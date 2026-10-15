@@ -1,0 +1,32 @@
+# Swift upstream/cluster source composition — 2026-09-20
+
+This is a source-only proposal over the retained three-way inputs at base `605651bb95d71c1da9bb122107925143e9441973` and upstream `cc225365f866d9a0e6f565fe9426703785611f84`. It resolves the five conflicted Swift files (nine conflict blocks), composes the new upstream disconnect responder, and updates one existing fixture's context. MAIN, the three-way inputs, the qualified private workspace, and all prior freezes are untouched. No compiler, product fixture, native command, or remote action was executed; only the small source/metadata checker ran.
+
+| File | Result |
+|---|---|
+| `ProviderLoop.swift` | The legacy cache sweep requires both `executionRole == .solo` and upstream `purgeLegacyFiles`. Other initialization and upstream cleanup changes remain. |
+| `EngineV2Bridge.swift` | Retains both `advertisedContextTokens` and `distributedFirstTokenBudgetPolicy`, including their existing initializations; upstream paged backend/context changes remain. |
+| `StandaloneServer+HTTP.swift` | Retains the distinct `PreContentDeadlineFailure` and `OpenAIRequestValidationError` catch arms and existing sanitization. |
+| `LocalChatUploadResponder.swift` | Preserves the distributed response hold, actual close callback, cancellation, and owned SSE writer. Distributed calls explicitly use `frameGenerationErrors: false`; ordinary HTTP adopts upstream `true`. |
+| `LocalInferenceHTTP.swift` | One stack: receipt origin → upstream disconnect ownership → auth → CORS → metrics → upload → basic router. Only distributed responses opt into channel observation. |
+| `LocalDisconnectResponder.swift` | Preserves upstream `base`/`coreContext` conversion, connection registry, cancellation Task, removable preparation callback, and cancellation handler. The actual source channel is captured once and its task-local scope is installed inside that same Task only when requested. |
+| `DistributedHTTPOriginTests.swift` | Uses the application's actual new context. The async testing channel is closed after bridge shutdown on both success and error; all existing assertions and methods remain. |
+
+Both old connection and upstream disconnect responders require a `BasicRequestContext` inner responder. They are deliberately not nested. The local `LocalHTTPConnectionScope` declaration remains in the existing `LocalConnectionResponder.swift`; the new stack reuses it without creating another request/session owner. The outer origin TaskLocal is inherited by the upstream Task, so body decoding and acquisition still consume the original request budget. Actual disconnect continues to cancel admission/native work through the existing scopes; it does not synthesize engine retirement or restore a native lease.
+
+The required upstream submodule is `libs/mlx-swift-lm` at `e22fc82bdb7bfbd93874d56c7df9ca3306782b09`. Its one-argument service method delegates to `frameGenerationErrors: false`; both overloads await `engine.streamChatCompletion` before creating the response stream. The `true` option only frames later generation failures. The current local submodule source does not have this overload, so this proposal must be qualified in the actual upstream composition, not compiled against the old dependency accidentally. The exact service and disconnect source inputs are retained under `context/`.
+
+Apply the five primary resolutions over the retained `merged/` inputs, then the two-file `context-composition.patch` over exact upstream `LocalDisconnectResponder` and exact retained local origin fixture. `integration.json` lists every preimage and postimage. `merged-to-resolved.patch`, `local-to-resolved.patch`, and `upstream-to-resolved.patch` cover only those five primary files; they are review alternatives, not three sequential patches. Required upstream connection/cancellation files and all other normally merged files remain part of the parent composition.
+
+`http-composed/` and `http-over-resolved.patch` are a separate, optional two-file rebase of the exact reviewed HTTP correction `2661c909e97bc0e52fa8f710d4f1e9247c8ec6f29144e99aa496d9afb8db015b`. They transplant only the resolved-stop override and initial HTTP rejection throw onto the resolved Bridge and existing automatically merged Submission, preserving all upstream context/page changes. The other three HTTP correction files must still come from that frozen correction after its product prerequisites are present. This does not include pipeline's later early-return successor and must not be represented as that future correction. Do not copy the old HTTP Bridge/Submission postimages over upstream.
+
+After root authorizes a complete disposable upstream/provider compilation context, run the retained product HTTP coverage including `ProtectedLocalHTTPTests` and `DistributedStopResolutionTests`, the existing `DistributedHTTPOriginTests`, `DistributedHTTPDisconnectTests`, and `DistributedHTTPRetirementTests`, plus upstream `LocalDisconnectTests` and ordinary standalone HTTP tests. A focused package command is:
+
+```sh
+cd provider-swift
+swift test --jobs 2 --filter 'ProtectedLocalHTTPTests|DistributedStopResolutionTests|DistributedHTTPOriginTests|DistributedHTTPDisconnectTests|DistributedHTTPRetirementTests|LocalDisconnectTests|standaloneServerAcceptsChatBodiesPastTheOldTwoMiBLimit|standaloneMalformedChatBodyStillMapsTo400|standaloneNonChatRoutesKeepTheUpstreamDecodePath'
+```
+
+Use the existing owned build controller, regular stdout/stderr files, complete source/dependency snapshots, and root's compiler slot for that command and the matching CLI build. The upstream MLXLMServer `ChatStreamingFailureHTTPTests` remain relevant to ordinary late error framing. No passed result is asserted here; runtime checks must validate actual full-close cancellation, allowed half-close, original deadline, pre-header rejection, normal HTTP stop resolution, and true native retirement after composition. Signing, App Attest pair identity, native admission, and hardware qualification are outside this proposal.
+
+Applicable instructions: repo `AGENTS.md` (pinned in `input-pins.json`), especially reader/failure/cleanup tracing and modular code. No nested provider instructions were found in the retained upstream tree. The completed Go proposal remains independently frozen as `upstream-cluster-go-resolution-20260920` manifest `3c8287fe9eaf745fb3ece5cd35d2760c0e0cf98cbfd589121b7c33853df191bd`.

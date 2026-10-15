@@ -1,0 +1,156 @@
+--- a/run.py
++++ b/run.py
+@@ -1,4 +1,4 @@
+-"""One real installed distributed session and one external authenticated request."""
++"""One installed HTTP disconnect, autonomous-cleanup observation, then fallback."""
+ from pathlib import Path
+ import argparse, base64, hashlib, json, os, shlex, subprocess, threading, time
+ import urllib.request
+@@ -6,15 +6,19 @@
+ from lease_source import LEASE
+ from physical_io import line_until, fetch_token, postflight, discovery
+ from tokenizer_check import verify as verify_tokenizer
++from cancellation_observation import observe_after_close
+ 
+ BASE=Path(__file__).resolve().parent
+-ROOT=BASE.parent
++ROOT=BASE.parents[1]  # cluster-research; private derivative is nested one level
+ 
+ def main():
+     parser=argparse.ArgumentParser()
+     parser.add_argument('--attempt',required=True,type=int)
+     parser.add_argument('--prompt-file',required=True,type=Path)
+     parser.add_argument('--client',required=True,type=Path)
++    parser.add_argument('--mode',required=True,choices=['before-content','after-two-content'])
++    parser.add_argument('--cancel-after-seconds',type=float,default=0.5)
++    parser.add_argument('--self-retirement-seconds',type=float,default=30)
+     parser.add_argument('--declared-prompt-tokens',type=int)
+     parser.add_argument('--rendered-prompt',type=Path)
+     parser.add_argument('--expected-token-ids',type=Path)
+@@ -22,11 +26,14 @@
+     assert 1<=args.attempt<=99
+     assert args.declared_prompt_tokens is None or 1<=args.declared_prompt_tokens<=8192
+     assert (args.rendered_prompt is None)==(args.expected_token_ids is None)
++    assert 0<args.cancel_after_seconds<=30
++    assert 1<=args.self_retirement_seconds<=60
+     output=BASE/('physical-'+str(args.attempt));output.mkdir(mode=0o700)
+-    remote_run=REMOTE+'/qualification/attempt'+str(args.attempt)
+-    record={'schema':'installed_distributed_http_attempt_v1','startedUnix':time.time(),
++    remote_run=REMOTE+'/qualification/cancel-'+args.mode+'-attempt'+str(args.attempt)
++    record={'schema':'installed_distributed_http_cancel_attempt_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+-            'numericalReferenceCompared':False,'requestCount':1}
++            'numericalReferenceCompared':False,'requestCount':1,'mode':args.mode,
++            'recoveryRequestQualified':False,'requestCancellationCauseIndependentlyVerified':False}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+     codefiles=sorted(BASE.glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
+     if args.rendered_prompt is not None:
+@@ -37,11 +44,12 @@
+     stop_watch=threading.Event();stop_lock=threading.Lock();stop_sent=False
+     guard_errors=[];token_file=output/'token.private'
+ 
+-    def stop_product():
++    def stop_product(reason):
+         nonlocal stop_sent
+         with stop_lock:
+-            if supervisor is not None and not stop_sent:
++            if supervisor is not None and supervisor.poll() is None and not stop_sent:
+                 stop_sent=True
++                record['parentStopIssued']={'reason':reason,'afterProductStartSeconds':time.monotonic()-product_started}
+                 try: supervisor.stdin.write(b'stop\n');supervisor.stdin.flush()
+                 except (OSError,BrokenPipeError): pass
+ 
+@@ -50,7 +58,7 @@
+             try:
+                 for monitor in monitors: monitor.require()
+             except Exception as error:
+-                guard_errors.append(str(error));stop_product();return
++                guard_errors.append(str(error));stop_product('resource-guard');return
+ 
+     try:
+         for rank,host in enumerate(['darkbloom-24','darkbloom-48']):
+@@ -96,17 +104,47 @@
+         for monitor in monitors: monitor.require()
+         command=['/usr/bin/python3','-B',str(args.client),'--endpoint','http://192.0.2.250:18081/v1/chat/completions',
+                  '--model','Qwen3.5-9B','--prompt-file',str(args.prompt_file),'--token-file',str(token_file),
+-                 '--output',str(output/'client'),'--timeout','90']
++                 '--output',str(output/'client'),'--timeout','90','--mode',args.mode,
++                 '--cancel-after-seconds',str(args.cancel_after_seconds)]
+         if args.declared_prompt_tokens is not None:
+             command.extend(['--declared-prompt-tokens',str(args.declared_prompt_tokens)])
+         record['clientCommand']=command
+         with (output/'client.stdout').open('xb') as out,(output/'client.stderr').open('xb') as err:
+             result=subprocess.run(command,stdout=out,stderr=err,timeout=100)
+         record['clientExitCode']=result.returncode
++        raw_receipt=(output/'client/receipt.json').read_bytes()
++        if len(raw_receipt)>131072: raise RuntimeError('Client receipt exceeded bound')
++        client_receipt=json.loads(raw_receipt)
++        record['clientReceiptSHA256']=hashlib.sha256(raw_receipt).hexdigest()
++        if result.returncode!=0 or client_receipt.get('requested_disconnect_observed') is not True:
++            raise RuntimeError('Client did not observe requested disconnect phase')
++        record['requestedClientDisconnectObserved']=True
++        origin=client_receipt['request_start_monotonic_ns']
++        closed=client_receipt['connection_close_returned_ns']
++        if type(origin) is not int or type(closed) is not int or min(origin,closed)<0:
++            raise RuntimeError('Invalid same-Mac client monotonic timestamps')
++        close_origin=(origin+closed)/1e9
++        observation_files=output/'self-retirement-files';observation_files.mkdir()
++        sample_number=0
++        def collect(rank,timeout):
++            nonlocal sample_number
++            value=postflight(['darkbloom-24','darkbloom-48'][rank],remote_run if rank==0 else None,timeout=timeout)
++            files=value.pop('files')
++            for name,encoded in files.items():
++                if name not in ['provider.stdout','provider.stderr','supervisor.json']:
++                    raise RuntimeError('Unexpected postflight file')
++                (observation_files/(str(sample_number)+'-'+name)).write_bytes(base64.b64decode(encoded,validate=True))
++            sample_number+=1
++            return value
++        # No stop/EOF is sent during this window. Resource guards remain active
++        # and make autonomous cleanup unqualified if they intervene.
++        record['selfRetirement']=observe_after_close(close_origin,args.self_retirement_seconds,
++            collect,lambda:stop_sent or bool(guard_errors))
+     except BaseException as error:
+         record['error']=type(error).__name__+': '+str(error)
+     finally:
+-        stop_product()
++        record['fallbackEnteredAfterProductStartSeconds']=time.monotonic()-product_started
++        stop_product('post-observation-cleanup-fallback')
+         if supervisor:
+             try:
+                 tail,_=supervisor.communicate(timeout=40)
+@@ -160,9 +198,11 @@
+         if token_file.exists(): token_file.unlink()
+     record['elapsedSeconds']=time.monotonic()-started
+     record['pinsUnchanged']=all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==pin for p,pin in pins.items())
+-    record['completed']=record.get('clientExitCode')==0 and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
++    finals=record.get('supervisorFinal',[])
++    record['supervisorNaturalExitObserved']=len(finals)==1 and finals[0].get('state')=='exited' and finals[0].get('stopReason')=='natural-exit' and finals[0].get('forcedKill') is False and type(finals[0].get('exitCode')) is int and finals[0]['exitCode'] in (0,1) and record.get('supervisorExitCode')==finals[0]['exitCode']
++    record['completed']=record.get('requestedClientDisconnectObserved') is True and record.get('selfRetirement',{}).get('self_retirement_observed') is True and record.get('selfRetirement',{}).get('harness_interference_observed') is False and record['supervisorNaturalExitObserved'] and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
+     (output/'execution.json').write_text(json.dumps(record,indent=2)+'\n')
+-    print(json.dumps({k:record.get(k) for k in ['completed','error','clientExitCode','supervisorExitCode','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
++    print(json.dumps({k:record.get(k) for k in ['completed','error','clientExitCode','supervisorExitCode','supervisorNaturalExitObserved','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
+     raise SystemExit(0 if record['completed'] else 1)
+ 
+ if __name__=='__main__':main()
+--- a/physical_io.py
++++ b/physical_io.py
+@@ -21,7 +21,7 @@
+     with os.fdopen(os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as file: file.write(raw)
+     return True
+ 
+-def postflight(host, remote_run=None):
++def postflight(host, remote_run=None, timeout=15):
+     code=r'''
+ from pathlib import Path
+ import base64,hashlib,json,subprocess,sys
+@@ -40,7 +40,8 @@
+ print(json.dumps(result))
+ '''
+     command=['/usr/bin/python3','-c',code]+([remote_run] if remote_run else [])
+-    result=subprocess.run(SSH+[host,shlex.join(command)],capture_output=True,text=True,timeout=15)
++    if not 0 < timeout <= 15: raise ValueError('Invalid postflight timeout')
++    result=subprocess.run(SSH+[host,shlex.join(command)],capture_output=True,text=True,timeout=timeout)
+     if result.returncode: raise RuntimeError('Postflight failed on '+host+': '+result.stderr)
+     return json.loads(result.stdout)
+ 

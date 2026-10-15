@@ -1,0 +1,322 @@
+import Foundation
+import Network
+
+
+// MARK: - Coordinator Client Actor
+
+// Access note: stored state and the methods reached across the split are
+// `internal` (not `private`) so this actor can be split by concern across the
+// CoordinatorClient+Connection/+Inbound/+Registration/+Outbound files in this
+// module (Swift `private` is file-scoped). Only members reached across the split
+// are widened; behavior is unchanged.
+public actor CoordinatorClient {
+    /// Upper bound on a single inbound WebSocket message. The coordinator sends each
+    /// inference request as ONE text frame carrying the base64 NaCl-box of the full
+    /// body; for a vision request that frame includes base64-encoded image bytes and
+    /// can be several MiB. Applied to the connection via
+    /// `NWProtocolWebSocket.Options.maximumMessageSize` at setup (see
+    /// `connectAndRun`): a larger frame is rejected by the transport, which tears
+    /// down the entire session and cancels every unrelated in-flight request on this
+    /// provider (then reconnects with backoff). Size this comfortably above the
+    /// coordinator's 16 MiB sealed-body cap after base64 expansion (×4/3 ≈ 21.3 MiB).
+    static let maxInboundMessageBytes = 32 * 1024 * 1024
+
+    internal let config: CoordinatorClientConfig
+    internal let stats: AtomicProviderStats
+    internal let state: ProviderState
+
+    internal let logger = CoordinatorWSLogger(subsystem: "dev.darkbloom.provider", category: "coordinator")
+
+    /// Tracks whether the box currently has a usable network path, so reconnect
+    /// logs/telemetry can attribute flap to local connectivity vs the coordinator.
+    internal let reachability = ReachabilityMonitor()
+
+    internal var eventContinuation: AsyncStream<CoordinatorEvent>.Continuation?
+    /// Holds the current connection's outbound continuation. The outbound stream
+    /// is recreated per connection (see OutboundRouter / connectAndRun); reusing
+    /// one AsyncStream across reconnects silently kills outbound delivery.
+    internal let outboundRouter = OutboundRouter()
+
+    /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
+    /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
+    /// ProviderLoop captures so `emitSSE` can write chunks straight to the live
+    /// NWConnection — bypassing the OutboundRouter → AsyncStream → for-await
+    /// control path (whose cooperative-pool consumer is starved by MLX decode).
+    /// Both are `nonisolated` so the hot path never hops to this actor. The
+    /// batcher's connection sink is (re)bound per session in `connectAndRun`;
+    /// control messages (heartbeats, attestation, complete/error) keep flowing
+    /// through `outboundRouter`.
+    nonisolated internal let chunkBatcher: ChunkBatcher
+    nonisolated internal let chunkSender: ChunkSender
+
+    /// Active Network.framework WebSocket connection (replaces the prior
+    /// `URLSessionWebSocketTask`). Outbound frames are written with the
+    /// non-blocking `NWConnection.send`, which buffers in the kernel and returns
+    /// immediately instead of `await`-ing each TCP ACK — that is what unblocks
+    /// per-stream inference-chunk throughput under concurrent load.
+    internal var nwConnection: NWConnection?
+    internal var nativePairMember: NativePairMemberControl?
+    internal var nativePairConnection: NativePairMemberConnection?
+
+    /// Serial queue that drives the NWConnection state machine, receive
+    /// callbacks, send completions, and pong handlers. Kept off the cooperative
+    /// pool and the actor executor. `internal` (not `private`) because the
+    /// connection extension in `CoordinatorClient+Connection.swift` starts the
+    /// connection and registers the pong handler on it (Swift `private` is
+    /// file-scoped, and this actor is split across files).
+    internal let connectionQueue = DispatchQueue(label: "dev.darkbloom.coordinator.nw")
+    /// Device token that arrived after the initial registration (APNs slow at
+    /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
+    internal var apnsTokenOverride: String?
+
+    /// Live APNs device-token source, read by every heartbeat. Defaults to the
+    /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
+    /// reflected in the next heartbeat — `apnsTokenOverride`/`config` only hold the
+    /// value captured at startup, and the late-token watcher in `ProviderLoop`
+    /// stops after the first token, so a rotation would otherwise keep the
+    /// coordinator pushing code-identity challenges to the dead token until a
+    /// reconnect. Injectable so unit tests drive rotation deterministically.
+    internal let liveAPNsToken: @Sendable () -> String?
+
+    /// Authoritative live per-model weight hashes pushed by the provider loop.
+    /// Nil means the loop has not supplied a snapshot, so registration uses the
+    /// daemon-start values. Once supplied, an omitted model hash deliberately
+    /// clears the startup value rather than re-advertising stale attestation
+    /// state. This does not force a reconnect; challenge responses already use
+    /// the live map, and this keeps future registrations consistent.
+    internal var modelWeightHashOverrides: [String: String]?
+
+    /// True from the moment this connection's `register` frame was handed to
+    /// the transport until the session tears down. Event-triggered heartbeats
+    /// check it so an out-of-band heartbeat can never precede registration on
+    /// a fresh connection (frames before `register` are a protocol violation);
+    /// the baseline heartbeat task starts after registration and needs no
+    /// gate.
+    var memberNegotiation: ClusterMemberNegotiation?
+    internal var memberRoleFailure = false
+    internal var sessionRegistered = false
+    private var connectionTask: Task<Void, Never>?
+
+    private let shutdownFlag = ShutdownFlag()
+
+    /// Fast, thread-safe shutdown visibility for connection tasks.
+    ///
+    /// The outbound WebSocket writer checks this once per inference chunk. Keep
+    /// the read nonisolated so the hot path does not hop back to the
+    /// CoordinatorClient actor just to read a Bool.
+    nonisolated internal var shutdownRequested: Bool {
+        shutdownFlag.isRequested
+    }
+
+    /// Mutable advertised-model list. Seeded from `config.models`; background
+    /// prefetch (Layer 3) appends newly-verified builds so re-registration and
+    /// reconnects pick them up without dropping the currently-served model.
+    internal let advertisedModelStore: AdvertisedModelStore
+
+    public init(
+        config: CoordinatorClientConfig,
+        stats: AtomicProviderStats,
+        state: ProviderState,
+        liveAPNsToken: (@Sendable () -> String?)? = nil
+    ) {
+        self.config = config
+        self.stats = stats
+        self.state = state
+        self.advertisedModelStore = AdvertisedModelStore(config.models.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0.id, available: config.runtimeCapabilities)
+        })
+        self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
+
+        // Inference-chunk fast path. The encode closure is the same pure static
+        // codec the control path uses; on the (effectively impossible) encode
+        // failure of a fixed-shape chunk it returns nil so SendHandle falls back
+        // to the control path. A local logger is captured (not `self.logger`,
+        // which isn't available while initializing stored properties) to avoid a
+        // retain cycle through the actor.
+        let chunkLogger = CoordinatorWSLogger(
+            subsystem: "dev.darkbloom.provider", category: "coordinator.chunks")
+        let batcher = ChunkBatcher()
+        self.chunkBatcher = batcher
+        self.chunkSender = ChunkSender(batcher: batcher, encode: { message in
+            do {
+                return try CoordinatorClientCodec.encodeOutboundMessage(message)
+            } catch {
+                chunkLogger.error(.coordinatorChunkEncodeFailed)
+                TelemetryClient.shared.emit(
+                    kind: .protocolError,
+                    severity: .error,
+                    message: "outbound chunk encode failed"
+                )
+                return nil
+            }
+        })
+    }
+
+    /// Add a runtime-verified build to the advertised set so the coordinator
+    /// sees it on the NEXT registration (reconnect). Returns true if the model
+    /// was newly advertised. The store always holds the FULL union (startup ∪
+    /// prefetched), so the currently-served model is never dropped during the
+    /// transition — registration carries old + new.
+    ///
+    /// Why not force a mid-connection re-register here: re-sending a `register`
+    /// on the live socket makes the coordinator construct a brand-new provider
+    /// record — resetting reputation, re-running attestation, and starting a
+    /// SECOND challenge loop alongside the first. That is too disruptive to the
+    /// model this provider is actively serving. The clean instant-pickup path is
+    /// a dedicated, non-resetting coordinator `models_update` message (Layer 4);
+    /// until then the new build is loadable locally immediately (it is in the
+    /// advertised set + appears warm in heartbeats once loaded) and is added to
+    /// the coordinator's advertised inventory on the next reconnect.
+    @discardableResult
+    public func advertiseModel(_ model: ModelInfo) -> Bool {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: model.id, available: config.runtimeCapabilities)
+        else {
+            logger.error(
+                "advertiseModel(\(model.id)): permanently ineligible; refusing advertisement")
+            return false
+        }
+        let isNew = advertisedModelStore.add(model)
+        if isNew {
+            logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")
+        }
+        return isNew
+    }
+
+    /// Retire a build from the advertised set (hard swap). After this, a register
+    /// or reconnect no longer announces the superseded build to the coordinator.
+    @discardableResult
+    public func unadvertiseModel(_ modelID: String) -> Bool {
+        let removed = advertisedModelStore.remove(id: modelID)
+        if removed {
+            logger.info("unadvertiseModel(\(modelID)): dropped from advertised set (\(self.advertisedModelStore.models.count) total)")
+        }
+        return removed
+    }
+
+    /// Snapshot of the current advertised model list (startup ∪ runtime
+    /// prefetched builds).
+    public func currentAdvertisedModels() -> [ModelInfo] {
+        advertisedModelStore.models
+    }
+
+    /// Start the connection loop. Returns an AsyncStream of events for the caller
+    /// to consume, and provides a way to send outbound messages.
+    public func start() -> (events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void) {
+        let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
+        self.eventContinuation = eventCont
+
+        // The outbound stream is created per-connection inside connectAndRun and
+        // registered with the router; the stable send closure always routes
+        // through the router to the live session.
+        let router = self.outboundRouter
+        let sendFn: @Sendable (OutboundMessage) -> Void = { msg in
+            router.yield(msg)
+        }
+
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runLoop()
+        }
+
+        return (eventStream, sendFn)
+    }
+
+    /// Member hosts join the real transport loop before dropping control state.
+    /// Native/device release remains independently owned by the installed host.
+    internal func shutdownAndWait() async {
+        shutdown()
+        connectionTask?.cancel()
+        await connectionTask?.value
+        connectionTask = nil
+    }
+
+    public func shutdown() {
+        shutdownFlag.request()
+        closeCurrentConnection()
+        eventContinuation?.finish()
+        outboundRouter.finish()
+    }
+
+    /// Send a WebSocket close frame (going-away) on the current connection and
+    /// then tear it down. Mirrors the old
+    /// `URLSessionWebSocketTask.cancel(with: .goingAway, reason: nil)`: a clean
+    /// close lets the coordinator deregister us promptly instead of waiting out a
+    /// ping/pong timeout. `cancel()` runs in the send completion so the close
+    /// frame is handed to the transport first. Used both for permanent shutdown
+    /// and for the APNs-refresh forced reconnect (the reconnect loop re-runs
+    /// registration while `shutdownRequested` is still false). Fire-and-forget:
+    /// the actor is not blocked waiting for the frame to flush.
+    private func closeCurrentConnection() {
+        detachNativePairMember()
+        guard let connection = nwConnection else { return }
+        nwConnection = nil
+        // Best-effort close frame: enqueue a .goingAway close frame so the
+        // coordinator sees a clean WS shutdown. Then cancel immediately —
+        // don't gate on the close frame flushing, because if the connection is
+        // still handshaking, the write side is wedged, or the peer is
+        // unreachable, the completion handler never fires and cancel() never
+        // runs, leaving the connection (and its reconnect-blocking state) alive.
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.goingAway)
+        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+        connection.send(
+            content: nil,
+            contentContext: context,
+            isComplete: true,
+            completion: .contentProcessed { _ in }
+        )
+        connection.cancel()
+    }
+
+    /// Re-register over a fresh connection carrying a device token that arrived
+    /// after the initial registration. Cancelling the socket (without setting
+    /// `shutdownRequested`) surfaces as a connection error, so the reconnect loop
+    /// re-runs `sendRegistration` with the override token — letting the
+    /// coordinator bind T↔K and push the code-identity challenge. No-op if the
+    /// token is unchanged.
+    public func refreshAPNsToken(_ token: String) {
+        guard apnsTokenOverride != token else { return }
+        apnsTokenOverride = token
+        closeCurrentConnection()
+    }
+
+    /// Tear down the current connection (clean close frame) WITHOUT setting
+    /// `shutdownRequested`, so the reconnect loop re-runs `sendRegistration`
+    /// with the CURRENT advertised set. Used when the advertised set SHRINKS
+    /// after registration (e.g. a startup self-test retirement under
+    /// `startup_selftest_fail_closed`): `models_update` is additive, so a
+    /// fresh `register` is the existing wire mechanism that communicates a
+    /// removal. Same reconnect path the coordinator handles on any network
+    /// blip; no-op when no connection is up (registration hasn't happened
+    /// yet — the register that follows will already carry the current set).
+    public func forceReconnect() {
+        closeCurrentConnection()
+    }
+
+    /// Replace the authoritative per-model weight-hash snapshot used by future
+    /// (re)registrations. Omitted entries clear daemon-start hashes.
+    public func updateModelWeightHashes(_ hashes: [String: String]) {
+        modelWeightHashOverrides = hashes
+    }
+
+}
+
+// MARK: - Security Checks Namespace
+
+/// Stub namespace for security checks. The Security module will provide
+/// real implementations; these stubs ensure the coordinator client compiles
+/// and runs independently.
+enum SecurityChecks {
+    static func isSIPEnabled() -> Bool {
+        SIPStatusChecker().isFullyEnabled()
+    }
+}
+
+
+// MARK: - Logger
+
+// Keep the historical coordinator-specific name while sharing ProviderLogger's
+// closed public vocabulary and private-by-default String overloads.
+internal typealias CoordinatorWSLogger = ProviderLogger

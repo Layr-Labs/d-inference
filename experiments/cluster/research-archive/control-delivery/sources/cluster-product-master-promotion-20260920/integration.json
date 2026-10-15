@@ -1,0 +1,879 @@
+{
+  "changedFiles": 85,
+  "changesApplied": false,
+  "excludedPrivateFiles": [
+    "provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift",
+    "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentRequestProvenance.swift",
+    "provider-swift/Sources/darkbloom/NativeHardwareInput.swift",
+    "provider-swift/Sources/darkbloom/NativeHardwareRequest.swift",
+    "provider-swift/Sources/darkbloom/StartCommand+NativeHardware.swift",
+    "provider-swift/Tests/DarkbloomCLITests/NativeHardwareDriverTests.swift"
+  ],
+  "files": [
+    {
+      "afterSHA256": "78b0b544158209a591ae0130b478b01b67b5996d6ca57d46de4ed9a99505cf79",
+      "apply": true,
+      "beforeSHA256": "5ae0b8127a339867e87b34784531bd44acd617ff2d05dae49c1b95e3716240ad",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "5ae0b8127a339867e87b34784531bd44acd617ff2d05dae49c1b95e3716240ad",
+      "path": "libs/darkbloom-cluster/Package.swift",
+      "qualifiedSHA256": "78b0b544158209a591ae0130b478b01b67b5996d6ca57d46de4ed9a99505cf79",
+      "source": "proposed/libs/darkbloom-cluster/Package.swift"
+    },
+    {
+      "afterSHA256": "d98dbd448a88fa5d52eabe3687b62224417441123f505c006e53140f749c43ca",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapAuthorization.swift",
+      "qualifiedSHA256": "d98dbd448a88fa5d52eabe3687b62224417441123f505c006e53140f749c43ca",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapAuthorization.swift"
+    },
+    {
+      "afterSHA256": "03f7f5bbcaeb60c147bcd1d98a71abee454f33912a73b2d378b64dacbdc414a3",
+      "apply": true,
+      "beforeSHA256": "44b8a6cd29154c2d720aab5851053cbd3394edfa6ec1c0de7c9d54dd9df57efa",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "44b8a6cd29154c2d720aab5851053cbd3394edfa6ec1c0de7c9d54dd9df57efa",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift",
+      "qualifiedSHA256": "03f7f5bbcaeb60c147bcd1d98a71abee454f33912a73b2d378b64dacbdc414a3",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift"
+    },
+    {
+      "afterSHA256": "0062f75bdca6cd94bf183dd1185f765a0eb70eecd83ecc0ae6f9c5d7f7d83b29",
+      "apply": true,
+      "beforeSHA256": "7c26f245b20f0c8ac76f49cbb4decd875fa549bc8bdd8b4113fa625c35ce7fd4",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "7c26f245b20f0c8ac76f49cbb4decd875fa549bc8bdd8b4113fa625c35ce7fd4",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift",
+      "qualifiedSHA256": "0062f75bdca6cd94bf183dd1185f765a0eb70eecd83ecc0ae6f9c5d7f7d83b29",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift"
+    },
+    {
+      "afterSHA256": "cdb1b124788346784827ed8acd0591d1e271b31ea26aac87a5d870d2775a24fa",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapPreludePacket.swift",
+      "qualifiedSHA256": "cdb1b124788346784827ed8acd0591d1e271b31ea26aac87a5d870d2775a24fa",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapPreludePacket.swift"
+    },
+    {
+      "afterSHA256": "40888c2356cf510d1aa6cccf2a98f19ffe1cd2fdd75f8e958d7c4c243efaa5d3",
+      "apply": true,
+      "beforeSHA256": "875792464f6c247eed1c6b499267b356a7b3930d4bde8b71df968865dcac9499",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "875792464f6c247eed1c6b499267b356a7b3930d4bde8b71df968865dcac9499",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+      "qualifiedSHA256": "40888c2356cf510d1aa6cccf2a98f19ffe1cd2fdd75f8e958d7c4c243efaa5d3",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift"
+    },
+    {
+      "afterSHA256": "e7e8d834a2586dbe7c4a8b63e6d2f5e649d9e30bfe2e1b8a368a9bc60cfc1def",
+      "apply": true,
+      "beforeSHA256": "6630d4adc65a24e2832181da65379164187bc820a9553e112e29d00d796860a4",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "6630d4adc65a24e2832181da65379164187bc820a9553e112e29d00d796860a4",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+      "qualifiedSHA256": "e7e8d834a2586dbe7c4a8b63e6d2f5e649d9e30bfe2e1b8a368a9bc60cfc1def",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift"
+    },
+    {
+      "afterSHA256": "00563cddb263e014ee0c1ac81c393f792a04e7536b1ad645b57aa4ea178930a3",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift",
+      "qualifiedSHA256": "00563cddb263e014ee0c1ac81c393f792a04e7536b1ad645b57aa4ea178930a3",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift"
+    },
+    {
+      "afterSHA256": "3e21d3e0bafc2036b7840403de8ced31bf15008ce52835e85f9853852970fb04",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift",
+      "qualifiedSHA256": "3e21d3e0bafc2036b7840403de8ced31bf15008ce52835e85f9853852970fb04",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift"
+    },
+    {
+      "afterSHA256": "bf66493d7f2610bc0cacd441ed277c6938ab6f4986d4a0875e2829ecea489534",
+      "apply": true,
+      "beforeSHA256": "a8a5ce563a0154ee8300b443acfb191d9e4e8a48fd6651b11031672bf5e9b81f",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "a8a5ce563a0154ee8300b443acfb191d9e4e8a48fd6651b11031672bf5e9b81f",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "qualifiedSHA256": "bf66493d7f2610bc0cacd441ed277c6938ab6f4986d4a0875e2829ecea489534",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift"
+    },
+    {
+      "afterSHA256": "5d1fae1ec3b8aa83e2f6468e61620edf2d7087582173b9bd94a57dd7ba8b564e",
+      "apply": true,
+      "beforeSHA256": "cb0e73b6fc308ae6e3bd6ec359875b28f48bc0c971cf42c5a57d2b853162f77a",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "cb0e73b6fc308ae6e3bd6ec359875b28f48bc0c971cf42c5a57d2b853162f77a",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "qualifiedSHA256": "5d1fae1ec3b8aa83e2f6468e61620edf2d7087582173b9bd94a57dd7ba8b564e",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift"
+    },
+    {
+      "afterSHA256": "628ac962efb0733129e330d6409c89240351d4cdff552d1cd12b614794f23ee7",
+      "apply": true,
+      "beforeSHA256": "b23e811ae3c80de443c1e2c29c43c89c6283cefa74af68a431d1c5a9fc58120b",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "b23e811ae3c80de443c1e2c29c43c89c6283cefa74af68a431d1c5a9fc58120b",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "qualifiedSHA256": "628ac962efb0733129e330d6409c89240351d4cdff552d1cd12b614794f23ee7",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift"
+    },
+    {
+      "afterSHA256": "d7e2b6d6036510dec41b7b0527888045404712a8d5228ad1a019da0a7019bfd6",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationCodec.swift",
+      "qualifiedSHA256": "d7e2b6d6036510dec41b7b0527888045404712a8d5228ad1a019da0a7019bfd6",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationCodec.swift"
+    },
+    {
+      "afterSHA256": "262e3065b6b45f97865643e4949db59c23d72be6246548592b0cd7be0242ac9c",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationTypes.swift",
+      "qualifiedSHA256": "262e3065b6b45f97865643e4949db59c23d72be6246548592b0cd7be0242ac9c",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationTypes.swift"
+    },
+    {
+      "afterSHA256": "499a04746d498eba9991c50a5f77496c28d7dd2ae512d333655ce4d94c409d01",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeKeyDerivation.swift",
+      "qualifiedSHA256": "499a04746d498eba9991c50a5f77496c28d7dd2ae512d333655ce4d94c409d01",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeKeyDerivation.swift"
+    },
+    {
+      "afterSHA256": "041324c553cee8ec6831dc600dac30557fbca5fba8b039184c527eda9aacf567",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift",
+      "qualifiedSHA256": "041324c553cee8ec6831dc600dac30557fbca5fba8b039184c527eda9aacf567",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift"
+    },
+    {
+      "afterSHA256": "e3316ca32b91bc5542e899d78a31e22a8de7bcd9e02b7c76a34751ac46d504d4",
+      "apply": true,
+      "beforeSHA256": "1e0c377464f85413c7f171ca6a7e1f9484b1609f0628034e17f6d44c760d330a",
+      "composition": "master + qualified product, private activation removed",
+      "mainBaseSHA256": "8604510f41cb7d5353b0b98e0d23fed77c52643c3808cb9968a1212a993c51e1",
+      "path": "provider-swift/Package.swift",
+      "qualifiedSHA256": "62e591cdda2b0760d0881884d2467fad9186c0f45e6c98ed3a6f61eb10479dc6",
+      "source": "proposed/provider-swift/Package.swift"
+    },
+    {
+      "afterSHA256": "612856c6d85ae60a51e9eb9b285cbb3723d5bfb715038187511873cdb5232ea1",
+      "apply": true,
+      "beforeSHA256": "5515cf89cc2937db3ebf1d52082e97931ea62dfe75ad06d181f78107f9b555ad",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "5515cf89cc2937db3ebf1d52082e97931ea62dfe75ad06d181f78107f9b555ad",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift",
+      "qualifiedSHA256": "612856c6d85ae60a51e9eb9b285cbb3723d5bfb715038187511873cdb5232ea1",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift"
+    },
+    {
+      "afterSHA256": "78621bc8db569a386577d099a854ba01597d9b8647130460b6ed7a0554750975",
+      "apply": true,
+      "beforeSHA256": "5247b974f0395c547ee8877214a33f01341f8dfc84fa168a17a0ebd36bf29fd7",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "5247b974f0395c547ee8877214a33f01341f8dfc84fa168a17a0ebd36bf29fd7",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift",
+      "qualifiedSHA256": "78621bc8db569a386577d099a854ba01597d9b8647130460b6ed7a0554750975",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift"
+    },
+    {
+      "afterSHA256": "11986a0f1c7e17ca26f39c2a7153dda40db0570adc5761c562c09f47dd1defcc",
+      "apply": true,
+      "beforeSHA256": "f29fae4b95bc0d7380cb63027806b820f7e04fe420bad2232fc96853ad2f464d",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "f29fae4b95bc0d7380cb63027806b820f7e04fe420bad2232fc96853ad2f464d",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift",
+      "qualifiedSHA256": "11986a0f1c7e17ca26f39c2a7153dda40db0570adc5761c562c09f47dd1defcc",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift"
+    },
+    {
+      "afterSHA256": "c3d34503e8278a15bbb1ff62286c34a29c9487ada6dfb51a4f6f5694648e1dda",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift",
+      "qualifiedSHA256": "c3d34503e8278a15bbb1ff62286c34a29c9487ada6dfb51a4f6f5694648e1dda",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift"
+    },
+    {
+      "afterSHA256": "bb81bd82be39f37713cfc012d7395168b56cade67292876f0ffb4e72a0985e23",
+      "apply": true,
+      "beforeSHA256": "99c1f0ed749c92a890be5890713702a84f341a3af7bf72a3c773c4be602d8927",
+      "composition": "master + qualified product, private activation removed",
+      "mainBaseSHA256": "99c1f0ed749c92a890be5890713702a84f341a3af7bf72a3c773c4be602d8927",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "qualifiedSHA256": "237c660384c4544afeecc65255882ae886219c8305ee2302c91739739878c171",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift"
+    },
+    {
+      "afterSHA256": "5b15576a2c79977093554f63efb784f150940ae40e596c94290898db6f3394fe",
+      "apply": true,
+      "beforeSHA256": "9366012b3f9a7b195f0a592af2ecdbfb970c315374ecd373b174da928754f746",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "a9c7ae96d3501692f300b2b3ce14921c7e4c627424ee619a1c7a729db3bdb394",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift",
+      "qualifiedSHA256": "47bc40b5cc56df4fa490354984d8e09b7b175446328512fd95de326801e4c2d1",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift"
+    },
+    {
+      "afterSHA256": "e65dd2c518c2c773c2b171f46227db98d5696fe7e814d31f263ea5c4a08dff0a",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+NativePair.swift",
+      "qualifiedSHA256": "e65dd2c518c2c773c2b171f46227db98d5696fe7e814d31f263ea5c4a08dff0a",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+NativePair.swift"
+    },
+    {
+      "afterSHA256": "1a93c9c15cf45140f0d1757beafb490ab2241b468057901b4a44da08bf1592ca",
+      "apply": true,
+      "beforeSHA256": "1f7b30af8d67bceefa0ab1ab8e27f3d23878a640ec2a220720c03e1fc72a10bd",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "1f7b30af8d67bceefa0ab1ab8e27f3d23878a640ec2a220720c03e1fc72a10bd",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift",
+      "qualifiedSHA256": "1a93c9c15cf45140f0d1757beafb490ab2241b468057901b4a44da08bf1592ca",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift"
+    },
+    {
+      "afterSHA256": "b374b3a191d87e147ed6f2958220b649ed5718c91b20113cb10d9d20efae6d67",
+      "apply": false,
+      "beforeSHA256": "b374b3a191d87e147ed6f2958220b649ed5718c91b20113cb10d9d20efae6d67",
+      "composition": "master + qualified product, private activation removed",
+      "mainBaseSHA256": "f0258ef5f00b62f9ec027465369e26af84b768e0cc32b93ab5587fd924d8011d",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift",
+      "qualifiedSHA256": "f57587331aa846781964526bf386569bee4414507bac989a7f7ee927f5df79fa",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift"
+    },
+    {
+      "afterSHA256": "b6b5926f0e32908c14429cf2ff9c42a7edca88f16ab36f96e2839759ec8d7738",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairLocalStart.swift",
+      "qualifiedSHA256": "b6b5926f0e32908c14429cf2ff9c42a7edca88f16ab36f96e2839759ec8d7738",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairLocalStart.swift"
+    },
+    {
+      "afterSHA256": "068e222956a25524d4ba3040aa7aff74420be0333df8e17b67f9d994ea443f83",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift",
+      "qualifiedSHA256": "068e222956a25524d4ba3040aa7aff74420be0333df8e17b67f9d994ea443f83",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift"
+    },
+    {
+      "afterSHA256": "982af59c2ae7326c2191995a193fea0d141c3e99af171d690d0f39acae036f60",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift",
+      "qualifiedSHA256": "982af59c2ae7326c2191995a193fea0d141c3e99af171d690d0f39acae036f60",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift"
+    },
+    {
+      "afterSHA256": "7495812bbfb9c9a427d8763da2c96632fd196553365ce5befac03aaadc763437",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift",
+      "qualifiedSHA256": "7495812bbfb9c9a427d8763da2c96632fd196553365ce5befac03aaadc763437",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift"
+    },
+    {
+      "afterSHA256": "17825a172c8fad44de741af5f795a1132d778a6f24113309bfb172978e711ec4",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift",
+      "qualifiedSHA256": "17825a172c8fad44de741af5f795a1132d778a6f24113309bfb172978e711ec4",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift"
+    },
+    {
+      "afterSHA256": "90d862d02c771ebf53850f046cf9af31d525885cb24e948271cebd9226d3db90",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift",
+      "qualifiedSHA256": "90d862d02c771ebf53850f046cf9af31d525885cb24e948271cebd9226d3db90",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift"
+    },
+    {
+      "afterSHA256": "0e338defabc05858cb0f13537ab260de2096e25d5447ce45607ff89255ee05ef",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift",
+      "qualifiedSHA256": "0e338defabc05858cb0f13537ab260de2096e25d5447ce45607ff89255ee05ef",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift"
+    },
+    {
+      "afterSHA256": "f2c182d9a3e9db0bbf04dd409a585decd6bec9dc8ea08c4bcbe757bb833207f4",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift",
+      "qualifiedSHA256": "f2c182d9a3e9db0bbf04dd409a585decd6bec9dc8ea08c4bcbe757bb833207f4",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift"
+    },
+    {
+      "afterSHA256": "d71c96d13eda9064e1772eba897782dcc495029a93c44bd1125b0dc5462eb4ae",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift",
+      "qualifiedSHA256": "d71c96d13eda9064e1772eba897782dcc495029a93c44bd1125b0dc5462eb4ae",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift"
+    },
+    {
+      "afterSHA256": "2c9eb6b2bb9badab53ae5adda6ab0f1f19ca72d377205036d7fc6f9b4ab24969",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestWriter.swift",
+      "qualifiedSHA256": "2c9eb6b2bb9badab53ae5adda6ab0f1f19ca72d377205036d7fc6f9b4ab24969",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestWriter.swift"
+    },
+    {
+      "afterSHA256": "77d99cf09e53580ac510f60927131eb658606c1aa9085ddfd4c45f6725a76aee",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedEndpoint.swift",
+      "qualifiedSHA256": "77d99cf09e53580ac510f60927131eb658606c1aa9085ddfd4c45f6725a76aee",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedEndpoint.swift"
+    },
+    {
+      "afterSHA256": "1fd0971dc20a6b2c670ca2d256db34b2ff71ae588710c93f73b446f4feae0c7c",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedSession.swift",
+      "qualifiedSHA256": "1fd0971dc20a6b2c670ca2d256db34b2ff71ae588710c93f73b446f4feae0c7c",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedSession.swift"
+    },
+    {
+      "afterSHA256": "7a682412a5d3e418af36b6ba913f4a1022f2906bfe63ac2e7c336e48f867cc0c",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairSessionCompletion.swift",
+      "qualifiedSHA256": "7a682412a5d3e418af36b6ba913f4a1022f2906bfe63ac2e7c336e48f867cc0c",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairSessionCompletion.swift"
+    },
+    {
+      "afterSHA256": "505e7239b3487691e0468156d7fbf7c079e583fc88c7f127500572c399e5674c",
+      "apply": true,
+      "beforeSHA256": "19718036b51472df9ae759cc78ca87b8243d621f1470de84a0b143b34b947b94",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "19718036b51472df9ae759cc78ca87b8243d621f1470de84a0b143b34b947b94",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift",
+      "qualifiedSHA256": "505e7239b3487691e0468156d7fbf7c079e583fc88c7f127500572c399e5674c",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift"
+    },
+    {
+      "afterSHA256": "5a8b43ad86f3b5372967f695c0f2420c3d6b81ce70cd2041179b9010578f6965",
+      "apply": true,
+      "beforeSHA256": "3455b5e011804cace553fe530ae46385b97f16bc17d61a308dee66baf787faed",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "3455b5e011804cace553fe530ae46385b97f16bc17d61a308dee66baf787faed",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift",
+      "qualifiedSHA256": "5a8b43ad86f3b5372967f695c0f2420c3d6b81ce70cd2041179b9010578f6965",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift"
+    },
+    {
+      "afterSHA256": "e9cd61fcfc5cd040b688da382c221a26c0df933be7436cb22e78506c3c436876",
+      "apply": true,
+      "beforeSHA256": "d905a20347ebdc1f80cfd8680195e31ef8352b0d3548a48292934afb9ad31859",
+      "composition": "master + qualified product, private activation removed",
+      "mainBaseSHA256": "d905a20347ebdc1f80cfd8680195e31ef8352b0d3548a48292934afb9ad31859",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift",
+      "qualifiedSHA256": "5498869d5cee78c49f1005cc6b69e5fee9682b754a3c0e4174e049a5a0bfb711",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift"
+    },
+    {
+      "afterSHA256": "78c544d5c00fe89847b8ada82dde67a5fb411ecc7b71a30456036b7c6afc5ad0",
+      "apply": true,
+      "beforeSHA256": "13ad5fb8f2a265d7f229a6bbf42cb976140b1ec3533d9686bf03470cde1613f8",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "13ad5fb8f2a265d7f229a6bbf42cb976140b1ec3533d9686bf03470cde1613f8",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift",
+      "qualifiedSHA256": "78c544d5c00fe89847b8ada82dde67a5fb411ecc7b71a30456036b7c6afc5ad0",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift"
+    },
+    {
+      "afterSHA256": "af8d9a3f8fccf5c355f38006e7aac9b029b2fbf0c1b7f885fc5763af557c9188",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift",
+      "qualifiedSHA256": "af8d9a3f8fccf5c355f38006e7aac9b029b2fbf0c1b7f885fc5763af557c9188",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift"
+    },
+    {
+      "afterSHA256": "3794a7305b68f860f9c384641f7d093fc369bad0ac5b2093bd570256b4a7f068",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift",
+      "qualifiedSHA256": "3794a7305b68f860f9c384641f7d093fc369bad0ac5b2093bd570256b4a7f068",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift"
+    },
+    {
+      "afterSHA256": "38c4e23bfd508143db83fec6ed58177ea2738008f2b89e32a087b80650fa3697",
+      "apply": true,
+      "beforeSHA256": "7ea32e38e9a3d45737b45b5c15abd5c6636821200075de92b130ec5ae5e7b797",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "7ea32e38e9a3d45737b45b5c15abd5c6636821200075de92b130ec5ae5e7b797",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift",
+      "qualifiedSHA256": "38c4e23bfd508143db83fec6ed58177ea2738008f2b89e32a087b80650fa3697",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift"
+    },
+    {
+      "afterSHA256": "19636285b5c2d29ff7ec6a18115aac33944f9b93841eabde9177d1d55c8125a6",
+      "apply": true,
+      "beforeSHA256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "qualifiedSHA256": "19636285b5c2d29ff7ec6a18115aac33944f9b93841eabde9177d1d55c8125a6",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift"
+    },
+    {
+      "afterSHA256": "f90a327e4520c23c2f3721d5196c9e65675b92d9122196dd7c1435f808bbe968",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedProtectedMemberPreparation.swift",
+      "qualifiedSHA256": "f90a327e4520c23c2f3721d5196c9e65675b92d9122196dd7c1435f808bbe968",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedProtectedMemberPreparation.swift"
+    },
+    {
+      "afterSHA256": "252befd46283213b8522e975d3c1d77342728c29fe9b9d7ec48d3395ed9d9acb",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/ProtectedLocalWorkload.swift",
+      "qualifiedSHA256": "252befd46283213b8522e975d3c1d77342728c29fe9b9d7ec48d3395ed9d9acb",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/ProtectedLocalWorkload.swift"
+    },
+    {
+      "afterSHA256": "fd866a55e8876f09fa722093ebc5ad82263554d359d1c062002f31ad40c6d9fb",
+      "apply": true,
+      "beforeSHA256": "eebfacbf1fa122296885c79b55a83ade93cb73040b9e7c17c777a46ef0d98eca",
+      "composition": "master + qualified product + early HTTP guards",
+      "mainBaseSHA256": "96f34ff7b7f244f60ab2217b432a212447569009774e016fd27b4136e68538fc",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+      "qualifiedSHA256": "29955db9d8e19b55e41ad75a6a9fd1fe0e033229ed848378494ea986a5895247",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift"
+    },
+    {
+      "afterSHA256": "3acda0cf0b0dc61ad25844ea7bf2e7521fcb2ed670688cba09eb4552a256e527",
+      "apply": true,
+      "beforeSHA256": "0c862540ac7300a8dc86094221b6e67d5716e091e284cf41d6409fe2c014b0db",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "93c6db0716c5b2993d710cf3e9f91ca68a81c70c2306b2ead1fd3ec182fe6424",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+      "qualifiedSHA256": "dc1ade0b165d4f28b1ccc11a696db11eff450594559847b5cb0eb8cf41e81a7c",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift"
+    },
+    {
+      "afterSHA256": "9012cfdc2ab1163d569fffc88dc35b89644bc8250f067e8ba801492205718804",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift",
+      "qualifiedSHA256": "9012cfdc2ab1163d569fffc88dc35b89644bc8250f067e8ba801492205718804",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift"
+    },
+    {
+      "afterSHA256": "e4cf380e6dd8736ff63a3ac3d34df8c367c14864132d0dd5eeff8b38558cddb4",
+      "apply": true,
+      "beforeSHA256": "b74bfb547105bbcca078f3e3292c6bb7f54a3bd57b4c89cbba8b5e41d3ea3d23",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "b74bfb547105bbcca078f3e3292c6bb7f54a3bd57b4c89cbba8b5e41d3ea3d23",
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift",
+      "qualifiedSHA256": "e4cf380e6dd8736ff63a3ac3d34df8c367c14864132d0dd5eeff8b38558cddb4",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift"
+    },
+    {
+      "afterSHA256": "97c0f52d20117f2397bc0a4393b2d390c6cb14b7337adc75f052201463d9c401",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairWorkerPacket.swift",
+      "qualifiedSHA256": "97c0f52d20117f2397bc0a4393b2d390c6cb14b7337adc75f052201463d9c401",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairWorkerPacket.swift"
+    },
+    {
+      "afterSHA256": "57b6d5ff047db0dde791572856efe210499180dfee28b0e68f475af6d58ef685",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift",
+      "qualifiedSHA256": "57b6d5ff047db0dde791572856efe210499180dfee28b0e68f475af6d58ef685",
+      "source": "proposed/provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift"
+    },
+    {
+      "afterSHA256": "c3c29b0acb74bbb7e47721165c9ce3482bba99e48620b42d6e0f5b2a6552db90",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ProtectedLocalServer.swift",
+      "qualifiedSHA256": "c3c29b0acb74bbb7e47721165c9ce3482bba99e48620b42d6e0f5b2a6552db90",
+      "source": "proposed/provider-swift/Sources/ProviderCore/ProviderLoop+ProtectedLocalServer.swift"
+    },
+    {
+      "afterSHA256": "f580ab6df75e42909fcc8412e304e8a8082fdee41ef5b571a9f362610748a4c9",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ProtectedSession.swift",
+      "qualifiedSHA256": "f580ab6df75e42909fcc8412e304e8a8082fdee41ef5b571a9f362610748a4c9",
+      "source": "proposed/provider-swift/Sources/ProviderCore/ProviderLoop+ProtectedSession.swift"
+    },
+    {
+      "afterSHA256": "e612ae9dd73eb695b835344ad8a710ef5e9c9a08abbdfd57c22ddfb74c1e0b5f",
+      "apply": true,
+      "beforeSHA256": "98152fb4a3dbf85126e0614f68732b10f94a410e7d2be49e1508b3425f670def",
+      "composition": "master + qualified product, private activation removed",
+      "mainBaseSHA256": "5d857e1865e6662e7376e75e82376a1e39c5a87b420f1b945659c9050c606b53",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "qualifiedSHA256": "ef9d824184bcb5f727e286774f464cab64726eb07fe02f6201713db088d7e99d",
+      "source": "proposed/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift"
+    },
+    {
+      "afterSHA256": "067498ae9d300e8baff3ba6235b8d3e241d5da3050a1c32038e4f22acd1b7412",
+      "apply": true,
+      "beforeSHA256": "a134cc6c663ad958cc436afc5b9c2f1f22990d779b5838d6354dd5919126f287",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "dd4fe9a1399f54814ba62cb16f9a5d47c27072c78dcb7b33507961ebca03d934",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+      "qualifiedSHA256": "25259d3a4c07666e75646ac4d8e898525bc501aa1e8aaf43c863f02c90b689b8",
+      "source": "proposed/provider-swift/Sources/ProviderCore/ProviderLoop.swift"
+    },
+    {
+      "afterSHA256": "f052d5a263db3bf31e1b4ef70ac35d690495ee29177b887a31b555178106d846",
+      "apply": true,
+      "beforeSHA256": "d838487dc63752a92a8dbe71c89c7175cc5dc8cddf29b3d5366397fff6000fdf",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "d838487dc63752a92a8dbe71c89c7175cc5dc8cddf29b3d5366397fff6000fdf",
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Monitoring.swift",
+      "qualifiedSHA256": "f052d5a263db3bf31e1b4ef70ac35d690495ee29177b887a31b555178106d846",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Monitoring.swift"
+    },
+    {
+      "afterSHA256": "274e31fe031bb60ab750e32b441febc83ffc9e117f98ca41ba4ef78095c5b135",
+      "apply": true,
+      "beforeSHA256": "efe1a471a942f952a7f884ffb56b1a5bca5768bbbe0f92222812fb93d4e82da0",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "efe1a471a942f952a7f884ffb56b1a5bca5768bbbe0f92222812fb93d4e82da0",
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift",
+      "qualifiedSHA256": "274e31fe031bb60ab750e32b441febc83ffc9e117f98ca41ba4ef78095c5b135",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift"
+    },
+    {
+      "afterSHA256": "9a0ac414d0dcad1757a5257f4fb448b645f46445f457735f2decf29baae46290",
+      "apply": true,
+      "beforeSHA256": "60173dfc53f54bdbb27e21c5aa60604b70189ba6973e50a8601c3c81c4afffc9",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "60173dfc53f54bdbb27e21c5aa60604b70189ba6973e50a8601c3c81c4afffc9",
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift",
+      "qualifiedSHA256": "9a0ac414d0dcad1757a5257f4fb448b645f46445f457735f2decf29baae46290",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift"
+    },
+    {
+      "afterSHA256": "c195f6c3b53eea41970346d390f68d946ebb9c9a61af866bce78ae7cfc73d6f1",
+      "apply": true,
+      "beforeSHA256": "aa2847b67e501c6ba094367fae9e981e03e2c6d82734720ce6ef5e104d9a8b51",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "aa2847b67e501c6ba094367fae9e981e03e2c6d82734720ce6ef5e104d9a8b51",
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift",
+      "qualifiedSHA256": "c195f6c3b53eea41970346d390f68d946ebb9c9a61af866bce78ae7cfc73d6f1",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift"
+    },
+    {
+      "afterSHA256": "d0bb8227c99af51f3d3410925f7eed73c22ed3ae17737c18ca7a010982dd2de4",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedProtectedMemberSession.swift",
+      "qualifiedSHA256": "d0bb8227c99af51f3d3410925f7eed73c22ed3ae17737c18ca7a010982dd2de4",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedProtectedMemberSession.swift"
+    },
+    {
+      "afterSHA256": "af77732c107555585c0a49bb54bf08f8f096a3baf96ffdbdd929273544e99c7c",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/ProtectedLocalStartLifecycle.swift",
+      "qualifiedSHA256": "af77732c107555585c0a49bb54bf08f8f096a3baf96ffdbdd929273544e99c7c",
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/Distributed/ProtectedLocalStartLifecycle.swift"
+    },
+    {
+      "afterSHA256": "68b6eee3e38ceca56653c7ffea7bfdfda7c5188d8d1954079627e3258e28cbcd",
+      "apply": true,
+      "beforeSHA256": "21287fa924be577b557700bd73bba9974e4f7e37336ea42f7406dcfcd336ae38",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "21287fa924be577b557700bd73bba9974e4f7e37336ea42f7406dcfcd336ae38",
+      "path": "provider-swift/Sources/darkbloom/DistributedStartSessionFactory.swift",
+      "qualifiedSHA256": "68b6eee3e38ceca56653c7ffea7bfdfda7c5188d8d1954079627e3258e28cbcd",
+      "source": "proposed/provider-swift/Sources/darkbloom/DistributedStartSessionFactory.swift"
+    },
+    {
+      "afterSHA256": "6a0b152c8503a8336542d12e8b38dc023aad36f3e23a733d2005a7a4d2f318ae",
+      "apply": true,
+      "beforeSHA256": "f1b401bdb11a09354ca4424f7bdcbd217cb0eccc6d852e79146a91964bbf5974",
+      "composition": "master + qualified product, private activation removed",
+      "mainBaseSHA256": "f1b401bdb11a09354ca4424f7bdcbd217cb0eccc6d852e79146a91964bbf5974",
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "qualifiedSHA256": "96d32373967fdc819dd73338eba624165812ace168236165839df1b4afcf747d",
+      "source": "proposed/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift"
+    },
+    {
+      "afterSHA256": "a9035d7fdff29d3870fd205e9da0f423eb888854fcbc34773b178386cb3597e0",
+      "apply": true,
+      "beforeSHA256": "e9ceae3e27961f767477c09d7462697a014cd2522669af66708e3c4d99bdb4d7",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "e9ceae3e27961f767477c09d7462697a014cd2522669af66708e3c4d99bdb4d7",
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Distributed.swift",
+      "qualifiedSHA256": "a9035d7fdff29d3870fd205e9da0f423eb888854fcbc34773b178386cb3597e0",
+      "source": "proposed/provider-swift/Sources/darkbloom/StartCommand+Distributed.swift"
+    },
+    {
+      "afterSHA256": "8c0b0aa5e374a0c3840287703315bf6f2d14eb2caea5030007f79343434e3f37",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ProtectedDistributed.swift",
+      "qualifiedSHA256": "8c0b0aa5e374a0c3840287703315bf6f2d14eb2caea5030007f79343434e3f37",
+      "source": "proposed/provider-swift/Sources/darkbloom/StartCommand+ProtectedDistributed.swift"
+    },
+    {
+      "afterSHA256": "a91cdccc1d5e0da315f0d08ff9d23b7fe9f80fdda82b171ab7243a89f99f3607",
+      "apply": true,
+      "beforeSHA256": "8a5b52b56b800c595de03e9a54aa270ec2b15ec864c17a20b07bfce15945abe0",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "8a5b52b56b800c595de03e9a54aa270ec2b15ec864c17a20b07bfce15945abe0",
+      "path": "provider-swift/Tests/ClusterConfigurationChecks/run.sh",
+      "qualifiedSHA256": "a91cdccc1d5e0da315f0d08ff9d23b7fe9f80fdda82b171ab7243a89f99f3607",
+      "source": "proposed/provider-swift/Tests/ClusterConfigurationChecks/run.sh"
+    },
+    {
+      "afterSHA256": "1b26ae22080e699943b1ce2ebec4d533d89fb9b8b078b44cd60e040985a32e11",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift",
+      "qualifiedSHA256": "1b26ae22080e699943b1ce2ebec4d533d89fb9b8b078b44cd60e040985a32e11",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift"
+    },
+    {
+      "afterSHA256": "576511151cc3ef9f148876c8fd4f5eafe7bd512a27fa2ed541b4695fd9766835",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift",
+      "qualifiedSHA256": "576511151cc3ef9f148876c8fd4f5eafe7bd512a27fa2ed541b4695fd9766835",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift"
+    },
+    {
+      "afterSHA256": "54d6619ae43ecb5dbbd56a9d5b4ad93678bf3a3d9a081e01cf32c46ba7d8910b",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberControlTests.swift",
+      "qualifiedSHA256": "54d6619ae43ecb5dbbd56a9d5b4ad93678bf3a3d9a081e01cf32c46ba7d8910b",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberControlTests.swift"
+    },
+    {
+      "afterSHA256": "2b2cb7985edda696ed6ccd69a1c32f0c9209496405d546386fe11e8628867f3e",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift",
+      "qualifiedSHA256": "2b2cb7985edda696ed6ccd69a1c32f0c9209496405d546386fe11e8628867f3e",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift"
+    },
+    {
+      "afterSHA256": "2cd4d5232214f7282b4d81c9f94544a66c77fbb694b452691c035e4c47cbe5dc",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberInvocationTests.swift",
+      "qualifiedSHA256": "2cd4d5232214f7282b4d81c9f94544a66c77fbb694b452691c035e4c47cbe5dc",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberInvocationTests.swift"
+    },
+    {
+      "afterSHA256": "2d0ca4586906609d94755b2294c067a2ecc58d3f53954ac51e389161e8aacf7e",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift",
+      "qualifiedSHA256": "2d0ca4586906609d94755b2294c067a2ecc58d3f53954ac51e389161e8aacf7e",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift"
+    },
+    {
+      "afterSHA256": "e71eb52fd0a1a6e1ee1c43807cd3744741a028b6d2ca178d7cda588a19596f69",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift",
+      "qualifiedSHA256": "e71eb52fd0a1a6e1ee1c43807cd3744741a028b6d2ca178d7cda588a19596f69",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift"
+    },
+    {
+      "afterSHA256": "aaa3eb418086195e9613fec353e503aeb0b7819776a0f3bdd582532d66300245",
+      "apply": true,
+      "beforeSHA256": "5f043f6191a203c2068a04d9859eb692db44336c70d3f5ad35160b0470b1b3f7",
+      "composition": "master + qualified product",
+      "mainBaseSHA256": "098af8772898d0fec439e5e34f49ed91c979eb5b34c4320b060bb8449247fee3",
+      "path": "provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift",
+      "qualifiedSHA256": "9c82c54019c07efbc632b6f638cd0b8a92e88a41b4f3200b01b315db90442323",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift"
+    },
+    {
+      "afterSHA256": "45a16e4571330d845ff4f29c7ff0ae918a14a357367c8e789d45a6304df25ed2",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedStopResolutionTests.swift",
+      "qualifiedSHA256": "45a16e4571330d845ff4f29c7ff0ae918a14a357367c8e789d45a6304df25ed2",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedStopResolutionTests.swift"
+    },
+    {
+      "afterSHA256": "a7d853b678e0a35236458326584491431534fb803a4ad41d9ab7567e971b96f7",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ProtectedLocalHTTPTests.swift",
+      "qualifiedSHA256": "a7d853b678e0a35236458326584491431534fb803a4ad41d9ab7567e971b96f7",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/ProtectedLocalHTTPTests.swift"
+    },
+    {
+      "afterSHA256": "abf2dbfc1323a9e74dd850c6a4aca2d9c5a194b6729c7620949668bdd313ac7b",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ProtectedLocalStartTests.swift",
+      "qualifiedSHA256": "abf2dbfc1323a9e74dd850c6a4aca2d9c5a194b6729c7620949668bdd313ac7b",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/ProtectedLocalStartTests.swift"
+    },
+    {
+      "afterSHA256": "1653357917c34cbdc8154749e8c02cc0c6cb21b60d08c1c9e618e683025e7a7d",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ProtectedLocalWorkloadTests.swift",
+      "qualifiedSHA256": "1653357917c34cbdc8154749e8c02cc0c6cb21b60d08c1c9e618e683025e7a7d",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/ProtectedLocalWorkloadTests.swift"
+    },
+    {
+      "afterSHA256": "c38705ec9f1288e4310ff787611b5dd79883912cd8991946587190b01ad4fed4",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionCompletionTests.swift",
+      "qualifiedSHA256": "c38705ec9f1288e4310ff787611b5dd79883912cd8991946587190b01ad4fed4",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionCompletionTests.swift"
+    },
+    {
+      "afterSHA256": "b6cda4e61347061504880485fd664cc3536e9457c6d7f81e2c4b6ce20b84e792",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionLifecycleTests.swift",
+      "qualifiedSHA256": "b6cda4e61347061504880485fd664cc3536e9457c6d7f81e2c4b6ce20b84e792",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionLifecycleTests.swift"
+    },
+    {
+      "afterSHA256": "1670b34ea38b9fad095574a4641263830752b3cf038157bd4de3f08c07808579",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "master + qualified product",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionTestSupport.swift",
+      "qualifiedSHA256": "1670b34ea38b9fad095574a4641263830752b3cf038157bd4de3f08c07808579",
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionTestSupport.swift"
+    },
+    {
+      "afterSHA256": "f643761bab09c666ba1ed905257e9ffd5bbe5e070590c8ae102e1126c565d585",
+      "apply": true,
+      "beforeSHA256": null,
+      "composition": "seven source-only early HTTP controls",
+      "mainBaseSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPPreAdmissionTests.swift",
+      "qualifiedSHA256": null,
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPPreAdmissionTests.swift"
+    }
+  ],
+  "identityOverlayReplaced": false,
+  "schema": "cluster_product_master_promotion_v1",
+  "targetHEAD": "cc225365",
+  "targetRoot": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/workspace",
+  "unchangedSelectedFiles": 1
+}

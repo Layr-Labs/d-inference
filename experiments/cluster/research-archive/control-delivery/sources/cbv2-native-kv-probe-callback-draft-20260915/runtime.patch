@@ -1,0 +1,165 @@
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/NativeKVTypeProbe.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/NativeKVTypeProbe.swift
+@@ -31,7 +31,54 @@
+         model: any CBv2SteppableModel, layerKinds: [CBv2LayerKind],
+         caches: [any CBv2AttendingLayerCache], token: Int32 = 0
+     ) throws -> Result {
+-        guard token >= 0, !layerKinds.isEmpty, caches.count == layerKinds.count,
++        guard token >= 0 else { throw invalid("probe requires fresh matching model caches") }
++        let recurrentModel = model as? any CBv2RecurrentSteppableModel
++        return try runProbe(layerKinds: layerKinds, caches: caches,
++            recurrentModel: recurrentModel,
++            prepareTokens: { count, check in
++                let tokens = MLXArray(Array(repeating: token, count: count)).reshaped([1, count])
++                try check()
++                return tokens
++            }, forward: { _, _, tokens, transaction in
++                // prepareTokens above always supplies the same legacy token root.
++                guard let tokens else { throw invalid("model probe has no token root") }
++                if let transaction, let recurrentModel {
++                    return recurrentModel.forward(
++                        tokens: tokens, caches: caches, recurrentState: [transaction])
++                }
++                return model.forward(tokens: tokens, caches: caches)
++            })
++    }
++
++    /// Attention-only stage seam for a throwing residual forward. The callback
++    /// runs synchronously with the same temporary rows, native error handler,
++    /// two-token prefill and one-token decode as the model overload. It must
++    /// use the supplied caches and return a root retaining its forward graph.
++    ///
++    /// The caller owns verified input construction/transport, phase binding,
++    /// native admission/deadline and failure cleanup. In particular a later
++    /// stage must validate its actual incoming residual dtype, not infer it
++    /// from embedding metadata. Neither the callback nor native roots are
++    /// retained after this call; Result contains only CPU-owned metadata.
++    public static func run(
++        layerKinds: [CBv2LayerKind], caches: [any CBv2AttendingLayerCache],
++        forward: (Phase, Int, [any CBv2AttendingLayerCache]) throws -> MLXArray
++    ) throws -> Result {
++        try runProbe(layerKinds: layerKinds, caches: caches,
++            recurrentModel: nil, prepareTokens: nil,
++            forward: { phase, count, _, _ in try forward(phase, count, caches) })
++    }
++
++    /// Both entry points share all row recording, native evaluation, recurrent
++    /// transaction handling and result validation. Token preparation remains
++    /// before recurrent bind, matching the original model entry's ordering.
++    private static func runProbe(
++        layerKinds: [CBv2LayerKind], caches: [any CBv2AttendingLayerCache],
++        recurrentModel: (any CBv2RecurrentSteppableModel)?,
++        prepareTokens: ((Int, () throws -> Void) throws -> MLXArray)?,
++        forward: (Phase, Int, MLXArray?, CBv2RecurrentStateEvaluation?) throws -> MLXArray
++    ) throws -> Result {
++        guard !layerKinds.isEmpty, caches.count == layerKinds.count,
+             layerKinds.allSatisfy({ $0.kvHeads > 0 && $0.headDim > 0 }),
+             zip(caches, layerKinds).allSatisfy({ $0.0.rows.isEmpty && $0.0.kind == $0.1 })
+         else { throw invalid("probe requires fresh matching model caches") }
+@@ -44,7 +91,6 @@
+         }
+         defer { for cache in caches { cache.setRows([]) } }
+ 
+-        let recurrentModel = model as? any CBv2RecurrentSteppableModel
+         let recurrent = try recurrentModel?.recurrentStateSpec.map(CBv2RecurrentRequestState.init(spec:))
+         defer { try? recurrent?.release() }
+         var observations: [Observation] = []
+@@ -52,17 +98,10 @@
+             let count = phase == .prefill ? 2 : 1
+             for case let row? in recorders { row.begin(phase: phase, count: count) }
+             try withError { error in
+-                let tokens = MLXArray(Array(repeating: token, count: count)).reshaped([1, count])
+-                try error.check()
++                let tokens = try prepareTokens?(count, { try error.check() })
+                 let transaction = try recurrent?.bind()
+                 defer { try? transaction?.rollback() }
+-                let output: MLXArray
+-                if let transaction, let recurrentModel {
+-                    output = recurrentModel.forward(
+-                        tokens: tokens, caches: caches, recurrentState: [transaction])
+-                } else {
+-                    output = model.forward(tokens: tokens, caches: caches)
+-                }
++                let output = try forward(phase, count, tokens, transaction)
+                 try error.check()
+                 // Validate before allocating/evaluating the forward's graph.
+                 // Shapes and dtypes are graph metadata, not tensor readbacks.
+--- a/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2PagedNativeDTypeTests.swift
++++ b/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2PagedNativeDTypeTests.swift
+@@ -137,4 +137,76 @@
+             #expect(caches.allSatisfy { $0.rows.isEmpty })
+         }
+     }
++
++    @Test("throwing callback preserves phase/count/native result and releases rows")
++    func callbackMatchesModelEntry() throws {
++        let model = NativeKVProbeFixture(types: [.float32, .bfloat16])
++        let oldCaches = caches()
++        let expected = try CBv2NativeKVTypeProbe.run(
++            model: model, layerKinds: kinds, caches: oldCaches)
++        let newCaches = caches()
++        var phases: [CBv2NativeKVTypeProbe.Phase] = []
++        var counts: [Int] = []
++        let actual = try CBv2NativeKVTypeProbe.run(layerKinds: kinds, caches: newCaches) {
++            phase, count, supplied in
++            #expect(zip(supplied, newCaches).allSatisfy { $0.0 === $0.1 })
++            #expect(supplied.allSatisfy { $0.rows.count == 1 })
++            phases.append(phase); counts.append(count)
++            let tokens = MLXArray(Array(repeating: Int32(0), count: count)).reshaped([1, count])
++            return model.forward(tokens: tokens, caches: supplied)
++        }
++        #expect(actual == expected)
++        #expect(phases == [.prefill, .decode] && counts == [2, 1])
++        #expect(oldCaches.allSatisfy { $0.rows.isEmpty })
++        #expect(newCaches.allSatisfy { $0.rows.isEmpty })
++    }
++
++    private enum CallbackFailure: Error { case refused }
++
++    @Test("callback failure after partial native work unbinds every private row")
++    func callbackThrowUnbindsRows() throws {
++        for failingPhase: CBv2NativeKVTypeProbe.Phase in [.prefill, .decode] {
++            let model = NativeKVProbeFixture(types: [.float32, .bfloat16])
++            let caches = caches()
++            var phases: [CBv2NativeKVTypeProbe.Phase] = []
++            #expect(throws: CallbackFailure.self) {
++                try CBv2NativeKVTypeProbe.run(layerKinds: kinds, caches: caches) {
++                    phase, count, supplied in
++                    phases.append(phase)
++                    let tokens = MLXArray(Array(repeating: Int32(0), count: count)).reshaped([1, count])
++                    let output = model.forward(tokens: tokens, caches: supplied)
++                    if phase == failingPhase { throw CallbackFailure.refused }
++                    return output
++                }
++            }
++            #expect(phases == (failingPhase == .prefill ? [.prefill] : [.prefill, .decode]))
++            #expect(caches.allSatisfy { $0.rows.isEmpty })
++        }
++    }
++
++    @Test("callback path retains malformed-cache and changing/asymmetric dtype refusal")
++    func callbackRefusals() throws {
++        var invoked = false
++        #expect(throws: CBv2KVError.self) {
++            try CBv2NativeKVTypeProbe.run(layerKinds: kinds, caches: []) { _, _, _ in
++                invoked = true
++                throw CallbackFailure.refused
++            }
++        }
++        #expect(!invoked)
++        for model in [
++            NativeKVProbeFixture(types: [.bfloat16, .bfloat16], changeOnDecode: true),
++            NativeKVProbeFixture(types: [.bfloat16, .bfloat16], asymmetric: true)
++        ] {
++            let caches = caches()
++            #expect(throws: CBv2KVError.self) {
++                try CBv2NativeKVTypeProbe.run(layerKinds: kinds, caches: caches) { _, count, supplied in
++                    let tokens = MLXArray(Array(repeating: Int32(0), count: count)).reshaped([1, count])
++                    return model.forward(tokens: tokens, caches: supplied)
++                }
++            }
++            #expect(caches.allSatisfy { $0.rows.isEmpty })
++        }
++    }
++
+ }

@@ -1,0 +1,131 @@
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop.swift
+@@ -363,6 +363,7 @@
+     /// reentrant loads cannot start against memory that has not been freed yet.
+     internal var modelsUnloading: Set<String> = []
+     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
++    internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
+ 
+     /// Serializes KV-GRANT mutations: the load-side re-slice
+     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →
+@@ -680,7 +681,7 @@
+         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
+         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
+         // so this cleanup cannot delete current cache data.
+-        if config.executionRole == .solo { LegacyKVCacheSweeper.sweep() }
++        if config.executionRole == .solo && purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
+         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+         self.preloadTaskStarted = preloadTaskStarted
+         self.beforeModelLoad = beforeModelLoad
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -54,6 +54,8 @@
+     /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
+     /// a physically preallocated pool).
+     public let kvBackendKind: EngineV2KVBackendKind
++    /// Observed pool geometry from backend preparation, never a default guess.
++    public let pagedPageSize: Int?
+     /// Construction-time fallback reason, retained for heartbeat reporting.
+     /// Admission and resizing depend on the actual kvBackendKind only.
+     public let kvBackendFallbackReason: String?
+@@ -151,6 +153,9 @@
+         .configDisabled, configured: false)
+     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
+     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
++    /// Immutable request-envelope limit for this loaded candidate. Listing and
++    /// admission share it; prefix hits never permit a larger prompt/output sum.
++    nonisolated let advertisedContextTokens: Int?
+ 
+     // MARK: - Per-request bookkeeping
+ 
+@@ -314,7 +319,9 @@
+         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
+         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+         kvBackendKind: EngineV2KVBackendKind = .contiguous,
++        pagedPageSize: Int? = nil,
+         kvBackendFallbackReason: String? = nil,
++        advertisedContextTokens: Int? = nil,
+         distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
+     ) {
+@@ -322,7 +329,11 @@
+         self.modelId = modelId
+         self.tokenizer = tokenizer
+         self.kvBackendKind = kvBackendKind
++        self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
+         self.kvBackendFallbackReason = kvBackendFallbackReason
++        self.advertisedContextTokens =
++            Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
++            ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
+         self.clampedKVBackendFallbackReason =
+             Self.heartbeatFallbackReason(kvBackendFallbackReason)
+         self.stopTokenIds = EngineV2Translation.stopTokenIds(
+--- a/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
+@@ -147,6 +147,12 @@
+                 status: HTTPResponse.Status(code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
+                 message: ProviderLoop.sanitizedInferenceFailure(
+                     from: error, phase: .generation).message)
++        } catch let error as OpenAIRequestValidationError {
++            // Chat upload interception lives outside the upstream router's
++            // HTTPResponseError mapping. Preserve this fixed, content-free
++            // validation error without exposing arbitrary upstream messages.
++            return Self.openAIErrorResponse(
++                status: error.status, message: error.localizedDescription)
+         } catch let error as MLXOpenAIServiceError {
+             return Self.openAIErrorResponse(
+                 status: HTTPResponse.Status(
+--- a/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
+@@ -117,14 +117,16 @@
+                     }
+                     if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
+                     let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
+-                        try await requestService.streamChatCompletionFrames(request: item.request)
++                        try await requestService.streamChatCompletionFrames(
++                            request: item.request, frameGenerationErrors: false)
+                     }
+                     return DistributedHTTPEventStream.response(frames, control: response)
+                 } catch {
+                     response.disconnect(); response.finish(); throw error
+                 }
+             }
+-            let frames = try await requestService.streamChatCompletionFrames(request: item.request)
++            let frames = try await requestService.streamChatCompletionFrames(
++                request: item.request, frameGenerationErrors: true)
+             return Self.sseResponse(frames)
+         }
+         return try Self.jsonResponse(
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -34,12 +34,12 @@
+ }
+ 
+ /// The concrete responder stack the local endpoint always uses:
+-/// receipt origin (outermost) → auth → CORS → MTP-augmented /metrics → chat-upload
++/// receipt origin → disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
+ /// interception (32 MiB body ceiling for the media-bearing chat routes, see
+ /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+ public typealias LocalInferenceApplication =
+     Application<
+-        LocalRequestOriginResponder<LocalConnectionResponder<LocalAuthResponder<
++        LocalRequestOriginResponder<LocalDisconnectResponder<LocalAuthResponder<
+             CORSResponder<
+                 LocalMetricsResponder<
+                     LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
+@@ -126,12 +126,12 @@
+     let metricsResponder = LocalMetricsResponder(
+         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+     let corsResponder = CORSResponder(inner: metricsResponder)
+-    // Auth rejects an unauthenticated request
+-    // before reaching the engine. Pass-through when no token is configured.
++    // Auth rejects unauthenticated requests before body/model handling. The
++    // outer origin and disconnect layers bind timing/lifetime, not authority.
+     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+ 
+     return Application(
+-        responder: LocalRequestOriginResponder(inner: LocalConnectionResponder(
++        responder: LocalRequestOriginResponder(inner: LocalDisconnectResponder(
+             inner: authedResponder, observeConnection: distributedResponses != nil)),
+         configuration: .init(
+             address: .hostname(config.host, port: Int(config.port)),

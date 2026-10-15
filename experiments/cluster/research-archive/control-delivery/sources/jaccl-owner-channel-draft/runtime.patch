@@ -1,0 +1,537 @@
+--- a/libs/darkbloom-cluster/Package.swift
++++ b/libs/darkbloom-cluster/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomCluster",
+     platforms: [.macOS(.v14)],
+     products: [
++        .library(name: "DarkbloomClusterBootstrap", targets: ["DarkbloomClusterBootstrap"]),
+         .library(name: "DarkbloomClusterProtocol", targets: ["DarkbloomClusterProtocol"]),
+         .library(name: "DarkbloomClusterProcess", targets: ["DarkbloomClusterProcess"]),
+         .library(name: "DarkbloomClusterRuntime", targets: ["DarkbloomClusterRuntime"]),
+@@ -17,11 +18,12 @@
+         .package(path: "../mlx-swift-lm"),
+     ],
+     targets: [
++        .target(name: "DarkbloomClusterBootstrap"),
+         .target(name: "DarkbloomClusterProtocol"),
+         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
+         .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess"]),
+         .target(name: "DarkbloomClusterRuntime", dependencies: [
+-            "DarkbloomClusterProtocol",
++            "DarkbloomClusterProtocol", "DarkbloomClusterBootstrap",
+             .product(name: "Cmlx", package: "mlx-swift"),
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "MLXNN", package: "mlx-swift"),
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/BootstrapSocket.swift
+@@ -0,0 +1,108 @@
++import Darwin
++import Foundation
++
++/// shutdown can interrupt IO; the descriptor is closed only at final release so
++/// a concurrent operation cannot accidentally access a recycled descriptor.
++final class BootstrapSocket: @unchecked Sendable {
++    let descriptor: Int32
++    let deadline: UInt64
++    private let lock = NSLock()
++    private var cancelled = false
++
++    init(taking descriptor: Int32, deadline: UInt64) throws {
++        let now = DispatchTime.now().uptimeNanoseconds
++        guard deadline > now, deadline - now <= 300_000_000_000 else {
++            Darwin.close(descriptor); throw ClusterBootstrapError.deadline
++        }
++        guard fcntl(descriptor, F_SETFL, O_NONBLOCK) == 0,
++              fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
++            let code = errno; Darwin.close(descriptor); throw ClusterBootstrapError.system(code)
++        }
++        var enabled: Int32 = 1
++        guard setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout.size(ofValue: enabled))) == 0 else {
++            let code = errno; Darwin.close(descriptor); throw ClusterBootstrapError.system(code)
++        }
++        self.descriptor = descriptor; self.deadline = deadline
++    }
++
++    deinit { Darwin.close(descriptor) }
++
++    func cancel() {
++        lock.withLock {
++            if !cancelled { cancelled = true; _ = Darwin.shutdown(descriptor, SHUT_RDWR) }
++        }
++    }
++
++    func check() throws {
++        guard !lock.withLock({ cancelled }) else { throw ClusterBootstrapError.closed }
++        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ClusterBootstrapError.deadline }
++    }
++
++    func wait(_ events: Int16, until: UInt64? = nil) throws {
++        let limit = min(deadline, until ?? deadline)
++        while true {
++            try check()
++            guard DispatchTime.now().uptimeNanoseconds < limit else { throw ClusterBootstrapError.deadline }
++            var p = pollfd(fd: descriptor, events: events, revents: 0)
++            let result = Darwin.poll(&p, 1, 25)
++            try check()
++            guard DispatchTime.now().uptimeNanoseconds < limit else { throw ClusterBootstrapError.deadline }
++            if result < 0 {
++                if errno == EINTR { continue }; throw ClusterBootstrapError.system(errno)
++            }
++            if result > 0 {
++                guard p.revents & Int16(POLLNVAL) == 0 else { throw ClusterBootstrapError.closed }
++                return // read/write observes EOF and socket errors itself.
++            }
++        }
++    }
++
++    func readExactly(_ count: Int) throws -> Data {
++        guard (1...131_072).contains(count) else { throw ClusterBootstrapError.invalid("Read bound") }
++        var result = Data(count: count), offset = 0
++        while offset < count {
++            try wait(Int16(POLLIN))
++            let n = result.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress!.advanced(by: offset), count - offset) }
++            if n > 0 { offset += n }
++            else if n == 0 { throw ClusterBootstrapError.closed }
++            else if errno != EINTR && errno != EAGAIN { throw ClusterBootstrapError.system(errno) }
++        }
++        try check(); return result
++    }
++
++    func write(_ data: Data) throws {
++        guard !data.isEmpty, data.count <= 131_072 else { throw ClusterBootstrapError.invalid("Write bound") }
++        var offset = 0
++        while offset < data.count {
++            try wait(Int16(POLLOUT))
++            let n = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), data.count - offset) }
++            if n > 0 { offset += n }
++            else if n == 0 { throw ClusterBootstrapError.closed }
++            else if errno != EINTR && errno != EAGAIN { throw ClusterBootstrapError.system(errno) }
++        }
++        try check()
++    }
++
++    func requirePeer(processID: Int32) throws {
++        guard processID > 1 else { throw ClusterBootstrapError.peer }
++        var observed: Int32 = 0, length = socklen_t(MemoryLayout<Int32>.size)
++        var uid: uid_t = 0, gid: gid_t = 0
++        guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &observed, &length) == 0,
++              length == MemoryLayout<Int32>.size, observed == processID,
++              getpeereid(descriptor, &uid, &gid) == 0, uid == geteuid() else { throw ClusterBootstrapError.peer }
++        try check()
++    }
++}
++
++func bootstrapAddress(_ path: String) throws -> sockaddr_un {
++    let bytes = Array(path.utf8)
++    guard path.hasPrefix("/"), !bytes.contains(0), bytes.count < 104 else {
++        throw ClusterBootstrapError.invalid("Invalid local socket path")
++    }
++    var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
++    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
++    withUnsafeMutableBytes(of: &address.sun_path) { target in
++        target.copyBytes(from: bytes); target[bytes.count] = 0
++    }
++    return address
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift
+@@ -0,0 +1,113 @@
++import Darwin
++import Foundation
++
++/// One in-flight native bootstrap round on a dedicated same-Mac channel.
++/// Errors poison this connection. cancel/EOF is not native retirement proof.
++public final class ClusterBootstrapConnection: @unchecked Sendable {
++    public let identity: ClusterBootstrapIdentity
++    public let deadlineUptimeNanoseconds: UInt64
++    private let socket: BootstrapSocket
++    private let worker: Bool
++    private let lock = NSLock()
++    private var busy = false, failed = false
++    private var sequence: UInt64 = 0
++    private var pending: ClusterBootstrapRound?
++
++    init(socket: BootstrapSocket, identity: ClusterBootstrapIdentity, worker: Bool) {
++        self.socket = socket; self.identity = identity; self.worker = worker
++        deadlineUptimeNanoseconds = socket.deadline
++    }
++
++    public static func connect(path: String, ownerProcessID: Int32, identity: ClusterBootstrapIdentity,
++                               deadlineUptimeNanoseconds: UInt64) throws -> ClusterBootstrapConnection {
++        guard ownerProcessID == getppid(), ownerProcessID > 1 else { throw ClusterBootstrapError.peer }
++        let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
++        var directoryMetadata = stat()
++        guard lstat(directory, &directoryMetadata) == 0, directoryMetadata.st_mode & S_IFMT == S_IFDIR,
++              directoryMetadata.st_uid == geteuid(), directoryMetadata.st_mode & 0o777 == 0o700 else {
++            throw ClusterBootstrapError.invalid("Bootstrap directory is not private")
++        }
++        var metadata = stat()
++        guard lstat(path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFSOCK,
++              metadata.st_uid == geteuid(), metadata.st_mode & 0o777 == 0o600 else {
++            throw ClusterBootstrapError.invalid("Bootstrap path is not the owned private socket")
++        }
++        var address = try bootstrapAddress(path)
++        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
++        guard fd >= 0 else { throw ClusterBootstrapError.system(errno) }
++        let socket = try BootstrapSocket(taking: fd, deadline: deadlineUptimeNanoseconds)
++        let result = withUnsafePointer(to: &address) {
++            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
++        }
++        if result != 0 {
++            guard errno == EINPROGRESS else { throw ClusterBootstrapError.system(errno) }
++            try socket.wait(Int16(POLLOUT))
++            var error: Int32 = 0, length = socklen_t(MemoryLayout<Int32>.size)
++            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0, error == 0 else {
++                throw ClusterBootstrapError.closed
++            }
++        }
++        try socket.requirePeer(processID: ownerProcessID)
++        return .init(socket: socket, identity: identity, worker: true)
++    }
++
++    public func cancel() { lock.withLock { failed = true }; socket.cancel() }
++
++    private func operation<T>(_ body: () throws -> T) throws -> T {
++        do {
++            try lock.withLock {
++                guard !failed, !busy else { throw ClusterBootstrapError.closed }; busy = true
++            }
++            let value = try body(); try socket.check()
++            try lock.withLock {
++                guard !failed else { throw ClusterBootstrapError.closed }; busy = false
++            }
++            return value
++        } catch { cancel(); throw error }
++    }
++
++    public func exchange(sequence: UInt64, contribution: Data) throws -> Data {
++        try operation {
++            guard worker, sequence == self.sequence else { throw ClusterBootstrapError.invalid("Unexpected worker round") }
++            let round = try ClusterBootstrapRound(identity: identity, sequence: sequence, contribution: contribution)
++            try socket.write(BootstrapHeader(round: round, reply: false).encoded()); try socket.write(contribution)
++            let header = try BootstrapHeader(socket.readExactly(BootstrapHeader.byteCount))
++            guard header.reply, header.identity == identity, header.sequence == sequence,
++                  header.contributionBytes == contribution.count else { throw ClusterBootstrapError.invalid("Reply identity differs") }
++            let result = try socket.readExactly(header.payloadBytes)
++            try requireEcho(result, round: round); self.sequence += 1
++            return result
++        }
++    }
++
++    public func receiveRound() throws -> ClusterBootstrapRound {
++        try operation {
++            guard !worker, pending == nil else { throw ClusterBootstrapError.invalid("Unexpected owner read") }
++            let header = try BootstrapHeader(socket.readExactly(BootstrapHeader.byteCount))
++            guard !header.reply, header.identity == identity, header.sequence == sequence else {
++                throw ClusterBootstrapError.invalid("Round identity differs")
++            }
++            let round = try ClusterBootstrapRound(identity: identity, sequence: sequence,
++                contribution: socket.readExactly(header.payloadBytes))
++            pending = round; return round
++        }
++    }
++
++    public func reply(to round: ClusterBootstrapRound, gathered: Data) throws {
++        try operation {
++            guard !worker, pending == round else { throw ClusterBootstrapError.invalid("Unexpected owner reply") }
++            try requireEcho(gathered, round: round)
++            try socket.write(BootstrapHeader(round: round, reply: true).encoded()); try socket.write(gathered)
++            pending = nil; sequence += 1
++        }
++    }
++
++    private func requireEcho(_ bytes: Data, round: ClusterBootstrapRound) throws {
++        let count = round.contribution.count, start = identity.rank * round.contribution.count
++        guard bytes.count == count * 2 else { throw ClusterBootstrapError.invalid("Gathered result size differs") }
++        let lower = bytes.index(bytes.startIndex, offsetBy: start), upper = bytes.index(lower, offsetBy: count)
++        guard Data(bytes[lower..<upper]) == round.contribution else {
++            throw ClusterBootstrapError.invalid("Gathered result size or local bytes differ")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapFrame.swift
+@@ -0,0 +1,67 @@
++import Foundation
++
++public enum ClusterBootstrapError: Error, Equatable, Sendable {
++    case invalid(String), peer, deadline, closed, system(Int32)
++}
++
++public struct ClusterBootstrapIdentity: Equatable, Sendable {
++    public let membershipEpoch: UUID
++    public let rank: Int
++    public init(membershipEpoch: UUID, rank: Int) throws {
++        guard (0...1).contains(rank) else { throw ClusterBootstrapError.invalid("Bootstrap requires two ranks") }
++        self.membershipEpoch = membershipEpoch; self.rank = rank
++    }
++}
++
++/// Native payload bytes are opaque. This local route is not peer authentication.
++public struct ClusterBootstrapRound: Equatable, Sendable {
++    public let identity: ClusterBootstrapIdentity
++    public let sequence: UInt64
++    public let contribution: Data
++    public init(identity: ClusterBootstrapIdentity, sequence: UInt64, contribution: Data) throws {
++        guard sequence < 6, (1...65_536).contains(contribution.count) else {
++            throw ClusterBootstrapError.invalid("Bootstrap round exceeds bounds")
++        }
++        self.identity = identity; self.sequence = sequence; self.contribution = contribution
++    }
++}
++
++struct BootstrapHeader {
++    static let byteCount = 40
++    let identity: ClusterBootstrapIdentity
++    let sequence: UInt64
++    let contributionBytes: Int
++    let reply: Bool
++    var payloadBytes: Int { contributionBytes * (reply ? 2 : 1) }
++
++    init(round: ClusterBootstrapRound, reply: Bool) {
++        identity = round.identity; sequence = round.sequence
++        contributionBytes = round.contribution.count; self.reply = reply
++    }
++
++    func encoded() -> Data {
++        var data = Data([0x44, 0x42, 0x4a, 0x42, 1, reply ? 2 : 1, UInt8(identity.rank), 2])
++        var uuid = identity.membershipEpoch.uuid
++        withUnsafeBytes(of: &uuid) { data.append(contentsOf: $0) }
++        for (value, count) in [(sequence, 8), (UInt64(contributionBytes), 4), (UInt64(payloadBytes), 4)] {
++            for shift in stride(from: (count - 1) * 8, through: 0, by: -8) { data.append(UInt8(truncatingIfNeeded: value >> shift)) }
++        }
++        return data
++    }
++
++    init(_ data: Data) throws {
++        let bytes = Array(data)
++        guard bytes.count == Self.byteCount, Array(bytes[0..<5]) == [0x44, 0x42, 0x4a, 0x42, 1],
++              [1, 2].contains(bytes[5]), bytes[6] < 2, bytes[7] == 2 else {
++            throw ClusterBootstrapError.invalid("Invalid bootstrap header")
++        }
++        let uuid: uuid_t = (bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
++            bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23])
++        identity = try .init(membershipEpoch: UUID(uuid: uuid), rank: Int(bytes[6]))
++        func number(_ range: Range<Int>) -> UInt64 { range.reduce(0) { ($0 << 8) | UInt64(bytes[$1]) } }
++        sequence = number(24..<32); contributionBytes = Int(number(32..<36)); reply = bytes[5] == 2
++        guard sequence < 6, (1...65_536).contains(contributionBytes), number(36..<40) == UInt64(payloadBytes) else {
++            throw ClusterBootstrapError.invalid("Invalid bootstrap length or sequence")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift
+@@ -0,0 +1,57 @@
++import Darwin
++import Foundation
++
++/// A fresh owner-only pathname. No arbitrary descriptor inheritance is needed.
++public final class ClusterBootstrapListener: @unchecked Sendable {
++    public let socketPath: String
++    private let directory: String
++    private let socket: BootstrapSocket
++    private let lock = NSLock()
++    private var attempted = false
++
++    public init(deadlineUptimeNanoseconds: UInt64) throws {
++        var template = Array("/private/tmp/darkbloom-bootstrap-XXXXXXXX".utf8CString)
++        guard let created = mkdtemp(&template) else { throw ClusterBootstrapError.system(errno) }
++        let directory = String(cString: created), path = directory + "/channel"
++        do {
++            guard chmod(directory, 0o700) == 0 else { throw ClusterBootstrapError.system(errno) }
++            var address = try bootstrapAddress(path)
++            let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
++            guard fd >= 0 else { throw ClusterBootstrapError.system(errno) }
++            let socket = try BootstrapSocket(taking: fd, deadline: deadlineUptimeNanoseconds)
++            let bound = withUnsafePointer(to: &address) {
++                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
++            }
++            guard bound == 0, chmod(path, 0o600) == 0, Darwin.listen(fd, 1) == 0 else {
++                throw ClusterBootstrapError.system(errno)
++            }
++            self.directory = directory; socketPath = path; self.socket = socket
++        } catch { unlink(path); rmdir(directory); throw error }
++    }
++
++    deinit { socket.cancel(); unlink(socketPath); rmdir(directory) }
++    public func cancel() { socket.cancel() }
++
++    public func accept(processID: Int32, identity: ClusterBootstrapIdentity,
++                       deadlineUptimeNanoseconds: UInt64) throws -> ClusterBootstrapConnection {
++        do {
++            try lock.withLock {
++                guard !attempted, processID > 1, deadlineUptimeNanoseconds <= socket.deadline else {
++                    throw ClusterBootstrapError.invalid("Invalid or reused bootstrap listener")
++                }
++                attempted = true
++            }
++            while true {
++                try socket.wait(Int16(POLLIN), until: deadlineUptimeNanoseconds)
++                let fd = Darwin.accept(socket.descriptor, nil, nil)
++                if fd < 0 {
++                    if errno == EINTR || errno == EAGAIN { continue }; throw ClusterBootstrapError.system(errno)
++                }
++                let accepted = try BootstrapSocket(taking: fd, deadline: deadlineUptimeNanoseconds)
++                try accepted.requirePeer(processID: processID)
++                socket.cancel()
++                return .init(socket: accepted, identity: identity, worker: false)
++            }
++        } catch { socket.cancel(); throw error }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentBootstrap.swift
+@@ -0,0 +1,25 @@
++import DarkbloomClusterBootstrap
++import Foundation
++
++/// An explicitly attached local owner channel. The owner must supply the
++/// authenticated peer relay; a local socket alone does not establish that trust.
++public struct QwenResidentBootstrap: Sendable {
++    private let connection: ClusterBootstrapConnection
++    public init(connection: ClusterBootstrapConnection) { self.connection = connection }
++
++    func make(configuration: QwenResidentLoadConfiguration) throws -> JACCLBootstrap {
++        guard connection.identity.membershipEpoch == configuration.identity.membershipEpoch,
++              connection.identity.rank == configuration.rank,
++              connection.deadlineUptimeNanoseconds <= configuration.deadlineUptimeNanoseconds else {
++            throw ProbeError("Bootstrap attachment differs from resident identity or lifetime")
++        }
++        return try JACCLBootstrap(membershipEpoch: connection.identity.membershipEpoch, rank: connection.identity.rank) {
++            epoch, rank, size, sequence, data, expectedBytes in
++            guard epoch == connection.identity.membershipEpoch, rank == connection.identity.rank,
++                  size == 2, expectedBytes == data.count * 2 else {
++                throw ClusterBootstrapError.invalid("Native bootstrap shape differs")
++            }
++            return try connection.exchange(sequence: sequence, contribution: data)
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -4,7 +4,10 @@
+ import MLXNN
+ 
+ extension QwenResidentRuntime {
+-    public static func load(_ configuration: QwenResidentLoadConfiguration) throws -> QwenResidentRuntime {
++    public static func load(_ configuration: QwenResidentLoadConfiguration,
++                            bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        // nil preserves the legacy experimental native TCP bootstrap.
++        let nativeBootstrap = try bootstrap?.make(configuration: configuration)
+         let directory = configuration.modelDirectory
+         let admission = try QwenResidentAdmission(configuration: configuration,
+             configBytes: BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576),
+@@ -29,7 +32,7 @@
+                     } catch { try nativeError.check(); throw error }
+                 }
+             }
+-            let collective = try Collective(transport: .jaccl)
++            let collective = try Collective(transport: .jaccl, bootstrap: nativeBootstrap)
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -14,6 +14,7 @@
+     ],
+     targets: [
+         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
++            .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+         ]),
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -6,7 +6,10 @@
+ /// explicitly thread-safe operation. No model or tensor crosses the pipe.
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
+     private let owner: QwenResidentRuntime
+-    init(_ configuration: QwenResidentLoadConfiguration) throws { owner = try .load(configuration) }
++    init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
++        let attachment = try bootstrap?.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
++        owner = try .load(configuration, bootstrap: attachment.map { QwenResidentBootstrap(connection: $0) })
++    }
+     var readiness: ClusterWorkerReady? { owner.readiness }
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+         try owner.reserve(requestID: id, request: value)
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerBootstrapConfiguration.swift
+@@ -0,0 +1,31 @@
++import DarkbloomClusterBootstrap
++import Foundation
++
++struct WorkerBootstrapConfiguration {
++    static let names: Set<String> = ["--bootstrap-socket-path", "--bootstrap-owner-pid",
++        "--bootstrap-deadline-uptime-nanoseconds"]
++    let path: String
++    let ownerProcessID: Int32
++    let deadlineUptimeNanoseconds: UInt64
++
++    static func parse(_ fields: [String: String], now: UInt64, lifetime: UInt64) throws -> Self? {
++        let supplied = names.filter { fields[$0] != nil }
++        if supplied.isEmpty { return nil } // Legacy experimental native TCP bootstrap.
++        guard supplied.count == names.count, let path = fields["--bootstrap-socket-path"],
++              path.hasPrefix("/"), path.utf8.count < 104, !path.contains("\0"),
++              let pidText = fields["--bootstrap-owner-pid"], let pid = Int32(pidText),
++              pid > 1, String(pid) == pidText,
++              let deadlineText = fields["--bootstrap-deadline-uptime-nanoseconds"],
++              let deadline = UInt64(deadlineText), String(deadline) == deadlineText,
++              deadline > now, deadline <= lifetime else {
++            throw WorkerFailure.invalid("Bootstrap requires the complete bounded local attachment")
++        }
++        return .init(path: path, ownerProcessID: pid, deadlineUptimeNanoseconds: deadline)
++    }
++
++    func connect(epoch: UUID, rank: Int) throws -> ClusterBootstrapConnection {
++        try .connect(path: path, ownerProcessID: ownerProcessID,
++            identity: .init(membershipEpoch: epoch, rank: rank),
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
++    }
++}
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+@@ -6,19 +6,23 @@
+ 
+ struct WorkerConfiguration {
+     let load: QwenResidentLoadConfiguration
++    let bootstrap: WorkerBootstrapConfiguration?
+ 
+     init(arguments: [String], now: UInt64) throws {
+         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
+             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
+             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
+-        guard arguments.count == names.count * 2 else { throw WorkerFailure.invalid("Expected exactly twelve worker flag/value pairs") }
++        guard [names.count * 2, (names.count + WorkerBootstrapConfiguration.names.count) * 2].contains(arguments.count) else {
++            throw WorkerFailure.invalid("Expected twelve worker pairs and an optional complete bootstrap triple")
++        }
+         var fields: [String: String] = [:]
+         for index in stride(from: 0, to: arguments.count, by: 2) {
+             let key = arguments[index], value = arguments[index + 1]
+-            guard names.contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
++            guard names.union(WorkerBootstrapConfiguration.names).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
+                   !value.contains("\0") else { throw WorkerFailure.invalid("Unknown, duplicate or empty worker argument") }
+             fields[key] = value
+         }
++        guard names.allSatisfy({ fields[$0] != nil }) else { throw WorkerFailure.invalid("Missing worker argument") }
+         func integer(_ key: String) throws -> Int {
+             guard let value = Int(fields[key]!), String(value) == fields[key] else { throw WorkerFailure.invalid("Worker integer must be canonical") }
+             return value
+@@ -40,6 +44,7 @@
+               deadline > now, deadline - now <= 300_000_000_000 else {
+             throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime")
+         }
++        bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
+         let peers = try (0...1).map { index -> ClusterWorkerPeer in
+             let label = fields["--peer\(index)-id"]!
+             guard label.utf8.count <= 128, label.utf8.allSatisfy({ (33...126).contains($0) }) else {
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
+@@ -18,7 +18,7 @@
+             alarm(UInt32((remaining + 999_999_999) / 1_000_000_000))
+             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
+             try pipes.check()
+-            let runtime = try NativeWorkerRuntime(configuration.load)
++            let runtime = try NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap)
+             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()
+             alarm(0)
+             Darwin.exit(0)

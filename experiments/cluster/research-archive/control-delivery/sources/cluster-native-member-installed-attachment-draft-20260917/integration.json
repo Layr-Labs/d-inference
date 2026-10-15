@@ -1,0 +1,335 @@
+{
+  "files": [
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "5ae0b8127a339867e87b34784531bd44acd617ff2d05dae49c1b95e3716240ad",
+      "path": "libs/darkbloom-cluster/Package.swift",
+      "proposedSHA256": "78b0b544158209a591ae0130b478b01b67b5996d6ca57d46de4ed9a99505cf79",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/libs/darkbloom-cluster/Package.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapAuthorization.swift",
+      "proposedSHA256": "d98dbd448a88fa5d52eabe3687b62224417441123f505c006e53140f749c43ca",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapAuthorization.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": "44b8a6cd29154c2d720aab5851053cbd3394edfa6ec1c0de7c9d54dd9df57efa",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift",
+      "proposedSHA256": "03f7f5bbcaeb60c147bcd1d98a71abee454f33912a73b2d378b64dacbdc414a3",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": "7c26f245b20f0c8ac76f49cbb4decd875fa549bc8bdd8b4113fa625c35ce7fd4",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift",
+      "proposedSHA256": "0062f75bdca6cd94bf183dd1185f765a0eb70eecd83ecc0ae6f9c5d7f7d83b29",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapPreludePacket.swift",
+      "proposedSHA256": "cdb1b124788346784827ed8acd0591d1e271b31ea26aac87a5d870d2775a24fa",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapPreludePacket.swift"
+    },
+    {
+      "mainSHA256": "875792464f6c247eed1c6b499267b356a7b3930d4bde8b71df968865dcac9499",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+      "proposedSHA256": "40888c2356cf510d1aa6cccf2a98f19ffe1cd2fdd75f8e958d7c4c243efaa5d3",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift"
+    },
+    {
+      "mainSHA256": "6630d4adc65a24e2832181da65379164187bc820a9553e112e29d00d796860a4",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+      "proposedSHA256": "e7e8d834a2586dbe7c4a8b63e6d2f5e649d9e30bfe2e1b8a368a9bc60cfc1def",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift",
+      "proposedSHA256": "00563cddb263e014ee0c1ac81c393f792a04e7536b1ad645b57aa4ea178930a3",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift"
+    },
+    {
+      "mainSHA256": "a8a5ce563a0154ee8300b443acfb191d9e4e8a48fd6651b11031672bf5e9b81f",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "proposedSHA256": "bf66493d7f2610bc0cacd441ed277c6938ab6f4986d4a0875e2829ecea489534",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift"
+    },
+    {
+      "mainSHA256": "a551c2f317b48b9e4e35656d03337f5f4b770da2b45821100e34ca791d2aa9ab",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "proposedSHA256": "c259cbdadfb50141a8431c6536056631eb0c5c23432f6508b02ba75c99cf6057",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift"
+    },
+    {
+      "mainSHA256": "b23e811ae3c80de443c1e2c29c43c89c6283cefa74af68a431d1c5a9fc58120b",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "proposedSHA256": "bed047a88a4fa17fca9652950ec2c4c2315dd4b313a22eb084fe3db4320deeea",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationCodec.swift",
+      "proposedSHA256": "d7e2b6d6036510dec41b7b0527888045404712a8d5228ad1a019da0a7019bfd6",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationCodec.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationTypes.swift",
+      "proposedSHA256": "262e3065b6b45f97865643e4949db59c23d72be6246548592b0cd7be0242ac9c",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationTypes.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeKeyDerivation.swift",
+      "proposedSHA256": "499a04746d498eba9991c50a5f77496c28d7dd2ae512d333655ce4d94c409d01",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeKeyDerivation.swift"
+    },
+    {
+      "lineage": "qualified-prelude-A61f",
+      "mainSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift",
+      "proposedSHA256": "041324c553cee8ec6831dc600dac30557fbca5fba8b039184c527eda9aacf567",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-validation-3-20260916/source/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "8604510f41cb7d5353b0b98e0d23fed77c52643c3808cb9968a1212a993c51e1",
+      "path": "provider-swift/Package.swift",
+      "proposedSHA256": "3e898aed8ca2ae925529d3b79ed81f1d68e8b8d0d99d713ec74ce12846989faa",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Package.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "5515cf89cc2937db3ebf1d52082e97931ea62dfe75ad06d181f78107f9b555ad",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift",
+      "proposedSHA256": "7e4706fceebbdaeb080bf9e39b82f8aad0540044838285311b08a7fb60d6742e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "5247b974f0395c547ee8877214a33f01341f8dfc84fa168a17a0ebd36bf29fd7",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift",
+      "proposedSHA256": "3b9cdbfca7bf5c8e94fd610fd932487f85ee8348bff7d4c40159d2e0143ac51e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift",
+      "proposedSHA256": "5dd1cbce7e15f7e4a1d679e244e952d8fd86386465f14215e29b357acb13529f",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "99c1f0ed749c92a890be5890713702a84f341a3af7bf72a3c773c4be602d8927",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "proposedSHA256": "bb81bd82be39f37713cfc012d7395168b56cade67292876f0ffb4e72a0985e23",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "a9c7ae96d3501692f300b2b3ce14921c7e4c627424ee619a1c7a729db3bdb394",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift",
+      "proposedSHA256": "47bc40b5cc56df4fa490354984d8e09b7b175446328512fd95de326801e4c2d1",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+NativePair.swift",
+      "proposedSHA256": "e65dd2c518c2c773c2b171f46227db98d5696fe7e814d31f263ea5c4a08dff0a",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+NativePair.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "1f7b30af8d67bceefa0ab1ab8e27f3d23878a640ec2a220720c03e1fc72a10bd",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift",
+      "proposedSHA256": "1a93c9c15cf45140f0d1757beafb490ab2241b468057901b4a44da08bf1592ca",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift",
+      "proposedSHA256": "3ea78074c5cbd1925160f2d896488f73686808c300a58813d087707c0aeb4af4",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift",
+      "proposedSHA256": "ea2d1cd0745024194198f5b82ab6e6ae8c5f709cc0fcd1029f4996fc8fa7d590",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift",
+      "proposedSHA256": "77807923440226f59738d73cd3f2b35c390de172378290b8a9e28c15a35f226f",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift",
+      "proposedSHA256": "17825a172c8fad44de741af5f795a1132d778a6f24113309bfb172978e711ec4",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift",
+      "proposedSHA256": "90d862d02c771ebf53850f046cf9af31d525885cb24e948271cebd9226d3db90",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift",
+      "proposedSHA256": "5d91ce18283d0c725e55dbdb5059ca056b0212fc6eed50dcea532bc2e97c5ffb",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "19718036b51472df9ae759cc78ca87b8243d621f1470de84a0b143b34b947b94",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift",
+      "proposedSHA256": "505e7239b3487691e0468156d7fbf7c079e583fc88c7f127500572c399e5674c",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "13ad5fb8f2a265d7f229a6bbf42cb976140b1ec3533d9686bf03470cde1613f8",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift",
+      "proposedSHA256": "5b4c348d0b3861ad85faf6d58df62eb19146427c4d905aba768cb38c6acf3a05",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift",
+      "proposedSHA256": "d8036a556f8662e6d665145893d75bc509443b7266ff4cacc9fba315ba9cb48d",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift",
+      "proposedSHA256": "db321813f7cadffb6154e396fce33ff13470bd22a10269f414dd1b45676d9fbb",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "7ea32e38e9a3d45737b45b5c15abd5c6636821200075de92b130ec5ae5e7b797",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift",
+      "proposedSHA256": "38c4e23bfd508143db83fec6ed58177ea2738008f2b89e32a087b80650fa3697",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "proposedSHA256": "19636285b5c2d29ff7ec6a18115aac33944f9b93841eabde9177d1d55c8125a6",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift",
+      "proposedSHA256": "9012cfdc2ab1163d569fffc88dc35b89644bc8250f067e8ba801492205718804",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift"
+    },
+    {
+      "mainSHA256": "b74bfb547105bbcca078f3e3292c6bb7f54a3bd57b4c89cbba8b5e41d3ea3d23",
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift",
+      "proposedSHA256": "793c965d59baae4a706ed1ae10131fe502bfbb52e42c043f22b3870830f295c0",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift",
+      "proposedSHA256": "583f47f7dc7a50fdd9b7c1068f11bc7094dbfd6cafb269592c338b30fee5ea53",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "5d857e1865e6662e7376e75e82376a1e39c5a87b420f1b945659c9050c606b53",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "proposedSHA256": "7a61b6b6c3122e2665bd3215b9c9ef48e9672ae3f589b420a3adbb5cb2f94a8d",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "dd4fe9a1399f54814ba62cb16f9a5d47c27072c78dcb7b33507961ebca03d934",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+      "proposedSHA256": "25259d3a4c07666e75646ac4d8e898525bc501aa1e8aaf43c863f02c90b689b8",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Sources/ProviderCore/ProviderLoop.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "f1b401bdb11a09354ca4424f7bdcbd217cb0eccc6d852e79146a91964bbf5974",
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "proposedSHA256": "190c737c02c5ddd71fc552c1b973c05645384c8be3a4280731cf787e87f41801",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": "8a5b52b56b800c595de03e9a54aa270ec2b15ec864c17a20b07bfce15945abe0",
+      "path": "provider-swift/Tests/ClusterConfigurationChecks/run.sh",
+      "proposedSHA256": "a91cdccc1d5e0da315f0d08ff9d23b7fe9f80fdda82b171ab7243a89f99f3607",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Tests/ClusterConfigurationChecks/run.sh"
+    },
+    {
+      "lineage": "installed-attachment-over-mesh",
+      "mainSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift",
+      "proposedSHA256": "dc739cf5b43042a7025aae93cd00826375dc06c60b5ae1fb82f2b13df4717f86",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift",
+      "proposedSHA256": "576511151cc3ef9f148876c8fd4f5eafe7bd512a27fa2ed541b4695fd9766835",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberControlTests.swift",
+      "proposedSHA256": "54d6619ae43ecb5dbbd56a9d5b4ad93678bf3a3d9a081e01cf32c46ba7d8910b",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-fixture-retry-20260917/proposed/NativePairMemberControlTests.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift",
+      "proposedSHA256": "2b2cb7985edda696ed6ccd69a1c32f0c9209496405d546386fe11e8628867f3e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberInvocationTests.swift",
+      "proposedSHA256": "2cd4d5232214f7282b4d81c9f94544a66c77fbb694b452691c035e4c47cbe5dc",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberInvocationTests.swift"
+    },
+    {
+      "mainSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift",
+      "proposedSHA256": "2d0ca4586906609d94755b2294c067a2ecc58d3f53954ac51e389161e8aacf7e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift"
+    },
+    {
+      "lineage": "invocation-over-A61f",
+      "mainSHA256": "098af8772898d0fec439e5e34f49ed91c979eb5b34c4320b060bb8449247fee3",
+      "path": "provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift",
+      "proposedSHA256": "9c82c54019c07efbc632b6f638cd0b8a92e88a41b4f3200b01b315db90442323",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-draft-20260916/proposed/provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift"
+    }
+  ],
+  "schema": "native-member-installed-attachment-swift-composition-v1"
+}

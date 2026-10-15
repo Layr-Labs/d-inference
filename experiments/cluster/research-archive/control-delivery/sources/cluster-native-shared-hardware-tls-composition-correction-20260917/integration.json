@@ -1,0 +1,26 @@
+{
+  "compilerExecuted": false,
+  "driverManifestSHA256": "e0d428fb6c7b7ea93d67ff6d31aad8f8ca7e47aec9d8f4918f1c0d64340cf80f",
+  "overrides": [
+    {
+      "afterSHA256": "237c660384c4544afeecc65255882ae886219c8305ee2302c91739739878c171",
+      "beforeSHA256": "bb81bd82be39f37713cfc012d7395168b56cade67292876f0ffb4e72a0985e23",
+      "bytes": 23449,
+      "e0ProposedSHA256": "d7e0a75e063f556d22f90e257632b41ad264c0c661a873834a9f3a1788cad8ad",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-build-1-20260916/workspace/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "tlsBlockSHA256": "4d04336f76ae1a97f9b1cb40edec3b2adf317f6f935b955456b0da35853fb614"
+    },
+    {
+      "afterSHA256": "ef9d824184bcb5f727e286774f464cab64726eb07fe02f6201713db088d7e99d",
+      "beforeSHA256": "7a61b6b6c3122e2665bd3215b9c9ef48e9672ae3f589b420a3adbb5cb2f94a8d",
+      "bytes": 25947,
+      "e0ProposedSHA256": "2fb3cf13f1a81c599c5fa5afcb2dce04e8d50a0ccf24c8ef56414914d9337638",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-invocation-build-1-20260916/workspace/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "tlsBlockSHA256": "281496b176a80beb102869487f651e5c42db84307c1834eb3064cea039494b52"
+    }
+  ],
+  "scope": "Rebase exact unchanged TLS blocks only; preserve actual private invocation/shared hooks.",
+  "workspaceChanged": false
+}

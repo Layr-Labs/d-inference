@@ -1,0 +1,297 @@
+--- actor/context.py
++++ ready/context.py
+@@ -1,7 +1,9 @@
+-"""Only the CLI source changes; reuse the exact private workspace and actual helper."""
++"""One owner-Service correction over the actual actor-corrected private workspace."""
+ from pathlib import Path
+ from upstream_context import ADAPTER,ADAPTER_SHA,CORRECTION_SHA,WORKSPACE,SOURCE,SWIFT_FILTER,INVOCATION_METHODS,NATIVE_PAIR_METHODS,isolated_environment
+ BASE=Path(__file__).resolve().parent
+-PRIOR=BASE.parent/'cluster-native-member-shared-requests-swift-checks-2-20260917'
+-OUTPUT=BASE.parent/'cluster-member-install-actor-checks-20260917'
+-HELPER=PRIOR/'helper-1'
++ACTOR=BASE.parent/'cluster-member-install-actor-correction-20260917'
++ACTOR_SHA='0f8d48a333f6e6c4be2a0be373ad28ef82bce06b33a792ef243e311f448053cb'
++PRIOR=BASE.parent/'cluster-member-install-actor-checks-20260917'
++OUTPUT=BASE.parent/'cluster-member-ready-eligibility-checks-20260917'
++OLD_HELPER=BASE.parent/'cluster-native-member-shared-requests-swift-checks-2-20260917/helper-1'
+--- actor/guards.py
++++ ready/guards.py
+@@ -1,38 +1,43 @@
+-"""Exact prior composition, one replacement, original MAIN and reused helper bindings."""
++"""Preserve actor/failed-run/helper evidence; derive exactly one new runtime preimage."""
+ import json
+ from pathlib import Path
+-import source_inventory as inventory
+-from context import BASE,PRIOR,OUTPUT,HELPER,WORKSPACE,SOURCE,INVOCATION_METHODS
++from context import BASE,ACTOR,ACTOR_SHA,PRIOR,OUTPUT,OLD_HELPER,WORKSPACE,SOURCE,INVOCATION_METHODS
+ from upstream_guards import verify as verify_upstream,recheck_sources,require_preserved_cli,freeze,sha,save,require
+ 
+ def verify():
+-    freeze(BASE)
+-    _,before,_,prior=verify_upstream()
++    freeze(BASE);freeze(ACTOR,ACTOR_SHA)
++    _,main,_,shared=verify_upstream()
+     for row in json.loads((BASE/'evidence-pins.json').read_text()):
+         p=Path(row['path'])
+-        require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Prior failure/helper/source evidence changed')
+-    require(prior==json.loads((PRIOR/'candidate-before.json').read_text()) and len(prior)==13853,'Prior 13853-source composition differs')
+-    require(before==json.loads((PRIOR/'source-before.json').read_text()) and before==json.loads((PRIOR/'source-after-preparation.json').read_text()),'Original MAIN authority differs')
++        require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Preserved actor/failure/helper evidence changed')
++    actor=json.loads((ACTOR/'integration.json').read_text())['files'];prior=dict(shared)
++    require(len(actor)==1 and actor[0]['path']=='provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift','Actor source scope differs')
++    for row in actor:
++        require(shared[row['path']]=={'sha256':row['beforeSHA256']} and sha(row['sourcePath'])==row['afterSHA256'],'Actor source ancestry differs')
++        prior[row['path']]={'sha256':row['afterSHA256']}
++    require(prior==json.loads((PRIOR/'candidate-before.json').read_text()) and len(prior)==13853,'Actual actor candidate differs')
++    require(main==json.loads((PRIOR/'source-before.json').read_text())==json.loads((PRIOR/'source-after-preparation.json').read_text()),'Original MAIN authority differs')
+     step=json.loads((PRIOR/'tests-1/execution.json').read_text())
+-    require(step['exitCode']==1 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Preserved compile failure was not naturally terminal')
+-    require(json.loads((PRIOR/'tests-1/source-recheck.json').read_text())=={'unchanged':True,'priorQualifiedCLIPreserved':True},'Failed attempt changed source')
+-    plan=json.loads((BASE/'integration.json').read_text());rows=plan['files']
+-    require(len(rows)==1 and rows[0]['path']=='provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift','Only exact CLI file may change')
+-    row=rows[0];candidate=dict(prior)
+-    require(prior[row['path']]=={'sha256':row['beforeSHA256']} and sha(BASE/'original'/row['path'])==row['beforeSHA256'] and sha(row['sourcePath'])==row['afterSHA256'],'CLI source/preimage differs')
++    require(step['exitCode']==1 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Actual 112-test failure was not naturally terminal')
++    require(json.loads((PRIOR/'tests-1/source-recheck.json').read_text())==dict(unchanged=True,priorQualifiedCLIPreserved=True,reusedHelperUnchanged=True),'Failed source changed')
++    plan=json.loads((BASE/'integration.json').read_text());rows=plan['files'];candidate=dict(prior)
++    require(plan['actorManifestSHA256']==ACTOR_SHA and plan['actorCandidateSHA256']==sha(PRIOR/'candidate-before.json'),'Correction ancestry differs')
++    require(len(rows)==1 and rows[0]['path']=='libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift','Only Service eligibility ordering may change')
++    row=rows[0]
++    require(prior[row['path']]=={'sha256':row['beforeSHA256']} and sha(BASE/'original'/row['path'])==row['beforeSHA256'] and sha(row['sourcePath'])==row['afterSHA256'],'Service source/preimage differs')
+     candidate[row['path']]={'sha256':row['afterSHA256']}
+-    require(len(candidate)==13853 and len(INVOCATION_METHODS)==29,'Source or test scope changed')
+-    return rows,before,prior,candidate
++    require(len(candidate)==13853 and len(INVOCATION_METHODS)==29,'Candidate or named test scope differs')
++    require(sha(OLD_HELPER/'checks.json')=='aee43c24436ff502e0637618fca53e90f9cca8e021c7d3ad79fb4073d48885ef','Historical helper receipt changed')
++    return rows,main,prior,candidate
+ 
+-def require_helper():
+-    p=HELPER/'checks.json'
+-    require(sha(p)=='aee43c24436ff502e0637618fca53e90f9cca8e021c7d3ad79fb4073d48885ef','Actual helper receipt changed')
+-    x=json.loads(p.read_text())
+-    require(x['passed'] is True and x['phase']=='helper' and x['manifestSHA256']=='432f24932fcab4c16d05978e72bc2d067f9a2d7a02c3780f0af1cb9813ca78f2'
+-        and x['candidateSHA256']==sha(PRIOR/'candidate-before.json'),'Actual helper composition differs')
+-    require(len(x['artifacts'])==6 and x['details']=={'helperCompiled':True,'legacySSHChecksExecuted':True,'newNativeHelperExecuted':False},'Incomplete actual helper')
++def require_helper(attempt):
++    folder=OUTPUT/('helper-'+str(attempt));receipt=folder/'checks.json';x=json.loads(receipt.read_text())
++    require(x['passed'] is True and x['phase']=='helper' and x['manifestSHA256']==sha(BASE/'manifest.json')
++        and x['candidateSHA256']==sha(OUTPUT/'candidate-before.json'),'Corrected helper composition differs')
++    require(x['details']==dict(helperCompiled=True,legacySSHChecksExecuted=True,newNativeHelperExecuted=False)
++        and len(x['artifacts'])==6 and len(x['steps'])==17,'Corrected helper/legacy checks incomplete')
+     for row in x['artifacts']:
+-        p=Path(row['path']);require(p.parent==HELPER and p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Reused helper changed')
++        p=Path(row['path']);require(p.parent==folder and p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Corrected helper artifact changed')
+     for step in x['steps']:
+-        require(step['exitCode']==0 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Helper command incomplete')
++        require(step['exitCode']==0 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Corrected helper child incomplete')
+     return x
+--- actor/prepare.py
++++ ready/prepare.py
+@@ -1,29 +1,29 @@
+-"""Granted one-file incremental correction; no cache copy or compiler invocation."""
++"""Granted exact one-file overlay into the existing source/cache; no compilation."""
+ import argparse,json,os
+ from pathlib import Path
+-from context import BASE,PRIOR,OUTPUT,WORKSPACE,SOURCE
+-from guards import verify,recheck_sources,require_preserved_cli,require_helper,sha,save,require
++from context import BASE,PRIOR,OUTPUT,WORKSPACE,SOURCE,OLD_HELPER
++from guards import verify,recheck_sources,require_preserved_cli,sha,save,require
+ 
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--apply',action='store_true',required=True);p.parse_args()
+-    rows,before,prior,candidate=verify();recheck_sources(prior,before);require_preserved_cli();require_helper()
++    rows,main,prior,candidate=verify();recheck_sources(prior,main);require_preserved_cli()
+     OUTPUT.mkdir(mode=0o700,exist_ok=False)
+     for name,source in [('source-before.json',PRIOR/'source-before.json'),('prior-candidate-before.json',PRIOR/'candidate-before.json')]:
+         with (OUTPUT/name).open('xb') as f:f.write(source.read_bytes())
+-    row=rows[0];destination=WORKSPACE/row['path'];backup=OUTPUT/'originals'/row['path'];backup.parent.mkdir(parents=True)
+-    require(not destination.is_symlink() and sha(destination)==row['beforeSHA256'],'Exact current CLI preimage differs')
+-    with backup.open('xb') as f:f.write(destination.read_bytes())
+-    require(sha(backup)==row['beforeSHA256'],'Preserved preimage changed')
+-    verify();recheck_sources(prior,before)
+-    temporary=destination.with_name(destination.name+'.actor-install.new')
++    row=rows[0];target=WORKSPACE/row['path'];backup=OUTPUT/'originals'/row['path'];backup.parent.mkdir(parents=True)
++    require(not target.is_symlink() and sha(target)==row['beforeSHA256'],'Exact current Service preimage differs')
++    with backup.open('xb') as f:f.write(target.read_bytes())
++    require(sha(backup)==row['beforeSHA256'],'Preserved Service source differs')
++    verify();recheck_sources(prior,main)
++    temporary=target.with_name(target.name+'.ready-eligibility.new')
+     with temporary.open('xb') as f:f.write(Path(row['sourcePath']).read_bytes());f.flush();os.fsync(f.fileno())
+-    require(sha(temporary)==row['afterSHA256'] and sha(destination)==row['beforeSHA256'],'Source changed before replacement')
+-    temporary.chmod(destination.stat().st_mode & 0o777);os.replace(temporary,destination)
+-    actual,main=recheck_sources(candidate,before);verify();require_helper();require_preserved_cli()
+-    save(OUTPUT/'candidate-before.json',actual);save(OUTPUT/'source-after-preparation.json',main)
++    require(sha(temporary)==row['afterSHA256'] and sha(target)==row['beforeSHA256'],'Source changed before replacement')
++    temporary.chmod(target.stat().st_mode & 0o777);os.replace(temporary,target)
++    actual,unchanged=recheck_sources(candidate,main);verify();require_preserved_cli()
++    save(OUTPUT/'candidate-before.json',actual);save(OUTPUT/'source-after-preparation.json',unchanged)
+     save(OUTPUT/'preparation.json',dict(workspace=str(WORKSPACE),source=str(SOURCE),wrapperManifestSHA256=sha(BASE/'manifest.json'),
+         integrationSHA256=sha(BASE/'integration.json'),priorCandidateSHA256=sha(PRIOR/'candidate-before.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
+-        reusedHelperSHA256=sha(PRIOR/'helper-1/checks.json'),changedFiles=[row['path']],sourceFiles=len(before),candidateFiles=len(candidate),
+-        workspaceCreated=False,buildCacheCopied=False,helperRebuilt=False,compilerRun=False,mainUnchanged=True))
+-    print(json.dumps(dict(prepared=str(OUTPUT),workspace=str(WORKSPACE),changedFiles=1,candidateFiles=len(candidate)),sort_keys=True))
++        historicalHelperSHA256=sha(OLD_HELPER/'checks.json'),changedFiles=[row['path']],sourceFiles=len(main),candidateFiles=len(candidate),
++        workspaceCreated=False,buildCacheCopied=False,compilerRun=False,mainUnchanged=True,correctedHelperRequired=True))
++    print(json.dumps(dict(prepared=str(OUTPUT),changedFiles=1,candidateFiles=len(candidate)),sort_keys=True))
+ if __name__=='__main__':os.umask(0o077);main()
+--- actor/run.py
++++ ready/run.py
+@@ -1,57 +1,90 @@
+-"""Granted same-cache Provider tests then CLI build; actual Foundation helper is reused."""
+-import argparse,json,os,re,resource
++"""Granted corrected helper/legacy checks, complete 112 Provider tests, then CLI build."""
++import argparse,json,os,resource,sys
+ from pathlib import Path
+-from context import BASE,OUTPUT,HELPER,WORKSPACE,SOURCE,SWIFT_FILTER,INVOCATION_METHODS,isolated_environment
+-from guards import verify,recheck_sources,require_helper,require_preserved_cli,sha,save,require
++sys.dont_write_bytecode=True
++from context import BASE,ADAPTER,WORKSPACE,OUTPUT,SOURCE,SWIFT_FILTER,OLD_HELPER,isolated_environment
++from guards import verify,recheck_sources,require_preserved_cli,require_helper,sha,save,require
+ from check_process import run_owned
+-from coverage import validate as validate_swift_results
++from coverage import validate
+ 
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--prepared',type=Path,required=True)
+-    p.add_argument('--phase',choices=['tests','build'],required=True);p.add_argument('--attempt',type=int,required=True);a=p.parse_args()
+-    require(1<=a.attempt<=9 and a.prepared.resolve()==OUTPUT,'Exact fresh retry output/attempt required')
++    p.add_argument('--phase',choices=['helper','tests','build'],required=True);p.add_argument('--attempt',type=int,required=True);a=p.parse_args()
++    require(1<=a.attempt<=9 and a.prepared.resolve()==OUTPUT,'Exact retry output and bounded attempt required')
+     _,main,_,candidate=verify();prep=json.loads((OUTPUT/'preparation.json').read_text())
+     require(prep['workspace']==str(WORKSPACE) and prep['source']==str(SOURCE) and prep['wrapperManifestSHA256']==sha(BASE/'manifest.json')
+         and prep['integrationSHA256']==sha(BASE/'integration.json') and prep['candidateSHA256']==sha(OUTPUT/'candidate-before.json')
+-        and prep['reusedHelperSHA256']==sha(HELPER/'checks.json'),'Preparation binding differs')
++        and prep['historicalHelperSHA256']==sha(OLD_HELPER/'checks.json'),'Preparation binding differs')
+     require(candidate==json.loads((OUTPUT/'candidate-before.json').read_text()) and main==json.loads((OUTPUT/'source-before.json').read_text()),'Prepared exact inventories differ')
+-    def recheck():verify();recheck_sources(candidate,main);require_helper();require_preserved_cli()
++    def recheck():verify();recheck_sources(candidate,main);require_preserved_cli()
+     recheck()
++    if a.phase in ['tests','build']:require_helper(a.attempt)
+     if a.phase=='build':
+         tests=OUTPUT/('tests-'+str(a.attempt));x=json.loads((tests/'checks.json').read_text())
+         require(x['passed'] is True and x['manifestSHA256']==sha(BASE/'manifest.json') and x['candidateSHA256']==sha(OUTPUT/'candidate-before.json')
+-            and x['details']['testsPassed']==107 and x['details']['invocationMethodsPassed']==29,'Matching complete107/29 tests required')
+-        require(x['executionSHA256']==sha(tests/'execution.json'),'Actual tests execution changed')
+-        detail=validate_swift_results((tests/'execution.stdout').read_text()+'\n'+(tests/'execution.stderr').read_text())
+-        require(detail['testsPassed']==107 and detail['invocationMethodsPassed']==29,'Actual passed lines changed')
++            and x['details']['testsPassed']==112 and x['details']['suitesPassed']==18 and x['details']['invocationMethodsPassed']==29,'Matching complete 112/18/29 tests required')
++        require(x['executionSHA256']==sha(tests/'execution.json'),'Actual test execution changed')
++        require(validate((tests/'execution.stdout').read_text()+'\n'+(tests/'execution.stderr').read_text())==x['details'],'Actual passed lines changed')
+     out=OUTPUT/(a.phase+'-'+str(a.attempt));out.mkdir(mode=0o700,exist_ok=False)
+-    isolated_environment();os.chdir(WORKSPACE/'provider-swift')
++    isolated_environment()
+     old_limit=resource.getrlimit(resource.RLIMIT_FSIZE);resource.setrlimit(resource.RLIMIT_FSIZE,(512*1024*1024,old_limit[1]))
+-    details={};step=None;failure=None
++    steps=[];details={};artifacts=[];failure=None
++    def execute(argv,name,bound):
++        try:steps.append(run_owned(argv,out,name,bound))
++        finally:recheck()
+     try:
+-        command=['swift','build' if a.phase=='build' else 'test','-j','2','--disable-automatic-resolution','--disable-build-manifest-caching']
+-        if a.phase=='tests':
+-            evidence=out/'owned-native-evidence';evidence.mkdir(mode=0o700)
+-            os.environ['DARKBLOOM_NATIVE_MEMBER_FIXTURE']=str(HELPER/'native-member-fixture')
+-            os.environ['DARKBLOOM_NATIVE_MEMBER_EVIDENCE']=str(evidence);command+=['--filter',SWIFT_FILTER]
+-        else:command+=['--product','darkbloom']
+-        step=run_owned(command,out,'execution',900)
+-        recheck()
+-        if a.phase=='tests':
+-            text=(out/'execution.stdout').read_text()+'\n'+(out/'execution.stderr').read_text();details=validate_swift_results(text)
+-            for name in INVOCATION_METHODS:
+-                require(len(re.findall(r'(?m)^✔ Test '+re.escape(name)+r'\(\) passed after [^\n]+$',text))==1,'Required test absent/repeated: '+name)
+-            require(details['testsPassed']==107 and details['invocationMethodsPassed']==29,'Exact107 tests/29 required methods must pass')
++        if a.phase=='helper':
++            execute([sys.executable,'-B',str(BASE/'test_coverage.py')],'coverage-parser',30)
++            source=WORKSPACE/'libs/darkbloom-cluster';(out/'module-cache').mkdir(mode=0o700)
++            command=['xcrun','swiftc','-j','2','-swift-version','6','-warnings-as-errors','-target','arm64-apple-macos14.0',
++                '-parse-as-library','-module-cache-path',str(out/'module-cache')]
++            linkage=['-I',str(out),'-L',str(out),'-Xlinker','-rpath','-Xlinker',str(out)]
++            modules=[('DarkbloomClusterProtocol',[]),('DarkbloomClusterProcess',['DarkbloomClusterProtocol']),
++                ('DarkbloomClusterBootstrap',[]),('DarkbloomClusterSecurity',['DarkbloomClusterBootstrap']),
++                ('DarkbloomClusterRemote',['DarkbloomClusterProtocol','DarkbloomClusterProcess','DarkbloomClusterBootstrap','DarkbloomClusterSecurity'])]
++            for name,dependencies in modules:
++                library=out/('lib'+name+'.dylib')
++                execute(command+linkage+['-l'+x for x in dependencies]+['-enable-testing','-emit-library','-emit-module','-module-name',name,
++                    '-emit-module-path',str(out/(name+'.swiftmodule')),'-Xlinker','-install_name','-Xlinker','@rpath/'+library.name]
++                    +list(map(str,sorted((source/'Sources'/name).glob('*.swift'))))+['-o',str(library)],name,60)
++            links=linkage+['-l'+name for name,_ in modules];executable=out/'native-member-fixture'
++            execute(command+links+list(map(str,sorted((ADAPTER/'Tests/OwnedChild').glob('*.swift'))))+['-o',str(executable)],'compile-helper',60)
++            for name in ['FakeClusterWorker','FakeOwner','RemoteOwnerTests','RetirementShutdownTests','DiagnosticFailureWorker','LateDiagnosticOwner','OwnerDiagnosticDrainTests']:
++                path=source/('Tests/ProcessChecks' if name=='FakeClusterWorker' else 'Tests/SSHChecks')/(name+'.swift')
++                files=[source/'Tests/ProcessChecks/FixtureIdentity.swift',path]
++                if name=='RetirementShutdownTests':files.append(source/'Tests/SSHChecks/RetirementOwnerConnection.swift')
++                execute(command+links+['-D','OWNER_DIAGNOSTIC_DRAIN']+list(map(str,files))+['-o',str(out/name)],'compile-'+name,60)
++            for directory in ['retirement-checks','diagnostic-checks']:(out/directory).mkdir(mode=0o700)
++            execute([str(out/'RemoteOwnerTests'),str(out/'FakeOwner'),str(out/'FakeClusterWorker')],'legacy-remote',30)
++            execute([str(out/'RetirementShutdownTests'),str(out/'FakeOwner'),str(out/'FakeClusterWorker'),str(out/'retirement-checks'),'corrected'],'legacy-retirement',30)
++            execute([str(out/'OwnerDiagnosticDrainTests'),str(out/'LateDiagnosticOwner'),str(out/'DiagnosticFailureWorker'),str(out/'diagnostic-checks')],'legacy-diagnostics',30)
++            for path in [executable]+sorted(out.glob('*.dylib')):artifacts.append(dict(path=str(path),sha256=sha(path),bytes=path.stat().st_size))
++            require(len(steps)==17 and len(artifacts)==6,'Corrected helper closure differs')
++            details=dict(helperCompiled=True,legacySSHChecksExecuted=True,newNativeHelperExecuted=False)
+         else:
+-            binary=WORKSPACE/'provider-swift/.build/debug/darkbloom';details=dict(binarySHA256=sha(binary),binaryBytes=binary.stat().st_size,binaryExecuted=False)
++            os.chdir(WORKSPACE/'provider-swift')
++            command=['swift','build' if a.phase=='build' else 'test','-j','2','--disable-automatic-resolution','--disable-build-manifest-caching']
++            if a.phase=='tests':
++                evidence=out/'owned-native-evidence';evidence.mkdir(mode=0o700)
++                os.environ['DARKBLOOM_NATIVE_MEMBER_FIXTURE']=str(OUTPUT/('helper-'+str(a.attempt))/'native-member-fixture')
++                os.environ['DARKBLOOM_NATIVE_MEMBER_EVIDENCE']=str(evidence);command+=['--filter',SWIFT_FILTER]
++            else:command+=['--product','darkbloom']
++            execute(command,'execution',900);require_helper(a.attempt)
++            if a.phase=='tests':details=validate((out/'execution.stdout').read_text()+'\n'+(out/'execution.stderr').read_text())
++            else:
++                binary=WORKSPACE/'provider-swift/.build/debug/darkbloom';details=dict(binarySHA256=sha(binary),binaryBytes=binary.stat().st_size,binaryExecuted=False)
+     except BaseException as error:
+         failure=type(error).__name__+': '+str(error);raise
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE,old_limit)
+-        recheck();save(out/'source-recheck.json',dict(unchanged=True,priorQualifiedCLIPreserved=True,reusedHelperUnchanged=True))
+-        save(out/'checks.json',dict(passed=failure is None,phase=a.phase,details=details,failure=failure,step=step,
+-            executionSHA256=sha(out/'execution.json') if (out/'execution.json').exists() else None,
+-            manifestSHA256=sha(BASE/'manifest.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
+-            reusedHelperSHA256=sha(HELPER/'checks.json'),helperRebuilt=False,modelOrRDMAOrRemoteExecuted=False))
++        try:recheck();save(out/'source-recheck.json',dict(unchanged=True,priorQualifiedCLIPreserved=True))
++        except BaseException as error:
++            if failure is None:failure=type(error).__name__+': '+str(error)
++            raise
++        finally:
++            save(out/'checks.json',dict(passed=failure is None,phase=a.phase,details=details,failure=failure,steps=steps,artifacts=artifacts,
++                executionSHA256=sha(out/'execution.json') if (out/'execution.json').exists() else None,
++                manifestSHA256=sha(BASE/'manifest.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
++                historicalHelperSHA256=sha(OLD_HELPER/'checks.json'),helperRebuilt=a.phase=='helper',modelOrRDMAOrRemoteExecuted=False))
+     print(json.dumps(dict(passed=True,phase=a.phase,details=details),sort_keys=True))
+ if __name__=='__main__':os.umask(0o077);main()
+--- actor/coverage.py
++++ ready/coverage.py
+@@ -1,19 +1,22 @@
+-"""Retain every actual prior completion and exact new method groups."""
+-import json
+-import re
++"""Require every actual discovered method, including both previously failed controls."""
++import json,re
+ from context import BASE
+ from corrected_results import validate_swift_results
+ 
+ def validate(text):
+     details=validate_swift_results(text)
+-    coverage=json.loads((BASE/'coverage.json').read_text())
++    prior=json.loads((BASE/'prior-coverage.json').read_text())
++    discovery=json.loads((BASE/'discovered-coverage.json').read_text())
+     labels=re.findall(r'(?m)^✔ Test (.+?) passed after \d+(?:\.\d+)? seconds\.$',text)
+     labels=[x for x in labels if not x.startswith('run with ')]
+-    for name in coverage['priorCompletionLabels']:
+-        if labels.count(name)!=1:raise ValueError('Prior passed case absent/repeated: '+name)
+-    for group,names in coverage['groups'].items():
++    for name in prior['priorCompletionLabels']:
++        if labels.count(name)!=1:raise ValueError('Prior completion absent/repeated: '+name)
++    for group,names in prior['groups'].items():
+         for name in names:
+             if labels.count(name+'()')!=1:raise ValueError('Required '+group+' method absent/repeated: '+name)
+-    if len(labels)!=details['testsPassed']:raise ValueError('Per-test completion/summary count differs')
+-    details.update(priorCompletionLabelsPreserved=len(coverage['priorCompletionLabels']),requiredMethodGroups={k:len(v) for k,v in coverage['groups'].items()},invocationMethodsPassed=sum(map(len,coverage['groups'].values())))
++    if sorted(labels)!=discovery['completionLabels'] or len(labels)!=112 or details['testsPassed']!=112 or details['suitesPassed']!=18:
++        raise ValueError('All 112 discovered methods and 18 suites must pass exactly once')
++    details.update(priorCompletionLabelsPreserved=len(prior['priorCompletionLabels']),
++        requiredMethodGroups={k:len(v) for k,v in prior['groups'].items()},invocationMethodsPassed=sum(map(len,prior['groups'].values())),
++        actualDiscoveredMethodsPassed=112,allDiscoveredCompletionsPreserved=True)
+     return details

@@ -1,0 +1,582 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift
+@@ -30,6 +30,11 @@
+     private let notifications = DispatchQueue(label: "darkbloom.worker-pair.invalidation")
+     private var admittedCount = 0
+     private var requestIDs = Set<UUID>()
++    /// Same-Mac absolute ceiling only. A remote endpoint must translate a
++    /// remaining duration against its own lifetime, never forward this uptime.
++    public var localLifetimeDeadlineUptimeNanoseconds: UInt64 {
++        min(workers[0].lifetimeDeadline, workers[1].lifetimeDeadline)
++    }
+     public var readiness: ClusterWorkerPairReadiness? {
+         lock.withLock {
+             guard !invalid && !stopping, let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
+@@ -80,7 +85,12 @@
+ 
+     /// Performs CPU/resource admission only. The exclusive worker does not run
+     /// forward until start. Partial refusal is quarantined and fenced before reuse.
+-    public func reserve(requestID: UUID, reservation: ClusterWorkerReservation) throws -> ClusterWorkerRequest {
++    public func reserve(requestID: UUID, reservation: ClusterWorkerReservation,
++                        admissionDeadline: UInt64? = nil) throws -> ClusterWorkerRequest {
++        // An expired admission budget acquires no request ID or reservation.
++        if let admissionDeadline, DispatchTime.now().uptimeNanoseconds >= admissionDeadline {
++            throw ClusterWorkerOwnerError.deadline
++        }
+         _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: identity.membershipEpoch,
+             sequence: 0, requestID: requestID, command: .reserve(reservation)))
+         let lease = try lock.withLock { () -> ClusterWorkerRequest in
+@@ -100,7 +110,7 @@
+             let value = ClusterWorkerRequest(owner: self, requestID: requestID, reservation: reservation)
+             active = value; admittedCount += 1; requestIDs.insert(requestID); return value
+         }
+-        do { try lease.admit(); return lease }
++        do { try lease.admit(until: admissionDeadline); return lease }
+         catch {
+             invalidate(); lease.cancel(reason: .runtimeError)
+             // Provider reserve must not throw with a reservation left behind.
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift
+@@ -25,7 +25,7 @@
+         byteReservation = reservation.capacityLimitBytes
+     }
+ 
+-    func admit() throws {
++    func admit(until admissionDeadline: UInt64? = nil) throws {
+         defer {
+             let cleanup = lock.withLock { () -> Bool in
+                 admitting = false
+@@ -38,7 +38,9 @@
+               reservation.deadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else {
+             throw ClusterWorkerOwnerError.deadline
+         }
+-        let deadline = min(reservation.deadlineUptimeNanoseconds, now + 5_000_000_000)
++        let deadline = min(reservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max,
++                           now + 5_000_000_000)
++        guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
+         var bytes = 0
+         for worker in owner.workers {
+             guard let capacity = worker.readiness?.requestCapacityBytes,
+@@ -60,7 +62,7 @@
+         }
+         try lock.withLock {
+             guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
+-            guard DispatchTime.now().uptimeNanoseconds < reservation.deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
++            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ClusterWorkerOwnerError.deadline }
+             byteReservation = bytes; admitted = true
+         }
+         DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: reservation.deadlineUptimeNanoseconds)) { [weak self] in
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine.swift
+@@ -52,16 +52,42 @@
+         return try queue.sync(execute: body)
+     }
+ 
++    /// Establish the profile ceiling at a trusted provider-local origin. The
++    /// coordinator's first-content budget remains a separate first-token limit.
++    public func deadlineContext(receivedAt: ContinuousClock.Instant,
++                                firstTokenDeadline: ContinuousClock.Instant? = nil) -> DistributedRequestDeadlineContext {
++        .init(generationDeadline: receivedAt.advanced(by: profile.requestTimeout),
++              firstTokenDeadline: firstTokenDeadline)
++    }
++
+     public func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+-        try onQueue { try admit(request, deadline: nil).stream }
++        try submit(request, deadlineContext: deadlineContext(receivedAt: clock.now()))
++    }
++
++    public func submit(_ request: CBv2Request,
++                       deadlineContext context: DistributedRequestDeadlineContext) throws -> AsyncStream<CBv2Event> {
++        // Capture before queue.sync: waiting for the engine queue consumes time.
++        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
++        return try onQueue { try admit(request, deadlineContext: bounded).stream }
+     }
+ 
+     public func submit(
+         _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
+     ) async throws -> CBv2FirstTokenDeadlineResult {
++        try await submit(request, firstTokenDeadline: firstTokenDeadline,
++                         deadlineContext: deadlineContext(receivedAt: clock.now()))
++    }
++
++    public func submit(
++        _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission,
++        deadlineContext context: DistributedRequestDeadlineContext
++    ) async throws -> CBv2FirstTokenDeadlineResult {
++        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(),
++                                                             firstTokenDeadline: firstTokenDeadline.deadline))
+         let cancellation = DistributedAdmissionCancellation()
+         return try await withTaskCancellationHandler {
+-            try await submit(request, deadline: firstTokenDeadline, cancellation: cancellation)
++            try await submit(request, deadline: firstTokenDeadline, cancellation: cancellation,
++                             deadlineContext: bounded)
+         } onCancel: {
+             cancellation.cancel()
+         }
+@@ -69,18 +95,26 @@
+ 
+     func submit(
+         _ request: CBv2Request, deadline: CBv2FirstTokenDeadlineAdmission,
+-        cancellation: DistributedAdmissionCancellation
++        cancellation: DistributedAdmissionCancellation,
++        deadlineContext context: DistributedRequestDeadlineContext? = nil
+     ) async throws -> CBv2FirstTokenDeadlineResult {
++        let local = deadlineContext(receivedAt: clock.now(), firstTokenDeadline: deadline.deadline)
++        let bounded = context.map { local.restricted(to: $0) } ?? local
++        let effectiveFirst = min(deadline.deadline, bounded.firstTokenDeadline ?? deadline.deadline)
++        let admission = CBv2FirstTokenDeadlineAdmission(deadline: effectiveFirst,
++            conservativePrefillTokensPerSecond: deadline.conservativePrefillTokensPerSecond,
++            conservativeDecodeTokensPerSecond: deadline.conservativeDecodeTokensPerSecond)
+         try Task.checkCancellation()
+         let outcome = try onQueue { () -> AdmissionOutcome in
+             try validate(request)
+             let projected = projectionRespectingCallerRates(
+-                owner.projectFirstToken(request, admission: deadline), admission: deadline)
+-            guard projectionFits(projected, deadline: deadline.deadline, promptTokens: request.promptTokens.count) else {
++                owner.projectFirstToken(request, admission: admission), admission: admission)
++            guard projectionFits(projected, deadline: min(effectiveFirst, bounded.generationDeadline),
++                                 promptTokens: request.promptTokens.count) else {
+                 return .refused(projected)
+             }
+             let admitted = try admit(
+-                request, deadline: deadline.deadline, projected: projected, cancellation: cancellation)
++                request, deadlineContext: bounded, projected: projected, cancellation: cancellation)
+             return .admitted(admitted, projected)
+         }
+         switch outcome {
+@@ -116,22 +150,30 @@
+     }
+ 
+     func admit(
+-        _ request: CBv2Request, deadline: ContinuousClock.Instant?,
++        _ request: CBv2Request, deadlineContext: DistributedRequestDeadlineContext,
+         projected: CBv2FirstTokenProjectedWork? = nil,
+         cancellation: DistributedAdmissionCancellation? = nil
+     ) throws -> Admission {
+         try validate(request)
+-        let began = clock.now()
++        try deadlineContext.checkAdmission(at: clock.now())
++        let deadline = deadlineContext.firstTokenDeadline
+         guard let capacity = readyCapacity(), capacity > 0 else {
+             throw DistributedEngineError.unavailable
+         }
+-        let lease = try owner.reserve(
+-            request, identity: identity, profileID: profile.id, capacityLimit: capacity)
++        let lease: any DistributedResidentRequestLease
++        if let boundedOwner = owner as? any DistributedDeadlineExecutionOwner {
++            lease = try boundedOwner.reserve(request, identity: identity, profileID: profile.id,
++                                             capacityLimit: capacity, deadlineContext: deadlineContext)
++        } else {
++            // Existing injected owners retain their contract. Only the opt-in
++            // capability above can interrupt a synchronous reserve wait itself.
++            lease = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: capacity)
++        }
+         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+         let state = DistributedRequestState(
+             request: request, lease: lease, continuation: continuation,
+             detokenizer: detokenizers.makeDetokenizer(stopStrings: request.stopStrings),
+-            absoluteDeadline: began.advanced(by: profile.requestTimeout), firstTokenDeadline: deadline)
++            absoluteDeadline: deadlineContext.generationDeadline, firstTokenDeadline: deadline)
+         active = state
+         cancellation?.arm { [weak self, weak state] in
+             guard let self, let state else { return }
+@@ -165,6 +207,8 @@
+             stop(state, reason: .terminal(cause: .admissionTimeout, message: "distributed admission deadline"))
+         } else if clock.now() >= state.absoluteDeadline {
+             stop(state, reason: .terminal(cause: .safetyDeadline, message: "distributed request deadline"))
++        } else if let deadline, clock.now() >= deadline {
++            stop(state, reason: .terminal(cause: .admissionTimeout, message: "distributed first-token deadline"))
+         } else {
+             armDeadline(state)
+             do {
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift
+@@ -4,12 +4,11 @@
+ import DarkbloomClusterProcess
+ 
+ /// Opt-in adapter only. No default factory or model-loading path installs it.
+-public final class DistributedPipeExecutionOwner: DistributedResidentExecutionOwner, @unchecked Sendable {
++public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOwner, @unchecked Sendable {
+     private let pair: ClusterWorkerPair
+     private let identity: DistributedResidentIdentity
+     private let profile: DistributedResidentExecutionProfile
+     private let chunkSize: Int
+-    private let timeoutNanoseconds: UInt64
+ 
+     public init(pair: ClusterWorkerPair, profile: DistributedResidentExecutionProfile, chunkSize: Int) throws {
+         let wire = pair.profile
+@@ -21,7 +20,7 @@
+               nanoseconds > 0, nanoseconds <= Int64(ClusterWorkerLimits.deadlineNanoseconds) else {
+             throw DistributedEngineError.invalidConfiguration("worker profile or request deadline differs")
+         }
+-        self.pair = pair; self.profile = profile; self.chunkSize = chunkSize; timeoutNanoseconds = UInt64(nanoseconds)
++        self.pair = pair; self.profile = profile; self.chunkSize = chunkSize
+         let id = pair.identity
+         identity = .init(membershipEpoch: id.membershipEpoch, modelID: id.modelID,
+             artifactSHA256: id.artifactSHA256, configurationSHA256: id.configurationSHA256,
+@@ -40,6 +39,13 @@
+     }
+     public func reserve(_ request: CBv2Request, identity expected: DistributedResidentIdentity,
+                         profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        // Compatibility for direct callers without an originating context.
++        try reserve(request, identity: expected, profileID: profileID, capacityLimit: capacityLimit,
++            deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: profile.requestTimeout)))
++    }
++    public func reserve(_ request: CBv2Request, identity expected: DistributedResidentIdentity,
++                        profileID: String, capacityLimit: Int,
++                        deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
+         guard expected == identity, profileID == profile.id, readiness() != nil else { throw DistributedEngineError.unavailable }
+         let p = request.sampling
+         guard p.temperature == 0, p.topP == 1, p.topK == 0, p.minP == 0, p.repetitionPenalty == 1,
+@@ -49,15 +55,16 @@
+               request.stopStrings.count <= 16, request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 }) else {
+             throw DistributedEngineError.unsupportedRequest("worker supports only greedy text; stop strings stay in the provider")
+         }
+-        let now = DispatchTime.now().uptimeNanoseconds
+-        let end = now.addingReportingOverflow(timeoutNanoseconds)
+-        guard !end.overflow else { throw DistributedEngineError.invalidConfiguration("local uptime deadline overflow") }
++        let uptime = DispatchTime.now().uptimeNanoseconds
++        let deadlines = try deadlineContext.localDeadlines(at: ContinuousClock.now,
++            uptimeBeforeNow: uptime, maximumRemaining: profile.requestTimeout,
++            lifetimeDeadline: pair.localLifetimeDeadlineUptimeNanoseconds)
+         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
+             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
+-            deadlineUptimeNanoseconds: end.partialValue, capacityLimitBytes: capacityLimit)
++            deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit)
+         // CBv2 request IDs may be reused after retirement. Each native request
+         // gets a fresh UUID; the lease retains its original public CBv2 identity.
+-        let native = try pair.reserve(requestID: UUID(), reservation: value)
++        let native = try pair.reserve(requestID: UUID(), reservation: value, admissionDeadline: deadlines.admission)
+         return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native)
+     }
+     public func shutdown() async { await pair.shutdown() }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestDeadlineContext.swift
+@@ -0,0 +1,74 @@
++import Foundation
++
++/// Provider-local monotonic deadlines. Neither instant is a wall timestamp or a
++/// remotely transferable uptime value. A remote owner receives remaining durations
++/// and derives its own local deadlines; the originating provider still enforces these.
++public struct DistributedRequestDeadlineContext: Sendable, Equatable {
++    public let generationDeadline: ContinuousClock.Instant
++    public let firstTokenDeadline: ContinuousClock.Instant?
++
++    public init(generationDeadline: ContinuousClock.Instant,
++                firstTokenDeadline: ContinuousClock.Instant? = nil) {
++        self.generationDeadline = generationDeadline
++        self.firstTokenDeadline = firstTokenDeadline
++    }
++
++    /// Additional policy can shorten either deadline, never replenish it.
++    public func restricted(to other: Self) -> Self {
++        let first = [firstTokenDeadline, other.firstTokenDeadline].compactMap { $0 }.min()
++        return .init(generationDeadline: min(generationDeadline, other.generationDeadline),
++                     firstTokenDeadline: first)
++    }
++
++    func checkAdmission(at now: ContinuousClock.Instant) throws {
++        guard now < generationDeadline else { throw DistributedRequestDeadlineError.generationExpired }
++        if let firstTokenDeadline, now >= firstTokenDeadline {
++            throw DistributedRequestDeadlineError.firstTokenExpired
++        }
++    }
++
++    /// Sample local uptime BEFORE `now`. This conservatively charges sampling
++    /// overhead instead of adding it to the request allowance. Conversion is only
++    /// for this Mac's children; ContinuousClock remains the origin's authority.
++    func localDeadlines(at now: ContinuousClock.Instant, uptimeBeforeNow: UInt64,
++                        maximumRemaining: Duration, lifetimeDeadline: UInt64) throws -> DistributedLocalRequestDeadlines {
++        try checkAdmission(at: now)
++        guard lifetimeDeadline > uptimeBeforeNow else { throw DistributedRequestDeadlineError.workerLifetimeExpired }
++        let remaining = min(now.duration(to: generationDeadline), maximumRemaining)
++        let amount = try Self.wholeNanoseconds(remaining)
++        let end = uptimeBeforeNow.addingReportingOverflow(amount)
++        guard !end.overflow else { throw DistributedRequestDeadlineError.uptimeOverflow }
++        let generation = min(end.partialValue, lifetimeDeadline)
++        let admission: UInt64
++        if let firstTokenDeadline {
++            let first = try Self.wholeNanoseconds(min(now.duration(to: firstTokenDeadline), remaining))
++            // first <= amount; the checked generation addition also bounds this.
++            admission = min(uptimeBeforeNow + first, generation)
++        } else { admission = generation }
++        return .init(generation: generation, admission: admission)
++    }
++
++    private static func wholeNanoseconds(_ duration: Duration) throws -> UInt64 {
++        guard duration > .zero else { throw DistributedRequestDeadlineError.invalidRemainingDuration }
++        let parts = duration.components
++        let seconds = parts.seconds.multipliedReportingOverflow(by: 1_000_000_000)
++        guard !seconds.overflow else { throw DistributedRequestDeadlineError.invalidRemainingDuration }
++        let value = seconds.partialValue.addingReportingOverflow(parts.attoseconds / 1_000_000_000)
++        guard !value.overflow, value.partialValue > 0 else { throw DistributedRequestDeadlineError.invalidRemainingDuration }
++        // Floor to complete nanoseconds: subnanosecond remainder grants no time.
++        return UInt64(value.partialValue)
++    }
++}
++
++struct DistributedLocalRequestDeadlines: Sendable, Equatable {
++    let generation: UInt64
++    let admission: UInt64
++}
++
++public enum DistributedRequestDeadlineError: Error, Sendable, Equatable {
++    case generationExpired
++    case firstTokenExpired
++    case workerLifetimeExpired
++    case invalidRemainingDuration
++    case uptimeOverflow
++}
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift
+@@ -139,6 +139,17 @@
+     func shutdown() async
+ }
+ 
++/// Optional capability for owners whose admission performs bounded IO. Legacy
++/// injected owners retain the old reserve API; the engine still enforces its own
++/// deadlines, but only a deadline-aware owner can bound synchronous reserve waits.
++public protocol DistributedDeadlineExecutionOwner: DistributedResidentExecutionOwner {
++    func reserve(
++        _ request: CBv2Request, identity: DistributedResidentIdentity,
++        profileID: String, capacityLimit: Int,
++        deadlineContext: DistributedRequestDeadlineContext
++    ) throws -> any DistributedResidentRequestLease
++}
++
+ public enum DistributedEngineError: Error, Sendable, Equatable {
+     case invalidConfiguration(String)
+     case unsupportedRequest(String)
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+@@ -103,8 +103,12 @@
+         mediaKind: EngineV2MediaKind? = nil,
+         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+         firstContentDeadline: FirstContentDeadline?,
+-        profile: RequestProfileBuilder? = nil
++        profile: RequestProfileBuilder? = nil,
++        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil
+     ) async throws -> AsyncStream<GenerationEvent> {
++        // This is our frame-receipt clock when available, never an upstream wall
++        // timestamp. Local engines are unaffected by the distributed-only context.
++        let distributedOrigin = profile?.continuousAnchor ?? ContinuousClock.now
+         // Validate the caller-supplied id before it becomes a dictionary key /
+         // cancel-correlation handle: a nil / empty / over-long / non-printable
+         // id is replaced with a fresh generated one (it could never correlate
+@@ -471,15 +475,25 @@
+                 ? deadlineProjectionBypassReason(
+                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
+                 : nil)
++        let distributed = engine as? DistributedCBv2Engine
++        let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
++                                                         firstTokenDeadline: firstContentDeadline?.instant)
++        let selectedContext = originContext.map { original in
++            distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
++        }
+         do {
+             if let admission = deadlineAdmission {
+                 // The engine's serialized closure compares projection against
+                 // this same absolute deadline. A second task-group race would
+                 // cancel after commit and hide the generation-bound retirement
+                 // handle needed to transfer resource ownership safely.
+-                let result = try await engine.submit(
+-                    engineRequest,
+-                    firstTokenDeadline: admission)
++                let result: CBv2FirstTokenDeadlineResult
++                if let distributed, let selectedContext {
++                    result = try await distributed.submit(engineRequest, firstTokenDeadline: admission,
++                                                          deadlineContext: selectedContext)
++                } else {
++                    result = try await engine.submit(engineRequest, firstTokenDeadline: admission)
++                }
+                 switch result {
+                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
+                     profile?.observeDeadlineDecision(
+@@ -572,7 +586,11 @@
+                 // Projection fails open when mode is off, no isolated rate has
+                 // been measured, or media makes token projection incomplete.
+                 // Absolute expiry does not: it was checked immediately above.
+-                events = try engine.submit(engineRequest)
++                if let distributed, let selectedContext {
++                    events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
++                } else {
++                    events = try engine.submit(engineRequest)
++                }
+                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
+                 if let profile {
+                     // Evaluated AFTER the submit returned: the deadline may
+@@ -623,6 +641,9 @@
+                     usageSignal: usageSignal,
+                     failure: Self.prefixCacheFailureClass(for: error))
+             }
++            if error as? DistributedRequestDeadlineError == .firstTokenExpired {
++                throw PreContentDeadlineFailure.deadlineUnreachable
++            }
+             if let failure = error as? PreContentDeadlineFailure { throw failure }
+             if error is CancellationError { throw CancellationError() }
+             // Admission failure. The message keeps the canonical
+--- a/provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift
++++ b/provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift
+@@ -208,7 +208,8 @@
+ 
+     /// Anchor `t0p`: the WebSocket frame receipt instant.
+     public let suspendingAnchor: SuspendingClock.Instant
+-    /// The same instant on the deadline clock, read ONLY for `slept_us`.
++    /// The same provider-local receipt instant on the deadline clock. Used for
++    /// `slept_us` and the opt-in distributed generation lifetime ceiling.
+     public let continuousAnchor: ContinuousClock.Instant
+     /// Untrusted wall anchor (epoch ms) captured once at construction.
+     public let wallMs: Int64
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Inference/Distributed/DistributedRequestOriginDeadlineTests.swift
+@@ -0,0 +1,150 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import ProviderCore
++
++private final class DeadlineOwner: DistributedDeadlineExecutionOwner, @unchecked Sendable {
++    let base = DistributedTestOwner()
++    private let lock = NSLock()
++    private var value: DistributedRequestDeadlineContext?
++    var context: DistributedRequestDeadlineContext? { lock.withLock { value } }
++    func readiness() -> DistributedResidentReadiness? { base.readiness() }
++    func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) { base.setReadinessInvalidationHandler(handler) }
++    func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
++        base.projectFirstToken(request, admission: admission)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                 capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        throw DistributedEngineError.invalidConfiguration("deadline-aware path was bypassed")
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                 capacityLimit: Int, deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        lock.withLock { value = deadlineContext }
++        return try base.reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    func shutdown() async { await base.shutdown() }
++}
++
++private final class QueueCaptureClock: @unchecked Sendable {
++    private let lock = NSLock()
++    private var instant = ContinuousClock.now
++    private var reads = 0
++    let captured = DispatchSemaphore(value: 0)
++    var clock: CBv2Clock {
++        CBv2Clock {
++            let result = self.lock.withLock { () -> (ContinuousClock.Instant, Bool) in
++                self.reads += 1
++                return (self.instant, self.reads == 2)
++            }
++            if result.1 { self.captured.signal() }
++            return result.0
++        }
++    }
++    func advance(_ amount: Duration) { lock.withLock { instant = instant.advanced(by: amount) } }
++}
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedRequestOriginDeadlineTests {
++    private func engine(_ owner: DeadlineOwner, _ clock: DistributedTestClock) throws -> DistributedCBv2Engine {
++        try .init(owner: owner, expectedIdentity: owner.base.identity, profile: distributedTestProfile(),
++                  detokenizers: DistributedTestDetokenizers(), clock: clock.clock)
++    }
++
++    private func finish(_ engine: DistributedCBv2Engine, _ owner: DeadlineOwner) async {
++        if owner.base.reserveCount > 0 && owner.base.last.releaseCount == 0 {
++            engine.cancel(owner.base.last.requestID); owner.base.last.acknowledge()
++        }
++        await engine.shutdown()
++    }
++
++    @Test func ordinarySubmitCapturesBudgetBeforeWaitingForEngineQueue() async throws {
++        let owner = DeadlineOwner(), clock = QueueCaptureClock()
++        let engine = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.base.identity,
++            profile: distributedTestProfile(), detokenizers: DistributedTestDetokenizers(), clock: clock.clock)
++        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
++        engine.queue.async { entered.signal(); _ = release.wait(timeout: .now() + 5) }
++        defer { release.signal() }
++        #expect(entered.wait(timeout: .now() + 2) == .success)
++        let pending = Task.detached { try engine.submit(distributedTestRequest()) }
++        // Both default context and profile-clamp reads occur before queue.sync.
++        #expect(clock.captured.wait(timeout: .now() + 2) == .success)
++        clock.advance(.seconds(315)); release.signal()
++        do {
++            _ = try await pending.value
++            Issue.record("engine queue wait received a new budget")
++        } catch DistributedRequestDeadlineError.generationExpired { }
++        #expect(owner.base.reserveCount == 0)
++        await finish(engine, owner)
++    }
++
++    @Test func preparationAndReserveTimeConsumeTheOriginalBudget() async throws {
++        let owner = DeadlineOwner(), clock = DistributedTestClock()
++        let engine = try engine(owner, clock)
++        let context = engine.deadlineContext(receivedAt: clock.now)
++        clock.advance(.seconds(300)) // provider preparation and queued work
++        owner.base.onReserve = { clock.advance(.seconds(10)) }
++        let stream = try engine.submit(distributedTestRequest(), deadlineContext: context)
++        #expect(owner.context == context)
++        #expect(engine.onQueue { engine.active?.absoluteDeadline } == context.generationDeadline)
++        clock.advance(.seconds(5))
++        #expect(!owner.base.last.send(.token(4)))
++        #expect(owner.base.last.releaseCount == 0)
++        owner.base.last.acknowledge()
++        let terminal = distributedTerminal(await distributedCollect(stream))
++        guard let terminal, case .terminal(let cause, _) = terminal.0 else { Issue.record("expected origin expiry"); return }
++        #expect(cause == .safetyDeadline)
++        await finish(engine, owner)
++    }
++
++    @Test func expiredOriginDoesNotReserve() async throws {
++        let owner = DeadlineOwner(), clock = DistributedTestClock()
++        let engine = try engine(owner, clock)
++        let context = engine.deadlineContext(receivedAt: clock.now)
++        clock.advance(.seconds(315))
++        #expect(throws: DistributedRequestDeadlineError.generationExpired) {
++            _ = try engine.submit(distributedTestRequest(), deadlineContext: context)
++        }
++        #expect(owner.base.reserveCount == 0)
++        await finish(engine, owner)
++    }
++
++    @Test func callerCannotEnlargeProfileCeiling() async throws {
++        let owner = DeadlineOwner(), clock = DistributedTestClock()
++        let engine = try engine(owner, clock), now = clock.now
++        let stream = try engine.submit(distributedTestRequest(maxTokens: 1),
++            deadlineContext: .init(generationDeadline: now.advanced(by: .seconds(600))))
++        #expect(owner.context?.generationDeadline == now.advanced(by: .seconds(315)))
++        owner.base.last.send(.token(4)); owner.base.last.acknowledge()
++        _ = await distributedCollect(stream); await finish(engine, owner)
++    }
++
++    @Test func firstTokenExpiryIsNotGenerationExpiryAfterFirstToken() async throws {
++        let owner = DeadlineOwner(), clock = DistributedTestClock()
++        let engine = try engine(owner, clock), now = clock.now
++        let context = DistributedRequestDeadlineContext(generationDeadline: now.advanced(by: .seconds(20)),
++                                                        firstTokenDeadline: now.advanced(by: .seconds(2)))
++        let stream = try engine.submit(distributedTestRequest(), deadlineContext: context)
++        #expect(owner.base.last.send(.token(4)))
++        clock.advance(.seconds(3))
++        #expect(!owner.base.last.send(.token(5))) // clean length at token 2
++        #expect(owner.base.last.cancelCount == 0)
++        owner.base.last.acknowledge()
++        #expect(distributedTerminal(await distributedCollect(stream))?.0 == .length)
++        await finish(engine, owner)
++    }
++
++    @Test func firstTokenExpiryDuringUnprojectedReserveDoesNotStart() async throws {
++        let owner = DeadlineOwner(), clock = DistributedTestClock()
++        let engine = try engine(owner, clock), now = clock.now
++        owner.base.onReserve = { clock.advance(.seconds(3)) }
++        let stream = try engine.submit(distributedTestRequest(), deadlineContext: .init(
++            generationDeadline: now.advanced(by: .seconds(20)), firstTokenDeadline: now.advanced(by: .seconds(2))))
++        #expect(owner.base.last.startCount == 0 && owner.base.last.cancelCount == 1)
++        #expect(owner.base.last.releaseCount == 0)
++        owner.base.last.acknowledge()
++        let terminal = distributedTerminal(await distributedCollect(stream))
++        guard let terminal, case .terminal(let cause, _) = terminal.0 else { Issue.record("expected admission expiry"); return }
++        #expect(cause == .admissionTimeout)
++        await finish(engine, owner)
++    }
++}

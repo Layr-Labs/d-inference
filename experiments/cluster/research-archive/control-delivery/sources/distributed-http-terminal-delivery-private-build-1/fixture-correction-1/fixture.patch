@@ -1,0 +1,66 @@
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDeliveryLifecycleTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDeliveryLifecycleTests.swift
+@@ -71,7 +71,7 @@
+         let session = LocalHostTestSession(); session.holdOwnerACK = true
+         let host = localHost(session)
+         try await host.start()
+-        let responses = host.responses
++        let responses = await host.responses
+         let response = try responses.begin()
+         let stop = Task { await host.stop(until: localHostDeadline(50)) }
+         #expect(try await localHostEventually { session.nativeCleanupObserved })
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDisconnectTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDisconnectTests.swift
+@@ -8,7 +8,7 @@
+     private func start() async throws -> (DistributedLocalServer, LocalHostTestSession, UInt16) {
+         let session = LocalHostTestSession(); session.lifetimeNanoseconds = 15_000_000_000
+         let host = DistributedLocalServer(session: session, config: .init(host: "127.0.0.1", port: 0),
+-            firstTokenBudgetPolicy: .init(baseMilliseconds: 10_000, millisecondsPerInputToken: 0),
++            firstTokenBudgetPolicy: try .init(baseMilliseconds: 10_000, millisecondsPerInputToken: 0),
+             tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
+         try await host.start()
+         return (host, session, try #require(await host.status.boundPort))
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPTerminalIntegrationTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPTerminalIntegrationTests.swift
+@@ -10,7 +10,7 @@
+         let session = LocalHostTestSession()
+         let host = DistributedLocalServer(session: session,
+             config: .init(host: "127.0.0.1", port: 0, authToken: "fixture-token"),
+-            firstTokenBudgetPolicy: .init(baseMilliseconds: 500, millisecondsPerInputToken: 100),
++            firstTokenBudgetPolicy: try .init(baseMilliseconds: 500, millisecondsPerInputToken: 100),
+             tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
+         try await host.start()
+         let port = try #require(await host.status.boundPort)
+@@ -32,7 +32,8 @@
+         #expect(lease.releaseCount == 0 && completed.finishCount == 0)
+         session.invalidatePairBeforeStatusCallback()
+         #expect(try await localHostEventually { await host.status.phase == .stopping })
+-        #expect(host.responses.hasActiveResponse && lease.releaseCount == 0)
++        let responses = await host.responses
++        #expect(responses.hasActiveResponse && lease.releaseCount == 0)
+         // The response remains pending, but native request ownership is still
+         // held. Only the explicit fake ACK below permits the real engine to end.
+         lease.acknowledge()
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift
+@@ -150,7 +150,7 @@
+         let request = Request(
+             head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
+             body: .init(asyncSequence: HTTPOriginBody(json: json, delay: bodyDelay, capture: capture)))
+-        let context = BasicRequestContext(source: ApplicationRequestContextSource(
++        let context = LocalConnectionRequestContext(source: ApplicationRequestContextSource(
+             channel: EmbeddedChannel(), logger: Logger(label: "distributed-http-origin")))
+         do {
+             let response = try await application.responder.respond(to: request, context: context)
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPVisibleContentTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPVisibleContentTests.swift
+@@ -94,7 +94,8 @@
+             _ = try DistributedHTTPEventStream.failureFrame(for: control, upstreamFailed: true)
+         }
+         control.recordTerminal(.init(promptTokens: 3, completionTokens: 0, cause: .prefillStall))
+-        let frame = try #require(DistributedHTTPEventStream.failureFrame(for: control, upstreamFailed: true))
++        let candidate = try DistributedHTTPEventStream.failureFrame(for: control, upstreamFailed: true)
++        let frame = try #require(candidate)
+         #expect(frame.contains("prefill_stall") && !frame.contains("deadline_unreachable"))
+     }
+ }

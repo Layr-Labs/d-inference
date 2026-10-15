@@ -1,0 +1,299 @@
+--- a/guards.py
++++ b/guards.py
+@@ -2,7 +2,7 @@
+ import json, os, queue, select, shlex, subprocess, threading, time
+ 
+ SSH = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
+-REMOTE = '/Users/developer/DarkbloomDev/installed-distributed-lookahead-runtime-20260915'
++REMOTE = '/Users/developer/DarkbloomDev/installed-distributed-diagnostics-runtime-20260915'
+ 
+ class Monitor:
+     def __init__(self, host, rank, output):
+--- a/supervisor.py
++++ b/supervisor.py
+@@ -2,7 +2,7 @@
+ from pathlib import Path
+ import json, os, select, signal, subprocess, sys, time
+ 
+-root = Path('/Users/developer/DarkbloomDev/installed-distributed-lookahead-runtime-20260915')
++root = Path('/Users/developer/DarkbloomDev/installed-distributed-diagnostics-runtime-20260915')
+ run = Path(sys.argv[1])
+ assert run.parent == root / 'qualification'
+ run.parent.mkdir(mode=0o700, exist_ok=True)
+--- a/run.py
++++ b/run.py
+@@ -6,6 +6,7 @@
+ from lease_source import LEASE
+ from physical_io import line_until, fetch_token, postflight, discovery
+ from tokenizer_check import verify as verify_tokenizer
++from status_capture import capture as capture_status
+ 
+ BASE=Path(__file__).resolve().parent
+ ROOT=BASE.parent
+@@ -29,6 +30,7 @@
+             'numericalReferenceCompared':False,'requestCount':1}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+     codefiles=sorted(BASE.glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
++    codefiles.extend([BASE/'stage_checks/__init__.py',BASE/'stage_checks/common.py'])
+     if args.rendered_prompt is not None:
+         codefiles.extend([args.rendered_prompt,args.expected_token_ids])
+     pins={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in codefiles}
+@@ -91,6 +93,7 @@
+         if catalog is None: raise RuntimeError('Installed product readiness deadline exceeded')
+         record['readyAfterSeconds']=time.monotonic()-started
+         (output/'catalog.json').write_text(json.dumps(catalog,indent=2)+'\n')
++        record['statusBefore']=capture_status(output,'before')
+         if args.rendered_prompt is not None:
+             record['tokenizerCheck']=verify_tokenizer(args.rendered_prompt,args.expected_token_ids,token,output)
+         for monitor in monitors: monitor.require()
+@@ -103,6 +106,10 @@
+         with (output/'client.stdout').open('xb') as out,(output/'client.stderr').open('xb') as err:
+             result=subprocess.run(command,stdout=out,stderr=err,timeout=100)
+         record['clientExitCode']=result.returncode
++        if result.returncode == 0:
++            record['statusAfter']=capture_status(output,'after',previous=record['statusBefore'])
++        else:
++            record['statusAfterNotRun']='Client did not complete normally'
+     except BaseException as error:
+         record['error']=type(error).__name__+': '+str(error)
+     finally:
+@@ -160,7 +167,7 @@
+         if token_file.exists(): token_file.unlink()
+     record['elapsedSeconds']=time.monotonic()-started
+     record['pinsUnchanged']=all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==pin for p,pin in pins.items())
+-    record['completed']=record.get('clientExitCode')==0 and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
++    record['completed']=record.get('clientExitCode')==0 and record.get('statusBefore',{}).get('validated') is True and record.get('statusAfter',{}).get('validated') is True and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
+     (output/'execution.json').write_text(json.dumps(record,indent=2)+'\n')
+     print(json.dumps({k:record.get(k) for k in ['completed','error','clientExitCode','supervisorExitCode','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
+     raise SystemExit(0 if record['completed'] else 1)
+--- /dev/null
++++ b/status_capture.py
+@@ -0,0 +1,119 @@
++"""Bound one fixed read-only leader CLI command, outside the client timer."""
++import hashlib
++import json
++import os
++import selectors
++import shlex
++import signal
++import subprocess
++import time
++from guards import SSH, REMOTE
++from status_validation import MAXIMUM_STDOUT, validate
++
++TIMEOUT_SECONDS = 15
++MAXIMUM_STDERR = 16384
++
++
++def private_write(path, value):
++    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as stream:
++        stream.write(value)
++
++
++def bounded_command(command, timeout=TIMEOUT_SECONDS):
++    started = time.monotonic()
++    deadline = started + timeout
++    process = None
++    streams = selectors.DefaultSelector()
++    raw = {'stdout': bytearray(), 'stderr': bytearray()}
++    limits = {'stdout': MAXIMUM_STDOUT, 'stderr': MAXIMUM_STDERR}
++    result = {'command': command, 'absoluteTimeoutSeconds': timeout,
++              'remoteNativeCleanupProven': False, 'localProcessReaped': False}
++    error = None
++    try:
++        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
++                                   stderr=subprocess.PIPE, start_new_session=True)
++        for name, pipe in [('stdout', process.stdout), ('stderr', process.stderr)]:
++            os.set_blocking(pipe.fileno(), False)
++            streams.register(pipe, selectors.EVENT_READ, name)
++        while streams.get_map():
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError('Status command absolute deadline exceeded')
++            for key, _ in streams.select(min(remaining, 0.1)):
++                name = key.data
++                try:
++                    chunk = os.read(key.fileobj.fileno(), min(4096, limits[name] - len(raw[name]) + 1))
++                except BlockingIOError:
++                    continue
++                if not chunk:
++                    streams.unregister(key.fileobj)
++                    continue
++                available = limits[name] - len(raw[name])
++                raw[name].extend(chunk[:available])
++                if len(chunk) > available:
++                    result[name + 'Truncated'] = True
++                    raise ValueError('Status command output exceeded its bound')
++        process.wait(timeout=max(0, deadline - time.monotonic()))
++        if time.monotonic() > deadline:
++            raise TimeoutError('Status command absolute deadline exceeded')
++        if process.returncode != 0:
++            raise RuntimeError('Status command returned nonzero')
++    except BaseException as caught:
++        error = caught
++        result['error'] = type(caught).__name__ + ': ' + str(caught)
++    finally:
++        streams.close()
++        if process is not None:
++            if process.poll() is None:
++                try:
++                    os.killpg(process.pid, signal.SIGKILL)
++                except ProcessLookupError:
++                    pass
++                except BaseException as caught:
++                    result['localFenceError'] = type(caught).__name__
++                    if error is None:
++                        error = caught
++            try:
++                process.wait(timeout=2)
++                result['localProcessReaped'] = True
++            except BaseException as caught:
++                result['localCleanupError'] = type(caught).__name__
++                if error is None:
++                    error = caught
++            for pipe in (process.stdout, process.stderr):
++                if pipe is not None:
++                    try:
++                        pipe.close()
++                    except BaseException as caught:
++                        result['localPipeCleanupError'] = type(caught).__name__
++                        if error is None:
++                            error = caught
++            result['localExitCode'] = process.returncode
++        result['elapsedSeconds'] = time.monotonic() - started
++    return bytes(raw['stdout']), bytes(raw['stderr']), result, error
++
++
++def capture(output, phase, previous=None):
++    if phase not in ('before', 'after') or (phase == 'after') != (previous is not None):
++        raise ValueError('Invalid fixed status capture phase')
++    command = SSH + ['darkbloom-24', shlex.join([REMOTE + '/darkbloom', 'cluster', 'status', '--json'])]
++    raw, err, receipt, failure = bounded_command(command)
++    # Raw outputs are bounded, private, and contain no auth command argument.
++    private_write(output / ('status-' + phase + '.stdout.json'), raw)
++    private_write(output / ('status-' + phase + '.stderr'), err)
++    receipt.update(phase=phase, stdoutBytes=len(raw), stderrBytes=len(err),
++                   stdoutSHA256=hashlib.sha256(raw).hexdigest(), stderrSHA256=hashlib.sha256(err).hexdigest(),
++                   includedInClientTTFT=False)
++    summary = None
++    if failure is None:
++        try:
++            summary = validate(raw, previous=previous)
++            receipt['validation'] = summary
++        except BaseException as caught:
++            failure = caught
++            receipt['error'] = type(caught).__name__ + ': ' + str(caught)
++    private_write(output / ('status-' + phase + '.receipt.json'),
++                  (json.dumps(receipt, indent=2) + '\n').encode())
++    if failure is not None:
++        raise failure
++    return summary
+--- /dev/null
++++ b/status_validation.py
+@@ -0,0 +1,106 @@
++"""Validate the installed CLI's existing diagnostics DTO, not saved-file liveness."""
++import json
++import uuid
++
++EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-diagnostics-20260915'
++MAXIMUM_STDOUT = 65536
++
++
++def require(value, message):
++    if not value:
++        raise ValueError('Cluster status: ' + message)
++
++
++def object_pairs(pairs):
++    value = {}
++    for key, item in pairs:
++        require(key not in value, 'duplicate JSON field')
++        value[key] = item
++    return value
++
++
++def integer(value, lower, upper):
++    return type(value) is int and lower <= value <= upper
++
++
++def reject_constant(_):
++    raise ValueError('Cluster status: nonfinite JSON value')
++
++
++def canonical_uuid(value):
++    try:
++        return type(value) is str and str(uuid.UUID(value)) == value
++    except (ValueError, AttributeError):
++        return False
++
++
++def validate(raw, previous=None):
++    require(0 < len(raw) <= MAXIMUM_STDOUT, 'stdout byte bound')
++    try:
++        value = json.loads(raw, object_pairs_hook=object_pairs, parse_constant=reject_constant)
++        require(type(value) is dict, 'report object required')
++        require(value['schema'] == 'darkbloom_cluster_diagnostics_v1' and value['operation'] == 'status'
++                and value['configurationState'] == 'verified', 'verified status report required')
++        require(value['physicalProbePerformed'] is False and value['recoveryPerformed'] is False,
++                'status must remain observational')
++        saved, live = value['saved'], value['live']
++        require(type(saved) is dict and type(live) is dict, 'live response was not observed')
++        session = live['session']
++        require(saved == live['binding'] == session['binding'], 'saved/live/session binding differs')
++        require(saved['clusterID'] == EXPECTED_CLUSTER and saved['role'] == 'leader'
++                and saved['publicModelID'] == 'Qwen3.5-9B'
++                and saved['runtimeModelID'] == 'registered_qwen35_9b', 'selected cluster/model differs')
++        require(saved['maximumRequests'] == 16 and saved['maximumLifetimeSeconds'] == 300,
++                'installed lifetime/quota differs')
++        require(live['schema'] == 'darkbloom_cluster_status_v1'
++                and live['authenticationConfigured'] is True and live['boundPort'] == 18081,
++                'live endpoint/authentication differs')
++        require(live['hostPhase'] == 'serving' and live['ready'] is True and live['failed'] is False
++                and live['quarantined'] is False and session['phase'] == 'ready' and session['ready'] is True,
++                'leader/session is not live ready')
++        epoch, nonce = session['observedMembershipEpoch'], live['nonce']
++        require(canonical_uuid(epoch) and canonical_uuid(nonce), 'actual epoch/nonce not observed')
++        require(session['observedPrefillSchedule'] == saved['prefillSchedule']
++                and saved['prefillSchedule'] in ('serial', 'oneChunkLookahead'), 'selected schedule differs')
++        require(session['mtpEnabled'] is False and session['mtpOffReason'] == 'runtimeCapabilityDisablesSpeculation',
++                'unexpected speculation state')
++        peers, members = saved['peers'], session['members']
++        require(type(peers) is list and type(members) is list and len(peers) == len(members) == 2,
++                'exactly two members required')
++        require(peers[0]['id'] != peers[1]['id'] and saved['memberID'] == peers[0]['id'], 'leader/member identity differs')
++        for rank, member in enumerate(members):
++            require(type(member['rank']) is int and type(peers[rank]['rank']) is int
++                    and member['rank'] == rank == peers[rank]['rank']
++                    and member['peerID'] == peers[rank]['id'], 'rank/member binding differs')
++            require(member['transport'] == ('localPipes' if rank == 0 else 'authenticatedSSH')
++                    and member['nativeReady'] is True and integer(member['requestCapacityBytes'], 1, 2**63 - 1),
++                    'actual two-rank native readiness not observed')
++            require(member['nativeCleanupObserved'] is False and member['ownerReleaseAcknowledged'] is False
++                    and member.get('ownerTermination') is None, 'member already terminating')
++        admission = session['admission']
++        require(admission['valid'] is True and admission['draining'] is False
++                and integer(admission['remainingLifetimeNanoseconds'], 1, 300_000_000_000)
++                and integer(admission['remainingRequests'], 0, 16)
++                and type(admission['activeRequest']) is bool, 'live admission observation invalid')
++        checks = value['checks']
++        require(type(checks) is list and len(checks) <= 16, 'check inventory differs')
++        outcomes = {item['name']: item['outcome'] for item in checks}
++        require(len(outcomes) == len(checks) and 'failed' not in outcomes.values()
++                and outcomes.get('savedConfiguration') == 'passed'
++                and outcomes.get('localServingObservation') == 'passed', 'saved or live status check failed')
++        if previous is None:
++            require(live['admissionAvailable'] is True and admission['activeRequest'] is False
++                    and admission['remainingRequests'] == 16, 'fresh idle session required before smoke')
++        else:
++            require(saved == previous['binding'] and epoch == previous['observedMembershipEpoch']
++                    and nonce != previous['nonce'], 'post-request epoch/binding is changed or stale')
++            require(admission['remainingRequests'] == previous['remainingRequests'] - 1,
++                    'one-request admission counter differs')
++        return {'validated': True, 'binding': saved, 'observedMembershipEpoch': epoch,
++                'nonce': nonce, 'nativeReadyRanks': [0, 1],
++                'remainingRequests': admission['remainingRequests'],
++                'remainingLifetimeNanoseconds': admission['remainingLifetimeNanoseconds'],
++                'activeRequest': admission['activeRequest'], 'admissionAvailable': live['admissionAvailable'],
++                'scope': 'Fresh CLI live observation; not a native cleanup or capacity lease proof'}
++    except (KeyError, TypeError, IndexError, UnicodeError, json.JSONDecodeError) as error:
++        raise ValueError('Cluster status: missing or malformed required DTO fields') from error

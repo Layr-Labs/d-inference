@@ -1,0 +1,11 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -41,6 +41,8 @@
+     private var stderr = Data()
+     public var readiness: ClusterWorkerReady? { lock.withLock { invalid ? nil : ready } }
+     public var nativeCleanupObserved: Bool { lock.withLock { cleanup } }
++    /// Authenticated current-owner acknowledgment that its device lease journal was resolved.
++    public var ownerDeviceLeaseReleasedObserved: Bool { lock.withLock { ownerReleased } }
+     public var diagnosticTail: Data { lock.withLock { stderr } }
+ 
+     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,

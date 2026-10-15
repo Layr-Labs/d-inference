@@ -1,0 +1,537 @@
+--- a/inputs.py
++++ b/inputs.py
+@@ -1,11 +1,16 @@
+-"""Frozen member overlay and bounded validation inputs; importing does no IO."""
++"""Frozen Swift-only composition; imports do not copy or compile anything."""
+ from pathlib import Path
++
+ BASE = Path(__file__).resolve().parent
+ SOURCE = Path('/Users/developer/DarkbloomDev/d-inference')
++UPSTREAM = BASE.parent / 'cluster-registered-member-validation-fixtures-20260916'
++UPSTREAM_SHA = '0550d8fb270ac4dbef474fc0585497d7bf8c612ca35812cca6f76ac6ade2be06'
+ OVERLAY = BASE.parent / 'cluster-registered-member-draft-20260915'
+ OVERLAY_SHA = '4ae431c60990ff9e4dfe319b8b5387ac8fb6bffcd54eac0213d3f85ed60ef965'
+-GO = '/Users/developer/.local/share/mise/installs/go/1.25.0/bin/go'
+-GO_SHA = 'c812de5f1e8307431c5bce8ebc4887c180827abc5834a72cd640a8a14200a93b'
+-GO_PACKAGES = ('coordinator/registry', 'coordinator/protocol', 'coordinator/api')
+-GO_FILTER = '^Test(VerifiedPair|ClusterMember|MemberRole)'
+-SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests'
++B_OVERLAY = BASE.parent / 'coordinator-native-pair-authorization-draft-20260916'
++B_OVERLAY_SHA = '69189730ac9df0ced27006c2b00606583a20f905a7140cfc8fff5f24ff9dc500'
++SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests'
++NATIVE_PAIR_METHODS = (
++    'publicSigningBytesMatchIndependentGoAndPythonFixture',
++    'ambiguousOrUnknownPublicRecordsAreRefused',
++)
+--- a/guards.py
++++ b/guards.py
+@@ -1,133 +1,72 @@
+-"""Source checks only; package materialization is explicit in prepare.py."""
++"""Exact source composition; cache/source inventory remains the inherited helper."""
+ import hashlib
+ import json
+ import os
+ from pathlib import Path
+-import re
+-import shlex
+-from inputs import BASE, SOURCE, OVERLAY, OVERLAY_SHA, GO_PACKAGES
++from inputs import (BASE, SOURCE, UPSTREAM, UPSTREAM_SHA, OVERLAY, OVERLAY_SHA,
++                    B_OVERLAY, B_OVERLAY_SHA)
++
+ 
+ def sha(path):
+     return hashlib.sha256(path.read_bytes()).hexdigest()
++
+ 
+ def save(path, value):
+     with path.open('x') as stream:
+         json.dump(value, stream, indent=2, sort_keys=True); stream.write('\n')
+ 
++
++def verify_frozen(root, expected=None):
++    manifest = root / 'manifest.json'
++    if expected is not None and sha(manifest) != expected:
++        raise ValueError('Freeze changed: ' + str(root))
++    for row in json.loads(manifest.read_text())['files']:
++        p = root / row['path']
++        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
++            raise ValueError('Frozen input changed: ' + str(p))
++
++
++def check_preimage(path, expected):
++    actual = sha(path) if path.is_file() and not path.is_symlink() else None
++    if (path.exists() or path.is_symlink()) != (expected is not None) or actual != expected:
++        raise ValueError('MAIN preimage/absence changed: ' + str(path))
++
++
+ def verify_overlay():
+-    manifest = OVERLAY / 'manifest.json'
+-    if sha(manifest) != OVERLAY_SHA:
+-        raise ValueError('Member freeze changed')
+-    for row in json.loads(manifest.read_text())['files']:
+-        p = OVERLAY / row['path']
+-        if p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+-            raise ValueError('Frozen member input changed: ' + row['path'])
+-    integration = json.loads((OVERLAY / 'integration.json').read_text())
+-    for row in integration['files']:
+-        p = SOURCE / row['path']
+-        actual = sha(p) if p.is_file() and not p.is_symlink() else None
+-        if (p.exists() or p.is_symlink()) != (row['baseSHA256'] is not None) or actual != row['baseSHA256']:
+-            raise ValueError('MAIN preimage/absence changed: ' + row['path'])
+-        if sha(OVERLAY / 'proposed' / row['path']) != row['proposedSHA256']:
+-            raise ValueError('Candidate differs from integration')
++    verify_frozen(BASE)
++    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA), (B_OVERLAY, B_OVERLAY_SHA)):
++        verify_frozen(root, expected)
++    # Only the 25 member and two B Swift files are composed. The separate Go
++    # qualification/integration may proceed without changing this Swift input.
++    rows = []
++    for root, label in ((OVERLAY, 'member'), (B_OVERLAY, 'native-B')):
++        for row in json.loads((root / 'integration.json').read_text())['files']:
++            if not row['path'].startswith('provider-swift/'):
++                continue
++            rows.append(dict(row, sourceLayer=label, sourcePath=str(root / 'proposed' / row['path'])))
++    declared = json.loads((BASE / 'swift-integration.json').read_text())
++    if rows != declared['files'] or len(rows) != 27 or len({row['path'] for row in rows}) != 27:
++        raise ValueError('Swift overlay closure changed')
++    for row in rows:
++        check_preimage(SOURCE / row['path'], row['baseSHA256'])
++        p = Path(row['sourcePath'])
++        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['proposedSHA256']:
++            raise ValueError('Swift proposed source changed: ' + row['path'])
+     for row in json.loads((BASE / 'helper-lineage.json').read_text()):
+         if sha(BASE / row['local']) != row['sha256']:
+             raise ValueError('Owned/inventory helper changed')
+     for row in json.loads((BASE / 'binder-review.json').read_text())['sources']:
+         if sha(SOURCE / row['path']) != row['sha256']:
+             raise ValueError('Reviewed binder context changed')
+-    return integration
+-
+-def source_for(relative):
+-    p = OVERLAY / 'proposed' / relative
+-    return p if p.exists() else SOURCE / relative
+-
+-def go_fixture_inputs():
+-    expected = {
+-        'fixtures/prompt-contract/v1/production_vectors.json',
+-        'deploy/gcp/prod/release-env-defaults',
+-        'deploy/environments/prod.env',
+-        'deploy/gcp/prod/required-env-keys.txt',
+-        'scripts/install.sh',
+-    }
+-    rows = json.loads((BASE / 'fixture-inputs.json').read_text())['files']
+-    if len(rows) != len(expected) or {row['path'] for row in rows} != expected:
+-        raise ValueError('Explicit Go fixture closure differs')
+-    for row in rows:
++    for row in json.loads((BASE / 'source-context.json').read_text())['files']:
+         p = SOURCE / row['path']
+         if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+-            raise ValueError('Pinned Go fixture changed: ' + row['path'])
+-    return rows
++            raise ValueError('Swift package/protocol context changed')
++    return declared
+ 
+-def go_snapshot():
+-    # Conservative local import closure, including test imports on every host.
+-    # No go list/tool download/compiler is needed to construct this snapshot.
+-    prefix = 'github.com/eigeninference/d-inference/'
+-    pending, seen, paths = list(GO_PACKAGES), set(), {'go.mod', 'go.sum'}
+-    paths.update(row['path'] for row in go_fixture_inputs())
+-    pattern = re.compile(r'(?m)^import[ \t]+(?:\(([\s\S]*?)^\)|([^\n]+))')
+-    while pending:
+-        package = pending.pop()
+-        if package in seen:
+-            continue
+-        if not package.startswith('coordinator/') or '..' in Path(package).parts:
+-            raise ValueError('Unexpected local Go dependency: ' + package)
+-        seen.add(package)
+-        directory = SOURCE / package
+-        if not directory.is_dir():
+-            raise ValueError('Missing local Go package: ' + package)
+-        candidates = {p.name for p in directory.iterdir() if p.is_file() and p.suffix in ('.go', '.s', '.h', '.c', '.cc', '.cpp', '.m', '.mm')}
+-        candidate_directory = OVERLAY / 'proposed' / package
+-        if candidate_directory.exists():
+-            candidates.update(p.name for p in candidate_directory.iterdir() if p.suffix == '.go')
+-        for name in sorted(candidates):
+-            relative = package + '/' + name; paths.add(relative)
+-            if not name.endswith('.go'):
+-                continue
+-            text = source_for(relative).read_text()
+-            for match in pattern.finditer(text):
+-                for value in re.findall(r'"([^"\n]+)"', match.group(1) or match.group(2)):
+-                    if value.startswith(prefix):
+-                        pending.append(value[len(prefix):])
+-            for match in re.finditer(r'(?m)^//go:embed[ \t]+([^\n]+)', text):
+-                for value in shlex.split(match.group(1)):
+-                    if value.startswith('all:') or '..' in Path(value).parts or value.startswith('/'):
+-                        raise ValueError('Unsupported embedding pattern')
+-                    matched = list(directory.glob(value))
+-                    if not matched:
+-                        raise ValueError('Missing embedded source: ' + value)
+-                    for p in matched:
+-                        if not p.is_file() or p.is_symlink():
+-                            raise ValueError('Expected regular embedded source')
+-                        paths.add(p.relative_to(SOURCE).as_posix())
+-        testdata = directory / 'testdata'
+-        if testdata.exists():
+-            for p in testdata.rglob('*'):
+-                if p.is_symlink():
+-                    raise ValueError('Unexpected fixture symlink')
+-                if p.is_file():
+-                    paths.add(p.relative_to(SOURCE).as_posix())
+-    rows = []
+-    for relative in sorted(paths):
+-        p = source_for(relative)
+-        if not p.is_file() or p.is_symlink():
+-            raise ValueError('Nonregular Go input')
+-        rows.append({'path': relative, 'source': 'proposed' if p.is_relative_to(OVERLAY) else 'main',
+-                     'sizeBytes': p.stat().st_size, 'sha256': sha(p)})
+-    return {'packages': sorted(seen), 'files': rows}
+-
+-def verify_go(snapshot, workspace=None):
+-    # Rediscover the full local source/fixture closure, so an old 1091-file
+-    # preparation cannot silently omit the newly pinned repository fixtures.
+-    if go_snapshot() != snapshot:
+-        raise ValueError('Go source/fixture closure changed or incomplete')
+-    for row in snapshot['files']:
+-        for p in [source_for(row['path'])] + ([workspace / row['path']] if workspace is not None else []):
+-            if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+-                raise ValueError('Go source changed: ' + row['path'])
+ 
+ def isolated_environment():
+-    # Retain toolchain/home/cache locations, not live service/database credentials.
++    # Exact inherited environment isolation: no live service/database credentials.
+     keep = ('PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'DEVELOPER_DIR', 'SDKROOT')
+     selected = {key: os.environ[key] for key in keep if key in os.environ}
+     selected.update(GOMAXPROCS='2', GOPROXY='off', GOSUMDB='off', GOTOOLCHAIN='local',
+--- a/prepare.py
++++ b/prepare.py
+@@ -6,64 +6,56 @@
+ sys.dont_write_bytecode = True
+ import source_inventory as inventory
+ from check_process import run_owned
+-from guards import save, sha, verify_overlay, go_snapshot, source_for, verify_go
+-from inputs import SOURCE, OVERLAY, OVERLAY_SHA
++from guards import save, sha, verify_overlay
++from inputs import BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA
++
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument('--phase', choices=['go', 'swift'], required=True)
++    parser.add_argument('--phase', choices=['swift'], required=True)
+     parser.add_argument('--output', type=Path, required=True)
+     args = parser.parse_args()
+     integration = verify_overlay()
+     output = args.output.resolve()
+     output.mkdir(mode=0o700, parents=False, exist_ok=False)
+     workspace = output / 'workspace'; workspace.mkdir(mode=0o700)
+-    if args.phase == 'go':
+-        snapshot = go_snapshot()
+-        save(output / 'source-before.json', snapshot)
+-        for row in snapshot['files']:
+-            destination = workspace / row['path']; destination.parent.mkdir(parents=True, exist_ok=True)
+-            with destination.open('xb') as stream:
+-                stream.write(source_for(row['path']).read_bytes())
+-        verify_overlay(); verify_go(snapshot, workspace)
+-        receipt = {'phase': 'go', 'sourceFiles': len(snapshot['files']), 'packages': snapshot['packages']}
+-    else:
+-        closure = inventory.closure(SOURCE)
+-        before = inventory.inventory(SOURCE)
+-        save(output / 'source-before.json', before)
+-        receipts = []
+-        for index, relative in enumerate(closure):
+-            destination = workspace / relative; destination.parent.mkdir(parents=True, exist_ok=True)
+-            receipts.append(run_owned(['/bin/cp', '-cR', str(SOURCE / relative), str(destination)], output, 'copy-' + str(index), 120))
+-        if inventory.inventory(workspace) != before or inventory.inventory(SOURCE) != before or inventory.closure(workspace) != closure:
+-            raise ValueError('Source/cache clone differs; retained')
+-        state = workspace / 'provider-swift/.build/workspace-state.json'
+-        with (output / 'workspace-state-original.json').open('xb') as stream:
+-            stream.write(state.read_bytes())
+-        state.write_text(json.dumps(inventory.replace_paths(json.loads(state.read_text()), str(SOURCE), str(workspace)), indent=2) + '\n')
+-        caches = []
+-        for cache in sorted((workspace / 'provider-swift/.build').glob('*/debug/ModuleCache')):
+-            target = output / 'preserved-path-bound-cache' / cache.relative_to(workspace / 'provider-swift/.build')
+-            target.parent.mkdir(parents=True, exist_ok=True); cache.rename(target)
+-            caches.append(str(target.relative_to(output)))
+-        expected = dict(before)
+-        for row in integration['files']:
+-            if not row['path'].startswith('provider-swift/'):
+-                continue
+-            destination = workspace / row['path']; destination.parent.mkdir(parents=True, exist_ok=True)
+-            destination.write_bytes((OVERLAY / 'proposed' / row['path']).read_bytes())
+-            expected[row['path']] = {'sha256': row['proposedSHA256']}
+-        if inventory.inventory(workspace) != expected or inventory.inventory(SOURCE) != before:
+-            raise ValueError('Unexpected source delta; retained')
+-        verify_overlay()
+-        save(output / 'candidate-before.json', expected)
+-        receipt = {'phase': 'swift', 'sourceFiles': len(before), 'candidateFiles': len(expected),
+-                   'localPackageClosure': closure, 'copies': receipts, 'preservedCaches': caches,
+-                   'privateWorkspaceStateSHA256': sha(state)}
+-    receipt.update(workspace=str(workspace), source=str(SOURCE), overlayManifestSHA256=OVERLAY_SHA,
+-                   mainUnchanged=True, compilerRun=False)
++    closure = inventory.closure(SOURCE)
++    before = inventory.inventory(SOURCE)
++    save(output / 'source-before.json', before)
++    receipts = []
++    for index, relative in enumerate(closure):
++        destination = workspace / relative; destination.parent.mkdir(parents=True, exist_ok=True)
++        receipts.append(run_owned(['/bin/cp', '-cR', str(SOURCE / relative), str(destination)], output, 'copy-' + str(index), 120))
++    if inventory.inventory(workspace) != before or inventory.inventory(SOURCE) != before or inventory.closure(workspace) != closure:
++        raise ValueError('Source/cache clone differs; retained')
++    state = workspace / 'provider-swift/.build/workspace-state.json'
++    with (output / 'workspace-state-original.json').open('xb') as stream:
++        stream.write(state.read_bytes())
++    state.write_text(json.dumps(inventory.replace_paths(json.loads(state.read_text()), str(SOURCE), str(workspace)), indent=2) + '\n')
++    caches = []
++    for cache in sorted((workspace / 'provider-swift/.build').glob('*/debug/ModuleCache')):
++        target = output / 'preserved-path-bound-cache' / cache.relative_to(workspace / 'provider-swift/.build')
++        target.parent.mkdir(parents=True, exist_ok=True); cache.rename(target)
++        caches.append(str(target.relative_to(output)))
++    expected = dict(before)
++    for row in integration['files']:
++        destination = workspace / row['path']; destination.parent.mkdir(parents=True, exist_ok=True)
++        destination.write_bytes(Path(row['sourcePath']).read_bytes())
++        expected[row['path']] = {'sha256': row['proposedSHA256']}
++    if inventory.inventory(workspace) != expected or inventory.inventory(SOURCE) != before:
++        raise ValueError('Unexpected source delta; retained')
++    verify_overlay()
++    save(output / 'candidate-before.json', expected)
++    receipt = {'phase': 'swift', 'sourceFiles': len(before), 'candidateFiles': len(expected),
++               'localPackageClosure': closure, 'copies': receipts, 'preservedCaches': caches,
++               'privateWorkspaceStateSHA256': sha(state), 'swiftOverlayFiles': len(integration['files']),
++               'workspace': str(workspace), 'source': str(SOURCE), 'overlayManifestSHA256': OVERLAY_SHA,
++               'nativeBManifestSHA256': B_OVERLAY_SHA, 'wrapperManifestSHA256': sha(BASE / 'manifest.json'),
++               'swiftIntegrationSHA256': sha(BASE / 'swift-integration.json'),
++               'mainUnchanged': True, 'compilerRun': False}
+     save(output / 'preparation.json', receipt)
+     print(json.dumps(receipt, sort_keys=True))
+ 
++
+ if __name__ == '__main__':
+     main()
+--- a/run.py
++++ b/run.py
+@@ -1,20 +1,21 @@
+-"""One bounded granted validation phase; failures and exact sources remain intact."""
++"""One bounded granted Swift validation phase; retain all failures and sources."""
+ import argparse
+ import json
+ import os
+ from pathlib import Path
+-import re
+ import resource
+ import sys
+ sys.dont_write_bytecode = True
+ import source_inventory as inventory
+ from check_process import run_owned
+-from guards import sha, save, verify_overlay, verify_go, isolated_environment
+-from inputs import SOURCE, OVERLAY_SHA, GO, GO_SHA, GO_PACKAGES, GO_FILTER, SWIFT_FILTER
++from guards import sha, save, verify_overlay, isolated_environment
++from inputs import BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, SWIFT_FILTER
++from swift_results import validate_swift_results
++
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument('--phase', choices=['go-focused', 'go-all', 'swift-build', 'swift-tests'], required=True)
++    parser.add_argument('--phase', choices=['swift-build', 'swift-tests'], required=True)
+     parser.add_argument('--prepared', type=Path, required=True)
+     parser.add_argument('--attempt', type=int, required=True)
+     args = parser.parse_args()
+@@ -22,78 +23,57 @@
+         raise ValueError('Invalid attempt')
+     prepared = args.prepared.resolve(); workspace = prepared / 'workspace'
+     preparation = json.loads((prepared / 'preparation.json').read_text())
+-    if preparation['overlayManifestSHA256'] != OVERLAY_SHA or preparation['workspace'] != str(workspace):
++    if (preparation['overlayManifestSHA256'] != OVERLAY_SHA or preparation['nativeBManifestSHA256'] != B_OVERLAY_SHA
++            or preparation['wrapperManifestSHA256'] != sha(BASE / 'manifest.json')
++            or preparation['swiftIntegrationSHA256'] != sha(BASE / 'swift-integration.json')
++            or preparation['workspace'] != str(workspace) or preparation['source'] != str(SOURCE)
++            or preparation['phase'] != 'swift'):
+         raise ValueError('Prepared source identity differs')
+-    go = args.phase.startswith('go-')
+-    if preparation['phase'] != ('go' if go else 'swift'):
+-        raise ValueError('Wrong preparation phase')
+     before = json.loads((prepared / 'source-before.json').read_text())
+-    candidate = None if go else json.loads((prepared / 'candidate-before.json').read_text())
++    candidate = json.loads((prepared / 'candidate-before.json').read_text())
+     def recheck():
+-        verify_overlay()
+-        if go:
+-            verify_go(before, workspace)
+-        elif inventory.inventory(workspace) != candidate or inventory.inventory(SOURCE) != before:
++        integration = verify_overlay()
++        expected = dict(before)
++        for row in integration['files']:
++            expected[row['path']] = {'sha256': row['proposedSHA256']}
++        if expected != candidate or inventory.inventory(workspace) != candidate or inventory.inventory(SOURCE) != before:
+             raise ValueError('MAIN or private Swift source/dependencies changed')
+     recheck()
++    if args.phase == 'swift-build':
++        prior = prepared / ('swift-tests-' + str(args.attempt))
++        checks = json.loads((prior / 'checks.json').read_text())
++        if (checks.get('passed') is not True or checks.get('wrapperManifestSHA256') != sha(BASE / 'manifest.json')
++                or checks.get('candidateSourceSHA256') != sha(prepared / 'candidate-before.json')
++                or checks.get('details', {}).get('nativePairMethodsPassed') != 2
++                or checks.get('executionSHA256') != sha(prior / 'execution.json')):
++            raise ValueError('Matching member/native Swift test pass required before CLI build')
+     output = prepared / (args.phase + '-' + str(args.attempt)); output.mkdir(mode=0o700, exist_ok=False)
+-    if go:
+-        if sha(Path(GO)) != GO_SHA:
+-            raise ValueError('Go toolchain changed')
+-        test_timeout = '180s' if args.phase == 'go-all' else '120s'
+-        command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1', '-timeout=' + test_timeout]
+-        if args.phase == 'go-focused': command += ['-run', GO_FILTER]
+-        command += ['./' + p for p in GO_PACKAGES]
+-        timeout = 300
+-        os.chdir(workspace)
+-    else:
+-        command = ['swift', 'build' if args.phase == 'swift-build' else 'test', '-j', '2',
+-                   '--disable-automatic-resolution', '--disable-build-manifest-caching']
+-        command += ['--product', 'darkbloom'] if args.phase == 'swift-build' else ['--filter', SWIFT_FILTER]
+-        timeout = 900
+-        os.chdir(workspace / 'provider-swift')
++    command = ['swift', 'build' if args.phase == 'swift-build' else 'test', '-j', '2',
++               '--disable-automatic-resolution', '--disable-build-manifest-caching']
++    command += ['--product', 'darkbloom'] if args.phase == 'swift-build' else ['--filter', SWIFT_FILTER]
++    os.chdir(workspace / 'provider-swift')
+     isolated_environment()
+     old_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+     resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, old_limit[1]))
+     try:
+-        result = run_owned(command, output, 'execution', timeout,
+-            diagnostic_limit=16_777_216 if go else 4_194_304)
++        run_owned(command, output, 'execution', 900)
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE, old_limit)
+         recheck()
+         save(output / 'source-recheck.json', {'sourcePinsUnchanged': True, 'mainUnchanged': True})
+-    stdout = (output / 'execution.stdout').read_text()
+-    stderr = (output / 'execution.stderr').read_text()
+-    details = {}
+-    if go:
+-        events = [json.loads(line) for line in stdout.splitlines() if line]
+-        packages = {'github.com/eigeninference/d-inference/' + p for p in GO_PACKAGES}
+-        complete = {e.get('Package') for e in events if e.get('Action') == 'pass' and 'Test' not in e}
+-        passed = {(e['Package'], e['Test']) for e in events if e.get('Action') == 'pass' and 'Test' in e and '/' not in e['Test']}
+-        verified = {t for _, t in passed if t.startswith('TestVerifiedPair')}
+-        member = {t for _, t in passed if t.startswith(('TestClusterMember', 'TestMemberRole'))}
+-        if not packages.issubset(complete) or len(verified) != 15 or len(member) != 4:
+-            raise ValueError('Go package/test completion is incomplete')
+-        details = {'verifiedPairMethods': len(verified), 'memberMethods': len(member), 'totalMethods': len(passed),
+-                   'apiHandlerPackageCompiled': True, 'apiTestsSelected': args.phase == 'go-all', 'raceDetector': True}
+-    elif args.phase == 'swift-build':
++    if args.phase == 'swift-build':
+         binary = workspace / 'provider-swift/.build/debug/darkbloom'
+         details = {'binarySHA256': sha(binary), 'binaryBytes': binary.stat().st_size, 'executedBinary': False}
+     else:
+-        combined = stdout + '\n' + stderr
+-        for name in ['legacyOmissionAndMemberInventorySurviveRawAttestation', 'realSocketRoleNegotiation',
+-                     'staleNegotiationTimerCannotRefuseReplacement', 'acceptedLeaderControlLossLatchesStopBeforeReconnect',
+-                     'memberRoleSelectionAndExplicitCoordinatorParseWithoutIO']:
+-            if name not in combined:
+-                raise ValueError('Required member/CLI case absent: ' + name)
+-        match = re.search(r'Test run with (\d+) tests?[^\n]*passed', combined)
+-        if not match:
+-            raise ValueError('Swift Testing completion summary absent')
+-        details = {'testsPassed': int(match.group(1)), 'filter': SWIFT_FILTER, 'realSocketCasesIncluded': True}
++        combined = (output / 'execution.stdout').read_text() + '\n' + (output / 'execution.stderr').read_text()
++        details = validate_swift_results(combined)
+     save(output / 'checks.json', {'passed': True, 'phase': args.phase, 'details': details,
+         'sourcePinsUnchanged': True, 'mainChanged': False, 'modelOrRemoteExecuted': False,
+-        'ownerKeyGrantQualified': False, 'executionSHA256': sha(output / 'execution.json')})
++        'ownerKeyGrantQualified': False, 'executionSHA256': sha(output / 'execution.json'),
++        'wrapperManifestSHA256': sha(BASE / 'manifest.json'),
++        'candidateSourceSHA256': sha(prepared / 'candidate-before.json')})
+     print(json.dumps(details, sort_keys=True))
++
+ 
+ if __name__ == '__main__':
+     main()
+--- /dev/null
++++ b/swift_results.py
+@@ -0,0 +1,36 @@
++"""Require actual Swift Testing pass lines, not discovery/start or compiler text."""
++import re
++from inputs import NATIVE_PAIR_METHODS, SWIFT_FILTER
++
++MEMBER_METHODS = (
++    'legacyOmissionAndMemberInventorySurviveRawAttestation',
++    'explicitAckRejectsWrongNonceRoleLateAndDuplicate',
++    'staleNegotiationTimerCannotRefuseReplacement',
++    'clientDoesNotPublishConnectedBeforeAckAndRefusesOldAckOnReconnect',
++    'directLoadPrefetchInferenceAndDesiredEventsNeverStartWork',
++    'emptyCapacityAndNoPersistenceOrBackgroundLoad',
++    'disconnectDropsConnectionGenerationBeforeReconnect',
++    'acceptedLeaderControlLossLatchesStopBeforeReconnect',
++    'unacknowledgedAndCancelledRegistrationWaitsRefuse',
++    'memberRoleSelectionAndExplicitCoordinatorParseWithoutIO',
++)
++
++
++def validate_swift_results(text):
++    summaries = re.findall(r'(?m)^✔ Test run with (\d+) tests?[^\n]*passed[^\n]*$', text)
++    if len(summaries) != 1:
++        raise ValueError('Unique successful Swift Testing summary absent')
++    for name in MEMBER_METHODS + NATIVE_PAIR_METHODS:
++        if len(re.findall(r'(?m)^✔ Test ' + re.escape(name) + r'\(\) passed after [^\n]+$', text)) != 1:
++            raise ValueError('Required passed member/native/CLI case absent or repeated: ' + name)
++    # This existing parameterized test has a display name, so Swift Testing
++    # reports that title rather than the source function identifier.
++    if len(re.findall(r'(?m)^✔ Test "Real WebSocket requires explicit member acknowledgment" passed after [^\n]+$', text)) != 1:
++        raise ValueError('Required real WebSocket member negotiation completion absent')
++    count = int(summaries[0])
++    if count < len(MEMBER_METHODS) + len(NATIVE_PAIR_METHODS) + 1:
++        raise ValueError('Swift Testing completion count is incomplete')
++    return {'testsPassed': count, 'filter': SWIFT_FILTER, 'realSocketCasesIncluded': True,
++            'requiredMemberAndCLIMethodsPassed': len(MEMBER_METHODS) + 1,
++            'nativePairMethodsPassed': len(NATIVE_PAIR_METHODS),
++            'nativePairPassedMethods': list(NATIVE_PAIR_METHODS)}
+--- /dev/null
++++ b/check_source.py
+@@ -0,0 +1,44 @@
++"""Small source/response-parser controls only: no inventory, copy, or child."""
++import ast
++from pathlib import Path
++from inputs import BASE, B_OVERLAY, NATIVE_PAIR_METHODS, SWIFT_FILTER
++from swift_results import MEMBER_METHODS, validate_swift_results
++
++
++def main():
++    for p in BASE.glob('*.py'):
++        ast.parse(p.read_text(), filename=str(p))
++    old = ast.parse((BASE / 'originals/inputs.py').read_text())
++    original_filter = next(ast.literal_eval(n.value) for n in old.body if isinstance(n, ast.Assign)
++                           and any(isinstance(t, ast.Name) and t.id == 'SWIFT_FILTER' for t in n.targets))
++    if SWIFT_FILTER != original_filter + '|NativePairMessageTests':
++        raise ValueError('Existing Swift filter changed')
++    source = (B_OVERLAY / 'proposed/provider-swift/Tests/ProviderCoreTests/Protocol/NativePairMessageTests.swift').read_text()
++    if source.count('@Test func ') != 2 or any('@Test func ' + name + '(' not in source for name in NATIVE_PAIR_METHODS):
++        raise ValueError('Native Pair fixture closure changed')
++    # Representative Swift Testing output. Success words in discovery/start
++    # lines cannot substitute for completion, nor can one B pass count twice.
++    base = ['✔ Test ' + name + '() passed after 0.001 seconds.' for name in MEMBER_METHODS + NATIVE_PAIR_METHODS]
++    base += ['✔ Test "Real WebSocket requires explicit member acknowledgment" passed after 0.010 seconds.',
++             '✔ Test run with 20 tests in 4 suites passed after 0.050 seconds.']
++    text = '\n'.join(base)
++    assert validate_swift_results(text)['nativePairMethodsPassed'] == 2
++    one = '✔ Test ' + NATIVE_PAIR_METHODS[0] + '() passed after 0.001 seconds.'
++    malformed = (
++        text.replace(one, '◇ Test ' + NATIVE_PAIR_METHODS[0] + '() started.'),
++        text + '\n' + one,
++        text.replace('20 tests in 4 suites passed', '20 tests in 4 suites failed'),
++        text.replace(base[-2], '◇ Test realSocketRoleNegotiation(acknowledge:) started.'),
++    )
++    for value in malformed:
++        try:
++            validate_swift_results(value)
++        except ValueError:
++            pass
++        else:
++            raise ValueError('Incomplete/ambiguous Swift result accepted')
++    print('PASS: Python AST, exact filter extension, two fixture methods, complete/started/duplicate/failure/socket controls')
++
++
++if __name__ == '__main__':
++    main()

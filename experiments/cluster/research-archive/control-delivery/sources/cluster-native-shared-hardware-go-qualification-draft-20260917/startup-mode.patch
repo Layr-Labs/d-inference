@@ -1,0 +1,104 @@
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/cmd/coordinator/native_hardware_enabled.go
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-go-qualification-draft-20260917/proposed/coordinator/cmd/coordinator/native_hardware_enabled.go
+@@ -23,6 +23,7 @@
+ 
+ type nativeHardwareExperiment struct {
+ 	Schema            string                           `json:"schema"`
++	Mode              string                           `json:"mode"`
+ 	Devices           [2]registry.NativeHardwareDevice `json:"devices"`
+ 	Approval          registry.NativeRuntimeApproval   `json:"approval"`
+ 	ListenAddress     string                           `json:"listenAddress"`
+@@ -89,13 +90,39 @@
+ 	if dec.Decode(new(any)) != io.EOF {
+ 		return nil, errors.New("hardware config trailing data")
+ 	}
+-	if x.Schema != "native_shared_hardware_coordinator_v1" || x.Devices[0].Serial == "" || x.Devices[1].Serial == "" || x.Devices[0].Serial == x.Devices[1].Serial ||
+-		x.Approval.Model != "registered_qwen35_9b" || x.Approval.Schedule != 1 ||
+-		x.Approval.MaximumPlaintext != 131072 || x.Approval.MaximumTransportFrame != 131112 ||
+-		x.Approval.MaximumRecords != 1024 || x.Approval.MaximumCumulativePlaintext != 16777216 ||
+-		!time.Now().Add(360*time.Second).Before(x.Approval.NotAfter) || x.Approval.NotAfter.After(time.Now().Add(15*time.Minute)) {
+-		return nil, errors.New("hardware experiment scope mismatch")
+-	}
++	if x.Schema != "native_shared_hardware_coordinator_v2" || cfg.NativePairCatalog != nil {
++		return nil, errors.New("hardware startup must select an explicit isolated mode")
++	}
++	var fields map[string]json.RawMessage
++	if e = json.Unmarshal(b, &fields); e != nil {
++		return nil, e
++	}
++	allowed := []string{"schema", "mode", "listenAddress", "certificateFile", "certificateSHA256", "keyFile"}
++	switch x.Mode {
++	case "trust_only":
++		// No pair policy, selector identities or success receipt is accepted here.
++		// The real Server still performs ordinary account/SE/MDA/code verification.
++	case "one_request":
++		allowed = append(allowed, "devices", "approval", "receiptFile")
++		if x.Devices[0].Serial == "" || x.Devices[1].Serial == "" || x.Devices[0].Serial == x.Devices[1].Serial ||
++			x.Approval.Model != "registered_qwen35_9b" || x.Approval.Schedule != 1 ||
++			x.Approval.MaximumPlaintext != 131072 || x.Approval.MaximumTransportFrame != 131112 ||
++			x.Approval.MaximumRecords != 1024 || x.Approval.MaximumCumulativePlaintext != 16777216 ||
++			!time.Now().Add(360*time.Second).Before(x.Approval.NotAfter) || x.Approval.NotAfter.After(time.Now().Add(15*time.Minute)) {
++			return nil, errors.New("hardware experiment scope mismatch")
++		}
++	default:
++		return nil, errors.New("unknown hardware startup mode")
++	}
++	if len(fields) != len(allowed) {
++		return nil, errors.New("hardware startup fields differ from mode")
++	}
++	for _, name := range allowed {
++		if _, ok := fields[name]; !ok {
++			return nil, errors.New("hardware startup field missing")
++		}
++	}
++
+ 	// No wildcard binding, HTTP downgrade or forwarded-header override is added.
+ 	// Member clients use normal system anchors when their option is nil; an
+ 	// explicit application-scoped pinned CA is still evaluated by SecTrust with
+@@ -120,17 +147,20 @@
+ 	if e != nil {
+ 		return nil, e
+ 	}
+-	parent, e := filepath.EvalSymlinks(filepath.Dir(x.ReceiptFile))
+-	if e != nil || parent != filepath.Dir(x.ReceiptFile) || !filepath.IsAbs(x.ReceiptFile) {
+-		return nil, errors.New("hardware receipt parent must be canonical")
+-	}
+-	if _, e = os.Lstat(x.ReceiptFile); !errors.Is(e, os.ErrNotExist) {
+-		return nil, errors.New("hardware receipt already exists")
+-	}
+-	cfg.NativePairCatalog, e = registry.NewNativeRuntimeCatalog([]registry.NativeRuntimeApproval{x.Approval})
+-	if e != nil {
+-		return nil, e
+-	}
++	if x.Mode == "one_request" {
++		parent, e := filepath.EvalSymlinks(filepath.Dir(x.ReceiptFile))
++		if e != nil || parent != filepath.Dir(x.ReceiptFile) || !filepath.IsAbs(x.ReceiptFile) {
++			return nil, errors.New("hardware receipt parent must be canonical")
++		}
++		if _, e = os.Lstat(x.ReceiptFile); !errors.Is(e, os.ErrNotExist) {
++			return nil, errors.New("hardware receipt already exists")
++		}
++		cfg.NativePairCatalog, e = registry.NewNativeRuntimeCatalog([]registry.NativeRuntimeApproval{x.Approval})
++		if e != nil {
++			return nil, e
++		}
++	}
++
+ 	x.configSHA = hardwareDigest(b)
+ 	return x, nil
+ }
+@@ -145,6 +175,14 @@
+ 	}
+ 	defer l.Close()
+ 	tlsListener := tls.NewListener(l, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{x.certificate}})
++	if x.Mode == "trust_only" {
++		// No selector worker is created, so no Attach/Reserve or native owner can
++		// be initiated by this driver. The root supervisor owns process lifetime.
++		return h.Serve(tlsListener)
++	}
++	if x.Mode != "one_request" {
++		return errors.New("unknown hardware startup mode")
++	}
+ 	// This is the real Server handler on accepted TLS connections (r.TLS),
+ 	// with the ordinary attestation/release/catalog services configured above.
+ 	go func() {

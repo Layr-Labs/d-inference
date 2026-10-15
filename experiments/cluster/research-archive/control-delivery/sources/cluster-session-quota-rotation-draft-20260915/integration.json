@@ -1,0 +1,103 @@
+{
+  "mainMutated": false,
+  "files": [
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift",
+      "kind": "replace",
+      "sha256": "de4e2a3936aa1d67a00686672b6498456b6a79c0128952400ca55e0bcef17a53",
+      "preimageSHA256": "19dfea8f0ada2d5746054f52519254e2ca19742ad9942139491523a959821afa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponse.swift",
+      "kind": "replace",
+      "sha256": "a2ce5ecba3de0ce9edceac1a33b4f95dbf23e99fad78b79f78f6bae81cd3ce5a",
+      "preimageSHA256": "8aa32d626bd4ba4e7a488ba9fb69f580bd25551c10c03adfdd44ac903bc8ede2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponseRouter.swift",
+      "kind": "add",
+      "sha256": "dffb475ac7adeba1287ddfb559f95eca0a3207d8e081c6fa1cd5cf5efca84403",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponses.swift",
+      "kind": "replace",
+      "sha256": "db701a7f4f26b7dacd5adfe03ffd2dd57d1e7e49a3a8595f11a26b2b2fcad6c9",
+      "preimageSHA256": "3881a64c521622e16e820b5768a54993062d69cce7397cffe7822f40b8f236fa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift",
+      "kind": "replace",
+      "sha256": "32edf5181f1972011c7b9f49fd7de470f442753f8daf23f56a22c57b00fbdc4c",
+      "preimageSHA256": "a8685a2b53e65b1aec087b93203c0e0d69f65aa3d1644402487c1623fd625ccb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Monitoring.swift",
+      "kind": "add",
+      "sha256": "d838487dc63752a92a8dbe71c89c7175cc5dc8cddf29b3d5366397fff6000fdf",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Rotation.swift",
+      "kind": "add",
+      "sha256": "577c66b2add672c934e39026cf2f9d516310d48100e6be463028abb0bccf1cb3",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift",
+      "kind": "add",
+      "sha256": "efe1a471a942f952a7f884ffb56b1a5bca5768bbbe0f92222812fb93d4e82da0",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Teardown.swift",
+      "kind": "add",
+      "sha256": "2112dfa1893cbd83f4ca006b1f6507d92605a064af4b06290eb4f26eb57545fd",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift",
+      "kind": "replace",
+      "sha256": "dece2169f764e383263362de66fb193eb5046c82b3750d36379fcbf2606f59b7",
+      "preimageSHA256": "66ac53c470f6cbc6a40ce4f55ea0018f039028e1505700d82fc2d6eb82782dbf"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift",
+      "kind": "add",
+      "sha256": "60173dfc53f54bdbb27e21c5aa60604b70189ba6973e50a8601c3c81c4afffc9",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift",
+      "kind": "replace",
+      "sha256": "aa2847b67e501c6ba094367fae9e981e03e2c6d82734720ce6ef5e104d9a8b51",
+      "preimageSHA256": "8ab88ba87529b972470afa40a100490651e927861f72a530647d5bc3f6e5295e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift",
+      "kind": "replace",
+      "sha256": "3a4e05ec4bbba7e84ba80f61a9744d7b4bc45542689401a1b8ef0c43fafcecce",
+      "preimageSHA256": "dff2b505d88b5d1eb42ba99ec1709b7bbcf4723e8508b7fe41e823a8bf846af6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+      "kind": "replace",
+      "sha256": "478fa9bb0b91846aaa9ce3ab8e180d9b12e6ee66257af88d274a5ef5ba69ec9a",
+      "preimageSHA256": "04ddddee81e6110329c784b67086917293ae8513907c5c01b029814576323d78"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalRotationIdentityTests.swift",
+      "kind": "add",
+      "sha256": "82f747ebccd14eab3999454e15fd06ec1ed618ffb10f3b6bc641fe8212d011a5",
+      "preimageSHA256": null
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalRotationTests.swift",
+      "kind": "add",
+      "sha256": "0d5fbf3f6e1f972d94d5f2af55e1818c83030eae42c65ffbcdea748f893a0cef",
+      "preimageSHA256": null
+    }
+  ],
+  "privateOnlyPackage": "PrivateChecks/Package.proposed.swift",
+  "privateOnlyDriver": "PrivateChecks/RotationOwnerCheck"
+}

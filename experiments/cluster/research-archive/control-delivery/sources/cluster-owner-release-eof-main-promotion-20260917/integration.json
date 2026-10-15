@@ -1,0 +1,70 @@
+{
+  "afterSHA256": "cb0e73b6fc308ae6e3bd6ec359875b28f48bc0c971cf42c5a57d2b853162f77a",
+  "beforeSHA256": "a551c2f317b48b9e4e35656d03337f5f4b770da2b45821100e34ca791d2aa9ab",
+  "main": "/Users/developer/DarkbloomDev/d-inference",
+  "mainCorrectionCompiledOrTested": false,
+  "mainModified": false,
+  "newRuntimeDependencies": [],
+  "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+  "privateBaselineBufferedACKLossReproduced": true,
+  "privateDeterministicCasesPassed": 4,
+  "privateQualificationAppliesToWholeMAINComposition": false,
+  "qualifiedPrivateManifestSHA256": "60417b284854105963be1ad2c5d4d85ea658a5f16eb9ee1ce26796cdf4812045",
+  "readLoopAfterByteExactToQualifiedPrivateSuccessor": true,
+  "readLoopBeforeByteExactToPrivateOriginal": true,
+  "repositoryHEAD": "605651bb95d71c1da9bb122107925143e9441973",
+  "schema": "owner_eof_main_promotion_v1",
+  "sourceProvenance": [
+    {
+      "bytes": 2400,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-release-eof-drain-correction-20260917/manifest.json",
+      "sha256": "60417b284854105963be1ad2c5d4d85ea658a5f16eb9ee1ce26796cdf4812045"
+    },
+    {
+      "bytes": 737,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-release-eof-drain-correction-20260917/runtime.patch",
+      "sha256": "8ddaaa754f379fbe5fecb05cda98819d9bd32c92a47b83a32f7953228db96c57"
+    },
+    {
+      "bytes": 24356,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-release-eof-drain-correction-20260917/original/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sha256": "6cfe6e914f4d6d46cd872da9c9179fa3f2af34fc04d1d74e66a1dc72d060b0f3"
+    },
+    {
+      "bytes": 24370,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-release-eof-drain-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sha256": "5d1fae1ec3b8aa83e2f6468e61620edf2d7087582173b9bd94a57dd7ba8b564e"
+    },
+    {
+      "bytes": 79500,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-checks-20260917/helper-2/checks.json",
+      "sha256": "9af71c63a19c43118361bc77c50cc9db12c5a8929c76f92df1e21a979f9b91e9"
+    },
+    {
+      "bytes": 200,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-checks-20260917/helper-2/baseline-drain/cases/valid/result.json",
+      "sha256": "0aaa10e705ff86b85ac10bcffb00ed0e59984eec797c94e053c9a4130ad12cd9"
+    },
+    {
+      "bytes": 198,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/valid/result.json",
+      "sha256": "e87d9995a4deaf5d3b1aa1018684329824c77e92ac954d3e0adff0e256171cb1"
+    },
+    {
+      "bytes": 201,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/missing/result.json",
+      "sha256": "894eb01101b7723335ac462d96e90ecc1182a896051b24d465e6f95a4b58d812"
+    },
+    {
+      "bytes": 199,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/wrong/result.json",
+      "sha256": "b19d6dd4a81bb6e481d00d77f10017819ce7e1ca036bf57c5a9f62f16cb2aefe"
+    },
+    {
+      "bytes": 201,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/abnormal/result.json",
+      "sha256": "05cd5dc584edc4270e53e039d86200bc722c497ca3887215cb077bccbe8b0269"
+    }
+  ],
+  "testOnlyRuntimeSeamAdded": false
+}

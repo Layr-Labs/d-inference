@@ -1,0 +1,1342 @@
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,7 @@
+ 
+ ## Unreleased — experimental local distributed serving (2026-09-15)
+ 
++- Add `cluster status` with fresh local serving/session evidence and `cluster doctor` with read-only installed metadata checks on either member. Saved setup, live readiness and unperformed physical checks stay distinct; no inference or automatic journal recovery is launched.
+ - Add `cluster configure` for pinned per-member setup and the authenticated `cluster worker-owner --stdio` entry. Saving setup does not install software, connect to peers or enable serving.
+ - Add explicit `start --local --distributed` for the saved leader configuration, with matching default-provider references, bounded native ownership and cleanup failure propagation. Ordinary solo startup remains the default.
+ - Add explicit saved prefill selection between serial (default) and one-chunk lookahead when the installed capability advertises it. Native peers agree before weight loading and retain the additional lookahead reservation and live resource gates; no benchmark capture or environment override is used by serving.
+--- a/docs/provider/cli-reference.md
++++ b/docs/provider/cli-reference.md
+@@ -171,6 +171,8 @@
+ | `configure --capability <path>` | Required | Absolute path to canonical capability JSON from the installed native worker | `ClusterCommand.swift` (`Cluster.Configure`) |
+ | `configure --capability-sha256 <sha256>` | Required | Lowercase SHA-256 of those exact capability bytes | `ClusterCommand.swift` (`Cluster.Configure.validate`) |
+ | `configure --json` | `false` | Print saved references and the limited verification scope as JSON | `ClusterCommand.swift` (`Cluster.Configure.run`) |
++| `status [--json] [--config <absolute-path>]` | Local configured leader | Show saved setup separately from a fresh local serving observation; never start inference | `ClusterDiagnosticsCommand.swift` (`Cluster.Status`) |
++| `doctor [--json] [--config <absolute-path>]` | Local member only | Verify local installed metadata and report unperformed peer/physical checks; never recover or change setup | `ClusterDiagnosticsCommand.swift` (`Cluster.Doctor`) |
+ | `worker-owner --stdio` | Required | Fixed entry used by the authenticated supervisor; reads the local default provider configuration, with no `--config` override | `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
+ 
+ `configure` accepts `--config` with an absolute path and saves the `[cluster]`
+@@ -189,6 +191,31 @@
+ `QwenResidentAdmission.loadAgreementFingerprint`).
+ The [configuration schema](../reference/configuration.md#saved-distributed-setup-experimental)
+ defines the required pins, installed paths and bounded session behavior.
++
++`status` reads the private local discovery record only to locate the server. It
++accepts loopback or a numeric address assigned to this Mac, sends a fresh nonce,
++and requires a bounded matching response from `GET /v1/cluster/status`. The route
++uses the same bearer policy as inference routes, including explicit `--no-auth`;
++that case is labeled unauthenticated. Responses are `Cache-Control: no-store`.
++The sample shows actual retained peer readiness, epoch, selected schedule,
++lifetime/admissions, MTP-off reason and cleanup/quarantine evidence. It is an
++instant observation, not a reservation or a promise that the next request fits
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusClient.swift`,
++`ClusterStatusClient.observe`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
++`DistributedInstalledSession.diagnosticObservation`).
++
++`doctor` works on either configured member. It checks the local worker executable,
++model/config/tokenizer metadata, existing SSH trust-file pins and the installed
++worker's bounded metadata-only description. It does not write a matrix, contact
++a peer, read weight payloads, run inference or perform a new collective test.
++Failed local checks produce a nonzero exit; unperformed checks remain explicit.
++A nonempty device journal means ownership is unproven, not orphaned. An empty or
++absent journal does not prove a free device; no journal is cleared
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift`,
++`ClusterDiagnostics.doctor`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift`,
++`ClusterDeviceJournalObservation.read`).
+ 
+ ### `darkbloom login` / `darkbloom logout`
+ 
+--- a/docs/reference/configuration.md
++++ b/docs/reference/configuration.md
+@@ -424,6 +424,18 @@
+ `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift`,
+ `DistributedInstalledPreparation.prepare`).
+ 
++`cluster status` and `cluster doctor` consume the same saved reference without
++changing it. Status separates canonical saved pins from a fresh local leader
++response. Doctor reuses the local installed metadata validator for leader or
++follower and executes only the fixed `--describe-runtime` metadata child; peer
++connectivity, new physical collectives and recovery are not performed. Both
++commands treat a nonempty journal as unproven ownership and never infer device
++availability from a PID or empty journal
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift`,
++`ClusterDiagnostics`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledValidation.swift`,
++`DistributedInstalledValidation.validate`).
++
+ The saved JACCL settings and fixed admitted arithmetic policy determine the
+ native worker environment
+ (`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`,
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift
+@@ -1,6 +1,20 @@
+ import Foundation
++import Darwin
+ 
+ extension ClusterConfigurationStore {
++    /// Diagnostics-only optional read. Missing file/reference means no saved
++    /// setup; malformed or unsafe existing input remains an error. No writes.
++    static func optionalInstalledReference(providerConfiguration: URL) throws -> ClusterConfigurationReference? {
++        try ClusterConfigurationFiles.requireAbsolute(providerConfiguration.path)
++        var value = stat()
++        if lstat(providerConfiguration.path, &value) != 0, errno == ENOENT { return nil }
++        let bytes = try ClusterConfigurationFiles.read(providerConfiguration, maximum: 1_048_576, privateMode: true)
++        guard let text = String(data: bytes, encoding: .utf8) else {
++            throw ClusterConfigurationError.invalid("Provider configuration is not UTF-8")
++        }
++        return try ConfigManager.parseValidating(text).cluster
++    }
++
+     /// Strict bounded read for an installed owner. It does not migrate, rewrite,
+     /// fall back to defaults, inspect models or acquire the native device lease.
+     public static func installedReference(providerConfiguration: URL) throws -> ClusterConfigurationReference {
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift
+@@ -0,0 +1,32 @@
++import Foundation
++import Darwin
++
++public enum ClusterDeviceJournalObservation: String, Codable, Sendable {
++    case absent, emptyJournal, ownershipUnproven, unsafeOrChanging
++
++    /// Metadata-only and deliberately lock-free. Empty/absent does not prove an
++    /// available device: a live solo process can hold an empty exclusive gate.
++    static func read(paths: ClusterUserPaths) -> Self {
++        var directoryStat = stat()
++        if lstat(paths.deviceDirectory.path, &directoryStat) != 0, errno == ENOENT { return .absent }
++        do {
++            let parent = try ClusterConfigurationFiles.directory(paths.deviceDirectory, privateMode: true)
++            defer { Darwin.close(parent.descriptor) }
++            let fd = openat(parent.descriptor, "native-device.lease", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
++            if fd < 0, errno == ENOENT { try parent.check(); return .absent }
++            guard fd >= 0 else { return .unsafeOrChanging }
++            defer { Darwin.close(fd) }
++            var value = stat(), named = stat()
++            guard fstat(fd, &value) == 0,
++                  fstatat(parent.descriptor, "native-device.lease", &named, AT_SYMLINK_NOFOLLOW) == 0,
++                  value.st_uid == geteuid(), value.st_mode & S_IFMT == S_IFREG,
++                  value.st_mode & 0o077 == 0, value.st_nlink == 1,
++                  value.st_dev == named.st_dev, value.st_ino == named.st_ino,
++                  value.st_mode == named.st_mode, value.st_size == named.st_size,
++                  value.st_mtimespec.tv_sec == named.st_mtimespec.tv_sec,
++                  value.st_mtimespec.tv_nsec == named.st_mtimespec.tv_nsec else { return .unsafeOrChanging }
++            try parent.check()
++            return value.st_size == 0 ? .emptyJournal : .ownershipUnproven
++        } catch { return .unsafeOrChanging }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift
+@@ -0,0 +1,110 @@
++import Foundation
++
++public struct ClusterDiagnosticsReport: Encodable, Sendable {
++    public enum ConfigurationState: String, Encodable, Sendable { case notConfigured, verified, invalid }
++    public enum Outcome: String, Encodable, Sendable { case passed, failed, notRun, notObserved }
++    public struct Check: Encodable, Sendable {
++        public let name: String
++        public let outcome: Outcome
++        public let detail: String
++    }
++    public let schema = "darkbloom_cluster_diagnostics_v1"
++    public let operation: String
++    public let configurationState: ConfigurationState
++    public let saved: ClusterStatusBinding?
++    public let live: ClusterLiveStatus?
++    public let deviceJournal: ClusterDeviceJournalObservation
++    public let checks: [Check]
++    /// These commands never run a new physical collective or change ownership.
++    public let physicalProbePerformed = false
++    public let recoveryPerformed = false
++}
++
++public enum ClusterDiagnostics {
++    public static func status(providerConfiguration: URL) async -> ClusterDiagnosticsReport {
++        await inspect(providerConfiguration: providerConfiguration, doctor: false)
++    }
++
++    /// Reuses the actual startup metadata validator, including the fixed bounded
++    /// describe-runtime child. It performs no SSH, model load, matrix/config
++    /// publication, lease acquisition, journal recovery or inference request.
++    public static func doctor(providerConfiguration: URL) async -> ClusterDiagnosticsReport {
++        await inspect(providerConfiguration: providerConfiguration, doctor: true)
++    }
++
++    private struct Saved: Sendable {
++        let paths: ClusterUserPaths
++        let reference: ClusterConfigurationReference?
++        let binding: ClusterStatusBinding?
++    }
++
++    private static func inspect(providerConfiguration: URL, doctor: Bool) async -> ClusterDiagnosticsReport {
++        var checks = [ClusterDiagnosticsReport.Check]()
++        let operation = doctor ? "doctor" : "status"
++        let saved: Saved
++        do {
++            saved = try await Task.detached {
++                let paths = try ClusterUserPaths()
++                let reference = try ClusterConfigurationStore.optionalInstalledReference(providerConfiguration: providerConfiguration)
++                let loaded = try reference.map { try ClusterConfigurationStore(paths: paths).load(reference: $0) }
++                let binding = try loaded.map { try ClusterStatusBinding(configuration: $0.configuration, capability: $0.capability) }
++                return Saved(paths: paths, reference: reference, binding: binding)
++            }.value
++        } catch {
++            return .init(operation: operation, configurationState: .invalid, saved: nil, live: nil,
++                deviceJournal: (try? ClusterUserPaths()).map { .read(paths: $0) } ?? .unsafeOrChanging,
++                checks: [.init(name: "savedConfiguration", outcome: .failed, detail: bounded(error))])
++        }
++        let journal = ClusterDeviceJournalObservation.read(paths: saved.paths)
++        guard let binding = saved.binding, let reference = saved.reference else {
++            return .init(operation: operation, configurationState: .notConfigured, saved: nil, live: nil,
++                deviceJournal: journal, checks: [.init(name: "savedConfiguration", outcome: .notRun,
++                    detail: "No saved cluster reference; ordinary solo behavior is unchanged.")])
++        }
++        checks.append(.init(name: "savedConfiguration", outcome: .passed,
++            detail: "Canonical configuration/capability pins and selected policy verified; this is not readiness."))
++        if doctor {
++            do {
++                try await Task.detached {
++                    _ = try DistributedInstalledValidation.validate(reference: reference, paths: saved.paths,
++                        deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++                }.value
++                checks.append(.init(name: "localInstalledMetadata", outcome: .passed,
++                    detail: "Local worker hash, config/manifest/tokenizer pins, trust-file metadata/pin and installed runtime description verified. Weight payloads and SSH authentication were not tested."))
++            } catch {
++                checks.append(.init(name: "localInstalledMetadata", outcome: .failed, detail: bounded(error)))
++            }
++        } else {
++            checks.append(.init(name: "localInstalledMetadata", outcome: .notRun, detail: "Run cluster doctor for local installed metadata checks."))
++        }
++        var live: ClusterLiveStatus?
++        if binding.role == .leader {
++            do {
++                live = try await ClusterStatusClient.observe(binding: binding, discoveryURL: LocalEndpoint.infoPath())
++                checks.append(.init(name: "localServingObservation", outcome: .passed,
++                    detail: live!.authenticationConfigured
++                        ? "Fresh nonce-bound local response under configured bearer authentication."
++                        : "Fresh nonce-bound local response; this server explicitly has no authentication configured."))
++            } catch {
++                checks.append(.init(name: "localServingObservation", outcome: .notObserved, detail: bounded(error)))
++            }
++        } else {
++            checks.append(.init(name: "localServingObservation", outcome: .notRun,
++                detail: "This member is a follower; run cluster status on the leader for its serving-session observation."))
++        }
++        checks.append(.init(name: "peerAndCollectiveProbe", outcome: .notRun,
++            detail: live?.session.observedMembershipEpoch != nil
++                ? "The retained leader reports bilateral loaded readiness for the displayed epoch. No new SSH, physical collective, numerical or throughput probe ran."
++                : "No live loaded cohort observed. Peer installation, authenticated connectivity and physical collectives remain untested."))
++        checks.append(.init(name: "deviceExclusion", outcome: .notRun,
++            detail: "Journal metadata only. Nonempty means ownership is unproven, not orphaned; empty/absent is not a free-device proof. No lock or journal was changed."))
++        return .init(operation: operation, configurationState: .verified, saved: binding, live: live,
++            deviceJournal: journal, checks: checks)
++    }
++
++    private static func bounded(_ error: Error) -> String {
++        String(String(describing: error).filter { character in
++            character.unicodeScalars.allSatisfy { $0.value >= 32 && $0.value != 127 }
++        }.prefix(512))
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusClient.swift
+@@ -0,0 +1,49 @@
++import Foundation
++
++enum ClusterStatusClient {
++    /// Bounded fresh local HTTP observation. No DNS, redirect, remote uptime,
++    /// owner launch, inference request or persistent connection is involved.
++    static func observe(binding: ClusterStatusBinding, discoveryURL: URL) async throws -> ClusterLiveStatus {
++        let discovery = try ClusterStatusDiscovery.read(discoveryURL)
++        let nonce = UUID().uuidString.lowercased()
++        let clock = ContinuousClock(), began = ContinuousClock.now
++        var request = URLRequest(url: try discovery.endpoint(), cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
++                                 timeoutInterval: 3)
++        request.setValue(nonce, forHTTPHeaderField: ClusterStatusCodec.nonceHeader)
++        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
++        if !discovery.apiKey.isEmpty { request.setValue("Bearer \(discovery.apiKey)", forHTTPHeaderField: "Authorization") }
++        let configuration = URLSessionConfiguration.ephemeral
++        configuration.timeoutIntervalForRequest = 3; configuration.timeoutIntervalForResource = 3
++        configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
++        configuration.connectionProxyDictionary = [:]
++        let session = URLSession(configuration: configuration, delegate: ClusterStatusNoRedirect(), delegateQueue: nil)
++        defer { session.invalidateAndCancel() }
++        let (stream, response) = try await session.bytes(for: request)
++        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
++              http.url == request.url,
++              http.value(forHTTPHeaderField: "Cache-Control")?.lowercased() == "no-store",
++              response.expectedContentLength <= Int64(ClusterStatusCodec.maximumBytes) else {
++            throw ClusterConfigurationError.invalid("Local cluster status was not observed")
++        }
++        var bytes = Data()
++        for try await byte in stream {
++            guard bytes.count < ClusterStatusCodec.maximumBytes, began.duration(to: clock.now) < .seconds(3) else {
++                throw ClusterConfigurationError.invalid("Local cluster status exceeded its response bound")
++            }
++            bytes.append(byte)
++        }
++        let result = try ClusterStatusCodec.decode(bytes, nonce: nonce, binding: binding,
++            authenticationConfigured: !discovery.apiKey.isEmpty, port: discovery.port)
++        guard began.duration(to: clock.now) < .seconds(3) else {
++            throw ClusterConfigurationError.invalid("Local cluster status observation expired")
++        }
++        return result
++    }
++}
++
++private final class ClusterStatusNoRedirect: NSObject, URLSessionTaskDelegate {
++    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
++                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
++        completionHandler(nil)
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
+@@ -0,0 +1,79 @@
++import Foundation
++
++enum ClusterStatusCodec {
++    static let maximumBytes = 16 * 1024
++    static let nonceHeader = "X-Darkbloom-Cluster-Nonce"
++
++    static func nonce(_ value: String) throws -> String {
++        guard value.utf8.count == 36, let uuid = UUID(uuidString: value), uuid.uuidString.lowercased() == value else {
++            throw ClusterConfigurationError.invalid("Status requires a canonical request nonce")
++        }
++        return value
++    }
++
++    static func encode(_ value: ClusterLiveStatus) throws -> Data {
++        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
++        var bytes = try encoder.encode(value); bytes.append(10)
++        guard bytes.count <= maximumBytes else { throw ClusterConfigurationError.invalid("Status exceeded its byte bound") }
++        return bytes
++    }
++
++    static func decode(_ bytes: Data, nonce expectedNonce: String, binding: ClusterStatusBinding,
++                       authenticationConfigured: Bool, port: UInt16) throws -> ClusterLiveStatus {
++        guard !bytes.isEmpty, bytes.count <= maximumBytes else {
++            throw ClusterConfigurationError.invalid("Status exceeded its byte bound")
++        }
++        guard binding.peers.count == 2 else { throw ClusterConfigurationError.invalid("Malformed expected status binding") }
++        let value = try JSONDecoder().decode(ClusterLiveStatus.self, from: bytes)
++        // Exact canonical re-encoding rejects unknown/duplicate fields, alternate
++        // integer syntax, omitted defaults and any trailing data.
++        guard try encode(value) == bytes, value.schema == ClusterLiveStatus.schemaName,
++              value.nonce == (try nonce(expectedNonce)), value.binding == binding,
++              value.session.binding == binding, value.boundPort == port,
++              value.authenticationConfigured == authenticationConfigured,
++              ["starting", "serving", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
++              ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
++              (0...1).contains(value.acquisitions), value.session.members.count == 2,
++              !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation" else {
++            throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")
++        }
++        if let epoch = value.session.observedMembershipEpoch { _ = try nonce(epoch) }
++        guard (value.session.observedMembershipEpoch == nil) == (value.session.observedPrefillSchedule == nil),
++              value.session.observedPrefillSchedule == nil || value.session.observedPrefillSchedule == binding.prefillSchedule else {
++            throw ClusterConfigurationError.invalid("Status schedule observation differs")
++        }
++        for (rank, member) in value.session.members.enumerated() {
++            guard member.rank == rank, member.peerID == binding.peers[rank].id,
++                  member.transport == (rank == 0 ? .localPipes : .authenticatedSSH),
++                  member.nativeReady == (member.requestCapacityBytes != nil),
++                  member.requestCapacityBytes.map({ $0 > 0 }) ?? true,
++                  !member.ownerReleaseAcknowledged || member.nativeCleanupObserved else {
++                throw ClusterConfigurationError.invalid("Status member observation differs")
++            }
++            if let termination = member.ownerTermination {
++                guard (termination.kind == .launchFailed) == (termination.status == nil) else {
++                    throw ClusterConfigurationError.invalid("Malformed owner termination observation")
++                }
++            }
++        }
++        if let admission = value.session.admission {
++            guard admission.remainingLifetimeNanoseconds <= UInt64(binding.maximumLifetimeSeconds) * 1_000_000_000,
++                  (0...binding.maximumRequests).contains(admission.remainingRequests) else {
++                throw ClusterConfigurationError.invalid("Status lifetime or admission count exceeded its bound")
++            }
++        }
++        let admitted = value.session.admission
++        let sessionReady = value.session.ready
++        guard !sessionReady || (value.session.observedMembershipEpoch != nil
++            && value.session.members.allSatisfy(\.nativeReady) && admitted?.valid == true
++            && (admitted?.remainingLifetimeNanoseconds ?? 0) > 0),
++              value.ready == (value.hostPhase == "serving" && !value.failed && sessionReady),
++              value.admissionAvailable == (value.ready && value.acquisitions == 0
++                && admitted?.valid == true && admitted?.activeRequest == false
++                && admitted?.draining == false && (admitted?.remainingRequests ?? 0) > 0),
++              value.quarantined == (value.hostPhase == "quarantined" || value.session.phase == "quarantined") else {
++            throw ClusterConfigurationError.invalid("Inconsistent status readiness observation")
++        }
++        return value
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift
+@@ -0,0 +1,75 @@
++import Foundation
++import Darwin
++
++/// Discovery locates a listener, not a process or a ready model. Credentials are
++/// sent only to a numeric address assigned to this Mac (or its loopback).
++struct ClusterStatusDiscovery: Decodable, Sendable {
++    let baseURL: String
++    let apiKey: String
++    let host: String
++    let port: UInt16
++    private enum CodingKeys: String, CodingKey { case baseURL = "base_url", apiKey = "api_key", host, port }
++
++    static func read(_ url: URL) throws -> Self {
++        let data = try ClusterConfigurationFiles.read(url, maximum: 8192, privateMode: true)
++        return try JSONDecoder().decode(Self.self, from: data)
++    }
++
++    func endpoint(localAddresses: Set<String> = Self.localAddresses()) throws -> URL {
++        guard port > 0, apiKey.utf8.count <= 512,
++              apiKey.utf8.allSatisfy({ (33...126).contains($0) }),
++              host.utf8.count <= 128 else {
++            throw ClusterConfigurationError.invalid("Malformed local endpoint discovery")
++        }
++        let advertised = host == "0.0.0.0" || host.isEmpty ? "127.0.0.1" : host
++        // Match the exact existing LocalEndpoint.Info constructor. No URL from
++        // discovery is used directly, and paths/userinfo/query are never honored.
++        guard baseURL == "http://\(advertised):\(port)/v1" else {
++            throw ClusterConfigurationError.invalid("Local discovery host, port and URL differ")
++        }
++        let dialHost: String
++        switch host {
++        case "", "0.0.0.0", "localhost": dialHost = "127.0.0.1"
++        case "::": dialHost = "::1"
++        default:
++            guard let numeric = Self.numericAddress(host), localAddresses.contains(numeric) else {
++                throw ClusterConfigurationError.invalid("Discovered address is not assigned to this Mac")
++            }
++            dialHost = numeric
++        }
++        var components = URLComponents()
++        components.scheme = "http"; components.host = dialHost.contains(":") ? "[\(dialHost)]" : dialHost
++        components.port = Int(port); components.path = "/v1/cluster/status"
++        guard let url = components.url else { throw ClusterConfigurationError.invalid("Malformed local status URL") }
++        return url
++    }
++
++    static func numericAddress(_ text: String) -> String? {
++        var v4 = in_addr(), v6 = in6_addr()
++        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
++        if inet_pton(AF_INET, text, &v4) == 1 {
++            guard inet_ntop(AF_INET, &v4, &buffer, socklen_t(buffer.count)) != nil else { return nil }
++        } else if inet_pton(AF_INET6, text, &v6) == 1 {
++            guard inet_ntop(AF_INET6, &v6, &buffer, socklen_t(buffer.count)) != nil else { return nil }
++        } else { return nil }
++        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
++    }
++
++    static func localAddresses() -> Set<String> {
++        var result: Set<String> = ["127.0.0.1", "::1"]
++        var first: UnsafeMutablePointer<ifaddrs>?
++        guard getifaddrs(&first) == 0 else { return result }
++        defer { freeifaddrs(first) }
++        var current = first
++        while let value = current {
++            defer { current = value.pointee.ifa_next }
++            guard let address = value.pointee.ifa_addr,
++                  [AF_INET, AF_INET6].contains(Int32(address.pointee.sa_family)) else { continue }
++            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
++            guard getnameinfo(address, socklen_t(address.pointee.sa_len), &buffer,
++                socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
++            if let numeric = numericAddress(String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)) { result.insert(numeric) }
++        }
++        return result
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusValues.swift
+@@ -0,0 +1,94 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Public identifiers and pins only. Saved setup is separate from a live sample.
++public struct ClusterStatusBinding: Codable, Sendable, Equatable {
++    public let clusterID: String
++    public let memberID: String
++    public let role: ClusterConfiguration.Role
++    public let configurationSHA256: String
++    public let capabilitySHA256: String
++    public let publicModelID: String
++    public let runtimeModelID: String
++    public let artifactSHA256: String
++    public let configurationModelSHA256: String
++    public let planSHA256: String
++    public let prefillSchedule: ClusterPrefillSchedule
++    public let peers: [Peer]
++    public let maximumLifetimeSeconds: Int
++    public let maximumRequests: Int
++
++    public struct Peer: Codable, Sendable, Equatable {
++        public let id: String
++        public let rank: Int
++        public let runtimeBinarySHA256: String
++    }
++
++    init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) throws {
++        clusterID = configuration.clusterID; memberID = configuration.memberID; role = configuration.role
++        configurationSHA256 = ClusterConfigurationCodec.sha256(try ClusterConfigurationCodec.encode(
++            configuration, capability: capability, capabilitySHA256: configuration.capabilitySHA256))
++        capabilitySHA256 = configuration.capabilitySHA256
++        publicModelID = configuration.publicModelID; runtimeModelID = capability.runtimeModelID
++        artifactSHA256 = capability.artifactSHA256; configurationModelSHA256 = capability.configurationSHA256
++        planSHA256 = configuration.selectedPlanSHA256; prefillSchedule = configuration.selectedPrefillSchedule
++        maximumLifetimeSeconds = capability.maxLifetimeSeconds; maximumRequests = capability.maxRequests
++        peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256) }
++    }
++}
++
++/// An instant observation, never a readiness lease or authority to recover a
++/// journal. No worker uptime, path, prompt, token, credential or environment.
++public struct ClusterLiveStatus: Codable, Sendable, Equatable {
++    public static let schemaName = "darkbloom_cluster_status_v1"
++    public let schema: String
++    public let nonce: String
++    public let binding: ClusterStatusBinding
++    public let authenticationConfigured: Bool
++    public let hostPhase: String
++    public let session: ClusterSessionObservation
++    public let boundPort: UInt16
++    public let acquisitions: Int
++    public let failed: Bool
++    public let ready: Bool
++    public let admissionAvailable: Bool
++    public let quarantined: Bool
++}
++
++public struct ClusterSessionObservation: Codable, Sendable, Equatable {
++    public let binding: ClusterStatusBinding
++    public let phase: String
++    /// Retained only after both actual native Ready values passed pair binding.
++    public let observedMembershipEpoch: String?
++    public let observedPrefillSchedule: ClusterPrefillSchedule?
++    public let ready: Bool
++    public let admission: Admission?
++    public let members: [Member]
++    public let mtpEnabled: Bool
++    public let mtpOffReason: String
++
++    public struct Admission: Codable, Sendable, Equatable {
++        /// The leader's already-clamped local lifetime, sampled locally.
++        public let remainingLifetimeNanoseconds: UInt64
++        public let remainingRequests: Int
++        public let activeRequest: Bool
++        public let draining: Bool
++        public let valid: Bool
++    }
++    public struct Member: Codable, Sendable, Equatable {
++        public enum Transport: String, Codable, Sendable { case localPipes, authenticatedSSH }
++        public let peerID: String
++        public let rank: Int
++        public let transport: Transport
++        public let nativeReady: Bool
++        public let requestCapacityBytes: Int?
++        public let nativeCleanupObserved: Bool
++        public let ownerReleaseAcknowledged: Bool
++        public let ownerTermination: Termination?
++    }
++    public struct Termination: Codable, Sendable, Equatable {
++        public enum Kind: String, Codable, Sendable { case launchFailed, exited, signalled }
++        public let kind: Kind
++        public let status: Int32?
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift
+@@ -4,45 +4,16 @@
+ import ProviderCoreFoundation
+ 
+ struct DistributedInstalledPreparation: Sendable {
+-    let plan: DistributedInstalledPlan
+-    let verifiedInputs: [DistributedInstalledFiles.Identity]
++    let validation: DistributedInstalledValidation
+     let matrixURL: URL
+-    let manifest: ModelManifest
+-    let model: DistributedInstalledModel
++    var plan: DistributedInstalledPlan { validation.plan }
++    var manifest: ModelManifest { validation.manifest }
++    var model: DistributedInstalledModel { validation.model }
+ 
+     static func prepare(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
+                         deadline: UInt64) throws -> Self {
+-        let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
+-        let plan = try DistributedInstalledPlan(saved: saved, paths: paths)
+-        let local = plan.localPeer
+-        var inputs = [DistributedInstalledFiles.Identity]()
+-        let executable = try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.workerExecutable),
+-            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: 256 * 1024 * 1024,
+-            executable: true, deadline: deadline)
+-        inputs.append(executable)
+-        inputs.append(try DistributedInstalledFiles.verify(plan.configurationURL,
+-            expectedSHA256: plan.capability.configurationSHA256, maximumBytes: 1_048_576, deadline: deadline))
+-        inputs.append(try DistributedInstalledFiles.verify(plan.manifestURL,
+-            expectedSHA256: plan.capability.manifestSHA256, maximumBytes: 65_536, deadline: deadline))
+-        let manifest = try DistributedInstalledManifest.validate(
+-            ClusterConfigurationFiles.read(plan.manifestURL, maximum: 65_536),
+-            configuration: plan.configuration, capability: plan.capability)
+-        let model = try DistributedInstalledModel.make(
+-            configurationData: ClusterConfigurationFiles.read(plan.configurationURL, maximum: 1_048_576),
+-            manifest: manifest, plan: plan)
+-        for file in plan.configuration.tokenizerFiles {
+-            inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.modelDirectory).appendingPathComponent(file.path),
+-                expectedSHA256: file.sha256, maximumBytes: 64 * 1024 * 1024, deadline: deadline))
+-        }
+-        let trust = plan.configuration.trust
+-        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
+-        inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: trust.knownHostsFile),
+-            expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
+-        // Recompute native profile/Plan/arithmetic metadata using the verified
+-        // installed worker. The command does not construct a model or request.
+-        try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
+-        for input in inputs { try input.requireUnchanged() }
+-
++        let validation = try DistributedInstalledValidation.validate(reference: reference, paths: paths, deadline: deadline)
++        let plan = validation.plan
+         let bytes = try plan.matrix(), hash = ClusterConfigurationCodec.sha256(bytes)
+         let directoryURL = paths.deviceDirectory.appendingPathComponent("configuration", isDirectory: true)
+         let directory = try ClusterConfigurationFiles.directory(directoryURL, create: true, privateMode: true)
+@@ -50,27 +21,16 @@
+         let name = hash + ".matrix.json"
+         try ClusterConfigurationFiles.publish(bytes, parent: directory, name: name, maximum: 4096)
+         try DistributedInstalledFiles.check(deadline)
+-        let result = Self(plan: plan, verifiedInputs: inputs, matrixURL: directoryURL.appendingPathComponent(name), manifest: manifest, model: model)
++        let result = Self(validation: validation, matrixURL: directoryURL.appendingPathComponent(name))
+         try result.requireUnchanged()
+         return result
+     }
+ 
+     func requireUnchanged() throws {
+-        for input in verifiedInputs { try input.requireUnchanged() }
++        try validation.requireUnchanged()
+         let expected = try plan.matrix()
+         guard try ClusterConfigurationFiles.read(matrixURL, maximum: 4096, privateMode: true) == expected else {
+             throw ClusterConfigurationError.invalid("Installed matrix changed")
+         }
+-        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: plan.configuration.trust.identityFile), privateMode: true)
+-        // These are the exact file candidates opened by the existing local
+-        // tokenizer loader. An unpinned fallback must not become active.
+-        let allowed = Set(plan.configuration.tokenizerFiles.map(\.path))
+-        for name in ["chat_template.jinja", "chat_template.json"] where !allowed.contains(name) {
+-            var value = stat()
+-            let path = model.directory.appendingPathComponent(name).path
+-            guard lstat(path, &value) != 0, errno == ENOENT else {
+-                throw ClusterConfigurationError.invalid("Unpinned local tokenizer template exists")
+-            }
+-        }
+     }
+ }
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
+@@ -16,6 +16,8 @@
+     public let profile: DistributedResidentExecutionProfile
+     public let model: DistributedInstalledModel
+     private let prepared: DistributedInstalledPreparation
++    private let diagnosticBinding: ClusterStatusBinding
++    private var observedMembershipEpoch: UUID?
+     private let wireIdentity: ClusterWorkerIdentity
+     typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint
+     private let endpointFactory: EndpointFactory
+@@ -40,6 +42,42 @@
+     /// and both release acknowledgements. There is no implicit journal recovery.
+     public var canRotate: Bool { status == .released }
+ 
++
++    /// Sample retained ownership directly. A PID or saved configuration never
++    /// establishes readiness, and no remote uptime participates in this sample.
++    public var diagnosticObservation: ClusterSessionObservation {
++        let values = lock.withLock { (endpoints, pair, observedMembershipEpoch) }
++        let members = configuration.peers.map { peer -> ClusterSessionObservation.Member in
++            let endpoint = values.0.first { $0.rank == peer.rank }
++            let ready = endpoint?.readiness
++            let termination: ClusterSessionObservation.Termination?
++            switch endpoint?.ownerTermination {
++            case .launchFailed?: termination = .init(kind: .launchFailed, status: nil)
++            case .exited(let status)?: termination = .init(kind: .exited, status: status)
++            case .signalled(let status)?: termination = .init(kind: .signalled, status: status)
++            case nil: termination = nil
++            }
++            return .init(peerID: peer.id, rank: peer.rank,
++                transport: peer.rank == configuration.localRank ? .localPipes : .authenticatedSSH,
++                nativeReady: ready != nil, requestCapacityBytes: ready?.requestCapacityBytes,
++                nativeCleanupObserved: endpoint?.nativeCleanupObserved ?? false,
++                ownerReleaseAcknowledged: endpoint?.ownerDeviceLeaseReleasedObserved ?? false,
++                ownerTermination: termination)
++        }
++        let state = values.1?.admissionState
++        let phase = status
++        let ready = values.1?.readiness != nil && members.allSatisfy(\.nativeReady)
++            && state?.isValid == true && (state?.remainingLifetimeNanoseconds ?? 0) > 0
++            && (phase == .ready || (phase == .draining && state?.hasActiveRequest == true))
++        return .init(binding: diagnosticBinding, phase: phase.rawValue,
++            observedMembershipEpoch: values.2?.uuidString.lowercased(),
++            observedPrefillSchedule: values.2 == nil ? nil : configuration.selectedPrefillSchedule,
++            ready: ready, admission: state.map { .init(remainingLifetimeNanoseconds: $0.remainingLifetimeNanoseconds,
++                remainingRequests: $0.admissionsRemaining, activeRequest: $0.hasActiveRequest,
++                draining: $0.isDraining, valid: $0.isValid) }, members: members,
++            mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation")
++    }
++
+     /// Call before and after LocalTokenizerLoader.load(from: model.directory).
+     /// Metadata inputs remain pinned; this does not load a model container.
+     public func validateModelInputs() throws { try prepared.requireUnchanged() }
+@@ -58,6 +96,7 @@
+     init(prepared: DistributedInstalledPreparation, endpointFactory: @escaping EndpointFactory = DistributedInstalledSession.installedEndpoint) throws {
+         self.endpointFactory = endpointFactory
+         self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
++        diagnosticBinding = try ClusterStatusBinding(configuration: configuration, capability: capability)
+         model = prepared.model
+         wireIdentity = prepared.plan.identity(epoch: UUID())
+         expectedIdentity = .init(membershipEpoch: wireIdentity.membershipEpoch, modelID: wireIdentity.modelID,
+@@ -112,6 +151,7 @@
+         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
+         try lock.withLock {
+             guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
++            self.observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
+             self.owner = owner; phase = .ready
+         }
+     }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledValidation.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++import ProviderCoreFoundation
++
++/// Shared read-only installed metadata checks. This does not publish the JACCL
++/// matrix, acquire a device lease, start an owner, or construct a model.
++struct DistributedInstalledValidation: Sendable {
++    let plan: DistributedInstalledPlan
++    let verifiedInputs: [DistributedInstalledFiles.Identity]
++    let manifest: ModelManifest
++    let model: DistributedInstalledModel
++
++    static func validate(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
++                         deadline: UInt64) throws -> Self {
++        let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
++        let plan = try DistributedInstalledPlan(saved: saved, paths: paths)
++        let local = plan.localPeer
++        var inputs = [DistributedInstalledFiles.Identity]()
++        let executable = try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.workerExecutable),
++            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: 256 * 1024 * 1024,
++            executable: true, deadline: deadline)
++        inputs.append(executable)
++        inputs.append(try DistributedInstalledFiles.verify(plan.configurationURL,
++            expectedSHA256: plan.capability.configurationSHA256, maximumBytes: 1_048_576, deadline: deadline))
++        inputs.append(try DistributedInstalledFiles.verify(plan.manifestURL,
++            expectedSHA256: plan.capability.manifestSHA256, maximumBytes: 65_536, deadline: deadline))
++        let manifest = try DistributedInstalledManifest.validate(
++            ClusterConfigurationFiles.read(plan.manifestURL, maximum: 65_536),
++            configuration: plan.configuration, capability: plan.capability)
++        let model = try DistributedInstalledModel.make(
++            configurationData: ClusterConfigurationFiles.read(plan.configurationURL, maximum: 1_048_576),
++            manifest: manifest, plan: plan)
++        for file in plan.configuration.tokenizerFiles {
++            inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.modelDirectory).appendingPathComponent(file.path),
++                expectedSHA256: file.sha256, maximumBytes: 64 * 1024 * 1024, deadline: deadline))
++        }
++        let trust = plan.configuration.trust
++        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
++        inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: trust.knownHostsFile),
++            expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
++        // Recompute native profile/Plan/arithmetic metadata using the verified
++        // installed worker. The command does not construct a model or request.
++        try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
++        for input in inputs { try input.requireUnchanged() }
++
++        let result = Self(plan: plan, verifiedInputs: inputs, manifest: manifest, model: model)
++        try result.requireUnchanged()
++        try DistributedInstalledFiles.check(deadline)
++        return result
++    }
++
++    func requireUnchanged() throws {
++        for input in verifiedInputs { try input.requireUnchanged() }
++        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: plan.configuration.trust.identityFile), privateMode: true)
++        // These are the exact file candidates opened by the existing local
++        // tokenizer loader. An unpinned fallback must not become active.
++        let allowed = Set(plan.configuration.tokenizerFiles.map(\.path))
++        for name in ["chat_template.jinja", "chat_template.json"] where !allowed.contains(name) {
++            var value = stat()
++            let path = model.directory.appendingPathComponent(name).path
++            guard lstat(path, &value) != 0, errno == ENOENT else {
++                throw ClusterConfigurationError.invalid("Unpinned local tokenizer template exists")
++            }
++        }
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift
+@@ -7,7 +7,24 @@
+             acquire: { try await self.acquire($0) },
+             tokenizerProvider: { try await self.resolveTokenizer($0) },
+             availableModels: { await self.catalog() }, mtpSlots: { [] },
++            clusterStatus: { try await self.clusterStatus(nonce: $0) },
+             onServerRunning: { await self.didBind($0) })
++    }
++
++    func clusterStatus(nonce: String) throws -> ClusterLiveStatus {
++        guard let observation = session.httpDiagnosticObservation, let port = boundPort else {
++            throw ClusterConfigurationError.invalid("No installed cluster observation is available")
++        }
++        let ready = phase == .serving && !failed && observation.ready
++        let admission = observation.admission
++        return .init(schema: ClusterLiveStatus.schemaName, nonce: try ClusterStatusCodec.nonce(nonce),
++            binding: observation.binding, authenticationConfigured: !(config.authToken ?? "").isEmpty,
++            hostPhase: phase.rawValue, session: observation, boundPort: port,
++            acquisitions: pin == nil ? 0 : 1, failed: failed, ready: ready,
++            admissionAvailable: ready && pin == nil && admission?.valid == true
++                && admission?.activeRequest == false && admission?.draining == false
++                && (admission?.remainingRequests ?? 0) > 0,
++            quarantined: phase == .quarantined || observation.phase == "quarantined")
+     }
+ 
+     func didBind(_ channel: any Channel) {
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift
+@@ -3,6 +3,7 @@
+ // Host-only injection seam for model-free HTTP/lifecycle tests. The public
+ // initializer accepts the installed session; it has the sole device ownership.
+ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
++    var httpDiagnosticObservation: ClusterSessionObservation? { get }
+     var model: DistributedInstalledModel { get }
+     var expectedIdentity: DistributedResidentIdentity { get }
+     var profile: DistributedResidentExecutionProfile { get }
+@@ -17,7 +18,12 @@
+     func drain(until deadline: UInt64) async -> DistributedInstalledSessionStatus
+ }
+ 
++extension DistributedLocalServerSession {
++    var httpDiagnosticObservation: ClusterSessionObservation? { nil }
++}
++
+ extension DistributedInstalledSession: DistributedLocalServerSession {
++    var httpDiagnosticObservation: ClusterSessionObservation? { diagnosticObservation }
+     var httpAdmissionAvailable: Bool { status == .ready && admissionState?.canAdmit() == true }
+     var httpSessionInvalid: Bool { admissionState?.isValid == false }
+     var httpSessionExhausted: Bool {
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -15,6 +15,7 @@
+ 
+ import Foundation
+ import Hummingbird
++import HTTPTypes
+ import MLXLMServer
+ import NIOCore
+ 
+@@ -70,6 +71,7 @@
+     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
+     availableModels: @escaping @Sendable () async -> [String],
+     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
++    clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
+     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+ ) -> LocalInferenceApplication {
+     // The upstream OpenAI request shape intentionally ignores Qwen's
+@@ -93,6 +95,21 @@
+     }
+     let service = serviceForTemplateControls(.init())
+     let router = MLXServerApplication.buildRouter(service: service)
++    if let clusterStatus {
++        router.get("/v1/cluster/status") { request, _ async throws -> Response in
++            let header = HTTPField.Name(ClusterStatusCodec.nonceHeader)!
++            guard let nonce = request.headers[header], (try? ClusterStatusCodec.nonce(nonce)) != nil else {
++                return Response(status: .badRequest, headers: [.cacheControl: "no-store"])
++            }
++            do {
++                let bytes = try ClusterStatusCodec.encode(await clusterStatus(nonce))
++                return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
++                    body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
++            } catch {
++                return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
++            }
++        }
++    }
+     // Chat-completions POSTs are served by the interception responder with
+     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
+     // pins the Hummingbird 2 MiB default, which 413s inline media — see
+--- a/provider-swift/Sources/darkbloom/ClusterCommand.swift
++++ b/provider-swift/Sources/darkbloom/ClusterCommand.swift
+@@ -4,7 +4,7 @@
+ 
+ struct Cluster: AsyncParsableCommand {
+     static let configuration = CommandConfiguration(commandName: "cluster",
+-        abstract: "Manage saved distributed-cluster setup.", subcommands: [Configure.self, WorkerOwner.self])
++        abstract: "Manage saved distributed-cluster setup.", subcommands: [Configure.self, Status.self, Doctor.self, WorkerOwner.self])
+ 
+     struct Configure: AsyncParsableCommand {
+         static let configuration = CommandConfiguration(commandName: "configure",
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift
+@@ -0,0 +1,61 @@
++import Foundation
++import ArgumentParser
++import ProviderCore
++
++extension Cluster {
++    struct Status: AsyncParsableCommand {
++        static let configuration = CommandConfiguration(commandName: "status",
++            abstract: "Show saved setup and a fresh local leader observation, without starting inference.")
++        @OptionGroup var configOptions: ConfigOptions
++        @Flag(help: "Print saved configuration and explicitly scoped live evidence as JSON.") var json = false
++        mutating func run() async throws {
++            Darkbloom.ensureLogging()
++            let report = await ClusterDiagnostics.status(providerConfiguration: try diagnosticsPath(configOptions.config))
++            try printDiagnostics(report, json: json)
++        }
++    }
++
++    struct Doctor: AsyncParsableCommand {
++        static let configuration = CommandConfiguration(commandName: "doctor",
++            abstract: "Check local installed metadata and trust files without inference, SSH probes or recovery.")
++        @OptionGroup var configOptions: ConfigOptions
++        @Flag(help: "Print each check's observed, failed or not-run scope as JSON.") var json = false
++        mutating func run() async throws {
++            Darkbloom.ensureLogging()
++            let report = await ClusterDiagnostics.doctor(providerConfiguration: try diagnosticsPath(configOptions.config))
++            try printDiagnostics(report, json: json)
++            if report.checks.contains(where: { $0.outcome == .failed }) { throw ExitCode.failure }
++        }
++    }
++}
++
++private func diagnosticsPath(_ input: String?) throws -> URL {
++    let path = try input ?? ConfigManager.defaultConfigPath().path
++    guard path.hasPrefix("/"), !path.contains("\0") else {
++        throw ValidationError("Cluster diagnostics require an absolute provider configuration path.")
++    }
++    return URL(fileURLWithPath: path)
++}
++
++private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool) throws {
++    if json { try printJSON(report); return }
++    print("Saved setup: \(report.configurationState.rawValue)")
++    if let saved = report.saved {
++        print("Cluster: \(saved.clusterID) · member \(saved.memberID) (\(saved.role.rawValue))")
++        print("Model: \(saved.publicModelID) · selected prefill: \(saved.prefillSchedule.rawValue)")
++    }
++    if let live = report.live {
++        print("Live leader: \(live.ready ? "ready" : "not ready") · admission \(live.admissionAvailable ? "available" : "closed") · \(live.hostPhase)")
++        print("Response authentication: \(live.authenticationConfigured ? "configured bearer" : "not configured (--no-auth)")")
++        print("Epoch: \(live.session.observedMembershipEpoch ?? "not observed") · MTP off: \(live.session.mtpOffReason)")
++        if let state = live.session.admission {
++            print("Lifetime remaining: \(state.remainingLifetimeNanoseconds / 1_000_000) ms · admissions: \(state.remainingRequests) · active: \(state.activeRequest)")
++        }
++        for peer in live.session.members {
++            print("  \(peer.peerID) rank \(peer.rank): \(peer.transport.rawValue), ready \(peer.nativeReady), native cleanup \(peer.nativeCleanupObserved), release ACK \(peer.ownerReleaseAcknowledged)")
++        }
++        if live.quarantined { print("Quarantined: retained ownership is unresolved.") }
++    } else { print("Live leader: not observed; saved configuration is not readiness.") }
++    print("Device journal: \(report.deviceJournal.rawValue) (no availability or orphan proof)")
++    for check in report.checks { print("[\(check.outcome.rawValue)] \(check.name): \(check.detail)") }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ClusterDiagnosticsChecks/ClusterDiagnosticsCheck.swift
+@@ -0,0 +1,149 @@
++import Foundation
++import Darwin
++import CryptoKit
++import DarkbloomClusterProtocol
++@testable import InstalledContract
++
++private struct Failure: Error { let message: String }
++private func require(_ value: Bool, _ message: String) throws { if !value { throw Failure(message: message) } }
++private func reject(_ body: () throws -> Void) throws {
++    do { try body() } catch is Failure { throw Failure(message: "Assertion in refusal") } catch { return }
++    throw Failure(message: "Expected refusal")
++}
++
++@main enum ClusterDiagnosticsCheck {
++    static func main() throws {
++        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(30); defer { alarm(0) }
++        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("diagnostics-" + UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: root) }
++        let f = try InstalledFixture.make(root: root, probe: URL(fileURLWithPath: CommandLine.arguments[1]),
++            owner: URL(fileURLWithPath: CommandLine.arguments[2]), worker: URL(fileURLWithPath: CommandLine.arguments[3]))
++        try validation(f)
++        try status(f)
++        try discovery(f)
++        try journal(f)
++        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery and journal uncertainty passed")
++    }
++
++    static func tree(_ root: URL) throws -> [String: String] {
++        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!.allObjects as! [URL]
++        var result = [String: String]()
++        for url in files {
++            var info = stat(); try require(lstat(url.path, &info) == 0, "stat")
++            let digest = info.st_mode & S_IFMT == S_IFREG ? ClusterConfigurationCodec.sha256(try Data(contentsOf: url)) : "directory"
++            result[String(url.path.dropFirst(root.path.count))] = "\(info.st_mode):\(digest)"
++        }
++        return result
++    }
++
++    static func validation(_ f: InstalledFixture) throws {
++        let before = try tree(f.root)
++        let value = try DistributedInstalledValidation.validate(reference: f.reference, paths: f.paths,
++            deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++        try require(value.plan.configuration.role == .leader && value.model.publicModelID == f.configuration.publicModelID, "leader metadata")
++        try require(try tree(f.root) == before, "metadata validation wrote files")
++        try require(!FileManager.default.fileExists(atPath: f.paths.deviceDirectory.appendingPathComponent("configuration").path), "matrix published")
++
++        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(f.configuration)) as! [String: Any]
++        object["role"] = "follower"; object["memberID"] = "peer-1"
++        let input = f.root.appendingPathComponent("follower.json")
++        try JSONSerialization.data(withJSONObject: object).write(to: input)
++        var reference: ClusterConfigurationReference?
++        _ = try ClusterConfigurationStore(paths: f.paths).save(configurationInput: input,
++            capabilityInput: f.root.appendingPathComponent("capability.json"), capabilitySHA256: f.configuration.capabilitySHA256) { reference = $0 }
++        let followerBefore = try tree(f.root)
++        let follower = try DistributedInstalledValidation.validate(reference: reference!, paths: f.paths,
++            deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++        try require(follower.plan.configuration.role == .follower && follower.plan.localPeer.rank == 1, "follower local selection")
++        try require(try tree(f.root) == followerBefore, "follower validation wrote files")
++        try reject { _ = try DistributedInstalledValidation.validate(reference: reference!, paths: f.paths, deadline: 1) }
++        let fallback = value.model.directory.appendingPathComponent("chat_template.json")
++        try Data("{}".utf8).write(to: fallback)
++        let refusalBefore = try tree(f.root)
++        try reject { _ = try DistributedInstalledValidation.validate(reference: f.reference, paths: f.paths,
++            deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000) }
++        try require(try tree(f.root) == refusalBefore, "refused metadata wrote files")
++        try FileManager.default.removeItem(at: fallback)
++    }
++
++    static func status(_ f: InstalledFixture) throws {
++        let binding = try ClusterStatusBinding(configuration: f.configuration, capability: f.capability)
++        let nonce = UUID().uuidString.lowercased(), epoch = UUID().uuidString.lowercased()
++        let sample = ClusterLiveStatus(schema: ClusterLiveStatus.schemaName, nonce: nonce, binding: binding,
++            authenticationConfigured: true, hostPhase: "serving", session: .init(binding: binding, phase: "ready",
++                observedMembershipEpoch: epoch, observedPrefillSchedule: .serial, ready: true,
++                admission: .init(remainingLifetimeNanoseconds: 8_000_000_000, remainingRequests: 16, activeRequest: false, draining: false, valid: true),
++                members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
++                    nativeReady: true, requestCapacityBytes: 1024, nativeCleanupObserved: false, ownerReleaseAcknowledged: false, ownerTermination: nil) },
++                mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation"),
++            boundPort: 8000, acquisitions: 0, failed: false, ready: true, admissionAvailable: true, quarantined: false)
++        func decode(_ bytes: Data, auth: Bool = true) throws -> ClusterLiveStatus {
++            try ClusterStatusCodec.decode(bytes, nonce: nonce, binding: binding, authenticationConfigured: auth, port: 8000)
++        }
++        let encoded = try ClusterStatusCodec.encode(sample)
++        try require(try decode(encoded) == sample, "round trip")
++        func changed(_ change: (inout [String: Any]) -> Void) throws -> Data {
++            var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]; change(&object)
++            var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]); data.append(10); return data
++        }
++        let noAuth = try changed { $0["authenticationConfigured"] = false }
++        try require(try !decode(noAuth, auth: false).authenticationConfigured, "explicit no-auth rejected")
++        try reject { _ = try decode(noAuth) }
++        for field in ["nonce", "schema", "hostPhase"] {
++            try reject { _ = try decode(changed { $0[field] = "wrong" }) }
++        }
++        try reject { _ = try decode(changed { $0["unknown"] = true }) }
++        try reject { _ = try decode(changed { $0["acquisitions"] = true }) }
++        try reject { _ = try decode(changed { $0["boundPort"] = 8001 }) }
++        try reject { _ = try decode(changed { $0["ready"] = false }) }
++        try reject { _ = try decode(changed { var b = $0["binding"] as! [String: Any]; b["planSHA256"] = String(repeating: "0", count: 64); $0["binding"] = b }) }
++        for (key, value) in [("remainingRequests", 17), ("remainingLifetimeNanoseconds", 11_000_000_000)] {
++            try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; var a = s["admission"] as! [String: Any]; a[key] = value; s["admission"] = a; $0["session"] = s }) }
++        }
++        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedPrefillSchedule"] = "one_chunk_lookahead_v1"; $0["session"] = s }) }
++        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["mtpEnabled"] = true; $0["session"] = s }) }
++        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; var m = s["members"] as! [[String: Any]]; m[1]["ownerReleaseAcknowledged"] = true; s["members"] = m; $0["session"] = s }) }
++        let text = String(decoding: encoded, as: UTF8.self)
++        try reject { _ = try decode(Data(text.replacingOccurrences(of: "\"acquisitions\":0", with: "\"acquisitions\":0,\"acquisitions\":0").utf8)) }
++        try reject { _ = try decode(Data(text.replacingOccurrences(of: "\"acquisitions\":0", with: "\"acquisitions\":0.0").utf8)) }
++        try reject { _ = try decode(Data(repeating: 32, count: ClusterStatusCodec.maximumBytes + 1)) }
++    }
++
++    static func discovery(_ f: InstalledFixture) throws {
++        func record(host: String, base: String? = nil, key: String = "fixture-bearer") throws -> ClusterStatusDiscovery {
++            let advertised = host == "0.0.0.0" || host.isEmpty ? "127.0.0.1" : host
++            return try JSONDecoder().decode(ClusterStatusDiscovery.self, from: JSONSerialization.data(withJSONObject:
++                ["host": host, "port": 8000, "base_url": base ?? "http://\(advertised):8000/v1", "api_key": key]))
++        }
++        let assigned: Set<String> = ["127.0.0.1", "::1", "192.0.2.250"]
++        for host in ["127.0.0.1", "0.0.0.0", "::", "::1", "localhost", "192.0.2.250"] {
++            let url = try record(host: host).endpoint(localAddresses: assigned)
++            try require(url.path == "/v1/cluster/status" && url.port == 8000, "local address refused")
++        }
++        try reject { _ = try record(host: "192.0.2.197").endpoint(localAddresses: assigned) }
++        try reject { _ = try record(host: "other.example").endpoint(localAddresses: assigned) }
++        try reject { _ = try record(host: "127.0.0.1", base: "http://remote.example:8000/v1").endpoint(localAddresses: assigned) }
++        try reject { _ = try record(host: "127.0.0.1", base: "http://127.0.0.1:8000/v1?redirect=1").endpoint(localAddresses: assigned) }
++        try reject { _ = try record(host: "127.0.0.1", key: "bad\nkey").endpoint(localAddresses: assigned) }
++        try require(try record(host: "127.0.0.1", key: "").endpoint(localAddresses: assigned).port == 8000, "no-auth discovery")
++        let link = f.root.appendingPathComponent("discovery-link")
++        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: f.root.appendingPathComponent("input.json").path)
++        try reject { _ = try ClusterStatusDiscovery.read(link) }
++    }
++
++    static func journal(_ f: InstalledFixture) throws {
++        let file = f.paths.deviceLeaseFile
++        let fd = open(file.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
++        try require(fd >= 0, "fixture gate missing"); defer { Darwin.close(fd) }
++        try require(flock(fd, LOCK_EX | LOCK_NB) == 0, "fixture gate busy"); defer { _ = flock(fd, LOCK_UN) }
++        let before = try tree(f.root)
++        try require(ClusterDeviceJournalObservation.read(paths: f.paths) == .emptyJournal, "empty locked journal not distinguished")
++        try require(try tree(f.root) == before, "journal read wrote files")
++        let payload = Data("unresolved ownership".utf8)
++        let written = payload.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
++        try require(written == payload.count, "journal fixture write")
++        let unresolved = try tree(f.root)
++        try require(ClusterDeviceJournalObservation.read(paths: f.paths) == .ownershipUnproven, "nonempty journal inferred orphan/ready")
++        try require(try tree(f.root) == unresolved, "journal observation changed ownership")
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ClusterDiagnosticsChecks/README.md
+@@ -0,0 +1,27 @@
++# Cluster diagnostics checks
++
++Run `bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` from the checkout.
++The runner compiles the actual Foundation-only Protocol, Bootstrap, Process,
++Remote and Installed sources with Swift 6 warnings as errors. It reuses the
++existing installed-session contract values and fabricated metadata child.
++
++Checks cover:
++
++- Leader and follower metadata validation with complete file/mode comparison
++  before and after; no matrix publication or model payload exists.
++- Expired validation and an unpinned tokenizer fallback refusal without writes.
++- Canonical status, fresh nonce and saved identity binding; wrong auth posture,
++  schedule, membership, counts, unknown/duplicate fields and integer syntax refuse.
++- Loopback, wildcard and an explicitly fabricated assigned local address;
++  arbitrary remote/DNS/URL-disagreement/credential-injection cases refuse.
++- A held empty device gate remains only an empty-journal observation; a nonempty
++  journal remains unproven ownership and its contents are unchanged.
++
++No GPU/model, SSH, remote network or physical collective runs. The small metadata
++child is CPU-only. Actual HTTP authentication/route/client tests and CLI parsing
++tests live in `ProviderCoreTests/Server/ClusterStatusHTTPTests.swift` and
++`DarkbloomCLITests/ClusterDiagnosticsCommandTests.swift` for the full Provider test
++suite. These are separate from this source closure.
++
++Temporary binaries and data live under the checkout, avoiding symlinked system
++temporary directories rejected by the real file policy, and are removed on exit.
+--- /dev/null
++++ b/provider-swift/Tests/ClusterDiagnosticsChecks/run.sh
+@@ -0,0 +1,70 @@
++#!/bin/bash
++set -euo pipefail
++task_provider="$(cd "$(dirname "$0")/../.." && pwd)"
++task_repo="$(cd "$task_provider/.." && pwd)"
++task_cluster="$task_repo/libs/darkbloom-cluster"
++task_sources="$task_provider/Sources/ProviderCore"
++task_fixtures="$task_provider/Tests/ClusterInstalledSessionChecks"
++task_diagnostics="$task_provider/Tests/ClusterDiagnosticsChecks"
++# The real installed-file policy rejects symlinked path components, including
++# /var aliases. Keep the test-owned binaries and files in the checkout tree.
++task_build="$(mktemp -d "$task_provider/.cluster-installed-session.XXXXXXXX")"
++trap 'rm -rf "$task_build"' EXIT
++task_target="$(uname -m)-apple-macos14.0"
++task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")
++task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
++
++build_module() {
++  local task_name="$1"
++  shift
++  local task_dependencies=("${task_links[@]}")
++  case "$task_name" in
++    DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
++    DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap) ;;
++    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation) ;;
++  esac
++  xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
++    -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
++    "${task_dependencies[@]}" "$@" \
++    -o "$task_build/lib$task_name.dylib" \
++    -Xlinker -install_name -Xlinker "@rpath/lib$task_name.dylib"
++}
++
++build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
++build_module DarkbloomClusterBootstrap "$task_cluster"/Sources/DarkbloomClusterBootstrap/*.swift
++build_module DarkbloomClusterProcess "$task_cluster"/Sources/DarkbloomClusterProcess/*.swift
++build_module DarkbloomClusterRemote "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
++build_module MLXLMCommon "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
++build_module ProviderCoreFoundation "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
++build_module InstalledContract \
++  "$task_sources/Config/ClusterConfiguration.swift" \
++  "$task_sources/Config/ClusterConfigurationCodec.swift" \
++  "$task_sources/Config/ClusterConfigurationFiles.swift" \
++  "$task_sources/Config/ClusterConfigurationPaths.swift" \
++  "$task_sources/Config/ClusterConfigurationStore.swift" \
++  "$task_sources/Inference/Distributed/DistributedRequestDeadlineContext.swift" \
++  "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
++  "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
++  "$task_sources"/Inference/Distributed/Installed/*.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusClient.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift
++
++task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
++  -lDarkbloomClusterProcess -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
++for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker ClusterDiagnosticsCheck; do
++  case "$task_name" in
++    InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
++    InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
++    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
++    ClusterDiagnosticsCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_diagnostics/ClusterDiagnosticsCheck.swift") ;;
++  esac
++  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
++    "${task_inputs[@]}" -o "$task_build/$task_name"
++done
++
++cd "$task_build"
++"$task_build/ClusterDiagnosticsCheck" "$task_build/InstalledProbeFixture" \
++  "$task_build/InstalledFakeOwner" "$task_build/InstalledFakeWorker"
+--- a/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+@@ -44,7 +44,9 @@
+   "$task_sources/Inference/Distributed/DistributedRequestDeadlineContext.swift" \
+   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
+   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
+-  "$task_sources"/Inference/Distributed/Installed/*.swift
++  "$task_sources"/Inference/Distributed/Installed/*.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
++  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
+ 
+ task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
+   -lDarkbloomClusterProcess -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
+--- /dev/null
++++ b/provider-swift/Tests/DarkbloomCLITests/ClusterDiagnosticsCommandTests.swift
+@@ -0,0 +1,14 @@
++import Testing
++import ArgumentParser
++@testable import darkbloom
++
++@Test func clusterDiagnosticsParseWithoutEnablingOrRecoveryFlags() throws {
++    let status = try Cluster.Status.parse(["--json", "--config", "/tmp/provider.toml"])
++    #expect(status.json && status.configOptions.config == "/tmp/provider.toml")
++    let doctor = try Cluster.Doctor.parse(["--json"])
++    #expect(doctor.json)
++    #expect(throws: (any Error).self) { _ = try Cluster.Doctor.parse(["--fix"]) }
++    #expect(throws: (any Error).self) { _ = try Cluster.Doctor.parse(["--physical"]) }
++    #expect(throws: (any Error).self) { _ = try Cluster.Status.parse(["--enable"]) }
++    #expect(throws: (any Error).self) { _ = try Cluster.Status.parse(["--host", "remote.example"]) }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/ClusterStatusHTTPTests.swift
+@@ -0,0 +1,100 @@
++import Foundation
++import Testing
++import MLXLMCommon
++@testable import ProviderCore
++
++private func clusterHTTPObservation(_ session: LocalHostTestSession) throws -> ClusterSessionObservation {
++    let pin = String(repeating: "a", count: 64)
++    let object: [String: Any] = ["clusterID": "fixture-cluster", "memberID": session.expectedIdentity.peers[0].id,
++        "role": "leader", "configurationSHA256": pin, "capabilitySHA256": pin,
++        "publicModelID": session.model.publicModelID, "runtimeModelID": session.expectedIdentity.modelID,
++        "artifactSHA256": pin, "configurationModelSHA256": pin, "planSHA256": pin,
++        "prefillSchedule": "serial_v1", "maximumLifetimeSeconds": 10, "maximumRequests": 16,
++        "peers": session.expectedIdentity.peers.enumerated().map { rank, peer in
++            ["id": peer.id, "rank": rank, "runtimeBinarySHA256": peer.buildSHA256] as [String: Any]
++        }]
++    let binding = try JSONDecoder().decode(ClusterStatusBinding.self, from: JSONSerialization.data(withJSONObject: object))
++    return .init(binding: binding, phase: "ready", observedMembershipEpoch: session.expectedIdentity.membershipEpoch.uuidString.lowercased(),
++        observedPrefillSchedule: .serial, ready: true,
++        admission: .init(remainingLifetimeNanoseconds: 4_000_000_000, remainingRequests: 16,
++            activeRequest: false, draining: false, valid: true),
++        members: session.expectedIdentity.peers.enumerated().map { rank, peer in
++            .init(peerID: peer.id, rank: rank, transport: rank == 0 ? .localPipes : .authenticatedSSH,
++                nativeReady: true, requestCapacityBytes: 1024, nativeCleanupObserved: false,
++                ownerReleaseAcknowledged: false, ownerTermination: nil)
++        }, mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation")
++}
++
++private func clusterHTTPGet(_ port: UInt16, nonce: String?, token: String?) async throws -> (Data, HTTPURLResponse) {
++    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/cluster/status")!)
++    request.timeoutInterval = 2
++    if let nonce { request.setValue(nonce, forHTTPHeaderField: ClusterStatusCodec.nonceHeader) }
++    if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
++    let (body, response) = try await URLSession.shared.data(for: request)
++    return (body, response as! HTTPURLResponse)
++}
++
++@Test func clusterStatusUsesNormalBearerPolicyAndFreshBoundedResponse() async throws {
++    let session = LocalHostTestSession()
++    session.observation = try clusterHTTPObservation(session)
++    let host = DistributedLocalServer(session: session, config: .init(authToken: "fixture-token"),
++        tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
++    try await host.start()
++    let port = try #require(await host.status.boundPort)
++    let nonce = UUID().uuidString.lowercased()
++    let (_, absent) = try await clusterHTTPGet(port, nonce: nonce, token: nil)
++    #expect(absent.statusCode == 401)
++    let (_, wrong) = try await clusterHTTPGet(port, nonce: nonce, token: "wrong")
++    #expect(wrong.statusCode == 401)
++    let (_, noNonce) = try await clusterHTTPGet(port, nonce: nil, token: "fixture-token")
++    #expect(noNonce.statusCode == 400 && noNonce.value(forHTTPHeaderField: "Cache-Control") == "no-store")
++    let (bytes, response) = try await clusterHTTPGet(port, nonce: nonce, token: "fixture-token")
++    #expect(response.statusCode == 200 && response.value(forHTTPHeaderField: "Cache-Control") == "no-store")
++    let sample = try ClusterStatusCodec.decode(bytes, nonce: nonce, binding: session.observation!.binding,
++        authenticationConfigured: true, port: port)
++    #expect(sample.ready && sample.admissionAvailable && sample.authenticationConfigured)
++    #expect(session.base.reserveCount == 0 && bytes.count <= ClusterStatusCodec.maximumBytes)
++    #expect(!String(decoding: bytes, as: UTF8.self).contains("fixture-token"))
++    let stopped = await host.stop(until: localHostDeadline())
++    #expect(stopped.cleanupComplete)
++}
++
++@Test func clusterStatusSupportsExplicitNoAuthAndActualLocalClient() async throws {
++    let session = LocalHostTestSession()
++    session.observation = try clusterHTTPObservation(session)
++    let host = localHost(session)
++    try await host.start()
++    let port = try #require(await host.status.boundPort)
++    let nonce = UUID().uuidString.lowercased()
++    let (bytes, response) = try await clusterHTTPGet(port, nonce: nonce, token: nil)
++    #expect(response.statusCode == 200)
++    let sample = try ClusterStatusCodec.decode(bytes, nonce: nonce, binding: session.observation!.binding,
++        authenticationConfigured: false, port: port)
++    #expect(!sample.authenticationConfigured && sample.ready)
++    let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
++        .appendingPathComponent(".cluster-status-http-" + UUID().uuidString)
++    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++    defer { try? FileManager.default.removeItem(at: directory) }
++    let file = directory.appendingPathComponent("local.json")
++    let info = LocalEndpoint.Info(host: "127.0.0.1", port: port, apiKey: "", version: "fixture", pid: -1, updatedAt: "stale")
++    try JSONEncoder().encode(info).write(to: file)
++    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
++    let observed = try await ClusterStatusClient.observe(binding: session.observation!.binding, discoveryURL: file)
++    #expect(observed.ready && !observed.authenticationConfigured)
++    // The stale/invalid discovery PID was irrelevant: a fresh response was required.
++    let stopped = await host.stop(until: localHostDeadline())
++    #expect(stopped.cleanupComplete)
++    do { _ = try await ClusterStatusClient.observe(binding: session.observation!.binding, discoveryURL: file); Issue.record("Dead listener looked ready") }
++    catch {}
++}
++
++@Test func clusterStatusWithoutInstalledObservationRefusesRatherThanInferringFromHost() async throws {
++    let session = LocalHostTestSession(), host = localHost(session)
++    try await host.start()
++    let port = try #require(await host.status.boundPort)
++    let (_, response) = try await clusterHTTPGet(port, nonce: UUID().uuidString.lowercased(), token: nil)
++    #expect(response.statusCode == 503)
++    #expect(session.base.reserveCount == 0)
++    let stopped = await host.stop(until: localHostDeadline())
++    #expect(stopped.cleanupComplete)
++}
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift
+@@ -12,6 +12,8 @@
+     let lock = NSLock()
+     var phase: DistributedInstalledSessionStatus = .prepared
+     var lifetime: UInt64?
++    var observation: ClusterSessionObservation?
++    var httpDiagnosticObservation: ClusterSessionObservation? { lock.withLock { observation } }
+     var validations = 0
+     var starts = 0
+     var stopCalled = false

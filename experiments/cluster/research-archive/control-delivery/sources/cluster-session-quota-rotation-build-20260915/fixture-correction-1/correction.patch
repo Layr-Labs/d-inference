@@ -1,0 +1,11 @@
+--- a/provider-swift/Tests/DistributedRotationOwnerCheck/RotationOwners.swift
++++ b/provider-swift/Tests/DistributedRotationOwnerCheck/RotationOwners.swift
+@@ -2,7 +2,7 @@
+ import Darwin
+ import DarkbloomClusterProtocol
+ import DarkbloomClusterProcess
+-import DarkbloomClusterRemote
++@testable import DarkbloomClusterRemote
+ import MLXLMCommon
+ @testable import ProviderCore
+ 

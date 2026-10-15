@@ -1,0 +1,1762 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift
+@@ -1,6 +1,7 @@
+ import Cmlx
+ import Foundation
+ import MLX
++import DarkbloomClusterSecurity
+ 
+ enum ClusterTransport: String {
+     case jaccl
+@@ -9,124 +10,135 @@
+     var backend: String { self == .jaccl ? "jaccl" : "ring" }
+ }
+ 
++/// The facade owns one native group and, optionally, one session-global codec.
++/// Scoped views retain that same owner; the raw endpoint is never exposed.
+ final class Collective {
+-    private var handle = mlx_distributed_group_new()
+-    let rank: Int
+-    let size: Int
+-    let transport: ClusterTransport
++    private let endpoint: CollectiveNativeEndpoint
++    private let protectedSession: CollectiveProtectedSession?
++    private let scope: CollectiveOperationScope?
+     private var tokenSequence: TokenSelectionSequence?
+     private(set) var modelReductionCount = 0
+-
++    var rank: Int { endpoint.rank }
++    var size: Int { endpoint.size }
++    var transport: ClusterTransport { endpoint.transport }
+     var transportLabel: String { transport.rawValue }
+     var correctnessOnly: Bool { transport == .loopbackTest }
+-
++    var requiresProtection: Bool { protectedSession != nil }
++    var protectedStatus: ClusterRecordTransportStatus? { protectedSession?.status }
+     static var jacclAvailable: Bool { mlx_distributed_is_available("jaccl") }
+ 
+     init(transport: ClusterTransport = .jaccl, bootstrap: JACCLBootstrap? = nil) throws {
+-        guard bootstrap == nil || transport == .jaccl else {
+-            throw ProbeError("Owner bootstrap requires JACCL")
+-        }
+-        self.transport = transport
+-        let expectedRank: Int? = try transport == .loopbackTest ? Self.validateLoopback() : nil
+-        guard mlx_distributed_is_available(transport.backend) else {
+-            throw ProbeError("Requested \(transport.rawValue) backend is unavailable; no fallback is allowed")
+-        }
+-        if transport == .loopbackTest {
+-            log("Using loopback-test transport for correctness only; timings are not cluster-performance evidence")
+-        }
+-        var initialized = mlx_distributed_group_new()
+-        try MLX.withError { error in
+-            let status: Int32
+-            if let bootstrap {
+-                status = try bootstrap.initialize(&initialized)
+-            } else {
+-                status = mlx_distributed_init(&initialized, true, transport.backend)
+-            }
+-            try error.check()
+-            guard status == 0 else { throw ProbeError("\(transport.rawValue) initialization failed: \(status)") }
+-        }
+-        handle = initialized
+-        rank = Int(mlx_distributed_group_rank(initialized))
+-        size = Int(mlx_distributed_group_size(initialized))
+-        guard size == 2, (0..<size).contains(rank) else {
+-            throw ProbeError("FFN TP requires exactly two ranks, got rank=\(rank) size=\(size)")
+-        }
+-        if let expectedRank, rank != expectedRank {
+-            throw ProbeError("Loopback backend initialized an unexpected rank")
+-        }
+-    }
+-
+-    deinit { mlx_distributed_group_free(handle) }
+-
+-    func sum(_ input: MLXArray) -> MLXArray {
+-        // Control agreements and token selection are Int32. Count floating
+-        // model reductions separately to detect optimized-path hook bypasses.
+-        if [.float16, .bfloat16, .float32].contains(input.dtype) { modelReductionCount += 1 }
+-        var result = mlx_array_new()
+-        let status = mlx_distributed_all_sum(&result, input.ctx, handle, StreamOrDevice.cpu.ctx)
+-        precondition(status == 0, "\(transportLabel) all-sum graph construction failed")
+-        return MLXArray(result)
+-    }
+-
+-    /// Serialized point-to-point completion; this is not a peer-consumed ACK.
+-    /// The returned Send handle aliases the input. Caller must not overlap MLX work.
++        endpoint = try .init(transport: transport, bootstrap: bootstrap)
++        protectedSession = nil; scope = nil
++    }
++
++    /// Not selected by serving. Refuses before group creation until the exact
++    /// measured staging profile and outer resource join are implemented.
++    static func protected(transport: ClusterTransport = .jaccl, bootstrap: JACCLBootstrap? = nil,
++                          configuration: CollectiveProtectionConfiguration) throws -> Collective {
++        try configuration.resourcePolicy.requireQualified()
++        let endpoint = try CollectiveNativeEndpoint(transport: transport, bootstrap: bootstrap)
++        let session = try CollectiveProtectedSession(configuration: configuration,
++            io: endpoint.recordIO(maximumFrameBytes: configuration.maximumFrameBytes))
++        return .init(endpoint: endpoint, protectedSession: session, scope: nil)
++    }
++
++    private init(endpoint: CollectiveNativeEndpoint, protectedSession: CollectiveProtectedSession,
++                 scope: CollectiveOperationScope?) {
++        self.endpoint = endpoint; self.protectedSession = protectedSession; self.scope = scope
++    }
++
++    /// The closure is not evaluated on the qualified plaintext path. No mutable
++    /// current-request/phase field can race a retained lookahead boundary.
++    func scoped(_ makeScope: () throws -> CollectiveOperationScope) throws -> Collective {
++        guard let protectedSession else { return self }
++        do {
++            let scope = try makeScope(); try scope.requireBinding(protectedSession.binding)
++            guard protectedSession.status.active else { throw ProbeError("Protected native session is inactive") }
++            return .init(endpoint: endpoint, protectedSession: protectedSession, scope: scope)
++        } catch { protectedSession.invalidate(); throw error }
++    }
++
++    func invalidateProtection() { protectedSession?.invalidate() }
++
++    func part(_ part: CollectiveOperationScope.Part) throws -> Collective {
++        try scoped {
++            guard let scope else { throw ProbeError("Protected sub-operation requires its immutable parent scope") }
++            return try scope.part(part)
++        }
++    }
++
+     func sendCompleted(_ input: MLXArray, to peer: Int, maximumBytes: Int,
+                        check: () throws -> Void) throws -> MLXArray {
+-        try withExtendedLifetime(self) {
+-            try CollectivePointToPoint.send(input, peer: peer, group: handle,
+-                rank: rank, size: size, maximumBytes: maximumBytes, check: check)
+-        }
+-    }
+-
+-    /// Known-shape, exact-dtype receive with evaluated owned-storage admission.
+-    /// Validate the wire header first; a failed transfer fences the whole cohort.
++        guard let protectedSession else {
++            return try endpoint.sendCompleted(input, peer: peer, maximumBytes: maximumBytes, check: check)
++        }
++        do {
++            guard peer == 1 - rank, let scope else { throw ProbeError("Protected send requires its exact scoped peer operation") }
++            let shape = try CollectivePointToPointShape(shape: input.shape, dtype: input.dtype, maximumBytes: maximumBytes)
++            try shape.validateMetadata(input)
++            try protectedSession.send(input, scope: scope.part(.array), check: check)
++            // Ciphertext completed; this retained source alias is not a consumed ACK.
++            return input
++        } catch { protectedSession.invalidate(); throw error }
++    }
++
+     func receiveCompleted(shape: [Int], dtype: DType, from peer: Int, maximumBytes: Int,
+                           check: () throws -> Void) throws -> MLXArray {
+-        try withExtendedLifetime(self) {
+-            try CollectivePointToPoint.receive(shape: shape, dtype: dtype, peer: peer,
+-                group: handle, rank: rank, size: size, maximumBytes: maximumBytes, check: check)
+-        }
+-    }
+-
+-    func barrier() {
+-        let result = sum(MLXArray(Int32(rank + 1)))
++        guard let protectedSession else {
++            return try endpoint.receiveCompleted(shape: shape, dtype: dtype, peer: peer, maximumBytes: maximumBytes, check: check)
++        }
++        do {
++            guard peer == 1 - rank, let scope else { throw ProbeError("Protected receive requires its exact scoped peer operation") }
++            _ = try CollectivePointToPointShape(shape: shape, dtype: dtype, maximumBytes: maximumBytes)
++            return try protectedSession.receive(shape: shape, dtype: dtype, scope: scope.part(.array), check: check)
++        } catch { protectedSession.invalidate(); throw error }
++    }
++
++    private func requirePlaintextCollective() throws {
++        guard protectedSession == nil else {
++            protectedSession?.invalidate()
++            throw ProbeError("Raw collective reductions are forbidden by required record protection")
++        }
++    }
++
++    func sum(_ input: MLXArray) throws -> MLXArray {
++        try requirePlaintextCollective()
++        if [.float16, .bfloat16, .float32].contains(input.dtype) { modelReductionCount += 1 }
++        return try endpoint.sum(input)
++    }
++
++    func barrier() throws {
++        let result = try sum(MLXArray(Int32(rank + 1)))
+         eval(result)
+-        precondition(result.item(Int32.self) == 3, "\(transportLabel) rank handshake failed")
+-    }
+-
+-    /// Both ranks must execute the same shape and loop counts before a model graph is built.
++        guard result.item(Int32.self) == 3 else { throw ProbeError("\(transportLabel) rank handshake failed") }
++    }
++
+     func requireAgreement(_ values: [Int32]) throws {
+-        let mine = MLXArray(values)
+-        let combined = sum(mine)
+-        eval(combined)
++        let combined = try sum(MLXArray(values)); eval(combined)
+         guard combined.asArray(Int32.self) == values.map({ $0 * 2 }) else {
+             throw ProbeError("Ranks disagree on the inference workload or model configuration")
+         }
+     }
+ 
+-    /// Explicitly reset at every warmup/repetition. The first selection verifies
+-    /// this identity with the peer in the same collective that carries its token.
+-    func beginTokenSequence(sequence: Int, vocabularySize: Int, outputCount: Int) {
+-        tokenSequence = TokenSelectionSequence(sequence: sequence, vocabularySize: vocabularySize,
+-                                               outputCount: outputCount)
++    func beginTokenSequence(sequence: Int, vocabularySize: Int, outputCount: Int) throws {
++        try requirePlaintextCollective()
++        tokenSequence = TokenSelectionSequence(sequence: sequence, vocabularySize: vocabularySize, outputCount: outputCount)
+     }
+ 
+     func selectToken(localArgmax: Int, sequence: Int, step: Int) throws -> Int {
++        try requirePlaintextCollective()
+         var state = tokenSequence ?? TokenSelectionSequence(sequence: 0, vocabularySize: 0, outputCount: 0)
+         let payload = state.payload(localArgmax: localArgmax, sequence: sequence, step: step, rank: rank)
+-        let combined = sum(MLXArray(payload))
+-        try MLX.withError { error in
+-            eval(combined)
+-            try error.check()
+-        }
++        let combined = try sum(MLXArray(payload))
++        try MLX.withError { error in eval(combined); try error.check() }
+         let token = try state.accept(combined.asArray(Int32.self), sequence: sequence, step: step)
+-        tokenSequence = state
+-        return token
++        tokenSequence = state; return token
+     }
+ 
+     /// The test backend may only open two IPv4 loopback listeners. Reject
+     /// ambiguous hostnames, extra addresses, malformed ranks, and singleton groups.
+-    private static func validateLoopback() throws -> Int {
++    fileprivate static func validateLoopback() throws -> Int {
+         let environment = ProcessInfo.processInfo.environment
+         guard let rankText = environment["MLX_RANK"], ["0", "1"].contains(rankText),
+             let file = environment["MLX_HOSTFILE"], !file.isEmpty
+@@ -148,3 +160,72 @@
+         return Int(rankText)!
+     }
+ }
++
++/// Only this file can create or use raw native group operations. Record IO
++/// retains this endpoint directly, never the protected facade.
++private final class CollectiveNativeEndpoint: CollectiveCiphertextEndpoint {
++    private let handle: mlx_distributed_group
++    let rank: Int
++    let size: Int
++    let transport: ClusterTransport
++
++    init(transport: ClusterTransport, bootstrap: JACCLBootstrap?) throws {
++        guard bootstrap == nil || transport == .jaccl else { throw ProbeError("Owner bootstrap requires JACCL") }
++        let expectedRank = try transport == .loopbackTest ? Collective.validateLoopback() : nil
++        guard mlx_distributed_is_available(transport.backend) else {
++            throw ProbeError("Requested \(transport.rawValue) backend is unavailable; no fallback is allowed")
++        }
++        if transport == .loopbackTest {
++            log("Using loopback-test transport for correctness only; timings are not cluster-performance evidence")
++        }
++        var initialized = mlx_distributed_group_new()
++        var transferred = false
++        defer { if !transferred { mlx_distributed_group_free(initialized) } }
++        try MLX.withError { error in
++            let status: Int32
++            if let bootstrap { status = try bootstrap.initialize(&initialized) }
++            else { status = mlx_distributed_init(&initialized, true, transport.backend) }
++            try error.check()
++            guard status == 0 else { throw ProbeError("\(transport.rawValue) initialization failed: \(status)") }
++        }
++        let rank = Int(mlx_distributed_group_rank(initialized)), size = Int(mlx_distributed_group_size(initialized))
++        guard size == 2, (0..<size).contains(rank) else { throw ProbeError("Collective requires exactly two ranks") }
++        guard expectedRank == nil || rank == expectedRank else { throw ProbeError("Loopback backend initialized an unexpected rank") }
++        self.transport = transport; self.rank = rank; self.size = size; handle = initialized; transferred = true
++    }
++
++    deinit { mlx_distributed_group_free(handle) }
++
++    func sum(_ input: MLXArray) throws -> MLXArray {
++        var result = mlx_array_new()
++        var transferred = false
++        defer { if !transferred { mlx_array_free(result) } }
++        let status = mlx_distributed_all_sum(&result, input.ctx, handle, StreamOrDevice.cpu.ctx)
++        guard status == 0 else { throw ProbeError("Raw all-sum graph construction failed") }
++        transferred = true; return MLXArray(result)
++    }
++
++    func sendCompleted(_ input: MLXArray, peer: Int, maximumBytes: Int, check: () throws -> Void) throws -> MLXArray {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.send(input, peer: peer, group: handle, rank: rank, size: size,
++                maximumBytes: maximumBytes, check: check)
++        }
++    }
++    func receiveCompleted(shape: [Int], dtype: DType, peer: Int, maximumBytes: Int,
++                          check: () throws -> Void) throws -> MLXArray {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.receive(shape: shape, dtype: dtype, peer: peer, group: handle,
++                rank: rank, size: size, maximumBytes: maximumBytes, check: check)
++        }
++    }
++    func sendCiphertextFrame(_ input: MLXArray, maximumBytes: Int, check: () throws -> Void) throws {
++        _ = try sendCompleted(input, peer: 1 - rank, maximumBytes: maximumBytes, check: check)
++    }
++    func receiveCiphertextFrame(byteCount: Int, check: () throws -> Void) throws -> MLXArray {
++        try receiveCompleted(shape: [byteCount], dtype: .uint8, peer: 1 - rank,
++            maximumBytes: byteCount, check: check)
++    }
++    func recordIO(maximumFrameBytes: Int) throws -> CollectiveRecordByteIO {
++        try .init(endpoint: self, maximumFrameBytes: maximumFrameBytes)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift
+@@ -10,9 +10,8 @@
+     private let bytes: CollectiveRecordByteIO
+     private let records: ClusterAuthenticatedRecordTransport
+ 
+-    init(collective: Collective, sessionKey: SymmetricKey, binding: ClusterRecordBinding,
+-         limits: ClusterRecordLimits, maximumFrameBytes: Int) throws {
+-        let io = try CollectiveRecordByteIO(collective: collective, maximumFrameBytes: maximumFrameBytes)
++    init(io: CollectiveRecordByteIO, sessionKey: SymmetricKey, binding: ClusterRecordBinding,
++         limits: ClusterRecordLimits) throws {
+         self.bytes = io
+         self.records = try .init(sessionKey: sessionKey, binding: binding, limits: limits, io: io)
+     }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveProtectedResources.swift
+@@ -0,0 +1,92 @@
++import CryptoKit
++import DarkbloomClusterSecurity
++import Foundation
++import MLX
++
++/// The fixed measured policy is intentionally absent until the exact codec/native
++/// staging probe and outer owner resource join have been reviewed.
++enum CollectiveProtectedResourcePolicy {
++    case unqualified
++
++    func requireQualified() throws {
++        throw ProbeError("Protected native staging has no qualified memory profile")
++    }
++}
++
++/// Observations needed by admission, not an assertion that these logical host
++/// counts bound Foundation capacities or CryptoKit workspace.
++struct CollectiveProtectedOperationBounds {
++    let plaintextBytes: Int
++    let recordBytes: Int
++    let logicalHostObjectsBytes: Int
++    let nativeFrameAllocationBytes: Int
++    let nativePlaintextAllocationBytes: Int
++
++    init(shape: [Int], dtype: DType, maximumPlaintextBytes: Int, maximumFrameBytes: Int) throws {
++        let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype, maximumBytes: maximumPlaintextBytes)
++        let framing = try ClusterRecordTransferAccounting(length: .exact(geometry.byteCount),
++            maximumTransportFrameBytes: maximumFrameBytes)
++        plaintextBytes = geometry.byteCount; recordBytes = framing.maximumSealedRecordBytes
++        logicalHostObjectsBytes = try [geometry.byteCount,
++            framing.maximumSealedRecordBytes, framing.maximumSealedRecordBytes,
++            framing.codecCiphertextAndTagLogicalBytes].reduce(0) { total, bytes in
++                let value = total.addingReportingOverflow(bytes)
++                guard bytes >= 0, !value.overflow else { throw ProbeError("Protected staging byte count overflow") }
++                return value.partialValue
++            }
++        nativeFrameAllocationBytes = try Memory.allocationFootprintUpperBound(byteCount: framing.maximumSealedRecordBytes)
++        nativePlaintextAllocationBytes = try Memory.allocationFootprintUpperBound(byteCount: geometry.byteCount)
++    }
++}
++
++/// Key freshness/coordinator admission is external. No initializer or caller
++/// boolean can mark this unmeasured resource policy as qualified.
++struct CollectiveProtectionConfiguration {
++    let sessionKey: SymmetricKey
++    let binding: ClusterRecordBinding
++    let limits: ClusterRecordLimits
++    let maximumFrameBytes: Int
++    let resourcePolicy: CollectiveProtectedResourcePolicy
++
++    func requireBinding(epoch: UUID, planSHA256: String) throws {
++        guard binding.epoch == epoch, binding.planSHA256 == (try collectiveRecordDigest(planSHA256)) else {
++            throw ProbeError("Protected native construction differs from the admitted epoch/Plan")
++        }
++        try resourcePolicy.requireQualified()
++    }
++}
++
++/// Required probe observations; these fields do not confer admission.
++/// OS lifetime high-water captures temporaries inside seal/open. Do not replace
++/// it with before/after footprint samples or subtract two historical maxima.
++struct CollectiveProtectedResourceMeasurement: Encodable {
++    let schema = "collective_protected_resource_measurement_v1"
++    let codecSourceSHA256: String
++    let nativeStagingSourceSHA256: String
++    let nativeTailSourceSHA256: String
++    let runtimeBuildSHA256: String
++    let hardwareModel: String
++    let osBuild: String
++    let sdkBuild: String
++    let suite: String
++    let allocatorPolicy: String
++    let scenario: String
++    let plaintextByteCounts: [Int]
++    let nativeShapes: [[Int]]
++    let nativeDTypes: [String]
++    let direction: String
++    let repetitions: Int
++    let baselineNativeActiveBytes: Int
++    let peakNativeActiveBytes: Int
++    let peakNativeCachedBytes: Int
++    let finalNativeActiveBytes: Int
++    let baselinePhysicalFootprintBytes: UInt64
++    let lifetimeMaximumPhysicalFootprintBeforeBytes: UInt64
++    let lifetimeMaximumPhysicalFootprintAfterBytes: UInt64
++    let finalPhysicalFootprintBytes: UInt64
++    let completedRecords: UInt64
++    let refusedRecords: UInt64
++    let publishedArrays: UInt64
++    let plaintextDigestMatched: Bool
++    let rawReceiptSHA256: String
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveProtectedSession.swift
+@@ -0,0 +1,70 @@
++import DarkbloomClusterSecurity
++import Foundation
++import MLX
++
++/// One owner per native group/key pair. Views never make another codec or reset
++/// its directional counters. The lock protects flags only, never caller work.
++final class CollectiveProtectedSession {
++    let binding: ClusterRecordBinding
++    let configuration: CollectiveProtectionConfiguration
++    private let records: CollectiveAuthenticatedRecords
++    private let lock = NSLock()
++    private var active = true
++    private var inOperation = false
++
++    init(configuration: CollectiveProtectionConfiguration, io: CollectiveRecordByteIO) throws {
++        try configuration.resourcePolicy.requireQualified()
++        self.configuration = configuration; binding = configuration.binding
++        records = try .init(io: io, sessionKey: configuration.sessionKey,
++            binding: configuration.binding, limits: configuration.limits)
++    }
++
++    var status: ClusterRecordTransportStatus { records.status }
++
++    func invalidate() {
++        lock.lock(); active = false; lock.unlock()
++        records.invalidate()
++    }
++
++    func send(_ input: MLXArray, scope: CollectiveOperationScope, check: () throws -> Void) throws {
++        try operation(scope, shape: input.shape, dtype: input.dtype, check: check) {
++            try records.sendArray(input, context: scope.context, expectedShape: input.shape,
++                expectedDType: input.dtype, check: { try self.checked(check) })
++        }
++    }
++
++    func receive(shape: [Int], dtype: DType, scope: CollectiveOperationScope,
++                 check: () throws -> Void) throws -> MLXArray {
++        try operation(scope, shape: shape, dtype: dtype, check: check) {
++            try records.receiveArray(context: scope.context, expectedShape: shape, expectedDType: dtype,
++                check: { try self.checked(check) })
++        }
++    }
++
++    private func checked(_ check: () throws -> Void) throws {
++        try check()
++        lock.lock(); let live = active; lock.unlock()
++        guard live, records.status.active else { throw ProbeError("Protected native session is inactive") }
++    }
++
++    private func operation<T>(_ scope: CollectiveOperationScope, shape: [Int], dtype: DType,
++                              check: () throws -> Void, _ body: () throws -> T) throws -> T {
++        lock.lock()
++        guard active, !inOperation else {
++            active = false; lock.unlock(); records.invalidate()
++            throw ProbeError("Protected native session is inactive or reentered")
++        }
++        inOperation = true; lock.unlock()
++        defer { lock.lock(); inOperation = false; lock.unlock() }
++        do {
++            try checked(check); try scope.requireBinding(binding)
++            // The next measured policy must reserve this envelope with the
++            // current loaded/request owner before any host export or crypto.
++            _ = try CollectiveProtectedOperationBounds(shape: shape, dtype: dtype,
++                maximumPlaintextBytes: configuration.limits.maximumPlaintextBytes,
++                maximumFrameBytes: configuration.maximumFrameBytes)
++            try configuration.resourcePolicy.requireQualified()
++            let result = try body(); try checked(check); return result
++        } catch { invalidate(); throw error }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift
+@@ -2,22 +2,30 @@
+ import Foundation
+ import MLX
+ 
+-/// Logical ciphertext frames only. Existing completed P2P still owns all native
+-/// fences. The current JACCL full-buffer tail needs its separate native fix
+-/// before this logical adapter can qualify confidential RDMA wire bytes.
++/// A private native endpoint can provide this capability; Collective itself
++/// deliberately does not conform, preventing ciphertext facade recursion.
++protocol CollectiveCiphertextEndpoint: AnyObject {
++    var rank: Int { get }
++    var size: Int { get }
++    func sendCiphertextFrame(_ input: MLXArray, maximumBytes: Int, check: () throws -> Void) throws
++    func receiveCiphertextFrame(byteCount: Int, check: () throws -> Void) throws -> MLXArray
++}
++
++/// Logical ciphertext frames. Requires the separately qualified native zero-tail
++/// staging fix as well as the authenticated record path.
+ final class CollectiveRecordByteIO: ClusterRecordByteIO {
+-    private let collective: Collective
++    private let endpoint: any CollectiveCiphertextEndpoint
+     let localRank: Int
+     let worldSize: Int
+     let maximumFrameBytes: Int
+ 
+-    init(collective: Collective, maximumFrameBytes: Int) throws {
+-        guard collective.size == 2, (0...1).contains(collective.rank),
++    init(endpoint: any CollectiveCiphertextEndpoint, maximumFrameBytes: Int) throws {
++        guard endpoint.size == 2, (0...1).contains(endpoint.rank),
+               maximumFrameBytes > ClusterRecordTransferAccounting.framingBytes,
+               maximumFrameBytes <= CollectivePointToPointShape.hardByteLimit else {
+             throw ProbeError("Encrypted record byte IO requires bounded two-rank P2P")
+         }
+-        self.collective = collective; localRank = collective.rank; worldSize = collective.size
++        self.endpoint = endpoint; localRank = endpoint.rank; worldSize = endpoint.size
+         self.maximumFrameBytes = maximumFrameBytes
+     }
+ 
+@@ -33,8 +41,7 @@
+             try withExtendedLifetime(bytes) {
+                 let array = MLXArray(bytes, [bytes.count], type: UInt8.self)
+                 try checked()
+-                _ = try collective.sendCompleted(array, to: 1 - localRank,
+-                    maximumBytes: bytes.count, check: checked)
++                try endpoint.sendCiphertextFrame(array, maximumBytes: bytes.count, check: checked)
+                 try checked()
+             }
+         }
+@@ -47,8 +54,7 @@
+         return try MLX.withError { error in
+             func checked() throws { try error.check(); try check(); try error.check() }
+             try checked()
+-            let array = try collective.receiveCompleted(shape: [byteCount], dtype: .uint8,
+-                from: 1 - localRank, maximumBytes: byteCount, check: checked)
++            let array = try endpoint.receiveCiphertextFrame(byteCount: byteCount, check: checked)
+             let copied = array.asData(access: .copy)
+             try checked()
+             guard copied.shape == [byteCount], copied.dType == .uint8, copied.data.count == byteCount else {
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordScope.swift
+@@ -0,0 +1,66 @@
++import CryptoKit
++import DarkbloomClusterSecurity
++import Foundation
++
++/// Immutable local expectation. Nothing here is adopted from an unauthenticated peer.
++struct CollectiveRequestScope {
++    let requestID: UUID
++    let epoch: UUID
++    let planSHA256: Data
++    let agreementSHA256: Data
++
++    init(requestID: UUID, epoch: UUID, planSHA256: String, agreementSHA256: String) throws {
++        self.requestID = requestID; self.epoch = epoch
++        self.planSHA256 = try collectiveRecordDigest(planSHA256)
++        self.agreementSHA256 = try collectiveRecordDigest(agreementSHA256)
++        _ = try ClusterRecordContext(requestID: requestID, type: .requestAgreement, expectationSHA256: self.agreementSHA256)
++    }
++
++    func operation(_ type: ClusterRecordType, metadata: Data) throws -> CollectiveOperationScope {
++        guard metadata.count <= 16_384 else { throw ProbeError("Protected operation metadata exceeds its bound") }
++        var bytes = Data("darkbloom/collective/request-operation/v1\0".utf8)
++        bytes.append(agreementSHA256); bytes.append(metadata)
++        let context = try ClusterRecordContext(requestID: requestID, type: type,
++            expectationSHA256: Data(SHA256.hash(data: bytes)))
++        return .init(request: self, context: context)
++    }
++}
++
++struct CollectiveOperationScope {
++    enum Part: UInt8 { case array = 1, controlLength, controlBody }
++    let request: CollectiveRequestScope?
++    let context: ClusterRecordContext
++
++    fileprivate init(request: CollectiveRequestScope?, context: ClusterRecordContext) {
++        self.request = request; self.context = context
++    }
++
++    static func setup(_ type: ClusterRecordType, agreementSHA256: String) throws -> Self {
++        .init(request: nil, context: try .init(requestID: nil, type: type,
++            expectationSHA256: collectiveRecordDigest(agreementSHA256)))
++    }
++
++    func part(_ part: Part) throws -> Self {
++        var bytes = Data("darkbloom/collective/operation-part/v1\0".utf8)
++        bytes.append(context.expectationSHA256); bytes.append(part.rawValue)
++        return .init(request: request, context: try .init(requestID: context.requestID, type: context.type,
++            expectationSHA256: Data(SHA256.hash(data: bytes))))
++    }
++
++    func requireBinding(_ binding: ClusterRecordBinding) throws {
++        if let request {
++            guard request.epoch == binding.epoch, request.planSHA256 == binding.planSHA256 else {
++                throw ProbeError("Protected operation differs from its fixed session binding")
++            }
++        }
++    }
++}
++
++func collectiveRecordDigest(_ text: String) throws -> Data {
++    let values = Array(text.utf8)
++    guard values.count == 64, values.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
++        throw ProbeError("Protected operation requires a canonical SHA256 identity")
++    }
++    func digit(_ c: UInt8) -> UInt8 { c <= 57 ? c - 48 : c - 87 }
++    return Data(stride(from: 0, to: 64, by: 2).map { digit(values[$0]) * 16 + digit(values[$0 + 1]) })
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationRecordScopes.swift
+@@ -0,0 +1,53 @@
++import Foundation
++
++/// Local semantic joins only. The immutable request scope is shared by every
++/// operation; record counters belong to the Collective session, not this value.
++struct QwenGenerationRecordScopes {
++    let request: CollectiveRequestScope
++
++    init(agreement: QwenLayerStageGenerationAgreement) throws {
++        guard let epoch = UUID(uuidString: agreement.descriptor.membershipEpoch) else {
++            throw ProbeError("Generation record scope lacks its admitted epoch")
++        }
++        request = try .init(requestID: agreement.request.requestID, epoch: epoch,
++            planSHA256: agreement.descriptor.planFingerprint, agreementSHA256: agreement.fingerprint)
++    }
++
++    func readiness() throws -> CollectiveOperationScope {
++        try request.operation(.requestAgreement, metadata: Data("generation-readiness".utf8))
++    }
++    func header(_ expected: QwenLayerStageGenerationBoundaryExpectation) throws -> CollectiveOperationScope {
++        try request.operation(.residualHeader, metadata: canonicalJSONData(expected))
++    }
++    func payload(_ packet: QwenLayerStageGenerationBoundaryPacket) throws -> CollectiveOperationScope {
++        // Receiver uses this only after the header's AEAD and exact local
++        // expectation check. No unauthenticated packet determines allocation.
++        try request.operation(.residualPayload, metadata: Data(packet.fingerprint.utf8))
++    }
++    func token(boundaryFingerprint: String, previousChain: String, ordinal: Int,
++               committedTokens: Int) throws -> CollectiveOperationScope {
++        struct Expected: Encodable {
++            let boundaryFingerprint: String
++            let previousChain: String
++            let ordinal: Int
++            let committedTokens: Int
++        }
++        guard qwenStageWireIsSHA256(boundaryFingerprint), qwenStageWireIsSHA256(previousChain),
++              (0..<4096).contains(ordinal), (1...32_768).contains(committedTokens) else {
++            throw ProbeError("Generation token record context exceeds its admitted domain")
++        }
++        return try request.operation(.targetToken, metadata: canonicalJSONData(Expected(
++            boundaryFingerprint: boundaryFingerprint, previousChain: previousChain,
++            ordinal: ordinal, committedTokens: committedTokens)))
++    }
++    func decision(tokenFingerprint: String) throws -> CollectiveOperationScope {
++        guard qwenStageWireIsSHA256(tokenFingerprint) else { throw ProbeError("Generation decision record context is malformed") }
++        return try request.operation(.generationDecision, metadata: Data(tokenFingerprint.utf8))
++    }
++    func acknowledgement(_ phase: QwenLayerStageGenerationAcknowledgement.Phase,
++                         fingerprint: String) throws -> CollectiveOperationScope {
++        guard qwenStageWireIsSHA256(fingerprint) else { throw ProbeError("Generation acknowledgement record context is malformed") }
++        return try request.operation(phase == .requestRetired ? .requestRetired : .acknowledgement,
++            metadata: Data((phase.rawValue + "|" + fingerprint).utf8))
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -67,7 +67,8 @@
+             try checked()
+             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                 material: { .generation(agreementFingerprint: agreement.fingerprint) },
+-                disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
++                disagreementMessage: "Generation membership/request/source readiness differs",
++                recordScope: { try QwenGenerationRecordScopes(agreement: agreement).readiness() }, check: checked)
+             let control = QwenLayerStageGenerationControl(agreement: agreement)
+             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
+             var session: QwenLayerStageSession?
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift
+@@ -6,11 +6,15 @@
+ final class QwenLayerStageGenerationTransport {
+     let agreement: QwenLayerStageGenerationAgreement
+     let collective: Collective
++    private let recordScopes: QwenGenerationRecordScopes?
+     private(set) var isFailed = false
+     private var inOperation = false
+     struct BoundaryTicket {
+         let packet: QwenLayerStageGenerationBoundaryPacket
+-        fileprivate init(packet: QwenLayerStageGenerationBoundaryPacket) { self.packet = packet }
++        fileprivate let consumedEndpoint: Collective
++        fileprivate init(packet: QwenLayerStageGenerationBoundaryPacket, consumedEndpoint: Collective) {
++            self.packet = packet; self.consumedEndpoint = consumedEndpoint
++        }
+     }
+     private var pendingBoundaryFingerprint: String?
+     var rank: Int { collective.rank }
+@@ -20,8 +24,10 @@
+             throw ProbeError("Generation transport requires two initialized ranks")
+         }
+         self.agreement = agreement; self.collective = collective
+-    }
+-    func retire() { isFailed = true; pendingBoundaryFingerprint = nil }
++        if collective.requiresProtection { recordScopes = try .init(agreement: agreement) }
++        else { recordScopes = nil }
++    }
++    func retire() { isFailed = true; pendingBoundaryFingerprint = nil; collective.invalidateProtection() }
+ 
+     func sendBoundary(_ boundary: QwenLayerStageBoundary,
+                       packet: QwenLayerStageGenerationBoundaryPacket,
+@@ -54,11 +60,14 @@
+             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
+                 hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype)
+             try check()
+-            try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check)
++            try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes,
++                endpoint: endpoint { try $0.header(expected) }, check: check)
+             try receiveAck(.boundaryReady, packet.fingerprint, from: 1, check: check)
+-            _ = try collective.sendCompleted(boundary.array, to: 1, maximumBytes: expected.byteCount, check: check)
++            let payloadEndpoint = try endpoint { try $0.payload(packet) }
++            _ = try payloadEndpoint.sendCompleted(boundary.array, to: 1, maximumBytes: expected.byteCount, check: check)
+             pendingBoundaryFingerprint = packet.fingerprint
+-            return BoundaryTicket(packet: packet)
++            return BoundaryTicket(packet: packet,
++                consumedEndpoint: try endpoint { try $0.acknowledgement(.boundaryConsumed, fingerprint: packet.fingerprint) })
+         }
+     }
+ 
+@@ -67,7 +76,9 @@
+             guard rank == 0, pendingBoundaryFingerprint == ticket.packet.fingerprint else {
+                 throw ProbeError("Generation consumed ticket differs or was replayed")
+             }
+-            try receiveAck(.boundaryConsumed, ticket.packet.fingerprint, from: 1, check: check)
++            try QwenLayerStageGenerationAcknowledgement.validate(
++                receiveAckValues(endpoint: ticket.consumedEndpoint, check: check), agreement: agreement,
++                phase: .boundaryConsumed, packetFingerprint: ticket.packet.fingerprint, rank: 1)
+             pendingBoundaryFingerprint = nil
+         }
+     }
+@@ -78,7 +89,8 @@
+         try operation {
+             guard rank == 1 else { throw ProbeError("Only generation rank1 receives residuals") }
+             let packet = try QwenLayerStageGenerationBoundaryPacket.decode(
+-                receiveData(maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check), expected: expected)
++                receiveData(maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes,
++                    endpoint: endpoint { try $0.header(expected) }, check: check), expected: expected)
+             try sendAck(.boundaryReady, packet.fingerprint, check: check)
+             let dtype: DType
+             switch expected.dtype {
+@@ -87,7 +99,8 @@
+             case "float32": dtype = .float32
+             default: throw ProbeError("Generation receive dtype unsupported")
+             }
+-            let array = try collective.receiveCompleted(shape: expected.shape, dtype: dtype, from: 0,
++            let payloadEndpoint = try endpoint { try $0.payload(packet) }
++            let array = try payloadEndpoint.receiveCompleted(shape: expected.shape, dtype: dtype, from: 0,
+                 maximumBytes: expected.byteCount, check: check)
+             let source = agreement.descriptor
+             let boundary = QwenLayerStageBoundary(requestFingerprint: expected.requestFingerprint,
+@@ -109,7 +122,11 @@
+     func sendToken(_ packet: QwenLayerStageGenerationTokenPacket, check: () throws -> Void) throws {
+         try operation {
+             guard rank == 1 else { throw ProbeError("Only generation rank1 selects target tokens") }
+-            try sendData(packet.encoded(), maximumBytes: 4096, check: check)
++            try sendData(packet.encoded(), maximumBytes: 4096, endpoint: endpoint {
++                try $0.token(boundaryFingerprint: packet.content.boundaryFingerprint,
++                    previousChain: packet.content.previousTokenChainSHA256, ordinal: packet.content.ordinal,
++                    committedTokens: packet.content.committedTokens)
++            }, check: check)
+             try receiveAck(.tokenAccepted, packet.fingerprint, from: 0, check: check)
+         }
+     }
+@@ -117,7 +134,10 @@
+                       committedTokens: Int, check: () throws -> Void) throws -> QwenLayerStageGenerationTokenPacket {
+         try operation {
+             guard rank == 0 else { throw ProbeError("Only generation rank0 receives target tokens") }
+-            return try .decode(receiveData(maximumBytes: 4096, check: check), agreement: agreement,
++            return try .decode(receiveData(maximumBytes: 4096, endpoint: endpoint {
++                try $0.token(boundaryFingerprint: boundaryFingerprint, previousChain: previousChain,
++                    ordinal: ordinal, committedTokens: committedTokens)
++            }, check: check), agreement: agreement,
+                 boundaryFingerprint: boundaryFingerprint, previousTokenChainSHA256: previousChain,
+                 ordinal: ordinal, committedTokens: committedTokens)
+         }
+@@ -131,7 +151,8 @@
+     func sendDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
+         try operation {
+             guard rank == 0 else { throw ProbeError("Only request owner sends generation decisions") }
+-            try sendData(packet.encoded(), maximumBytes: 4096, check: check)
++            try sendData(packet.encoded(), maximumBytes: 4096,
++                endpoint: endpoint { try $0.decision(tokenFingerprint: packet.content.tokenFingerprint) }, check: check)
+             try receiveAck(.decisionAccepted, packet.fingerprint, from: 1, check: check)
+         }
+     }
+@@ -139,7 +160,8 @@
+                          check: () throws -> Void) throws -> QwenLayerStageGenerationDecisionPacket {
+         try operation {
+             guard rank == 1 else { throw ProbeError("Only generation rank1 receives decisions") }
+-            return try .decode(receiveData(maximumBytes: 4096, check: check), agreement: agreement, token: token)
++            return try .decode(receiveData(maximumBytes: 4096,
++                endpoint: endpoint { try $0.decision(tokenFingerprint: token.fingerprint) }, check: check), agreement: agreement, token: token)
+         }
+     }
+     func acknowledgeDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
+@@ -154,11 +176,12 @@
+     func exchangeRetirement(decision: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
+         try operation {
+             let actual: [Int32]
++            let retiredEndpoint = try endpoint { try $0.acknowledgement(.requestRetired, fingerprint: decision.fingerprint) }
+             if rank == 0 {
+                 try sendAck(.requestRetired, decision.fingerprint, check: check)
+-                actual = try receiveAckValues(check: check)
++                actual = try receiveAckValues(endpoint: retiredEndpoint, check: check)
+             } else {
+-                actual = try receiveAckValues(check: check)
++                actual = try receiveAckValues(endpoint: retiredEndpoint, check: check)
+                 try sendAck(.requestRetired, decision.fingerprint, check: check)
+             }
+             try QwenLayerStageGenerationAcknowledgement.validate(actual, agreement: agreement,
+@@ -166,16 +189,16 @@
+         }
+     }
+ 
+-    private func sendData(_ data: Data, maximumBytes: Int, check: () throws -> Void) throws {
++    private func sendData(_ data: Data, maximumBytes: Int, endpoint: Collective, check: () throws -> Void) throws {
+         guard !data.isEmpty, data.count <= maximumBytes else { throw ProbeError("Generation send control byte cap") }
+-        _ = try collective.sendCompleted(MLXArray([UInt32(data.count)]), to: 1 - rank, maximumBytes: 4, check: check)
+-        _ = try collective.sendCompleted(MLXArray(Array(data)), to: 1 - rank, maximumBytes: maximumBytes, check: check)
+-    }
+-    private func receiveData(maximumBytes: Int, check: () throws -> Void) throws -> Data {
+-        let length = try collective.receiveCompleted(shape: [1], dtype: .uint32, from: 1 - rank,
++        _ = try endpoint.part(.controlLength).sendCompleted(MLXArray([UInt32(data.count)]), to: 1 - rank, maximumBytes: 4, check: check)
++        _ = try endpoint.part(.controlBody).sendCompleted(MLXArray(Array(data)), to: 1 - rank, maximumBytes: maximumBytes, check: check)
++    }
++    private func receiveData(maximumBytes: Int, endpoint: Collective, check: () throws -> Void) throws -> Data {
++        let length = try endpoint.part(.controlLength).receiveCompleted(shape: [1], dtype: .uint32, from: 1 - rank,
+             maximumBytes: 4, check: check).item(UInt32.self)
+         guard length > 0, Int(length) <= maximumBytes else { throw ProbeError("Generation received control byte cap") }
+-        let data = try collective.receiveCompleted(shape: [Int(length)], dtype: .uint8, from: 1 - rank,
++        let data = try endpoint.part(.controlBody).receiveCompleted(shape: [Int(length)], dtype: .uint8, from: 1 - rank,
+             maximumBytes: maximumBytes, check: check).asData().data
+         try check(); return data
+     }
+@@ -183,24 +206,32 @@
+                          check: () throws -> Void) throws {
+         let values = try QwenLayerStageGenerationAcknowledgement.values(agreement: agreement,
+             phase: phase, packetFingerprint: fingerprint, rank: rank)
+-        _ = try collective.sendCompleted(MLXArray(values), to: 1 - rank, maximumBytes: 256, check: check)
+-    }
+-    private func receiveAckValues(check: () throws -> Void) throws -> [Int32] {
+-        let actual = try collective.receiveCompleted(shape: [64], dtype: .int32, from: 1 - rank,
++        let endpoint = try endpoint { try $0.acknowledgement(phase, fingerprint: fingerprint) }
++        _ = try endpoint.sendCompleted(MLXArray(values), to: 1 - rank, maximumBytes: 256, check: check)
++    }
++    private func receiveAckValues(endpoint: Collective, check: () throws -> Void) throws -> [Int32] {
++        let actual = try endpoint.receiveCompleted(shape: [64], dtype: .int32, from: 1 - rank,
+             maximumBytes: 256, check: check).asArray(Int32.self)
+         try check(); return actual
+     }
+     private func receiveAck(_ phase: QwenLayerStageGenerationAcknowledgement.Phase, _ fingerprint: String,
+                             from peer: Int, check: () throws -> Void) throws {
+-        try QwenLayerStageGenerationAcknowledgement.validate(receiveAckValues(check: check), agreement: agreement,
++        let endpoint = try endpoint { try $0.acknowledgement(phase, fingerprint: fingerprint) }
++        try QwenLayerStageGenerationAcknowledgement.validate(receiveAckValues(endpoint: endpoint, check: check), agreement: agreement,
+             phase: phase, packetFingerprint: fingerprint, rank: peer)
++    }
++    private func endpoint(_ scope: (QwenGenerationRecordScopes) throws -> CollectiveOperationScope) throws -> Collective {
++        try collective.scoped {
++            guard let recordScopes else { throw ProbeError("Protected generation lacks its immutable request scope") }
++            return try scope(recordScopes)
++        }
+     }
+     private func operation<T>(allowPendingBoundary: Bool = false, _ body: () throws -> T) throws -> T {
+         guard !inOperation, !isFailed, allowPendingBoundary || pendingBoundaryFingerprint == nil else {
+-            isFailed = true; throw ProbeError("Generation transport is failed, reentered or has pending consumption")
++            isFailed = true; collective.invalidateProtection(); throw ProbeError("Generation transport is failed, reentered or has pending consumption")
+         }
+         inOperation = true; defer { inOperation = false }
+         do { let result = try body(); guard !isFailed else { throw ProbeError("Generation transport was poisoned") }; return result }
+-        catch { isFailed = true; throw error }
++        catch { isFailed = true; collective.invalidateProtection(); throw error }
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillReadinessExchange.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillReadinessExchange.swift
+@@ -5,36 +5,43 @@
+ /// The material factory runs at the former request digest-construction point.
+ func requireQwenLongPrefillReadinessDigest(collective: Collective,
+     material: () -> QwenLongPrefillReadinessMaterial, disagreementMessage: String,
++    recordScope: (() throws -> CollectiveOperationScope)? = nil,
+     check: () throws -> Void
+ ) throws -> String {
+     guard collective.size == 2, (0..<2).contains(collective.rank) else {
+         throw ProbeError("Long prefill readiness requires exactly two admitted ranks")
+     }
+-    return try MLX.withError { error in
+-        func checked() throws { try error.check(); try check(); try error.check() }
+-        let digest = material().digest
+-        let values = digest.utf8.map(Int32.init)
+-        func send() throws {
+-            let array = MLXArray(values)
++    do {
++        return try MLX.withError { error in
++            func checked() throws { try error.check(); try check(); try error.check() }
++            let endpoint = try collective.scoped {
++                guard let recordScope else { throw ProbeError("Protected readiness has no explicit operation scope") }
++                return try recordScope()
++            }
++            let digest = material().digest
++            let values = digest.utf8.map(Int32.init)
++            func send() throws {
++                let array = MLXArray(values)
++                try checked()
++                _ = try endpoint.sendCompleted(array, to: 1 - collective.rank,
++                    maximumBytes: 256, check: checked)
++            }
++            func receive() throws -> [Int32] {
++                let actual = try endpoint.receiveCompleted(shape: [64], dtype: .int32,
++                    from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
++                try checked()
++                return actual
++            }
++            // Both ranks publish their digest before either rejects its peer's value.
++            // Completed send is not a peer-consumption acknowledgment.
++            let actual: [Int32]
++            if collective.rank == 0 { try send(); actual = try receive() }
++            else { actual = try receive(); try send() }
+             try checked()
+-            _ = try collective.sendCompleted(array, to: 1 - collective.rank,
+-                maximumBytes: 256, check: checked)
++            guard actual == values else {
++                throw ProbeError(disagreementMessage)
++            }
++            return digest
+         }
+-        func receive() throws -> [Int32] {
+-            let actual = try collective.receiveCompleted(shape: [64], dtype: .int32,
+-                from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
+-            try checked()
+-            return actual
+-        }
+-        // Both ranks publish their digest before either rejects its peer's value.
+-        // Completed send is not a peer-consumption acknowledgment.
+-        let actual: [Int32]
+-        if collective.rank == 0 { try send(); actual = try receive() }
+-        else { actual = try receive(); try send() }
+-        try checked()
+-        guard actual == values else {
+-            throw ProbeError(disagreementMessage)
+-        }
+-        return digest
+-    }
++    } catch { collective.invalidateProtection(); throw error }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -6,6 +6,14 @@
+ extension QwenResidentRuntime {
+     public static func load(_ configuration: QwenResidentLoadConfiguration,
+                             bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        try loadNative(configuration, bootstrap: bootstrap, protection: nil)
++    }
++
++    /// Internal qualification seam. No CLI/config selects it, and unmeasured
++    /// protection refuses before acquiring native process admission.
++    static func loadNative(_ configuration: QwenResidentLoadConfiguration,
++                           bootstrap: QwenResidentBootstrap? = nil,
++                           protection: CollectiveProtectionConfiguration?) throws -> QwenResidentRuntime {
+         // nil preserves the legacy experimental native TCP bootstrap.
+         let nativeBootstrap = try bootstrap?.make(configuration: configuration)
+         let directory = configuration.modelDirectory
+@@ -14,6 +22,7 @@
+             manifestBytes: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
+             environment: ProcessInfo.processInfo.environment, now: DispatchTime.now().uptimeNanoseconds,
+             read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++        try protection?.requireBinding(epoch: configuration.identity.membershipEpoch, planSHA256: admission.plan.fingerprint)
+         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
+         try QwenResidentProcessLease.shared.acquire()
+         var stage: QwenResidentLoadedStage?
+@@ -32,7 +41,12 @@
+                     } catch { try nativeError.check(); throw error }
+                 }
+             }
+-            let collective = try Collective(transport: .jaccl, bootstrap: nativeBootstrap)
++            let collective: Collective
++            if let protection {
++                collective = try .protected(transport: .jaccl, bootstrap: nativeBootstrap, configuration: protection)
++            } else {
++                collective = try Collective(transport: .jaccl, bootstrap: nativeBootstrap)
++            }
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
+@@ -42,7 +56,8 @@
+                 do {
+                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                         material: { .residentLoadIntent(agreementFingerprint: common) },
+-                        disagreementMessage: "Resident load membership/source/Plan differs", check: checked)
++                        disagreementMessage: "Resident load membership/source/Plan differs",
++                        recordScope: { try .setup(.loadAgreement, agreementSHA256: common) }, check: checked)
+                     try autoreleasepool {
+                         let value = try loadQwenResidentStage(admission, check: checked)
+                         retired = value.loaded.model; stage = value
+@@ -71,7 +86,8 @@
+                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
+                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
+-                        disagreementMessage: "Resident peers did not load matching verified stage commitments", check: checked)
++                        disagreementMessage: "Resident peers did not load matching verified stage commitments",
++                        recordScope: { try .setup(.loadedReady, agreementSHA256: loadedIdentity) }, check: checked)
+                     try checked()
+                     return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
+                 } catch {
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeFixture.swift
+@@ -0,0 +1,55 @@
++import CryptoKit
++import DarkbloomClusterSecurity
++import Foundation
++@testable import DarkbloomClusterRuntime
++
++/// In-memory completed byte IO only; no mock codec or native retirement claim.
++final class CollectiveScopeFrames {
++    var incoming: [[Data]] = [[], []]
++    var sentCounts: [[Int]] = [[], []]
++}
++final class CollectiveScopeIO: ClusterRecordByteIO {
++    let localRank: Int
++    let worldSize = 2
++    let maximumFrameBytes = 1064
++    let frames: CollectiveScopeFrames
++    var beforeSend: (() throws -> Void)?
++    init(_ rank: Int, _ frames: CollectiveScopeFrames) { localRank = rank; self.frames = frames }
++    func sendCompleted(_ bytes: Data, check: () throws -> Void) throws {
++        try check(); try beforeSend?()
++        frames.incoming[1 - localRank].append(bytes)
++        frames.sentCounts[localRank].append(bytes.count); try check()
++    }
++    func receiveCompleted(byteCount: Int, check: () throws -> Void) throws -> Data {
++        try check()
++        guard let first = frames.incoming[localRank].first, first.count == byteCount else {
++            throw ProbeError("Scope fixture lacks its exact completed frame")
++        }
++        frames.incoming[localRank].removeFirst(); try check(); return first
++    }
++}
++struct CollectiveScopePair {
++    let frames: CollectiveScopeFrames
++    let binding: ClusterRecordBinding
++    let first: ClusterAuthenticatedRecordTransport
++    let second: ClusterAuthenticatedRecordTransport
++    let firstIO: CollectiveScopeIO
++    init() throws {
++        let frames = CollectiveScopeFrames(); self.frames = frames
++        binding = try .init(epoch: UUID(uuidString: "d01cf2aa-3306-4699-ab39-f050da5d187c")!,
++            planSHA256: Data(repeating: 0x21, count: 32), membershipTranscriptSHA256: Data(repeating: 0x42, count: 32))
++        firstIO = .init(0, frames)
++        let key = SymmetricKey(data: Data(repeating: 0x63, count: 32)) // public test key
++        let limits = try ClusterRecordLimits(maximumPlaintextBytes: 1024)
++        first = try .init(sessionKey: key, binding: binding, limits: limits, io: firstIO)
++        second = try .init(sessionKey: key, binding: binding, limits: limits, io: CollectiveScopeIO(1, frames))
++    }
++    func request(_ id: String = "6012e020-9a4e-473d-9316-96990a17d411") throws -> CollectiveRequestScope {
++        try .init(requestID: UUID(uuidString: id)!, epoch: binding.epoch,
++            planSHA256: String(repeating: "21", count: 32), agreementSHA256: String(repeating: "31", count: 32))
++    }
++    func expectation(_ scope: CollectiveOperationScope, count: Int = 8) throws -> ClusterRecordTransferExpectation {
++        try scope.requireBinding(binding)
++        return try .init(context: scope.context, length: .exact(count))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift
+@@ -0,0 +1,116 @@
++import CryptoKit
++import DarkbloomClusterSecurity
++import Foundation
++import Testing
++@testable import DarkbloomClusterRuntime
++
++@Suite struct CollectiveScopeTests {
++    @Test func immutableRequestPartAndSetupBindings() throws {
++        let pair = try CollectiveScopePair(), request = try pair.request()
++        let payload = try request.operation(.residualPayload, metadata: Data("frame-0".utf8))
++        let length = try payload.part(.controlLength), body = try payload.part(.controlBody)
++        #expect(length.context.expectationSHA256 != body.context.expectationSHA256)
++        #expect(payload.context.expectationSHA256 != body.context.expectationSHA256)
++        let another = try pair.request("a13e5d3f-d6b5-42e4-956c-a9289d7d3b96")
++        #expect(try another.operation(.residualPayload, metadata: Data("frame-0".utf8)).context.requestID != payload.context.requestID)
++        #expect(throws: ClusterRecordError.self) { try request.operation(.loadedReady, metadata: Data()) }
++        #expect(throws: ClusterRecordError.self) { try CollectiveOperationScope.setup(.requestRetired, agreementSHA256: String(repeating: "11", count: 32)) }
++        #expect(throws: ProbeError.self) { try request.operation(.residualHeader, metadata: Data(repeating: 0, count: 16_385)) }
++        for hash in [String(repeating: "A", count: 64), String(repeating: "0", count: 63), ""] {
++            #expect(throws: ProbeError.self) { try CollectiveRequestScope(requestID: UUID(), epoch: pair.binding.epoch,
++                planSHA256: hash, agreementSHA256: String(repeating: "31", count: 32)) }
++        }
++        let changedEpoch = try ClusterRecordBinding(epoch: UUID(), planSHA256: pair.binding.planSHA256,
++            membershipTranscriptSHA256: pair.binding.membershipTranscriptSHA256)
++        #expect(throws: ProbeError.self) { try payload.requireBinding(changedEpoch) }
++        let changedPlan = try ClusterRecordBinding(epoch: pair.binding.epoch, planSHA256: Data(repeating: 0x22, count: 32),
++            membershipTranscriptSHA256: pair.binding.membershipTranscriptSHA256)
++        #expect(throws: ProbeError.self) { try payload.requireBinding(changedPlan) }
++    }
++
++    @Test func setupRequestsRetirementShareDirectionalCounters() throws {
++        let pair = try CollectiveScopePair(), firstRequest = try pair.request()
++        let secondRequest = try pair.request("a13e5d3f-d6b5-42e4-956c-a9289d7d3b96")
++        let scopes = try [
++            CollectiveOperationScope.setup(.loadAgreement, agreementSHA256: String(repeating: "41", count: 32)),
++            .setup(.loadedReady, agreementSHA256: String(repeating: "42", count: 32)),
++            firstRequest.operation(.requestAgreement, metadata: Data()),
++            firstRequest.operation(.residualPayload, metadata: Data([1])),
++            firstRequest.operation(.requestRetired, metadata: Data([2])),
++            secondRequest.operation(.requestAgreement, metadata: Data()),
++            secondRequest.operation(.residualPayload, metadata: Data([1])),
++        ]
++        let bytes = Data(repeating: 7, count: 8)
++        for (index, scope) in scopes.enumerated() {
++            let expected = try pair.expectation(scope)
++            try pair.first.send(bytes, expecting: expected, check: {})
++            #expect(try pair.second.receive(expecting: expected, check: {}) == bytes)
++            #expect(pair.first.status.codec.sealedRecords == UInt64(index + 1))
++            #expect(pair.second.status.codec.openedRecords == UInt64(index + 1))
++        }
++        #expect(pair.frames.sentCounts[0] == Array(repeating: 48, count: scopes.count))
++        #expect(pair.frames.incoming.allSatisfy(\.isEmpty))
++        let reverse = try pair.expectation(scopes[4])
++        try pair.second.send(bytes, expecting: reverse, check: {})
++        #expect(try pair.first.receive(expecting: reverse, check: {}) == bytes)
++        #expect(pair.first.status.codec.openedRecords == 1)
++        #expect(pair.first.status.codec.sealedRecords == 7)
++    }
++
++    @Test func wrongRequestPartAndRetirementCannotPublish() throws {
++        for fault in 0..<3 {
++            let pair = try CollectiveScopePair(), request = try pair.request()
++            let send = try request.operation(.residualPayload, metadata: Data([0])).part(.controlBody)
++            let receive: CollectiveOperationScope
++            if fault == 0 {
++                receive = try pair.request("a13e5d3f-d6b5-42e4-956c-a9289d7d3b96")
++                    .operation(.residualPayload, metadata: Data([0])).part(.controlBody)
++            } else if fault == 1 {
++                receive = try request.operation(.residualPayload, metadata: Data([0])).part(.controlLength)
++            } else { receive = try request.operation(.requestRetired, metadata: Data([0])).part(.controlBody) }
++            try pair.first.send(Data(repeating: 7, count: 8), expecting: pair.expectation(send), check: {})
++            var published = false
++            #expect(throws: (any Error).self) {
++                _ = try pair.second.receive(expecting: pair.expectation(receive), check: {}); published = true
++            }
++            #expect(!published && !pair.second.status.active)
++            #expect(pair.second.status.codec.openedRecords == 0)
++        }
++    }
++
++    @Test func replayAcrossNewScopeAndReentrantIOPoisonSharedCodec() throws {
++        let pair = try CollectiveScopePair(), scope = try pair.request().operation(.residualPayload, metadata: Data([0]))
++        let expected = try pair.expectation(scope), bytes = Data(repeating: 9, count: 8)
++        try pair.first.send(bytes, expecting: expected, check: {})
++        let prior = pair.frames.incoming[1][0]
++        #expect(try pair.second.receive(expecting: expected, check: {}) == bytes)
++        pair.frames.incoming[1].append(prior)
++        #expect(throws: (any Error).self) { try pair.second.receive(expecting: expected, check: {}) }
++        #expect(!pair.second.status.active && pair.second.status.codec.openedRecords == 1)
++        let reentrant = try CollectiveScopePair(), reentrantExpected = try reentrant.expectation(scope)
++        reentrant.firstIO.beforeSend = { try reentrant.first.send(bytes, expecting: reentrantExpected, check: {}) }
++        defer { reentrant.firstIO.beforeSend = nil }
++        #expect(throws: (any Error).self) { try reentrant.first.send(bytes, expecting: reentrantExpected, check: {}) }
++        #expect(!reentrant.first.status.active && reentrant.frames.sentCounts[0].isEmpty)
++    }
++
++    @Test func cancelledReceiveCannotPublishOrReopen() throws {
++        let pair = try CollectiveScopePair(), scope = try pair.request().operation(.targetToken, metadata: Data())
++        let expected = try pair.expectation(scope)
++        try pair.first.send(Data(repeating: 3, count: 8), expecting: expected, check: {})
++        var published = false
++        #expect(throws: ProbeError.self) {
++            _ = try pair.second.receive(expecting: expected, check: { throw ProbeError("fixture cancellation") }); published = true
++        }
++        #expect(!published && !pair.second.status.active && pair.second.status.codec.openedRecords == 0)
++        #expect(throws: (any Error).self) { try pair.second.receive(expecting: expected, check: {}) }
++    }
++
++    @Test func unqualifiedProtectionRefusesBeforeNativeConstruction() throws {
++        let pair = try CollectiveScopePair()
++        let configuration = CollectiveProtectionConfiguration(sessionKey: SymmetricKey(data: Data(repeating: 0, count: 32)),
++            binding: pair.binding, limits: try .init(maximumPlaintextBytes: 1024), maximumFrameBytes: 1064,
++            resourcePolicy: .unqualified)
++        #expect(throws: ProbeError.self) { try Collective.protected(configuration: configuration) }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenRecordScopeTests.swift
+@@ -0,0 +1,50 @@
++import Foundation
++import Testing
++@_spi(Benchmark) @testable import DarkbloomClusterRuntime
++
++@Suite struct QwenRecordScopeTests {
++    @Test func actualWireExpectationsAndRetainedLookaheadScope() throws {
++        func hash(_ value: String) -> String { String(repeating: value, count: 64) }
++        // Metadata-only software profile. It grants no model/load authority.
++        let profile = try QwenLayerStageGenerationProfile(identifier: "record-scope-fixture", vocabularySize: 32,
++            hiddenSize: 32, activationDType: "bfloat16", maximumPromptTokens: 4,
++            maximumChunkTokens: 2, maximumOutputTokens: 2, maximumContextTokens: 6)
++        let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
++            promptTokenIDs: [1, 2, 3, 4], chunkSize: 2, outputCount: 2, stopTokenIDs: [])
++        let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: hash("1"),
++            artifactAggregateSHA256: hash("2"), storageCommitmentSHA256: hash("3"),
++            planFingerprint: hash("4"), producerStageFingerprint: hash("5"))
++        let agreement = try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: UUID(),
++            source: source, consumerStageFingerprint: hash("6"), rankBuildSHA256: [hash("7"), hash("8")],
++            numericalPolicySHA256: hash("9"), prefillPolicy: .oneChunkLookahead)
++        let scopes = try QwenGenerationRecordScopes(agreement: agreement)
++        let first = try QwenLayerStageGenerationBoundaryExpectation(agreement: agreement, frame: request.frame(sequence: 0),
++            tokenIDs: [1, 2], previousTokenChainSHA256: agreement.initialTokenChainSHA256)
++        let second = try QwenLayerStageGenerationBoundaryExpectation(agreement: agreement, frame: request.frame(sequence: 1),
++            tokenIDs: [3, 4], previousTokenChainSHA256: agreement.initialTokenChainSHA256)
++        let packet1 = try QwenLayerStageGenerationBoundaryPacket(expected: first, payloadSHA256: hash("a"))
++        let packet2 = try QwenLayerStageGenerationBoundaryPacket(expected: second, payloadSHA256: hash("b"))
++        let retained = try scopes.acknowledgement(.boundaryConsumed, fingerprint: packet1.fingerprint)
++        let oldDigest = retained.context.expectationSHA256
++        #expect(try scopes.header(first).context.expectationSHA256 != scopes.header(second).context.expectationSHA256)
++        #expect(try scopes.payload(packet1).context.expectationSHA256 != scopes.payload(packet2).context.expectationSHA256)
++        #expect(try scopes.acknowledgement(.boundaryConsumed, fingerprint: packet2.fingerprint).context.expectationSHA256 != oldDigest)
++        #expect(retained.context.expectationSHA256 == oldDigest)
++        let token = try QwenLayerStageGenerationTokenPacket(agreement: agreement, boundaryFingerprint: packet2.fingerprint,
++            previousTokenChainSHA256: agreement.initialTokenChainSHA256, ordinal: 0, committedTokens: 4, tokenID: 12)
++        let sender = try scopes.token(boundaryFingerprint: token.content.boundaryFingerprint,
++            previousChain: token.content.previousTokenChainSHA256, ordinal: token.content.ordinal,
++            committedTokens: token.content.committedTokens)
++        let receiver = try scopes.token(boundaryFingerprint: packet2.fingerprint,
++            previousChain: agreement.initialTokenChainSHA256, ordinal: 0, committedTokens: 4)
++        #expect(sender.context.expectationSHA256 == receiver.context.expectationSHA256)
++        #expect(try scopes.token(boundaryFingerprint: packet2.fingerprint,
++            previousChain: agreement.initialTokenChainSHA256, ordinal: 1, committedTokens: 5).context.expectationSHA256 != sender.context.expectationSHA256)
++        let decision = try QwenLayerStageGenerationDecisionPacket(agreement: agreement, token: token, continueRequested: false)
++        #expect(try scopes.decision(tokenFingerprint: decision.content.tokenFingerprint).context.expectationSHA256
++            == scopes.decision(tokenFingerprint: token.fingerprint).context.expectationSHA256)
++        let retired = try scopes.acknowledgement(.requestRetired, fingerprint: decision.fingerprint)
++        #expect(retired.context.type == .requestRetired)
++        #expect(try scopes.acknowledgement(.decisionAccepted, fingerprint: decision.fingerprint).context.expectationSHA256 != retired.context.expectationSHA256)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationCases.swift
+@@ -0,0 +1,55 @@
++#if COLLECTIVE_RECORD_ALLOCATION_CHECK
++import Foundation
++import MLX
++
++struct CollectiveAllocationCase {
++    enum Failure: String { case none, ciphertext, tag, beforeExport, afterSeal, afterReceive, afterOpen, oversize, shape }
++    struct Geometry {
++        let id: String
++        let shape: [Int]
++        let dtype: DType
++        var bytes: Int { shape.reduce(1, *) * dtype.size }
++    }
++    let id: String
++    let geometries: [Geometry]
++    let rounds: Int
++    let failure: Failure
++    let sessionOnly: Bool
++    let priming: [Geometry]
++    init(id: String, geometries: [Geometry], rounds: Int, failure: Failure, sessionOnly: Bool, priming: [Geometry] = []) {
++        self.id = id; self.geometries = geometries; self.rounds = rounds
++        self.failure = failure; self.sessionOnly = sessionOnly; self.priming = priming
++    }
++    static let maximumPlaintextBytes = 512 * 5120 * 4
++    static let maximumFrameBytes = maximumPlaintextBytes + 40
++
++    static var all: [Self] {
++        let scalar = Geometry(id: "u32-4", shape: [1], dtype: .uint32)
++        let ack = Geometry(id: "i32-256", shape: [64], dtype: .int32)
++        let tiny = Geometry(id: "u8-1", shape: [1], dtype: .uint8)
++        var shapes = [scalar, ack, tiny, .init(id: "u8-4096", shape: [4096], dtype: .uint8),
++            .init(id: "u8-16384", shape: [16384], dtype: .uint8)]
++        for (label, dtype) in [("bf16", DType.bfloat16), ("f32", DType.float32)] {
++            for hidden in [4096, 5120] {
++                for chunk in [1, 511, 512] {
++                    shapes.append(.init(id: "\(label)-\(chunk)x\(hidden)", shape: [1, chunk, hidden], dtype: dtype))
++                }
++            }
++        }
++        let largest = shapes.last!
++        var cases = shapes.map { Self(id: "fresh-" + $0.id, geometries: [$0], rounds: 32, failure: .none, sessionOnly: false) }
++        cases.append(.init(id: "reuse-large-short", geometries: [largest, scalar, ack, largest, tiny], rounds: 8, failure: .none, sessionOnly: false))
++        for failure in [Failure.ciphertext, .tag, .beforeExport, .afterSeal, .afterReceive, .afterOpen, .oversize, .shape] {
++            cases.append(.init(id: "failure-" + failure.rawValue, geometries: [largest], rounds: 1, failure: failure, sessionOnly: false))
++            cases.append(.init(id: "reused-failure-" + failure.rawValue, geometries: [largest], rounds: 1,
++                failure: failure, sessionOnly: false, priming: [largest, scalar, ack]))
++        }
++        cases.append(.init(id: "session-only", geometries: [], rounds: 1, failure: .none, sessionOnly: true))
++        return cases
++    }
++    static func find(_ id: String) throws -> Self {
++        guard let value = all.first(where: { $0.id == id }) else { throw ProbeError("Unknown fixed allocation case") }
++        return value
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationEndpoint.swift
+@@ -0,0 +1,56 @@
++#if COLLECTIVE_RECORD_ALLOCATION_CHECK
++import Foundation
++import MLX
++
++final class CollectiveAllocationWeakArray {
++    weak var value: MLXArray?
++    init(_ value: MLXArray) { self.value = value }
++}
++
++/// Only ciphertext delivery is in memory. Real native byte export/import and
++/// codec/adapter paths remain unchanged; this is not a simulated RDMA result.
++final class CollectiveAllocationMailbox {
++    var frame: Data?
++    var lengths: [Int] = []
++    var nativeReceiveCompleted = false
++    var weakArrays: [CollectiveAllocationWeakArray] = []
++    var failure: CollectiveAllocationCase.Failure
++    init(_ failure: CollectiveAllocationCase.Failure) { self.failure = failure }
++    func track(_ array: MLXArray) throws {
++        guard weakArrays.count < 256 else { throw ProbeError("Allocation fixture array inventory cap") }
++        weakArrays.append(.init(array))
++    }
++}
++
++final class CollectiveAllocationEndpoint: CollectiveCiphertextEndpoint {
++    let rank: Int
++    let size = 2
++    let mailbox: CollectiveAllocationMailbox
++    init(rank: Int, mailbox: CollectiveAllocationMailbox) { self.rank = rank; self.mailbox = mailbox }
++    func sendCiphertextFrame(_ input: MLXArray, maximumBytes: Int, check: () throws -> Void) throws {
++        try check()
++        guard rank == 0, mailbox.frame == nil, mailbox.lengths.count < 64 else {
++            throw ProbeError("Allocation fixture has overlapping or excess frames")
++        }
++        try mailbox.track(input)
++        var frame = try CollectivePointToPoint.copyCompletedBytes(input, maximumBytes: maximumBytes, check: check)
++        guard frame.count > 40 else { throw ProbeError("Allocation fixture frame is truncated") }
++        if mailbox.failure == .ciphertext { frame[24] ^= 1 }
++        if mailbox.failure == .tag { frame[frame.count - 1] ^= 1 }
++        mailbox.lengths.append(frame.count); mailbox.frame = frame
++        try check()
++    }
++    func receiveCiphertextFrame(byteCount: Int, check: () throws -> Void) throws -> MLXArray {
++        try check()
++        guard rank == 1, let frame = mailbox.frame, frame.count == byteCount else {
++            throw ProbeError("Allocation fixture lacks an exact ciphertext frame")
++        }
++        mailbox.frame = nil
++        let array = try CollectivePointToPoint.materializeCompletedBytes(frame, shape: [byteCount], dtype: .uint8,
++            maximumBytes: byteCount, check: check)
++        try mailbox.track(array)
++        mailbox.nativeReceiveCompleted = true
++        try check(); return array
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationExecution.swift
+@@ -0,0 +1,127 @@
++#if COLLECTIVE_RECORD_ALLOCATION_CHECK
++import CryptoKit
++import DarkbloomClusterSecurity
++import Foundation
++import MLX
++
++enum CollectiveAllocationCancellation: Error { case injected }
++struct CollectiveAllocationExecution {
++    let sentRecords: UInt64
++    let openedRecords: UInt64
++    let publishedArrays: Int
++    let refusedRecords: Int
++    let frameLengths: [Int]
++    let expectedPlaintextBytes: [Int]
++    let actualInputByteCounts: [Int]
++    let attemptedShapes: [[Int]]
++    let attemptedDTypes: [String]
++    let verifiedPlaintextDigests: [String]
++    let senderActiveBeforeCleanup: Bool
++    let receiverActiveBeforeCleanup: Bool
++    let weakArrays: [CollectiveAllocationWeakArray]
++
++    static func run(_ test: CollectiveAllocationCase, check: () throws -> Void) throws -> Self {
++        let mailbox = CollectiveAllocationMailbox(.none)
++        let key = SymmetricKey(data: Data(repeating: 0x63, count: 32)) // public fixture bytes only
++        let binding = try ClusterRecordBinding(epoch: UUID(), planSHA256: Data(repeating: 0x21, count: 32),
++            membershipTranscriptSHA256: Data(repeating: 0x42, count: 32))
++        let limits = try ClusterRecordLimits(maximumPlaintextBytes: CollectiveAllocationCase.maximumPlaintextBytes)
++        let sender = try CollectiveAuthenticatedRecords(io: .init(endpoint: CollectiveAllocationEndpoint(rank: 0, mailbox: mailbox),
++            maximumFrameBytes: CollectiveAllocationCase.maximumFrameBytes), sessionKey: key, binding: binding, limits: limits)
++        let receiver = try CollectiveAuthenticatedRecords(io: .init(endpoint: CollectiveAllocationEndpoint(rank: 1, mailbox: mailbox),
++            maximumFrameBytes: CollectiveAllocationCase.maximumFrameBytes), sessionKey: key, binding: binding, limits: limits)
++        defer { sender.invalidate(); receiver.invalidate(); mailbox.frame = nil }
++        let request = try CollectiveRequestScope(requestID: UUID(), epoch: binding.epoch,
++            planSHA256: String(repeating: "21", count: 32), agreementSHA256: String(repeating: "31", count: 32))
++        var published = 0, refused = 0, sizes: [Int] = [], digests: [String] = []
++        var actualSizes: [Int] = [], attemptedShapes: [[Int]] = [], attemptedTypes: [String] = []
++        var currentFailure = CollectiveAllocationCase.Failure.none
++        var sentBefore: UInt64 = 0, openedBefore: UInt64 = 0
++        func injectedCheck() throws {
++            try check()
++            switch currentFailure {
++            case .beforeExport: throw CollectiveAllocationCancellation.injected
++            case .afterSeal where sender.status.codec.sealedRecords > sentBefore: throw CollectiveAllocationCancellation.injected
++            case .afterReceive where mailbox.nativeReceiveCompleted: throw CollectiveAllocationCancellation.injected
++            case .afterOpen where receiver.status.codec.openedRecords > openedBefore: throw CollectiveAllocationCancellation.injected
++            default: break
++            }
++        }
++        let operations = test.priming.map { ($0, CollectiveAllocationCase.Failure.none) }
++            + (0..<test.rounds).flatMap { _ in test.geometries.map { ($0, test.failure) } }
++        for (geometry, failure) in operations {
++            currentFailure = failure; mailbox.failure = failure; mailbox.nativeReceiveCompleted = false
++            sentBefore = sender.status.codec.sealedRecords; openedBefore = receiver.status.codec.openedRecords
++            let publishedBefore = published
++            try autoreleasepool {
++                try check()
++                let invalid = failure == .oversize || failure == .shape
++                let shape = invalid ? [1] : geometry.shape
++                let dtype = invalid ? DType.uint32 : geometry.dtype
++                let bytes = invalid ? 4 : geometry.bytes
++                let input = try CollectivePointToPoint.materializeCompletedBytes(Data(repeating: 0x5a, count: bytes),
++                    shape: shape, dtype: dtype, maximumBytes: bytes, check: check)
++                try mailbox.track(input)
++                let context = try request.operation(.residualPayload,
++                    metadata: Data((test.id + "|" + geometry.id).utf8)).part(.array).context
++                let expectedShape = failure == .oversize ? [CollectiveAllocationCase.maximumPlaintextBytes + 1]
++                    : failure == .shape ? [2] : geometry.shape
++                let expectedDType = failure == .oversize ? DType.uint8 : dtype
++                sizes.append(expectedShape.reduce(1, *) * expectedDType.size)
++                actualSizes.append(bytes); attemptedShapes.append(expectedShape); attemptedTypes.append(String(describing: expectedDType))
++                do {
++                    try sender.sendArray(input, context: context, expectedShape: expectedShape,
++                        expectedDType: expectedDType, check: injectedCheck)
++                    let output = try receiver.receiveArray(context: context, expectedShape: expectedShape,
++                        expectedDType: expectedDType, check: injectedCheck)
++                    published += 1; try mailbox.track(output)
++                    guard failure == .none else { throw ProbeError("Failure case published native plaintext") }
++                    let actual = try CollectivePointToPoint.copyCompletedBytes(output, maximumBytes: bytes, check: check)
++                    guard actual.count == bytes, actual.allSatisfy({ $0 == 0x5a }) else {
++                        throw ProbeError("Allocation probe changed authenticated native bytes")
++                    }
++                    digests.append(SHA256.hash(data: actual).map { String(format: "%02x", $0) }.joined())
++                } catch {
++                    try check() // Native/resource/deadline errors cannot count as expected refusal.
++                    let expected: Bool
++                    switch failure {
++                    case .ciphertext, .tag: expected = (error as? ClusterRecordError) == .authenticationFailed
++                    case .beforeExport, .afterSeal, .afterReceive, .afterOpen: expected = error is CollectiveAllocationCancellation
++                    case .oversize: expected = (error as? ProbeError)?.description == "Point-to-point transfer exceeds the admitted byte limit"
++                    case .shape: expected = (error as? ProbeError)?.description == "Point-to-point transfer changed native array metadata"
++                    case .none: expected = false
++                    }
++                    guard expected, published == publishedBefore else { throw error }
++                    refused += 1
++                }
++            }
++        }
++        let sent = sender.status, opened = receiver.status
++        let count = UInt64(operations.count)
++        let primed = UInt64(test.priming.count)
++        if test.failure == .none {
++            guard sent.active, opened.active, sent.codec.sealedRecords == count,
++                  opened.codec.openedRecords == count, published == Int(count), refused == 0,
++                  mailbox.frame == nil, mailbox.lengths == sizes.map({ $0 + 40 }) else {
++                throw ProbeError("Allocation success counters or exact frames differ")
++            }
++        } else {
++            let beforeSend = [.beforeExport, .oversize, .shape].contains(test.failure)
++            let beforeIO = beforeSend || test.failure == .afterSeal
++            let afterOpen = test.failure == .afterOpen
++            guard refused == 1, published == Int(primed),
++                  sent.codec.sealedRecords == primed + (beforeSend ? 0 : 1),
++                  opened.codec.openedRecords == primed + (afterOpen ? 1 : 0),
++                  mailbox.lengths.count == Int(primed) + (beforeIO ? 0 : 1),
++                  (beforeIO ? !sent.active : !opened.active) else {
++                throw ProbeError("Allocation failure did not poison the expected owner before publication")
++            }
++        }
++        return .init(sentRecords: sent.codec.sealedRecords, openedRecords: opened.codec.openedRecords,
++            publishedArrays: published, refusedRecords: refused, frameLengths: mailbox.lengths,
++            expectedPlaintextBytes: sizes, actualInputByteCounts: actualSizes, attemptedShapes: attemptedShapes,
++            attemptedDTypes: attemptedTypes, verifiedPlaintextDigests: digests,
++            senderActiveBeforeCleanup: sent.active, receiverActiveBeforeCleanup: opened.active, weakArrays: mailbox.weakArrays)
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationFootprint.swift
+@@ -0,0 +1,37 @@
++#if COLLECTIVE_RECORD_ALLOCATION_CHECK
++import Darwin
++import Foundation
++
++struct CollectiveAllocationFootprint: Encodable {
++    let currentBytes: UInt64
++    let lifetimeMaximumBytes: UInt64
++
++    static func read() throws -> Self {
++        var value = rusage_info_v4()
++        let status = withUnsafeMutablePointer(to: &value) { pointer in
++            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
++                proc_pid_rusage(getpid(), Int32(RUSAGE_INFO_V4), $0)
++            }
++        }
++        guard status == 0, value.ri_phys_footprint > 0,
++              value.ri_lifetime_max_phys_footprint >= value.ri_phys_footprint else {
++            throw ProbeError("OS lifetime physical high-water is unavailable")
++        }
++        return .init(currentBytes: value.ri_phys_footprint, lifetimeMaximumBytes: value.ri_lifetime_max_phys_footprint)
++    }
++
++    static func systemString(_ name: String) throws -> String {
++        var count = 0
++        guard sysctlbyname(name, nil, &count, nil, 0) == 0, (1...256).contains(count) else {
++            throw ProbeError("Allocation probe system identity unavailable")
++        }
++        var bytes = [UInt8](repeating: 0, count: count)
++        let status = bytes.withUnsafeMutableBytes { sysctlbyname(name, $0.baseAddress, &count, nil, 0) }
++        guard status == 0, count == bytes.count, bytes.last == 0,
++              let value = String(bytes: bytes.dropLast(), encoding: .utf8), !value.isEmpty else {
++            throw ProbeError("Allocation probe system identity malformed")
++        }
++        return value
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationProbe.swift
+@@ -0,0 +1,68 @@
++#if COLLECTIVE_RECORD_ALLOCATION_CHECK
++import Foundation
++import MLX
++
++@_spi(ClusterTesting) public enum CollectiveAllocationProbe {
++    public static func cases() throws -> Data {
++        struct Value: Encodable { let id: String; let byteCounts: [Int]; let primingByteCounts: [Int]; let rounds: Int; let failure: String }
++        return try JSONEncoder().encode(CollectiveAllocationCase.all.map {
++            Value(id: $0.id, byteCounts: $0.geometries.map(\.bytes), primingByteCounts: $0.priming.map(\.bytes), rounds: $0.rounds, failure: $0.failure.rawValue)
++        })
++    }
++
++    public static func run(caseID: String) throws -> Data {
++        let test = try CollectiveAllocationCase.find(caseID)
++        return try MLX.withError { native in
++            try QwenResidentResourceEnvironment.require()
++            Memory.cacheLimit = 0
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try native.check()
++            let baselineNative = Memory.snapshot(), baselinePhysical = try CollectiveAllocationFootprint.read()
++            Memory.peakMemory = 0
++            let start = DispatchTime.now().uptimeNanoseconds
++            var nextResourceCheck: UInt64 = 0
++            func check() throws {
++                try native.check()
++                let now = DispatchTime.now().uptimeNanoseconds
++                guard now >= start, now - start < 55_000_000_000,
++                      Memory.activeMemory <= baselineNative.activeMemory + 256 * 1024 * 1024 else {
++                    throw ProbeError("Allocation fixture exceeds fixed native/time bound")
++                }
++                if now >= nextResourceCheck {
++                    try QwenResidentResourceEnvironment.require()
++                    let physical = try CollectiveAllocationFootprint.read()
++                    guard physical.lifetimeMaximumBytes <= baselinePhysical.currentBytes + 512 * 1024 * 1024 else {
++                        throw ProbeError("Allocation fixture exceeds fixed process high-water bound")
++                    }
++                    nextResourceCheck = now + 100_000_000
++                }
++                try native.check()
++            }
++            do {
++                let result = try autoreleasepool { try CollectiveAllocationExecution.run(test, check: check) }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try native.check(); try check()
++                let beforeCleanup = Memory.snapshot()
++                Memory.clearCache(); try native.check()
++                let finalNative = Memory.snapshot(), finalPhysical = try CollectiveAllocationFootprint.read()
++                guard result.weakArrays.allSatisfy({ $0.value == nil }),
++                      finalNative.activeMemory == baselineNative.activeMemory, finalNative.cacheMemory == 0,
++                      finalPhysical.lifetimeMaximumBytes >= baselinePhysical.lifetimeMaximumBytes else {
++                    throw ProbeError("Allocation fixture retained native arrays or lost high-water evidence")
++                }
++                let report = try CollectiveAllocationReport(test: test, result: result, baselineNative: baselineNative,
++                    beforeCleanup: beforeCleanup, finalNative: finalNative, baselinePhysical: baselinePhysical,
++                    finalPhysical: finalPhysical, elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - start,
++                    hardware: try CollectiveAllocationFootprint.systemString("hw.model"),
++                    osBuild: try CollectiveAllocationFootprint.systemString("kern.osversion"))
++                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
++                let data = try encoder.encode(report)
++                guard data.count <= 65_536 else { throw ProbeError("Allocation fixture report exceeds bound") }
++                return data
++            } catch {
++                let primary = error
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try native.check()
++                throw primary
++            }
++        }
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationReport.swift
+@@ -0,0 +1,79 @@
++#if COLLECTIVE_RECORD_ALLOCATION_CHECK
++import Foundation
++import MLX
++
++struct CollectiveAllocationReport: Encodable {
++    struct Geometry: Encodable { let id: String; let shape: [Int]; let dtype: String; let plaintextBytes: Int; let nativeArrayBoundBytes: Int; let nativeFrameBoundBytes: Int }
++    let schema = "collective_native_allocation_probe_v1"
++    let scope = "both codec endpoints plus native staging in one process; no RDMA/group/model"
++    let profileQualified = false
++    let caseID: String
++    let failureMode: String
++    let hardwareModel: String
++    let osBuild: String
++    let suite = "aes256GcmHkdfSha256V1"
++    let allocatorPolicy = "disable_freed_buffer_cache"
++    let maximumPlaintextBytes = CollectiveAllocationCase.maximumPlaintextBytes
++    let maximumFrameBytes = CollectiveAllocationCase.maximumFrameBytes
++    let maximumInFlightOperations = 1
++    let rounds: Int
++    let geometries: [Geometry]
++    let elapsedNanoseconds: UInt64
++    let baselineNativeActiveBytes: Int
++    let observedPeakNativeActiveBytes: Int
++    let maximumObservedNativeCacheBytes: Int
++    let finalNativeActiveBytes: Int
++    let finalNativeCacheBytes: Int
++    let baselinePhysical: CollectiveAllocationFootprint
++    let finalPhysical: CollectiveAllocationFootprint
++    let conservativeObservedPhysicalIncrementBytes: UInt64
++    let sentRecords: UInt64
++    let openedRecords: UInt64
++    let publishedArrays: Int
++    let refusedRecords: Int
++    let frameLengths: [Int]
++    let plaintextByteCounts: [Int]
++    let actualInputByteCounts: [Int]
++    let attemptedNativeShapes: [[Int]]
++    let attemptedNativeDTypes: [String]
++    let primingOperations: Int
++    let unauthenticatedArraysPublished = 0
++    let verifiedPlaintextDigests: [String]
++    let senderActiveBeforeCleanup: Bool
++    let receiverActiveBeforeCleanup: Bool
++    let allTrackedNativeArraysReleased = true
++    let nativeAllocationsReturnedToBaseline = true
++
++    init(test: CollectiveAllocationCase, result: CollectiveAllocationExecution, baselineNative: Memory.Snapshot,
++         beforeCleanup: Memory.Snapshot, finalNative: Memory.Snapshot, baselinePhysical: CollectiveAllocationFootprint,
++         finalPhysical: CollectiveAllocationFootprint, elapsedNanoseconds: UInt64, hardware: String, osBuild: String) throws {
++        caseID = test.id; failureMode = test.failure.rawValue; hardwareModel = hardware; self.osBuild = osBuild
++        rounds = test.rounds; primingOperations = test.priming.count
++        geometries = try test.geometries.map { geometry in
++            let actual = try CollectivePointToPointShape(shape: geometry.shape, dtype: geometry.dtype,
++                maximumBytes: CollectiveAllocationCase.maximumPlaintextBytes)
++            guard geometry.bytes == actual.byteCount else { throw ProbeError("Probe geometry byte derivation differs") }
++            let bounds = try CollectiveProtectedOperationBounds(shape: geometry.shape, dtype: geometry.dtype,
++                maximumPlaintextBytes: CollectiveAllocationCase.maximumPlaintextBytes,
++                maximumFrameBytes: CollectiveAllocationCase.maximumFrameBytes)
++            return Geometry(id: geometry.id, shape: geometry.shape, dtype: String(describing: geometry.dtype),
++                plaintextBytes: actual.byteCount, nativeArrayBoundBytes: bounds.nativePlaintextAllocationBytes,
++                nativeFrameBoundBytes: bounds.nativeFrameAllocationBytes)
++        }
++        self.elapsedNanoseconds = elapsedNanoseconds
++        baselineNativeActiveBytes = baselineNative.activeMemory
++        observedPeakNativeActiveBytes = max(beforeCleanup.peakMemory, finalNative.peakMemory)
++        maximumObservedNativeCacheBytes = max(baselineNative.cacheMemory, beforeCleanup.cacheMemory, finalNative.cacheMemory)
++        finalNativeActiveBytes = finalNative.activeMemory; finalNativeCacheBytes = finalNative.cacheMemory
++        self.baselinePhysical = baselinePhysical; self.finalPhysical = finalPhysical
++        conservativeObservedPhysicalIncrementBytes = finalPhysical.lifetimeMaximumBytes > baselinePhysical.currentBytes
++            ? finalPhysical.lifetimeMaximumBytes - baselinePhysical.currentBytes : 0
++        sentRecords = result.sentRecords; openedRecords = result.openedRecords
++        publishedArrays = result.publishedArrays; refusedRecords = result.refusedRecords; frameLengths = result.frameLengths
++        plaintextByteCounts = result.expectedPlaintextBytes; actualInputByteCounts = result.actualInputByteCounts
++        attemptedNativeShapes = result.attemptedShapes; attemptedNativeDTypes = result.attemptedDTypes
++        verifiedPlaintextDigests = result.verifiedPlaintextDigests
++        senderActiveBeforeCleanup = result.senderActiveBeforeCleanup; receiverActiveBeforeCleanup = result.receiverActiveBeforeCleanup
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,12 +7,17 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "CollectiveAllocationCheck", targets: ["CollectiveAllocationCheck"]),
+         .executable(name: "darkbloom-cluster-worker", targets: ["DarkbloomClusterWorker"]),
+     ],
+     dependencies: [
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "CollectiveAllocationCheck", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++        ], path: "Tests/CollectiveAllocationCheck"),
+         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
+             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CollectiveAllocationCheck/Main.swift
+@@ -0,0 +1,47 @@
++import Foundation
++import Darwin
++import MLX
++import DarkbloomClusterProcess
++@_spi(ClusterTesting) import DarkbloomClusterRuntime
++
++@main struct CollectiveAllocationMain {
++    static func main() throws {
++        let arguments = Array(CommandLine.arguments.dropFirst())
++        guard arguments == ["check-arguments"] || arguments == ["list-cases"]
++                || (arguments.count == 2 && arguments[0] == "run-resource-case") else {
++            throw NSError(domain: "CollectiveAllocationCheck.arguments", code: 1)
++        }
++        alarm(60)
++        if arguments == ["check-arguments"] {
++            FileHandle.standardOutput.write(Data("{\"argumentsAccepted\":true,\"nativeExecuted\":false}\n".utf8))
++            alarm(0); return
++        }
++        if arguments == ["list-cases"] {
++            let value = try CollectiveAllocationProbe.cases()
++            guard value.count <= 65_536 else { throw NSError(domain: "CollectiveAllocationCheck.cases", code: 1) }
++            FileHandle.standardOutput.write(value + Data([10])); alarm(0); return
++        }
++        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".darkbloom/cluster-device")
++        let gate = try ClusterDeviceExclusion(directoryURL: directory)
++        try withExtendedLifetime(gate) {
++            let result = try Device.withDefaultDevice(.gpu) {
++                try Stream.withNewDefaultStream(device: .gpu) {
++                    try MLX.withError { native in
++                        do {
++                            let result = try CollectiveAllocationProbe.run(caseID: arguments[1])
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try native.check()
++                            Memory.clearCache(); try native.check(); return result
++                        } catch {
++                            let primary = error
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try native.check()
++                            throw primary
++                        }
++                    }
++                }
++            }
++            guard result.count <= 65_536 else { throw NSError(domain: "CollectiveAllocationCheck.output", code: 1) }
++            FileHandle.standardOutput.write(result + Data([10]))
++        }
++        alarm(0)
++    }
++}

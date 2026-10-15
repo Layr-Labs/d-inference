@@ -1,0 +1,187 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/CBv2RequestSession.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/CBv2RequestSession.swift
+@@ -51,7 +51,8 @@
+ 
+     /// Intermediate chunks return an evaluated [1,1] handle. The final chunk
+     /// returns evaluated [1,vocabulary] logits through the actual narrowing seam.
+-    func prefillChunk(_ tokens: [Int], final: Bool, check: () throws -> Void) throws -> MLXArray {
++    func prefillChunk(_ tokens: [Int], final: Bool, observer: CBv2OwnerPhaseObserver? = nil,
++                      check: () throws -> Void) throws -> MLXArray {
+         do {
+             try requireOpen()
+             guard !promptFinished, !tokens.isEmpty,
+@@ -59,7 +60,7 @@
+                   final == (committedPromptTokens + tokens.count == promptCount) else {
+                 throw ProbeError("CBv2 prefill chunks do not match the agreed prompt frontier")
+             }
+-            let output = try forward(tokens, requirement: final ? .lastPositionLogits : .evaluationOnly, check: check)
++            let output = try forward(tokens, requirement: final ? .lastPositionLogits : .evaluationOnly, observer: observer, check: check)
+             committedPromptTokens += tokens.count
+             promptFinished = final
+             return output
+@@ -88,7 +89,7 @@
+     }
+ 
+     private func forward(_ tokens: [Int], requirement: CBv2PrefillRequirement?,
+-                         check: () throws -> Void) throws -> MLXArray {
++                         observer: CBv2OwnerPhaseObserver? = nil, check: () throws -> Void) throws -> MLXArray {
+         guard tokens.allSatisfy({ (0..<vocabularySize).contains($0) }) else {
+             throw ProbeError("CBv2 input token is outside the vocabulary")
+         }
+@@ -96,6 +97,10 @@
+         evaluation = try recurrent.bind()
+         evaluationWasStaged = false
+         let input = MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count])
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .graphConstructionBegin, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
+         let output: MLXArray
+         if let requirement {
+             output = adapter.recurrentPrefill(tokens: input, inputEmbeddings: nil,
+@@ -104,13 +109,37 @@
+             output = adapter.forward(tokens: input, caches: caches,
+                 recurrentState: [evaluation!])[0..., -1, 0...]
+         }
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .graphConstructionEnd, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .rootStagingBegin, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
+         let roots = try evaluation!.evaluate()
+         evaluationWasStaged = true
+         let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .rootStagingEnd, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
+         // Mirrors EngineLoopV2.recurrentTargetForward + eagerCacheInnerState:
+         // logits alone cannot stand in for conv/SSM and device-offset roots.
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .evaluationBegin, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
+         eval([output] + roots + cacheRoots)
+         try check()
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .evaluationEnd, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .validationCommitBegin, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
++        }
+         let width = requirement == .evaluationOnly ? 1 : vocabularySize
+         guard output.shape == [1, width], [.float16, .bfloat16, .float32].contains(output.dtype) else {
+             throw ProbeError("CBv2 forward returned unexpected logit/handle geometry")
+@@ -121,6 +150,10 @@
+         committedTokens += tokens.count
+         guard Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? []) == Set(geometry.recurrent.modelLayerIndices) else {
+             throw ProbeError("CBv2 recurrent generation was not committed completely")
++        }
++        if let observer {
++            try CBv2OwnerPhaseObservation(phase: .validationCommitEnd, tokenCount: tokens.count, committedTokens: committedTokens)
++                .deliver(to: observer, check: check)
+         }
+         return output
+     }
+--- a/experiments/cluster/inference/Sources/ClusterInference/CBv2OwnedRequestState.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/CBv2OwnedRequestState.swift
+@@ -47,7 +47,7 @@
+         }
+     }
+ 
+-    func run(tokenCount: Int, check: () throws -> Void,
++    func run(tokenCount: Int, observer: CBv2OwnerPhaseObserver? = nil, check: () throws -> Void,
+              forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> MLXArray,
+              validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
+         do {
+@@ -57,11 +57,39 @@
+             }
+             let caches = bank.layerCaches(rowStates: [rows])
+             evaluation = try recurrent.bind(); evaluationWasStaged = false
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .graphConstructionBegin, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
+             let output = try forward(caches, evaluation!)
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .graphConstructionEnd, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .rootStagingBegin, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
+             let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
+             let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .rootStagingEnd, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .evaluationBegin, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
+             eval([output] + recurrentRoots + cacheRoots)
+             try check()
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .evaluationEnd, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .validationCommitBegin, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
++            }
+             try validateOutput(output)
+             try validateState(after: committedTokens + tokenCount)
+             try check()
+@@ -71,6 +99,10 @@
+             guard Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                 == Set(geometry.recurrent.modelLayerIndices) else {
+                 throw ProbeError("CBv2 recurrent generation did not commit every local layer")
++            }
++            if let observer {
++                try CBv2OwnerPhaseObservation(phase: .validationCommitEnd, tokenCount: tokenCount, committedTokens: committedTokens)
++                    .deliver(to: observer, check: check)
+             }
+             return output
+         } catch {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSession.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSession.swift
+@@ -98,12 +98,12 @@
+     }
+ 
+     func prefillChunk(_ tokens: [Int], offset: Int, final: Bool,
+-                      incoming: QwenLayerStageBoundary? = nil,
++                      incoming: QwenLayerStageBoundary? = nil, observer: CBv2OwnerPhaseObserver? = nil,
+                       check: () throws -> Void) throws -> QwenLayerStageOutput {
+         do {
+             try state.requireOpen()
+             let frame = try schedule.admitPrefill(count: tokens.count, offset: offset, final: final)
+-            return try perform(tokens: tokens, frame: frame, incoming: incoming, check: check)
++            return try perform(tokens: tokens, frame: frame, incoming: incoming, observer: observer, check: check)
+         } catch { try fail(error) }
+     }
+ 
+@@ -117,7 +117,7 @@
+     }
+ 
+     private func perform(tokens: [Int], frame: QwenLayerStageFrame, incoming: QwenLayerStageBoundary?,
+-                         check: () throws -> Void) throws -> QwenLayerStageOutput {
++                         observer: CBv2OwnerPhaseObserver? = nil, check: () throws -> Void) throws -> QwenLayerStageOutput {
+         try MLX.withError { error in
+             func checked() throws { try error.check(); try check() }
+             guard tokens.allSatisfy({ (0..<stage.vocabularySize).contains($0) }),
+@@ -128,7 +128,7 @@
+             // nil positions use each stage's own KV absoluteOffset. Both states
+             // start at zero and must match the SAME full-model tokenOffset here;
+             // a stage's global layer offset never changes sequence positions.
+-            let output = try state.run(tokenCount: tokens.count, check: checked, forward: { caches, evaluation in
++            let output = try state.run(tokenCount: tokens.count, observer: observer, check: checked, forward: { caches, evaluation in
+                 if stage.stageIndex == 0 {
+                     let native = stage.model as! any CBv2RecurrentMTPForwardable
+                     // Ordinary noncaptured trunk: discard the lazy logits tuple

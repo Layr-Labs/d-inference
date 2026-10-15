@@ -1,0 +1,615 @@
+--- a/bindings.json
++++ b/bindings.json
+@@ -1,16 +1,22 @@
+ {
+   "runtimeDirectory": "/Users/developer/DarkbloomDev/installed-distributed-http-delivery-runtime-20260915",
+-  "clusterID": "darkbloom-product-qwen9b-http-delivery-20260915",
++  "clusterID": "darkbloom-product-qwen9b-configured-deadline-20260915",
+   "providerSHA256": "c4083695c07ed7da819284e48de3aeb8786940b43271fa6e974b469c26f10350",
+   "nativeSHA256": "ffcbd7de0ccc5a8b35881f9dd5ed5b6fcb8a2f5bdc7e7b63fa1e46bd9c79bba5",
+   "capabilitySHA256": "7e8a1480f1c8831cf447fa2f51935bf5e3b79024b1b83c09aa2df0bb6df883e7",
+   "selectedPlanSHA256": "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f",
+   "prefillSchedule": "one_chunk_lookahead_v1",
+   "configurationSHA256": {
+-    "darkbloom-24": "d787ce64ed4249048c195ab02cedefcda50558fe69b7d7063e08c33f373da588",
+-    "darkbloom-48": "2228dec1f648ca8aa973eb3adde9d08d97dd11ed8a2e182c2f740285a5fc0144"
++    "darkbloom-24": "7f2a82af486b2b58ed17a620b51e8ceceaf187e7a1f781f91d36bf1aa9a9c536",
++    "darkbloom-48": "8d895c8217ea0896e406069faa92770bbe6d651d7ea4de8c866274fde4df967c"
+   },
+   "providerDeploymentPinEnforcedBy": "Root deployment verification, not a new remote preflight in this inherited harness",
+-  "actualConfigurationReceiptBinding": "Root reports both match derivation; this agent did not perform remote configure/readback",
+-  "runtimeExecutionByThisAgent": false
++  "actualConfigurationReceiptBinding": "Derived inputs; root must configure and verify before this test",
++  "runtimeExecutionByThisAgent": false,
++  "requestTimeoutSeconds": 2,
++  "ordinaryRequestTimeoutSeconds": 120,
++  "originalProviderTOMLSHA256": {
++    "darkbloom-24": "dea0e291200e111d0fbc5f8e549db5054546aeeaf963a854519804e3c5c675d6",
++    "darkbloom-48": "47c083ac6eb0d7926b4bd468437e3d6dea1dc92e9bc44e63a133c4cc907f941e"
++  }
+ }
+--- a/harness/run.py
++++ b/harness/run.py
+@@ -1,4 +1,4 @@
+-"""One connected cold8K terminal-error observation, autonomous cleanup, then fallback."""
++"""One connected configured2s terminal-error observation, autonomous cleanup, then fallback."""
+ from pathlib import Path
+ import argparse, base64, hashlib, json, os, shlex, subprocess, threading, time
+ import urllib.request
+@@ -8,7 +8,7 @@
+ from tokenizer_check import verify as verify_tokenizer
+ from cancellation_observation import observe_after_close
+ from status_capture import capture as capture_status
+-from terminal_contract import validate_client, natural_failure_exit, request_disposition
++from terminal_contract import validate_client, natural_failure_exit, request_disposition, observation_qualified
+ 
+ BASE=Path(__file__).resolve().parent
+ ROOT=BASE.parents[1]  # cluster-research; private derivative is nested one level
+@@ -28,11 +28,12 @@
+     assert args.rendered_prompt is not None and args.expected_token_ids is not None
+     assert 1<=args.self_retirement_seconds<=60
+     output=BASE/('physical-'+str(args.attempt));output.mkdir(mode=0o700)
+-    remote_run=REMOTE+'/qualification/terminal-attempt'+str(args.attempt)
+-    record={'schema':'installed_distributed_http_terminal_observation_v1','startedUnix':time.time(),
++    remote_run=REMOTE+'/qualification/configured-deadline-attempt'+str(args.attempt)
++    record={'schema':'installed_distributed_http_configured_deadline_observation_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+             'numericalReferenceCompared':False,'requestCount':1,
+-            'inferenceRequestSucceeded':None,'slaPassed':None,'cancellationQualified':False}
++            'inferenceRequestSucceeded':None,'slaPassed':None,'cancellationQualified':False, 'configuredRequestTimeoutSeconds':2,
++            'naturalContentDeadlineMissReproduced':False}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+     codefiles=sorted(BASE.glob('*.py'))+sorted((BASE/'stage_checks').glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
+     if args.rendered_prompt is not None:
+@@ -198,7 +199,7 @@
+     record['pinsUnchanged']=all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==pin for p,pin in pins.items())
+     finals=record.get('supervisorFinal',[])
+     record['supervisorNaturalFailureExitObserved']=natural_failure_exit(finals,record.get('supervisorExitCode'))
+-    record['terminalObservationQualified']=record.get('terminalObservation',{}).get('typedDeadlineFailureObserved') is True and record.get('terminalObservation',{}).get('errorReceivedAfterContentCutoff') is True and record.get('statusBefore',{}).get('validated') is True and record.get('selfRetirement',{}).get('self_retirement_observed') is True and record.get('selfRetirement',{}).get('harness_interference_observed') is False and record['supervisorNaturalFailureExitObserved'] and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
++    record['terminalObservationQualified']=observation_qualified(record)
+     (output/'execution.json').write_text(json.dumps(record,indent=2)+'\n')
+     print(json.dumps({k:record.get(k) for k in ['terminalObservationQualified','inferenceRequestSucceeded','slaPassed','error','clientExitCode','supervisorExitCode','supervisorNaturalFailureExitObserved','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
+     raise SystemExit(0 if record['terminalObservationQualified'] else 1)
+--- a/harness/status_validation.py
++++ b/harness/status_validation.py
+@@ -2,8 +2,8 @@
+ import json
+ import uuid
+ 
+-EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-http-delivery-20260915'
+-EXPECTED_CONFIGURATION_SHA256 = 'd787ce64ed4249048c195ab02cedefcda50558fe69b7d7063e08c33f373da588'
++EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-configured-deadline-20260915'
++EXPECTED_CONFIGURATION_SHA256 = '7f2a82af486b2b58ed17a620b51e8ceceaf187e7a1f781f91d36bf1aa9a9c536'
+ EXPECTED_PREFILL_SCHEDULE = 'one_chunk_lookahead_v1'
+ EXPECTED_PEERS = ('darkbloom-24', 'darkbloom-48')
+ MAXIMUM_STDOUT = 65536
+--- a/harness/terminal_contract.py
++++ b/harness/terminal_contract.py
+@@ -1,6 +1,7 @@
+-"""A delivered cold-prefill failure is an observation, never successful inference."""
++"""A delivered configured-deadline failure is an observation, never successful inference."""
+ 
+ DEADLINE_NS = 18_192_000_000
++CONFIGURED_DEADLINE_NS = 2_000_000_000
+ 
+ 
+ def request_disposition(receipt):
+@@ -28,8 +29,8 @@
+             or any(type(value) is not int for value in usage.values())
+             or type(error) is not dict
+             or not (error.get('code') == 'deadline_unreachable'
+-                    or (error.get('code') == 'inference_error' and error.get('terminal_cause') == 'prefill_stall'))):
+-        raise ValueError('Expected complete typed cold8K failure with reported 8192/0 usage')
++                    or (error.get('code') == 'inference_error' and error.get('terminal_cause') == 'safety_deadline'))):
++        raise ValueError('Expected complete typed configured2s failure with reported 8192/0 usage')
+     sla = measurement.get('content_sla', {})
+     if (set(sla) != {'attempt_reported_prompt_tokens', 'declared_prompt_tokens'}
+             or any(row.get('deadline_ns') != DEADLINE_NS or row.get('request_passed') is not False
+@@ -44,6 +45,9 @@
+     return dict(typedDeadlineFailureObserved=True, responseEOFObserved=True,
+                 typedError=error, reportedAttemptUsage=usage,
+                 errorReceivedAfterContentCutoff=error_time >= DEADLINE_NS,
++                configuredRequestDeadlineNanoseconds=CONFIGURED_DEADLINE_NS,
++                errorReceivedAfterConfiguredCutoff=error_time >= CONFIGURED_DEADLINE_NS,
++                naturalContentDeadlineMissReproduced=False,
+                 inferenceRequestSucceeded=False, slaPassed=False,
+                 closeOrigin=closed / 1e9)
+ 
+@@ -54,3 +58,24 @@
+             and finals[0].get('forcedKill') is False
+             and type(finals[0].get('exitCode')) is int and finals[0]['exitCode'] == 1
+             and type(supervisor_exit) is int and supervisor_exit == 1)
++
++
++def observation_qualified(record):
++    terminal = record.get('terminalObservation', {})
++    cleanup = record.get('selfRetirement', {})
++    monitors = record.get('monitors', [])
++    return (type(record.get('configuredRequestTimeoutSeconds')) is int
++            and record['configuredRequestTimeoutSeconds'] == 2
++            and terminal.get('typedDeadlineFailureObserved') is True
++            and terminal.get('configuredRequestDeadlineNanoseconds') == CONFIGURED_DEADLINE_NS
++            and terminal.get('errorReceivedAfterConfiguredCutoff') is True
++            and terminal.get('inferenceRequestSucceeded') is False and terminal.get('slaPassed') is False
++            and record.get('statusBefore', {}).get('validated') is True
++            and cleanup.get('self_retirement_observed') is True
++            and cleanup.get('harness_interference_observed') is False
++            and record.get('supervisorNaturalFailureExitObserved') is True
++            and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True
++            and record.get('aliasCleanup', {}).get('restored') is True
++            and not record.get('guardErrors')
++            and len(monitors) == 2 and all(m.get('exitCode') == 0 and not m.get('errors') for m in monitors)
++            and record.get('pinsUnchanged') is True and 'error' not in record)
+--- /dev/null
++++ b/configuration_files.py
+@@ -0,0 +1,144 @@
++"""Private bounded files for the reviewed test's exact provider-pointer swap."""
++from contextlib import contextmanager
++import fcntl
++import hashlib
++import os
++from pathlib import Path
++import stat
++import uuid
++
++MAXIMUM = 1024 * 1024
++
++
++def digest(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def executable_hash(path):
++    with directory(path.parent) as parent:
++        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
++        try:
++            before = os.fstat(fd)
++            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.getuid()
++                    or before.st_mode & 0o022 or not 0 < before.st_size <= 512 * MAXIMUM):
++                raise ValueError('Unsafe bounded executable')
++            result = hashlib.sha256()
++            size = 0
++            while True:
++                block = os.read(fd, MAXIMUM)
++                if not block: break
++                size += len(block)
++                if size > before.st_size: raise ValueError('Executable grew')
++                result.update(block)
++            after = os.fstat(fd)
++            named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
++            keys = ('st_dev', 'st_ino', 'st_size', 'st_mode', 'st_mtime_ns', 'st_ctime_ns')
++            if (size != before.st_size or any(getattr(before, key) != getattr(after, key) for key in keys)
++                    or (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino)):
++                raise ValueError('Executable changed')
++            return result.hexdigest()
++        finally:
++            os.close(fd)
++
++
++@contextmanager
++def directory(path):
++    path = Path(path)
++    if not path.is_absolute() or '..' in path.parts:
++        raise ValueError('Expected fixed absolute directory')
++    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        for part in path.parts[1:]:
++            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
++            os.close(fd); fd = child
++        info = os.fstat(fd)
++        if info.st_uid != os.getuid() or info.st_mode & 0o022:
++            raise ValueError('Unsafe configuration parent')
++        yield fd
++        current = path.lstat()
++        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
++            raise ValueError('Configuration directory changed')
++    finally:
++        os.close(fd)
++
++
++def read_at(parent, name):
++    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
++    try:
++        before = os.fstat(fd)
++        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.getuid()
++                or before.st_mode & 0o077 or not 0 <= before.st_size <= MAXIMUM):
++            raise ValueError('Unsafe private regular file')
++        data = bytearray()
++        while len(data) <= MAXIMUM:
++            part = os.read(fd, min(65536, MAXIMUM + 1 - len(data)))
++            if not part: break
++            data.extend(part)
++        after = os.fstat(fd)
++        names = ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
++        if len(data) != before.st_size or any(getattr(before, k) != getattr(after, k) for k in names):
++            raise ValueError('Private input changed while reading')
++        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
++        if (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino):
++            raise ValueError('Private input path changed')
++        return bytes(data), stat.S_IMODE(before.st_mode)
++    finally:
++        os.close(fd)
++
++
++def read_private(path):
++    with directory(path.parent) as parent:
++        return read_at(parent, path.name)
++
++
++def publish(path, data, mode=0o600, expected=None):
++    if len(data) > MAXIMUM or mode != 0o600:
++        raise ValueError('Invalid private publication')
++    with directory(path.parent) as parent:
++        temporary = '.deadline-' + uuid.uuid4().hex
++        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent)
++        try:
++            with os.fdopen(fd, 'wb') as stream:
++                stream.write(data); stream.flush(); os.fsync(stream.fileno())
++            if expected is None:
++                # A new evidence file must not overwrite an existing entry.
++                os.link(temporary, path.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
++                os.unlink(temporary, dir_fd=parent)
++            else:
++                old, old_mode = read_at(parent, path.name)
++                if digest(old) != expected or old_mode != mode:
++                    raise ValueError('Provider configuration changed outside its lock')
++                os.replace(temporary, path.name, src_dir_fd=parent, dst_dir_fd=parent)
++            os.fsync(parent)
++            observed, observed_mode = read_at(parent, path.name)
++            if observed != data or observed_mode != mode:
++                raise ValueError('Published private bytes differ')
++        finally:
++            try: os.unlink(temporary, dir_fd=parent)
++            except FileNotFoundError: pass
++
++
++@contextmanager
++def locked(path, require_empty=False):
++    with directory(path.parent) as parent:
++        # Both locks already exist from the installed configure/device gate.
++        fd = os.open(path.name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
++        try:
++            info = os.fstat(fd)
++            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
++                    or info.st_nlink != 1 or info.st_mode & 0o077):
++                raise ValueError('Unsafe existing lock')
++            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++            named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
++            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
++                raise ValueError('Existing lock changed')
++            if require_empty and os.fstat(fd).st_size != 0:
++                raise ValueError('Native device journal remains nonempty')
++            yield
++            named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
++            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
++                raise ValueError('Existing lock changed')
++            if require_empty and os.fstat(fd).st_size != 0:
++                raise ValueError('Native device journal changed')
++        finally:
++            os.close(fd)
+--- /dev/null
++++ b/configuration_remote.py
+@@ -0,0 +1,143 @@
++"""Fixed per-host preparation/install/restore; run only by the reviewed outer driver."""
++import base64
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++from configuration_files import digest, directory, executable_hash, locked, publish, read_private
++
++ROOT = Path('/Users/developer/DarkbloomDev/installed-distributed-http-delivery-runtime-20260915')
++HOME_DIRECTORY = Path('/Users/gaj')
++PROVIDER = HOME_DIRECTORY / '.config/darkbloom/provider.toml'
++DEVICE = HOME_DIRECTORY / '.darkbloom/cluster-device/native-device.lease'
++CAPABILITY = '7e8a1480f1c8831cf447fa2f51935bf5e3b79024b1b83c09aa2df0bb6df883e7'
++PROVIDER_BINARY = 'c4083695c07ed7da819284e48de3aeb8786940b43271fa6e974b469c26f10350'
++EXPECTED = {
++    'darkbloom-24': ('leader', 'dea0e291200e111d0fbc5f8e549db5054546aeeaf963a854519804e3c5c675d6',
++                    '7f2a82af486b2b58ed17a620b51e8ceceaf187e7a1f781f91d36bf1aa9a9c536'),
++    'darkbloom-48': ('follower', '47c083ac6eb0d7926b4bd468437e3d6dea1dc92e9bc44e63a133c4cc907f941e',
++                    '8d895c8217ea0896e406069faa92770bbe6d651d7ea4de8c866274fde4df967c'),
++}
++
++
++def encoded(value):
++    return (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
++
++
++def require_idle():
++    raw = subprocess.check_output(['/bin/ps', '-axo', 'pid=,comm='], text=True, timeout=5)
++    active = [line.strip() for line in raw.splitlines() if len(line.split(maxsplit=1)) == 2
++              and Path(line.split(maxsplit=1)[1]).name in
++              ('darkbloom', 'darkbloom-cluster-worker', 'darkbloom-owner-qualification')]
++    if active: raise ValueError('Product/native processes still exist')
++    journal, _ = read_private(DEVICE)
++    if journal: raise ValueError('Native device journal is nonempty')
++
++
++def prepare(transaction, request, expected):
++    role, original_hash, selected_hash = expected
++    raw = base64.b64decode(request['configuration'], validate=True)
++    if len(raw) > 65536 or digest(raw) != selected_hash:
++        raise ValueError('Derived two-second configuration differs')
++    require_idle()
++    original, mode = read_private(PROVIDER)
++    if digest(original) != original_hash or mode != 0o600:
++        raise ValueError('Default provider preimage differs from installed binding')
++    # Check the installed executable before asking it to parse/serialize TOML.
++    if executable_hash(ROOT / 'darkbloom') != PROVIDER_BINARY:
++        raise ValueError('Installed Provider binary differs')
++    capability = HOME_DIRECTORY / '.config/darkbloom/clusters' / (CAPABILITY + '.capability.json')
++    cap, _ = read_private(capability)
++    if digest(cap) != CAPABILITY: raise ValueError('Installed capability differs')
++    transaction.parent.mkdir(mode=0o700, exist_ok=True)
++    with directory(transaction.parent): pass
++    transaction.mkdir(mode=0o700)
++    publish(transaction / 'provider.before.toml', original)
++    publish(transaction / 'provider.after.toml', original)
++    publish(transaction / 'configure.json', raw)
++    # Existing CLI validates trust, canonical capability and profile, and uses
++    # the real device/configuration locks. This does not change the default.
++    command = [str(ROOT / 'darkbloom'), 'cluster', 'configure', '--input', str(transaction / 'configure.json'),
++               '--capability', str(capability), '--capability-sha256', CAPABILITY,
++               '--config', str(transaction / 'provider.after.toml'), '--json']
++    result = subprocess.run(command, capture_output=True, timeout=30)
++    if len(result.stdout) > 65536 or len(result.stderr) > 16384:
++        raise ValueError('Configure output exceeded bound')
++    publish(transaction / 'configure.stdout', result.stdout)
++    publish(transaction / 'configure.stderr', result.stderr)
++    if result.returncode != 0: raise ValueError('Staged configure refused')
++    receipt = json.loads(result.stdout)
++    if (receipt['configurationSHA256'] != selected_hash or receipt['capabilitySHA256'] != CAPABILITY
++            or receipt['distributedEnabled'] is not False or receipt['readinessVerified'] is not False):
++        raise ValueError('Staged configure binding differs')
++    after, after_mode = read_private(transaction / 'provider.after.toml')
++    current, current_mode = read_private(PROVIDER)
++    if current != original or current_mode != mode or after_mode != mode:
++        raise ValueError('Default changed during staging')
++    state = dict(memberID=request['host'], attempt=request['attempt'], role=role,
++                 providerPath=str(PROVIDER), beforeSHA256=original_hash, afterSHA256=digest(after),
++                 mode=mode, configurationSHA256=selected_hash, defaultChanged=False)
++    publish(transaction / 'state.json', encoded(state))
++    return state
++
++
++def swap(transaction, request, expected, restore):
++    _, original_hash, selected_hash = expected
++    require_idle()
++    state_path = transaction / 'state.json'
++    if request['postimageSHA256'] is None:
++        # A refused prepare never mutates the default. Still verify the exact
++        # original bytes; do not infer restoration from a missing receipt.
++        if not restore: raise ValueError('Prepared transaction missing')
++        raw, mode = read_private(PROVIDER)
++        if digest(raw) != original_hash or mode != 0o600:
++            raise ValueError('Unprepared transaction cannot restore unknown bytes')
++        return dict(restored=True, providerSHA256=original_hash, mode=mode, noSwapRequired=True)
++    state = json.loads(read_private(state_path)[0])
++    if (state['beforeSHA256'] != original_hash or state['configurationSHA256'] != selected_hash
++            or state['memberID'] != request['host'] or state['attempt'] != request['attempt']
++            or state['providerPath'] != str(PROVIDER) or state['mode'] != 0o600
++            or state['afterSHA256'] != request['postimageSHA256']):
++        raise ValueError('Durable transaction binding differs')
++    before, _ = read_private(transaction / 'provider.before.toml')
++    after, _ = read_private(transaction / 'provider.after.toml')
++    if digest(before) != original_hash or digest(after) != state['afterSHA256']:
++        raise ValueError('Durable pre/postimage differs')
++    desired, expected_current = (before, state['afterSHA256']) if restore else (after, original_hash)
++    with locked(DEVICE, require_empty=True), locked(PROVIDER.with_name(PROVIDER.name + '.lock')):
++        require_idle()
++        current, mode = read_private(PROVIDER)
++        if mode != state['mode']: raise ValueError('Default provider mode changed')
++        if digest(current) != digest(desired):
++            publish(PROVIDER, desired, mode=mode, expected=expected_current)
++        current, mode = read_private(PROVIDER)
++        if current != desired or mode != state['mode']: raise ValueError('Default verification failed')
++    return dict(restored=restore, installed=not restore, providerSHA256=digest(current),
++                mode=mode, configurationSHA256=selected_hash if not restore else None)
++
++
++def execute(request):
++    if (set(request) != {'action', 'host', 'attempt', 'configuration', 'postimageSHA256'}
++            or request['host'] not in EXPECTED or type(request['attempt']) is not int
++            or not 1 <= request['attempt'] <= 99 or request['action'] not in ('prepare', 'install', 'restore')):
++        raise ValueError('Invalid fixed configuration transaction')
++    pin = request['postimageSHA256']
++    if pin is not None and (type(pin) is not str or len(pin) != 64 or any(c not in '0123456789abcdef' for c in pin)):
++        raise ValueError('Invalid postimage pin')
++    if request['action'] == 'prepare' and pin is not None:
++        raise ValueError('Preparation cannot adopt an old transaction')
++    transaction = ROOT / 'configuration-transactions' / ('configured-deadline-' + str(request['attempt']))
++    if request['action'] == 'prepare':
++        return prepare(transaction, request, EXPECTED[request['host']])
++    return swap(transaction, request, EXPECTED[request['host']], request['action'] == 'restore')
++
++
++if __name__ == '__main__':
++    try:
++        raw = sys.stdin.buffer.read(131073)
++        if len(raw) > 131072: raise ValueError('Transaction input exceeded bound')
++        print(json.dumps(execute(json.loads(raw)), sort_keys=True))
++    except BaseException as error:
++        print(json.dumps({'error': type(error).__name__ + ': ' + str(error)}))
++        sys.exit(1)
+--- /dev/null
++++ b/configuration_transaction.py
+@@ -0,0 +1,32 @@
++"""Two-host transaction ordering; every path attempts both exact restorations."""
++HOSTS = ('darkbloom-24', 'darkbloom-48')
++
++
++def transact(action, physical, prepared=None, restore_only=False):
++    pins = dict(prepared or {})
++    record = dict(prepared={}, installed={}, restored={}, restorationErrors={},
++                  physical=None, error=None, defaultsRestored=False, qualified=False)
++    try:
++        if not restore_only:
++            for host in HOSTS:
++                receipt = action(host, 'prepare', None)
++                pins[host] = receipt['afterSHA256']
++                record['prepared'][host] = receipt
++            for host in HOSTS:
++                record['installed'][host] = action(host, 'install', pins[host])
++            record['physical'] = physical()
++    except BaseException as error:
++        record['error'] = type(error).__name__ + ': ' + str(error)
++    finally:
++        for host in HOSTS:
++            try:
++                receipt = action(host, 'restore', pins.get(host))
++                if receipt.get('restored') is not True:
++                    raise ValueError('Exact original restoration was not verified')
++                record['restored'][host] = receipt
++            except BaseException as error:
++                record['restorationErrors'][host] = type(error).__name__ + ': ' + str(error)
++        record['defaultsRestored'] = len(record['restored']) == 2 and not record['restorationErrors']
++    record['qualified'] = (record['defaultsRestored'] and record['error'] is None
++                           and (restore_only or (record['physical'] or {}).get('terminalObservationQualified') is True))
++    return record
+--- /dev/null
++++ b/run_configured.py
+@@ -0,0 +1,142 @@
++"""Root-run only: stage both defaults, run one negative check, restore exact bytes."""
++import argparse
++import base64
++import hashlib
++import json
++import os
++from pathlib import Path
++import shlex
++import signal
++import subprocess
++import sys
++from configuration_files import publish, read_private
++from configuration_transaction import HOSTS, transact
++from harness.guards import SSH
++
++BASE = Path(__file__).resolve().parent
++
++
++def bundled_remote():
++    files = (BASE / 'configuration_files.py').read_text()
++    main = (BASE / 'configuration_remote.py').read_text()
++    return ('import sys,types\nmodule=types.ModuleType("configuration_files")\n'
++            'exec(compile(' + repr(files) + ',"configuration_files.py","exec"),module.__dict__)\n'
++            'sys.modules["configuration_files"]=module\n'
++            'exec(compile(' + repr(main) + ',"configuration_remote.py","exec"),{"__name__":"__main__"})\n')
++
++
++def recovery_pins(original):
++    pins, errors = {}, {}
++    for host in HOSTS:
++        path = original / (host + '.prepare.stdout.json')
++        receipt_path = original / (host + '.prepare.receipt.json')
++        try:
++            if not path.exists() and not receipt_path.exists(): continue
++            raw = read_private(path)[0]
++            receipt = json.loads(read_private(receipt_path)[0])
++            if type(receipt.get('exitCode')) is not int or receipt['exitCode'] != 0 or receipt.get('stdoutSHA256') != hashlib.sha256(raw).hexdigest():
++                raise ValueError('Prepared output receipt differs')
++            value = json.loads(raw)
++            pin = value['afterSHA256']
++            if value.get('memberID') != host or type(pin) is not str or len(pin) != 64 or any(c not in '0123456789abcdef' for c in pin):
++                raise ValueError('Prepared postimage identity differs')
++            pins[host] = pin
++        except BaseException as error:
++            # Do not prevent restoration of the other host. Without a retained
++            # pin this host can only verify an already-exact original default.
++            errors[host] = type(error).__name__ + ': ' + str(error)
++    return pins, errors
++
++
++def remote_action(host, action, pin, attempt, output):
++    role = 'leader' if host == HOSTS[0] else 'follower'
++    payload = dict(host=host, action=action, attempt=attempt, postimageSHA256=pin,
++                   configuration=base64.b64encode((BASE / 'configuration' / (role + '.configure.json')).read_bytes()).decode())
++    code = bundled_remote()
++    command = SSH + [host, shlex.join(['/usr/bin/python3', '-B', '-c', code])]
++    result = subprocess.run(command, input=json.dumps(payload).encode(), capture_output=True, timeout=45)
++    if len(result.stdout) > 65536 or len(result.stderr) > 16384:
++        raise ValueError('Configuration command output exceeded bound')
++    name = host + '.' + action
++    publish(output / (name + '.stdout.json'), result.stdout)
++    publish(output / (name + '.stderr'), result.stderr)
++    publish(output / (name + '.receipt.json'), (json.dumps(dict(
++        exitCode=result.returncode, remoteProgramSHA256=hashlib.sha256(code.encode()).hexdigest(),
++        stdoutSHA256=hashlib.sha256(result.stdout).hexdigest(), stderrSHA256=hashlib.sha256(result.stderr).hexdigest(),
++        postimageSHA256=pin, nativeModelExecuted=False), indent=2) + '\n').encode())
++    value = json.loads(result.stdout)
++    if result.returncode != 0 or 'error' in value:
++        raise ValueError('Configuration ' + action + ' refused on ' + host + ': ' + str(value.get('error')))
++    return value
++
++
++def physical(attempt, output):
++    fixtures = BASE.parent / 'installed-http-long-prompts-20260915/fixtures'
++    command = ['/usr/bin/python3', '-B', str(BASE / 'harness/run.py'), '--attempt', str(attempt),
++               '--prompt-file', str(fixtures / 'prompt-8192.txt'), '--declared-prompt-tokens', '8192',
++               '--rendered-prompt', str(fixtures / 'prompt-8192.rendered.txt'),
++               '--expected-token-ids', str(fixtures / 'prompt-8192.ids.json'), '--client', str(BASE / 'client.py')]
++    environment = dict(os.environ, PYTHONPATH=str(BASE))
++    with (output / 'harness.stdout').open('xb') as out, (output / 'harness.stderr').open('xb') as err:
++        process = subprocess.Popen(command, cwd=BASE, env=environment, stdout=out, stderr=err, start_new_session=True)
++        try:
++            process.wait(timeout=650)
++        except BaseException:
++            # SIGINT permits the existing harness's BaseException/finally path
++            # to retain its cleanup. Remote ownership is still checked before
++            # either default can be restored; killing this parent proves none.
++            if process.poll() is None:
++                process.send_signal(signal.SIGINT)
++                try: process.wait(timeout=650)
++                except BaseException:
++                    process.kill(); process.wait(timeout=5)
++            raise
++    receipt = BASE / 'harness' / ('physical-' + str(attempt)) / 'execution.json'
++    raw = receipt.read_bytes()
++    if len(raw) > 1024 * 1024: raise ValueError('Harness receipt exceeds bound')
++    value = json.loads(raw)
++    return dict(terminalObservationQualified=process.returncode == 0 and value.get('terminalObservationQualified') is True,
++                harnessExitCode=process.returncode, receipt=str(receipt), receiptSHA256=hashlib.sha256(raw).hexdigest(),
++                inferenceRequestSucceeded=value.get('inferenceRequestSucceeded'), slaPassed=value.get('slaPassed'))
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--attempt', required=True, type=int)
++    parser.add_argument('--execute', action='store_true', help='Acknowledge the reviewed real two-host pointer switch.')
++    parser.add_argument('--restore-only', action='store_true')
++    args = parser.parse_args()
++    if not args.execute or not 1 <= args.attempt <= 99:
++        parser.error('Expected --execute and fresh attempt1...99; restoration uses the original attempt')
++    os.umask(0o077)
++    root = BASE / 'transactions'; root.mkdir(mode=0o700, exist_ok=True)
++    original = root / ('attempt-' + str(args.attempt))
++    pins, recovery_errors = {}, {}
++    if args.restore_only:
++        pins, recovery_errors = recovery_pins(original)
++        output = root / ('restore-' + str(args.attempt) + '-' + str(os.getpid()))
++    else:
++        if (BASE / 'harness' / ('physical-' + str(args.attempt))).exists():
++            raise ValueError('Physical attempt already exists')
++        output = original
++    output.mkdir(mode=0o700)
++    interrupted = False
++    def interrupt(_signal, _frame):
++        nonlocal interrupted
++        if not interrupted:
++            interrupted = True
++            raise KeyboardInterrupt('Operator requested stop; cleanup/restoration remains owned')
++    signal.signal(signal.SIGINT, interrupt); signal.signal(signal.SIGTERM, interrupt)
++    record = transact(lambda host, action, pin: remote_action(host, action, pin, args.attempt, output),
++                      lambda: physical(args.attempt, output), prepared=pins, restore_only=args.restore_only)
++    record.update(schema='installed_configured_deadline_transaction_v1', attempt=args.attempt,
++                  configuredRequestTimeoutSeconds=2, ordinaryRequestTimeoutSeconds=120,
++                  externalContentSLANanoseconds=18_192_000_000, naturalContentMissReproduced=False,
++                  restoreOnly=args.restore_only, interrupted=interrupted, recoveryReceiptErrors=recovery_errors)
++    if recovery_errors: record['qualified'] = False
++    publish(output / 'execution.json', (json.dumps(record, indent=2) + '\n').encode())
++    print(json.dumps({key: record[key] for key in ('qualified', 'defaultsRestored', 'error', 'restorationErrors', 'physical')}, sort_keys=True))
++    raise SystemExit(0 if record['qualified'] else 1)
++
++
++if __name__ == '__main__': main()

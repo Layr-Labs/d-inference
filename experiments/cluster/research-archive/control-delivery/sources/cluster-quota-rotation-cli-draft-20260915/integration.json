@@ -1,0 +1,69 @@
+{
+  "compilerExecuted": false,
+  "files": [
+    {
+      "afterSHA256": "21287fa924be577b557700bd73bba9974e4f7e37336ea42f7406dcfcd336ae38",
+      "beforeSHA256": null,
+      "bytes": 2385,
+      "path": "provider-swift/Sources/darkbloom/DistributedStartSessionFactory.swift"
+    },
+    {
+      "afterSHA256": "037ce854a75debc6bbc462bbab88baff1ce80734617dc517bfc68271c491bb74",
+      "beforeSHA256": "913e8bbb5df1a18baadbd7f479c81feef6fa71f8541d431a7d4257779a9abb44",
+      "bytes": 3228,
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Distributed.swift"
+    },
+    {
+      "afterSHA256": "660710541b44a4be5e1b142b53f2873fdf334672cab900d896869e135c83aaa0",
+      "beforeSHA256": null,
+      "bytes": 5313,
+      "path": "provider-swift/Tests/DarkbloomCLITests/DistributedStartSessionFactoryTests.swift"
+    }
+  ],
+  "mainMutated": false,
+  "runtimeFiles": 2,
+  "sourceOnly": true,
+  "testFiles": 1,
+  "unchangedControls": [
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift",
+      "sha256": "3ed7215e037afa76e159278b554abf52a84721d556ebf89a01a413d58639d13e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift",
+      "sha256": "f29fae4b95bc0d7380cb63027806b820f7e04fe420bad2232fc96853ad2f464d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "sha256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledValidation.swift",
+      "sha256": "a15374ed24e26daefb0e1806c063713423eb0bd5a810230f7165fbfb671c4b03"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift",
+      "sha256": "02cce955fa79ee75b428e4bd6171f33215f27c76a6fcd894f635c54890a8db4c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Rotation.swift",
+      "sha256": "577c66b2add672c934e39026cf2f9d516310d48100e6be463028abb0bccf1cb3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift",
+      "sha256": "efe1a471a942f952a7f884ffb56b1a5bca5768bbbe0f92222812fb93d4e82da0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift",
+      "sha256": "60173dfc53f54bdbb27e21c5aa60604b70189ba6973e50a8601c3c81c4afffc9"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/DistributedStartSignals.swift",
+      "sha256": "54f22b69e283b1bccbf0ce3435449a7a164ae345abe84bb084bbd3d5d1fb024f"
+    },
+    {
+      "path": "provider-swift/Tests/DarkbloomCLITests/DistributedStartCommandTests.swift",
+      "sha256": "bbf1473a1a91f50138e3bf40b77eb8038e59907c8a6f5e944aff4a89b4ceb76b"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# Remaining admission reader migration
+
+This package intentionally leaves the existing pair path byte-exact. It must not be described as App Attest pair support until these connected readers use the typed identity and their tests pass in the composed latest-master workspace.
+
+| Source | Required concrete change |
+|---|---|
+| registry/verified_pair_types.go + verified_pair_membership.go | Store typed identity beside or in place of legacy fields. Select one explicit identity kind at reservation after existing common route/heartbeat/idle gates. Revalidate that same kind; never silently switch on lease loss. Existing legacy predicate remains intact. |
+| verified_pair_membership.go transcript | Keep all-legacy v1 bytes exact; use a distinct version/domain for typed members, immutable epoch/rank/Plan/native policy and canonical identity. |
+| verified_pair_reservation.go | Compare exact typed identities at prepared ACK, commit and every use; keep atomic two-device Registry lock and actual Provider pointers. Current App Attest lease expiry is exclusive and cannot extend the original pair deadline. |
+| verified_pair_lifecycle.go + verified_pair_commands.go | Bind cross-path holds to normalized signer identity plus real verified account/machine continuity, and legacy verified serial only when genuine. Reconnect may be held but cannot consume the original release. Missing identity must retain uncertain holds. No proof deadline, EOF or replacement releases committed ownership. |
+| native_pair_handlers.go + initiation/native_pair_intent.go | Verify signatures/configured signer hash against the selected actual control key, not a fabricated legacy SE field. Existing shared nonce/sequence/connection gates and mutual consent remain. |
+| native_pair_protocol/Swift grant readers | Carry the typed membership commitment consistently into prepare/commit/native transcript; no wire decoder confers trust. Mirror new transcript version and substitution vectors. |
+| attestation_policy.go + provider_capabilities.go + lease clear/revoke/expiry | App Attest owners must not depend on independent legacy APNs/MDA flags, but hard negative evidence still revokes both paths. Add exact-state revocation and a bounded lease-expiry wakeup so idle owners retire promptly; refresh may not revive a quarantined generation. |
+| ObserveVerifiedPairOwnerReleased | For the original typed authority require current matching release signer/runtime/connection and actual signed cleanup. Lost proof leaves quarantine. Do not require capacity/model admission on release. |
+| native_pair_hardware_observation.go | Existing serial-based private test selector stays explicitly legacy-only until a separate typed selector is provided. Never put machine ID into DeviceSerial. |
+
+Registry readers: the new lease fields are consumed only by existing providerHasAppAttestAuthorizationLocked (therefore ordinary liveness, inference final handoff, serving authorization, capability and authorizer-refresh readers also see a changed carried binding) and the new internal identity projection. Grant uses the same Registry→Provider lock order; authorizer keeps its existing authorizer→Registry→Provider order and no IO under those locks. Clear/replace/revoke/disconnect still erase the entire lease. BackendCapacity, WarmModels, CurrentModel and pendingModelLoads are not mutated. The typed projection is not called by admission in this slice.

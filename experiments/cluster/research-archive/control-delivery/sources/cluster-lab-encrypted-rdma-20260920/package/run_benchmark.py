@@ -1,0 +1,136 @@
+"""One bounded native cohort. Canonical device lock is inherited across exec."""
+import argparse
+import json
+import os
+from pathlib import Path
+import signal
+import resource
+import time
+from benchmark_package import digest, verify
+from binding_common import parse, require
+from gemma_inputs import REMOTE, write_json, product, arguments, validate_job
+from jaccl_startup_stderr import JacclStartupProgress
+from mtp_journal import device_directory, observe, require_empty
+from reference_resources import ResourceGate, read_command
+from target_processes import observe as processes
+from worker_contract import WorkerSpec
+from worker_processes import PipeWorkers, cleanup_error_text
+from expert_retirement import collect_retired_result
+
+def main():
+    parser=argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument('--package-sha256',required=True)
+    parser.add_argument('--job',type=Path,required=True)
+    parser.add_argument('--job-sha256',required=True)
+    args=parser.parse_args(); os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+    started=time.monotonic(); deadline=started+135
+    require(args.job.parent.parent==REMOTE/'runs' and args.job.name=='job.json','Job path')
+    run=args.job.parent
+    require(run.resolve()==run and digest(args.job)==args.job_sha256,'Job identity')
+    package=verify(args.package_sha256)
+    job=parse(args.job.read_bytes())
+    validate_job(job)
+    argv,inner_sha=arguments(job,args.job)
+    selected_product=product(job)
+    require(job['nativeSHA256']==digest(REMOTE/'bundle'/selected_product),'Native/job identity')
+    record={'schema':'lab_record_terminal_v1','status':'failed','mode':job['mode'],
+            'packageSHA256':args.package_sha256,'jobSHA256':args.job_sha256,
+            'labAuthenticatedRDMA':False,'productMembershipEstablished':False,'externalHTTPTTFTMeasured':False,
+            'primaryFailure':None,'cleanupErrors':[]}
+    pipes=None; before=None; secret=None
+    resources=(run/'resources.jsonl').open('xb',buffering=0)
+    gate=ResourceGate(lambda row:PipeWorkers._write_all(resources,json.dumps(row,sort_keys=True).encode()+b'\n'))
+    def guard(phase):
+        require(time.monotonic()<deadline,'Original parent deadline expired')
+        cancellation=run/'cancellation.json'
+        if cancellation.exists():
+            require(not cancellation.is_symlink() and cancellation.stat().st_size<=4096,'Unsafe cancellation record')
+            value=parse(cancellation.read_bytes())
+            require(value=={'schema':'lab_record_cancellation_v1','jobSHA256':args.job_sha256},
+                    'Cancellation identity differs')
+            raise RuntimeError('Matching peer failed; cancel this owned native group')
+        gate(phase)
+    def interrupt(number,_): raise SystemExit(128+number)
+    previous={number:signal.signal(number,interrupt) for number in (signal.SIGHUP,signal.SIGINT,signal.SIGTERM)}
+    try:
+        from lab_secret import create
+        secret=create(job['nativeJob'])
+        guard('prelaunch')
+        memory=int(read_command(['/usr/sbin/sysctl','-n','hw.memsize']).strip())
+        require(memory==(24 if job['mode']=='stage0' else 48)*1024**3,'Wrong physical host role')
+        require(not processes(deadline)['prohibited'],'Existing native/owner process')
+        before=observe(device_directory());require_empty(before)
+        write_json(run/'journal-before.json',before)
+        env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=str(Path.home()),LANG='C')
+        if job['kind']=='rdma':
+            env.update(JACCL_RANK='0' if job['mode']=='stage0' else '1',
+                       JACCL_IBV_DEVICES=str(REMOTE/'matrix.json'),JACCL_COORDINATOR='192.0.2.250:51361')
+        binary=REMOTE/'bundle'/selected_product;s=binary.lstat()
+        launch=dict(binary=str(binary),job=str(args.job),environment=env,
+                    binaryIdentity=[s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns],
+                    jobSHA256=args.job_sha256,arguments=argv,nativeJobSHA256=inner_sha)
+        write_json(run/'launch.json',launch)
+        spec=WorkerSpec(('/usr/bin/python3','-B',str(REMOTE/'native_gate.py'),'--launch',str(run/'launch.json'),
+                         '--launch-sha256',digest(run/'launch.json')),
+                        dict(PATH=env['PATH'],HOME=env['HOME'],LANG='C'),'solo',None)
+        remaining=int(deadline-time.monotonic())
+        require(remaining>=121,'Insufficient time for native lifetime and cleanup')
+        stderr=JacclStartupProgress() if job['mode']=='stage1' else None
+        pipes=PipeWorkers((spec,),run/'native',remaining,guard,stderr_policy=stderr);pipes.start()
+        record['nativePIDs']=[child.pid for child in pipes.children]
+        write_json(run/'owner.json',dict(parentPID=os.getpid(),nativePIDs=record['nativePIDs'],
+                                        nativePGIDs=record['nativePIDs'],deadlineMonotonic=deadline))
+        def result(_,raw):
+            value=parse(raw)
+            require(isinstance(value,dict),'Native result must be an object')
+            return value
+        record['result'],codes=collect_retired_result(pipes,result)
+        if stderr is not None:record['startupStderr']=stderr.summary()
+        record['byteValidationAfterRetirement']=True
+        from expert_results import validate_result
+        validate_result(record['result'],job)
+        require(codes==[0],'Worker exit was nonzero')
+        record['labAuthenticatedRDMA']=True
+        record['status']='completed'
+    except BaseException as error:
+        record['primaryFailure']=cleanup_error_text(error)[0]
+    finally:
+        if pipes is not None:
+            try:pipes.close(kill=record['status']!='completed')
+            except BaseException as error:record['cleanupErrors'].append(cleanup_error_text(error)[0])
+            record.update(exitCodes=[child.returncode for child in pipes.children],
+                          outputComplete=pipes.complete_output,cleanupErrors=record['cleanupErrors']+pipes.cleanup_errors)
+            absent=[]
+            for child in pipes.children:
+                try:os.killpg(child.pid,0);absent.append(False)
+                except ProcessLookupError:absent.append(True)
+                except BaseException as error:
+                    absent.append(False);record['cleanupErrors'].append(cleanup_error_text(error)[0])
+            record['groupsAbsent']=bool(absent) and all(absent)
+            if record['exitCodes']!=[0] or not record['outputComplete'] or not record['groupsAbsent']:
+                record['status']='failed'
+        try:
+            after=observe(device_directory());require_empty(after,before)
+            write_json(run/'journal-after.json',after)
+            require(not processes(time.monotonic()+4)['prohibited'],'Native/owner remains')
+            record['journalEmptyAndProcessesRetired']=True
+            gate('postflight')
+            verify(args.package_sha256)
+            require(digest(args.job)==args.job_sha256,'Job changed')
+        except BaseException as error:record['cleanupErrors'].append(cleanup_error_text(error)[0])
+        if secret is not None:
+            try:
+                from lab_secret import cleanup
+                cleanup(*secret)
+                record['privateSecretFileAbsent']=not secret[0].exists()
+                require(record['privateSecretFileAbsent'],'Lab secret path survived retirement')
+            except BaseException as error:record['cleanupErrors'].append(cleanup_error_text(error)[0])
+        if record['cleanupErrors'] or time.monotonic()>=deadline:record['status']='failed'
+        record['elapsedSeconds']=time.monotonic()-started
+        write_json(run/'terminal.json',record);resources.close()
+        for number,handler in previous.items():signal.signal(number,handler)
+    print(json.dumps({'status':record['status'],'mode':job['mode'],'run':str(run),
+                      'terminalSHA256':digest(run/'terminal.json')}),flush=True)
+    return 0 if record['status']=='completed' else 1
+
+if __name__=='__main__':raise SystemExit(main())

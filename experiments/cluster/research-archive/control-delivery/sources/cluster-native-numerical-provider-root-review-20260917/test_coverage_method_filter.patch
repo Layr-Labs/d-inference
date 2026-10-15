@@ -1,0 +1,20 @@
+--- c7/test_coverage.py
++++ root/test_coverage_method_filter.py
+@@ -1,6 +1,8 @@
+ """Parser regression controls use explicit fabricated text, never product evidence."""
+ import hashlib,json,re,unittest
+ from pathlib import Path
++import sys
++sys.path.insert(0, '/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-build-draft-20260917')
+ from context import BASE,PRIOR
+ from coverage import validate
+ 
+@@ -14,7 +16,7 @@
+ def fabricated_success():
+     text=original()
+     text=re.sub(r'(?m)^✘ Test .+ recorded an issue .+\n','',text)
+-    text=re.sub(r'(?m)^✘ Test (.+?) failed after ([0-9.]+) seconds with 1 issue\.$',r'✔ Test \1 passed after \2 seconds.',text)
++    text=re.sub(r'(?m)^✘ Test (?!run with )(.+?) failed after ([0-9.]+) seconds with 1 issue\.$',r'✔ Test \1 passed after \2 seconds.',text)
+     text=re.sub(r'(?m)^✘ Suite (.+?) failed after ([0-9.]+) seconds with 1 issue\.$',r'✔ Suite \1 passed after \2 seconds.',text)
+     new=json.loads((BASE/'coverage.json').read_text())['newMethods']
+     completions='\n'.join('✔ Test '+x+'() passed after 0.001 seconds.' for x in new)

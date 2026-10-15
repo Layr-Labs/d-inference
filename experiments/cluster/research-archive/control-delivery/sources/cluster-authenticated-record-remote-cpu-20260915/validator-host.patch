@@ -1,0 +1,11 @@
+--- local/validate_result
++++ remote/validate_result
+@@ -3,7 +3,7 @@
+         raise ValueError('Wrong CPU benchmark schema')
+     if any(value.get(name) is not False for name in ['encryptedRDMAMeasured', 'modelMeasured', 'keysLogged']):
+         raise ValueError('Unexpected scope claim')
+-    if value.get('hostChip') != 'Apple M4 Max': raise ValueError('Wrong observed CPU identity')
++    if value.get('hostChip') != 'Apple M4 Pro': raise ValueError('Wrong observed CPU identity')
+     cases = value.get('cases')
+     if not isinstance(cases, list) or len(cases) != 8: raise ValueError('Missing CPU cases')
+     expected = {(name, rank) for name in SHAPES for rank in [0, 1]}

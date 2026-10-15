@@ -1,0 +1,14 @@
+{
+  "baseDirectory": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-key-prelude-draft-20260916",
+  "baseManifestSHA256": "23fce2b652fac6a42eda424cb83beb425cfd90f2482eca022e9f89c23f105afb",
+  "changes": [
+    {
+      "afterSHA256": "f8380b8e3813124e19313a6fc0184b5602ff918cebe3b5dc6ec3106ea9202331",
+      "beforeSHA256": "d5cc458ba093135ee582b420abc3168aadc71f975238277f1fbd01b643436d41",
+      "path": "Tests/NativeKeyChild.swift"
+    }
+  ],
+  "materialized": false,
+  "requiresFreshCombinedSourceDirectory": true,
+  "runtimeChanges": []
+}

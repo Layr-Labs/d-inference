@@ -1,0 +1,89 @@
+--- originals/long_rank_test_support.py
++++ long_rank_test_support.py
+@@ -3,6 +3,7 @@
+ from long_reference_inputs import ARTIFACT, CONFIGURATION
+ from long_rank_identity import canonical, sha, known_agreement, recorded_request, environment_receipt
+ from long_rank_warning import WARNING
++from long_pair_cut import PLAN_SHA256, STAGE_PLAN_SHA256, STAGE_CONFIGURATION_SHA256, SOURCE_LAYOUT_SHA256, SOURCE_MODEL_BYTES
+ 
+ EPOCH = 'a' * 32
+ ENDPOINTS = [['127.0.0.1:31001'], ['127.0.0.1:31002']]
+@@ -11,11 +12,12 @@
+     prompt_token_ids_sha256=sha(','.join(['3'] * 8192).encode()))
+ 
+ 
+-def fixtures(rank,scheduling='serial_v1',plan='b' * 64,epoch=EPOCH,inputs=INPUTS):
++def fixtures(rank,scheduling='serial_v1',plan=PLAN_SHA256,epoch=EPOCH,inputs=INPUTS,storage='b' * 64):
+     descriptor = known_agreement(epoch,scheduling,inputs)
+-    descriptor.update(storageCommitmentSHA256='b' * 64,planFingerprint=plan,
+-        producerStageFingerprint='c' * 64,consumerStageFingerprint='d' * 64,
+-        producerConstructionConfigurationSHA256='e' * 64,consumerConstructionConfigurationSHA256='f' * 64)
++    descriptor.update(storageCommitmentSHA256=storage,planFingerprint=plan,
++        producerStageFingerprint=STAGE_PLAN_SHA256[0],consumerStageFingerprint=STAGE_PLAN_SHA256[1],
++        producerConstructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[0],
++        consumerConstructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[1])
+     fingerprint = sha(b'qwen-profiled-prefill-start-agreement-v1\n' + canonical(descriptor))
+     common = dict(schemaVersion=1,epoch=epoch,rank=rank,worldSize=2,transport='loopback-test',backend='ring',
+         flow='profiled_prefill_measurement_v1',envelopeVersion=4,agreement=descriptor,agreementFingerprint=fingerprint,
+@@ -24,7 +26,9 @@
+     final = dict(common,kind='qwen_long_prefill_rank_report',completed=True,correctnessOnly=True,
+         throughputMeasurementValid=False,modelForwardCompared=False,physicalTransferQualified=False,
+         sourceLoad=dict(stageIndex=rank,verifiedAggregateSHA256=ARTIFACT,sourceConfigurationSHA256=CONFIGURATION,
+-                        storageCommitmentSHA256=descriptor['storageCommitmentSHA256']),
++                        storageCommitmentSHA256=descriptor['storageCommitmentSHA256'],planSHA256=plan,
++                        stagePlanSHA256=STAGE_PLAN_SHA256[rank],constructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[rank],
++                        sourceParameterLayoutSHA256=SOURCE_LAYOUT_SHA256,sourceModelTensorBytes=SOURCE_MODEL_BYTES),
+         request=recorded_request(epoch,inputs['prompt']),arithmeticEnvironment=environment_receipt(),
+         arithmeticEnvironmentSHA256=descriptor['arithmeticEnvironmentSHA256'],
+         resourceAdmission={'fabricated':'opaque resource admission'},execution={'fabricated':'not a numerical fixture'},
+--- originals/test_long_rank_owner.py
++++ test_long_rank_owner.py
+@@ -39,6 +39,8 @@
+                 before, after = upstream.configuration(*args), configuration(*args)
+                 expected = copy.deepcopy(before)
+                 expected['arguments'] += ['--prefill-owner-trace-file', '@rank/owner-trace.json']
++                cut_index = expected['arguments'].index('--execution-path') + 2
++                expected['arguments'][cut_index:cut_index] = ['--stage-cut', '12']
+                 self.assertEqual(after, expected)
+                 self.assertEqual(after['arguments'].count('--prefill-owner-trace-file'), 1)
+                 self.assertEqual(after['arguments'].count('--prefill-phase-trace-file'), 1)
+@@ -53,7 +55,7 @@
+                         require_configuration(wrong, *args)
+         status, receipt, calls, output = existing_launch.Tests.run_fake(self, True)
+         self.assertEqual(status, 0)
+-        self.assertEqual(receipt['kind'], 'remote_qwen_long_prefill_rank_owner_launcher')
++        self.assertEqual(receipt['kind'], 'remote_qwen_long_prefill_rank_cut_owner_launcher')
+         self.assertIs(receipt['phase_timing_requested'], True)
+         self.assertIs(receipt['owner_timing_requested'], True)
+         self.assertFalse(receipt['throughput_qualification'])
+--- originals/test_long_rank_phase.py
++++ test_long_rank_phase.py
+@@ -40,6 +40,8 @@
+                 expected = copy.deepcopy(before)
+                 expected['arguments'] += ['--prefill-phase-trace-file', '@rank/phase-trace.json',
+                                           '--prefill-owner-trace-file', '@rank/owner-trace.json']
++                cut_index = expected['arguments'].index('--execution-path') + 2
++                expected['arguments'][cut_index:cut_index] = ['--stage-cut', '12']
+                 self.assertEqual(after, expected)
+                 self.assertEqual(after['arguments'].count('--prefill-phase-trace-file'), 1)
+                 require_configuration(after, *args)
+@@ -53,7 +55,7 @@
+     def test_fake_launcher_marks_request_without_claiming_retrieval(self):
+         status, receipt, calls, output = existing_launch.Tests.run_fake(self, True)
+         self.assertEqual(status, 0)
+-        self.assertEqual(receipt['kind'], 'remote_qwen_long_prefill_rank_owner_launcher')
++        self.assertEqual(receipt['kind'], 'remote_qwen_long_prefill_rank_cut_owner_launcher')
+         self.assertIs(receipt['phase_timing_requested'], True)
+         self.assertIs(receipt['timing_diagnostic_only'], True)
+         self.assertFalse(receipt['throughput_qualification'])
+--- originals/test_long_rank_supervision.py
++++ test_long_rank_supervision.py
+@@ -42,7 +42,7 @@
+         self.assertFalse(result['remote_process_reaping_independently_verified'])
+ 
+     def test_valid_different_peer_agreements_cancel_whole_cohort(self):
+-        result,_,stops=self.fake([None,None],[fixtures(0),fixtures(1,plan='f'*64)])
++        result,_,stops=self.fake([None,None],[fixtures(0),fixtures(1,storage='f'*64)])
+         self.assertFalse(result['passed']);self.assertIn('Peers disagree',result['error'])
+         self.assertEqual(len(stops[0][0]),2)
+ 

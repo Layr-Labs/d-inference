@@ -1,0 +1,120 @@
+{
+  "mainChanged": false,
+  "files": [
+    {
+      "path": "coordinator/registry/attestation_policy.go",
+      "proposedSHA256": "a46fcac43c33829e3321dcafea63bf243d9436b23f13ca0cdccd8dbb3a2a2098",
+      "sizeBytes": 22470,
+      "baseSHA256": "1f96b31b645afc94ce25f2186c7358520e00526952decdef7505c9611d2c5872"
+    },
+    {
+      "path": "coordinator/registry/gate_reason.go",
+      "proposedSHA256": "6d64ad611f7f548edd64e85ee3d87b2375f6103e4f9f1fd81eca55d04ac02611",
+      "sizeBytes": 10373,
+      "baseSHA256": "a85562b912b7275e97048cddd5dac80fbd66975bdfb450b225240af146245f59"
+    },
+    {
+      "path": "coordinator/registry/model_commands.go",
+      "proposedSHA256": "a620700aa8b8d06de325e16349bc90ab2b1da64489b51ac0f7343d1a6417fcc6",
+      "sizeBytes": 10096,
+      "baseSHA256": "586dc1157c338df8d7599ffee39d0697250f6915c50119e81b47deaac31d94bb"
+    },
+    {
+      "path": "coordinator/registry/model_loading.go",
+      "proposedSHA256": "43085fe406c58ecd1cd45b19fdcf13fd05923b184adef82604aec8a40eeb2d39",
+      "sizeBytes": 22930,
+      "baseSHA256": "a891297b50ae4d965c725c084c5f3995fd4cd1336fb91b41d1c6fc3d2cf024dd"
+    },
+    {
+      "path": "coordinator/registry/provider.go",
+      "proposedSHA256": "754990d7fe5d9ecc2b7391b21ed47891a240e47346864c00305d07a045ab952a",
+      "sizeBytes": 23414,
+      "baseSHA256": "e8faf36b28b7ac4246cd5d4b5ba5d9b3e5ccf003c351e75137df5dfdd2fdb5b2"
+    },
+    {
+      "path": "coordinator/registry/provider_evidence.go",
+      "proposedSHA256": "1b842ebb7241b3de9d9dd72211b968ec4851c34ac0e5954935696cae3f0bb3e7",
+      "sizeBytes": 20021,
+      "baseSHA256": "e6365ded81d9eefbfb618a9bb08dedc9aa1db1ff60646419a5324d0702254864"
+    },
+    {
+      "path": "coordinator/registry/provider_lifecycle.go",
+      "proposedSHA256": "d8c62bee076c774d6e04073c7692865910095dc06ed177fead36ea30c052af61",
+      "sizeBytes": 21697,
+      "baseSHA256": "db9c35b9a33ccf162df03c341081b52c36361ece11677987a9f66b8d62a8357d"
+    },
+    {
+      "path": "coordinator/registry/registry.go",
+      "proposedSHA256": "c52a2edc1a0fb9c3fc56bfba2d9c925b355c6b5e59a8242f7f8d139340cb8722",
+      "sizeBytes": 15824,
+      "baseSHA256": "7f71448e0f0a96c408b0e5f141128a3e607f84a130ba0468dcafc70fbe73c8df"
+    },
+    {
+      "path": "coordinator/registry/routing_eligibility.go",
+      "proposedSHA256": "6d9cf38f898dc51662cbf4438d0a4bb43a67d55a4df1a80cdf5d7d49ccc44382",
+      "sizeBytes": 6176,
+      "baseSHA256": "19595a58e0afcc1243f5034aee3fdc435e83d775843b617a51104874bd0298e3"
+    },
+    {
+      "path": "coordinator/registry/scheduler.go",
+      "proposedSHA256": "49f9163bafe3850caacda43bf87e7916d1a26010cbc9232d478344843203015b",
+      "sizeBytes": 143489,
+      "baseSHA256": "5833b70bb89444813a1c15ecc5cebeab7725d44d8e43890ddedcbfc1425a71dd"
+    },
+    {
+      "path": "coordinator/registry/verified_pair_commands.go",
+      "proposedSHA256": "280514f8f7540c34cd8bb32e22e7b7c2122f9002f09814fe5a9b844fcf7f6522",
+      "sizeBytes": 2042,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_concurrency_test.go",
+      "proposedSHA256": "c52c785cbfcd744169222a566c6c0ab242aa15258e327aba8542d64bbe9cf176",
+      "sizeBytes": 5046,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_lifecycle.go",
+      "proposedSHA256": "6a5fd176efd240da5fe8d7f1777672a3ad7db1a3ce1167100a0dda043ed04791",
+      "sizeBytes": 7923,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_lifecycle_test.go",
+      "proposedSHA256": "a71c76584dcf7e6f764159c9aacaff4a1893d6bfdeee8bd5d6fdfba47cbed318",
+      "sizeBytes": 8096,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_membership.go",
+      "proposedSHA256": "4b6bc03c9e8f166e19c04dc1a91151308ad35a99ce9853dfdb1240fd113b9ee5",
+      "sizeBytes": 5616,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_reservation.go",
+      "proposedSHA256": "81bc9c7c25a5b3bcf420b8c0d79640b674914bef360db2b42a4576d8db25bca4",
+      "sizeBytes": 7652,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_test.go",
+      "proposedSHA256": "866ef0108c26095531853422b9946440ddd515cac08249110002a4f7d13fe604",
+      "sizeBytes": 8376,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/verified_pair_types.go",
+      "proposedSHA256": "feb41bdfb4b7248307b5dcbadf826f959aabca360dd08e7dacee58b99abe0b30",
+      "sizeBytes": 4128,
+      "baseSHA256": null
+    },
+    {
+      "path": "coordinator/registry/warm_pool_controller.go",
+      "proposedSHA256": "65d21383c9507e3c9dbd092d17f5492615b33dd4bf8ad2f4292fb610af894593",
+      "sizeBytes": 32839,
+      "baseSHA256": "c19a3f4276655aea73a987c09b16b10ab2a7818ba518248276b9babefaf9048e"
+    }
+  ],
+  "nativeOrKeyEstablishmentEnabled": false
+}

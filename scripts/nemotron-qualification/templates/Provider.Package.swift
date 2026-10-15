@@ -93,6 +93,15 @@ let package = Package(name: "NemotronProviderValidation", platforms: [.macOS(.v1
             ],
             path: "Sources/ProviderCore"
         ),
+        // Qualification-only loopback runner (scripts/nemotron-qualification/super-runner.md).
+        // It exists only in this harness template, never in the shipping provider manifest.
+        .executableTarget(name: "NemotronSuperRunner", dependencies: ["ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"), .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"), .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"), .product(name: "MLXLMServer", package: "mlx-swift-lm"),
+                .product(name: "Hummingbird", package: "hummingbird"), .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser")],
+            path: "Tests/NemotronSuperRunner"),
         .testTarget(name: "ProviderCoreTests", dependencies: ["ProviderCore", .product(name: "HummingbirdTesting", package: "hummingbird"), .product(name: "MLXLMCommon", package: "mlx-swift-lm")],
             path: "Tests/ProviderCoreTests", sources: ["Server/NemotronSuperImageHTTPRelayTests.swift", "Inference/Vision/NemotronSuperImageDecodeTests.swift", "Inference/Engine/NemotronSuperLocalImageBindingTests.swift", "Server/NemotronSuperLocalHTTPTests.swift", "Server/NemotronSuperLocalHTTPReasoningToolTests.swift", "NemotronSuperRecurrentAdmissionTests.swift", "NemotronSuperLocalOutputTests.swift", "NemotronSuperPromptContractTests.swift", "NemotronSuperPromptGoldenTests.swift", "Inference/Engine/NemotronSuperLoadAdmissionTests.swift", "Inference/Engine/NemotronSuperLocalBindingTests.swift", "Inference/Fixtures/EngineV2TestStubs.swift", "Inference/Fixtures/NemotronSuperInstalledFixture.swift"])
     ])

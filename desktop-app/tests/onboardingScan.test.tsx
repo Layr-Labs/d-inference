@@ -167,12 +167,12 @@ describe('ineligible Mac', () => {
 describe('when the result is not known yet', () => {
   it('keeps scanning until the runtime delivers a snapshot', () => {
     const connecting = backendWith(undefined, {
-      status: { state: 'connecting', message: 'Reconnecting to the runtime…' },
+      status: { state: 'connecting', message: 'Reconnecting to the Darkbloom CLI…' },
     });
     const { rerender } = renderOnboarding(connecting);
     elapse(30_000);
     expect(heading('Checking this Mac…')).toBeVisible();
-    expect(screen.getByText('Reconnecting to the runtime…')).toBeVisible();
+    expect(screen.getByText('Reconnecting to the Darkbloom CLI…')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Skip/ })).not.toBeInTheDocument();
     rerender(<Onboarding backend={backendWith(snapshot())} done={vi.fn()} />);
     expect(heading('Checking this Mac…')).toBeVisible();
@@ -228,30 +228,31 @@ describe('when the result is not known yet', () => {
 });
 
 describe('runtime setup', () => {
-  it('installs the runtime before it can check this Mac', () => {
+  it('installs the CLI only when the user clicks Install CLI, before it can check this Mac', () => {
     api.install.mockResolvedValue(undefined);
     renderOnboarding(
       backendWith(undefined, {
-        status: { state: 'missing', message: 'Install the Darkbloom runtime to connect this Mac.' },
+        status: { state: 'missing', message: 'Install the Darkbloom CLI to connect this Mac.' },
       }),
     );
-    expect(heading('Install Darkbloom to check this Mac.')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: /Install runtime/ }));
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    expect(api.install).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Install CLI/ }));
     expect(api.install).toHaveBeenCalledOnce();
   });
 
-  it('offers a repair when the runtime is unreachable', async () => {
+  it('offers a repair when the CLI is unreachable', async () => {
     api.install.mockRejectedValue(new Error('Runtime installation failed'));
     renderOnboarding(
       backendWith(undefined, {
         status: {
           state: 'error',
-          message: 'Could not connect to the runtime. Update or repair the installation.',
+          message: 'Could not connect to the Darkbloom CLI. Update or repair it.',
         },
       }),
     );
-    expect(heading('We couldn’t check this Mac.')).toBeVisible();
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Repair runtime/ })));
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Repair CLI/ })));
     expect(screen.getByRole('alert')).toHaveTextContent('Runtime installation failed');
   });
 });

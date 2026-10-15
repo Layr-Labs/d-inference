@@ -62,19 +62,16 @@ export class Backend extends EventEmitter {
   snapshot?: Snapshot;
   private connection?: ReturnType<typeof validateDiscovery>;
   private stopped = false;
-  // At most one install runs; the renderer's button and the automatic install share it.
+  // At most one install runs, and only when the user asks for it (the renderer's Install,
+  // Repair, Update or Retry button); repeated clicks join the install in flight.
   private installation?: Promise<void>;
   private installer?: ChildProcess;
   private cancelled = false;
-  // Automatic install runs once per launch; any install attempt uses it up.
-  private installAttempted = false;
   // A failed or cancelled install stays on screen until the next attempt.
   private installOutcome?: DesktopStatus;
-  /** `autoInstallScript`: the bundled installer to run when the runtime is missing, if enabled. */
   constructor(
     private packaged: boolean,
     private preview?: PreviewRuntime,
-    private autoInstallScript?: string,
   ) {
     super();
   }
@@ -128,8 +125,8 @@ export class Backend extends EventEmitter {
         state: code === 'ENOENT' ? 'missing' : 'error',
         message:
           code === 'ENOENT'
-            ? 'Install the Darkbloom runtime to connect this Mac.'
-            : 'Could not connect to the runtime. Update or repair the installation.',
+            ? 'Install the Darkbloom CLI to connect this Mac.'
+            : 'Could not connect to the Darkbloom CLI. Update or repair it.',
       });
     }
   }
@@ -190,11 +187,9 @@ export class Backend extends EventEmitter {
   async watch() {
     while (!this.stopped) {
       try {
-        // An install connects when it finishes; meanwhile its progress owns the status.
-        if (!this.connection && !this.installation) {
-          await this.connect();
-          this.autoInstall();
-        }
+        // A missing CLI only reports `missing`: installing waits for the user's click. An
+        // install connects when it finishes; meanwhile its progress owns the status.
+        if (!this.connection && !this.installation) await this.connect();
         if (this.connection) {
           const response = await fetch(
             `http://127.0.0.1:${this.connection.port}/control/v1/events`,
@@ -229,29 +224,17 @@ export class Backend extends EventEmitter {
         }
       } catch {
         this.connection = undefined;
-        this.status({ state: 'connecting', message: 'Reconnecting to the runtime…' });
+        this.status({ state: 'connecting', message: 'Reconnecting to the Darkbloom CLI…' });
       }
       await new Promise((resolve) => setTimeout(resolve, this.connection ? 250 : 5000));
     }
   }
-  // First launch of a release build: install a missing runtime without waiting for a click.
-  private autoInstall() {
-    if (
-      !this.autoInstallScript ||
-      this.preview ||
-      this.installAttempted ||
-      this.stopped ||
-      this.current.state !== 'missing'
-    )
-      return;
-    void this.install(this.autoInstallScript).catch(() => {});
-  }
+  /** Installs, updates or repairs the CLI; called only from the user's click (`backend:install`). */
   install(script: string): Promise<void> {
     if (this.preview)
       return Promise.reject(
         new Error('Rebuild the local preview to update its bundled desktop API.'),
       );
-    this.installAttempted = true;
     this.installation ??= this.runInstall(script).finally(() => {
       this.installation = undefined;
     });
@@ -267,7 +250,7 @@ export class Backend extends EventEmitter {
     this.installOutcome = undefined;
     this.cancelled = false;
     const transcript = new InstallTranscript();
-    this.status({ state: 'installing', message: 'Preparing to install the backend…' });
+    this.status({ state: 'installing', message: 'Installing the Darkbloom CLI…' });
     let existing: string | undefined;
     try {
       try {
@@ -275,7 +258,7 @@ export class Backend extends EventEmitter {
       } catch {}
       if (existing) {
         await this.verifyRuntime(existing);
-        this.status({ state: 'installing', message: 'Updating the backend…' });
+        this.status({ state: 'installing', message: 'Updating the Darkbloom CLI…' });
         await this.runInstaller(existing, ['update'], process.env, transcript);
       } else
         await this.runInstaller(
@@ -291,7 +274,7 @@ export class Backend extends EventEmitter {
       if (error instanceof InstallCancelled) {
         this.installOutcome = {
           state,
-          message: existing ? 'Backend update cancelled.' : 'Backend installation cancelled.',
+          message: existing ? 'CLI update cancelled.' : 'CLI install cancelled.',
         };
         this.status(this.installOutcome);
         return;
@@ -307,7 +290,7 @@ export class Backend extends EventEmitter {
       this.status(this.installOutcome);
       throw new Error('Runtime installation failed');
     }
-    this.status({ state: 'installing', message: 'Backend installed. Starting it…' });
+    this.status({ state: 'installing', message: 'CLI installed. Starting it…' });
     await this.connect();
   }
   // Runs the installer without a terminal (it then never prompts), publishing its steps as
@@ -368,19 +351,5 @@ function killGroup(child: ChildProcess) {
   } catch {
     child.kill('SIGTERM');
   }
-}
-/**
- * Whether a missing runtime is installed on launch without a click: release builds only. The
- * signed preview refuses installs, smoke tests never touch the system, and development opts in
- * with DARKBLOOM_DESKTOP_AUTO_INSTALL=1.
- */
-export function autoInstallEnabled(options: {
-  packaged: boolean;
-  preview: boolean;
-  smokeTest: boolean;
-  env: NodeJS.ProcessEnv;
-}) {
-  if (options.preview || options.smokeTest) return false;
-  return options.packaged || options.env.DARKBLOOM_DESKTOP_AUTO_INSTALL === '1';
 }
 class InstallCancelled extends Error {}

@@ -49,7 +49,7 @@ it('opens on the welcome view and checks this Mac once the runtime connects', as
   const { rerender } = render(<App />);
   expect(heading('Put this Mac to work.')).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Start' }));
-  expect(heading('Install Darkbloom to check this Mac.')).toBeVisible();
+  expect(heading('Install the Darkbloom CLI')).toBeVisible();
   backend = { ...backend, status: { state: 'ready' }, state: await previewAPI.read('state') };
   rerender(<App />);
   expect(heading('Checking this Mac…')).toBeVisible();

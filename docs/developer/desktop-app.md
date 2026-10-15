@@ -489,42 +489,41 @@ See [provider releases](../operations/provider-release.md) and
 [coordinator deployment](../operations/coordinator-deploy.md) for the independently
 authorized release/deploy procedures.
 
-## Runtime installation
+## CLI installation
 
-Users drag the app to Applications and open it. A release build then installs a
-missing runtime by itself: when `Backend.watch` finds no `~/.darkbloom/bin/darkbloom`
-on its first connection attempt, it runs the bundled installer
+The app is a front end to the Darkbloom CLI (`~/.darkbloom/bin/darkbloom`), which runs
+the background service that serves models. Users drag the app to Applications and open
+it; when the CLI is missing, onboarding shows **Install the Darkbloom CLI** with an
+**Install CLI** button. The install starts only when the user clicks it: the
+watch loop (`Backend.watch` in `desktop-app/src/main/backend.ts`) only reports
+`missing` and never starts an installer, in any build. The click calls
+`DesktopAPI.install()` (`backend:install`), which runs the bundled installer
 (`Contents/Resources/bootstrap/install-runtime.sh`, a copy of `scripts/install.sh`)
-with `COORD_URL=https://api.darkbloom.dev` and no terminal, so it never prompts.
-Nothing can run while the DMG downloads, mounts or is dragged, so first launch is
-the earliest moment.
+with `COORD_URL=https://api.darkbloom.dev` and no terminal, so it never prompts. An
+existing CLI is updated or repaired with `darkbloom update` instead.
 
-- **When.** Once per launch, in packaged builds only (`autoInstallEnabled` in
-  `desktop-app/src/main/backend.ts`). The signed preview refuses installs, `--ui-smoke-test`
-  never touches the system, and development opts in with
-  `DARKBLOOM_DESKTOP_AUTO_INSTALL=1`. A failed or cancelled install stays failed until
-  the user clicks Retry, Install or Repair; reconnect attempts keep its message.
-- **One installer.** The automatic install and the renderer's Install, Repair and
-  Next steps buttons share one in-flight install; a second request joins it.
+- **Buttons.** `RuntimeSetup` offers **Install CLI** (`missing`), **Repair CLI**
+  (`error`) or **Update CLI** (`incompatible`), and **Retry** after a failure. The
+  signed preview refuses installs and `--ui-smoke-test` disables them.
+- **One installer.** Every button shares one in-flight install; a second click joins it.
+  While it runs, the watch loop does not reconnect over its progress.
 - **Progress.** `desktop-app/src/main/installProgress.ts` maps the installer's step
-  headers (`→ [1/5]` … `→ [5/5]`, the hash/signature lines and the System Settings
-  prompt) to plain `{ state: 'installing', message }` statuses such as "Downloading
-  the backend… 42%" and "Setting up device verification…". User-facing text calls the
-  runtime "the backend", since people already installed Darkbloom. Only the current
-  output line is buffered (8 KB).
+  headers (`→ [1/5]` … `→ [5/5]` and the hash/signature lines) to plain
+  `{ state: 'installing', message }` statuses: "Installing the Darkbloom CLI…",
+  "Downloading the CLI… 42%", "Verifying the CLI's signature…", "Setting up this Mac's
+  identity…", "Setting up device verification…" and "CLI installed. Starting it…".
+  `RuntimeSetup` shows them with **Cancel**, never a second Install button. Only the
+  current output line is buffered (8 KB).
 - **Failure.** The status sets `installFailed: true` and its message keeps the step and
-  the installer's last `✗ …` or `Error: …` line ("Couldn't install the backend while
+  the installer's last `✗ …` or `Error: …` line ("Couldn't install the CLI while
   downloading it: …"), with URL queries, credential-looking values and long tokens
   removed. A fresh install that fails stays `missing`; a failed update of an existing
-  runtime is `error`. `RuntimeSetup` shows the reason with **Retry**, and while
-  installing shows the progress and **Cancel**, never a second Install button.
+  CLI is `error`. The reason stays on screen, through reconnect attempts, until the user
+  clicks **Retry**.
 - **Cancel.** `DesktopAPI.cancelInstall()` (`backend:cancelInstall`) stops the
-  installer's process group (including `curl`). Quitting the app does the same. The
-  installer stages and verifies the new app before its atomic swap, so cancelling
-  normally leaves an existing runtime in place.
-- **MDM before macOS 27.** The installer opens the enrollment profile and System Settings
-  itself; the app shows "Finish device verification in System Settings". There is no
-  installer flag to defer this yet, so an explained in-app step needs one.
+  installer's process group (including `curl`) and reports "CLI install cancelled.".
+  Quitting the app does the same. The installer stages and verifies the new app before
+  its atomic swap, so cancelling normally leaves an existing CLI in place.
 
 ## Launch at login
 

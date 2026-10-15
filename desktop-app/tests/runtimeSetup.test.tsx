@@ -16,11 +16,36 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it('shows the CLI install screen and installs nothing until the click', () => {
+  api.install.mockResolvedValue(undefined);
+  setup({ state: 'missing', message: 'Install the Darkbloom CLI to connect this Mac.' });
+  expect(screen.getByRole('heading', { name: 'Install the Darkbloom CLI' })).toBeVisible();
+  expect(
+    screen.getByText(
+      'Darkbloom runs on its command-line tool. It installs once, runs a background service that serves models on this Mac, and updates automatically.',
+    ),
+  ).toBeVisible();
+  expect(api.install).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: /Install CLI/ }));
+  expect(api.install).toHaveBeenCalledOnce();
+});
+
+it.each([
+  ['error', 'Repair CLI'],
+  ['incompatible', 'Update CLI'],
+] as const)('offers %s as %s', (state, label) => {
+  setup({ state });
+  expect(screen.getByRole('button', { name: new RegExp(label) })).toBeEnabled();
+  expect(api.install).not.toHaveBeenCalled();
+});
+
 it('shows install progress with a way out, never a second install', () => {
-  setup({ state: 'installing', message: 'Downloading the backend… 42%' });
-  expect(screen.getByRole('heading', { name: 'Installing the backend…' })).toBeVisible();
-  expect(screen.getByRole('status')).toHaveTextContent('Downloading the backend… 42%');
-  expect(screen.queryByRole('button', { name: /Install|Repair|Retry/ })).not.toBeInTheDocument();
+  setup({ state: 'installing', message: 'Downloading the CLI… 42%' });
+  expect(screen.getByRole('heading', { name: 'Installing the Darkbloom CLI…' })).toBeVisible();
+  expect(screen.getByRole('status')).toHaveTextContent('Downloading the CLI… 42%');
+  expect(
+    screen.queryByRole('button', { name: /Install|Repair|Update|Retry/ }),
+  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /Cancel/ }));
   expect(api.cancelInstall).toHaveBeenCalledOnce();
   expect(api.install).not.toHaveBeenCalled();
@@ -29,20 +54,19 @@ it('shows install progress with a way out, never a second install', () => {
 it('keeps why an install stopped next to Retry', () => {
   api.install.mockResolvedValue(undefined);
   const message =
-    'Couldn’t install the backend while finding the latest release: Could not reach coordinator at https://api.darkbloom.dev.';
+    'Couldn’t install the CLI while finding the latest release: Could not reach coordinator at https://api.darkbloom.dev.';
   setup({ state: 'missing', message, installFailed: true });
-  expect(screen.getByRole('heading', { name: 'The backend isn’t installed yet.' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: 'Install the Darkbloom CLI' })).toBeVisible();
   expect(screen.getByRole('alert')).toHaveTextContent(message);
-  expect(screen.queryByRole('button', { name: /Install runtime/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Install CLI/ })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
   expect(api.install).toHaveBeenCalledOnce();
 });
 
 it('keeps the first-run install wording after a cancelled install', () => {
-  setup({ state: 'missing', message: 'Backend installation cancelled.' });
-  expect(
-    screen.getByRole('heading', { name: 'Install Darkbloom to check this Mac.' }),
-  ).toBeVisible();
-  expect(screen.getByText('Backend installation cancelled.')).toBeVisible();
-  expect(screen.getByRole('button', { name: /Install runtime/ })).toBeEnabled();
+  setup({ state: 'missing', message: 'CLI install cancelled.' });
+  expect(screen.getByRole('heading', { name: 'Install the Darkbloom CLI' })).toBeVisible();
+  expect(screen.getByText('CLI install cancelled.')).toBeVisible();
+  expect(screen.getByRole('button', { name: /Install CLI/ })).toBeEnabled();
+  expect(api.install).not.toHaveBeenCalled();
 });

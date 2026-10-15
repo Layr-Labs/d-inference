@@ -22,6 +22,19 @@ import uuid
 
 class Catalog(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
+        if self.server.issue_codes:
+            # A code the user must approve in the browser; it stays pending until cancelled.
+            assert self.path in ("/v1/device/code", "/v1/device/token"), self.path
+            body = {"status": "authorization_pending"} if self.path == "/v1/device/token" else {
+                "device_code": "fixture-device", "user_code": "TEST-CODE", "expires_in": 60, "interval": 1,
+                "verification_uri": f"http://127.0.0.1:{self.server.server_port}/link-page"}
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         assert self.path == "/v1/device/code", self.path
         self.server.link_started.set()
         self.server.link_release.wait(10)
@@ -130,6 +143,7 @@ def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Catalog)
     server.reads = []
     server.link_started = threading.Event()
+    server.issue_codes = False
     server.link_release = threading.Event()
     server.hold_insights = False
     server.insights_started = threading.Event()
@@ -307,6 +321,27 @@ idle_timeout_mins = 60
                     time.sleep(.1)
                 assert snapshot["operations"][0]["state"] == "cancelled", snapshot
                 assert not snapshot["linked"] and snapshot["link"] is None, snapshot
+                # The app shows the code and opens the link page only when the user asks for it.
+                server.issue_codes = True
+                link_id = str(uuid.uuid4())
+                assert request("actions", {"id": link_id, "action": "link"})[0] == 202
+                for _ in range(50):
+                    snapshot = request()[1]
+                    if snapshot.get("link") and snapshot["link"].get("code"):
+                        break
+                    time.sleep(.1)
+                assert snapshot["link"]["code"] == "TEST-CODE", snapshot
+                assert snapshot["link"]["url"].endswith("/link-page"), snapshot
+                time.sleep(2)
+                assert "/link-page" not in server.reads, "the link page was opened without a click"
+                assert request("actions", {"id": str(uuid.uuid4()), "action": "cancel", "operation": link_id})[0] == 202
+                for _ in range(40):
+                    snapshot = request()[1]
+                    if snapshot["operations"][0]["state"] != "running":
+                        break
+                    time.sleep(.1)
+                assert snapshot["operations"][0]["state"] == "cancelled", snapshot
+                server.issue_codes = False
                 check_replacement_exit(args.binary.resolve(), root, config, env)
                 print("desktop-api: authentication, isolation, account insights, exact counters, state, settings, idempotency, cancellation, validation, error statuses, and replaced-executable exit passed")
                 if args.hold:

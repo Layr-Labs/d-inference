@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop link page opens on request
+
+- Linking this Mac from the desktop app (onboarding, Autopilot, Home) no longer pops the browser open as soon as the code appears. The app shows the code first and opens the link page only when you click to continue, as desktop sign-in already did.
 ## Unreleased — desktop download notifications
 
 - Name the model in download notifications, with the same progress its row on Models shows (for example “Downloading Qwen 3.5 9B · 42%”), and in their outcome (“Qwen 3.5 9B download · Failed”). Downloads the runtime doesn't attribute to a model still read “Downloading model”.

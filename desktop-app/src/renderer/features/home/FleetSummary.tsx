@@ -9,10 +9,12 @@ export function FleetSummary({
   backend,
   openMachine,
   onEarnings,
+  onStart,
 }: {
   backend: BackendState;
   openMachine: (id: string) => void;
   onEarnings: () => void;
+  onStart?: () => void;
 }) {
   const state = backend.state!;
   const titleID = useId();
@@ -27,6 +29,8 @@ export function FleetSummary({
         localID={state.machine.id}
         recent={backend.cloud?.earnings_complete === false}
         onOpen={openMachine}
+        onStart={onStart}
+        startDisabled={backend.busy}
       />
     </section>
   );

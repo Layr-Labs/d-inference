@@ -99,30 +99,74 @@
 .tableLabels,
 .tableRow {
   display: grid;
-  grid-template-columns: minmax(190px, 2fr) minmax(70px, 1fr) 50px minmax(120px, 1fr);
+  grid-template-columns: minmax(190px, 2fr) minmax(70px, 1fr) 50px minmax(120px, 1fr) 16px;
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-width: 510px;
-  border-bottom: 1px solid var(--line);
   text-align: left;
 }
+.tableLabels,
+.row {
+  min-width: 550px;
+  border-bottom: 1px solid var(--line);
+}
 .tableLabels {
-  padding: 0 0 14px;
+  padding: 0 12px 14px;
   font-size: 10px;
   color: var(--muted);
 }
+.row {
+  padding: 6px 0;
+}
+/* Each Mac is a card that opens its overview: hover, press and focus read as a control. */
 .tableRow {
-  padding: 20px 0;
+  padding: 14px 12px;
+  border-radius: 8px;
   font-size: 12px;
-  transition: background 0.15s;
+  transition:
+    background var(--hover-duration),
+    transform 0.1s;
 }
 .tableRow:hover {
   background: var(--panel-bg);
 }
-.tableLabels > :last-child,
-.tableRow > :last-child {
+.tableRow:active {
+  background: var(--raised-bg);
+  transform: translateY(1px);
+}
+/* The list scrolls sideways, so an outset ring would be clipped. */
+.tableRow:focus-visible {
+  outline-offset: -2px;
+}
+.earned {
   text-align: right;
+}
+.open {
+  justify-self: end;
+  color: var(--muted);
+  transition:
+    color var(--hover-duration),
+    transform var(--hover-duration);
+}
+.tableRow:hover .open,
+.tableRow:focus-visible .open {
+  color: var(--text-primary);
+  transform: translateX(2px);
+}
+.rowAction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 2px 0 8px;
+  padding: 12px 12px 12px 46px;
+  border-radius: 8px;
+  background: var(--blue-wash);
+}
+.rowAction p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 .machineName {
   display: flex;
@@ -156,7 +200,8 @@
   .earningsMetrics strong {
     font-size: 28px;
   }
-  .chartHeading {
+  .chartHeading,
+  .rowAction {
     flex-wrap: wrap;
   }
 }

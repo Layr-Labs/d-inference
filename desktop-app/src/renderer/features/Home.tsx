@@ -48,6 +48,7 @@ export function Home({
         backend={backend}
         openMachine={openMachine}
         onEarnings={() => navigate('earnings')}
+        onStart={() => navigate('models')}
       />
       {(!state.linked || state.link) && (
         <footer className={styles.footer}>

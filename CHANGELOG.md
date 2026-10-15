@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop Home Mac cards
+
+- On Home, each Mac under *Your Macs* now shows an open chevron with hover, press and focus states, and a stopped This Mac shows **Start providing**, which opens Models just like the header's start button.
+
 ## Unreleased — desktop macOS 27 requirement
 
 - The desktop app no longer offers **Install CLI** to a new Mac below macOS 27: onboarding shows "Darkbloom needs macOS 27 or later" with **Open Software Update**, *Check this Mac* fails a macOS check below 27, and a Mac that already runs the CLI on an older macOS keeps serving with an **Update macOS** next step on This Mac and a dismissible prompt on Home. This Mac's next steps now say "CLI" instead of "runtime".

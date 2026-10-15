@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { externalLinks } from '../shared/externalLinks';
 import { socialLinks } from '../shared/socialLinks';
 
 // Every trust decision the main process makes about renderer input, in one
@@ -41,14 +42,7 @@ export function rendererFile(root: string, requestURL: string) {
   return file;
 }
 
-const links: Record<string, string> = {
-  ...socialLinks,
-  console: 'https://console.darkbloom.dev',
-  docs: 'https://docs.darkbloom.dev',
-  community: 'https://github.com/Layr-Labs/d-inference/discussions',
-  terms: 'https://www.darkbloom.ai/terms',
-  privacy: 'https://www.darkbloom.ai/privacy',
-};
+const links: Record<string, string> = externalLinks;
 const linkHosts = ['console.darkbloom.dev', 'docs.darkbloom.dev', 'www.darkbloom.ai', 'github.com'];
 
 // Resolves a renderer link target to an https URL on an allowlisted host.

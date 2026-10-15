@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop preview external links
+
+- In the browser development preview (`?preview`), *Read the guide*, *Terms of Service*, *Privacy*, *Account & payouts*, *Troubleshooting guide* and *Open browser* now open their pages in a new tab instead of doing nothing; link destinations move to `src/shared/externalLinks.ts`, shared with the main process, whose https and host checks are unchanged. The signed app was not affected.
 ## Unreleased — desktop Autopilot link step
 
 - On an unlinked Mac, Models now labels the Autopilot buttons “Link this Mac & start Autopilot” / “Link this Mac & turn on Autopilot” and explains before the click that a browser page opens for the code shown in the app, then Autopilot starts. The link code dialog now also appears from the manual Models page, and its Cancel is a standard secondary button.

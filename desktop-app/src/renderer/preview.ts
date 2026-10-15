@@ -1,4 +1,5 @@
 import type { Action, DesktopAPI, Snapshot, Resource } from '../shared/contracts';
+import { externalLinks } from '../shared/externalLinks';
 import { previewInsights } from './previewInsights';
 import { publicOrFixture } from './previewNetwork';
 import { previewLink, withPreviewAccount } from './previewAccount';
@@ -80,7 +81,11 @@ export const previewAPI: DesktopAPI = {
   async copy(text) {
     await navigator.clipboard.writeText(text);
   },
-  async openExternal() {},
+  // No main process here, so open the same destination in a new browser tab.
+  async openExternal(target) {
+    const url = target === 'link' ? snapshot.link?.url : externalLinks[target];
+    if (url) window.open(url, '_blank', 'noopener');
+  },
   async updateStatus() {
     return { state: 'idle' };
   },

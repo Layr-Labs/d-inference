@@ -47,7 +47,9 @@
   margin: 16px 0 14px 32px;
 }
 
+/* A code is typed elsewhere; never split it across lines (e.g. at its hyphen). */
 .code strong {
+  white-space: nowrap;
   font-size: 21px;
   font-weight: 500;
   letter-spacing: 4px;

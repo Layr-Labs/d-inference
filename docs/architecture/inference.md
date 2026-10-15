@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -22,6 +22,72 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`.
 
 ## Context
+
+The unregistered `NemotronSuperLocalBridgeBuilder` assembles an installed Super
+language tower through the native CBv2 factory after rechecking a pending LOAD
+lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement and
+drains its own requests. It accepts pretokenized text only; media, tools, schemas
+and prefix reuse are rejected. The builder uses serial contiguous KV, bounded
+calibrated prefill, and no MTP. These internal paths do not register a model or
+expose an HTTP route. `NemotronSuperLocalLoad` owns an unpublished load transaction,
+checks the pinned config, reserves the conservative SDK quote and preserves
+charges on native completion faults. `NemotronSuperPromptContract` renders the
+pinned literal text template and rejects conflicting reasoning controls. Its
+text entry rejects tools, schemas and media until their request paths are wired.
+`NemotronSuperVisionSubmission` preserves causal attention and absent position
+state when translating admitted SDK features. `NemotronSuperLocalOutput` buffers
+bounded output until native channel parsing, tool validation and response-format
+validation finish. The unregistered `runValidatedText` binding connects rendered tool/schema prompts
+to withheld output validation after native retirement. It rejects truncation and
+missing/error terminals. Causal vision submission is exercised by a synthetic
+fixture through the real bridge, including RADIO/projector preparation, generation
+and retirement; public media dispatch remains unwired. SDK fixtures compare
+full-position and narrowed image logits, split prefill inside an image span and
+exercise recurrent rollback with request isolation. These checks do not establish
+full-checkpoint quality or speculative MTP support. Synthetic loopback HTTP tests exercise authentication, model listing, SSE, malformed input and restart through the actual Hummingbird server and native bridge; their weights and tokenizer are fixtures. The local builder wraps the
+composite in `NemotronSuperRecurrentAdapter`, a serial causal adapter with explicit
+scalar-cache-offset positioning. It rejects explicit position tensors, packed rows
+and mismatched state/cache counts; the generic Nemotron type is not widened. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVisionSubmission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperLocalOutput.swift`.
+Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalLoad.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalBinding.swift`.
+
+The dedicated `NemotronSuperLocalImageBinding` is minted by that exact unpublished
+load owner, uses separate real media and bridge KV reservations, and cancels/drains
+through terminal retirement. Synthetic tests exercise image cancellation, reuse
+and close. It does not manufacture a shared native lease or register a public
+media route. The CPU `NemotronSuperImageDecode` accepts a deliberately narrow
+RGB8 PNG subset with explicit orientation, size/CRC checks and float SDK resize;
+JPEG, alpha, palette, grayscale and color-conversion formats remain rejected.
+Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
+ingress before JSON/base64/header inspection and media before decode; it only
+accepts inline PNG data and uses the owned tokenizer. Native input arrays are
+constructed in a separate retained, fenced epoch before tower preparation.
+Synthetic RGB tests cover generation, cancellation, busy rejection and release
+after task completion. Actual tokenizer parity, RADIO peak workspace and
+decoded-image HTTP qualification remain required.
+
+SDK installation now holds resident plus bounded staging reservations across
+sequential exclusive construction epochs. Completed fences release temporary
+roots, while failed completion retains resident objects and charges. Header-derived
+projection/expert-bank/image staging bounds and explicit backend allowance must
+still be checked against full-model measured peak memory. The separate Super MTP
+module/loader passes synthetic BF16 loading and equation tests using an explicitly
+unquantized KV variant. Official FP8 KV parity, target-hidden handoff, speculative
+accept/reject replay and performance evidence are not established; it is not an
+activated assistant. Bundling the upstream MTP tensors does not qualify execution.
+The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
+application and standard JSON/SSE framing, defaults to absent, and requires
+explicit thinking-off for inline PNG media. No production caller installs it.
+Super FP8 codec/cache and text-hidden wrappers are separate opt-in components;
+synthetic tests now also exercise the eager FP8 head with unit-scale attention
+and replay. Lazy expert/output projection helpers expose explicit workspace and
+validity obligations; they are not wired into a stateful speculative assistant.
+
 
 The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
 and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
@@ -672,7 +738,8 @@ At scan time `TemplateRenderCheck.renderOK(at:)` compiles every template
 source in runtime precedence (`chat_template.jinja`, `chat_template.json`,
 `tokenizer_config.json`) with swift-jinja `lstripBlocks: true, trimBlocks:
 true` and renders canonical fixtures; multimodal fixtures run only when
-`config.json` declares `vision_config`. The result is advertised per model as
+the shared media discovery policy accepts the configuration (see
+[model registry boundary](model-registry.md#mechanism)). The result is advertised per model as
 `template_render_ok` (`nil` = no template, key omitted); the model stays
 advertised, but the provider's capacity quotes reject it with reason `template`
 and the coordinator can refuse to route

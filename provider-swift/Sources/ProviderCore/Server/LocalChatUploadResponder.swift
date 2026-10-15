@@ -26,16 +26,19 @@ where Inner.Context == BasicRequestContext {
     public let inner: Inner
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
+    let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)?
 
     init(
         inner: Inner,
         service: MLXOpenAIService,
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
-        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil
+        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
+        serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)? = nil
     ) {
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
+        self.serviceForRawChat = serviceForRawChat
     }
 
     /// The POST paths that carry inline media and need the raised ceiling.
@@ -113,7 +116,11 @@ where Inner.Context == BasicRequestContext {
         case .success(let decoded): item = decoded
         case .failure(let badRequest): return badRequest
         }
-        let requestService = serviceForTemplateControls(item.templateControls)
+        // Optional unpublished-owner hook is reached only after outer auth,
+        // body-limit collection and ordinary request decoding. Exact raw bytes
+        // retain controls that the upstream request type deliberately omits.
+        let requestService = serviceForRawChat?(Data(buffer: buffer), item.request)
+            ?? serviceForTemplateControls(item.templateControls)
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.

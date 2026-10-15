@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -9,6 +9,13 @@ understand why a box refuses a load that "should fit"; for the operator view
 [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md).
 
 ## Context
+
+The unregistered Super builder requires a live pending LOAD lease and preserves
+the ordinary fixed-workspace concurrency floor. Synthetic bridge tests must
+provide a grant above the minimum KV floor plus recurrent workspace; a small
+checkpoint does not waive that policy. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`.
 
 The provider is Apple-Silicon-only: the SwiftPM platform floor is declared by
 the packages described in

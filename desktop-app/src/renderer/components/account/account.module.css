@@ -122,7 +122,8 @@
   width: 100%;
   justify-content: center;
 }
-.signInActions > :global(.quiet) {
+.signInActions > :global(.quiet),
+.signInActions > :global(.text-link) {
   justify-self: center;
 }
 

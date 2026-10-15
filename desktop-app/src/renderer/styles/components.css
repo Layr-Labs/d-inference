@@ -236,6 +236,11 @@
   margin-bottom: 0;
 }
 
+.operation > .text-link {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .operation > .button {
   padding: 0 6px;
   min-height: 18px;

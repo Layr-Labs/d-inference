@@ -12,6 +12,7 @@ import { Onboarding } from './components/Onboarding';
 import { onboardingScenario } from './previewEligibility';
 import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
+import { GetHelp, HelpControl } from './components/Help';
 import { AccountControl } from './components/AccountControl';
 import { SocialLinks } from './components/SocialLinks';
 const navigation = [
@@ -71,6 +72,7 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <HelpControl version={backend.state.version} />
           <SocialLinks />
           <AccountControl backend={backend} />
         </div>
@@ -89,7 +91,13 @@ export default function App() {
           className={`page-content ${machineRoute ? 'machine-page' : route === 'home' ? 'home-page' : ''}`}
         >
           {backend.status.state !== 'ready' && (
-            <Notice>{backend.status.message || 'Connecting to this Mac…'}</Notice>
+            <Notice>
+              {backend.status.message || 'Connecting to this Mac…'}
+              {/* Waiting needs no next step; a runtime that can't be reached does. */}
+              {backend.status.state !== 'connecting' && backend.status.state !== 'installing' && (
+                <GetHelp />
+              )}
+            </Notice>
           )}
           {route === 'home' && (
             <Home backend={backend} navigate={navigate} openMachine={openMachine} />

@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-14
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -227,6 +227,15 @@ after the browser opens. The CLI keeps automatic
 browser opening. Copy, cancel, retry and approval states stay in the modal.
 Closing it preserves pending approval; Continue sign-in reopens the same attempt
 across pages. Account sign-in is excluded from the generic `OperationFeed`.
+
+**Help**, above the community links at the bottom of the sidebar
+(`components/Help.tsx`), opens a dialog linking the guide (`docs`), Slack
+(`slack`) and GitHub Discussions (`community`) through the existing
+external-link allowlist, and names the app version to mention. Failures offer
+**Get help** (the guide, which covers troubleshooting) next to the error: failed
+or interrupted operation notifications, the not-connected notice when the
+runtime is unreachable (not while it connects or installs), failed sign-in
+beside **Try again**, and a failed runtime install or repair.
 
 Home scrolls. It opens with the network milestone strip: tokens processed, the
 last 24 hours when the runtime relays `last_24h_tokens`, Macs connected, and a

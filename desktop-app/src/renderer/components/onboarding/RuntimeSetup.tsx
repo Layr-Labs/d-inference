@@ -2,6 +2,7 @@ import { Download } from 'lucide-react';
 import { useState } from 'react';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
+import { GetHelp } from '../Help';
 import { Button, Notice } from '../UI';
 
 export function RuntimeSetup({ backend }: { backend: BackendState }) {
@@ -28,6 +29,11 @@ export function RuntimeSetup({ backend }: { backend: BackendState }) {
       <Button variant="primary" disabled={!api} onClick={() => void install()}>
         <Download size={16} /> {missing ? 'Install runtime' : 'Repair runtime'}
       </Button>
+      {error && (
+        <p>
+          <GetHelp />
+        </p>
+      )}
     </>
   );
 }

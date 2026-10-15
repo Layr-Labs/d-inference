@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Autopilot link step
+
+- On an unlinked Mac, Models now labels the Autopilot buttons “Link this Mac & start Autopilot” / “Link this Mac & turn on Autopilot” and explains before the click that a browser page opens for the code shown in the app, then Autopilot starts. The link code dialog now also appears from the manual Models page, and its Cancel is a standard secondary button.
 ## Unreleased — desktop link page opens on request
 
 - Linking this Mac from the desktop app (onboarding, Autopilot, Home) no longer pops the browser open as soon as the code appears. The app shows the code first and opens the link page only when you click to continue, as desktop sign-in already did.

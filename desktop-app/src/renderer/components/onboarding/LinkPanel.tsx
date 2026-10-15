@@ -12,14 +12,16 @@ export function LinkPanel({ link, cancel }: { link: Snapshot['link']; cancel: ()
         <span className={styles.linkStep}>1</span>
         <span>
           <strong>Link your Darkbloom account</strong>
-          <small>Serving starts as soon as you approve this Mac in your browser.</small>
+          <small>
+            Open the link page and enter this code. Serving starts as soon as you approve this Mac.
+          </small>
         </span>
       </header>
       {link ? (
         <div className={styles.code}>
           <strong aria-label={`Link code ${link.code}`}>{link.code}</strong>
           <Button variant="primary" onClick={() => void api?.openExternal('link')}>
-            Open browser <ArrowUpRight size={15} />
+            Open link page <ArrowUpRight size={15} />
           </Button>
         </div>
       ) : (
@@ -32,9 +34,7 @@ export function LinkPanel({ link, cancel }: { link: Snapshot['link']; cancel: ()
           <LoaderCircle className="spin" size={13} />
           {link ? 'Waiting for approval…' : 'Getting a link code…'}
         </span>
-        <button className="text-link" onClick={cancel}>
-          Cancel
-        </button>
+        <Button onClick={cancel}>Cancel</Button>
       </footer>
     </section>
   );

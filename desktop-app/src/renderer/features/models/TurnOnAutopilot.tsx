@@ -22,6 +22,11 @@ export function enableAction(snapshot: Snapshot) {
   };
 }
 
+// Autopilot serves the network, so an unlinked Mac is linked first: the app shows a code and the
+// user opens the link page to approve it. Say so before the click.
+export const linkFirst =
+  'Autopilot needs this Mac linked to your Darkbloom account. You’ll get a code here and open the link page in your browser to approve it. Once you approve, Autopilot starts and any downloads begin.';
+
 export function TurnOnAutopilot({
   snapshot,
   working,
@@ -42,12 +47,13 @@ export function TurnOnAutopilot({
       <div>
         <strong>Autopilot</strong>
         <small>Choose downloads. Autopilot manages what’s loaded.</small>
+        {!snapshot.linked && <small>{linkFirst}</small>}
       </div>
       <Button
         disabled={busy || !!working || !enableAction(snapshot).models.length}
         onClick={onEnable}
       >
-        {working ?? 'Turn on Autopilot'}
+        {working ?? (snapshot.linked ? 'Turn on Autopilot' : 'Link this Mac & turn on Autopilot')}
       </Button>
     </section>
   );

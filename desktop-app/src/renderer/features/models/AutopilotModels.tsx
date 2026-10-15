@@ -1,12 +1,12 @@
 import { useState, type ReactNode } from 'react';
 import type { ModelEarnings } from './earnings';
-import { Check, SlidersHorizontal } from 'lucide-react';
+import { Check, Link2, SlidersHorizontal } from 'lucide-react';
 import type { NativeModel } from '../../../shared/contracts';
-import { Button, Empty, Header, Modal, Notice } from '../../components/UI';
-import { LinkPanel } from '../../components/onboarding/LinkPanel';
+import { Button, Empty, Header, Notice } from '../../components/UI';
+import { LinkDialog } from './LinkDialog';
 import { networkEarnings, recommendedModels, rankNetworkModels } from './recommendations';
 import { RecommendedModels } from './RecommendedModels';
-import { enableAction } from './TurnOnAutopilot';
+import { enableAction, linkFirst } from './TurnOnAutopilot';
 import { pinnedMemory } from '../../models/selection';
 import type { BackendState } from '../../useBackend';
 import { AutopilotCard } from './AutopilotCard';
@@ -17,6 +17,7 @@ import { PoolRow } from './PoolRow';
 import { RemoveModelDialog } from './RemoveModelDialog';
 import type { ModelActions } from './useModelActions';
 import { ExpandableModelList } from './ExpandableModelList';
+import styles from './autopilot.module.css';
 
 // The pool: downloaded models Autopilot may load. People choose what lives on this Mac and what
 // is pinned; Autopilot chooses what's in memory, so there is no selection to apply.
@@ -58,12 +59,6 @@ export function AutopilotModels({
   );
   const start = enableAction(state);
   const busy = backend.busy || Object.keys(actions.working).length > 0;
-  const cancelLink = () => {
-    const linking = state.operations.find(
-      (operation) => operation.action === 'link' && operation.state === 'running',
-    );
-    if (linking?.cancellable) void backend.act({ action: 'cancel', operation: linking.id });
-  };
   const pinBlocked = (model: NativeModel) => {
     const { limit } = pinnedMemory(state, [...status.pinned, model.id]);
     const slots = state.memory.max_model_slots;
@@ -110,9 +105,14 @@ export function AutopilotModels({
             disabled={busy || !start.models.length}
             onClick={() => void actions.policy(enableAction(state), 'Starting…')}
           >
-            Turn on Autopilot
+            {state.linked ? 'Turn on Autopilot' : 'Link this Mac & turn on Autopilot'}
           </Button>
         </div>
+      )}
+      {!status.enabled && !state.linked && (
+        <p className={styles.note}>
+          <Link2 size={14} /> {linkFirst}
+        </p>
       )}
       <RecommendedModels
         snapshot={state}
@@ -184,11 +184,7 @@ export function AutopilotModels({
           onClose={() => setRemove(undefined)}
         />
       )}
-      {state.link && (
-        <Modal title="Link this Mac" onClose={cancelLink}>
-          <LinkPanel link={state.link} cancel={cancelLink} />
-        </Modal>
-      )}
+      <LinkDialog backend={backend} />
       {confirm && (
         <AutopilotConfirm
           change={confirm}

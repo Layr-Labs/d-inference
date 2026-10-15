@@ -9,6 +9,7 @@ import { AutopilotModels } from './AutopilotModels';
 import { ManualModels } from './ManualModels';
 import { modelsMode } from './pool';
 import { enableAction, TurnOnAutopilot } from './TurnOnAutopilot';
+import { LinkDialog } from './LinkDialog';
 import { useModelActions } from './useModelActions';
 import styles from './autopilot.module.css';
 
@@ -68,6 +69,7 @@ export function Models({
               busy={backend.busy || Object.keys(actions.working).length > 0}
               onEnable={() => void actions.policy(enableAction(state), 'Turning on…')}
             />
+            <LinkDialog backend={backend} />
           </>
         )
       }

@@ -212,7 +212,7 @@ describe('Autopilot on', () => {
       ),
     );
     await act(async () =>
-      fireEvent.click(screen.getByRole('button', { name: 'Turn on Autopilot' })),
+      fireEvent.click(screen.getByRole('button', { name: 'Link this Mac & turn on Autopilot' })),
     );
     expect(sent().map((action) => action.action)).toEqual(['link', 'autopilot']);
   });
@@ -230,7 +230,7 @@ describe('Autopilot on', () => {
       ),
     );
     await act(async () =>
-      fireEvent.click(screen.getByRole('button', { name: 'Turn on Autopilot' })),
+      fireEvent.click(screen.getByRole('button', { name: 'Link this Mac & turn on Autopilot' })),
     );
     expect(sent().map((action) => action.action)).toEqual(['link']);
     expect(screen.getByRole('alert')).toHaveTextContent('Link expired');

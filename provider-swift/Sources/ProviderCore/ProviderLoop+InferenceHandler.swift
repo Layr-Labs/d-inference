@@ -343,20 +343,30 @@ extension ProviderLoop {
         // retrying — surfacing the real decoder error on failure rather
         // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
         let chatRequest: OpenAIChatCompletionRequest
+        // A body with `questions` and no `messages` is a decision
+        // (`Inference/Decision/`). It never decodes as chat, so it is parsed
+        // only after the chat decode fails; chat traffic pays nothing extra.
+        let decisionRequest: DecisionRequest?
         do {
             chatRequest = try Self.decodeOpenAIRequest(decryptedData)
+            decisionRequest = nil
         } catch {
-            // Privacy: the provider logger renders the whole message `.public`, and
-            // reports collect this subsystem — so never interpolate the raw decode
-            // error, which on a malformed body can carry a fragment of the (now
-            // decrypted) request, i.e. user prompt content. Log only the error TYPE.
-            // The requester-facing string below is likewise kept generic: it transits
-            // the coordinator in plaintext and is logged server-side, so interpolating
-            // the raw error could resurface a prompt fragment in coordinator logs
-            // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            logger.error("[\(requestId)] failed to parse chat request")
-            rejectInvalidRequest()
-            return
+            guard let decision = try? DecisionRequest.parse(decryptedData) else {
+                // Privacy: the provider logger renders the whole message `.public`, and
+                // reports collect this subsystem — so never interpolate the raw decode
+                // error, which on a malformed body can carry a fragment of the (now
+                // decrypted) request, i.e. user prompt content. Log only the error TYPE.
+                // The requester-facing string below is likewise kept generic: it transits
+                // the coordinator in plaintext and is logged server-side, so interpolating
+                // the raw error could resurface a prompt fragment in coordinator logs
+                // (defense-in-depth for the "coordinator never sees plaintext" invariant).
+                logger.error("[\(requestId)] failed to parse chat request")
+                rejectInvalidRequest()
+                return
+            }
+            decisionRequest = decision
+            // Admission, acceptance and load below read only the model id.
+            chatRequest = OpenAIChatCompletionRequest(model: decision.model, messages: [])
         }
         profile.mark(.parsed)
 
@@ -430,6 +440,17 @@ extension ProviderLoop {
         } catch {
             rejectInvalidRequest() // Never publish raw decrypted validation details.
             return
+        }
+        // Chat to a decision model, or a decision to any other model, is a
+        // deterministic 400 before acceptance. The loaded slot's type is
+        // re-checked by the scheduler (chat) and the decision runner.
+        if let knownType = modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType {
+            do {
+                try DecisionServingGate.validate(modelType: knownType, servesDecision: decisionRequest != nil)
+            } catch {
+                rejectInvalidRequest()
+                return
+            }
         }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
@@ -842,6 +863,27 @@ extension ProviderLoop {
             let v2UsageSignal = EngineV2RequestUsageSignal(
                 onLookupResolved: lookupReceiptFinalizer.resolve,
                 onCacheReady: receiptCallbacks.ready)
+
+            if let decisionRequest {
+                let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+                    tokenizer: tokenizer, modelType: modelType,
+                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
+                    engineV2Bridge: slotEngineV2, visionGate: slotVisionGate)
+                await Self.serveDecision(DecisionServingContext(
+                    requestId: requestId, modelId: modelId, request: decisionRequest,
+                    modelType: modelType, container: slotContainer,
+                    makeEngine: Self.decisionEngineFactory(
+                        modelId: modelId, entry: entry, cacheScope: cacheScope, remoteCache: remoteCache,
+                        usageSignal: v2UsageSignal, firstContentDeadline: firstContentDeadline,
+                        profile: profile, serviceReservationID: serviceReservationID,
+                        serviceReservation: serviceReservation),
+                    usageSignal: v2UsageSignal, reportsCacheUsage: remoteCache.scope != nil,
+                    emitFrame: emitSSE, rejectExpiredDeadline: rejectExpiredDeadline,
+                    finalizeProfile: finalizeProfile, profile: profile,
+                    lookupReceiptFinalizer: lookupReceiptFinalizer, send: send, token: token,
+                    stats: providerStats, signer: signingIdentity, log: log), loop: me)
+                return
+            }
 
             // Build a single-model engine view bound to the scheduler we
             // already resolved. This keeps the engine constructor's

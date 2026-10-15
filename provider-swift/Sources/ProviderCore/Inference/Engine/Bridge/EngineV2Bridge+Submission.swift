@@ -436,6 +436,8 @@ extension EngineV2Bridge {
                 engine: actual, bridge: self, budget: kvBudget)
         } else { completePrefixOwnsRequestCharge = false }
         let nativePagedOwnsRequestCharge: Bool
+        // GLM's separate operation owner validates its actual process owner at
+        // both admission checks. It must not masquerade as a MiMo transaction.
         if let actual = ownedEngine as? EngineV2, let kvBudget,
            let transaction = nativeTransaction, nativeTransactionID == transaction.id {
             nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(

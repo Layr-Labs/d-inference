@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-14
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -45,6 +45,46 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`chat_template.jinja`, `chat_template.json`), `preprocessor`
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
+
+### Raw GLM discovery quotation
+
+`GLM5NextDiscoveryLoadFootprint.estimate` in
+`provider-swift/Sources/ProviderCoreFoundation/GLM5NextDiscoveryLoadFootprint.swift`
+prices exact `glm5_next` affine-Q4 metadata without constructing native arrays
+or hashing payloads. `ModelScanner.glm5NextLoadEstimate` in
+`provider-swift/Sources/ProviderCore/Models/ModelScanner+GLM5Next.swift` supplies
+the existing bounded header reader and flat regular-file inventory.
+
+| Term | Bytes counted |
+|---|---|
+| `disk` | All integrity files in the raw snapshot, including every weight shard and non-weight file |
+| Native copies | `2 * largestTensor + largestExpertBank + 2 * visionBytes + (257 << 20)` |
+| Tokenizer allowance | `max(64 << 20, 8 * allNonWeightBytes)` |
+| Full LOAD | `ceil(disk * 6 / 5) + nativeCopies + tokenizerAllowance` |
+| `native_load_transient_bytes` | Native copies plus tokenizer allowance, **above** the padded disk basis |
+
+All MTP weights remain in `disk`; expert banks include every stored expert,
+not the active-expert count. Integer arithmetic is checked through the signed
+wire range. Missing, malformed, non-Q4, unknown-role, nested-integrity or incomplete
+inventories are omitted from GLM discovery, not given a loadable generic quote.
+This footprint is not the native loader's complete architecture validation or
+a model-support grant.
+
+Metadata-only directories such as `.cache/` and `_provenance/` are permitted
+without adding their receipts to model bytes. The descriptor-relative scan
+checks every entry, including hidden entries, and rejects symlinks, special
+files and any nested filename classified as integrity-relevant by
+`ModelScanner.isIntegrityFile`. It allows at most 4,096 total entries and eight
+directory levels; ignored metadata is bounded to 32 MiB per file and 64 MiB in
+aggregate. These directories are inspected read-only and are never deleted.
+
+Only a same-directory tokenizer is priced. Passing a separate tokenizer source
+to discovery or `glm5NextLoadQuotationIsCurrent` refuses this profile; a caller
+must not load a different composition using the raw declaration. Actual source
+identity, complete native inventory, reservation and post-load guards remain
+the managed loader's responsibility. This changes neither manifest publication
+nor catalog activation. The [memory policy](../architecture/hardware-support.md#load-gate-modelloadadmission)
+retains separate OS, activation and KV reserves.
 
 ### Aggregate hash
 

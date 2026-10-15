@@ -45,6 +45,20 @@ resources, not provider product resources. MiMo provider fixture preparation
 uses bounded synthetic weights; the genuine audio codec is a separately
 hash-verified input. See [provider and SDK tests](test.md#provider-and-sdk).
 
+Building the GLM5Next target, media, MTP and loader candidates does not
+register the architecture with the model factories or provider. Follow the
+[prerequisite test procedure](test.md#glm5next-prerequisite-tests); do not use a
+successful SDK build as proof of the [complete integration](../design/glm53-flash-native.md).
+
+The GLM candidate's official template requires numeric attribute access such as
+`content.0.type`, which the pinned Swift-Jinja release does not parse. A local
+editable dependency patch can validate that missing syntax, but it is not a
+clean locked build or a distributable dependency revision. Record the patch,
+base revision and every other resolved pin for such a run; keep provider and
+SDK renderer sources identical. A reviewed upstream or fork revision remains a
+release gate. Do not rewrite the model template or modify ignored build
+checkouts to hide the parser limitation.
+
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
 [checkpoint-storage gates](test.md#native-inference-checkpoint-storage-qualification);

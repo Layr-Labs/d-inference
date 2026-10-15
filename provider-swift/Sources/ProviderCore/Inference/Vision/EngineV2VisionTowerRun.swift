@@ -40,10 +40,158 @@
 
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXVLM
 
 extension EngineV2VisionPrefill {
+
+    private struct GLMFrameFeature {
+        let modality: GLM5NextMediaPlacement.Modality
+        let item: Int
+        let range: Range<Int>
+        let value: MLXArray
+    }
+
+    static func buildGLM5NextSubmission(root: GLM5NextModel, prepared: GLM5NextPreparedInput,
+        towerLimits: VisionTowerBudget.Limits, mlxErrors: MLX.ErrorBox) throws -> PreparedSubmission {
+        let input = prepared.input
+        guard input.image != nil || input.video != nil else { throw EngineV2VisionPrefillError.noProcessedMedia }
+        guard input.text.tokens.ndim == 2, input.text.tokens.dim(0) == 1,
+            input.text.tokens.dim(1) > 0, input.text.tokens.dim(1) <= root.configuration.textConfig.maxPositionEmbeddings else {
+            throw EngineV2VisionPrefillError.unsupportedMedia("GLM media requires a bounded single prompt")
+        }
+        let tokenArray = input.text.tokens.asType(.int64)
+        eval(tokenArray)
+        try throwIfMLXFaulted(mlxErrors)
+        let tokens = tokenArray.asArray(Int64.self).map(Int.init)
+        try throwIfMLXFaulted(mlxErrors)
+        guard tokens.allSatisfy({ (0..<root.vocabularySize).contains($0) }) else {
+            throw EngineV2VisionPrefillError.unsupportedMedia("GLM token outside vocabulary")
+        }
+        if let mask = input.text.mask {
+            guard mask.shape == input.text.tokens.shape, mask.dtype == .bool else {
+                throw EngineV2VisionPrefillError.unsupportedMedia("GLM validity mask geometry")
+            }
+            eval(mask)
+            try throwIfMLXFaulted(mlxErrors)
+            let valid = mask.asArray(Bool.self)
+            try throwIfMLXFaulted(mlxErrors)
+            guard valid.allSatisfy({ $0 }) else {
+                // CBv2's one-row submission has no padding-validity field. Do
+                // not silently strip padding and move GLM sparse-pool origins.
+                throw EngineV2VisionPrefillError.unsupportedMedia("GLM padded media requires request validity support")
+            }
+        }
+        var frames: [GLMFrameFeature] = []
+        var expected: [(GLM5NextMediaPlacement.Modality, Int, Range<Int>)] = []
+        var aggregatePatches = 0
+        let sources: [(GLM5NextMediaPlacement.Modality, MLXArray?, [THW]?)] = [
+            (.image, input.image?.pixels, input.image?.frames),
+            (.video, input.video?.pixels, input.video?.frames),
+        ]
+        // Validate ALL geometry/placements before any tower invocation.
+        for (modality, pixels, grids) in sources {
+            guard let pixels else { continue }
+            guard let grids, !grids.isEmpty, pixels.ndim == 2 else {
+                throw EngineV2VisionPrefillError.invalidVisionGrid(mediaIndex: 0)
+            }
+            let c = root.configuration.visionConfig
+            guard pixels.dtype.isFloatingPoint,
+                pixels.dim(1) == c.inChannels * c.temporalPatchSize * c.patchSize * c.patchSize else {
+                throw EngineV2VisionPrefillError.unsupportedMedia("GLM flattened patch geometry")
+            }
+            _ = try imagePixelRuns(grids: grids, totalRows: pixels.dim(0))
+            var feature = 0
+            for (item, grid) in grids.enumerated() {
+                guard grid.t > 0, modality != .image || grid.t == 1,
+                    let count = VisionTowerBudget.patchCount(grid), count <= 960_000 - aggregatePatches else {
+                    throw EngineV2VisionPrefillError.towerBudgetExceeded("GLM aggregate patch limit")
+                }
+                aggregatePatches += count
+                let one = THW(1, grid.h, grid.w)
+                _ = try VisionTowerBudget.glm5FrameLimits(grid: one,
+                    configuration: root.configuration.visionConfig, limits: towerLimits)
+                let perFrame = count / grid.t / 4
+                for _ in 0..<grid.t {
+                    expected.append((modality, item, feature..<(feature + perFrame)))
+                    feature += perFrame
+                }
+            }
+        }
+        let placements = prepared.placements.sorted { $0.tokenRange.lowerBound < $1.tokenRange.lowerBound }
+        guard placements.count == expected.count else {
+            throw EngineV2VisionPrefillError.unsupportedMedia("GLM frame/placement count")
+        }
+        var occupied = Set<Int>()
+        var matched = Set<Int>()
+        var lastImage = -1
+        var lastVideo = -1
+        for p in placements {
+            guard p.tokenRange.lowerBound >= 0, p.tokenRange.upperBound <= tokens.count,
+                !p.tokenRange.isEmpty, p.tokenRange.count == p.featureRange.count,
+                p.tokenRange.allSatisfy({ tokens[$0] == root.configuration.imageTokenId && occupied.insert($0).inserted }),
+                let index = expected.indices.first(where: {
+                    expected[$0].0 == p.modality && expected[$0].1 == p.itemIndex && expected[$0].2 == p.featureRange
+                }), matched.insert(index).inserted else {
+                throw EngineV2VisionPrefillError.unsupportedMedia("GLM exact token/feature placement")
+            }
+            if p.modality == .image {
+                guard index > lastImage else { throw EngineV2VisionPrefillError.unsupportedMedia("GLM image order") }
+                lastImage = index
+            } else {
+                guard index > lastVideo else { throw EngineV2VisionPrefillError.unsupportedMedia("GLM video order") }
+                lastVideo = index
+            }
+        }
+        guard tokens.allSatisfy({ (0..<root.vocabularySize).contains($0) }),
+            !tokens.contains(root.configuration.videoTokenId),
+            tokens.indices.allSatisfy({ tokens[$0] != root.configuration.imageTokenId || occupied.contains($0) }) else {
+            throw EngineV2VisionPrefillError.unsupportedMedia("GLM unexpanded or uncovered media token")
+        }
+        for (modality, pixels, grids) in sources {
+            guard let pixels, let grids else { continue }
+            let runs = try imagePixelRuns(grids: grids, totalRows: pixels.dim(0))
+            let c = root.configuration.visionConfig
+            guard pixels.dim(1) == c.inChannels * c.temporalPatchSize * c.patchSize * c.patchSize else {
+                throw EngineV2VisionPrefillError.visionPixelRunMismatch(expected: 0, actual: pixels.dim(1))
+            }
+            var feature = 0
+            for (item, grid) in grids.enumerated() {
+                let perFrame = runs[item].count / grid.t
+                for frame in 0..<grid.t {
+                    try Task.checkCancellation()
+                    let limits = try VisionTowerBudget.glm5FrameLimits(grid: THW(1, grid.h, grid.w),
+                        configuration: c, limits: towerLimits)
+                    let start = runs[item].lowerBound + frame * perFrame
+                    let value = try root.visionTower.forward(patches: pixels[start..<(start + perFrame)],
+                        grids: [GLM5NextVisionGrid(temporal: 1, height: grid.h, width: grid.w)],
+                        limits: limits, checkpoint: { _ in
+                            try Task.checkCancellation()
+                            try throwIfMLXFaulted(mlxErrors)
+                        }).expandedDimensions(axis: 0)
+                    eval(value)
+                    try throwIfMLXFaulted(mlxErrors)
+                    guard value.shape == [1, perFrame / 4, root.configuration.textConfig.hiddenSize] else {
+                        throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: modality == .image ? .image : .video)
+                    }
+                    frames.append(.init(modality: modality, item: item, range: feature..<(feature + perFrame / 4), value: value))
+                    feature += perFrame / 4
+                }
+            }
+        }
+        let embeddings = try placements.map { p -> MLXArray in
+            guard let frame = frames.first(where: { $0.modality == p.modality && $0.item == p.itemIndex && $0.range == p.featureRange }) else {
+                throw EngineV2VisionPrefillError.unsupportedMedia("GLM missing frame features")
+            }
+            return frame.value
+        }
+        return PreparedSubmission(promptTokens: tokens,
+            spans: placements.map { .init(tokenOffset: $0.tokenRange.lowerBound, length: $0.tokenRange.count) },
+            embeddings: embeddings, spanKinds: placements.map { $0.modality == .image ? .image : .video },
+            attention: .causal, positionState: nil,
+            mediaKind: input.image == nil ? .video : input.video == nil ? .image : .mixed)
+    }
 
     /// The pixel rows belonging to each grid in a processor's packed image
     /// tensor, in grid order.

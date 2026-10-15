@@ -29,6 +29,7 @@ enum SSDHybridCheckpointStoreFactory {
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricMTPLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricMTPLayout
+                || backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
         else { return nil }
         guard backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout

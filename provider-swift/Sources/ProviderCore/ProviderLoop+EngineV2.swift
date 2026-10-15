@@ -359,6 +359,7 @@ extension ProviderLoop {
                 modelDirectory: modelDirectory,
                 container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
+                maximumContextLength: targetSizing.maxContextLength,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry,
@@ -366,9 +367,11 @@ extension ProviderLoop {
                 logWarning: { slotLogger.warning($0) })
         } catch {
             if nativeLoad != nil { throw error } // real TX owns native unwind
+            let failure = await GLM5NextRetirement.validatedFailure(error, retaining: [newcomerBox])
+            if GLM5NextLoadFunnel.isUnproven(failure) { throw failure }
             await newcomerBox.releaseAfterExternalResources()
             clearCacheAfterConfirmedNativeOwnership()
-            throw error
+            throw failure
         }
         // Prepare-stage fail-open (artifact revalidation, assistant load, or
         // bind failure): the drafter never became resident, so drop its share
@@ -480,6 +483,10 @@ extension ProviderLoop {
                 registerInRuntime: registerInRuntime)
         } catch {
             if nativeLoad != nil { throw error } // no release, Void proof, or speculative restore
+            var owners: [AnyObject] = [newcomerBox]
+            if let assistant = prepared.assistant { owners.append(assistant) }
+            let failure = await GLM5NextRetirement.validatedFailure(error, retaining: owners)
+            if GLM5NextLoadFunnel.isUnproven(failure) { throw failure }
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
             clearCacheAfterConfirmedNativeOwnership()
@@ -487,7 +494,7 @@ extension ProviderLoop {
                 guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
-            throw error
+            throw failure
         }
 
         // Phase 3 — grow-side targets (rare on load: the budget shrank, so
@@ -507,22 +514,27 @@ extension ProviderLoop {
     /// weights, and only then regrow the survivors — in that order (Codex
     /// review), so the regrow's fleet budget reflects true residency and
     /// Σ(grants) never exceeds it. Caller holds the re-slice gate.
-    internal func unwindBuiltSlotAndRegrow(
+    @discardableResult internal func unwindBuiltSlotAndRegrow(
         modelId: String,
         bundle: ProviderEngineBundle,
         newcomer: EngineV2NewcomerBox
-    ) async {
+    ) async -> Bool {
         if let container = newcomer.modelContainer, Self.nativeMiMoLoad(in: container) != nil {
             // Native callers must leave the setup operation/task and use the
             // actual transaction path; generic unwind is not native authority.
-            return
+            return false
         }
         await engineV2Runtime.unregister(modelId: modelId)
-        await bundle.bridge.shutdown()
+        do { try await GLM5NextRetirement.beforeRelease(bundle.bridge) }
+        catch {
+            GLM5NextLoadFaultState.retain([bundle, newcomer])
+            return false
+        }
         bundle.releaseAssistant()
         await newcomer.releaseAfterExternalResources()
         clearCacheAfterConfirmedNativeOwnership()
         await resliceGrowSurvivorsLocked()
+        return true
     }
 
     /// Compatibility overload for target-only tests.
@@ -531,7 +543,7 @@ extension ProviderLoop {
         bridge: EngineV2Bridge,
         newcomer: EngineV2NewcomerBox
     ) async {
-        await unwindBuiltSlotAndRegrow(
+        _ = await unwindBuiltSlotAndRegrow(
             modelId: modelId,
             bundle: ProviderEngineBundle(targetOnly: bridge),
             newcomer: newcomer)

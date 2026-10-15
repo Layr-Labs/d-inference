@@ -3,6 +3,7 @@
 
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 
 extension EngineV2Factory {
@@ -30,6 +31,7 @@ extension EngineV2Factory {
         let residentPrefixCacheEnabled: Bool
         let hybridPrefixCache: CBv2HybridPrefixCacheConfig?
         let kvQuantization: EngineV2KVQuantizationSelection
+        let glm5NextNative: GLM5NextProtectedResources?
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
@@ -53,7 +55,8 @@ extension EngineV2Factory {
             nativeLayerDTypes: [DType],
             kvQuantization: EngineV2KVQuantizationSelection = .native,
             residentPrefixCacheEnabled: Bool = false,
-            hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil
+            hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
+            glm5NextNative: GLM5NextProtectedResources? = nil
         ) {
             self.modelIdentity = ObjectIdentifier(model)
             self.requestedMaxConcurrentRequests = max(1, maxConcurrentRequests)
@@ -74,6 +77,7 @@ extension EngineV2Factory {
             self.residentPrefixCacheEnabled = residentPrefixCacheEnabled
             self.hybridPrefixCache = hybridPrefixCache
             self.kvQuantization = kvQuantization
+            self.glm5NextNative = glm5NextNative
         }
 
         func consume(
@@ -119,6 +123,7 @@ extension EngineV2Factory {
         automaticallySelectConcurrency: Bool = false,
         performanceQualificationAllowed: Bool = true,
         mtpPerformanceConfiguration: ServingMTPConfiguration? = nil,
+        kvBudget: GlobalKVCacheBudget? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -169,6 +174,75 @@ extension EngineV2Factory {
         {
             resolvedKind = .contiguous
             fallbackReason = "crash_loop_guard"
+        }
+
+        if let glm = glm5NextTarget(model: model) {
+            // Never route GLM's compressed K/V payload through the generic
+            // full-attention kernels/probe. Only the target-issued binding can
+            // interpret latent K and index/gates/validity V correctly.
+            guard resolvedKind == .paged, precision == .native else {
+                throw EngineV2ProductionError.pagedUnavailable(
+                    "GLM requires its native paged backend and native FP32 KV; select paged explicitly until policy qualification")
+            }
+            if let raw = environment[Self.pagedPoolDTypeEnvKey],
+                !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                try Self.pagedPoolDType(environment: environment) != .float32 {
+                throw EngineV2ProductionError.pagedUnavailable("GLM payload storage requires float32")
+            }
+            try pagedPreflightOverride?(layerKinds)
+            let selectedContext = maxContextLength ?? (model as? GLM5NextProtectedModel)?.maximumContextLength
+                ?? glm.configuration.maxPositionEmbeddings
+            let context = try GLM5NextExecutionBound.require(selectedContext,
+                modelMaximum: glm.configuration.maxPositionEmbeddings)
+            if let protected = model as? GLM5NextProtectedModel, context != protected.maximumContextLength {
+                throw GLM5NextExecutionBoundError.backendMismatch(prepared: protected.maximumContextLength, backend: context)
+            }
+            let policy = productionServingPolicy(
+                model: model, modelID: modelID, modelArtifactSHA256: modelArtifactSHA256,
+                constructionPurpose: constructionPurpose,
+                automaticallySelectConcurrency: automaticallySelectConcurrency,
+                performanceQualificationAllowed: false, backend: .paged,
+                maxContextLength: context, maxConcurrentRequests: maxConcurrentRequests,
+                environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
+            let maximumBuffer = MLX.GPU.deviceInfo().maxBufferSize
+            guard maximumBuffer > 0 else { throw EngineV2ProductionError.noKVHeadroom }
+            var scheduler = policy.scheduler
+            scheduler.prefillChunkSize = min(context, scheduler.prefillChunkSize)
+            scheduler.soloPrefillStripeTokens = scheduler.soloPrefillStripeTokens.map { min(context, $0) }
+            let paged = try glm.makeCBv2PagedBackend(
+                kvBytesCapacity: cappedCapacity,
+                maximumBatchSize: scheduler.maxConcurrentRequests,
+                maximumQueryTokens: max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0),
+                maximumContextTokens: context,
+                maximumScratchBytes: min(cappedCapacity, maximumBuffer),
+                segmentBytes: 64 << 20, maximumBufferBytes: maximumBuffer)
+            if let protected = model as? GLM5NextProtectedModel {
+                guard let kvBudget, residentPrefixCache == nil, hybridPrefixCache == nil else {
+                    throw EngineV2ProductionError.pagedUnavailable(
+                        "GLM protected MTP requires the actual process budget and a prefix-free profile")
+                }
+                let native = try GLM5NextProtectedResources(model: protected, config: paged.pool.config,
+                    budget: kvBudget)
+                return ProductionBackendPreparation(model: model, maxConcurrentRequests: maxConcurrentRequests,
+                    layerKinds: layerKinds, modelCapabilities: native.resources.model.cbv2Capabilities,
+                    backend: native.resources.backend, caches: [], kind: .paged, fallbackReason: nil,
+                    schedulerConfig: scheduler, pagedPoolDType: "float32",
+                    nativeLayerDTypes: Array(repeating: .float32, count: layerKinds.count), glm5NextNative: native)
+            }
+            let pagedCaches = paged.makeLayerCaches()
+            let mapping = Dictionary(uniqueKeysWithValues: layerKinds.enumerated().map {
+                ($0.element.modelLayerIndex ?? $0.offset, $0.offset)
+            })
+            let caches = try adapter.newCaches { index, _ in
+                guard let storage = mapping[index], storage < pagedCaches.count else {
+                    throw EngineV2ProductionError.pagedUnavailable("GLM cache-layer mapping")
+                }
+                return pagedCaches[storage]
+            }
+            return ProductionBackendPreparation(model: model, maxConcurrentRequests: maxConcurrentRequests,
+                layerKinds: layerKinds, modelCapabilities: modelCapabilities, backend: paged,
+                caches: caches, kind: .paged, fallbackReason: nil, schedulerConfig: scheduler,
+                pagedPoolDType: "float32", nativeLayerDTypes: Array(repeating: .float32, count: layerKinds.count))
         }
 
         // Parse dtype before kernel preflight, and only for a resolved paged build.

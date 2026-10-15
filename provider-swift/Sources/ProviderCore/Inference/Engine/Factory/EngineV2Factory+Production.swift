@@ -5,6 +5,7 @@
 import Foundation
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// Construction failures reported by the factory's refusal telemetry.
 enum EngineV2ProductionError: Error, CustomStringConvertible {
@@ -83,6 +84,7 @@ extension EngineV2Factory {
 
     /// The engine and resolved backend metadata used for admission and telemetry.
     public struct ProductionBuild {
+        var glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
@@ -170,6 +172,7 @@ extension EngineV2Factory {
             model: model,
             modelID: modelID,
             constructionPurpose: constructionPurpose,
+            kvBudget: kvBudget,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
@@ -225,9 +228,29 @@ extension EngineV2Factory {
         constructionPurpose: ConstructionPurpose = .serving,
         checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
     ) throws -> ProductionBuild {
+        if glm5NextTarget(model: model) != nil {
+            guard let kvBudget,
+                kvBudget.memoryHeadroomSnapshot().activationReserveBytes >= UnifiedMemoryCap.defaultActivationReserveBytes else {
+                throw EngineV2ProductionError.noKVHeadroom
+            }
+        }
         let (backend, caches) = try preparedBackend.consume(
             model: model,
             maxConcurrentRequests: maxConcurrentRequests)
+        let glmNative = preparedBackend.glm5NextNative
+        var mtpConfig = mtpConfig
+        if let glmNative {
+            guard glmNative.budget === kvBudget,
+                (mtpDrafter as? GLM5NextMTPAdapter) === glmNative.resources.assistant,
+                mtpConfig.effectiveEnabled, mtpConfig.verificationMode == .serialTarget,
+                prefixCache == nil, completePrefixCache == nil,
+                preparedBackend.hybridPrefixCache == nil else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
+            }
+            mtpConfig.maxDraftTokens = min(1, mtpConfig.maxDraftTokens)
+            mtpConfig.fixedDraftTokens = mtpConfig.fixedDraftTokens.map { min(1, $0) }
+            mtpConfig.maxSpeculativeBatch = 1
+        }
         if let violation = EngineV2.backendCapabilityViolation(
             capabilities: preparedBackend.modelCapabilities, backend: backend) {
             throw EngineV2ProductionError.pagedUnavailable(violation)
@@ -247,7 +270,15 @@ extension EngineV2Factory {
                 model: model, backend: preparedBackend.kind, store: completePrefixCache,
                 constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
         let processOwner: EngineProcessMemoryOwner?
-        if preparedBackend.kind == .paged, let kvBudget {
+        if let glmNative {
+            guard glmNative.resources.backend === backend,
+                glmNative.resources.backend.pool.bytesMaterialized == 0,
+                glmNative.resources.backend.bytesReserved == 0,
+                !glmNative.scope.snapshot.isRetainedFault else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM protected backend was consumed before engine admission")
+            }
+            processOwner = glmNative.processOwner
+        } else if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required
             // reserve-before-allocation boundary. Contiguous keeps its existing
             // bridge claim until its actual backing coverage is implemented.
@@ -268,11 +299,28 @@ extension EngineV2Factory {
         if preparedBackend.kind == .contiguous {
             admissionConfig.layerElementBytes = preparedBackend.nativeLayerDTypes.map(\.size)
         }
+        let steppable: any CBv2SteppableModel
+        if let glmNative {
+            steppable = glmNative.resources.model
+        } else if let glm = glm5NextTarget(model: model) {
+            steppable = GLM5NextSteppableModel(target: glm, root: model as? GLM5NextModel)
+        } else {
+            steppable = CBv2SteppableLanguageModelAdapter(model)
+        }
+        let cacheProvider: any CBv2LayerCacheProvider
+        if let glmNative {
+            cacheProvider = glmNative.resources.cacheProvider
+        } else if let target = glm5NextTarget(model: model), let paged = backend as? PagedKVBackend {
+            cacheProvider = try GLM5NextCausalCacheBank(target: target, root: model as? GLM5NextModel,
+                backend: paged, caches: caches)
+        } else {
+            cacheProvider = CBv2LayerCacheBank(caches: caches)
+        }
         let engine = EngineV2(
-            model: CBv2SteppableLanguageModelAdapter(model),
+            model: steppable,
             layerKinds: preparedBackend.layerKinds,
             backend: backend,
-            cacheProvider: CBv2LayerCacheBank(caches: caches),
+            cacheProvider: cacheProvider,
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
@@ -286,14 +334,21 @@ extension EngineV2Factory {
             completeCheckpointKVDTypes: preparedBackend.nativeLayerDTypes,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
-            processMemoryOwner: processOwner)
+            processMemoryOwner: processOwner,
+            nativeCompletionTracking: glmNative != nil,
+            nativeExecutionContract: glmNative?.resources.contract)
+        let glmOwner: GLM5NextNativeOperationOwner?
+        if let glmNative, let protected = model as? GLM5NextProtectedModel {
+            glmOwner = GLM5NextNativeOperationOwner(model: protected, resources: glmNative, engine: engine)
+        } else { glmOwner = nil }
         // Direct makeProductionEngine callers discard the build metadata.
         // Refuse here as well as in makeBridge, before an unusable engine can
         // escape. No request has been submitted; construction owners unwind.
         if case .unavailable(let reason)? = engine.resolvedMTPAdmission {
+            if let glmOwner { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: reason) }
             throw reason
         }
-        return ProductionBuild(
+        var build = ProductionBuild(
             engine: engine,
             fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
             kvBackendKind: preparedBackend.kind,
@@ -309,5 +364,7 @@ extension EngineV2Factory {
                     EngineV2KVQuantizationSelection.allCases.first { $0.configuration == configuration }
                 } ?? preparedBackend.kvQuantization,
             admissionWatermarkFraction: admissionConfig.watermarkFraction)
+        build.glm5NextNativeOwner = glmOwner
+        return build
     }
 }

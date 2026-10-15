@@ -50,6 +50,26 @@ private struct MiMoV26NativeSlotAssembly: Sendable {
 }
 
 extension EngineV2SlotFactory {
+    /// Explicit inline intent from the already loaded, integrity-checked GLM
+    /// root. No sidecar resolver/download and no public capability registration.
+    static func glm5NextInlinePreparation(container: ModelContainer, enabled: Bool) async throws -> SpecDecPreparation {
+        try await container.perform { context in
+            guard let root = context.model as? GLM5NextModel else {
+                throw GLM5NextManagedLoadError.identityMismatch
+            }
+            guard enabled else {
+                return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
+            }
+            guard let mtp = root.mtp, mtp.targetIdentity == ObjectIdentifier(root.textTower) else {
+                return .init(artifact: nil, status: .disabled(.metadataMissing, configured: true))
+            }
+            return .init(artifact: nil, status: .init(configured: true, active: false, reason: nil,
+                source: .inline, revision: root.artifact.identity.revision,
+                sourceRevision: root.artifact.identity.revision,
+                artifactBytes: UInt64(root.artifact.inventory.bytes(in: .mtp)), assistantBytes: 0))
+        }
+    }
+
     /// Exact rectangular verification (scalar-dense rows, row-exact affine
     /// projections, serialized attention) is the default MiMo MTP strategy for
     /// eligible text rounds. Exact `0` / `false` / `no` / `off` on this key or
@@ -80,6 +100,7 @@ extension EngineV2SlotFactory {
     static func prepareProductionModel(
         modelId: String, isVLM: Bool, modelDirectory: URL? = nil,
         container: ProviderModelContainer, specDecPreparation: SpecDecPreparation,
+        maximumContextLength: Int? = nil,
         assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
@@ -93,7 +114,8 @@ extension EngineV2SlotFactory {
         case .autoregressive(let target):
             return .autoregressive(try await prepareProductionModel(
                 modelId: modelId, isVLM: isVLM, modelDirectory: modelDirectory, container: target,
-                specDecPreparation: specDecPreparation, assistantLoader: assistantLoader,
+                specDecPreparation: specDecPreparation, maximumContextLength: maximumContextLength,
+                assistantLoader: assistantLoader,
                 emitTelemetry: emitTelemetry, logInfo: logInfo, logWarning: logWarning))
         case .diffusion:
             guard specDecPreparation.artifact == nil else {

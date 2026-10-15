@@ -112,6 +112,7 @@ public actor GlobalKVCacheBudget {
             isReclaimAllowed: {
                 let registry = MiMoV26NativeLoadRegistry.shared
                 return !registry.hasRetainedFault && !registry.hasUnretiredClosingTransactions
+                    && !GLM5NextLoadFaultState.isRetained
             })
     }
 

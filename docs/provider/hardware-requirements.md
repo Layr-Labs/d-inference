@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -18,6 +18,10 @@ determine capacity. Neither mode reduces model-load quotations, OS reserves,
 activation floors or minimum serveable KV headroom. The RAM-tier table remains
 subject to the same load gate. Precision controls and fallback are in the
 [CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
+
+GLM-5.3-Flash has no qualified provider hardware tier. Its
+[in-progress native implementation](../design/glm53-flash-native.md) does not
+make a downloaded four-bit artifact serveable or reduce these memory safeguards.
 
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).

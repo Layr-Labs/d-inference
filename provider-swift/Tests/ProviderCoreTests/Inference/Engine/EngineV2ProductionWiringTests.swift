@@ -558,6 +558,33 @@ struct EngineV2SlotBuildTests {
 
 @Suite("EngineV2 production wiring: KV re-slicing", .serialized)
 struct EngineV2ReslicingWiringTests {
+    /// Run alone: a failed native fence intentionally remains process-retained.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_RETAINED_RESLICE"] == "1"))
+    func glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor() async throws {
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridge, survivor, _) = try await buildAndInstallSlotA(loop, runtime: runtime,
+            recorder: recorder, engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        let oldGrant = await bridge.engineKVBytesCapacity()
+        await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: wiringPhysicalBytes,
+            makeEngine: { _, _ in throw GLM5NextManagedLoadError.retirementUnproven }))
+        let newcomer = EngineV2NewcomerBox(makeStubContainer())
+        await loop.acquireResliceGate()
+        await #expect(throws: GLM5NextManagedLoadError.retirementUnproven) {
+            try await loop.resliceAndBuildEngineV2Bundle(modelId: "failed-native-glm", modelType: "glm5_next",
+                isVLM: false, modelDirectory: nil, newcomer: newcomer, tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                targetSizing: makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072),
+                specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)))
+        }
+        await loop.releaseResliceGate()
+        #expect(newcomer.container != nil)
+        #expect(await bridge.engineKVBytesCapacity() < oldGrant)
+        #expect(survivor.shutdownCalls == 0)
+        #expect(GLM5NextLoadFaultState.isRetained)
+        #expect(!ProviderLoop.nativeProcessAllowsReclamation())
+        GLM5NextLoadFaultState.retain([loop, survivor])
+    }
 
     init() {
         // unloadModel / updateAggregateCapacity read MLX GPU counters.

@@ -59,6 +59,52 @@ bridge so future load and reserve-raise checks can preserve a serviceable total
 grant. These [workspace-aware floors](hardware-support.md#kv-slot-grants) do not
 lower the activation reserve or replace actual per-request byte admission.
 
+### GLM5Next implementation boundary
+
+`glm5_next` remains outside the production supported set. The native SDK has an
+unregistered `GLM5NextTextModel`, trained `GLM5NextMTP`, vision tower and
+`GLM5NextModel` wrapper. `GLM5NextArtifactLoader` validates the pinned file
+inventory and reads bounded tensor ranges instead of materializing a second
+whole-model dictionary. Provider integration uses a model-bound
+`GLM5NextNativeOperationOwner` for protected MTP bridge admission; it does not
+borrow a MiMo transaction or bypass its checks. Shutdown consumes the actual
+native engine/contract receipt before releasing the root or growing survivor
+grants. Missing ownership or unproven completion refuses work and retains the
+affected owners. Synthetic tests do not establish full-model output parity or
+full-artifact qualification. Source lives under
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/` and
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/`. See the
+[in-progress integration contract](../design/glm53-flash-native.md) for the
+required paged, complete-prefix and trained-MTP gates.
+
+Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
+the selected local tokenizer using the provider's actual GLM defaults,
+reasoning controls and tool/history normalization. The generic template check
+also remains mandatory; neither check repairs or substitutes a template.
+These boundaries are implemented in
+`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/` and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+NativeLifecycle.swift`.
+
+Raw same-directory GLM discovery uses a
+[complete header-derived LOAD quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation),
+including full expert-bank, vision, MTP and tokenizer accounting. This does not
+enable the native serving path. A separate tokenizer composition cannot reuse
+that raw quote; the resolved source must pass the scanner recheck and the
+managed native loader's independent validation before allocation.
+
+The low-level `glm5` tool parser uses the official XML framing with
+schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
+suffix until EOS so quoted XML delimiters and a later malformed call cannot
+commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
+returns the original text through the existing parser-failure path. Ambiguous
+string unions and unsupported indirect schemas are not inferred. This parser
+does not implement constrained decoding or enable GLM model advertisement.
+The request-local [GLM prompt contract](../reference/protocol-messages.md#unregistered-glm-native-prompt-contract)
+also preserves original schema values only after a trusted loaded-model check.
+Its official-template renderer currently needs a locally tested Swift-Jinja
+numeric-attribute patch. That validation does not resolve the separate
+reviewed-dependency and clean-build gates; see the [build boundary](../developer/build.md).
+
 ## Mechanism
 
 ### Prompt-completion measurements and qualified profiles

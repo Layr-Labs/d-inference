@@ -25,6 +25,7 @@ extension ProviderLoop {
     nonisolated static func nativeProcessAllowsReclamation() -> Bool {
         let registry = MiMoV26NativeLoadRegistry.shared
         return !registry.hasRetainedFault && !registry.hasUnretiredClosingTransactions
+            && !GLM5NextLoadFaultState.isRetained
     }
 
     func nativeMiMoAllowsReclamation() -> Bool {
@@ -41,6 +42,7 @@ extension ProviderLoop {
     }
 
     func requireNativeMiMoProcessWorkAllowed() throws {
+        try GLM5NextLoadFaultState.requireHealthy()
         try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
         try nativeMiMoRegistry.requireNewNativeWorkAllowed()
     }

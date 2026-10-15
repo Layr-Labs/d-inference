@@ -95,6 +95,7 @@ extension StandaloneServer {
     /// Process-level refusal only. A healthy result is not a completion or
     /// reclaim receipt; retirement still consumes the actual SDK/host outcome.
     func requireNativeMiMoNewWorkAllowed() throws {
+        try GLM5NextLoadFaultState.requireHealthy()
         try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
         try nativeMiMoRegistry.requireNewNativeWorkAllowed()
         guard !MiMoV26NativeLoadRegistry.shared.hasUnretiredClosingTransactions,
@@ -104,6 +105,7 @@ extension StandaloneServer {
     }
 
     var nativeMiMoReclaimAllowed: Bool {
+        guard !GLM5NextLoadFaultState.isRetained else { return false }
         guard !MiMoV26NativeLoadRegistry.shared.hasRetainedFault,
               !nativeMiMoRegistry.hasRetainedFault,
               !MiMoV26NativeLoadRegistry.shared.hasUnretiredClosingTransactions,

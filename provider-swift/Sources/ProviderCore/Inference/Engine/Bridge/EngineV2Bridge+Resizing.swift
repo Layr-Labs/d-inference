@@ -32,6 +32,7 @@ extension EngineV2Bridge {
     public func updateKVBytesCapacity(_ bytes: Int) {
         let requested = max(0, bytes)
         guard let engine = ownedEngine else { return }
+        if GLM5NextLoadFaultState.isRetained, requested > engine.capacity().kvBytesCapacity { return }
         lastRequestedKVBytesCapacity = requested
         guard kvBackendKind == .paged else {
             engine.updateKVBytesCapacity(requested)

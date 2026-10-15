@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "scope": "prompt-rendering-fixture-only",
+  "source": {
+    "repository": "zai-org/GLM-5.3-Flash",
+    "revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+    "path": "chat_template.jinja",
+    "bytes": 10950,
+    "sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 Z.AI Co., Ltd"
+  },
+  "raw_candidate": {
+    "repository": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+    "revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
+    "template_sha256": "34d5ee66b12fa6446cdae131c352b8f68cd85369e0e6fda115583805fada3891",
+    "matches_official_template": false,
+    "automatically_replaced": false
+  },
+  "semantics": {
+    "reasoning_effort": ["low", "high", "max"],
+    "default_reasoning_effort": "max",
+    "effort_precedence": ["reasoning.effort", "reasoning_effort", "chat_template_kwargs.reasoning_effort"],
+    "clear_thinking_precedence": ["clear_thinking", "chat_template_kwargs.clear_thinking"],
+    "default_clear_thinking": false,
+    "clear_thinking_effect": "Suppresses historical assistant reasoning at or before the last user message; does not disable new reasoning.",
+    "unsupported_controls": ["reasoning.enabled", "enable_thinking", "preserve_thinking", "thinking"],
+    "all_present_aliases_are_validated": true
+  },
+  "claims": {
+    "native_engine_registered": false,
+    "raw_candidate_prompt_parity": false,
+    "tokenizer_parity": false,
+    "constrained_decoding": false,
+    "json_output_mode": false,
+    "media": false
+  }
+}

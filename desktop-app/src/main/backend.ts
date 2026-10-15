@@ -75,6 +75,11 @@ export class Backend extends EventEmitter {
   ) {
     super();
   }
+  // The installed, vendor-signed CLI. A preview's bundled API runs its provider operations
+  // through it, so the preview needs it installed before the API can start.
+  get installedCLI() {
+    return path.join(homedir(), '.darkbloom/bin/darkbloom');
+  }
   get binary() {
     return (
       this.preview?.binary ||
@@ -103,6 +108,9 @@ export class Backend extends EventEmitter {
     try {
       const binary = await realpath(this.binary);
       await this.verifyRuntime(binary);
+      // Without the installed CLI a preview's API can't start; report it missing (ENOENT) so
+      // setup offers Install CLI rather than a repair.
+      if (this.preview) await realpath(this.installedCLI);
       if (this.preview) await this.preview.ensure();
       else if (this.packaged || process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY !== '1')
         await execute(binary, ['desktop', 'ensure'], {
@@ -231,10 +239,18 @@ export class Backend extends EventEmitter {
   }
   /** Installs, updates or repairs the CLI; called only from the user's click (`backend:install`). */
   install(script: string): Promise<void> {
-    if (this.preview)
-      return Promise.reject(
-        new Error('Rebuild the local preview to update its bundled desktop API.'),
+    // A preview can install a missing CLI with the same verified installer as a release, but
+    // never update or repair: its bundled API comes from the local build.
+    if (this.preview && !this.installation)
+      return realpath(this.installedCLI).then(
+        () => {
+          throw new Error('Rebuild the local preview to update its bundled desktop API.');
+        },
+        () => this.startInstall(script),
       );
+    return this.startInstall(script);
+  }
+  private startInstall(script: string): Promise<void> {
     this.installation ??= this.runInstall(script).finally(() => {
       this.installation = undefined;
     });
@@ -253,9 +269,11 @@ export class Backend extends EventEmitter {
     this.status({ state: 'installing', message: 'Installing the Darkbloom CLI…' });
     let existing: string | undefined;
     try {
-      try {
-        existing = await realpath(this.binary);
-      } catch {}
+      // A preview's own binary is its bundled API, never something to update here.
+      if (!this.preview)
+        try {
+          existing = await realpath(this.binary);
+        } catch {}
       if (existing) {
         await this.verifyRuntime(existing);
         this.status({ state: 'installing', message: 'Updating the Darkbloom CLI…' });

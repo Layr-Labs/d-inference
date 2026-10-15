@@ -334,6 +334,38 @@ the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
 
+#### Experimental Dev-Branch Lane (Dev Only, Self-Signed)
+
+`.github/workflows/release-dev-branch.yml` builds a provider from any branch or
+commit and publishes it to the dev coordinator without merging to master. It is
+dispatch-only on `master`, so the credentialed publication logic runs the
+reviewed master copy of every script; it checks out the chosen `ref` only to
+compile and ad-hoc sign (`codesign -s -`), never reading a production secret or
+the production Apple signing identity. The branch binary is compiled and signed
+in a job that holds no secret, and is never run in a step that holds a
+credential. The version is `X.Y.Z-dev.branch.<run>`, which
+`scripts/check-release-version.sh` accepts and which stays distinct from the
+master dev lane's `X.Y.Z-dev.<run>`.
+
+```bash
+gh workflow run release-dev-branch.yml --ref master \
+  -f ref=<branch> -f acknowledge_install_signature_gate=true
+```
+
+The lane is gated: without `acknowledge_install_signature_gate=true` it stops.
+The dev coordinator serves the self-signed build: its release-artifact check
+hashes the bundle rather than inspecting the Apple signature, and
+`MIN_TRUST=self_signed` is a device-attestation tier, not a code-signature
+tier. But the
+installer pins an Apple-anchored designated requirement for the real install
+path (`scripts/install.sh`, `verify_staged_app_signature`), so a fresh
+`darkbloom-dev` install rejects an ad-hoc or locally minted signature. Use this
+lane for coordinator-level testing until an Apple dev signing identity for the
+team is provisioned or the installer's `-dev.` requirement is adjusted. Because
+`/v1/releases/latest` orders by `created_at`, publishing makes the branch build
+the latest dev release; an existing install's self-updater may not downgrade to
+a lower run number, while a fresh install takes the newest.
+
 ### 6. Sign, Stage And Register Exact Bytes
 
 After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes

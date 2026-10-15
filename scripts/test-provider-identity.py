@@ -89,7 +89,9 @@ class ProviderIdentityTests(unittest.TestCase):
         self.assertIn(f'[[ "$GITHUB_REF_NAME" == *{MARKER}* ]]', resolve)
         self.assertIn(f'release_version="${{release_version}}{MARKER}${{GITHUB_RUN_NUMBER}}"', resolve)
         check = (ROOT / "scripts/check-release-version.sh").read_text()
-        self.assertIn('"$PROVIDER_VERSION"' + MARKER.replace(".", "\\.") + "[1-9]", check)
+        # The master dev lane stamps -dev.N; the dev-branch lane stamps
+        # -dev.branch.N. Both are the version marker plus a positive run number.
+        self.assertIn('"$PROVIDER_VERSION"' + MARKER.replace(".", "\\.") + "(branch\\.)?[1-9]", check)
 
     def test_flat_verifier_names_are_the_swift_products(self):
         # The coordinator's release registration requires these names.

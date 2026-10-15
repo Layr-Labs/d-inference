@@ -1,0 +1,3 @@
+### Experimental dev-branch provider lane
+
+- Add `.github/workflows/release-dev-branch.yml`, a dispatch-only lane that builds a provider from any branch or commit and publishes it to the dev coordinator as a self-signed (ad-hoc) release, without merging to master. It is dev-only: no tag path, no production environment, no production signing identity, and no production secret. It stamps the version `X.Y.Z-dev.branch.<run>` so it stays distinct from the master dev lane. The lane is gated on an operator acknowledgement because the current installer only accepts an Apple-anchored signature, so a self-signed build is served by the dev coordinator for testing but is not installable until that signing decision is made.

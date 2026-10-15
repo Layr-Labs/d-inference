@@ -25,6 +25,8 @@ final class RoleClassificationTests: XCTestCase {
             ("merges.txt", "tokenizer"),
             // config
             ("config.json", "config"),
+            ("hadamard.json", "config"),
+            ("decision_config.json", "config"),
             ("generation_config.json", "config"),
             ("quantize_config.json", "config"),
             // template

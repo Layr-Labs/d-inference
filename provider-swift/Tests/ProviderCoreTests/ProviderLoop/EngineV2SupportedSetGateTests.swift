@@ -83,6 +83,19 @@ struct EngineV2SupportedSetGateTests {
         #expect(await loop.advertisedModelCount() == 3)
     }
 
+    @Test("the decision head model type is supported and recognised by type only")
+    func pplxDeciderModelType() {
+        #expect(EngineV2SupportedModels.isSupported(modelType: "pplx_decider_qwen35"))
+        #expect(EngineV2SupportedModels.isSupported(
+            model: modelInfo(id: "any-local-name", modelType: "pplx_decider_qwen35")))
+        #expect(EngineV2SupportedModels.isPplxDeciderModelType("pplx_decider_qwen35"))
+        #expect(!EngineV2SupportedModels.isPplxDeciderModelType("qwen3_5"))
+        #expect(!EngineV2SupportedModels.isPplxDeciderModelType(nil))
+        #expect(EngineV2SupportedModels.isPplxDeciderListingModelID("EigenLabs/pplx-decider-v1-27b-MLX-4bit"))
+        #expect(EngineV2SupportedModels.isPplxDeciderListingModelID("pplx-decider-v1-27b"))
+        #expect(!EngineV2SupportedModels.isPplxDeciderListingModelID("perplexity-ai/pplx-decider-v1-27b"))
+    }
+
     @Test("partition splits supported/unsupported order-preserving")
     func partitionHelper() {
         let models = [

@@ -30,6 +30,7 @@ public enum EngineV2KVBackendPolicy {
         case .paged: return .paged
         case .auto:
             if EngineV2SupportedModels.isBonsai2ListingModelID(modelID) { return .paged }
+            if EngineV2SupportedModels.isPplxDeciderListingModelID(modelID) { return .paged }
             if EngineV2SupportedModels.isNemotron35ListingModelID(modelID) { return .paged }
             if EngineV2SupportedModels.isQwen4ExpListingModelID(modelID) { return .paged }
             switch modelID {

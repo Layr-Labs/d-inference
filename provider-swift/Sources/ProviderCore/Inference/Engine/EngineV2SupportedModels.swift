@@ -20,6 +20,10 @@
 //   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
 //                       automatic paging/cache policy is separately scoped
 //
+//   * `pplx_decider_qwen35` — pplx-decider dense Qwen 3.8 target whose output
+//                       head is the 255-row decision readout; serves only
+//                       decision requests (`Inference/Decision/`)
+//
 //   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
 //                       artifact/sidecar validity and per-request bounds remain
 //                       mandatory; this does not activate automatic MTP.
@@ -33,8 +37,21 @@
 // reflected here.
 
 import Foundation
+import MLXLMCommon
 
 public enum EngineV2SupportedModels {
+    public static let pplxDeciderModelID = "EigenLabs/pplx-decider-v1-27b-MLX-4bit"
+    public static func isPplxDeciderListingModelID(_ id: String?) -> Bool {
+        switch id {
+        case pplxDeciderModelID, "pplx-decider-v1-27b": true
+        default: false
+        }
+    }
+    /// The decider's head emits option logits, not vocabulary logits, so the
+    /// loaded `model_type` (never a model name) selects the decision path.
+    public static func isPplxDeciderModelType(_ modelType: String?) -> Bool {
+        normalized(modelType) == PplxDeciderConfiguration.modelType
+    }
     public static let bonsai2ModelID = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
     public static func isBonsai2ListingModelID(_ id: String?) -> Bool {
         switch id {
@@ -99,6 +116,7 @@ public enum EngineV2SupportedModels {
         if raw == "gpt_oss" { return true }
         if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }
+        if raw == PplxDeciderConfiguration.modelType { return true }
         if raw == "qwen3_vl_moe" { return true }
         if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }
         return gemma4TargetTypes.contains(raw)

@@ -22,8 +22,8 @@ extension PrefixCachePolicy {
     }
 
     /// Default SSD activation is separate from backend selection. Only these
-    /// exact Qwen, Gemma QAT, GPT-OSS 20B, Nemotron Lightning, Bonsai 2 and MiMo artifacts
-    /// default on; an affirmative global flag
+    /// exact Qwen, Gemma QAT, GPT-OSS 20B, Nemotron Lightning, Bonsai 2,
+    /// pplx-decider and MiMo artifacts default on; an affirmative global flag
     /// opts other models into their existing capability/identity gates. This
     /// keeps offline cache comparisons available without enabling other artifacts
     /// merely because their attention backend defaults to paged.
@@ -34,6 +34,7 @@ extension PrefixCachePolicy {
         var defaultEnabled = EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
             || EngineV2SupportedModels.isQwen4ExpListingModelID(modelId)
             || EngineV2SupportedModels.isBonsai2ListingModelID(modelId)
+            || EngineV2SupportedModels.isPplxDeciderListingModelID(modelId)
             || isMiMoDefaultModel(modelId)
         switch modelId {
         case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",

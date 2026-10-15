@@ -324,6 +324,9 @@ enum EngineV2VLMTextExtraction {
         extracted: Qwen35Model,
         vocabSize: Int
     ) throws -> Float {
+        // `vocabSize` bounds the probe INPUT ids (embedding rows). Logits are
+        // compared at their own width, which a decision head narrows to its
+        // option count; nothing here indexes logits by the vocabulary.
         let probeTokens = [1, 17, 29, 43, 61].map {
             min($0, max(0, vocabSize - 1))
         }

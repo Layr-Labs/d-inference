@@ -15,10 +15,11 @@ import { Welcome } from './onboarding/Welcome';
 
 type Step = 'install' | 'welcome' | 'link' | 'scan' | 'start';
 
-const stepIndex: Record<Step, number> = { install: 0, welcome: 1, link: 1, scan: 2, start: 3 };
+// The Mac is checked before an account is linked, so an ineligible Mac is never asked to link.
+const stepIndex: Record<Step, number> = { install: 0, welcome: 1, scan: 1, link: 2, start: 3 };
 
-// Statuses in which the CLI is absent, broken or being (re)installed at the user's request. A brief reconnect
-// once a snapshot has arrived keeps the current step instead.
+// Statuses in which the CLI is absent, broken or being (re)installed at the user's request. A
+// brief reconnect once a snapshot has arrived keeps the current step instead.
 const unavailable: BackendState['status']['state'][] = [
   'missing',
   'error',
@@ -32,21 +33,22 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
   const ready = !!backend.state && !unavailable.includes(backend.status.state);
   const [step, setStep] = useState<Step>(ready ? 'welcome' : 'install');
   // Set once the install step has offered an install, repair or update (or shown one the user
-  // started): finishing it then goes straight on to linking rather than back to the welcome view.
+  // started): finishing it then goes straight on to the check, not back to the welcome view.
   const [installed, setInstalled] = useState(false);
-  // Starting without a linked account sends people back to link it, then on to the start page
-  // again once the check has passed.
+  // Set once the check has passed (or the user continued past an unconfirmed one). Linking then
+  // leads to the start page; starting without a linked account sends people back to link it.
   const [checked, setChecked] = useState(false);
   const linked = !!backend.state?.linked;
   if (!ready && !installed && unavailable.includes(backend.status.state)) setInstalled(true);
-  if (step === 'install' && ready) setStep(installed ? 'link' : 'welcome');
+  if (step === 'install' && ready) setStep(installed ? 'scan' : 'welcome');
   if (step === 'link' && ready && linked) setStep(checked ? 'start' : 'scan');
   const view: Step = ready ? step : 'install';
-  const toStart = () => {
+  // After the check, an already linked Mac skips linking.
+  const afterCheck = () => {
     setChecked(true);
-    setStep('start');
+    setStep(linked ? 'start' : 'link');
   };
-  const scan = useMacScan(backend, view === 'scan', toStart);
+  const scan = useMacScan(backend, view === 'scan', afterCheck);
   const link = useAccountLink(backend);
   const leave = () => {
     link.cancel();
@@ -64,10 +66,14 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
     heading?.setAttribute('tabindex', '-1');
     heading?.focus();
   }, [view]);
-  const joined = view === 'start' || (scan.settled && scan.result?.verdict === 'eligible');
+  // A checked Mac keeps its place in the grid while it links, then starts.
+  const joined =
+    view === 'start' ||
+    (view === 'link' && checked) ||
+    (scan.settled && scan.result?.verdict === 'eligible');
   const leaving = view === 'scan' && scan.frame.phase === 'leaving';
   const grid =
-    view === 'install' || view === 'welcome' || view === 'link'
+    view === 'install' || view === 'welcome'
       ? 'idle'
       : joined
         ? 'joined'
@@ -81,10 +87,7 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
         <OnboardingIntro grid={grid} />
         <section className="onboarding-form">
           <div className="onboarding-progress">
-            <OnboardingSteps
-              current={view === 'welcome' && linked ? 2 : stepIndex[view]}
-              linked={linked}
-            />
+            <OnboardingSteps current={stepIndex[view]} linked={linked} />
             {/* Setup can be left from any step once there is a dashboard to open. */}
             {backend.state && (
               <button className="text-link" onClick={leave}>
@@ -99,10 +102,16 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
             key={view}
           >
             {view === 'install' && <RuntimeSetup backend={backend} />}
-            {view === 'welcome' && <Welcome linked={linked} start={() => setStep('link')} />}
+            {view === 'welcome' && <Welcome linked={linked} start={() => setStep('scan')} />}
             {view === 'link' && <LinkStep backend={backend} link={link} />}
             {view === 'scan' && (
-              <ScanStep backend={backend} scan={scan} proceed={toStart} explore={leave} />
+              <ScanStep
+                backend={backend}
+                scan={scan}
+                next={linked ? 'start serving' : 'link your account'}
+                proceed={afterCheck}
+                explore={leave}
+              />
             )}
             {view === 'start' && backend.state && (
               <StartServing

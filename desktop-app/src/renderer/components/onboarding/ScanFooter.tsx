@@ -9,11 +9,13 @@ import styles from './scanFooter.module.css';
 
 export function ScanFooter({
   scan,
+  next = 'start serving',
   proceed,
   explore,
   waitlist = true,
 }: {
   scan: MacScan;
+  next?: string;
   proceed: () => void;
   explore: () => void;
   waitlist?: boolean;
@@ -35,7 +37,7 @@ export function ScanFooter({
           className={styles.countdown}
           style={{ '--countdown': `${scanTiming.holdMs + scanTiming.exitMs}ms` } as CSSProperties}
         />
-        <span>Next: start serving</span>
+        <span>Next: {next}</span>
         <button className="text-link" onClick={scan.finish}>
           Continue now <ArrowRight size={13} />
         </button>

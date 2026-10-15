@@ -1,10 +1,10 @@
 import { Check } from 'lucide-react';
 
 // The first step's page is headed Install the Darkbloom CLI; its label stays short to fit.
-const steps = ['Install CLI', 'Link your account', 'Check this Mac', 'Start'];
-const linkStep = 1;
+const steps = ['Install CLI', 'Check this Mac', 'Link your account', 'Start'];
+const linkStep = 2;
 
-// Linking is done only once the account is linked: local only passes it without linking.
+// Linking is done only once the account is linked; a linked Mac passes it without linking.
 export function OnboardingSteps({ current, linked }: { current: number; linked: boolean }) {
   return (
     <ol className="steps" aria-label="Setup steps">

@@ -58,27 +58,16 @@ describe('preview scenarios', () => {
 });
 
 describe('preview onboarding', () => {
-  // The ineligible scenario is a fresh, unlinked install: link first. The preview approves the
-  // code a few seconds after it is shown.
-  async function linkInPreview() {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      fireEvent.click(await screen.findByRole('button', { name: /Link account/ }));
-      expect(await screen.findByText('KXQF-7M2P')).toBeVisible();
-      await act(async () => vi.advanceTimersByTime(6000));
-    } finally {
-      vi.useRealTimers();
-    }
-  }
-
+  // The ineligible scenario is a fresh, unlinked install. The Mac is checked before linking, so
+  // it never reaches the link step.
   it('opens on the scenario and joins the waitlist through the preview runtime', async () => {
     const App = await app('?preview&onboarding=ineligible');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }));
-    await linkInPreview();
     expect(await screen.findByRole('heading', { name: 'Checking this Mac…' })).toBeVisible();
     fireEvent.click(await screen.findByRole('button', { name: /Skip/ }));
     expect(screen.getByRole('heading', { name: 'This Mac isn’t eligible yet.' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Link account/ })).not.toBeInTheDocument();
     expect(screen.getByText('MacBook Air')).toBeVisible();
     fireEvent.change(screen.getByRole('textbox', { name: 'Email address' }), {
       target: { value: 'ada@example.com' },
@@ -91,7 +80,6 @@ describe('preview onboarding', () => {
     const App = await app('?preview&onboarding=ineligible&waitlist=fail');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }));
-    await linkInPreview();
     fireEvent.click(await screen.findByRole('button', { name: /Skip/ }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Email address' }), {
       target: { value: 'ada@example.com' },

@@ -108,6 +108,19 @@ describe('eligible Mac', () => {
 });
 
 describe('ineligible Mac', () => {
+  it('stops at the check and is never asked to link an account', () => {
+    const backend = backendWith({ ...eightGBMac(), linked: false });
+    renderOnboarding(backend);
+    fireEvent.click(screen.getByRole('button', { name: /Skip/ }));
+    expect(heading('This Mac isn’t eligible yet.')).toBeVisible();
+    expect(currentStep()).toHaveTextContent('Check this Mac');
+    elapse(60_000);
+    expect(heading('This Mac isn’t eligible yet.')).toBeVisible();
+    expect(heading('Link your account.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Link account|Continue/ })).toBeNull();
+    expect(backend.act).not.toHaveBeenCalled();
+  });
+
   it('names the reason, offers the waitlist, and never advances on its own', () => {
     const done = vi.fn();
     renderOnboarding(backendWith(eightGBMac()), done);
@@ -229,9 +242,18 @@ describe('leaving setup', () => {
     fireEvent.click(explore());
     expect(done).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Start' }));
-    expect(heading('Link your account.')).toBeVisible();
+    expect(heading('Checking this Mac…')).toBeVisible();
     fireEvent.click(explore());
     expect(done).toHaveBeenCalledTimes(2);
+    elapse(revealMs);
+    expect(heading('This Mac is eligible.')).toBeVisible();
+    expect(screen.getByText('Next: link your account')).toBeVisible();
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(3);
+    fireEvent.click(screen.getByRole('button', { name: /Continue now/ }));
+    expect(heading('Link your account.')).toBeVisible();
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(4);
     await act(async () => fireEvent.click(screen.getByRole('button', { name: /Link account/ })));
     const running = { ...operation('running', '', 'link'), cancellable: true };
     view.rerender(
@@ -241,17 +263,9 @@ describe('leaving setup', () => {
       />,
     );
     fireEvent.click(explore());
-    expect(done).toHaveBeenCalledTimes(3);
+    expect(done).toHaveBeenCalledTimes(5);
     expect(backend.act).toHaveBeenLastCalledWith({ action: 'cancel', operation: running.id });
     view.rerender(<Onboarding backend={{ ...backend, state: snapshot() }} done={done} />);
-    expect(heading('Checking this Mac…')).toBeVisible();
-    fireEvent.click(explore());
-    expect(done).toHaveBeenCalledTimes(4);
-    elapse(revealMs);
-    expect(heading('This Mac is eligible.')).toBeVisible();
-    fireEvent.click(explore());
-    expect(done).toHaveBeenCalledTimes(5);
-    fireEvent.click(screen.getByRole('button', { name: /Continue now/ }));
     expect(heading('Ready to serve.')).toBeVisible();
     expect(screen.getAllByRole('button', { name: /Explore the app first/ })).toHaveLength(1);
     fireEvent.click(explore());

@@ -1,31 +1,57 @@
 import CryptoKit
 import Foundation
-import MLXLMServer
+import Jinja
 import MLXLMCommon
+import MLXLMServer
+import ProviderCoreFoundation
 
-/// Local onboarding contract for the exact pinned Super VL template. This does
-/// not admit a model, execute media, or enforce output/tool schemas.
+/// Prompt contract for the exact pinned Super VL template, matching the
+/// reference `apply_chat_template` plus `processing_nemotron_h_omni.py`
+/// placeholder expansion. It does not admit a model, execute media, or
+/// validate output.
 enum NemotronSuperPromptContract {
     static let templateSHA256 = "1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816"
+    static let vocabularySize = 131072
+    static let imageTokenID = 18
+    static let imageStartTokenID = 19
+    static let imageEndTokenID = 20
 
-    enum Failure: Error { case templateMismatch, unsupportedControl, conflictingControls, unsupportedMedia }
-
-    static func verifiedTemplate(_ bytes: Data) throws -> String {
-        guard SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == templateSHA256,
-              let source = String(data: bytes, encoding: .utf8) else { throw Failure.templateMismatch }
-        return source
+    enum Failure: Error {
+        case templateMismatch, unsupportedControl, conflictingControls, unsupportedMedia
+        case invalidToolArguments, toolDeclarationMismatch, invalidTokens
     }
 
-    private struct Controls: Decodable {
+    /// Effective template and parser controls. Absent values take the pinned
+    /// template's defaults; `forceNonemptyContent` is the ultra_v3 parser option.
+    struct Controls: Equatable, Sendable {
+        var enableThinking = true
+        var mediumEffort = false
+        var truncateHistoryThinking = true
+        var forceNonemptyContent = false
+    }
+
+    /// Verified pinned template, prepared for swift-jinja: comment whitespace
+    /// control is normalized and the Python `string` filter is rebound. Render
+    /// it only with ``additionalContext(_:)``.
+    static func verifiedTemplate(_ bytes: Data) throws -> String {
+        guard SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == templateSHA256,
+            let source = String(data: bytes, encoding: .utf8)
+        else { throw Failure.templateMismatch }
+        return NemotronSuperTemplateFilters.bind(template: normalizeSwiftJinjaTemplate(source))
+    }
+
+    private struct RawControls: Decodable {
         let enabled: Bool?
         let medium: Bool?
         let truncate: Bool?
+        let forceContent: Bool?
         let effort: String?
         let nestedEnabled: Bool?
         let nestedEffort: String?
         enum Keys: String, CodingKey {
             case enabled = "enable_thinking", medium = "medium_effort"
             case truncate = "truncate_history_thinking", effort = "reasoning_effort"
+            case forceContent = "force_nonempty_content"
             case kwargs = "chat_template_kwargs", reasoning, preserve = "preserve_thinking"
         }
         enum ReasoningKeys: String, CodingKey { case enabled, effort }
@@ -41,6 +67,7 @@ enum NemotronSuperPromptContract {
             enabled = try boolean(.enabled)
             medium = try boolean(.medium)
             truncate = try boolean(.truncate)
+            forceContent = try boolean(.forceContent)
             // This generic alias has different semantics; do not silently lose it.
             guard !values.contains(.preserve), kwargs?.contains(.preserve) != true else { throw Failure.unsupportedControl }
             effort = try values.decodeIfPresent(String.self, forKey: .effort)
@@ -52,73 +79,152 @@ enum NemotronSuperPromptContract {
 
     /// The official template defaults thinking on even for images. Medium effort
     /// is a separate template boolean, not the generic reasoning_effort key.
-    static func additionalContext(body: Data) throws -> [String: any Sendable] {
-        let controls = try JSONDecoder().decode(Controls.self, from: body)
-        let effort = (controls.nestedEffort ?? controls.effort)?.lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Contradictory spellings of one control are refused, never reconciled.
+    static func controls(body: Data) throws -> Controls {
+        let raw = try JSONDecoder().decode(RawControls.self, from: body)
+        func normalized(_ value: String?) -> String? {
+            value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let effort = normalized(raw.nestedEffort ?? raw.effort)
         if let effort, !["none", "off", "0", "medium", "high"].contains(effort) {
             throw Failure.unsupportedControl
         }
-        if let top = controls.effort, let nested = controls.nestedEffort,
-            top.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                != nested.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        if let top = normalized(raw.effort), let nested = normalized(raw.nestedEffort), top != nested {
             throw Failure.conflictingControls
         }
-        if let top = controls.enabled, let nested = controls.nestedEnabled, top != nested {
+        if let top = raw.enabled, let nested = raw.nestedEnabled, top != nested {
             throw Failure.conflictingControls
         }
         let disabled = ["none", "off", "0"].contains(effort ?? "")
-        let enabled = controls.nestedEnabled ?? controls.enabled ?? !disabled
-        if let explicit = controls.nestedEnabled ?? controls.enabled, effort != nil,
+        let enabled = raw.nestedEnabled ?? raw.enabled ?? !disabled
+        if let explicit = raw.nestedEnabled ?? raw.enabled, effort != nil,
             explicit == disabled { throw Failure.conflictingControls }
-        if let medium = controls.medium, effort == "medium" || effort == "high",
+        if let medium = raw.medium, effort == "medium" || effort == "high",
             medium != (effort == "medium") { throw Failure.conflictingControls }
-        let medium = controls.medium ?? (effort == "medium")
+        let medium = raw.medium ?? (effort == "medium")
         guard !(medium && !enabled) else { throw Failure.conflictingControls }
-        return ["enable_thinking": enabled, "medium_effort": medium,
-                "truncate_history_thinking": controls.truncate ?? true]
+        return Controls(enableThinking: enabled, mediumEffort: medium,
+            truncateHistoryThinking: raw.truncate ?? true,
+            forceNonemptyContent: raw.forceContent ?? false)
     }
 
-    /// Text qualification entry: apply the verified literal template rather
-    /// than a tokenizer's unverified default. Output constraints/media remain
-    /// rejected until their native request owners are connected.
-    static func tokenizeText(body: Data, templateBytes: Data,
-        tokenizer: any MLXLMCommon.Tokenizer) throws -> [Int] {
+    static func additionalContext(body: Data) throws -> [String: any Sendable] {
+        additionalContext(try controls(body: body))
+    }
+
+    /// Template variables plus the Python-compatible filters bound by
+    /// ``verifiedTemplate(_:)``.
+    static func additionalContext(_ controls: Controls) -> [String: any Sendable] {
+        var context = NemotronSuperTemplateFilters.context
+        context["enable_thinking"] = controls.enableThinking
+        context["medium_effort"] = controls.mediumEffort
+        context["truncate_history_thinking"] = controls.truncateHistoryThinking
+        return context
+    }
+
+    /// Reference prompt tokens. `messages` must already carry the provider's
+    /// tool-choice and response-format instructions; tool declarations are
+    /// taken from the raw body in request order and filtered to `declared`.
+    static func render(messages: [OpenAIChatMessage], body: Data, declared: [OpenAITool]?,
+        controls: Controls, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
+        addGenerationPrompt: Bool = true) throws -> [Int] {
         let template = try verifiedTemplate(templateBytes)
-        let request = try ProviderLoop.decodeOpenAIRequest(body)
-        guard request.model == NemotronSuperLocalBinding.modelID,
-            request.tools == nil, request.toolChoice == nil,
-            request.responseFormat == nil else { throw Failure.unsupportedControl }
-        for message in request.messages {
-            if case .parts(let parts) = message.content {
-                for part in parts {
-                    guard case .text = part else { throw Failure.unsupportedMedia }
-                }
-            }
+        var context = additionalContext(controls)
+        if let tools = try toolValues(body: body, declared: declared) { context["tools"] = tools }
+        // swift-transformers applies additional context after its own default.
+        context["add_generation_prompt"] = addGenerationPrompt
+        let tokens = try tokenizer.applyChatTemplate(messages: self.messages(messages),
+            chatTemplate: template, tools: nil, additionalContext: context)
+        guard !tokens.isEmpty, tokens.allSatisfy({ (0..<vocabularySize).contains($0) }) else {
+            throw Failure.invalidTokens
         }
-        let tokens = try tokenizer.applyChatTemplate(messages: messages(request.messages),
-            chatTemplate: template, tools: nil, additionalContext: additionalContext(body: body))
-        guard !tokens.isEmpty, tokens.allSatisfy({ (0..<131072).contains($0) }),
-            !tokens.contains(18) else { throw Failure.unsupportedMedia }
         return tokens
     }
 
-    /// Keep image slots in their original positions for an admitted media owner.
-    /// URLs remain opaque values; this function never fetches or decodes media.
+    /// Template messages with request-order tool-call arguments. Image slots
+    /// keep their positions; URLs stay opaque and are never fetched here.
     static func messages(_ messages: [OpenAIChatMessage]) throws -> [[String: any Sendable]] {
         try messages.map { message in
-            var value = message.templateMessageDict()
-            if case .parts(let parts) = message.content {
-                value["content"] = try parts.map { part -> [String: any Sendable] in
-                    switch part {
-                    case .text(let text): return ["type": "text", "text": text]
-                    case .imageURL(let uri): return ["type": "image_url", "image_url": uri]
-                    case .videoURL, .inputAudio, .unsupported: throw Failure.unsupportedMedia
-                    }
-                }
+            var value: [String: any Sendable] = ["role": message.role.rawValue,
+                                                 "content": try content(message.content)]
+            if let name = message.name { value["name"] = name }
+            if let id = message.toolCallID { value["tool_call_id"] = id }
+            if let calls = message.toolCalls, !calls.isEmpty {
+                value["tool_calls"] = Value.array(try calls.map(toolCall))
             }
+            if let reasoning = message.reasoningContent { value["reasoning_content"] = reasoning }
             return value
         }
+    }
+
+    private static func content(_ content: OpenAIMessageContent) throws -> Value {
+        switch content {
+        case .null: return .null
+        case .text(let text): return .string(text)
+        case .parts(let parts):
+            return .array(try parts.map { part -> Value in
+                switch part {
+                case .text(let text): return .object(["type": "text", "text": .string(text)])
+                case .imageURL(let uri):
+                    return .object(["type": "image_url", "image_url": .object(["url": .string(uri)])])
+                case .videoURL, .inputAudio, .unsupported: throw Failure.unsupportedMedia
+                }
+            })
+        }
+    }
+
+    /// vLLM decodes OpenAI's JSON-string arguments before rendering; empty
+    /// arguments become an empty mapping.
+    private static func toolCall(_ call: OpenAIToolCall) throws -> Value {
+        let arguments: Value
+        if call.function.arguments.isEmpty {
+            arguments = .object([:])
+        } else {
+            do { arguments = try NemotronSuperOrderedJSON.parse(call.function.arguments) }
+            catch { throw Failure.invalidToolArguments }
+        }
+        return .object(["id": .string(call.id), "type": .string(call.type),
+            "function": .object(["name": .string(call.function.name), "arguments": arguments])])
+    }
+
+    private static func toolValues(body: Data, declared: [OpenAITool]?) throws -> Value? {
+        guard let declared, !declared.isEmpty else { return nil }
+        guard case .object(let root) = try NemotronSuperOrderedJSON.parse(body),
+            case .array(let raw)? = root["tools"] else { throw Failure.toolDeclarationMismatch }
+        let names = Set(declared.map(\.function.name))
+        let selected = raw.filter { tool in
+            guard case .object(let object) = tool else { return false }
+            let function: Value? = object["function"] ?? tool
+            guard case .object(let fields)? = function, case .string(let name)? = fields["name"] else {
+                return false
+            }
+            return names.contains(name)
+        }
+        guard selected.count == declared.count else { throw Failure.toolDeclarationMismatch }
+        return .array(selected)
+    }
+
+    /// processing_nemotron_h_omni.py replaces each `<image>` with `<img>`, one
+    /// `<image>` per visual feature, and `</img>`; feature counts are in order.
+    static func expandImagePlaceholders(_ tokens: [Int], featureCounts: [Int],
+        contextLength: Int) throws -> [Int] {
+        guard tokens.filter({ $0 == imageTokenID }).count == featureCounts.count,
+            featureCounts.allSatisfy({ $0 > 0 }) else { throw Failure.unsupportedMedia }
+        var expanded: [Int] = []
+        var image = 0
+        for token in tokens {
+            let span = token == imageTokenID ? featureCounts[image] + 2 : 1
+            guard span <= contextLength - expanded.count else { throw Failure.invalidTokens }
+            if token == imageTokenID {
+                expanded.append(imageStartTokenID)
+                expanded.append(contentsOf: repeatElement(imageTokenID, count: featureCounts[image]))
+                expanded.append(imageEndTokenID)
+                image += 1
+            } else {
+                expanded.append(token)
+            }
+        }
+        return expanded
     }
 }
 

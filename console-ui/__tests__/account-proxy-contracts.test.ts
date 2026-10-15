@@ -52,6 +52,16 @@ describe("account proxy wire contracts", () => {
     expect(upstream.fetch.mock.calls[0][1].body).toBe("{}");
   });
 
+  it("preserves the desktop consent purpose through the approval proxy", async () => {
+    const body = JSON.stringify({ user_code: "ABCD-1234", purpose: "desktop_account" });
+    upstream.fetch.mockResolvedValueOnce(upstreamOk({ status: "approved", purpose: "desktop_account" }));
+    const response = await approveDevice(makeRequest("/api/device/approve", { method: "POST", headers: auth, body }));
+    expect(upstream.fetch).toHaveBeenCalledWith(`${DEFAULT_COORD}/v1/device/approve`, {
+      method: "POST", headers: { Authorization: headerToken, "Content-Type": "application/json" }, body,
+    });
+    expect(await response.json()).toEqual({ status: "approved", purpose: "desktop_account" });
+  });
+
   it.each([
     [rotateKey, "POST", "/v1/keys/key%20%2F%3F%23%25/rotate"],
     [removeMachine, "DELETE", "/v1/me/providers/key%20%2F%3F%23%25"],

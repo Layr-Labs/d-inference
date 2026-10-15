@@ -103,7 +103,7 @@ it('offers help when installing or repairing the runtime fails', async () => {
   api.install.mockRejectedValue(new Error('Runtime installation failed'));
   render(<RuntimeSetup backend={backendWith(undefined, { status: { state: 'missing' } })} />);
   expect(screen.queryByRole('button', { name: /Get help/ })).not.toBeInTheDocument();
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: /Install runtime/ })));
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /Install backend/ })));
   expect(screen.getByRole('alert')).toHaveTextContent('Runtime installation failed');
   fireEvent.click(screen.getByRole('button', { name: /Get help/ }));
   expect(api.openExternal).toHaveBeenCalledExactlyOnceWith('docs');

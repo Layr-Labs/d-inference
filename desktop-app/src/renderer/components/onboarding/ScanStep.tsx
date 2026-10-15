@@ -36,11 +36,14 @@ function caption({ result, settled }: MacScan, backend: BackendState) {
 export function ScanStep({
   backend,
   scan,
+  next,
   proceed,
   explore,
 }: {
   backend: BackendState;
   scan: MacScan;
+  // What an eligible Mac moves on to: linking the account, or starting on a linked Mac.
+  next: string;
   proceed: () => void;
   explore: () => void;
 }) {
@@ -61,6 +64,7 @@ export function ScanStep({
       <ScanFooter
         waitlist={!backend.state?.capabilities || backend.state.capabilities.includes('waitlist')}
         scan={scan}
+        next={next}
         proceed={proceed}
         explore={explore}
       />

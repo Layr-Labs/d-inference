@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 import provider_release_identity as release_identity
@@ -71,17 +72,41 @@ class ProviderIdentityTests(unittest.TestCase):
                 "PRODUCT_CLI_NAME": DOCUMENT["swiftProducts"]["cli"],
                 "PRODUCT_ENCLAVE_NAME": DOCUMENT["swiftProducts"]["enclave"]})
 
+    def test_load_rejects_an_empty_or_unprefixed_marker(self):
+        # Fail closed: a marker must begin with "-", the SemVer pre-release
+        # delimiter. An empty marker is a substring of every version and an
+        # unprefixed one could match inside a numeric or build-metadata segment,
+        # so load() rejects both rather than misrouting identity selection.
+        base = json.loads(release_identity.IDENTITY_FILE.read_text())
+        for bad in ("", "dev."):
+            document = json.loads(json.dumps(base))
+            document["releaseVersionMarkers"]["dev"] = bad
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "provider-identity.json"
+                path.write_text(json.dumps(document))
+                with self.subTest(marker=bad):
+                    with self.assertRaises(ValueError):
+                        release_identity.load(path)
+
     def test_installer_copy_matches_the_json(self):
         # install.sh runs as `curl | bash`, so it keeps literals; this is its guard.
         source = (ROOT / "scripts/install.sh").read_text()
         start = source.index("select_provider_identity() {")
         function = source[start:source.index("\n}\n", start) + 3]
-        self.assertIn(f"*{MARKER}*)", function)
-        self.assertIn(f"*{STAGING_MARKER}*)", function)
+        # The installer matches the SemVer pre-release component (the segment
+        # after the first "-", build metadata stripped), so the marker appears
+        # without its leading dash: "-dev." -> "dev.*)", "-staging." -> "staging.*)".
+        self.assertIn(f"{MARKER.lstrip('-')}*)", function)
+        self.assertIn(f"{STAGING_MARKER.lstrip('-')}*)", function)
         self.assertIn(f'PRODUCTION_COORD_URL="{PROD["coordinatorHTTPURL"]}"', source)
+        # select_provider_identity reads the designated-requirement constants to
+        # pick the per-identity signature requirement; define them for isolation.
+        constants = "".join(line + "\n" for line in source.splitlines()
+                            if line.startswith(("DARKBLOOM_DESIGNATED_REQUIREMENT=",
+                                                "DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT=")))
         for version, names in [(PROD_VERSION, PROD), (DEV_VERSION, DEV), (STAGING_VERSION, STAGING)]:
             with self.subTest(version=version):
-                script = function + f'select_provider_identity "{version}"\n' + \
+                script = constants + function + f'select_provider_identity "{version}"\n' + \
                     'printf "%s\\n" "$CLI_NAME" "$ENCLAVE_NAME" "$APP_NAME" "$PROVIDER_LABEL" ' \
                     '"$INSTALL_DIR" "$PROVIDER_CONFIG"\n'
                 output = subprocess.run(["bash", "-euc", script], env={"HOME": HOME},
@@ -97,7 +122,11 @@ class ProviderIdentityTests(unittest.TestCase):
         for marker in (MARKER, STAGING_MARKER):
             self.assertIn(f'[[ "$GITHUB_REF_NAME" == *{marker}* ]]', resolve)
             self.assertIn(f'release_version="${{release_version}}{marker}${{GITHUB_RUN_NUMBER}}"', resolve)
-            self.assertIn('"$PROVIDER_VERSION"' + marker.replace(".", "\\.") + "[1-9]", check)
+        # The master dev lane stamps -dev.N; the dev-branch lane stamps
+        # -dev.branch.N, so the check accepts the optional branch segment for the
+        # dev marker. Staging stays -staging.N.
+        self.assertIn('"$PROVIDER_VERSION"' + MARKER.replace(".", "\\.") + "(branch\\.)?[1-9]", check)
+        self.assertIn('"$PROVIDER_VERSION"' + STAGING_MARKER.replace(".", "\\.") + "[1-9]", check)
 
     def test_flat_verifier_names_are_the_swift_products(self):
         # The coordinator's release registration requires these names.

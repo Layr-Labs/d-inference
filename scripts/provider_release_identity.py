@@ -24,11 +24,20 @@ IDENTITY_FILE = Path(__file__).resolve().parent.parent / RELATIVE_IDENTITY_FILE
 def load(path=IDENTITY_FILE):
     document = json.loads(Path(path).read_text())
     environments = set(document.get("environments", {}))
-    markers = set(document.get("releaseVersionMarkers", {}))
+    marker_map = document.get("releaseVersionMarkers", {})
+    markers = set(marker_map)
     if (document.get("schema") != 1 or environments != {"prod", "dev", "staging"}
             or markers != environments - {"prod"}):
         raise ValueError(f"{path}: expected schema 1 with prod, dev and staging environments "
                          "and a releaseVersionMarkers entry for each non-production environment")
+    # Fail closed: a marker must be a non-empty string that begins with "-", the
+    # SemVer pre-release delimiter. An empty marker is a substring of every
+    # version and would misroute identity selection; a marker without the
+    # leading "-" could match inside a numeric or build-metadata segment.
+    for name, marker in marker_map.items():
+        if not isinstance(marker, str) or not marker.startswith("-"):
+            raise ValueError(f"{path}: releaseVersionMarkers[{name!r}] must be a non-empty "
+                             f'string beginning with "-", got {marker!r}')
     return document
 
 

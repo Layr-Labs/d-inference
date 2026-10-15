@@ -41,10 +41,10 @@ struct NemotronSuperReasoningChannel {
         held += text
         var pieces: [ParsedReasoning] = []
         while inReasoning, !held.isEmpty {
-            let marker = [Self.open, Self.close].compactMap { marker in
+            let earliest = [Self.open, Self.close].compactMap { marker in
                 held.range(of: marker).map { (marker, $0) }
             }.min { $0.1.lowerBound < $1.1.lowerBound }
-            guard let (name, range) = marker else {
+            guard let (marker, range) = earliest else {
                 let keep = Self.partialMarkerSuffix(held)
                 let split = held.index(held.endIndex, offsetBy: -keep)
                 append(String(held[..<split]), reasoning: true, to: &pieces)
@@ -53,7 +53,7 @@ struct NemotronSuperReasoningChannel {
             }
             append(String(held[..<range.lowerBound]), reasoning: true, to: &pieces)
             held = String(held[range.upperBound...])
-            if name == Self.close { inReasoning = false }
+            if marker == Self.close { inReasoning = false }
         }
         if !inReasoning {
             append(held, reasoning: false, to: &pieces)

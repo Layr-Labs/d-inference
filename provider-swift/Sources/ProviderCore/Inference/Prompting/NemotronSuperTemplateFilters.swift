@@ -8,7 +8,9 @@ import Jinja
 /// families keep their existing prompt bytes.
 enum NemotronSuperTemplateFilters {
     /// swift-jinja resolves `string` the filter and `string` the test through
-    /// one name. Rebinding only the filter keeps `is string` intact.
+    /// one name. Rebinding only the filter keeps `is string` intact. The plain
+    /// pattern is exact only for the hash-pinned template, which has no
+    /// `| string` inside literals or comments; golden tests prove its output.
     static let stringFilterName = "__nemotron_super_string"
     static let outputLimit = 16 << 20
 

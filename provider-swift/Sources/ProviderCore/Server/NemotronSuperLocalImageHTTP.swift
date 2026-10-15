@@ -69,8 +69,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
     func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         guard request.model == NemotronSuperLocalBinding.modelID else { throw unsupported() }
-        let media: Bool
-        if case .image = route { media = true } else { media = false }
+        let media = if case .image = route { true } else { false }
         let output: NemotronSuperLocalOutput
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
         do {
@@ -173,6 +172,8 @@ enum SuperHTTPErrors {
 /// Stream state and startup result are actor-owned. Cancellation registration
 /// uses a separate lock so transport callbacks never wait on this actor.
 /// Every native chunk passes the request's output parser before it is yielded.
+/// Parser and validator errors map identically for text and image routes, so
+/// the relay maps them with `media: false`.
 actor SuperImageHTTPRelay {
     private let continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation
     private var output: NemotronSuperLocalOutput

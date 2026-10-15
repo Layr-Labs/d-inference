@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -441,13 +441,16 @@ unavailable hardware honestly. Local validation does not authorize deployment.
 - [Provider release](../operations/provider-release.md)
 
 
-## Bonsai 9B artifact publication checks
+## Model publication workflow checks
 
-`python3 scripts/test_publish_model_revision.py` covers the shared immutable
-publication reservation. The opt-in Register Model preparation uses
-`fixtures/model-publication/bonsai9b-base-2026-10-15.json`: nine base files with
-full source SHA-256/size/ETag receipts, excluding the separate `mtp/` files.
-`actionlint .github/workflows/register-model.yml` checks the workflow wiring.
-The publisher verifies the stored source manifest and binds each copy to its
-verified source ETag before publishing the destination manifest last. These
-checks verify artifact identity; native serving qualification remains separate.
+Run `python3 scripts/test_model_registry_workflow.py` to exercise the actual
+workflow shell steps against a loopback HTTP server with fixture credentials.
+It checks that an uploaded revision sends only revision identity, needs no R2
+credentials, preserves normal registration payloads, and propagates failures.
+CI runs this suite without contacting production. The test host needs Bash,
+Python, jq and curl, matching the workflow runner.
+
+`python3 scripts/test_publish_model_revision.py` covers the immutable upload
+reservation. `actionlint .github/workflows/register-model.yml` checks workflow
+syntax. These checks do not establish native model quality or serving capacity;
+use the [publication runbook](../operations/model-revisions.md) for those checks.

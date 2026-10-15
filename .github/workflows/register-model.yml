@@ -11,11 +11,6 @@ on:
         required: false
         default: false
         type: boolean
-      prepare_bonsai_base:
-        description: Publish the verified base-only Bonsai 9B revision before registration
-        required: false
-        default: false
-        type: boolean
       model_id:
         description: Model ID, for example mlx-community/foo
         required: true
@@ -95,31 +90,6 @@ jobs:
   register:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - name: Reject conflicting publication modes
-        if: ${{ inputs.publish_revision_only && inputs.prepare_bonsai_base }}
-        run: |
-          echo 'An uploaded revision cannot also request Bonsai artifact preparation.' >&2
-          exit 1
-      - name: Check out the reviewed publisher
-        if: ${{ inputs.prepare_bonsai_base }}
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Install artifact publication tools
-        if: ${{ inputs.prepare_bonsai_base }}
-        run: |
-          python3 -m venv "$RUNNER_TEMP/bonsai-publication-tools"
-          "$RUNNER_TEMP/bonsai-publication-tools/bin/pip" install awscli==1.42.30
-          echo "$RUNNER_TEMP/bonsai-publication-tools/bin" >> "$GITHUB_PATH"
-      - name: Publish verified Bonsai base-only revision
-        if: ${{ inputs.prepare_bonsai_base }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          MODEL_ID: ${{ inputs.model_id }}
-          MODEL_VERSION: ${{ inputs.version }}
-        run: python3 scripts/publish-bonsai9b-base.py
       - name: Build registration payload
         if: ${{ !inputs.publish_revision_only }}
         env:

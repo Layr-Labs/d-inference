@@ -62,13 +62,18 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 
 | Option | Default | Meaning |
 |---|---|---|
+| `--checkpoint DIR` / `--synthetic` | required, one of | load mode |
+| `--template FILE` | `<checkpoint>/chat_template.jinja` | pinned template; required with `--synthetic` |
+| `--preflight` | off | with `--checkpoint`: check identity, template, config, inventory and shard files without reading shards or touching the GPU; writes `<state>/runner-preflight.json` and exits |
+| `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 16384 | builder maximum; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
 | `--kv-capacity-gib` | 4 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1) |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
-| `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config) |
-| `--cap-fraction` | provider default | process budget cap |
+| `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
+| `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |
 | `--sample-interval-ms` | 50 | ledger/memory sampling; use 5 for calibration, 50-100 for speed |
+| `--drain-timeout-seconds` | 600 | bound on waiting for in-flight work after a shutdown signal |
 | `--verify-parallelism` | 4 | concurrent shard SHA-256 checks (whole-shard reads) |
 | `--engine-env KEY=VALUE` | none | runtime-policy entries, for plain/speculative A/B |
 
@@ -83,7 +88,7 @@ file cache, and the receipt cannot tell which you had.
 |---|---|
 | `<state>/runner-ready.json` | written after both listeners bind: URLs, pid, executable, build configuration, identity, settings, load seconds and phases |
 | `<state>/runner-events.jsonl` | `runner.start`, `load.begin`, `load.phase.*`, `load.quote`, `load.end` (with the load memory window), `serve.ready`, `charge.opened`/`charge.retired`, `shutdown.*`, `retirement`, `runner.exit` |
-| `GET /runner/memory` | fresh sample: process footprint (current, kernel interval max, lifetime max), MLX active/cache/peak, ledger (charged, materialized, remaining, cap, activation reserve, owners), charges by kind, maxima since the last reset, HTTP/bridge activity |
+| `GET /runner/memory` | fresh sample: process footprint (current, kernel interval max, lifetime max), MLX active/cache/peak, ledger (charged, materialized, remaining, cap, activation reserve, owners), charge rows and sums by kind, `unattributed_bytes` (ledger charge outside the rows, e.g. engine owners), maxima since the last reset including `sampled_max_request_charges_held` (request kinds held at the same time), HTTP/bridge activity |
 | `POST /runner/peaks/reset` | returns the closing window, then resets the kernel interval footprint, MLX peak and sampled maxima |
 | `POST /runner/ballast` | `{"bytes": N}` holds a real ledger reservation that shrinks the remainder (near-limit probes); released at drain |
 | `GET /runner/status` | ready-file content plus live activity |
@@ -99,9 +104,11 @@ if that read fails, bytes are `null` or the image hook is disabled, never guesse
 The first SIGINT/SIGTERM cancels a load in progress, or closes admission (new
 requests get 503), waits up to `--drain-timeout-seconds` for in-flight HTTP and
 bridge work, stops both listeners, releases ballast, then retires the owner
-(`closeAfterDrain`). Exit 0 means the owner retired and the process ledger holds
-no charge; 2 is a failed load that retired cleanly; 3 is retained ownership or
-an outstanding charge. A second signal exits at once and logs
+(`closeAfterDrain`). If the signal arrives during load, the load is cancelled
+and nothing is served. Exit 0 means the owner retired and the process ledger
+holds no charge; 2 is a failed load that retired cleanly; 3 is retained
+ownership or an outstanding charge; 4 is a clean retirement after a listener
+failure or a drain that hit its timeout. A second signal exits at once and logs
 `runner.forced_exit` with unverified retirement.
 
 ## Benchmark
@@ -115,17 +122,17 @@ python3 -I bench_super.py run --out spec.json --arm speculative --launch-runner 
 python3 -I bench_super.py compare plain.json spec.json
 ```
 
-Defaults: contexts `short=128,medium=2048,long=15360` prompt tokens (calibrated
-from the first request of each shape), images `512x512,1024x1024,2048x1536`,
+Defaults: contexts `short=128,medium=2048,long=15360` prompt tokens (fitted
+from the first request plus up to `--calibration-steps` one-token requests), images `512x512,1024x1024,2048x1536`,
 concurrency `1,2,4,8` with 2 requests per client, `max_tokens` 128, one warmup,
 three repetitions, seed 1234, `temperature` 0, `top_p` 1, `enable_thinking`
 false (the image hook requires it). `compare` refuses receipts with different
-workload settings.
+workload settings, model identity or runner build configuration.
 
 | Metric | Definition |
 |---|---|
 | cold load | runner `load.end` seconds and phases; process start to ready file |
-| first TTFT | first request of a shape after load (first-use kernel and allocator cost) |
+| first TTFT | first request of each context at its uncalibrated initial length (first-use cost for that shape); only the first workload runs directly after load |
 | cold TTFT | new leading nonce on a warmed process; no prompt prefix shared |
 | warm TTFT | byte-identical repeat; `cached_prompt_tokens` shows any reuse (none expected: this owner has no prefix store) |
 | prefill tok/s | prompt tokens / TTFT (end-to-end lower bound) |

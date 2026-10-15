@@ -225,12 +225,12 @@ def stream_chat(base_url, token, body, timeout=900.0, abort=None, on_first_delta
                 if choice.get("finish_reason"):
                     result["finish_reason"] = choice["finish_reason"]
     except (OSError, http.client.HTTPException, ValueError) as error:
-        if abort is not None and abort.aborted_at is not None:
-            result["aborted"] = True
-        else:
+        if abort is None or abort.aborted_at is None:
             result["error"] = f"{type(error).__name__}: {error}"
     finally:
         connection.close()
+    # An abort from on_first_delta ends the read loop without an exception.
+    result["aborted"] = abort is not None and abort.aborted_at is not None
     return _finish(result, start)
 
 
@@ -323,6 +323,20 @@ def png_rgb(width, height, seed):
 
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
+
+
+def parse_contexts(text):
+    """``name=tokens,...`` -> ordered {name: tokens}."""
+    result = {}
+    for item in filter(None, text.split(",")):
+        name, tokens = item.split("=")
+        result[name.strip()] = int(tokens)
+    return result
+
+
+def parse_images(text):
+    """``WxH,...`` -> [(width, height)]."""
+    return [tuple(int(v) for v in item.lower().split("x")) for item in filter(None, text.split(","))]
 
 
 # Statistics ------------------------------------------------------------------
@@ -425,6 +439,21 @@ def model_revision(model_dir):
                 commits.add(lines[0].strip())
         facts["hf_download_commits"] = sorted(commits)
     return facts
+
+
+def provenance(runner, sources, model_dir):
+    """Hardware, checkouts, model identity and runner binary facts for a receipt."""
+    return {"hardware": hardware(),
+            "sources": {name: git_state(path) for name, path in (item.split("=", 1) for item in sources)},
+            "model": {"identity": runner.ready.get("identity"), "local_revision": model_revision(model_dir)},
+            "runner": {"ready": runner.ready, "launch": runner.launch,
+                       "executable_sha256": file_sha256(runner.ready["executable"])}}
+
+
+def claim_scope(runner):
+    if (runner.ready.get("identity") or {}).get("mode") == "synthetic":
+        return "SYNTHETIC fixture: validates tooling only; no model speed, memory or quality claim"
+    return "full checkpoint through the qualification runner"
 
 
 def load_settings_hash(settings):

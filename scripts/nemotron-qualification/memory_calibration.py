@@ -28,10 +28,6 @@ MIB = 1 << 20
 REQUEST_KINDS = ("media_ingress", "media", "kv")
 
 
-def kinds_bytes(by_kind):
-    return sum(by_kind.get(kind, 0) for kind in REQUEST_KINDS)
-
-
 class Calibration:
     def __init__(self, runner, args):
         self.runner = runner
@@ -55,9 +51,9 @@ class Calibration:
 
     def workloads(self):
         result = [(f"text.{name}", lambda tokens=tokens: self.text_body(tokens))
-                  for name, tokens in parse_contexts(self.args.contexts).items()]
+                  for name, tokens in client.parse_contexts(self.args.contexts).items()]
         result += [(f"image.{w}x{h}", lambda w=w, h=h: self.image_body(w, h))
-                   for w, h in parse_images(self.args.images)]
+                   for w, h in client.parse_images(self.args.images)]
         return result
 
     def record(self, name, result, evidence):
@@ -65,19 +61,27 @@ class Calibration:
 
     # Ledger observation -----------------------------------------------------
     def settled(self, timeout=120.0):
-        """Wait until every request charge, owner and HTTP/bridge activity has retired."""
+        """Wait until no request or ballast charge remains and HTTP/bridge work is idle.
+
+        ``leak`` compares the whole ledger with the idle baseline: ``none`` when it
+        is equal, ``review`` when only unattributed (engine-owner) charge moved,
+        ``request_charge`` when a request reservation never retired.
+        """
         start = time.perf_counter()
         while True:
             snapshot = self.runner.memory()
             context = snapshot["context"]
-            idle = (snapshot["ledger"]["charged"] == self.baseline["ledger"]["charged"]
-                    and snapshot["ledger"]["owners"] == self.baseline["ledger"]["owners"]
-                    and context["bridge_active_requests"] == 0 and context["http_active_responses"] == 0)
+            held = [row for row in snapshot["charges"]["rows"] if row["kind"] != "load"]
+            idle = (not held and context["bridge_active_requests"] == 0
+                    and context["http_active_responses"] == 0)
             if idle or time.perf_counter() - start > timeout:
-                return {"settled": idle, "after_s": time.perf_counter() - start,
-                        "charged": snapshot["ledger"]["charged"], "owners": snapshot["ledger"]["owners"],
-                        "baseline_charged": self.baseline["ledger"]["charged"],
-                        "baseline_owners": self.baseline["ledger"]["owners"]}
+                charged, baseline = snapshot["ledger"]["charged"], self.baseline["ledger"]["charged"]
+                leak = "request_charge" if held else "none" if charged == baseline else "review"
+                return {"settled": idle, "leak": leak, "after_s": time.perf_counter() - start,
+                        "charged": charged, "baseline_charged": baseline,
+                        "owners": snapshot["ledger"]["owners"], "baseline_owners": self.baseline["ledger"]["owners"],
+                        "unattributed_bytes": snapshot["charges"].get("unattributed_bytes"),
+                        "baseline_unattributed_bytes": self.baseline["charges"].get("unattributed_bytes")}
             time.sleep(0.005)
 
     def geometry(self, name, make_body):
@@ -88,7 +92,7 @@ class Calibration:
         after = self.runner.memory()
         window = after["window"]
         reserved = window["sampled_max_charge_by_kind"]
-        request_bytes = kinds_bytes(reserved)
+        request_bytes = window["sampled_max_request_charges_held"]
         active_before = before["memory"]["mlx_active"]
         mlx_delta = window["mlx_peak"] - active_before
         footprint_delta = (window["kernel_max_phys_footprint"] or window["sampled_max_phys_footprint"]) \
@@ -97,6 +101,7 @@ class Calibration:
         row = {"workload": name, "status": sample["status"], "error": sample.get("error"),
                "prompt_tokens": sample.get("prompt_tokens"), "completion_tokens": sample.get("completion_tokens"),
                "reserved_by_kind_sampled_max": reserved, "request_reserved_bytes": request_bytes,
+               "request_reserved_bytes_definition": "max over samples of media_ingress+media+kv held at once",
                "activation_reserve_bytes": reserve,
                "measured_mlx_peak_delta_bytes": mlx_delta,
                "measured_phys_footprint_delta_bytes": footprint_delta,
@@ -115,17 +120,25 @@ class Calibration:
             "request_reserved_bytes": request_bytes, "activation_reserve_bytes": reserve,
             "measured_mlx_peak_delta_bytes": mlx_delta,
             "note": "sampled charges only; raise runner --sample-interval-ms resolution if not_observed"})
-        self.record(f"no_leak_after_success.{name}", "pass" if row["settle"]["settled"] else "fail", row["settle"])
+        self.record(f"no_leak_after_success.{name}", leak_verdict(row["settle"]), row["settle"])
         return row
 
     def near_limit(self, name, make_body, reference_bytes):
         """Ballast leaves just below / just above the reference reservation."""
-        margin = self.args.near_limit_margin_mib * MIB
+        margin = int(self.args.near_limit_margin_mib * MIB)
+        if reference_bytes <= margin:
+            self.record(f"near_limit_boundary.{name}", "not_exercised",
+                        {"reference_request_bytes": reference_bytes, "margin_bytes": margin,
+                         "reason": "reference reservation is not larger than the margin"})
+            return {"workload": name, "margin_bytes": margin, "rows": []}
         rows = []
         for side, offset in (("refuse", margin), ("admit", -margin)):
             remaining = self.runner.memory()["ledger"]["remaining"]
             ballast = max(0, remaining - reference_bytes + offset)
             ballast_result = self.runner.set_ballast(ballast)
+            if not ballast_result.get("accepted"):
+                rows.append({"side": side, "ballast": ballast_result, "admitted": None})
+                continue
             after_ballast = self.runner.memory()
             self.runner.reset_peaks()
             sample = self.runner.chat(make_body(), timeout=self.args.request_timeout)
@@ -140,10 +153,14 @@ class Calibration:
                          "reserved_by_kind_sampled_max": window["sampled_max_charge_by_kind"],
                          "mlx_peak_delta_bytes": window["mlx_peak"] - after_ballast["memory"]["mlx_active"],
                          "settle": settle})
-        consistent = (not rows[0]["admitted"]) and rows[1]["admitted"]
-        self.record(f"near_limit_boundary.{name}", "pass" if consistent else "inconsistent", {
-            "margin_bytes": margin, "sides": [{k: r[k] for k in ("side", "admitted", "status", "error",
-                                                                   "remaining_after_ballast")} for r in rows]})
+        if any(row["admitted"] is None for row in rows):
+            verdict = "not_exercised"  # the ballast itself was refused
+        else:
+            verdict = "pass" if (not rows[0]["admitted"]) and rows[1]["admitted"] else "inconsistent"
+        self.record(f"near_limit_boundary.{name}", verdict, {
+            "margin_bytes": margin, "reference_request_bytes": reference_bytes,
+            "sides": [{k: r.get(k) for k in ("side", "admitted", "status", "error", "remaining_after_ballast")}
+                      for r in rows]})
         return {"workload": name, "margin_bytes": margin, "rows": rows}
 
     def cancel(self, name, make_body, phase):
@@ -172,6 +189,11 @@ class Calibration:
             elif current == phase:
                 abort.abort()
                 observed, at_abort = current, snapshot
+            else:
+                time.sleep(0.002)
+        if observed is None and phase == "decode" and abort.aborted_at is not None:
+            # on_first_delta aborted on the request thread, which may end first.
+            observed, at_abort = "decode", self.runner.memory()
         timeline = []
         start = time.perf_counter()
         charge_gone = bridge_idle = http_idle = None
@@ -200,7 +222,7 @@ class Calibration:
         # only outside view of live work, so its idle time is recorded too.
         early = charge_gone is not None and bridge_idle is not None and charge_gone + 0.02 < bridge_idle
         verdict = ("not_observed" if observed is None else
-                   "fail" if early or not settle["settled"] else "pass")
+                   "fail" if early or not settle["settled"] else leak_verdict(settle))
         self.record(f"cancellation.{name}.{phase}", verdict, {
             "observed_phase": observed, "early_refund": early, "charge_gone_s": charge_gone,
             "bridge_idle_s": bridge_idle, "http_idle_s": http_idle, "settled": settle["settled"]})
@@ -243,7 +265,8 @@ class Calibration:
             statuses[key] = statuses.get(key, 0) + 1
         settle = self.settled()
         within = cap is None or max_charged is None or max_charged <= cap
-        self.record(f"concurrency.{level}.within_cap_and_settled", "pass" if within and settle["settled"] else "fail",
+        self.record(f"concurrency.{level}.within_cap_and_settled",
+                    leak_verdict(settle) if within else "fail",
                     {"cap": cap, "polled_max_charged": max_charged, "statuses": statuses, "settled": settle["settled"]})
         return {"concurrency": level, "statuses": statuses, "polled_samples": len(snapshots),
                 "polled_max_charged": max_charged, "polled_max_by_kind": max_by_kind(snapshots),
@@ -267,8 +290,10 @@ class Calibration:
                      "request_status": holder.get("status"), "request_error": holder.get("error")})
         restarted = client.Runner.launch_process(self.runner.launch["command"], self.args.work_dir_resolved,
                                                  timeout=self.args.ready_timeout)
-        sample = restarted.chat(self.text_body(32, max_tokens=4), timeout=self.args.request_timeout)
-        restart_code = restarted.stop(signal.SIGINT)
+        try:
+            sample = restarted.chat(self.text_body(32, max_tokens=4), timeout=self.args.request_timeout)
+        finally:
+            restart_code = restarted.stop(signal.SIGINT)
         restart_retirement = (restarted.events("retirement") or [None])[-1]
         restart_clean = restart_code == 0 and sample["status"] == 200 and bool(
             restart_retirement and restart_retirement.get("clean"))
@@ -279,6 +304,12 @@ class Calibration:
                             "retirement": retirement},
                 "restart": {"launch": restarted.launch, "request": sample, "exit_code": restart_code,
                             "retirement": restart_retirement}}
+
+
+def leak_verdict(settle):
+    if not settle["settled"] or settle["leak"] == "request_charge":
+        return "fail"
+    return "pass" if settle["leak"] == "none" else "review"
 
 
 def current_phase(kinds, streamed):
@@ -299,14 +330,6 @@ def max_by_kind(snapshots):
         for kind, value in snapshot["charges"]["by_kind"].items():
             result[kind] = max(result.get(kind, 0), value)
     return result
-
-
-def parse_contexts(text):
-    return {item.split("=")[0]: int(item.split("=")[1]) for item in text.split(",") if item}
-
-
-def parse_images(text):
-    return [tuple(int(v) for v in item.lower().split("x")) for item in text.split(",") if item]
 
 
 def load_comparison(runner):
@@ -334,18 +357,10 @@ def run(args):
     else:
         runner = client.Runner(args.runner_state)
     calibration = Calibration(runner, args)
-    mode = (runner.ready.get("identity") or {}).get("mode")
     receipt = {"schema": SCHEMA, "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-               "claim_scope": ("SYNTHETIC fixture: validates tooling only; no model memory claim"
-                               if mode == "synthetic" else "full checkpoint through the qualification runner"),
-               "settings": {k: v for k, v in vars(args).items() if k != "work_dir_resolved"},
-               "hardware": client.hardware(),
-               "sources": {name: client.git_state(path) for name, path in
-                           (item.split("=", 1) for item in args.source)},
-               "model": {"identity": runner.ready.get("identity"),
-                         "local_revision": client.model_revision(args.model_dir)},
-               "runner": {"ready": runner.ready, "launch": runner.launch,
-                          "executable_sha256": client.file_sha256(runner.ready["executable"])}}
+               "claim_scope": client.claim_scope(runner),
+               "settings": {k: v for k, v in vars(args).items() if k != "work_dir_resolved"}}
+    receipt.update(client.provenance(runner, args.source, args.model_dir))
     stopped = False
     try:
         calibration.baseline = runner.memory()
@@ -353,7 +368,8 @@ def run(args):
         receipt["load"] = load_comparison(runner)
         load = receipt["load"]
         calibration.record("load_claim_covers_measured_load_footprint",
-                           "pass" if (load["margin_bytes"] or -1) >= 0 else "fail",
+                           "not_observed" if load["margin_bytes"] is None else
+                           "pass" if load["margin_bytes"] >= 0 else "fail",
                            {k: load[k] for k in ("pending_load_claim_bytes", "measured_footprint_delta_bytes",
                                                  "margin_bytes")})
         workloads = calibration.workloads()
@@ -368,8 +384,8 @@ def run(args):
         else:
             calibration.record("near_limit_boundary", "not_exercised", "no request reservation was observed")
         receipt["cancellation"] = []
-        images = parse_images(args.images)
-        contexts = parse_contexts(args.contexts)
+        images = client.parse_images(args.images)
+        contexts = client.parse_contexts(args.contexts)
         if images:
             w, h = max(images, key=lambda size: size[0] * size[1])
             for phase in ("ingress", "media", "prefill", "decode"):
@@ -391,10 +407,15 @@ def run(args):
             stopped = True
     finally:
         receipt["invariants"] = calibration.invariants
-        if runner.process is not None and not stopped:
-            code = runner.stop()
-            receipt["runner_exit"] = {"code": code, "retirement": (runner.events("retirement") or [None])[-1]}
         Path(args.out).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        if runner.process is not None and not stopped:
+            try:
+                code = runner.stop()
+                receipt["runner_exit"] = {"code": code,
+                                          "retirement": (runner.events("retirement") or [None])[-1]}
+            except client.RunnerError as error:
+                receipt["runner_exit"] = {"code": None, "error": str(error)}
+            Path(args.out).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     counts = {}
     for invariant in calibration.invariants:
         counts[invariant["result"]] = counts.get(invariant["result"], 0) + 1

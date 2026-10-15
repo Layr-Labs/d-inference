@@ -28,18 +28,6 @@ _spec.loader.exec_module(client)
 SCHEMA = "nemotron-super-bench/1"
 
 
-def parse_contexts(text):
-    result = {}
-    for item in text.split(","):
-        name, tokens = item.split("=")
-        result[name.strip()] = int(tokens)
-    return result
-
-
-def parse_images(text):
-    return [tuple(int(v) for v in item.lower().split("x")) for item in text.split(",") if item]
-
-
 class Bench:
     def __init__(self, runner, args):
         self.runner = runner
@@ -172,9 +160,12 @@ def summary(samples):
 
 def comparable_settings(args):
     return {"contexts": args.contexts, "images": args.images, "concurrency": args.concurrency,
+            "concurrency_context": args.concurrency_context,
             "concurrency_requests": args.concurrency_requests, "max_tokens": args.max_tokens,
             "warmup": args.warmup, "repetitions": args.repetitions, "seed": args.seed,
             "thinking": args.thinking, "workloads": args.workloads,
+            "calibration_steps": args.calibration_steps,
+            "initial_words_per_token": args.initial_words_per_token,
             "sampling": {"temperature": 0, "top_p": 1}}
 
 
@@ -188,20 +179,11 @@ def run(args):
     bench = Bench(runner, args)
     workloads = set(args.workloads.split(","))
     receipt = {"schema": SCHEMA, "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-               "arm": args.arm, "extra_body": bench.extra,
+               "claim_scope": client.claim_scope(runner), "arm": args.arm, "extra_body": bench.extra,
                "settings": comparable_settings(args),
                "settings_sha256": client.load_settings_hash(comparable_settings(args)),
-               "definitions": DEFINITIONS, "hardware": client.hardware(),
-               "sources": {name: client.git_state(path) for name, path in
-                           (item.split("=", 1) for item in args.source)},
-               "model": {"identity": runner.ready.get("identity"),
-                         "local_revision": client.model_revision(args.model_dir)},
-               "runner": {"ready": runner.ready, "launch": runner.launch,
-                          "executable_sha256": client.file_sha256(runner.ready["executable"])}}
-    mode = (runner.ready.get("identity") or {}).get("mode")
-    receipt["claim_scope"] = ("SYNTHETIC fixture: validates tooling only; no model speed, memory or "
-                              "quality claim" if mode == "synthetic" else
-                              "full checkpoint through the qualification runner")
+               "definitions": DEFINITIONS}
+    receipt.update(client.provenance(runner, args.source, args.model_dir))
     if runner.ready.get("build_configuration") != "release":
         bench.warnings.append("runner is a debug build: host-side timings are not performance evidence")
     load_end = (runner.events("load.end") or [{}])[-1]
@@ -209,23 +191,27 @@ def run(args):
                             "process_start_to_ready_s": runner.launch.get("process_start_to_ready_s"),
                             "load_window": load_end.get("load_window"),
                             "quote": (runner.events("load.quote") or [None])[-1]}
-    contexts = parse_contexts(args.contexts)
+    contexts = client.parse_contexts(args.contexts)
     try:
         if "text" in workloads:
             receipt["text"] = {name: bench.text_context(name, target) for name, target in contexts.items()}
         if "image" in workloads:
-            receipt["images"] = [bench.image(w, h) for w, h in parse_images(args.images)]
+            receipt["images"] = [bench.image(w, h) for w, h in client.parse_images(args.images)]
         if "concurrency" in workloads:
             name = args.concurrency_context if args.concurrency_context in contexts else next(iter(contexts))
             receipt["concurrency"] = [bench.concurrency(int(level), name, contexts[name])
                                       for level in args.concurrency.split(",")]
     finally:
         receipt["warnings"] = bench.warnings
-        if runner.process is not None:
-            code = runner.stop()
-            receipt["runner_exit"] = {"code": code,
-                                      "retirement": (runner.events("retirement") or [None])[-1]}
         Path(args.out).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        if runner.process is not None:
+            try:
+                code = runner.stop()
+                receipt["runner_exit"] = {"code": code,
+                                          "retirement": (runner.events("retirement") or [None])[-1]}
+            except client.RunnerError as error:
+                receipt["runner_exit"] = {"code": None, "error": str(error)}
+            Path(args.out).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     print(json.dumps(headline(receipt), indent=2))
     return 0 if receipt.get("runner_exit", {}).get("code", 0) == 0 else 1
 
@@ -259,7 +245,8 @@ def headline(receipt):
 DEFINITIONS = {
     "ttft_s": "request written -> first SSE delta with content or reasoning text (includes HTTP, "
               "template, media preparation and prefill)",
-    "first": "first request of that shape after load (includes first-use kernel/allocator cost)",
+    "first": "first request of each context, at its uncalibrated initial length (first-use kernel and "
+             "allocator cost for that shape); only the first workload runs directly after load",
     "cold": "new leading nonce on a warmed process; no prompt prefix is shared",
     "warm": "byte-identical repeat of one body; cached_prompt_tokens reports any reuse "
             "(prefix stores are absent on this owner, so reuse is expected to be 0)",
@@ -275,6 +262,13 @@ def compare(args):
     a, b = (json.loads(Path(p).read_text()) for p in (args.a, args.b))
     if a["settings_sha256"] != b["settings_sha256"]:
         print("receipts used different workload settings; refusing to compare", file=sys.stderr)
+        return 2
+    for key in ("mode", "index_sha256"):
+        if (a["model"]["identity"] or {}).get(key) != (b["model"]["identity"] or {}).get(key):
+            print(f"receipts differ in model {key}; refusing to compare", file=sys.stderr)
+            return 2
+    if a["runner"]["ready"].get("build_configuration") != b["runner"]["ready"].get("build_configuration"):
+        print("receipts differ in runner build configuration; refusing to compare", file=sys.stderr)
         return 2
     rows = {}
     for name in sorted(set(a.get("text", {})) & set(b.get("text", {}))):

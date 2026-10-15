@@ -33,7 +33,7 @@ drain/restart.
 | Receipt key | What it does | Compared |
 |---|---|---|
 | `load` | reads `load.begin`, `load.quote`, `load.end` events | pending LOAD claim (quote + minimum KV) vs kernel max footprint growth and MLX peak during load |
-| `geometry[]` | each context and image size at concurrency 1, peaks reset first | sampled max `media_ingress`+`media`+`kv` charges vs MLX peak growth and footprint growth; margins with and without the global activation reserve; return to the idle ledger |
+| `geometry[]` | each context and image size at concurrency 1, peaks reset first | max over samples of `media_ingress`+`media`+`kv` held at the same time vs MLX peak growth and footprint growth; margins with and without the global activation reserve; return to the idle ledger |
 | `near_limit` | ballast leaves the remainder `margin` below, then above, the reference request's observed charge | refused below, admitted above; status, error, MLX peak growth on refusal |
 | `cancellation[]` | client RST when the phase is observed: `ingress`, `media`, `prefill` (KV charge, no token yet), `decode` (after the first delta) | charges retire only after the bridge reports the request inactive; ledger returns to idle |
 | `concurrency[]` | 2/4/8 simultaneous text requests with 20 ms ledger polling | polled max charge within the cap; statuses; return to idle |
@@ -50,6 +50,7 @@ by the provider fixture tests, not by this script.
 | `pass` | the invariant held with the recorded evidence |
 | `fail` | it did not; the evidence shows the numbers |
 | `inconsistent` | near-limit outcome did not match the boundary (live usage or other processes moved the remainder; see `remaining_after_ballast`) |
+| `review` | every request charge retired, but the ledger total differs from the idle baseline only in unattributed (engine-owner) charge |
 | `not_observed` | the phase or charge finished between samples; use a finer `--sample-interval-ms` or a larger workload |
 | `not_exercised` | the scenario needs a seam or mode this run did not have |
 

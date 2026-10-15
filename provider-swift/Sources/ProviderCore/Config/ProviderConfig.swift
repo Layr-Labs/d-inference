@@ -156,7 +156,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// decode is aggregate/B (`docs/reports/2026-07-25-paged-gate-results.md`).
     ///
     /// Missing configuration selects the exact reviewed model/runtime/hardware
-    /// profile when one exists; unknown profiles retain default 4 and ceiling 8.
+    /// profile when one exists; unknown profiles retain default 4 and ceiling 8,
+    /// except that models on the native `auto` paged allowlist start at 8 on
+    /// M5 Pro, Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`).
     /// Explicit values remain upper bounds. Widths up to 16 require a reviewed
     /// profile after backend resolution, physical fit and shared-Mac admission.
     /// Heartbeats report the final effective cap, never the requested ceiling.

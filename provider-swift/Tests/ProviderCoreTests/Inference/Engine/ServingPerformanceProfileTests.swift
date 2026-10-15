@@ -177,6 +177,36 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     await bridge.shutdown()
 }
 
+@Test func automaticWidthWithoutProfileFallsBackUnderPostureButExplicitWidthDoesNot() async {
+    let budget = GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+    })
+    // The automatic M5 paged width: 8 above an unqualified 4, no profile.
+    let automatic = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: "generic-model",
+        tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+        maxConcurrentRequests: 8, unqualifiedMaxConcurrentRequests: 4, kvBudget: budget)
+    #expect(await automatic.hasPostureGatedWidth)
+    #expect(await automatic.effectiveServingConcurrency(allowExpansion: false) == 4)
+    #expect(await automatic.effectiveServingConcurrency(allowExpansion: true) == 8)
+    #expect(await automatic.profileTestAcquire(requestID: "throttled", allowExpansion: false, pending: 3))
+    #expect(await automatic.profileTestAcquire(requestID: "refused", allowExpansion: false, pending: 4) == false)
+    #expect(await automatic.profileTestAcquire(requestID: "expanded", allowExpansion: true, pending: 4))
+    await automatic.releaseServiceAllowance(requestID: "throttled")
+    await automatic.releaseServiceAllowance(requestID: "expanded")
+    await automatic.shutdown()
+
+    // An explicit operator width of 8 is its own unqualified width: no fallback.
+    let explicit = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: "generic-model",
+        tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+        maxConcurrentRequests: 8, unqualifiedMaxConcurrentRequests: 8, kvBudget: budget)
+    #expect(await explicit.hasPostureGatedWidth == false)
+    #expect(await explicit.effectiveServingConcurrency(allowExpansion: false) == 8)
+    #expect(await explicit.profileTestAcquire(requestID: "explicit", allowExpansion: false, pending: 4))
+    await explicit.releaseServiceAllowance(requestID: "explicit")
+    #expect(budget.serviceBudget.count == 0)
+    await explicit.shutdown()
+}
+
 private extension EngineV2Bridge {
     func profileTestAcquire(requestID: String, allowExpansion: Bool, pending: Int) -> Bool {
         pendingSubmissionIDs = Set((0..<pending).map { "pending-\($0)" })

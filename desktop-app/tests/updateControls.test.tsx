@@ -91,7 +91,7 @@ it('uses revision-checked native settings and never restarts the provider automa
     true,
   );
   expect(vi.mocked(backend.act).mock.calls[0][0]).not.toHaveProperty('startup_preload');
-  expect(await screen.findByRole('button', { name: 'Restart provider' })).toBeVisible();
+  expect(await screen.findByRole('button', { name: 'Restart serving' })).toBeVisible();
   expect(screen.getByRole('button', { name: 'Update now' })).toBeVisible();
 });
 it('keeps missing notes honest and explains old releases on the timeline', () => {

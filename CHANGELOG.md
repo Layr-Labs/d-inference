@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — desktop serving wording
+
+- Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
+
+## Unreleased — desktop serving wording
+
+- Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
 ## Unreleased — desktop preview external links
 
 - In the browser development preview (`?preview`), *Read the guide*, *Terms of Service*, *Privacy*, *Account & payouts*, *Troubleshooting guide* and *Open browser* now open their pages in a new tab instead of doing nothing; link destinations move to `src/shared/externalLinks.ts`, shared with the main process, whose https and host checks are unchanged. The signed app was not affected.

@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Route } from '../shared/contracts';
 import type { Backend } from './backend';
 import { quit } from './lifecycle';
-import { startableModels, trayMenuUpdater } from './trayMenu';
+import { startableModels, trayMenuTemplate, trayMenuUpdater } from './trayMenu';
 
 // Creates the menu bar item. Returns the snapshot listener that rebuilds the
 // native menu only when its visible model changes.
@@ -15,40 +15,24 @@ export function createTray(backend: Backend, show: (route?: Route) => void) {
   const update = trayMenuUpdater((model) => {
     tray.setToolTip(`Darkbloom · ${model.status}`);
     tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: `Darkbloom — ${model.status}`, enabled: false },
-        { label: 'Open Darkbloom', click: () => show() },
-        { label: 'Models', click: () => show('models') },
-        { label: 'Studio', click: () => show('studio') },
-        { label: 'Earnings', click: () => show('earnings') },
-        { type: 'separator' },
-        {
-          label: 'Start provider',
-          enabled: model.canStart,
-          click: () => {
+      Menu.buildFromTemplate(
+        trayMenuTemplate(model, {
+          show,
+          start: () => {
             const models = startableModels(backend.snapshot);
             if (models.length)
               void backend.act({ action: 'start', models }).catch(() => show('models'));
             else show('models');
           },
-        },
-        {
-          label: 'Stop provider',
-          enabled: model.canStop,
-          click: () => {
+          stop: () => {
             void backend.act({ action: 'stop' }).catch(() => show());
           },
-        },
-        {
-          label: 'Restart provider',
-          enabled: model.canRestart,
-          click: () => {
+          restart: () => {
             void backend.act({ action: 'restart' }).catch(() => show());
           },
-        },
-        { type: 'separator' },
-        { label: 'Quit Darkbloom', click: quit },
-      ]),
+          quit,
+        }),
+      ),
     );
   });
   update(backend.snapshot);

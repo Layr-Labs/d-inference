@@ -62,7 +62,7 @@ export function Updates({ backend }: { backend: BackendState }) {
     <>
       <Header
         title="Updates"
-        description="Stay current. Keep contributing."
+        description="Stay current. Keep serving."
         action={
           <Button
             disabled={checking}
@@ -90,18 +90,18 @@ export function Updates({ backend }: { backend: BackendState }) {
           onChange={(value) => void changeAuto(value)}
         />
         <small className={styles.muted}>
-          Preference changes apply on the next provider restart.
+          Preference changes apply the next time serving restarts.
         </small>
         {restartNeeded && (
           <div className={styles.restart} role="status">
-            <span>Saved. Restart the provider to apply.</span>
+            <span>Saved. Restart serving to apply.</span>
             <Button
               disabled={backend.busy}
               onClick={async () => {
                 if (await backend.act({ action: 'restart' }, true)) setRestartNeeded(false);
               }}
             >
-              Restart provider
+              Restart serving
             </Button>
           </div>
         )}
@@ -134,7 +134,7 @@ export function Updates({ backend }: { backend: BackendState }) {
             >
               Restart desktop app
             </Button>
-            <small>Your provider keeps running.</small>
+            <small>This Mac keeps serving.</small>
           </>
         )}
       </section>

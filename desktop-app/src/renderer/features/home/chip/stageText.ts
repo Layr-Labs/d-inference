@@ -17,8 +17,8 @@ function modeText(
   fresh: boolean,
 ) {
   if (measured) return 'Live from this Mac';
-  if (provider === 'stopped') return 'Provider stopped';
-  if (provider === 'starting') return 'Provider starting';
+  if (provider === 'stopped') return 'Stopped';
+  if (provider === 'starting') return 'Starting…';
   if (preview) return 'Simulated activity';
   return fresh ? 'Live from this Mac' : 'Waiting for live activity';
 }
@@ -63,9 +63,9 @@ export function stageText({
     : shown
       ? 'live activity'
       : provider === 'stale'
-        ? 'provider status out of date'
+        ? 'status out of date'
         : provider === 'draining'
-          ? 'provider finishing current requests'
+          ? 'finishing current requests'
           : 'waiting for live activity';
   const numbers =
     running === null
@@ -74,12 +74,12 @@ export function stageText({
           Math.round((tokensPerSecond ?? 0) / 10) * 10
         } tokens per second.`;
   const summary = !powered
-    ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.${machine}`
+    ? `${anatomy.name}: ${provider === 'starting' ? 'starting to serve' : 'not serving'}.${machine}`
     : `${anatomy.name}: ${activity}.${numbers}${machine}`;
   // Spoken by the live region: state only. The numbers change every second and would make a
   // screen reader repeat this sentence indefinitely; they stay in `summary` and the readouts.
   const announcement = !powered
-    ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.`
+    ? `${anatomy.name}: ${provider === 'starting' ? 'starting to serve' : 'not serving'}.`
     : `${anatomy.name}: ${activity}.`;
   return {
     mode: modeText(provider, measured !== null, preview, reading.fresh),

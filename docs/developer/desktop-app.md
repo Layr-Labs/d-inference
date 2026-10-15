@@ -213,7 +213,13 @@ coordinator’s `provider_status`, rather than the raw `readiness` event message
 A ready Mac shows "Ready to serve" with its loaded-model count. Shared product
 labels in `desktop-app/src/renderer/presentation/status.ts` (`machineStatus`,
 `modelActivity`) distinguish online Macs and idle models from processing requests.
-`operationLabel` names actions in progress and completed outcomes. `App` mounts
+`operationLabel` names actions in progress and completed outcomes. Putting This
+Mac to work is always *serving*: Home, This Mac, Overview next steps, Updates and
+the menu bar say Start serving, Stop serving and Restart serving, and the matching
+operations read Starting to serve, Stopping serving and Restarting serving.
+"Provider" remains only the role noun (provider version, automatic provider
+updates, the Leaderboard's Provider column); `desktop-app/tests/servingVocabulary.test.tsx`
+rejects the retired Start providing / Stop provider wording in `desktop-app/src`. `App` mounts
 one `OperationFeed` outside page content; its body portal stays at the bottom
 on Home, My Macs (including remote Macs and all tabs), Leaderboard and Updates.
 Successful operations disappear after ten seconds, using their native completion
@@ -464,7 +470,7 @@ Updates shows installed/latest runtime versions, a compact release timeline and
 an automatic provider-update switch. Provider configuration defaults to enabled;
 the UI preserves an existing opt-out. Disabling asks for confirmation in both
 Updates and Settings. Updates saves through the revision-checked native settings
-action, and offers a provider restart to apply the setting to a running provider.
+action, and offers **Restart serving** to apply the setting to a running provider.
 It never restarts automatically from a toggle.
 
 A mandatory update is shown only when the installed version is below the
@@ -523,7 +529,7 @@ menu bar item stays available. Passing `--hidden` also starts hidden.
 | `desktop-app/src/main/protocol.ts` | privileged `darkbloom://` scheme and renderer file serving |
 | `desktop-app/src/main/window.ts` | the sandboxed main window; close hides |
 | `desktop-app/src/main/ipc.ts` | renderer-callable channels, each gated by `isTrustedSender` |
-| `desktop-app/src/main/tray.ts`, `desktop-app/src/main/trayMenu.ts` | menu bar item; the native menu rebuilds only when its state model changes |
+| `desktop-app/src/main/tray.ts`, `desktop-app/src/main/trayMenu.ts` | menu bar item (status, Start/Stop/Restart serving); the native menu rebuilds only when its state model changes |
 | `desktop-app/src/main/appMenu.ts`, `desktop-app/src/main/notifications.ts`, `desktop-app/src/main/lifecycle.ts` | application menu, failed-operation notification, quit state |
 | `desktop-app/src/main/loginLaunch.ts` | login-item registration and hidden login launch |
 | `desktop-app/src/main/updates.ts`, `desktop-app/src/main/updateFeed.ts` | GUI self-update and the build-time feed contract |

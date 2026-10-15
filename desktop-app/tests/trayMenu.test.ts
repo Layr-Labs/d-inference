@@ -9,13 +9,13 @@ async function snapshot(patch: Partial<Snapshot> = {}): Promise<Snapshot> {
 
 it('derives the label and actions from provider state', async () => {
   expect(trayMenuModel(undefined)).toEqual({
-    status: 'Connecting',
+    status: 'Connecting…',
     canStart: false,
     canStop: false,
     canRestart: false,
   });
   expect(trayMenuModel(await snapshot({ state: 'stopped', operations: [] }))).toEqual({
-    status: 'stopped',
+    status: 'Stopped',
     canStart: true,
     canStop: false,
     canRestart: false,
@@ -56,7 +56,7 @@ it('rebuilds the native menu only when the visible menu changes', async () => {
   update({ ...running, state: 'stopped' });
   expect(render).toHaveBeenCalledTimes(2);
   expect(render).toHaveBeenLastCalledWith(
-    expect.objectContaining({ status: 'stopped', canStart: true }),
+    expect.objectContaining({ status: 'Stopped', canStart: true }),
   );
 });
 

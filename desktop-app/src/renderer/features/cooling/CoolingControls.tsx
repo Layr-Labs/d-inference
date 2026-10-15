@@ -22,7 +22,7 @@ export function CoolingControls({ backend }: { backend: BackendState }) {
   }, [backend.cooling?.speed, backend.cooling?.threshold]);
   return (
     <section className={styles.controls} aria-labelledby={titleID}>
-      <h2 id={titleID}>Provider cooling</h2>
+      <h2 id={titleID}>Cooling while serving</h2>
       <div className={styles.fields}>
         <label className={styles.field}>
           <span>
@@ -51,7 +51,7 @@ export function CoolingControls({ backend }: { backend: BackendState }) {
               </option>
             ))}
           </select>
-          <small>Only while the provider is active.</small>
+          <small>Only while this Mac is serving.</small>
         </label>
       </div>
       <div className={styles.actions}>

@@ -46,7 +46,7 @@ export function MemoryHealth({ memory }: { memory: Snapshot['memory'] }) {
             {free != null && <span>{gb(free)} free to load</span>}
           </>
         ) : (
-          'Reported while the provider runs.'
+          'Reported while this Mac is serving.'
         )}
       </small>
     </div>

@@ -72,7 +72,7 @@ it('offers to start a stopped provider with its selected downloaded models', asy
         {
           kind: 'act',
           action: { action: 'start', models: ['gpt-oss-20b', 'gemma-4-26b'] },
-          label: 'Start providing',
+          label: 'Start serving',
         },
         { kind: 'route', route: 'models', label: 'Choose models' },
       ],
@@ -108,7 +108,7 @@ it('waits for loading, draining and starting without offering actions', async ()
 
 it('offers a restart for a stale snapshot or a crashed model', async () => {
   const snapshot = await state();
-  const restart = { kind: 'act', action: { action: 'restart' }, label: 'Restart provider' };
+  const restart = { kind: 'act', action: { action: 'restart' }, label: 'Restart serving' };
   expect(assess({ ...snapshot, state: 'stale' }).steps[0]).toMatchObject({
     id: 'stale',
     actions: [restart],
@@ -141,7 +141,7 @@ it('puts a running operation first and holds provider steps during lifecycle cha
   const starting = assess({ ...snapshot, state: 'stopped', operations: [operation('start')] });
   expect(starting.tone).toBe('pending');
   expect(starting.steps).toEqual([
-    expect.objectContaining({ id: 'operation', title: 'Starting provider', actions: [] }),
+    expect.objectContaining({ id: 'operation', title: 'Starting to serve', actions: [] }),
   ]);
   const downloading = assess({
     ...snapshot,

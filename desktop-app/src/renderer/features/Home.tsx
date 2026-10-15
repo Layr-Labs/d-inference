@@ -24,7 +24,7 @@ export function Home({
   const stoppable = state.state === 'running' || state.state === 'stale';
   const transition =
     state.state === 'starting'
-      ? 'Starting provider'
+      ? 'Starting…'
       : state.state === 'draining'
         ? 'Finishing requests'
         : null;
@@ -38,7 +38,7 @@ export function Home({
             onClick={() => (stoppable ? void backend.act({ action: 'stop' }) : navigate('models'))}
           >
             {stoppable ? <Pause size={14} /> : <Play size={14} />}{' '}
-            {stoppable ? 'Stop provider' : (transition ?? 'Start providing')}
+            {stoppable ? 'Stop serving' : (transition ?? 'Start serving')}
           </Button>
         }
       />

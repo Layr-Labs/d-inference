@@ -43,14 +43,14 @@ export function MachineHeader({
           >
             {state.state === 'running' ? <Square size={12} /> : <Play size={13} />}{' '}
             {state.state === 'running'
-              ? 'Stop provider'
+              ? 'Stop serving'
               : state.state === 'draining'
                 ? 'Finishing requests'
-                : 'Start provider'}
+                : 'Start serving'}
           </Button>
           <Button
-            title="Restart provider"
-            aria-label="Restart"
+            title="Restart serving"
+            aria-label="Restart serving"
             disabled={backend.busy}
             onClick={() => void backend.act({ action: 'restart' })}
           >

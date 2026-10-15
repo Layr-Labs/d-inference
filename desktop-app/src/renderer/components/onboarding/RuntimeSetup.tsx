@@ -9,7 +9,7 @@ type Copy = { title: string; lead: string; action: string };
 const firstRun: Record<'missing' | 'failed', Copy> = {
   missing: {
     title: 'Install Darkbloom to check this Mac.',
-    lead: 'Darkbloom installs its verified native runtime, then checks whether this Mac can serve models. Your provider works independently of this window.',
+    lead: 'Darkbloom installs its verified native runtime, then checks whether this Mac can serve models. Serving continues when this window is closed.',
     action: 'Install runtime',
   },
   failed: {

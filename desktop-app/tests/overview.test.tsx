@@ -134,8 +134,8 @@ it('lists next steps with working actions for a stopped, unlinked Mac', async ()
     within(steps)
       .getAllByRole('listitem')
       .map((item) => item.querySelector('strong')!.textContent),
-  ).toEqual(['Start providing', 'Link this Mac']);
-  fireEvent.click(within(steps).getByRole('button', { name: 'Start providing' }));
+  ).toEqual(['Start serving', 'Link this Mac']);
+  fireEvent.click(within(steps).getByRole('button', { name: 'Start serving' }));
   expect(backend.act).toHaveBeenCalledWith({
     action: 'start',
     models: ['gpt-oss-20b', 'gemma-4-26b'],
@@ -145,7 +145,7 @@ it('lists next steps with working actions for a stopped, unlinked Mac', async ()
   fireEvent.click(within(steps).getByRole('button', { name: 'Link account' }));
   expect(backend.act).toHaveBeenCalledWith({ action: 'link' });
   rerender(<LocalOverview backend={{ ...backend, busy: true }} navigate={navigate} />);
-  expect(screen.getByRole('button', { name: 'Start providing' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Start serving' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Choose models' })).toBeEnabled();
 });
 

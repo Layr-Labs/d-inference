@@ -30,7 +30,7 @@ export function IdleMemory({
             {value.keepLoaded
               ? 'Models stay in memory while this Mac is idle.'
               : 'Idle models are unloaded to free memory.'}{' '}
-            Apply changes by restarting the provider.
+            Restart serving to apply changes.
           </small>
         </span>
         <input

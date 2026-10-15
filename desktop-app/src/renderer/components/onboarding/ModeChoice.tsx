@@ -3,7 +3,7 @@ export type ContributionMode = 'network' | 'local';
 const modes: { id: ContributionMode; title: string; description: string }[] = [
   {
     id: 'network',
-    title: 'Contribute to Darkbloom',
+    title: 'Serve the Darkbloom network',
     description: 'Make this Mac available and earn from its work.',
   },
   {

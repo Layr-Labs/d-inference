@@ -2,9 +2,9 @@ import type { Action, NativeModel, Operation } from '../../../shared/contracts';
 import { modelName } from '../../models/facts';
 
 const actions: Record<Action['action'], { name: string; running: string }> = {
-  start: { name: 'Provider start', running: 'Starting provider' },
-  stop: { name: 'Provider stop', running: 'Stopping provider' },
-  restart: { name: 'Provider restart', running: 'Restarting provider' },
+  start: { name: 'Start serving', running: 'Starting to serve' },
+  stop: { name: 'Stop serving', running: 'Stopping serving' },
+  restart: { name: 'Restart serving', running: 'Restarting serving' },
   switch: { name: 'Model selection', running: 'Changing models' },
   update: { name: 'Darkbloom update', running: 'Updating Darkbloom' },
   diagnose: { name: 'Health check', running: 'Checking this Mac' },

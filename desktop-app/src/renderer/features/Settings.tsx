@@ -124,8 +124,8 @@ export function Settings({
         <AutoUpdateSwitch checked={auto} onChange={setAuto} disabled={backend.busy} />
         <div className="setting-row">
           <span>
-            <strong>Keep providing in the background</strong>
-            <small>Closing the window keeps the menu bar and provider available.</small>
+            <strong>Keep serving in the background</strong>
+            <small>Closing the window keeps Darkbloom in the menu bar and this Mac serving.</small>
           </span>
           <Status state="online">Always available</Status>
         </div>

@@ -22,6 +22,7 @@ const bridge: DesktopAPI = {
   act: vi.fn(async () => operation('succeeded')),
   status: async () => ({ state: 'ready' }),
   install: async () => {},
+  cancelInstall: async () => {},
   openExternal: async () => {},
   copy: async () => {},
   updateStatus: async () => ({ state: 'idle' }),

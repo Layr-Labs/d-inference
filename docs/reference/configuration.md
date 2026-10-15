@@ -148,8 +148,13 @@ Serving concurrency is resolved after the model's KV backend and verified
 artifact are known. `BackendSettings.engineV2MaxConcurrentIsExplicit`
 distinguishes an absent `engine_v2_max_concurrent` key (automatic, legacy
 default `4` until an exact reviewed profile applies) from any existing literal
-operator cap. Serialization preserves that distinction; historical literal
-values are not silently raised. Per-model overrides remain explicit limits.
+operator cap. Without a profile, models on the native `auto` paged allowlist
+(`EngineV2KVBackendPolicy.preferredBackend`) start at the legacy ceiling `8` on
+M5 Pro, Max and Ultra and return to `4` under Low Power Mode or thermal pressure
+(`ServingPerformanceProfiles.automaticConcurrency`); a model paged only by an
+explicit backend or live packed quantization keeps `4`. Serialization
+preserves that distinction; historical literal values, including a stamped `4`,
+are not silently raised. Per-model overrides remain explicit limits.
 Daemon and standalone engines use the same profile resolver and preserve
 narrower architecture and physical memory constraints. `darkbloom status` and
 `doctor` explain the selection. See [qualification](../developer/serving-performance-qualification.md).

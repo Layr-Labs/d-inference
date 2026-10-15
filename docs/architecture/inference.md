@@ -97,9 +97,14 @@ publishes the newest evidence without sending one heartbeat per token.
 `provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`
 matches reviewed data to verified model weights, provider/runtime revision,
 resolved KV backend, GPU/RAM bin and the entire configured context limit.
-Unknown profiles retain the legacy policy. The concurrency/chunk catalogs remain empty;
+Unknown profiles retain the legacy policy, except that models on the native
+`auto` paged allowlist start at the legacy ceiling of 8 instead of 4 on M5 Pro,
+Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`; chip identity comes from one
+sysctl, not full hardware detection). That width, like a profile
+width, returns to the configured width under Low Power Mode or thermal pressure
+(`EngineV2Bridge.hasPostureGatedWidth`). The concurrency/chunk catalogs remain empty;
 the [qualification procedure](../developer/serving-performance-qualification.md)
-is required before any higher default or model-specific chunk policy activates.
+is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
 engine retirement, not when a caller merely requests cancellation. Atomic

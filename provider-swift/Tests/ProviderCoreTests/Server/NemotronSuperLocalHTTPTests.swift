@@ -165,21 +165,26 @@ extension NemotronSuperLocalHTTPTests {
                     #expect(response.status == .ok)
                     #expect(!String(buffer: response.body).contains(model))
                 }
+                // Thinking defaults on (template default); generated text then
+                // stays in the reference reasoning channel until `</think>`.
                 for stream in [false, true] {
-                    try await client.execute(uri: "/v1/chat/completions", method: .post,
-                        headers: headers, body: try body(image: png, stream: stream)) { response in
-                        #expect(response.status == .ok)
-                        #expect(response.headers[.accessControlAllowOrigin] == "*")
-                        let output = String(buffer: response.body)
-                        #expect(output.contains("x"))
-                        #expect(output.contains(stream ? "[DONE]" : "chat.completion"))
-                        #expect(!output.contains("\"error\""))
+                    for thinking in [false, true, nil] as [Bool?] {
+                        try await client.execute(uri: "/v1/chat/completions", method: .post,
+                            headers: headers, body: try body(image: png, stream: stream,
+                                                             thinking: thinking)) { response in
+                            #expect(response.status == .ok)
+                            #expect(response.headers[.accessControlAllowOrigin] == "*")
+                            let output = String(buffer: response.body)
+                            #expect(output.contains(stream ? "[DONE]" : "chat.completion"))
+                            #expect(!output.contains("\"error\""))
+                            #expect(output.contains(thinking == false ? "\"content\":\"x" : "\"reasoning_content\":\"x"))
+                        }
                     }
                 }
                 for invalid in [try body(image: "https://example.invalid/never-fetch.png", stream: true),
                                 try body(image: "data:image/jpeg;base64,AA==", stream: true),
-                                try body(image: png, thinking: true),
-                                try body(image: png, thinking: nil),
+                                try body(image: png, extra: ["enable_thinking": false,
+                                    "chat_template_kwargs": ["enable_thinking": true]]),
                                 try body(image: png, extra: ["response_format": ["type": "json_object"]]),
                                 ByteBuffer(string: "{")] {
                     try await client.execute(uri: "/v1/chat/completions", method: .post,

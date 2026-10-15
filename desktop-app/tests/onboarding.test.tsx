@@ -48,8 +48,8 @@ it('installs the backend first and checks this Mac once it connects', async () =
   localStorage.clear();
   backend = backendWith(undefined, { status: { state: 'missing' } });
   const { rerender } = render(<App />);
-  expect(heading('Install backend')).toBeVisible();
-  expect(screen.getByRole('button', { name: /Install backend/ })).toBeVisible();
+  expect(heading('Install the Darkbloom CLI')).toBeVisible();
+  expect(screen.getByRole('button', { name: /Install CLI/ })).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
   backend = { ...backend, status: { state: 'ready' }, state: await previewAPI.read('state') };
   rerender(<App />);

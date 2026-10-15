@@ -4,22 +4,22 @@
 interface Step {
   marker: RegExp;
   message: string;
-  // Completes "Couldn’t install the backend while …" when the installer fails in this step.
+  // Completes "Couldn’t install the CLI while …" when the installer fails in this step.
   phase: string;
 }
 
-// Markers the installer prints, in order. Lines are trimmed before matching. People already
-// installed Darkbloom (the app), so the runtime it installs is called "the backend".
+// Markers the installer prints, in order. Lines are trimmed before matching. The app is a
+// front end to the Darkbloom CLI, so user-facing text calls what it installs "the CLI".
 const steps: Step[] = [
   {
     marker: /^→ \[1\/5\]/,
-    message: 'Finding the latest backend release…',
+    message: 'Finding the latest CLI release…',
     phase: 'finding the latest release',
   },
-  { marker: /^→ \[2\/5\]/, message: 'Downloading the backend…', phase: 'downloading it' },
+  { marker: /^→ \[2\/5\]/, message: 'Downloading the CLI…', phase: 'downloading it' },
   {
     marker: /^(Bundle hash verified|Staging and verifying)/,
-    message: 'Verifying the backend’s signature…',
+    message: 'Verifying the CLI’s signature…',
     phase: 'verifying its signature',
   },
   {
@@ -32,18 +32,11 @@ const steps: Step[] = [
     message: 'Setting up device verification…',
     phase: 'setting up device verification',
   },
-  // Before macOS 27 the installer opens System Settings for the enrollment profile itself.
-  {
-    marker: /^System Settings opened/,
-    message:
-      'Finish device verification in System Settings: click Install, then enter your password.',
-    phase: 'setting up device verification',
-  },
   { marker: /^→ \[5\/5\]/, message: 'Finishing up…', phase: 'finishing up' },
   // `darkbloom update` (repair of an existing install).
   {
     marker: /^Checking for updates/,
-    message: 'Checking for a backend update…',
+    message: 'Checking for a CLI update…',
     phase: 'checking for an update',
   },
 ];
@@ -98,12 +91,12 @@ export class InstallTranscript {
     }
   }
 
-  /** The status message for a failed run; `verb` is what was being done to the backend. */
+  /** The status message for a failed run; `verb` is what was being done to the CLI. */
   failure(timedOut = false, verb: 'install' | 'update' = 'install'): string {
     const during = this.step ? ` while ${this.step.phase}` : '';
     if (timedOut)
-      return `${verb === 'install' ? 'Installing' : 'Updating'} the backend timed out${during}. Check your connection and retry.`;
-    const lead = `Couldn’t ${verb} the backend${during}`;
+      return `${verb === 'install' ? 'Installing' : 'Updating'} the CLI timed out${during}. Check your connection and retry.`;
+    const lead = `Couldn’t ${verb} the CLI${during}`;
     if (this.reason) return `${lead}: ${this.reason.replace(/[.\s]*$/, '')}.`;
     return `${lead}. Check your connection and retry.`;
   }

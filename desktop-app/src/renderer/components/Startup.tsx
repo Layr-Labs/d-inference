@@ -5,7 +5,7 @@ import { unreachable } from './onboarding/useMacScan';
 
 /**
  * Shown to returning users until the first snapshot arrives: connection status, or install and
- * repair when the runtime is unreachable. First-run onboarding is never shown again for this.
+ * repair when the CLI is unreachable. First-run onboarding is never shown again for this.
  */
 export function Startup({ backend }: { backend: BackendState }) {
   return (

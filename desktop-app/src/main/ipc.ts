@@ -6,8 +6,7 @@ import type { desktopUpdates } from './updates';
 import type { MainWindow } from './window';
 import { clipboardText, externalURL, isTrustedSender } from './security';
 
-// The bundled copy of scripts/install.sh, the installer the CLI install path uses.
-export function installScript() {
+function installScript() {
   return path.join(
     app.isPackaged ? process.resourcesPath : app.getAppPath(),
     app.isPackaged ? 'bootstrap' : 'resources',

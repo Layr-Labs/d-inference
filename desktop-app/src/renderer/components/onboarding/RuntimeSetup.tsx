@@ -6,37 +6,40 @@ import { api } from '../../useBackend';
 import { GetHelp } from '../Help';
 import { Button, Notice } from '../UI';
 
-// The action each status offers during onboarding; other statuses are waiting on the backend.
+// The button each status offers; other statuses are waiting on the CLI. Nothing installs until
+// the user clicks one.
 const actions: Partial<Record<DesktopStatus['state'], string>> = {
-  missing: 'Install backend',
-  error: 'Repair backend',
-  incompatible: 'Update backend',
+  missing: 'Install CLI',
+  error: 'Repair CLI',
+  incompatible: 'Update CLI',
 };
 
 type Copy = { title: string; lead: string; action: string };
 
-// Returning users set Darkbloom up before: say what happened to it, not how the first run works.
+// Returning users set Darkbloom up before: say what happened to its CLI, not how the first run
+// works.
 const returning: Record<'missing' | 'incompatible' | 'failed', Copy> = {
   missing: {
-    title: 'Reinstall Darkbloom to continue.',
-    lead: 'Darkbloom’s native runtime is no longer installed on this Mac.',
-    action: 'Reinstall runtime',
+    title: 'Reinstall the Darkbloom CLI to continue.',
+    lead: 'The Darkbloom CLI is no longer installed on this Mac.',
+    action: 'Install CLI',
   },
   incompatible: {
-    title: 'Update Darkbloom to continue.',
-    lead: 'Darkbloom reached its native runtime on this Mac, but the installed version doesn’t work with this version of the app.',
-    action: 'Update runtime',
+    title: 'Update the Darkbloom CLI to continue.',
+    lead: 'Darkbloom reached its CLI on this Mac, but the installed version doesn’t work with this version of the app.',
+    action: 'Update CLI',
   },
   failed: {
     title: 'Darkbloom couldn’t start.',
-    lead: 'The app couldn’t start or connect to Darkbloom’s native runtime on this Mac. Repair it to continue.',
-    action: 'Repair runtime',
+    lead: 'The app couldn’t start or connect to the Darkbloom CLI on this Mac. Repair it to continue.',
+    action: 'Repair CLI',
   },
 };
 
-// Onboarding's first step, and the returning-user Startup screen when the runtime is
-// unreachable. It shows whatever the main process reports while the backend installs or
-// connects, and offers an install, repair or update only when one is needed.
+// Onboarding's first step, Install the Darkbloom CLI, and the returning-user Startup screen when
+// the CLI is unreachable. It offers an install, repair or update when one is needed, and shows
+// whatever the main process reports while the CLI connects or while an install the user started
+// runs.
 export function RuntimeSetup({
   backend,
   returningUser = false,
@@ -46,12 +49,11 @@ export function RuntimeSetup({
 }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
-  const { state, message } = backend.status;
-  // The app installs a missing backend by itself; while it does, offer only a way out, never a
-  // second install.
+  const { state, message, installFailed } = backend.status;
+  // While the install the user started runs, offer only a way out, never a second install.
   const installing = state === 'installing';
   // The last install failed: `message` names the step that failed and the installer's reason.
-  const failed = !installing && !!backend.status.installFailed;
+  const failed = !installing && !!installFailed;
   const copy = returningUser
     ? returning[
         state === 'missing' || state === 'incompatible' ? state : installing ? 'missing' : 'failed'
@@ -71,18 +73,22 @@ export function RuntimeSetup({
   }
   return (
     <>
-      <h2>{copy ? copy.title : 'Install backend'}</h2>
+      <h2>{copy ? copy.title : 'Install the Darkbloom CLI'}</h2>
       <p>
         {copy
           ? copy.lead
-          : 'Darkbloom needs its backend, a background service that serves models on this Mac. It installs once and updates automatically.'}
+          : 'Darkbloom runs on its command-line tool. It installs once, runs a background service that serves models on this Mac, and updates automatically.'}
       </p>
       {error && <Notice>{error}</Notice>}
       {/* One live region for the progress and the reason, so each change is announced. */}
       <p className="install-status" role="status">
         {!action && <LoaderCircle className="spin" size={14} aria-hidden="true" />}
         {message ||
-          (action ? '' : installing ? 'Installing the backend…' : 'Connecting to the backend…')}
+          (action
+            ? ''
+            : installing
+              ? 'Installing the Darkbloom CLI…'
+              : 'Connecting to the Darkbloom CLI…')}
       </p>
       {installing ? (
         <Button disabled={!api} onClick={() => void api?.cancelInstall()}>

@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased — desktop automatic backend install
+## Unreleased — desktop CLI install progress
 
-- The desktop app now installs its backend by itself the first time it opens on a Mac without one. It shows each step in plain language (“Downloading the backend… 42%”, “Verifying the backend’s signature…”, “Setting up device verification…”). If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**. An install in progress can be cancelled.
+- On a Mac without the Darkbloom CLI, the desktop app's setup shows **Install the Darkbloom CLI**; the install starts only when you click **Install CLI**. It then shows each step in plain language (“Downloading the CLI… 42%”, “Verifying the CLI’s signature…”, “Setting up device verification…”) with **Cancel**. If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**.
 
 ## Unreleased — desktop help and next steps
 

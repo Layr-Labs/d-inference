@@ -58,9 +58,9 @@ describe('install step', () => {
   it('starts there when the backend is missing, and nothing later is reachable', () => {
     api.install.mockResolvedValue(undefined);
     renderWith({ state: 'missing', message: 'Install the Darkbloom runtime to connect this Mac.' });
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     expect(
-      screen.getByText(/Darkbloom needs its backend, a background service that serves models/),
+      screen.getByText(/Darkbloom runs on its command-line tool. It installs once, runs a background service/),
     ).toBeVisible();
     expect(currentStep()).toHaveTextContent('Install backend');
     expect(screen.getByRole('status')).toHaveTextContent(
@@ -69,25 +69,25 @@ describe('install step', () => {
     expect(button(/Link account/)).toBeNull();
     expect(button('Start')).toBeNull();
     expect(button(/Explore the app first/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Install backend/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Install CLI/ }));
     expect(api.install).toHaveBeenCalledOnce();
   });
 
   it('shows the progress the main process reports while installing, with no second Install', () => {
     const { update } = renderWith({ state: 'installing', message: 'Downloading the backend…' });
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     expect(screen.getByRole('status')).toHaveTextContent('Downloading the backend…');
-    expect(button(/backend/)).toBeNull();
+    expect(button(/CLI/)).toBeNull();
     update({ state: 'installing', message: 'Verifying the backend…' });
     expect(screen.getByRole('status')).toHaveTextContent('Verifying the backend…');
-    expect(button(/backend/)).toBeNull();
+    expect(button(/CLI/)).toBeNull();
     expect(button(/Explore the app first/)).toBeNull();
   });
 
   it('moves on to linking once installed, with the install step done and focus on Link', () => {
     const { update } = renderWith({ state: 'installing', message: 'Installing…' });
     update({ state: 'connecting' });
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     update({ state: 'ready' }, snapshot({ linked: false }));
     expect(heading('Link your account.')).toBeVisible();
     expect(heading('Link your account.')).toHaveFocus();
@@ -108,9 +108,9 @@ describe('install step', () => {
 
   it('opens on the welcome view at Link, or at Check when linked, if already installed', () => {
     const { update } = renderWith({ state: 'connecting' });
-    expect(heading('Install backend')).toBeVisible();
-    expect(screen.getByRole('status')).toHaveTextContent('Connecting to the backend…');
-    expect(button(/backend/)).toBeNull();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting to the Darkbloom CLI…');
+    expect(button(/CLI/)).toBeNull();
     update({ state: 'ready' }, snapshot({ linked: false }));
     expect(heading('Put this Mac to work.')).toBeVisible();
     expect(currentStep()).toHaveTextContent('Link your account');
@@ -127,20 +127,20 @@ describe('install step', () => {
       state: 'error',
       message: 'Installation failed. Check your connection and retry.',
     });
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     expect(screen.getByRole('status')).toHaveTextContent(
       'Installation failed. Check your connection and retry.',
     );
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Repair backend/ })));
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Repair CLI/ })));
     expect(api.install).toHaveBeenCalledOnce();
     expect(screen.getByRole('alert')).toHaveTextContent('Runtime installation failed');
-    expect(screen.getByRole('button', { name: /Repair backend/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Repair CLI/ })).toBeEnabled();
   });
 
   it('offers an update when the backend is incompatible', () => {
     renderWith({ state: 'incompatible', message: 'This backend is too old for the app.' });
     expect(screen.getByRole('status')).toHaveTextContent('This backend is too old for the app.');
-    expect(screen.getByRole('button', { name: /Update backend/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /Update CLI/ })).toBeVisible();
   });
 
   it('keeps the current step through a reconnect, and returns to it after a repair', () => {
@@ -150,9 +150,9 @@ describe('install step', () => {
     update({ state: 'connecting', message: 'Reconnecting to the runtime…' });
     expect(heading('Link your account.')).toBeVisible();
     update({ state: 'error', message: 'Could not connect to the runtime.' });
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     expect(currentStep()).toHaveTextContent('Install backend');
-    expect(screen.getByRole('button', { name: /Repair backend/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /Repair CLI/ })).toBeVisible();
     update({ state: 'ready' });
     expect(heading('Link your account.')).toBeVisible();
     expect(heading('Link your account.')).toHaveFocus();

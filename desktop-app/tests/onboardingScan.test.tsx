@@ -8,6 +8,7 @@ import type { BackendState } from '../src/renderer/useBackend';
 import { backendWith, eightGBMac, models, operation, snapshot } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({
+  install: vi.fn(),
   act: vi.fn(),
   read: vi.fn(),
   openExternal: vi.fn(),
@@ -166,12 +167,12 @@ describe('ineligible Mac', () => {
 describe('when the result is not known yet', () => {
   it('waits for the backend to deliver a snapshot, then checks a linked Mac', () => {
     const connecting = backendWith(undefined, {
-      status: { state: 'connecting', message: 'Reconnecting to the runtime…' },
+      status: { state: 'connecting', message: 'Reconnecting to the Darkbloom CLI…' },
     });
     const { rerender } = render(<Onboarding backend={connecting} done={vi.fn()} />);
     elapse(30_000);
-    expect(heading('Install backend')).toBeVisible();
-    expect(screen.getByText('Reconnecting to the runtime…')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    expect(screen.getByText('Reconnecting to the Darkbloom CLI…')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Skip/ })).not.toBeInTheDocument();
     rerender(<Onboarding backend={backendWith(snapshot())} done={vi.fn()} />);
@@ -270,9 +271,42 @@ describe('leaving setup', () => {
   });
 
   it('is not offered before the backend connects, when there is no app to open', () => {
-    const missing = { state: 'missing', message: 'Install the runtime.' } as const;
+    const missing = { state: 'missing', message: 'Install the Darkbloom CLI.' } as const;
     render(<Onboarding backend={backendWith(undefined, { status: missing })} done={vi.fn()} />);
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Explore the app first/ })).toBeNull();
+  });
+});
+
+const renderSetup = (backend: BackendState) =>
+  render(<Onboarding backend={backend} done={vi.fn()} />);
+
+describe('runtime setup', () => {
+  it('installs the CLI only when the user clicks Install CLI, before it can check this Mac', () => {
+    api.install.mockResolvedValue(undefined);
+    renderSetup(
+      backendWith(undefined, {
+        status: { state: 'missing', message: 'Install the Darkbloom CLI to connect this Mac.' },
+      }),
+    );
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    expect(api.install).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Install CLI/ }));
+    expect(api.install).toHaveBeenCalledOnce();
+  });
+
+  it('offers a repair when the CLI is unreachable', async () => {
+    api.install.mockRejectedValue(new Error('Runtime installation failed'));
+    renderSetup(
+      backendWith(undefined, {
+        status: {
+          state: 'error',
+          message: 'Could not connect to the Darkbloom CLI. Update or repair it.',
+        },
+      }),
+    );
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Repair CLI/ })));
+    expect(screen.getByRole('alert')).toHaveTextContent('Runtime installation failed');
   });
 });

@@ -118,6 +118,19 @@ MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
 exact artifact ID; all existing admission checks remain in effect. The artifact
 contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
 
+The 9B main payload is 3,462,149,260 bytes at revision
+`b94a52f3ce9047919dce00392a0fc6b8a7968abe`. It uses 4096-wide Hadamard blocks,
+so the 27B block-1024 constant-reuse estimate does not transfer. No measured
+activation floor or lower RAM tier is introduced. Text, single/multiple-image,
+concurrent prefill and cache-restoration peaks must be measured on the final
+source composition; all existing OS/activation/KV guards remain in effect.
+The explicit 9B MTP binding adds the separate head's existing artifact
+residency charge and F32 request-state reservations. Stored F16 head tensors
+do not justify pricing their runtime KV or hidden history as F16. See
+`Qwen35InlineMTPAssistant.requestStateAllocationSpecs` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift`; rounded allocations
+and temporary live owners remain included. This adds no minimum-RAM claim.
+
 ## Chip families
 
 | Family | Recognised as | Behaviour that differs |

@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -173,6 +173,22 @@ the process prints its listening address and the daemon-state file is not used.
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 
+## Experimental Nemotron Super image fixtures
+
+The optional `NemotronSuperLocalImageHTTP` owner hook in
+`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift`
+uses the existing local authentication, body limits, JSON/SSE framing and
+request-cancellation scope. Its default is absent; no production callsite
+installs it and it does not advertise a new model. The fixture path accepts
+bounded inline RGB8 PNG input and requires explicit `enable_thinking:false`.
+JPEG and other unqualified formats are refused. This is not full image support
+or full-checkpoint serving qualification.
+
+The [portable component harness](../../scripts/nemotron-qualification/README.md)
+exercises this hook on isolated loopback endpoints. Admission/reservation
+calibration and full-checkpoint throughput remain separate gates. Cancellation
+must retain media/KV and response ownership until native terminal retirement.
+
 ## Related
 
 - [Self-route](./self-route.md) — route your *fleet* requests to your own
@@ -180,3 +196,11 @@ the process prints its listening address and the daemon-state file is not used.
 - [CLI reference](./cli-reference.md) — `start`, `local` flags and paths.
 - [Beta features](./beta-features.md) — MTP and paged KV apply to local serving too.
 - [`reference/configuration.md`](../reference/configuration.md) — media limits and engine variables.
+
+## Graceful drain
+
+After local admission closes for shutdown, a new POST receives HTTP `503`
+with a structured capacity response (`invalid_request_error`) from `LocalDisconnectResponder`.
+CORS headers remain present. Health checks and preflight requests still work,
+and already admitted responses retain their existing owner. Retry a rejected
+request after the provider is serving again.

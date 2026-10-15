@@ -1,13 +1,15 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
 is empty; enabling a profile requires independent qualification with continuous
 power observations. Historical reports and raw runs are kept in a local archive.
-The separate concurrency/chunk catalogs remain empty, so M5 Max B8 and M5 Ultra
-B16 remain qualification targets. Six qualified prompt-count fallback records
+The separate concurrency/chunk catalogs remain empty. On M5 Pro, Max and Ultra,
+models on the native `auto` paged allowlist start at the unqualified legacy
+ceiling of 8 without a profile; any width above 8, including the M5 Ultra B16
+target, still requires a reviewed profile. Six qualified prompt-count fallback records
 cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
 The ordinary admission path uses its resolved rates without the former fixed
 50% reduction; this change needs no timing-catalog entry. Profile qualification

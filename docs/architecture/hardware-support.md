@@ -373,6 +373,20 @@ requests retire and the completion posture check passes. A cancelled or
 non-nominal cell discards those observations and remains retryable; valid
 earlier measurements and independently published serving evidence survive.
 
+### Serving width by chip
+
+Without a reviewed profile the automatic engine width is the legacy default 4
+on every chip except M5 Pro, Max and Ultra, where models on the native `auto`
+paged allowlist start at the legacy ceiling 8
+(`ServingPerformanceProfiles.automaticConcurrency`; chip identity comes from
+`machdep.cpu.brand_string`, not full detection). The width changes no KV grant,
+load quotation or activation reserve (already sized for B=8); it only raises how
+many admitted requests a slot may run at once, still bounded by fixed-workspace
+memory concurrency and the coordinator's per-model quality cap. Under Low Power
+Mode or a non-nominal thermal state the bridge serves and reports the configured
+width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
+values, including a literal `4` from older configs, are kept.
+
 ### Cross-repository agreement
 
 Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.

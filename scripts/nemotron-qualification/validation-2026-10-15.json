@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-15",
+  "sdk_source_commit": "3fc3a103af8c868ddf0f894966598206e3df6fa5",
+  "provider_source_commit": "b56eda7cc4ab8ed8847d5450e33889c1be9e9cec",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "cpu_cores": 28,
+    "gpu_cores": 60,
+    "unified_memory_GiB": 256,
+    "os": "macOS 27.2",
+    "swift": "6.4"
+  },
+  "sdk_last_executed_tests": {
+    "declarations": 18,
+    "suites": 6,
+    "passed": true,
+    "duration_seconds": 0.66,
+    "final_head_rerun": false
+  },
+  "provider_last_executed_tests": {
+    "declarations": 15,
+    "passed": 14,
+    "failed": 1,
+    "failure": "imageHTTPResetRetainsChargeUntilTerminalRetires: invalid tracker-release expectation while native terminal held",
+    "fix": "Observe actual request scope cancellation; retain tracker/media/KV until native terminal released",
+    "fixed_test_compiled": true,
+    "fixed_test_executed": false
+  },
+  "final_focused_builds": {
+    "sdk": {
+      "passed": true,
+      "seconds": 3.95
+    },
+    "provider": {
+      "passed": true,
+      "seconds": 73.87
+    }
+  },
+  "cpu_checks": {
+    "bundle_tests_with_pinned_index": 5,
+    "portable_setup_and_manifests": "passed",
+    "unit_test_file_conventions": "passed",
+    "docs_lint": "185 files OK",
+    "docs_impact": "46 changed files coverage OK",
+    "changelog": "15 fragments valid",
+    "diff_whitespace": "passed"
+  },
+  "final_gpu_rerun": "deferred: GPU activity, preserving other workloads",
+  "full_checkpoint_loaded": false,
+  "admission_reservation_calibrated": false,
+  "full_model_benchmarks": null,
+  "speculative_assistant_enabled": false,
+  "full_image_compatibility": false,
+  "public_source_model": {
+    "repository": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+    "revision": "7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c",
+    "shards": 88,
+    "weight_bytes": 75010188240,
+    "mtp_tensors": 4120,
+    "identity_check": "Public source headers and Hub metadata; payload not hashed locally"
+  },
+  "original_machine_log_sha256": {
+    "pause-sdk-tests.log": "fe4e07a986bc7954e79f4fc4b811ba4dbdca544bcd661e7e53c54f50ed14eb29",
+    "pause-provider-tests.log": "30160e3f1e9bf373591e5f771a19ba158edf32fa56dc8cd416e27adccc19d3e0",
+    "handoff-sdk-final-build.log": "9e02f99b92195203c1b4aef9b910237734d30e4298424babf9a112144bfb4901",
+    "handoff-provider-final-build.log": "7a644ece40806d7eb9948c69af8c251e4f79e6cadf02e7bd037f6a97dbc55694",
+    "handoff-docs-check.log": "8f82170faa6d967da49a9033417fe9f947b6826ef04dd869af3a9b8e695e469b",
+    "handoff-docs-impact.log": "7124a04d4d62a056fb588eee2aa939f806b7d3be0150a5cbf9464f496b33330e",
+    "handoff-changelog.log": "f170a0e68c5745a7969b3cb61ce7bdfc3827c7ab608a615d025b48596446f760"
+  },
+  "log_note": "Hashes identify original-machine logs, not bundled log files or a final-head GPU pass."
+}

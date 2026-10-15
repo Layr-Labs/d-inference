@@ -69,8 +69,10 @@ it.each([
   },
 );
 
-it('still starts first-run onboarding before the first snapshot', async () => {
+it('still starts first-run onboarding, at its install step, before the first snapshot', async () => {
   await launch({ state: 'connecting' });
-  expect(screen.getByText('Put this Mac to work.')).toBeVisible();
-  expect(screen.getByRole('button', { name: /Start/ })).toBeVisible();
+  expect(screen.getByRole('heading', { name: 'Install backend' })).toBeVisible();
+  expect(screen.getByRole('status')).toHaveTextContent('Connecting to the backend…');
+  expect(screen.getByRole('list', { name: 'Setup steps' })).toBeVisible();
+  expect(screen.queryByText('Connecting to this Mac…')).not.toBeInTheDocument();
 });

@@ -432,6 +432,8 @@ Run `python3 scripts/test_model_registry_workflow.py` to exercise the actual
 workflow shell steps against a loopback HTTP server with fixture credentials.
 It checks that an uploaded revision sends only revision identity, needs no R2
 credentials, preserves normal registration payloads, and propagates failures.
+It also rejects unconfirmed revision promotion while retaining staged-only
+normal registration.
 CI runs this suite without contacting production. The test host needs Bash,
 Python, jq and curl, matching the workflow runner.
 

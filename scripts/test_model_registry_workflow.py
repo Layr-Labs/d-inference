@@ -138,6 +138,24 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
         for name in ('model_id', 'version'):
             self.assertIn('        required: true', input_block(name), name)
 
+    def test_revision_mode_requires_explicit_promotion(self):
+        with coordinator() as (url, requests):
+            for value in ('false', ''):
+                with self.subTest(promote=value):
+                    self.env.update(COORDINATOR_URL=url, PROMOTE=value)
+                    result = self.run_step('Build revision-only payload')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('set promote=true', result.stderr)
+        self.assertEqual(requests, [])
+
+    def test_normal_registration_can_remain_unpromoted(self):
+        self.env.update(PROMOTE='false', PUBLISH_REVISION_ONLY='false')
+        with coordinator() as (url, requests):
+            self.env['COORDINATOR_URL'] = url
+            self.assertEqual(self.run_step('Build registration payload').returncode, 0)
+            self.assertEqual(self.run_step('Publish model with coordinator').returncode, 0)
+        self.assertFalse(requests[0][1]['promote'])
+
     def test_malformed_source_stops_before_publication(self):
         self.env['HUGGING_FACE_ARTIFACT_JSON'] = 'not-json'
         with coordinator() as (url, requests):

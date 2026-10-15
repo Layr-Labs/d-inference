@@ -30,6 +30,7 @@ publish its manifest last, then verify the registered identity.
 
 The default `.github/workflows/register-model.yml` mode sends model metadata
 and prices to the registration endpoint. Its `publish_revision_only=true` mode
+requires explicit `promote=true` because that action always promotes, and
 sends only the version and optional pinned HF source to the existing model's
 `publish-revision` action, preserving metadata and prices while promoting the
 revision. Both modes need only the coordinator publishing key; upload tooling

@@ -57,7 +57,7 @@ on:
         required: false
         default: '{}'
       hugging_face_artifact_json:
-        description: Optional exact public HF artifact JSON (repo_id, full commit revision, optional path_prefix); null keeps R2 only.
+        description: Optional pinned public HF artifact JSON. Null clears it on registration; revision-only uses R2 for new versions and preserves the source on retries.
         required: false
         default: 'null'
       metadata_json:
@@ -77,7 +77,7 @@ on:
         required: false
         default: ''
       promote:
-        description: Promote this version after registration
+        description: Promote this version (must be true in revision-only mode)
         required: false
         default: false
         type: boolean
@@ -185,8 +185,13 @@ jobs:
         if: ${{ inputs.publish_revision_only }}
         env:
           VERSION: ${{ inputs.version }}
+          PROMOTE: ${{ inputs.promote }}
           HUGGING_FACE_ARTIFACT_JSON: ${{ inputs.hugging_face_artifact_json }}
         run: |
+          if [ "${PROMOTE:-false}" != "true" ]; then
+            echo "Revision-only publication promotes the revision; set promote=true to confirm" >&2
+            exit 1
+          fi
           jq -n --arg version "$VERSION" \
             --argjson hugging_face_artifact "${HUGGING_FACE_ARTIFACT_JSON:-null}" \
             '{version: $version, hugging_face_artifact: $hugging_face_artifact}' > payload.json

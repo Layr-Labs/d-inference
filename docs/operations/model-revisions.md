@@ -18,7 +18,7 @@ Overwriting an already published R2 revision is rejected.
 | State | Operation | Credentials |
 |---|---|---|
 | New model ID with a valid, already published canonical manifest | Register the build using [model migration](model-migration.md#2-register-the-build-in-the-coordinator-catalog) | Coordinator publishing key |
-| Existing model ID with a valid, already published new revision | Set `publish_revision_only=true` in **Register Model** | Coordinator publishing key |
+| Existing model ID with a valid, already published new revision | Set `publish_revision_only=true` and `promote=true` in **Register Model** | Coordinator publishing key |
 | Missing files, changed bytes, wrong manifest inventory or noncanonical prefix | Publish a new immutable revision, then register or promote it | Model-bucket upload credentials plus coordinator publishing key |
 
 A public download URL proves read access, not bucket write permission. Conversely,
@@ -112,11 +112,13 @@ version with identical bytes.
    resume an interrupted publication.
 
    If the revision is already uploaded, the **Register Model** GitHub workflow
-   accepts `publish_revision_only=true`. It invokes `publish-revision` with the
+   accepts `publish_revision_only=true` with `promote=true`. It invokes `publish-revision` with the
    version and optional pinned HF artifact, preserving model metadata and prices.
    It uses only `MODEL_REGISTRY_PUBLISHING_KEY`; it does not need R2 credentials
    or a local GCP login. Registration-only inputs are optional at dispatch and
    ignored in this mode; normal registration validates them before sending.
+   Revision-only publication always promotes; leaving `promote=false` fails
+   before any HTTP request. Use normal registration for a staged-only build.
    Keep `publish_revision_only=false` for normal registration.
 
    To use a different HF source for this revision, add these flags to both the

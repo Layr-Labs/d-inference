@@ -1,5 +1,6 @@
 import type { AutopilotStatus } from '../../../shared/autopilot';
 import type { NativeModel, Operation, Snapshot } from '../../../shared/contracts';
+import { servesNetwork } from '../../models/selection';
 
 // A runtime without the Autopilot block can't run it, so it only ever gets manual selection.
 export type ModelsMode = 'autopilot' | 'manual' | 'unsupported';
@@ -44,7 +45,7 @@ export function poolState(
   status: AutopilotStatus,
   downloading: boolean,
 ): PoolState {
-  if (!model.eligible) return 'ineligible';
+  if (!servesNetwork(model)) return 'ineligible';
   if (downloading) return 'downloading';
   if (!model.downloaded) return 'available';
   if (!status.selected.includes(model.id)) return 'outside';

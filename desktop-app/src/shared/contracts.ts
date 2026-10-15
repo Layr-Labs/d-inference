@@ -36,6 +36,9 @@ export interface NativeModel {
   loaded: boolean;
   eligible: boolean;
   reason?: string | null;
+  // Listed by the Darkbloom catalog. Only these can be served to the network or enrolled in
+  // Autopilot; a model found only on disk runs in Local only. Absent from older runtimes.
+  network?: boolean;
   description?: string | null;
   context_length?: number | null;
   family?: string | null;

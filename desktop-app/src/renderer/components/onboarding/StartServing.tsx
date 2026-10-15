@@ -8,7 +8,7 @@ import { LinkPanel } from './LinkPanel';
 import type { ContributionMode } from './ModeChoice';
 import { ServingSummary } from './ServingSummary';
 import { pinnedMemory, startingModel } from '../../models/selection';
-import { methodFor, startAction, startModels, type StartMethod } from './startPlan';
+import { methodFor, startAction, startModels, usablePins, type StartMethod } from './startPlan';
 import { useStartServing } from './useStartServing';
 import styles from './startServing.module.css';
 import { networkEarnings, recommendedModels } from '../../features/models/recommendations';
@@ -62,12 +62,13 @@ export function StartServing({
   const manualOnly = !!snapshot.capabilities && !snapshot.capabilities.includes('autopilot');
   const method = methodFor(mode, serving.rejected || manualOnly);
   const text = copy[method];
+  const pins = usablePins(snapshot, method, pinned);
   const network = networkEarnings(backend.network);
   const recommended =
-    method === 'autopilot' && !pinned.length ? recommendedModels(snapshot.models, network) : [];
+    method === 'autopilot' && !pins.length ? recommendedModels(snapshot.models, network) : [];
   const showRecommendations = recommended.length > 0;
   const empty = !startModels(snapshot, method, pinned).length;
-  const tooLarge = pinnedMemory(snapshot, pinned).exceeds;
+  const tooLarge = pinnedMemory(snapshot, pins).exceeds;
   const running = snapshot.operations.find((operation) => operation.state === 'running');
   return (
     <>
@@ -75,7 +76,7 @@ export function StartServing({
       {!showRecommendations && (
         <>
           <p>{text.lead}</p>
-          <ServingSummary snapshot={snapshot} method={method} pinned={pinned} />
+          <ServingSummary snapshot={snapshot} method={method} pinned={pins} />
         </>
       )}
       {serving.rejected && method === 'manual' && (

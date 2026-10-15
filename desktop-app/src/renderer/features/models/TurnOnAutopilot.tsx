@@ -1,13 +1,15 @@
 import { Sparkles } from 'lucide-react';
 import type { Snapshot } from '../../../shared/contracts';
 import { Button } from '../../components/UI';
-import { startingModel } from '../../models/selection';
+import { servesNetwork, startingModel } from '../../models/selection';
 import styles from './autopilot.module.css';
 
 // Turning on mirrors `darkbloom autopilot enable`: start with Autopilot on the models serving
 // now, or the starting model when nothing serves. Saved pins are kept by the runtime.
 export function enableAction(snapshot: Snapshot) {
-  const serving = snapshot.models.filter((model) => model.serving && model.downloaded);
+  const serving = snapshot.models.filter(
+    (model) => model.serving && model.downloaded && servesNetwork(model),
+  );
   const fallback = startingModel(snapshot);
   const models = serving.length ? serving.map((model) => model.id) : fallback ? [fallback.id] : [];
   const downloads = snapshot.models

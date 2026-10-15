@@ -76,7 +76,7 @@ export function PoolRow({
           </span>
         </div>
         <small className={state === 'ineligible' ? 'warning-text' : 'muted'}>
-          {modelFacts(model)}
+          {modelFacts(model, true)}
         </small>
         {model.description && (
           <details className={styles.description}>

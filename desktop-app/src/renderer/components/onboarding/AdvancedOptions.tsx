@@ -4,7 +4,7 @@ import { useReducedMotion } from '../../useReducedMotion';
 import type { Snapshot } from '../../../shared/contracts';
 import { ModeChoice, type ContributionMode } from './ModeChoice';
 import { PinList } from './PinList';
-import type { StartMethod } from './startPlan';
+import { usablePins, type StartMethod } from './startPlan';
 import styles from './advancedOptions.module.css';
 
 const pinCopy: Record<StartMethod, { title: string; lead: string; noun: string }> = {
@@ -67,7 +67,13 @@ export function AdvancedOptions({
         <div className={styles.panel} id={id} ref={panel} role="region" aria-label="Advanced">
           <h3>{copy.title}</h3>
           <p>{copy.lead}</p>
-          <PinList snapshot={snapshot} pinned={pinned} noun={copy.noun} onChange={onPinned} />
+          <PinList
+            snapshot={snapshot}
+            pinned={usablePins(snapshot, method, pinned)}
+            noun={copy.noun}
+            network={method !== 'local'}
+            onChange={onPinned}
+          />
           <h3>How this Mac is used</h3>
           <ModeChoice mode={mode} onChange={onMode} />
         </div>

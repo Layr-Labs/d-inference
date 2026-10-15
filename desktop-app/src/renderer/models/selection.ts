@@ -1,9 +1,13 @@
 import type { NativeModel, Snapshot } from '../../shared/contracts';
 
+// Network serving and Autopilot advertise only catalog models. The model list also holds every
+// model found on disk, which Local only can run but the network never routes to.
+export const servesNetwork = (model: NativeModel) => model.eligible && model.network !== false;
+
 // A model already on disk starts without a download; otherwise the smallest eligible download
 // gets this Mac serving soonest.
 export function startingModel(snapshot: Snapshot): NativeModel | undefined {
-  const eligible = snapshot.models.filter((model) => model.eligible);
+  const eligible = snapshot.models.filter(servesNetwork);
   return (
     eligible.find((model) => model.downloaded) ??
     eligible.reduce<NativeModel | undefined>(

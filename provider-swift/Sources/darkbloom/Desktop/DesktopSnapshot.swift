@@ -58,6 +58,9 @@ extension DesktopBackend {
         "memory_gb": .number(local?.estimatedMemoryGb), "downloaded": .bool(local != nil),
         "serving": .bool(selected.contains(id)), "loaded": .bool(resident.contains(id)),
         "eligible": .bool(reason == nil), "reason": reason.map(DV.string) ?? .null,
+        // Only catalog models can be advertised or enrolled in Autopilot; a
+        // model found only on disk is eligible for local-only serving.
+        "network": .bool(entry != nil),
         "description": entry?.description.map(DV.string) ?? .null,
         "context_length": .number(entry?.maxContextLength.map(Double.init)),
         "family": entry?.family.map(DV.string) ?? .null,

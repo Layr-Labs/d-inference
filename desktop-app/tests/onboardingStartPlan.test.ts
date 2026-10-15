@@ -22,10 +22,8 @@ describe('starting model', () => {
 
 describe('start action', () => {
   it('maps each method onto its runtime action', () => {
-    expect(methodFor('network', false)).toBe('autopilot');
-    expect(methodFor('network', true)).toBe('manual');
-    expect(methodFor('local', false)).toBe('local');
-    expect(methodFor('local', true)).toBe('local');
+    expect(methodFor(false)).toBe('autopilot');
+    expect(methodFor(true)).toBe('manual');
   });
 
   it('starts Autopilot on the starting model unless models are pinned, with sorted pins', () => {
@@ -49,12 +47,6 @@ describe('start action', () => {
       action: 'start',
       models: ['qwen-3.5-9b'],
       local: false,
-      endpoint: true,
-    });
-    expect(startAction(snapshot(), 'local', [])).toEqual({
-      action: 'start',
-      models: [],
-      local: true,
       endpoint: true,
     });
   });

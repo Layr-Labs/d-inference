@@ -1,16 +1,14 @@
 import type { Action, Snapshot } from '../../../shared/contracts';
 import { startingModel } from '../../models/selection';
-import type { ContributionMode } from './ModeChoice';
 
-// How the chosen models start: Autopilot, the plain `start` action after a runtime rejected
-// Autopilot, or a local-only start that never joins the network.
-export type StartMethod = 'autopilot' | 'manual' | 'local';
+// How the chosen models start: Autopilot, or the plain `start` action after a runtime rejected
+// Autopilot.
+export type StartMethod = 'autopilot' | 'manual';
 
-export const methodFor = (mode: ContributionMode, rejected: boolean): StartMethod =>
-  mode === 'local' ? 'local' : rejected ? 'manual' : 'autopilot';
+export const methodFor = (rejected: boolean): StartMethod => (rejected ? 'manual' : 'autopilot');
 
-// Autopilot starts the pinned models, or the starting model when nothing is pinned; the other
-// methods start exactly the chosen models.
+// Autopilot starts the pinned models, or the starting model when nothing is pinned; a manual
+// start starts exactly the chosen models.
 export function startModels(snapshot: Snapshot, method: StartMethod, pinned: string[]) {
   if (method !== 'autopilot' || pinned.length) return pinned;
   const model = startingModel(snapshot);
@@ -31,5 +29,5 @@ export function startAction(snapshot: Snapshot, method: StartMethod, pinned: str
       endpoint: true,
     };
   }
-  return { action: 'start', models, local: method === 'local', endpoint: true };
+  return { action: 'start', models, local: false, endpoint: true };
 }

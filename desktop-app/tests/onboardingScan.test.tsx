@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest';
 import { Onboarding } from '../src/renderer/components/Onboarding';
 import { scanTiming } from '../src/renderer/components/onboarding/scanScript';
 import type { BackendState } from '../src/renderer/useBackend';
-import { backendWith, eightGBMac, models, snapshot } from './onboardingFixtures';
+import { backendWith, eightGBMac, models, operation, snapshot } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({
   install: vi.fn(),
@@ -41,7 +41,7 @@ describe('welcome', () => {
     const { rerender } = render(<Onboarding backend={backend} done={vi.fn()} />);
     expect(heading('Put this Mac to work.')).toBeVisible();
     expect(currentStep()).toHaveTextContent('Check this Mac');
-    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.getAllByRole('button')).toHaveLength(3);
     elapse(30_000);
     expect(heading('Put this Mac to work.')).toBeVisible();
     rerender(<Onboarding backend={{ ...backend, state: snapshot() }} done={vi.fn()} />);
@@ -165,13 +165,13 @@ describe('ineligible Mac', () => {
 });
 
 describe('when the result is not known yet', () => {
-  it('keeps scanning until the runtime delivers a snapshot', () => {
+  it('waits for the runtime to deliver a snapshot, then checks a linked Mac', () => {
     const connecting = backendWith(undefined, {
       status: { state: 'connecting', message: 'Reconnecting to the runtime…' },
     });
     const { rerender } = renderOnboarding(connecting);
     elapse(30_000);
-    expect(heading('Checking this Mac…')).toBeVisible();
+    expect(heading('Connecting to this Mac…')).toBeVisible();
     expect(screen.getByText('Reconnecting to the runtime…')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Skip/ })).not.toBeInTheDocument();
     rerender(<Onboarding backend={backendWith(snapshot())} done={vi.fn()} />);
@@ -224,6 +224,66 @@ describe('when the result is not known yet', () => {
     await act(async () => resolveRefresh());
     elapse(revealMs);
     expect(heading('This Mac is eligible.')).toBeVisible();
+  });
+});
+
+describe('leaving setup', () => {
+  const explore = () => screen.getByRole('button', { name: /Explore the app first/ });
+
+  it('can be left for the app from every step', async () => {
+    const done = vi.fn();
+    const unlinked = snapshot({ linked: false });
+    const backend = backendWith(unlinked);
+    const view = render(<Onboarding backend={backend} done={done} />);
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    expect(heading('Link your account.')).toBeVisible();
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(2);
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Link account/ })));
+    const running = { ...operation('running', '', 'link'), cancellable: true };
+    view.rerender(
+      <Onboarding
+        backend={{ ...backend, state: { ...unlinked, operations: [running] } }}
+        done={done}
+      />,
+    );
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(3);
+    expect(backend.act).toHaveBeenLastCalledWith({ action: 'cancel', operation: running.id });
+    view.rerender(<Onboarding backend={{ ...backend, state: snapshot() }} done={done} />);
+    expect(heading('Checking this Mac…')).toBeVisible();
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(4);
+    elapse(revealMs);
+    expect(heading('This Mac is eligible.')).toBeVisible();
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(5);
+    fireEvent.click(screen.getByRole('button', { name: /Continue now/ }));
+    expect(heading('Ready to serve.')).toBeVisible();
+    expect(screen.getAllByRole('button', { name: /Explore the app first/ })).toHaveLength(1);
+    fireEvent.click(explore());
+    expect(done).toHaveBeenCalledTimes(6);
+  });
+
+  it('stops the check when setup is left mid-scan', () => {
+    const done = vi.fn();
+    const view = renderOnboarding(backendWith(snapshot()), done);
+    elapse(500);
+    fireEvent.click(explore());
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    elapse(60_000);
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('is not offered before the runtime connects, when there is no app to open', () => {
+    renderOnboarding(
+      backendWith(undefined, { status: { state: 'missing', message: 'Install the runtime.' } }),
+    );
+    expect(heading('Install Darkbloom to check this Mac.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Explore the app first/ })).toBeNull();
   });
 });
 

@@ -49,13 +49,7 @@ export function ServingSummary({
             ? 'Keeps pinned models loaded and manages the rest as demand changes.'
             : 'Chooses which downloaded models stay in memory as demand changes.',
         }
-      : {
-          icon: <Layers size={15} />,
-          text:
-            method === 'local'
-              ? 'Runs only for your apps on this Mac’s local endpoint.'
-              : 'Keeps these models loaded until you change them.',
-        },
+      : { icon: <Layers size={15} />, text: 'Keeps these models loaded until you change them.' },
     {
       icon: <RefreshCw size={15} />,
       text: snapshot.settings.auto_update

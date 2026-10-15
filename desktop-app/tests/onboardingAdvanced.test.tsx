@@ -77,22 +77,13 @@ it('refuses pins that need more memory than this Mac has', () => {
   expect(screen.getByRole('button', { name: /Start serving with Autopilot/ })).toBeDisabled();
 });
 
-it('runs locally only with at least one pinned model and no account', async () => {
-  const { backend, done } = openAdvanced(snapshot({ linked: false }));
-  fireEvent.click(screen.getByRole('radio', { name: /Use models locally/ }));
-  const start = screen.getByRole('button', { name: /Start local models/ });
-  expect(start).toBeDisabled();
-  expect(screen.getByText('Pin a model to run it locally.')).toBeVisible();
-  fireEvent.click(pin(/GPT-OSS 20B/));
-  expect(start).toBeEnabled();
-  expect(screen.getByText('Local only doesn’t need a Darkbloom account.')).toBeVisible();
-  await act(async () => fireEvent.click(start));
-  expect(backend.act).toHaveBeenCalledExactlyOnceWith(
-    { action: 'start', models: ['gpt-oss-20b'], local: true, endpoint: true },
-    true,
-  );
-  expect(done).toHaveBeenCalledOnce();
-  expect(api.act).not.toHaveBeenCalled();
+it('always contributes: Advanced no longer offers a local-only mode', () => {
+  const { panel } = openAdvanced();
+  expect(within(panel).queryByRole('heading', { name: 'How this Mac is used' })).toBeNull();
+  expect(within(panel).queryByRole('radiogroup')).toBeNull();
+  expect(screen.queryByText(/Use models locally/)).toBeNull();
+  expect(screen.queryByRole('button', { name: /Start local models/ })).toBeNull();
+  expect(screen.getByRole('button', { name: /Start serving with Autopilot/ })).toBeVisible();
 });
 
 it('falls back to choosing models manually when the runtime rejects Autopilot', async () => {

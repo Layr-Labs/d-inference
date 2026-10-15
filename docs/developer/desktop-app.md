@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-14
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -325,9 +325,13 @@ sampler and routes (`swift test --filter 'DarkbloomHardwareLoadTests|DesktopHard
 
 ## Onboarding
 
-First run has two steps, **Check this Mac** and **Start**. Start on the welcome
-view runs the eligibility scan. An eligible Mac moves on by itself; an ineligible
-one gets its reasons and a waitlist; an unconfirmed one can check again or continue.
+First run has three steps, **Link your account**, **Check this Mac** and
+**Start**. Start on the welcome view opens linking; an already linked Mac skips
+to the eligibility scan with the first step shown as done. An eligible Mac moves
+on by itself; an ineligible one gets its reasons and a waitlist; an unconfirmed
+one can check again or continue. "Explore the app first", beside the steps, leaves
+for the app from any step once the runtime has delivered a snapshot, and cancels
+a link in progress.
 
 - **Eligibility.** The scan reads the optional `Snapshot.eligibility` block
   (`desktop-app/src/shared/eligibility.ts`: `apple_silicon`, `memory`, `macos`,
@@ -356,15 +360,14 @@ one gets its reasons and a waitlist; an unconfirmed one can check again or conti
     (configured enrollment plus the live phase from `autopilot status --json`).
   - Pins use the existing CLI's unload protection while Autopilot holds ownership;
     pinning a cold model does not itself load it.
-- **Account linking.** An unlinked Mac runs the existing `link` action first and
-  starts serving as soon as the account is linked. A failed or cancelled link
-  returns to the start button.
+- **Account linking.** **Link account** runs the existing `link` action and
+  shows its code. Only **Open link page** opens the browser. Once the account is
+  linked, setup moves on to the scan. A failed or cancelled link returns to
+  **Link account**. A start on an unlinked Mac goes back to this step rather
+  than linking inline, then returns to Start.
 - **Fallback.** A runtime that rejects `autopilot` by name keeps the starting
   model selected and offers "Choose models manually". That path uses the
   existing `start` action with the chosen models.
-- **Local only.** Under Advanced, "Use models locally" starts
-  `{ action: 'start', local: true }` with at least one pinned model and needs no
-  account.
 - **Updates.** Onboarding never writes settings, so an automatic-update opt-out
   is preserved.
 

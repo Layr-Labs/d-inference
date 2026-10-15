@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -181,3 +181,11 @@ the process prints its listening address and the daemon-state file is not used.
 - [CLI reference](./cli-reference.md) — `start`, `local` flags and paths.
 - [Beta features](./beta-features.md) — MTP and paged KV apply to local serving too.
 - [`reference/configuration.md`](../reference/configuration.md) — media limits and engine variables.
+
+## Graceful drain
+
+After local admission closes for shutdown, a new POST receives HTTP `503`
+with a structured capacity response (`invalid_request_error`) from `LocalDisconnectResponder`.
+CORS headers remain present. Health checks and preflight requests still work,
+and already admitted responses retain their existing owner. Retry a rejected
+request after the provider is serving again.

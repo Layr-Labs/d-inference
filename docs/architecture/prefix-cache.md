@@ -49,7 +49,7 @@ change backend selection or native serving-memory charges.
 | Prefix-reuse backend | `.contiguousUnquantized` | `.pagedFP16` |
 
 The default setting remains `"auto"`. In the candidate, it prefers paged only
-for these exact fleet/private-candidate identities, not family names, aliases or substrings:
+for these exact fleet/candidate identities, not family names, aliases or substrings:
 
 - `Qwen3.5-9B` (the production catalog ID, matched case-sensitively; the
   lowercase `qwen3.5-9b` and the `Qwen/Qwen3.5-9B` repo path are not listed)
@@ -65,6 +65,8 @@ for these exact fleet/private-candidate identities, not family names, aliases or
 - `ternary-bonsai-2-27b`
 - `EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit`
 - `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`
+- `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` (separate 9B policy)
+- `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` (same separate 9B policy)
 - `EigenLabs/pplx-decider-v1-27b-MLX-4bit` and `pplx-decider-v1-27b` (the
   dense Qwen 3.8 27B target with a decision head;
   `EngineV2SupportedModels.isPplxDeciderListingModelID`)
@@ -153,6 +155,19 @@ rectangular verification. Enabling source policy is not evidence of cache hits
 or full-artifact qualification; use the [release acceptance steps](../operations/provider-release.md).
 
 ### Bonsai complete state
+
+The 9B identity independently defaults to paged attention and SSD prefix
+caching; it does not join the 27B admission or MTP cohort. The qualification
+configuration selects native live KV and native checkpoint precision. Runtime
+capability, authenticated cache identity, key availability, operator opt-outs
+and write-budget checks still apply. Ordinary 9B vision submissions remain
+ineligible for prefix reuse; a warm model is not a cache hit.
+The optional explicit local 9B MTP binding retains the native Qwen text model's
+cache identity and complete assistant checkpoints; see
+[inference policy](inference.md) and `PrismHadamardQwen35.cbv2MTPTargetIdentity` in
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/PrismHadamardQwen35.swift`.
+Plain, serial-MTP and rectangular-MTP restoration require separate actual-model
+qualification; identity forwarding alone does not establish cache parity.
 
 Bonsai uses the existing complete-checkpoint path to restore attention KV and
 recurrent state together. `EngineV2SupportedModels.isBonsai2ListingModelID`

@@ -174,9 +174,10 @@ private struct DrafterFixture {
 
     /// - Parameter corruptWeightSHA: when true, the manifest lists a SHA-256
     ///   for the weight file that does NOT match the served bytes.
-    init(prefix: String, corruptWeightSHA: Bool = false) {
+    init(prefix: String, corruptWeightSHA: Bool = false,
+         configBytes: Data = Data(#"{"model_type": "gemma4_assistant"}"#.utf8)) {
         self.prefix = prefix
-        self.configBytes = Data(#"{"model_type": "gemma4_assistant"}"#.utf8)
+        self.configBytes = configBytes
         self.weightBytes = Data((0..<4096).map { UInt8(($0 &* 31 &+ 7) & 0xFF) })
         let weightSHA = corruptWeightSHA
             ? String(repeating: "d", count: 64)
@@ -219,6 +220,13 @@ private struct DrafterFixture {
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(manifest)
     }
+}
+
+private actor PinnedBonsaiCatalog: SpecDecCatalogLooking {
+    let pinned: CatalogModel
+    init(_ pinned: CatalogModel) { self.pinned = pinned }
+    func cachedModel(id: String) -> CatalogModel? { id == pinned.id ? pinned : nil }
+    func model(id: String) async throws -> CatalogModel? { id == pinned.id ? pinned : nil }
 }
 
 private func makeModel(id: String, specDecPrefix: String?) -> CatalogModel {
@@ -401,6 +409,40 @@ struct SpecDecResolverTests {
         #expect(await resolver.prefetch(model: model).reason == .manifestFetchFailed)
         #expect(!FileManager.default.fileExists(
             atPath: SpecDecStore.artifactDirectory(root: storeRoot, r2Prefix: prefix).path))
+    }
+
+    @Test("default Bonsai auto returns the verified cached catalog head without a local override",
+          arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
+    func automaticBonsaiCachedCatalogCandidate(modelID: String) async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let prefix = "v2-specdec/bonsai9b-catalog/v1"
+        let fixture = DrafterFixture(prefix: prefix,
+            configBytes: Data(#"{"model_type":"qwen3_5_mtp","text_config":{"mtp_num_hidden_layers":1}}"#.utf8))
+        server.setFiles(try fixture.served())
+        let storeRoot = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: storeRoot) }
+        let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: modelID, fixture: fixture)
+        let artifactFunnel = SpecDecArtifactFunnel(resolver: resolver, catalog: PinnedBonsaiCatalog(model))
+        let request = SpecDecArtifactFunnel.Request(modelId: modelID, modelType: "prism_hadamard_qwen35",
+            enabled: BackendSettings().mtpMode.enablesMTP(forModelType: "prism_hadamard_qwen35",
+                embeddedArtifactDeclared: false, modelID: modelID),
+            localPath: nil, allowDownload: false, environment: [:])
+        #expect(await artifactFunnel.prepare(request).status.reason == .artifactNotCached)
+        let stored = try #require(await resolver.prefetch(model: model).artifact)
+        #expect(!server.requestedPaths().isEmpty)
+        server.clearRequested()
+        for _ in 0..<2 {
+            let candidate = try #require(await artifactFunnel.prepare(request).artifact)
+            #expect(candidate.source == .catalog)
+            #expect(candidate.directory == stored.directory)
+            #expect(candidate.revision == fixture.manifest.version)
+        }
+        #expect(server.requestedPaths().isEmpty)
+        await artifactFunnel.shutdown()
+        await server.shutdown()
     }
 
     @Test("warm re-resolve returns the stored copy with zero network traffic")

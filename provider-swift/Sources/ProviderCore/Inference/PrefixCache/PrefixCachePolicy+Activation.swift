@@ -34,6 +34,7 @@ extension PrefixCachePolicy {
         var defaultEnabled = EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
             || EngineV2SupportedModels.isQwen4ExpListingModelID(modelId)
             || EngineV2SupportedModels.isBonsai2ListingModelID(modelId)
+            || Bonsai9BModelPolicy.matchesModelID(modelId)
             || EngineV2SupportedModels.isPplxDeciderListingModelID(modelId)
             || isMiMoDefaultModel(modelId)
         switch modelId {

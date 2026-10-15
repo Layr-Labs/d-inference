@@ -31,7 +31,8 @@ enum ToolChoiceEnforcementPolicy {
     static func supportsForcedMedia(context: ChatTemplateFixContext, nativeWrapperLoaded: Bool) -> Bool {
         if nativeWrapperLoaded && context.modelType == "diffusion_gemma" { return true }
         return nativeWrapperLoaded && context.modelType == "prism_hadamard_qwen35"
-            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+            && (EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+                || Bonsai9BModelPolicy.matches(modelId: context.modelId, modelType: context.modelType))
     }
 
     static func isFramingWhitespace(_ text: String) -> Bool {
@@ -93,7 +94,8 @@ enum ToolChoiceEnforcementPolicy {
         // never an AR automaton advanced on provisional canvas tokens.
         if type == "diffusion_gemma" { return true }
         if type == "prism_hadamard_qwen35" {
-            return EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+            return (EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+                || Bonsai9BModelPolicy.matches(modelId: context.modelId, modelType: context.modelType))
         }
         return type == "nemotron_h"
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
@@ -119,7 +121,8 @@ enum ToolChoiceEnforcementPolicy {
             return true
         }
         return context.modelType == "prism_hadamard_qwen35"
-            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+            && (EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+                || Bonsai9BModelPolicy.matches(modelId: context.modelId, modelType: context.modelType))
     }
 
     static func validateParser(

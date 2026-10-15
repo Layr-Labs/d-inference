@@ -1,6 +1,9 @@
 {
   "schema": 1,
-  "releaseVersionMarker": "-dev.",
+  "releaseVersionMarkers": {
+    "dev": "-dev.",
+    "staging": "-staging."
+  },
   "swiftProducts": {
     "cli": "darkbloom",
     "enclave": "darkbloom-enclave"
@@ -44,6 +47,26 @@
       "modelRevisionRef": "darkbloom-dev",
       "coordinatorHTTPURL": "https://api.dev.darkbloom.dev",
       "coordinatorWebSocketURL": "wss://api.dev.darkbloom.dev/ws/provider",
+      "modelCDNURL": "https://models.darkbloom.ai"
+    },
+    "staging": {
+      "cliName": "darkbloom-staging",
+      "enclaveName": "darkbloom-enclave-staging",
+      "appBundleName": "Darkbloom Staging.app",
+      "appDisplayName": "Darkbloom Staging",
+      "installDirectoryName": ".darkbloom-staging",
+      "configDirectoryName": ".config/darkbloom-staging",
+      "legacyConfigDirectoryNames": [],
+      "launchAgentLabel": "io.darkbloom.provider.staging",
+      "watchdogAgentLabel": "io.darkbloom.watchdog.staging",
+      "logSubsystem": "com.darkbloom.provider.staging",
+      "serviceLogSubsystem": "dev.darkbloom.provider.staging",
+      "defaultLocalPort": 8002,
+      "keychainServicePrefix": "io.darkbloom.staging",
+      "encryptedCacheNamespace": "darkbloom-staging",
+      "modelRevisionRef": "darkbloom-staging",
+      "coordinatorHTTPURL": "https://api.staging.darkbloom.dev",
+      "coordinatorWebSocketURL": "wss://api.staging.darkbloom.dev/ws/provider",
       "modelCDNURL": "https://models.darkbloom.ai"
     }
   }

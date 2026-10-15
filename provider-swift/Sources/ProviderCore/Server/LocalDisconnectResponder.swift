@@ -28,7 +28,16 @@ where Inner.Context == BasicRequestContext {
     var responseTracker: LocalResponseTracker? = nil
 
     public func respond(to request: Request, context: Context) async throws -> Response {
-        let lease = request.method == .post ? try responseTracker?.admit() : nil
+        let lease: LocalResponseTracker.Lease?
+        do {
+            lease = request.method == .post ? try responseTracker?.admit() : nil
+        } catch let error as HTTPError where error.status == .serviceUnavailable {
+            // Admission wraps the router's error mapper, so render this refusal
+            // here before creating request or response ownership.
+            return CORSResponder<Inner>.openAIErrorResponse(
+                status: .serviceUnavailable,
+                message: InferenceFailureCode.capacity.message)
+        }
         let scope = context.connection.makeScope()
         let task = Task<Response, Error> {
             try await LocalRequestCancellation.$current.withValue(scope) {

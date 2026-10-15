@@ -28,13 +28,18 @@ if [[ ! "$PROVIDER_VERSION" =~ $SEMVER ]]; then
     echo "release version check: invalid ProviderCore.version: $PROVIDER_VERSION" >&2
     exit 1
 fi
-# A dev release is the source version plus -dev.<run number>. The release
-# build stamps that full value into ProviderCore.version before compiling.
+# A dev release is the source version plus -dev.<run number>; a staging release
+# is the source version plus -staging.<run number>. The master dev lane uses
+# -dev.N; the experimental dev-branch lane
+# (.github/workflows/release-dev-branch.yml) uses -dev.branch.N so a branch
+# build never collides with a master dev build. The release build stamps the
+# full value into ProviderCore.version before compiling.
 RELEASE_VERSION=$PROVIDER_VERSION
 if [ -n "$EXPECTED" ]; then
     EXPECTED=${EXPECTED#v}
     if [ "$PROVIDER_VERSION" != "$EXPECTED" ] &&
-        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-dev\.[1-9][0-9]*$ ]]; then
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-dev\.(branch\.)?[1-9][0-9]*$ ]] &&
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-staging\.[1-9][0-9]*$ ]]; then
         echo "release version check: source=$PROVIDER_VERSION requested=$EXPECTED" >&2
         exit 1
     fi

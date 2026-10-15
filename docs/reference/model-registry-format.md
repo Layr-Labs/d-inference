@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -349,7 +349,23 @@ build; aliases with neither are omitted).
 |---|---|---|
 | `darkbloom-publish hash <dir> --id <model_id> --version <version> [-o manifest.json]` | `provider-swift/Sources/darkbloom-publish/HashCommand.swift` | validates id/version before hashing; writes to stdout without `-o` |
 | `scripts/publish-model.sh` | interactive; env `R2_ACCOUNT_ID` (required), `R2_BUCKET` (`darkbloom-models`), `R2_ACCESS_KEY_SECRET` / `R2_SECRET_KEY_SECRET` (GCP Secret Manager names `darkbloom-r2-access-key-id`, `darkbloom-r2-secret-access-key`) | runs the hasher via `swift run -c release`, uploads files with concurrency 8, uploads `manifest.json` last; optional env `HUGGING_FACE_ARTIFACT_JSON` validates an existing public HF artifact and passes it into the printed registration command; prints a `gh workflow run register-model.yml` command; defaults `required_provider_capabilities` to `apple_m5,mlx_nax` for `EigenLabs/Qwen3.8-27B-4bit` |
-| `.github/workflows/register-model.yml` | `workflow_dispatch` inputs mirroring the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`; `coordinator_url` defaults to `https://api.darkbloom.dev`) | builds the payload with `jq` and POSTs with `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}` |
+| `.github/workflows/register-model.yml`, default `publish_revision_only=false` | `model_id`, `version`, `display_name`, `quantization`, positive integer context/output limits, RAM and prices; other inputs mirror the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`) | validates registration-only inputs, builds the payload with `jq`, and POSTs to `/v1/admin/models/register` |
+| Same workflow, `publish_revision_only=true` | `model_id`, `version`, explicit `promote=true`, optional `hugging_face_artifact_json`; registration-only inputs are ignored | POSTs `{"version":"...","hugging_face_artifact":null}` (or the supplied artifact object) to `/v1/admin/models/{encoded_model_id}/publish-revision`; preserves metadata/prices and promotes the revision |
+
+Both workflow modes default `coordinator_url` to `https://api.darkbloom.dev` and
+use `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}`. Neither
+uploads bytes or uses R2 credentials. The canonical manifest and all serving
+files must already be published. Only `model_id` and `version` are required by
+the dispatch form; the normal registration step rejects missing registration
+fields and nonpositive or noninteger limits, RAM and prices before any HTTP
+request. See the [operation decision table](../operations/model-revisions.md#choose-the-operation-first)
+for upload versus registry-only work.
+
+Revision-only mode rejects `promote=false` before HTTP because the existing
+`publish-revision` action always promotes. It cannot stage an inactive version;
+use normal registration with `promote=false` for that operation. The optional
+HF source follows the [existing revision retry contract](#admin-actions): null
+means R2-only for a new version and preserves the stored source on retry.
 
 ## Related
 

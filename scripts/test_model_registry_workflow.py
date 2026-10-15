@@ -12,6 +12,17 @@ import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / '.github/workflows/register-model.yml'
+REGISTRATION_FIELDS = ('DISPLAY_NAME', 'QUANTIZATION', 'MAX_CONTEXT_LENGTH',
+                       'MAX_OUTPUT_LENGTH', 'MIN_RAM_GB', 'INPUT_PRICE', 'OUTPUT_PRICE')
+
+
+def input_block(name):
+    """Read one dispatch input's settings without adding a YAML dependency."""
+    lines = WORKFLOW.read_text().splitlines()
+    start = lines.index('      ' + name + ':') + 1
+    stop = next(i for i in range(start, len(lines))
+                if lines[i] and not lines[i].startswith('        '))
+    return lines[start:stop]
 
 
 def step(name):
@@ -75,8 +86,10 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
                               text=True, timeout=15)
 
     def test_existing_upload_needs_only_coordinator_credentials(self):
-        # Invalid/empty registration fields cannot leak into the revision API.
-        self.env.update(INPUT_PRICE='', MAX_CONTEXT_LENGTH='', METADATA_JSON='not-json')
+        # A minimal dispatch supplies no registration-only metadata or prices.
+        for name in REGISTRATION_FIELDS:
+            self.env.pop(name)
+        self.env['METADATA_JSON'] = 'not-json'
         with coordinator() as (url, requests):
             self.env['COORDINATOR_URL'] = url
             built = self.run_step('Build revision-only payload')
@@ -104,6 +117,26 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
         self.assertEqual(body['capabilities'], ['chat', 'tools'])
         self.assertEqual((body['input_price'], body['output_price']), (80000, 130000))
         self.assertNotIn('cache_read_price', body)
+
+    def test_registration_still_requires_metadata_limits_and_prices(self):
+        original = self.env.copy()
+        with coordinator() as (url, requests):
+            for name in REGISTRATION_FIELDS:
+                with self.subTest(missing=name):
+                    self.env = dict(original, COORDINATOR_URL=url, **{name: ''})
+                    self.assertNotEqual(self.run_step('Build registration payload').returncode, 0)
+            for name in REGISTRATION_FIELDS[2:]:
+                for value in ('0', '-1', '1.5'):
+                    with self.subTest(field=name, invalid=value):
+                        self.env = dict(original, COORDINATOR_URL=url, **{name: value})
+                        self.assertNotEqual(self.run_step('Build registration payload').returncode, 0)
+        self.assertEqual(requests, [])
+
+    def test_dispatch_requires_only_model_and_version(self):
+        for name in REGISTRATION_FIELDS:
+            self.assertIn('        required: false', input_block(name.lower()), name)
+        for name in ('model_id', 'version'):
+            self.assertIn('        required: true', input_block(name), name)
 
     def test_malformed_source_stops_before_publication(self):
         self.env['HUGGING_FACE_ARTIFACT_JSON'] = 'not-json'

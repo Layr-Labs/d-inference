@@ -13,7 +13,7 @@ embedded MTP checkpoint under an existing model ID. For a new model ID or a
 quantization exposed as a separate build, use [model migration](model-migration.md).
 Overwriting an already published R2 revision is rejected.
 
-## Choose the operation first
+### Choose the operation first
 
 | State | Operation | Credentials |
 |---|---|---|
@@ -115,8 +115,9 @@ version with identical bytes.
    accepts `publish_revision_only=true`. It invokes `publish-revision` with the
    version and optional pinned HF artifact, preserving model metadata and prices.
    It uses only `MODEL_REGISTRY_PUBLISHING_KEY`; it does not need R2 credentials
-   or a local GCP login. The workflow's other required model inputs are ignored
-   in this mode. Keep `publish_revision_only=false` for normal registration.
+   or a local GCP login. Registration-only inputs are optional at dispatch and
+   ignored in this mode; normal registration validates them before sending.
+   Keep `publish_revision_only=false` for normal registration.
 
    To use a different HF source for this revision, add these flags to both the
    preview and publication commands:

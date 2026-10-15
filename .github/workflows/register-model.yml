@@ -18,8 +18,8 @@ on:
         description: Manifest version
         required: true
       display_name:
-        description: Human-readable display name
-        required: true
+        description: Human-readable display name (required for registration)
+        required: false
       family:
         description: Model family
         required: false
@@ -29,8 +29,8 @@ on:
         required: false
         default: ''
       quantization:
-        description: Quantization
-        required: true
+        description: Quantization (required for registration)
+        required: false
       capabilities_csv:
         description: Comma-separated capabilities (OpenRouter features, e.g. tools,reasoning,json_mode). Leave empty and opt in per model to avoid overstating capabilities.
         required: false
@@ -40,14 +40,14 @@ on:
         required: false
         default: ""
       max_context_length:
-        description: Maximum context length
-        required: true
+        description: Maximum context length (required for registration)
+        required: false
       max_output_length:
-        description: Maximum output length
-        required: true
+        description: Maximum output length (required for registration)
+        required: false
       min_ram_gb:
-        description: Minimum RAM in GB
-        required: true
+        description: Minimum RAM in GB (required for registration)
+        required: false
       description:
         description: Model description
         required: false
@@ -65,12 +65,12 @@ on:
         required: false
         default: '{}'
       input_price:
-        description: Input price in micro-USD per 1M tokens (e.g. 15000 = $0.015)
-        required: true
+        description: Input price in micro-USD per 1M tokens (required for registration, e.g. 15000 = $0.015)
+        required: false
         type: number
       output_price:
-        description: Output price in micro-USD per 1M tokens (e.g. 70000 = $0.070)
-        required: true
+        description: Output price in micro-USD per 1M tokens (required for registration, e.g. 70000 = $0.070)
+        required: false
         type: number
       cache_read_price:
         description: Optional price for prompt tokens served from a provider's prefix cache (OpenRouter input_cache_read), micro-USD per 1M tokens, 0..input_price. Empty = half the input price, and clears any rate previously set for this model.
@@ -113,6 +113,12 @@ jobs:
           OUTPUT_PRICE: ${{ inputs.output_price }}
           CACHE_READ_PRICE: ${{ inputs.cache_read_price }}
         run: |
+          for registration_field in DISPLAY_NAME QUANTIZATION MAX_CONTEXT_LENGTH MAX_OUTPUT_LENGTH MIN_RAM_GB INPUT_PRICE OUTPUT_PRICE; do
+            if [ -z "${!registration_field}" ]; then
+              echo "$registration_field is required for registration" >&2
+              exit 1
+            fi
+          done
           jq -n \
             --arg model_id "$MODEL_ID" \
             --arg version "$VERSION" \
@@ -148,6 +154,9 @@ jobs:
                     end
                 end;
 
+            if ([$max_context_length, $max_output_length, $min_ram_gb, $input_price, $output_price]
+                | all(type == "number" and . > 0 and . == floor)) then .
+            else error("registration limits, RAM and prices must be positive integers") end |
             {
               model_id: $model_id,
               version: $version,

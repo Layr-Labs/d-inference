@@ -426,21 +426,6 @@ touch scrolling or responsive carousel layout. Search/discovery after an
 authorized deployment needs separate read-only inspection; local success is
 not live verification.
 
-## Reporting Results
-
-Report exact selector, revision, native resources and model identity. Distinguish
-compile-only, fixed vectors, tiny native fixtures, full-model execution,
-signed-artifact tests and private platform integration. Document skips and
-unavailable hardware honestly. Local validation does not authorize deployment.
-
-## Related
-
-- [Build](build.md)
-- [Serving-performance qualification](serving-performance-qualification.md)
-- [Historical references](historical-references.md)
-- [Provider release](../operations/provider-release.md)
-
-
 ## Model publication workflow checks
 
 Run `python3 scripts/test_model_registry_workflow.py` to exercise the actual
@@ -454,3 +439,17 @@ Python, jq and curl, matching the workflow runner.
 reservation. `actionlint .github/workflows/register-model.yml` checks workflow
 syntax. These checks do not establish native model quality or serving capacity;
 use the [publication runbook](../operations/model-revisions.md) for those checks.
+
+## Reporting Results
+
+Report exact selector, revision, native resources and model identity. Distinguish
+compile-only, fixed vectors, tiny native fixtures, full-model execution,
+signed-artifact tests and private platform integration. Document skips and
+unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Related
+
+- [Build](build.md)
+- [Serving-performance qualification](serving-performance-qualification.md)
+- [Historical references](historical-references.md)
+- [Provider release](../operations/provider-release.md)

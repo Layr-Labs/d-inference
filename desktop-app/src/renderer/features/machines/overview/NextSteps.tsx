@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Route } from '../../../../shared/contracts';
 import type { BackendState } from '../../../useBackend';
 import { api } from '../../../useBackend';
@@ -14,6 +15,15 @@ export function NextSteps({
   backend: BackendState;
   navigate: (route: Route) => void;
 }) {
+  const [copied, setCopied] = useState('');
+  const copy = async (code: string) => {
+    try {
+      await api?.copy(code);
+      setCopied(code);
+    } catch {
+      setCopied('');
+    }
+  };
   const run = (action: StepAction) => {
     if (action.kind === 'route') navigate(action.route);
     else if (action.kind === 'act') void backend.act(action.action);
@@ -38,6 +48,14 @@ export function NextSteps({
             <div>
               <strong>{step.title}</strong>
               <p>{step.detail}</p>
+              {step.code && (
+                <div className={styles.stepCode}>
+                  <strong aria-label={`Link code ${step.code}`}>{step.code}</strong>
+                  <button type="button" className="text-link" onClick={() => void copy(step.code!)}>
+                    {copied === step.code ? 'Copied' : 'Copy code'}
+                  </button>
+                </div>
+              )}
             </div>
             {step.actions.length > 0 && (
               <div className={styles.stepActions}>

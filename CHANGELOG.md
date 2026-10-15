@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop account link actions
 
-- Ask before unlinking this Mac from Settings, like other removals; unlinking previously happened on a single click. On Home, stop offering Link account again while a link is in progress or its code is shown, so repeated clicks no longer start new link requests.
+- Ask before unlinking this Mac from Settings, like other removals; unlinking previously happened on a single click. On Home, stop offering Link account again while a link is in progress or its code is shown, so repeated clicks no longer start new link requests. This Mac's "Finish linking this Mac" step shows the link code large and on its own, with a Copy code button, instead of inside a sentence.
 
 ## Unreleased — desktop hardware load
 

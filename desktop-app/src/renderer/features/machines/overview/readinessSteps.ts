@@ -84,7 +84,9 @@ export function linkStep(state: Snapshot): ReadinessStep {
     ? {
         id: 'link',
         title: 'Finish linking this Mac',
-        detail: `Enter code ${state.link.code} in your browser to attribute this Mac’s earnings to your account.`,
+        detail:
+          'Enter this code on the link page to attribute this Mac’s earnings to your account.',
+        code: state.link.code,
         actions: [{ kind: 'link-page', label: 'Open link page' }],
       }
     : {

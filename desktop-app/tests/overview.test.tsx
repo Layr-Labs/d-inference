@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 
 let LocalOverview: typeof import('../src/renderer/features/machines/overview/LocalOverview').LocalOverview;
@@ -137,7 +137,13 @@ it('opens the link page while a link code is pending', async () => {
     },
   };
   render(<LocalOverview backend={backend} navigate={vi.fn()} />);
-  expect(health()).toHaveTextContent('Enter code ABCD-1234 in your browser');
+  // The code stands on its own, not inside a sentence, and can be copied.
+  expect(within(health()).getByLabelText('Link code ABCD-1234')).toHaveTextContent(/^ABCD-1234$/);
+  expect(health()).toHaveTextContent('Enter this code on the link page');
+  const copy = vi.spyOn(previewAPI, 'copy').mockResolvedValue();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Copy code' })));
+  expect(copy).toHaveBeenCalledWith('ABCD-1234');
+  expect(screen.getByRole('button', { name: 'Copied' })).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Open link page' }));
   expect(open).toHaveBeenCalledWith('link');
 });

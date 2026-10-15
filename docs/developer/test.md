@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -425,6 +425,22 @@ without a server. DOM tests do not replace browser checks for pointer capture,
 touch scrolling or responsive carousel layout. Search/discovery after an
 authorized deployment needs separate read-only inspection; local success is
 not live verification.
+
+## Model publication workflow checks
+
+Run `python3 scripts/test_model_registry_workflow.py` to exercise the actual
+workflow shell steps against a loopback HTTP server with fixture credentials.
+It checks that an uploaded revision sends only revision identity, needs no R2
+credentials, preserves normal registration payloads, and propagates failures.
+It also rejects unconfirmed revision promotion while retaining staged-only
+normal registration.
+CI runs this suite without contacting production. The test host needs Bash,
+Python, jq and curl, matching the workflow runner.
+
+`python3 scripts/test_publish_model_revision.py` covers the immutable upload
+reservation. `actionlint .github/workflows/register-model.yml` checks workflow
+syntax. These checks do not establish native model quality or serving capacity;
+use the [publication runbook](../operations/model-revisions.md) for those checks.
 
 ## Reporting Results
 

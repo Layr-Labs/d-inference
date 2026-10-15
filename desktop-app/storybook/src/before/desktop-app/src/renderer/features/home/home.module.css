@@ -1,0 +1,133 @@
+.dashboard {
+  display: grid;
+  gap: 18px;
+}
+.dashboard > header {
+  margin: 0;
+}
+.dashboard > header h1 {
+  font-size: 28px;
+}
+.contribution {
+  padding: 4px 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+}
+.generated {
+  text-align: right;
+  padding-bottom: 2px;
+}
+.generated strong {
+  display: block;
+  font-size: 27px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.generated span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.shared > span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+.shared > strong {
+  display: block;
+  font-size: clamp(40px, 4.2vw, 60px);
+  font-weight: 500;
+  letter-spacing: -3px;
+  line-height: 1.15;
+  margin: 10px 0;
+  font-variant-numeric: tabular-nums;
+}
+.shared small {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.contribution button:not([class]),
+.footer button:not([class]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.contribution button:not([class]):hover,
+.footer button:not([class]):hover {
+  color: var(--accent-brand);
+}
+.activity {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  min-width: 0;
+}
+.activity > * {
+  flex: 1;
+  min-height: 0;
+}
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  font-size: 10px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.footer > span {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.footer b {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+@media (max-height: 760px) {
+  .dashboard {
+    gap: 14px;
+  }
+  .contribution {
+    padding: 0;
+  }
+  .shared > strong {
+    font-size: 46px;
+    margin: 6px 0;
+  }
+  .dashboard > header h1 {
+    font-size: 24px;
+  }
+  .footer {
+    padding-top: 10px;
+  }
+}
+@media (max-width: 1000px) {
+  .shared > strong {
+    font-size: 46px;
+  }
+}
+
+.tokenBreakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.tokenBreakdown b {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}

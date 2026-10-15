@@ -1,0 +1,200 @@
+body {
+  background: var(--bg-primary, #0b0b0c);
+}
+.sb-compare {
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+  color: var(--text-primary, #e8e8ea);
+}
+.sb-intro h1 {
+  margin: 6px 0 14px;
+  font-size: 24px;
+}
+.sb-pr {
+  font: 600 12px/1 ui-monospace, monospace;
+  color: #a5b4fc;
+  text-decoration: none;
+  border: 1px solid #6366f1;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+.sb-explain {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.sb-explain section {
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.sb-explain h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 6px;
+}
+.sb-explain p,
+.sb-explain ul {
+  margin: 4px 0;
+}
+.sb-wrong {
+  background: #3f1418;
+  border: 1px solid #7f1d1d;
+}
+.sb-wrong h2 {
+  color: #fca5a5;
+}
+.sb-fixed {
+  background: #0f2e22;
+  border: 1px solid #065f46;
+}
+.sb-fixed h2 {
+  color: #6ee7b7;
+}
+.sb-panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.sb-panes.sb-stack {
+  grid-template-columns: 1fr;
+}
+.sb-pane {
+  border-radius: 12px;
+  overflow: hidden;
+  min-width: 0;
+}
+.sb-before {
+  border: 2px solid #b91c1c;
+}
+.sb-after {
+  border: 2px solid #059669;
+}
+.sb-badge {
+  margin: 0;
+  padding: 8px 14px;
+  font: 600 12px/1.2 ui-monospace, monospace;
+  letter-spacing: 0.04em;
+}
+.sb-before .sb-badge {
+  background: #7f1d1d;
+  color: #fef2f2;
+}
+.sb-after .sb-badge {
+  background: #065f46;
+  color: #ecfdf5;
+}
+/* A transform makes fixed-position UI (dialogs, toasts) stay inside its pane. */
+.sb-surface {
+  position: relative;
+  transform: translateZ(0);
+  overflow: auto;
+  background: var(--bg-primary, #0b0b0c);
+}
+.sb-surface > .page-content {
+  padding: 20px;
+  max-width: none;
+  margin: 0;
+}
+.sb-log {
+  border-top: 1px solid #ffffff1f;
+  padding: 10px 14px;
+  font-size: 12px;
+  background: #111114;
+}
+.sb-log ol {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.sb-log code {
+  word-break: break-all;
+}
+.sb-log p {
+  margin: 6px 0 0;
+  opacity: 0.7;
+}
+.sb-observed {
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #ffffff0d;
+  border: 1px dashed #ffffff33;
+}
+@media (max-width: 900px) {
+  .sb-explain,
+  .sb-panes {
+    grid-template-columns: 1fr;
+  }
+}
+.sb-frame-box {
+  width: 100%;
+  aspect-ratio: 1320 / 880;
+  overflow: hidden;
+  position: relative;
+  border-radius: 8px;
+  border: 1px solid #ffffff1f;
+}
+.sb-frame-box iframe {
+  width: 1320px;
+  height: 880px;
+  border: 0;
+  transform: scale(var(--sb-frame-scale, 0.5));
+  transform-origin: 0 0;
+  position: absolute;
+  inset: 0;
+}
+.sb-demo {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.sb-steps {
+  margin: 12px 0 0;
+  padding: 12px 12px 12px 32px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.sb-steps-bad {
+  background: #3f141880;
+  border: 1px solid #7f1d1d;
+}
+.sb-steps-good {
+  background: #0f2e2280;
+  border: 1px solid #065f46;
+}
+.sb-shot {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+.sb-shot img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid #ffffff1f;
+  justify-self: start;
+}
+.sb-shot figcaption {
+  font: 600 12px/1 ui-monospace, monospace;
+  opacity: 0.8;
+}
+
+/* Walkthroughs: one flow of the current app as a sequence of states. */
+.sb-flow-intro { max-width: 900px; color: var(--text-secondary, #b8b8c0); line-height: 1.5; }
+.sb-flow { list-style: none; margin: 0; padding: 0 24px 32px; display: grid; gap: 28px; }
+.sb-flow-step { display: grid; gap: 8px; }
+.sb-flow-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.sb-flow-head h2 { font-size: 16px; margin: 0; }
+.sb-flow-n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #3b3b52; font-size: 12px; margin-right: 4px; }
+.sb-flow-prs { font-size: 12px; opacity: 0.85; }
+.sb-flow-note { max-width: 900px; font-size: 13px; line-height: 1.5; opacity: 0.9; }
+.sb-flow-note p { margin: 0 0 4px; }
+
+/* Several full onboarding screens in one pane: drop the window-height minimum. */
+.sb-short .onboarding { min-height: 0; padding-top: 30px; }
+.sb-short .onboarding-layout { padding: 24px 0; }

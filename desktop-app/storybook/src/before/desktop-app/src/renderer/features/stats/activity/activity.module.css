@@ -1,0 +1,141 @@
+.activity {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.heading h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.heading p {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.preview {
+  margin-top: -8px;
+  font-size: 10px;
+  color: var(--accent-brand);
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+.toolbar select {
+  min-width: 150px;
+}
+.toolbar > span {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tableWrap {
+  overflow-x: auto;
+}
+.table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.table th,
+.table td {
+  padding: 14px 14px 14px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+.table th {
+  padding-top: 0;
+  padding-bottom: 12px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.table th:last-child,
+.table td:last-child {
+  padding-right: 0;
+}
+.table .number {
+  text-align: right;
+}
+.table tbody tr {
+  transition: background var(--hover-duration);
+}
+.table tbody tr:hover {
+  background: var(--panel-bg);
+}
+.outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.outcome::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--positive);
+}
+.outcome[data-outcome='cancelled']::before {
+  background: var(--warning);
+}
+.outcome[data-outcome='failed']::before {
+  background: var(--negative);
+}
+.pending {
+  color: var(--muted);
+}
+.more {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.empty {
+  padding: 28px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.notice {
+  font-size: 11px;
+  color: var(--warning);
+}
+.unavailable {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 24px;
+  border-radius: 10px;
+  background: var(--panel-bg);
+}
+.unavailable strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+.unavailable p {
+  max-width: 540px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.privacy svg {
+  margin-top: 3px;
+}

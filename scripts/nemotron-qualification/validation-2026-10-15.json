@@ -1,7 +1,7 @@
 {
   "date": "2026-10-15",
-  "sdk_source_commit": "3fc3a103af8c868ddf0f894966598206e3df6fa5",
-  "provider_source_commit": "b56eda7cc4ab8ed8847d5450e33889c1be9e9cec",
+  "sdk_source_commit": "1ce44e9acb07be8d4b3d2acd8fdc7c9033d09c85",
+  "provider_source_commit": "27a3e6d9ac4f24400f7c2468f1954e3369736bcc",
   "hardware": {
     "chip": "Apple M3 Ultra",
     "cpu_cores": 28,
@@ -11,29 +11,36 @@
     "swift": "6.4"
   },
   "sdk_last_executed_tests": {
-    "declarations": 18,
-    "suites": 6,
+    "harness": "templates/SDK.Package.swift, all test targets, no filter",
+    "swift_testing_tests": 111,
+    "swift_testing_suites": 32,
+    "xctest_tests": 2,
     "passed": true,
-    "duration_seconds": 0.66,
-    "final_head_rerun": false
+    "duration_seconds": 0.873,
+    "final_head_rerun": true,
+    "previous_selection": "18 declarations / 6 suites passed on 3fc3a103 before suite nesting and upstream refresh"
   },
   "provider_last_executed_tests": {
-    "declarations": 15,
-    "passed": 14,
-    "failed": 1,
-    "failure": "imageHTTPResetRetainsChargeUntilTerminalRetires: invalid tracker-release expectation while native terminal held",
-    "fix": "Observe actual request scope cancellation; retain tracker/media/KV until native terminal released",
-    "fixed_test_compiled": true,
-    "fixed_test_executed": false
+    "harness": "templates/Provider.Package.swift, all test targets, no filter",
+    "swift_testing_tests": 25,
+    "swift_testing_suites": 6,
+    "xctest_tests": 12,
+    "passed": true,
+    "final_head_rerun": true,
+    "previous_failure": "imageHTTPResetRetainsChargeUntilTerminalRetires: invalid tracker-release expectation while native terminal held",
+    "fixed_test_executed": true,
+    "fixed_test_result": "passed (3.733 s)"
   },
   "final_focused_builds": {
     "sdk": {
       "passed": true,
-      "seconds": 3.95
+      "seconds": 15.66,
+      "incremental": true
     },
     "provider": {
       "passed": true,
-      "seconds": 73.87
+      "seconds": 35.15,
+      "incremental": true
     }
   },
   "cpu_checks": {
@@ -45,7 +52,7 @@
     "changelog": "15 fragments valid",
     "diff_whitespace": "passed"
   },
-  "final_gpu_rerun": "deferred: GPU activity, preserving other workloads",
+  "final_gpu_rerun": "passed at SDK 1ce44e9a / provider sources 27a3e6d9; one test process at a time; AGX device utilization 22% before each run from desktop compositing and video, with no other test or inference process; synthetic fixtures only",
   "full_checkpoint_loaded": false,
   "admission_reservation_calibrated": false,
   "full_model_benchmarks": null,
@@ -68,5 +75,11 @@
     "handoff-docs-impact.log": "7124a04d4d62a056fb588eee2aa939f806b7d3be0150a5cbf9464f496b33330e",
     "handoff-changelog.log": "f170a0e68c5745a7969b3cb61ce7bdfc3827c7ab608a615d025b48596446f760"
   },
-  "log_note": "Hashes identify original-machine logs, not bundled log files or a final-head GPU pass."
+  "final_head_log_sha256": {
+    "sdk-final-head-build.log": "097049872fd27b456d27880a033253cf694576e156c7cb760ea7176e4833440a",
+    "provider-final-head-build.log": "cecc1d290e10a7ee818ab0fe782253f9830ba29e2b119216b5c8d38e9867a96b",
+    "sdk-final-head-tests.log": "7a431633d1a8b6183bb54852a8b5beabf1298d8b0348b93c41a3e48aef6c905a",
+    "provider-final-head-tests.log": "220ae5ab24b2798b516d32d4fc67974f86bd380b5db7733ac9432cb61d9886b1"
+  },
+  "log_note": "Hashes identify logs kept on the original machine, not bundled files. The final-head logs are from synthetic fixture runs, not a full-checkpoint run."
 }

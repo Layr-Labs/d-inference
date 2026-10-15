@@ -102,7 +102,7 @@ export function RuntimeSetup({
         )
       )}
       {(error || failed) && (
-        <p>
+        <p className="get-help">
           <GetHelp />
         </p>
       )}

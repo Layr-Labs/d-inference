@@ -137,6 +137,7 @@
 }
 /* The code is typed on another page: large, spaced and selectable as one unit. */
 .steps .stepCode strong {
+  white-space: nowrap;
   font-size: 22px;
   font-weight: 500;
   letter-spacing: 4px;

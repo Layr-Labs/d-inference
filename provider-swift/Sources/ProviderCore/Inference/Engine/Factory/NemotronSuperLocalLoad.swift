@@ -37,9 +37,17 @@ actor NemotronSuperLocalLoad {
             let configuration = try NemotronSuperImageConfiguration(data: configData)
             let quote = try NemotronSuperInstallation.requiredLoadBytes(
                 source: source, backendAllowanceBytes: backendAllowanceBytes)
-            guard kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
+            // Opt-in speculation adds the embedded head's payload and loader
+            // construction allowance to the same LOAD claim, before allocation.
+            let speculation = try NemotronSuperLocalMTP.Setting.resolve(environment: environment)
+            let headQuote = try speculation.map { _ in
+                try NemotronSuperMTPServing.loadQuote(configuration: configuration, source: source)
+            }
+            let (claimBytes, overflow) = quote.addingReportingOverflow(
+                try headQuote.map(NemotronSuperLocalMTP.loadSupplementBytes) ?? 0)
+            guard !overflow, kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
-                    weightBytes: UInt64(quote), minimumKVBytes: UInt64(kvBytesCapacity))
+                    weightBytes: UInt64(claimBytes), minimumKVBytes: UInt64(kvBytesCapacity))
             else { throw Failure.capacity }
             lease = claim
             try Task.checkCancellation()
@@ -50,10 +58,17 @@ actor NemotronSuperLocalLoad {
                 construction: construction)
             installed = candidate
             try Task.checkCancellation()
+            var head: NemotronSuperLocalMTP.Head?
+            if let speculation, let headQuote {
+                head = .init(module: try NemotronSuperMTPServing.loadHead(installed: candidate,
+                    source: source, quote: headQuote, construction: construction),
+                    setting: speculation)
+            }
+            try Task.checkCancellation()
             let built = try await NemotronSuperLocalBridgeBuilder.make(installed: candidate,
                 tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity, kvBudget: budget, loadLease: claim,
-                construction: construction, environment: environment)
+                construction: construction, mtp: head, environment: environment)
             owner = built
             try Task.checkCancellation()
             // Installation/setup has fenced. The standard ledger now sees live

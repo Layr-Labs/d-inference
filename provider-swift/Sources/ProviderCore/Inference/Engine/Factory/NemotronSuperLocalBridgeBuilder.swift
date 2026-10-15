@@ -10,7 +10,11 @@ import MLXVLM
 /// The existing owner still performs identity verification, slot publication, LOAD
 /// admission and atomic request acquisition. This builder does none of those jobs.
 enum NemotronSuperLocalBridgeBuilder {
-    enum Failure: Error { case unloaded, loadAdmissionLost, unsupportedSizing, retirementIncomplete }
+    enum Failure: Error {
+        case unloaded, loadAdmissionLost, unsupportedSizing, retirementIncomplete
+        /// Text speculation is installed; its target refuses media embeddings.
+        case mediaWithSpeculation
+    }
 
     /// Must be retained by the slot owner while its bridge is reachable. Transfer
     /// the installation here; callers must not keep mutable model aliases or close
@@ -24,14 +28,18 @@ enum NemotronSuperLocalBridgeBuilder {
         private let budget: GlobalKVCacheBudget
         private let contextLength: Int
         private var imageBinding: NemotronSuperLocalImageBinding?
+        private var textBinding: NemotronSuperLocalBinding?
         private var imageFaults: [(NativeConstructionScope, WholeMacUnboundedActivity)] = []
         private var quarantine: Owner?
+        let speculates: Bool
 
         fileprivate init(bridge: EngineV2Bridge, installed: NemotronSuperInstallation.Installed,
-                         tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int) {
+                         tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
+                         speculates: Bool) {
             self.bridge = bridge
             self.installed = installed
             self.tokenizer = tokenizer; self.budget = budget; self.contextLength = contextLength
+            self.speculates = speculates
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -40,7 +48,8 @@ enum NemotronSuperLocalBridgeBuilder {
         /// Dedicated local owner only; no external acquisition closure can bind
         /// another slot's installation, tokenizer, lease or bridge by model name.
         func localImageBinding() throws -> NemotronSuperLocalImageBinding {
-            try lock.withLock {
+            guard !speculates else { throw Failure.mediaWithSpeculation }
+            return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, installed != nil else {
                     throw Failure.retirementIncomplete
                 }
@@ -52,10 +61,36 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// The owner's single text binding on its own bridge and tokenizer. No
+        /// registry lease or slot is manufactured; acquisition refuses once the
+        /// owner closes or retains a fault. `closeAfterDrain` drains it first.
+        func localTextBinding() throws -> NemotronSuperLocalBinding {
+            try lock.withLock {
+                guard closing == nil, imageFaults.isEmpty, installed != nil else {
+                    throw Failure.retirementIncomplete
+                }
+                if let textBinding { return textBinding }
+                let bridge = self.bridge, tokenizer = self.tokenizer
+                let binding = NemotronSuperLocalBinding(acquire: { [weak self] model in
+                    guard let self, self.acceptsLocalWork else { throw Failure.retirementIncomplete }
+                    return .init(tokenizer: tokenizer,
+                        releaseToken: OneShotRelease(release: { _ in }, modelId: model),
+                        modelType: "nemotron_h_omni", engineV2Bridge: bridge)
+                })
+                textBinding = binding
+                return binding
+            }
+        }
+
+        private var acceptsLocalWork: Bool {
+            lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }
+        }
+
         /// Uses this loaded owner's tokenizer and the pinned literal template.
         /// Input counts come from the admitted image processor, in message order.
         func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
-            try lock.withLock {
+            guard !speculates else { throw Failure.mediaWithSpeculation }
+            return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, installed != nil else {
                     throw Failure.retirementIncomplete
                 }
@@ -80,6 +115,9 @@ enum NemotronSuperLocalBridgeBuilder {
                     messages: NemotronSuperPromptContract.messages(request.messages),
                     chatTemplate: template, tools: nil,
                     additionalContext: NemotronSuperPromptContract.additionalContext(body: body))
+                // Integration: expand through the prompt track's
+                // NemotronSuperPromptContract.expandImagePlaceholders so each span
+                // carries the reference <img>/</img> (19/20) wrapper.
                 guard raw.filter({ $0 == 18 }).count == featureCounts.count else {
                     throw NemotronSuperLocalImageBinding.Failure.invalidInput
                 }
@@ -99,7 +137,8 @@ enum NemotronSuperLocalBridgeBuilder {
         func makeLocalImageInput(promptTokens: [Int], pixels: [[Float]], widths: [Int], heights: [Int],
             construction: NativeConstructionScope
         ) throws -> NemotronSuperLocalImageBinding.Input {
-            try lock.withLock {
+            guard !speculates else { throw Failure.mediaWithSpeculation }
+            return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
                     throw Failure.retirementIncomplete
                 }
@@ -113,7 +152,8 @@ enum NemotronSuperLocalBridgeBuilder {
         func prepareLocalImage(_ input: NemotronSuperLocalImageBinding.Input,
             maximumFeatureBytes: Int, construction: NativeConstructionScope
         ) throws -> EngineV2VisionPrefill.PreparedSubmission {
-            try lock.withLock {
+            guard !speculates else { throw Failure.mediaWithSpeculation }
+            return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
                     throw Failure.retirementIncomplete
                 }
@@ -131,13 +171,16 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// Slot owner must first close acquisition and drain local bindings. A
-        /// retained native engine is a fault, never evidence permitting a refund.
+        /// Slot owner must first close acquisition. This drains the owner's text
+        /// and image bindings; a retained native engine is a fault, never
+        /// evidence permitting a refund.
         func closeAfterDrain() async throws {
             let closing = lock.withLock { () -> Task<Void, Error> in
                 if let closing = self.closing { return closing }
                 let images = imageBinding
+                let text = textBinding
                 let task = Task { [self] in
+                    await text?.drain()
                     try await images?.drain()
                     guard !hasRetainedImageFault else { throw Failure.retirementIncomplete }
                     await bridge.shutdown()
@@ -146,6 +189,7 @@ enum NemotronSuperLocalBridgeBuilder {
                         installed?.closeAfterRetirement()
                         installed = nil
                         imageBinding = nil
+                        textBinding = nil
                     }
                 }
                 self.closing = task
@@ -159,12 +203,13 @@ enum NemotronSuperLocalBridgeBuilder {
     /// KV grant/sizing must come from the existing slot re-slice and loaded sizing
     /// path. Native setup/probes run inside the SDK construction scope. Caller
     /// must retain a faulted scope and its charged installation until restart.
+    /// `mtp` installs opt-in text speculation; nil keeps the target-only owner.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
         sizing: SlotSizingSnapshot, kvBytesCapacity: Int,
         kvBudget: GlobalKVCacheBudget, loadLease: PendingModelLoadLease,
-        construction: NativeConstructionScope,
+        construction: NativeConstructionScope, mtp: NemotronSuperLocalMTP.Head? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
@@ -184,6 +229,10 @@ enum NemotronSuperLocalBridgeBuilder {
                 throw Failure.unsupportedSizing
             }
             let adapter = NemotronSuperRecurrentAdapter(model)
+            let speculation = try mtp.map {
+                try NemotronSuperLocalMTP.engine(
+                    for: model, head: $0, maximumSequenceLength: sizing.maxContextLength)
+            }
             return try EngineV2Factory.makeBridge(
                 modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
                 eosTokenIds: eosTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
@@ -191,7 +240,14 @@ enum NemotronSuperLocalBridgeBuilder {
                 runtimePolicyEnvironment: environment,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
                 makeEngine: {
-                    try EngineV2Factory.makeProductionBuild(
+                    if let speculation {
+                        return try NemotronSuperLocalMTP.makeProductionBuild(
+                            engine: speculation, policyModel: adapter,
+                            tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
+                            kvBudget: kvBudget, maxContextLength: sizing.maxContextLength,
+                            environment: environment)
+                    }
+                    return try EngineV2Factory.makeProductionBuild(
                         model: adapter, modelID: NemotronSuperLocalBinding.modelID,
                         tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
                         maxConcurrentRequests: 1, kvBudget: kvBudget,
@@ -199,10 +255,11 @@ enum NemotronSuperLocalBridgeBuilder {
                         environment: environment)
                 })
         }
-        // MTP and prefix stores remain absent. The dedicated image binding uses
-        // causal embeddings; initial recurrent execution stays serial/contiguous.
+        // Prefix stores remain absent. Without speculation the dedicated image
+        // binding uses causal embeddings; recurrent execution stays serial/contiguous.
         return Owner(bridge: bridge, installed: installed, tokenizer: tokenizer,
-                     budget: kvBudget, contextLength: sizing.maxContextLength)
+                     budget: kvBudget, contextLength: sizing.maxContextLength,
+                     speculates: mtp != nil)
     }
 }
 

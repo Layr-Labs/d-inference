@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -334,6 +334,10 @@ serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 standalone local mode also waits for active HTTP response bodies. The signal
 deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
+Once local HTTP admission closes, new POST requests receive HTTP 503 with the
+OpenAI JSON error message `Provider capacity is temporarily unavailable.` and
+the usual CORS header. Health reads and OPTIONS preflights remain available;
+already admitted response bodies retain their drain ownership.
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
 With no accepted work left, a graceful drain retries native MiMo owner
@@ -1274,7 +1278,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
+| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit` and the exact Prism/Eigen Bonsai 9B identities under `prism_hadamard_qwen35`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization

@@ -556,6 +556,8 @@ enum EngineV2SlotFactory {
             advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
+                ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
+                    nativeContextTokens: sizing.maxContextLength)
                 ?? (preparedBackend?.performanceProfile == nil && deadlineProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,

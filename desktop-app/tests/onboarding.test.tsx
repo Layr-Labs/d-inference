@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   read: vi.fn(),
   openExternal: vi.fn(),
   onNavigate: () => () => {},
+  onHardware: () => () => {},
 }));
 let backend: BackendState;
 vi.mock('../src/renderer/useBackend', () => ({
@@ -43,17 +44,37 @@ function toStartPage(state = snapshot(), done = vi.fn()) {
   return { done, update };
 }
 
-it('opens on the welcome view and checks this Mac once the runtime connects', async () => {
+it('installs the backend first and checks this Mac once it connects', async () => {
   localStorage.clear();
   backend = backendWith(undefined, { status: { state: 'missing' } });
   const { rerender } = render(<App />);
-  expect(heading('Put this Mac to work.')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Start' }));
-  expect(heading('Install Darkbloom to check this Mac.')).toBeVisible();
+  expect(heading('Install backend')).toBeVisible();
+  expect(screen.getByRole('button', { name: /Install backend/ })).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
   backend = { ...backend, status: { state: 'ready' }, state: await previewAPI.read('state') };
   rerender(<App />);
   expect(heading('Checking this Mac…')).toBeVisible();
   expect(screen.queryByRole('heading', { name: 'Your contribution' })).not.toBeInTheDocument();
+});
+
+it('leaves setup for the app mid-check, and stays there once the check would have ended', () => {
+  vi.useFakeTimers();
+  try {
+    localStorage.clear();
+    api.read.mockReturnValue(new Promise(() => {}));
+    backend = backendWith(snapshot());
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    expect(heading('Checking this Mac…')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: /Explore the app first/ }));
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
+    expect(localStorage.getItem('darkbloom.onboardingComplete')).toBe('1');
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.queryByRole('heading', { name: 'Ready to serve.' })).not.toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('states what Autopilot will do from reported facts, with the terms beside the action', () => {
@@ -90,16 +111,36 @@ it('starts serving with Autopilot in one click', async () => {
   expect(backend.refresh).toHaveBeenCalled();
 });
 
-it('links an unlinked account first, then starts as soon as it is linked', async () => {
+const steps = () => screen.getByRole('list', { name: 'Setup steps' });
+const currentStep = () => steps().querySelector('[aria-current="step"]');
+
+function renderUnlinked(state = snapshot({ linked: false })) {
+  backend = backendWith(state);
+  const done = vi.fn();
+  const view = render(<Onboarding backend={backend} done={done} />);
+  const update = (next: Snapshot) => {
+    backend = { ...backend, state: next };
+    view.rerender(<Onboarding backend={backend} done={done} />);
+  };
+  return { done, update };
+}
+
+it('links the account first, and opens the browser only from its button', async () => {
   api.act.mockResolvedValue(operation('succeeded', '', 'autopilot'));
   const unlinked = snapshot({ linked: false });
-  const { done, update } = toStartPage(unlinked);
-  expect(
-    screen.getByText(
-      'First you’ll link your Darkbloom account in the browser, then serving starts.',
-    ),
-  ).toBeVisible();
-  await act(async () => fireEvent.click(startButton()));
+  const { done, update } = renderUnlinked(unlinked);
+  expect([...steps().querySelectorAll('li')].map((step) => step.textContent)).toEqual([
+    'Install backend',
+    '2Link your account',
+    '3Check this Mac',
+    '4Start',
+  ]);
+  expect(currentStep()).toHaveTextContent('Link your account');
+  fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+  expect(heading('Link your account.')).toBeVisible();
+  expect(screen.getByText(/Earnings from this Mac go to your Darkbloom account/)).toBeVisible();
+  expect(backend.act).not.toHaveBeenCalled();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /Link account/ })));
   expect(backend.act).toHaveBeenCalledExactlyOnceWith({ action: 'link' });
   expect(screen.getByRole('region', { name: 'Link your account' })).toBeVisible();
   expect(screen.getByText('Getting a link code…')).toBeVisible();
@@ -107,32 +148,70 @@ it('links an unlinked account first, then starts as soon as it is linked', async
   update({ ...unlinked, link });
   expect(screen.getByText('KXQF-7M2P')).toBeVisible();
   expect(screen.getByText('Waiting for approval…')).toBeVisible();
+  expect(api.openExternal).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: /Open link page/ }));
-  expect(api.openExternal).toHaveBeenCalledWith('link');
+  expect(api.openExternal).toHaveBeenCalledExactlyOnceWith('link');
   expect(api.act).not.toHaveBeenCalled();
   update({ ...unlinked, linked: true });
+  expect(heading('Checking this Mac…')).toBeVisible();
+  expect(currentStep()).toHaveTextContent('Check this Mac');
+  expect(steps().querySelectorAll('li.complete')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: /Skip/ }));
+  expect(screen.getByText('Your Darkbloom account is linked.')).toBeVisible();
+  fireEvent.click(startButton());
   await waitFor(() => expect(done).toHaveBeenCalledOnce());
   expect(api.act).toHaveBeenCalledExactlyOnceWith(autopilot);
+  expect(backend.act).toHaveBeenCalledOnce();
+});
+
+it('skips linking on a Mac that is already linked', () => {
+  backend = backendWith(snapshot());
+  render(<Onboarding backend={backend} done={vi.fn()} />);
+  expect(currentStep()).toHaveTextContent('Check this Mac');
+  expect(steps().querySelectorAll('li.complete')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+  expect(heading('Checking this Mac…')).toBeVisible();
+  expect(screen.queryByRole('button', { name: /Link account/ })).not.toBeInTheDocument();
+  expect(backend.act).not.toHaveBeenCalled();
 });
 
 it('recovers when linking fails or is cancelled', async () => {
   const unlinked = snapshot({ linked: false });
-  const { update } = toStartPage(unlinked);
-  await act(async () => fireEvent.click(startButton()));
+  const { update } = renderUnlinked(unlinked);
+  fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+  const linkButton = () => screen.getByRole('button', { name: /Link account/ });
+  await act(async () => fireEvent.click(linkButton()));
   const failed = operation('failed', 'Expired', 'link');
   update({ ...unlinked, operations: [failed] });
   expect(screen.getByRole('alert')).toHaveTextContent(
-    'Linking didn’t finish. Start again to get a new code.',
+    'Linking didn’t finish. Link again to get a new code.',
   );
-  expect(startButton()).toBeEnabled();
-  await act(async () => fireEvent.click(startButton()));
+  expect(linkButton()).toBeEnabled();
+  await act(async () => fireEvent.click(linkButton()));
   const running = { ...operation('running', '', 'link'), id: 'second-link', cancellable: true };
   update({ ...unlinked, operations: [running, failed] });
   expect(screen.getByRole('region', { name: 'Link your account' })).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(backend.act).toHaveBeenLastCalledWith({ action: 'cancel', operation: running.id });
-  expect(startButton()).toBeVisible();
+  expect(linkButton()).toBeVisible();
   expect(api.act).not.toHaveBeenCalled();
+});
+
+it('sends a start back to link the account if it is no longer linked', async () => {
+  const { update } = toStartPage();
+  const unlinked = snapshot({ linked: false });
+  update(unlinked);
+  expect(screen.getByText('Link your Darkbloom account first. Serving needs it.')).toBeVisible();
+  fireEvent.click(startButton());
+  expect(heading('Link your account.')).toBeVisible();
+  expect(currentStep()).toHaveTextContent('Link your account');
+  expect(backend.act).not.toHaveBeenCalled();
+  expect(api.act).not.toHaveBeenCalled();
+  expect(api.openExternal).not.toHaveBeenCalled();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /Link account/ })));
+  update({ ...unlinked, linked: true });
+  expect(heading('Ready to serve.')).toBeVisible();
+  expect(startButton()).toBeEnabled();
 });
 
 it('shows the runtime’s reason when Autopilot fails for another cause', async () => {

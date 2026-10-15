@@ -1,25 +1,20 @@
-import { Download } from 'lucide-react';
+import { Download, LoaderCircle } from 'lucide-react';
 import { useState } from 'react';
+import type { DesktopStatus } from '../../../shared/contracts';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
 import { Button, Notice } from '../UI';
 
-type Copy = { title: string; lead: string; action: string };
-
-const firstRun: Record<'missing' | 'failed', Copy> = {
-  missing: {
-    title: 'Install Darkbloom to check this Mac.',
-    lead: 'Darkbloom installs its verified native runtime, then checks whether this Mac can serve models. Serving continues when this window is closed.',
-    action: 'Install runtime',
-  },
-  failed: {
-    title: 'We couldn’t check this Mac.',
-    lead: 'Darkbloom couldn’t reach its native runtime. Repair it and the check runs again.',
-    action: 'Repair runtime',
-  },
+// The action each status offers during onboarding; other statuses are waiting on the backend.
+const actions: Partial<Record<DesktopStatus['state'], string>> = {
+  missing: 'Install backend',
+  error: 'Repair backend',
+  incompatible: 'Update backend',
 };
 
-// Returning users set Darkbloom up before: say what happened to it, not how the first check works.
+type Copy = { title: string; lead: string; action: string };
+
+// Returning users set Darkbloom up before: say what happened to it, not how the first run works.
 const returning: Record<'missing' | 'incompatible' | 'failed', Copy> = {
   missing: {
     title: 'Reinstall Darkbloom to continue.',
@@ -38,6 +33,9 @@ const returning: Record<'missing' | 'incompatible' | 'failed', Copy> = {
   },
 };
 
+// Onboarding's first step, and the returning-user Startup screen when the runtime is
+// unreachable. It shows whatever the main process reports while the backend installs or
+// connects, and offers an install, repair or update only when one is needed.
 export function RuntimeSetup({
   backend,
   returningUser = false,
@@ -46,27 +44,47 @@ export function RuntimeSetup({
   returningUser?: boolean;
 }) {
   const [error, setError] = useState('');
-  const { state } = backend.status;
+  const [pending, setPending] = useState(false);
+  const { state, message } = backend.status;
   const copy = returningUser
     ? returning[state === 'missing' || state === 'incompatible' ? state : 'failed']
-    : firstRun[state === 'missing' ? 'missing' : 'failed'];
+    : undefined;
+  const action = copy ? copy.action : actions[state];
   async function install() {
     try {
       setError('');
+      setPending(true);
       await api?.install();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Installation failed');
+    } finally {
+      setPending(false);
     }
   }
   return (
     <>
-      <h2>{copy.title}</h2>
-      <p>{copy.lead}</p>
+      <h2>{copy ? copy.title : 'Install backend'}</h2>
+      <p>
+        {copy
+          ? copy.lead
+          : 'Darkbloom needs its backend, a background service that serves models on this Mac. It installs once and updates automatically.'}
+      </p>
       {error && <Notice>{error}</Notice>}
-      {backend.status.message && <p className="muted">{backend.status.message}</p>}
-      <Button variant="primary" disabled={!api} onClick={() => void install()}>
-        <Download size={16} /> {copy.action}
-      </Button>
+      {/* One live region for both the progress and the reason, so each change is announced. */}
+      <p className="install-status" role="status">
+        {!action && <LoaderCircle className="spin" size={14} aria-hidden="true" />}
+        {message ||
+          (action
+            ? ''
+            : state === 'installing'
+              ? 'Installing the backend…'
+              : 'Connecting to the backend…')}
+      </p>
+      {action && (
+        <Button variant="primary" disabled={!api || pending} onClick={() => void install()}>
+          <Download size={16} /> {action}
+        </Button>
+      )}
     </>
   );
 }

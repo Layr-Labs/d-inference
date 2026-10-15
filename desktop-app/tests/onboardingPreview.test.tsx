@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import {
   evaluateEligibility,
@@ -58,10 +58,24 @@ describe('preview scenarios', () => {
 });
 
 describe('preview onboarding', () => {
+  // The ineligible scenario is a fresh, unlinked install: link first. The preview approves the
+  // code a few seconds after it is shown.
+  async function linkInPreview() {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fireEvent.click(await screen.findByRole('button', { name: /Link account/ }));
+      expect(await screen.findByText('KXQF-7M2P')).toBeVisible();
+      await act(async () => vi.advanceTimersByTime(6000));
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
   it('opens on the scenario and joins the waitlist through the preview runtime', async () => {
     const App = await app('?preview&onboarding=ineligible');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }));
+    await linkInPreview();
     expect(await screen.findByRole('heading', { name: 'Checking this Mac…' })).toBeVisible();
     fireEvent.click(await screen.findByRole('button', { name: /Skip/ }));
     expect(screen.getByRole('heading', { name: 'This Mac isn’t eligible yet.' })).toBeVisible();
@@ -77,6 +91,7 @@ describe('preview onboarding', () => {
     const App = await app('?preview&onboarding=ineligible&waitlist=fail');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }));
+    await linkInPreview();
     fireEvent.click(await screen.findByRole('button', { name: /Skip/ }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Email address' }), {
       target: { value: 'ada@example.com' },

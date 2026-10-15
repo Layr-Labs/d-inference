@@ -1,12 +1,12 @@
 # Changelog
 
+## Unreleased — desktop onboarding order and exit
+
+- Install the backend as the first onboarding step, then link the Darkbloom account, check the Mac and start. Install backend shows the install progress, or the reason with Install, Repair or Update backend, and nothing later is reachable until the backend is connected; it then moves on to linking by itself, and an already installed backend opens at the link step. The browser opens only from **Open link page**, an in-progress link has a Cancel button, and an already linked Mac goes straight to the check. **Explore the app first** now leaves onboarding from any step once the backend is connected, instead of only the last one. The local-only choice under Advanced is removed from onboarding; local models stay available in the app.
 ## Unreleased — desktop serving wording
 
 - Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
 
-## Unreleased — desktop serving wording
-
-- Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
 ## Unreleased — desktop preview external links
 
 - In the browser development preview (`?preview`), *Read the guide*, *Terms of Service*, *Privacy*, *Account & payouts*, *Troubleshooting guide* and *Open browser* now open their pages in a new tab instead of doing nothing; link destinations move to `src/shared/externalLinks.ts`, shared with the main process, whose https and host checks are unchanged. The signed app was not affected.

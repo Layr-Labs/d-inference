@@ -2,7 +2,6 @@ import { ChevronDown } from 'lucide-react';
 import { useEffect, useId, useRef } from 'react';
 import { useReducedMotion } from '../../useReducedMotion';
 import type { Snapshot } from '../../../shared/contracts';
-import { ModeChoice, type ContributionMode } from './ModeChoice';
 import { PinList } from './PinList';
 import type { StartMethod } from './startPlan';
 import styles from './advancedOptions.module.css';
@@ -18,11 +17,6 @@ const pinCopy: Record<StartMethod, { title: string; lead: string; noun: string }
     lead: 'These models load when this Mac starts serving and stay until you change them.',
     noun: 'chosen',
   },
-  local: {
-    title: 'Keep a model always on',
-    lead: 'Local only runs just the models you keep in memory, for your apps on this Mac’s local endpoint.',
-    noun: 'kept in memory',
-  },
 };
 
 export function AdvancedOptions({
@@ -30,8 +24,6 @@ export function AdvancedOptions({
   open,
   onToggle,
   method,
-  mode,
-  onMode,
   pinned,
   onPinned,
 }: {
@@ -39,8 +31,6 @@ export function AdvancedOptions({
   open: boolean;
   onToggle: () => void;
   method: StartMethod;
-  mode: ContributionMode;
-  onMode: (mode: ContributionMode) => void;
   pinned: string[];
   onPinned: (pinned: string[]) => void;
 }) {
@@ -68,8 +58,6 @@ export function AdvancedOptions({
           <h3>{copy.title}</h3>
           <p>{copy.lead}</p>
           <PinList snapshot={snapshot} pinned={pinned} noun={copy.noun} onChange={onPinned} />
-          <h3>How this Mac is used</h3>
-          <ModeChoice mode={mode} onChange={onMode} />
         </div>
       )}
     </div>

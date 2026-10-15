@@ -4,7 +4,8 @@ import { api } from '../../useBackend';
 import { Button } from '../UI';
 import styles from './linkPanel.module.css';
 
-// Shown while the device-code link runs; serving starts by itself once the account is linked.
+// Shown while the device-code link runs; setup moves on by itself once the account is linked.
+// The browser opens only from the button.
 export function LinkPanel({ link, cancel }: { link: Snapshot['link']; cancel: () => void }) {
   return (
     <section className={styles.link} aria-label="Link your account" aria-busy>
@@ -12,9 +13,7 @@ export function LinkPanel({ link, cancel }: { link: Snapshot['link']; cancel: ()
         <span className={styles.linkStep}>1</span>
         <span>
           <strong>Link your Darkbloom account</strong>
-          <small>
-            Open the link page and enter this code. Serving starts as soon as you approve this Mac.
-          </small>
+          <small>Open the link page and enter this code. Then approve this Mac.</small>
         </span>
       </header>
       {link ? (

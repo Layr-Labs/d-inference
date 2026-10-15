@@ -5,6 +5,8 @@ import { evaluateEligibility, type EligibilityResult } from './eligibility';
 import { scanScript } from './scanScript';
 import { useScanTimeline } from './useScanTimeline';
 
+// Statuses in which the runtime can't be reached; the returning-user Startup screen offers a
+// repair for these.
 export const unreachable: BackendState['status']['state'][] = ['missing', 'error', 'incompatible'];
 
 // Each run decides from the first snapshot it sees once active, so a later snapshot never
@@ -29,7 +31,6 @@ export function useMacScan(backend: BackendState, active: boolean, onEligible: (
     frame,
     finish,
     settled: !!result && (frame.phase === 'verdict' || frame.phase === 'leaving'),
-    blocked: !backend.state && unreachable.includes(backend.status.state),
     async recheck() {
       const id = run.id + 1;
       setRun({ id, reading: true });

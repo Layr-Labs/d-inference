@@ -1,18 +1,13 @@
 import type { BackendState } from '../../useBackend';
 import { failedChecks, type Verdict } from './eligibility';
-import { RuntimeSetup } from './RuntimeSetup';
 import { ScanCard } from './ScanCard';
 import { ScanFooter } from './ScanFooter';
 import type { MacScan } from './useMacScan';
 
-const copy: Record<Verdict | 'checking' | 'installing', { title: string; lead: string }> = {
+const copy: Record<Verdict | 'checking', { title: string; lead: string }> = {
   checking: {
     title: 'Checking this Mac…',
     lead: 'Darkbloom makes sure this Mac can serve models before you set it up.',
-  },
-  installing: {
-    title: 'Installing Darkbloom…',
-    lead: 'The check starts as soon as the verified native runtime is ready.',
   },
   eligible: {
     title: 'This Mac is eligible.',
@@ -49,11 +44,9 @@ export function ScanStep({
   proceed: () => void;
   explore: () => void;
 }) {
-  if (scan.blocked) return <RuntimeSetup backend={backend} />;
   const { result, frame, settled } = scan;
   const verdict = settled ? result?.verdict : undefined;
-  const { title, lead } =
-    copy[verdict ?? (backend.status.state === 'installing' ? 'installing' : 'checking')];
+  const { title, lead } = copy[verdict ?? 'checking'];
   return (
     <>
       <h2 aria-live="polite">{title}</h2>

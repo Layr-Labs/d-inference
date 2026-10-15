@@ -3,12 +3,15 @@
 ## Unreleased — desktop automatic backend install
 
 - The desktop app now installs its backend by itself the first time it opens on a Mac without one. It shows each step in plain language (“Downloading the backend… 42%”, “Verifying the backend’s signature…”, “Setting up device verification…”). If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**. An install in progress can be cancelled.
+
 ## Unreleased — desktop help and next steps
 
 - Add **Help** to the desktop sidebar, linking the guide, the Darkbloom Slack and GitHub Discussions, and offer **Get help** next to failures: failed operation notifications, an unreachable runtime, failed sign-in (beside **Try again**), and a failed runtime install or repair.
+
 ## Unreleased — desktop onboarding order and exit
 
 - Install the backend as the first onboarding step, then link the Darkbloom account, check the Mac and start. Install backend shows the install progress, or the reason with Install, Repair or Update backend, and nothing later is reachable until the backend is connected; it then moves on to linking by itself, and an already installed backend opens at the link step. The browser opens only from **Open link page**, an in-progress link has a Cancel button, and an already linked Mac goes straight to the check. **Explore the app first** now leaves onboarding from any step once the backend is connected, instead of only the last one. The local-only choice under Advanced is removed from onboarding; local models stay available in the app.
+
 ## Unreleased — desktop serving wording
 
 - Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
@@ -16,118 +19,155 @@
 ## Unreleased — desktop preview external links
 
 - In the browser development preview (`?preview`), *Read the guide*, *Terms of Service*, *Privacy*, *Account & payouts*, *Troubleshooting guide* and *Open browser* now open their pages in a new tab instead of doing nothing; link destinations move to `src/shared/externalLinks.ts`, shared with the main process, whose https and host checks are unchanged. The signed app was not affected.
+
 ## Unreleased — desktop Autopilot link step
 
 - On an unlinked Mac, Models now labels the Autopilot buttons “Link this Mac & start Autopilot” / “Link this Mac & turn on Autopilot” and explains before the click that a browser page opens for the code shown in the app, then Autopilot starts. The link code dialog now also appears from the manual Models page, and its Cancel is a standard secondary button.
+
 ## Unreleased — desktop link page opens on request
 
 - Linking this Mac from the desktop app (onboarding, Autopilot, Home) no longer pops the browser open as soon as the code appears. The app shows the code first and opens the link page only when you click to continue, as desktop sign-in already did.
+
 ## Unreleased — desktop download notifications
 
 - Name the model in download notifications, with the same progress its row on Models shows (for example “Downloading Qwen 3.5 9B · 42%”), and in their outcome (“Qwen 3.5 9B download · Failed”). Downloads the runtime doesn't attribute to a model still read “Downloading model”.
+
 ## Unreleased — desktop required update in progress
 
 - While Darkbloom updates on a runtime below the supported version, This Mac's Overview shows a single “Updating Darkbloom” step and headline instead of also offering the required update again.
+
 ## Unreleased — desktop manual selection during Autopilot turn-on
 
 - Disable Apply selection, Download and Remove on the Models page while Autopilot is turning on, so a manual selection can no longer be applied on top of the turn-on.
+
 ## Unreleased — desktop model slot limit
 
 - Say when a model can’t be kept in memory because all model slots (`max_model_slots`) are in use, instead of claiming it needs more memory than the Mac has. Onboarding’s pin summary makes the same distinction.
+
 ## Unreleased — desktop overview fan staleness
 
 - Show This Mac's Fans cell on the overview as unavailable when the cooling reading is more than a minute old, instead of presenting old RPM and GPU temperature as current, matching Home's fan indicator and the Cooling page.
+
 ## Unreleased — desktop Home provider states
 
 - Home's header no longer offers Start providing while the provider is starting, draining or stale: it shows Starting provider or Finishing requests (disabled) during transitions and Stop provider while a stale provider is still running. The chip's screen-reader summary says live activity only while live numbers are shown, otherwise naming why (waiting for live activity, finishing current requests, or status out of date), without a trailing space.
+
 ## Unreleased — desktop dialogs over window-drag areas
 
 - Close desktop dialogs when the dimmed background is clicked over the sidebar or top bar. Those areas move the window, and Electron let them take the click even under an open dialog, so the dialog, including sign-in, seemed impossible to close.
+
 ## Unreleased — desktop preview with an older installed runtime
 
 - Report the installed Darkbloom runtime's version as the provider version in the signed desktop preview, instead of the bundled desktop API's own build version, so Updates no longer offers an update that is already installed (a state file left behind by an older provider process no longer sets the stopped provider's version either) (clicking Update now ran `darkbloom update`, which reported "Already up to date", and the offer stayed). Refuse actions that need desktop commands the installed runtime does not have yet (provider cooling, Studio's local-only serving) with an explanation, and show its cooling controls as unavailable, instead of failing with the runtime's usage text.
 - Read the version probe from stdout only, so macOS upgrade notices on stderr do not hide the installed version. Invalid, failed, or oversized probes remain unavailable; ordinary commands keep their stderr diagnostics.
+
 ## Unreleased — desktop release notes without tag signatures
 
 - Never show a git tag's SSH or PGP signature block as release notes on the Updates page. Provider 0.9.20's published notes include the signed tag's signature, which appeared as five bullet points of encoded text. Preserve inline and quoted marker text and notes following a complete signature; hide real unterminated signature blocks too.
+
 ## Unreleased — desktop menu bar icon size
 
 - Draw the menu bar icon at the size of other menu bar icons (a 16 pt mark instead of the full 22 pt bar height) and sharply on Retina displays, which previously upscaled a single low-resolution bitmap.
+
 ## Unreleased — desktop keyboard focus after navigation
 
 - Keep keyboard and screen-reader users in place after changing pages, Macs or onboarding steps: when the control they used disappears, focus moves to the new page's or step's heading instead of falling back to the top of the window. Controls that survive navigation keep focus. The window title follows the rendered page heading, including delayed initial data and account changes, without moving focus on ordinary state refreshes.
+
 ## Unreleased — desktop Home screen-reader announcements
 
 - Stop Home's chip from re-announcing a 20-word activity summary to screen readers every five seconds. The live region now speaks only when the chip's state changes (for example stopped to serving); the full summary with current numbers stays available to screen readers without interrupting.
+
 ## Unreleased — desktop plain-language copy
 
 - Replace implementation terms in desktop copy: Settings no longer says "Managed by the Swift backend" or "Settings changed in the backend", and manual model selection says "Memory available for models" instead of "Native load allowance". Describe pinned models as models kept in memory everywhere, matching the Keep in memory controls.
+
 ## Unreleased — desktop Earnings labels
 
 - Name models in the Earnings breakdown by their catalog names (for example “GPT-OSS 20B”), falling back to the settled ID for models no longer in the catalog; say “Show all N Macs” in the By Mac view; and clear Copy CSV's “Copied” confirmation 1.6 seconds after the latest successful copy instead of keeping it until the period changes.
+
 ## Unreleased — desktop layout fit at narrow widths
 
 - Fix layout defects found at the desktop window's smaller sizes: 30-day earnings bars and Stats chart hover targets lost width to default button padding, a long waitlist email widened the onboarding page past the window, the Stats Activity table hid its Earned column below about 1000 px, Settings drew a double rule between sections, and chart times used a leading zero ("06:39 PM") unlike the rest of the app.
+
 ## Unreleased — desktop Settings save checks
 
 - Offer Save changes in Settings only after something changed, and explain a weekly schedule the runtime would reject (no windows, a window without days, or a missing time) right under the schedule instead of failing after Save with a generic error.
+
 ## Unreleased — desktop singular counts
 
 - Use singular nouns for counts of one: “1 Mac” on Home, “Show 1 more model” on Models, “1 download” in model recommendations, the Stats chart and token-bar descriptions, and “1 request processing” in live activity.
+
 ## Unreleased — desktop account link actions
 
 - Ask before unlinking this Mac from Settings, like other removals; unlinking previously happened on a single click. On Home, stop offering Link account again while a link is in progress or its code is shown, so repeated clicks no longer start new link requests.
+
 ## Unreleased — desktop light and dark theme contrast
 
 - Make light- and dark-theme text and controls readable: selected schedule days and text selection (dark text on blue in light theme), the Home fan status (dark blue on dark in dark theme), the fan heat warning in light theme, progress bars, the fan-speed slider track, and off switches in light theme. Show a focus ring on the Macs search field and complete (unclipped) rings on My Macs tabs and Home's Mac rows, and follow macOS appearance changes on onboarding and the startup screen too.
 - Keep enabled switches blue in both themes and preserve the active appearance choice across macOS changes and screen navigation when preference storage is unavailable.
+
 ## Unreleased — desktop manual model selection
 
 - In manual model selection, drop a chosen model from the selection when it is removed, instead of leaving it checked, disabled and submitted with Apply selection. Do not draw unreported memory use as an empty bar, and explain an empty Downloaded or Serving filter instead of saying the model catalog failed to load. Don't offer to download a model this Mac can't run.
+
 ## Unreleased — desktop Leaderboard loading and network totals
 
 - Refresh the Leaderboard's network map totals while the page is open, as its "Refreshes every 30 seconds" caption says; they previously stayed at the last Home visit. Show "Loading rankings…" until rankings first load and "No rankings yet" for an empty result, instead of "Leaderboard unavailable", and do not call failed first network statistics "last known totals". Providers that share a pseudonym no longer collide in the rankings list.
+
 ## Unreleased — desktop dialog keyboard focus
 
 - Keep keyboard focus inside desktop dialogs when their content changes, such as sign-in moving from "Continue in browser" to approval or cancellation. Only the topmost dialog handles Escape, Tab and focus recovery when dialogs overlap; closing it restores focus without disturbing a dialog still open beneath it. Expandable details are reachable with Tab, and dialogs no longer pull focus back to their first button every few seconds while the app refreshes.
+
 ## Unreleased — desktop milestone, empty chart and unknown memory display
 
 - Keep Home's network strip from showing a total just short of a milestone as reaching it (for example "1B" with "Next milestone 1B", every cell lit and 100%). Leave an all-zero earnings chart's scale unlabeled instead of "$0.000001", and show undetected memory as unknown instead of 0 GB on This Mac's Overview and Home's memory legend.
+
 ## Unreleased — desktop view-only Mac status and totals
 
 - Show a view-only Mac's reported status (Starting, Finishing requests, Verification needed, Ready) instead of Offline whenever it is not online. Show its 24-hour Tokens served as unavailable when the input or cached-input breakdown is missing instead of undercounting, say "Not observed yet" rather than "Last observed not observed", hide the hourly chart when there is no observation to anchor it, and keep the month's capitalization in older observations' chart ranges.
+
 ## Unreleased — desktop Studio endpoint model and key
 
 - Default Studio's model to the one the local endpoint serves, so the copied example request targets a served model and Apply serving mode does not switch models unless you choose another. Clear revealed API keys and ignore stale key-read results when the endpoint stops, changes or disconnects, requiring a fresh Reveal after it returns. Report clipboard or key-read failures instead of showing "Copied". Copying the base URL now confirms on its own button instead of on Copy example.
+
 ## Unreleased — desktop Cooling readings and thresholds
 
 - Stop showing a cooling reading older than a minute as the current GPU temperature and spinning fans; the Cooling page now shows them as unavailable, matching its status and Home's fan indicator. Show a threshold set from the CLI between the 5 °C presets as itself, so the selected value is exactly what Enable provider cooling submits, and keep CLI-set speed and threshold within the whole-number ranges the desktop action accepts.
+
 ## Unreleased — desktop model action guards
 
 - Lock a model's controls on the first click, so double-clicking Keep in memory, Add to pool or other model actions no longer sends the action twice. Add to pool before Autopilot is set up now turns Autopilot on with the cached pool instead of doing nothing, preserving the serving selection or starting one model when none serve. Turn on Autopilot is disabled while another operation runs.
+
 ## Unreleased — desktop earnings while signed out
 
 - Ask a linked Mac to sign in when its Darkbloom account session is signed out or expired, instead of showing "Loading settled earnings…" indefinitely on Earnings, Home's daily earnings chart and the Models earnings order.
+
 ## Unreleased — desktop runtime protocol check
 
 - Keep the desktop app disconnected from a runtime that speaks an incompatible protocol. Previously the app reported the error and then, within a quarter second, connected to the runtime's event stream anyway, showed it as ready and forwarded its unchecked snapshots. Streamed snapshots are now checked too.
+
 ## Unreleased — desktop first-launch eligibility on fresh installs
 
 - Confirm eligible Macs during first-launch onboarding on a fresh install. The runtime reports measured memory only for downloaded models, so with nothing downloaded every Mac read "We couldn't confirm everything". Models not yet on the Mac now count by catalog size, as the runtime's own fit check does. Memory is reported as failing only when every reported model needs more than the Mac has.
+
 ## Unreleased — desktop preview API recovery
 
 - Let Darkbloom Preview relaunch after a crash or force quit. The bundled API it left running held the native service lock, so every new API exited and the app stayed on "Could not connect" until the leftover process was killed by hand. The next launch now stops that API, verified by recorded pid and exact bundled command, before starting a new one. Startup failures show the API's last error line instead of a generic message.
+
 ## Unreleased — desktop cold launch for returning users
 
 - Show returning users "Connecting to this Mac…" while the desktop app waits for its first runtime snapshot, instead of first-run onboarding's Welcome and Start. When the runtime is missing or unreachable, offer Install or Repair directly. First-run onboarding is unchanged.
 - Tell returning users why Darkbloom can't start instead of showing first-run wording: reinstall it when the runtime is missing, update it when the installed version doesn't work with this app, or repair it when it couldn't start. An incompatible runtime is no longer described as unreachable.
+
 ## Unreleased — desktop release data for update status
 
 - Show provider release history on Updates when the coordinator publishes it without a support policy, which is what the native desktop API returns until the desktop release feed is deployed. The history no longer always reads "History unavailable"; the version floor stays unknown unless account data supplies it.
 - Load release data for This Mac's Overview, so a runtime below the supported floor offers Update now without first visiting Updates.
+
 ## Unreleased — desktop Stats completed-request traffic
 
 - Show This Mac's Stats traffic chart while the provider is serving. This session's local request history reports completion times only, which the chart ignored, so it produced no points and disappeared. The chart is now labeled Completed requests for local history and Settled requests for ledger history.
+
 ## Unreleased — desktop page scroll position
 
 - Open each desktop page, Mac and My Macs tab at the top. Previously the window kept the previous page's scroll offset, so following View earnings or Explore Stats from lower on Home, or switching Macs, landed below the new page's header and tabs.

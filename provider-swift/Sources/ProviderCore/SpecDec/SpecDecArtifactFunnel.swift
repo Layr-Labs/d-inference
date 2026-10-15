@@ -187,8 +187,11 @@ actor SpecDecArtifactFunnel {
                 return .init(artifact: artifact, status: .candidate(artifact))
             }
         }
+        let isBonsai9B = Bonsai9BModelPolicy.matches(
+            modelId: request.modelId, modelType: request.modelType)
         guard Self.isGemma4Target(modelType: request.modelType)
             || Self.isInlineTarget(modelType: request.modelType)
+            || isBonsai9B
         else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
@@ -205,6 +208,12 @@ actor SpecDecArtifactFunnel {
                     status: .disabled(.localArtifactInvalid, configured: true))
             }
             return .init(artifact: artifact, status: .candidate(artifact))
+        }
+
+        // The 9B head remains an explicit local qualification candidate.
+        // It has no catalog/default activation contract yet.
+        if isBonsai9B {
+            return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
 
         guard let catalog else {

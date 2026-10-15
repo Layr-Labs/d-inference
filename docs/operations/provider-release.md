@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -18,12 +18,22 @@ A push to `master` that changes the provider or its release tooling publishes a
 dev release automatically. A `vX.Y.Z` tag publishes production. To find the
 newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.9.21`. This candidate excludes startup
-health-check timings from throughput learning and enables bounded calibration
-for ordinary autoregressive and native block engines without requiring a customer
-job. It pins the merged ordinary-request retirement API from
-[mlx-swift-lm #305](https://github.com/Layr-Labs/mlx-swift-lm/pull/305).
-Preparation does not tag, register or publish a release.
+`ProviderCore.version` is prepared as `0.9.22` for native Bonsai 9B request,
+vision and explicit MTP sidecar support. The previous `v0.9.21` was
+[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21).
+The release candidate uses exact acceptance and drafter-required rectangular verification
+when its validated sidecar and runtime eligibility permit it. Serial verification
+is an explicit comparison override; target-only generation remains available
+without a sidecar or when speculation is ineligible.
+See the [native Bonsai contract](../architecture/inference.md) for the exact model
+identity, checkpoint constraints and defaults.
+
+This source preparation does not establish release qualification. Confirm final
+publisher artifacts and their explicit sidecar metadata, final distribution IDs,
+sampled-MTP correctness, model quality, physical-memory/media admission and hosted
+platform compatibility before promotion. Bounded local greedy parity and speed
+results do not close those gates. No tag, registration, upload or deployment is
+performed by this change.
 
 `v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
 Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)

@@ -94,6 +94,14 @@ checks all 88 shard names and 4,120 MTP entries, and optionally validates payloa
 sizes/SHA256. It does not inspect every config/tokenizer/license asset or qualify
 inference. It performs no publication or network operations.
 
+## Loopback runner, benchmark and memory calibration
+
+The provider harness template also builds `NemotronSuperRunner`, a
+qualification-only executable that serves one Super owner on 127.0.0.1 through
+the real local HTTP stack with isolated state. [super-runner.md](super-runner.md)
+covers building, running and `bench_super.py`; [memory_calibration.md](memory_calibration.md)
+covers `memory_calibration.py`. Both scripts are stdlib-only (`python3 -I`).
+
 ## Admission and reservation calibration
 
 Full-checkpoint runtime calibration is required before enabling serving or

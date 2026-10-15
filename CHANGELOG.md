@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop link page opens on request
+
+- Linking this Mac from the desktop app (onboarding, Autopilot, Home) no longer pops the browser open as soon as the code appears. The app shows the code first and opens the link page only when you click to continue, as desktop sign-in already did.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

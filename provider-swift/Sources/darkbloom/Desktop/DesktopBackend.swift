@@ -131,7 +131,9 @@ actor DesktopBackend {
                   "state": .string("waiting"),
                 ]))
             }
-          })
+          },
+          // The app shows the code first; the link page opens only when the user clicks.
+          automaticallyOpenBrowser: false)
         link = .null
         complete(request.id, code: 0, message: "This Mac is linked to your account.")
       } else {

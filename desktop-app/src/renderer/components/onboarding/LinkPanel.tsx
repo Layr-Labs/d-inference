@@ -1,4 +1,5 @@
-import { ArrowUpRight, LoaderCircle } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, LoaderCircle } from 'lucide-react';
+import { useState } from 'react';
 import type { Snapshot } from '../../../shared/contracts';
 import { api } from '../../useBackend';
 import { Button } from '../UI';
@@ -6,6 +7,16 @@ import styles from './linkPanel.module.css';
 
 // Shown while the device-code link runs; serving starts by itself once the account is linked.
 export function LinkPanel({ link, cancel }: { link: Snapshot['link']; cancel: () => void }) {
+  // The code is typed on another page; copying it avoids misreading or mistyping it.
+  const [copied, setCopied] = useState('');
+  async function copy(code: string) {
+    try {
+      await api?.copy(code);
+      setCopied(code);
+    } catch {
+      setCopied('');
+    }
+  }
   return (
     <section className={styles.link} aria-label="Link your account" aria-busy>
       <header>
@@ -19,7 +30,13 @@ export function LinkPanel({ link, cancel }: { link: Snapshot['link']; cancel: ()
       </header>
       {link ? (
         <div className={styles.code}>
-          <strong aria-label={`Link code ${link.code}`}>{link.code}</strong>
+          <span className={styles.codeValue}>
+            <strong aria-label={`Link code ${link.code}`}>{link.code}</strong>
+            <Button onClick={() => void copy(link.code)}>
+              {copied === link.code ? <Check size={15} /> : <Copy size={15} />}
+              {copied === link.code ? 'Copied' : 'Copy code'}
+            </Button>
+          </span>
           <Button variant="primary" onClick={() => void api?.openExternal('link')}>
             Open link page <ArrowUpRight size={15} />
           </Button>

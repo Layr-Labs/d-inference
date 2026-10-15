@@ -38,7 +38,7 @@ it('advises linking without changing a ready tone', async () => {
       state: 'pending',
     },
   });
-  expect(linking.steps[0].detail).toContain('ABCD-1234');
+  expect(linking.steps[0].code).toBe('ABCD-1234');
   expect(linking.steps[0].actions).toEqual([{ kind: 'link-page', label: 'Open link page' }]);
 });
 

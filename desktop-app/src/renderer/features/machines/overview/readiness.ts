@@ -12,6 +12,8 @@ export interface ReadinessStep {
   id: string;
   title: string;
   detail: string;
+  /** A code the user types elsewhere (the link page), shown large so it can be read at a glance. */
+  code?: string;
   actions: StepAction[];
 }
 export interface Readiness {

@@ -124,6 +124,25 @@
   font-size: 11px;
   color: var(--muted);
 }
+.stepCode {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: fit-content;
+  margin-top: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(var(--contrast-rgb), 0.04);
+}
+/* The code is typed on another page: large, spaced and selectable as one unit. */
+.steps .stepCode strong {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 4px;
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+}
 .stepActions {
   display: flex;
   gap: 8px;

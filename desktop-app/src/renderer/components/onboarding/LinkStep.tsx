@@ -2,34 +2,11 @@ import { Link2 } from 'lucide-react';
 import type { BackendState } from '../../useBackend';
 import { Button, Notice } from '../UI';
 import { LinkPanel } from './LinkPanel';
-import { RuntimeSetup } from './RuntimeSetup';
 import type { AccountLink } from './useAccountLink';
-import type { MacScan } from './useMacScan';
 
-// Linking needs the runtime, so this step installs or waits for it first. A linked Mac moves on
-// by itself.
-export function LinkStep({
-  backend,
-  scan,
-  link,
-}: {
-  backend: BackendState;
-  scan: MacScan;
-  link: AccountLink;
-}) {
-  if (scan.blocked) return <RuntimeSetup backend={backend} />;
-  if (!backend.state)
-    return (
-      <>
-        <h2 aria-live="polite">
-          {backend.status.state === 'installing'
-            ? 'Installing Darkbloom…'
-            : 'Connecting to this Mac…'}
-        </h2>
-        <p>Setup continues as soon as Darkbloom’s verified native runtime is ready.</p>
-        {backend.status.message && <p role="status">{backend.status.message}</p>}
-      </>
-    );
+// Shown only once the backend is installed and connected; a linked Mac moves on by itself.
+export function LinkStep({ backend, link }: { backend: BackendState; link: AccountLink }) {
+  if (!backend.state) return null;
   return (
     <>
       <h2>Link your account.</h2>

@@ -44,13 +44,13 @@ function toStartPage(state = snapshot(), done = vi.fn()) {
   return { done, update };
 }
 
-it('opens on the welcome view and checks this Mac once the runtime connects', async () => {
+it('installs the backend first and checks this Mac once it connects', async () => {
   localStorage.clear();
   backend = backendWith(undefined, { status: { state: 'missing' } });
   const { rerender } = render(<App />);
-  expect(heading('Put this Mac to work.')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Start' }));
-  expect(heading('Install Darkbloom to check this Mac.')).toBeVisible();
+  expect(heading('Install backend')).toBeVisible();
+  expect(screen.getByRole('button', { name: /Install backend/ })).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
   backend = { ...backend, status: { state: 'ready' }, state: await previewAPI.read('state') };
   rerender(<App />);
   expect(heading('Checking this Mac…')).toBeVisible();
@@ -130,9 +130,10 @@ it('links the account first, and opens the browser only from its button', async 
   const unlinked = snapshot({ linked: false });
   const { done, update } = renderUnlinked(unlinked);
   expect([...steps().querySelectorAll('li')].map((step) => step.textContent)).toEqual([
-    '1Link your account',
-    '2Check this Mac',
-    '3Start',
+    'Install backend',
+    '2Link your account',
+    '3Check this Mac',
+    '4Start',
   ]);
   expect(currentStep()).toHaveTextContent('Link your account');
   fireEvent.click(screen.getByRole('button', { name: 'Start' }));
@@ -153,7 +154,7 @@ it('links the account first, and opens the browser only from its button', async 
   update({ ...unlinked, linked: true });
   expect(heading('Checking this Mac…')).toBeVisible();
   expect(currentStep()).toHaveTextContent('Check this Mac');
-  expect(steps().querySelector('li')).toHaveClass('complete');
+  expect(steps().querySelectorAll('li.complete')).toHaveLength(2);
   fireEvent.click(screen.getByRole('button', { name: /Skip/ }));
   expect(screen.getByText('Your Darkbloom account is linked.')).toBeVisible();
   fireEvent.click(startButton());
@@ -166,7 +167,7 @@ it('skips linking on a Mac that is already linked', () => {
   backend = backendWith(snapshot());
   render(<Onboarding backend={backend} done={vi.fn()} />);
   expect(currentStep()).toHaveTextContent('Check this Mac');
-  expect(steps().querySelector('li')).toHaveClass('complete');
+  expect(steps().querySelectorAll('li.complete')).toHaveLength(2);
   fireEvent.click(screen.getByRole('button', { name: 'Start' }));
   expect(heading('Checking this Mac…')).toBeVisible();
   expect(screen.queryByRole('button', { name: /Link account/ })).not.toBeInTheDocument();

@@ -5,8 +5,6 @@ import { evaluateEligibility, type EligibilityResult } from './eligibility';
 import { scanScript } from './scanScript';
 import { useScanTimeline } from './useScanTimeline';
 
-const unreachable: BackendState['status']['state'][] = ['missing', 'error', 'incompatible'];
-
 // Each run decides from the first snapshot it sees once active, so a later snapshot never
 // changes a verdict mid-scan. Checking again starts a new run from a fresh read.
 export function useMacScan(backend: BackendState, active: boolean, onEligible: () => void) {
@@ -29,7 +27,6 @@ export function useMacScan(backend: BackendState, active: boolean, onEligible: (
     frame,
     finish,
     settled: !!result && (frame.phase === 'verdict' || frame.phase === 'leaving'),
-    blocked: !backend.state && unreachable.includes(backend.status.state),
     async recheck() {
       const id = run.id + 1;
       setRun({ id, reading: true });

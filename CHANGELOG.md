@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop onboarding order and exit
 
-- Link the Darkbloom account as the first onboarding step, before the Mac check and start. The browser opens only from **Open link page**, an in-progress link has a Cancel button, and an already linked Mac goes straight to the check. **Explore the app first** now leaves onboarding from any step instead of only the last one. The local-only choice under Advanced is removed from onboarding; local models stay available in the app.
+- Install the backend as the first onboarding step, then link the Darkbloom account, check the Mac and start. Install backend shows the install progress, or the reason with Install, Repair or Update backend, and nothing later is reachable until the backend is connected; it then moves on to linking by itself, and an already installed backend opens at the link step. The browser opens only from **Open link page**, an in-progress link has a Cancel button, and an already linked Mac goes straight to the check. **Explore the app first** now leaves onboarding from any step once the backend is connected, instead of only the last one. The local-only choice under Advanced is removed from onboarding; local models stay available in the app.
 
 ## Unreleased — desktop hardware load
 

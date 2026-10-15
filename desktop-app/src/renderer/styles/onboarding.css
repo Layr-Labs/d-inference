@@ -125,7 +125,8 @@
 .steps {
   list-style: none;
   display: flex;
-  gap: 24px;
+  flex-wrap: wrap;
+  gap: 8px 18px;
   padding: 0;
   margin: 0;
   font-size: 10px;
@@ -222,4 +223,19 @@
   color: var(--muted);
   font-size: 11px;
   text-align: center;
+}
+
+.onboarding-step > p.install-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.onboarding-step > p.install-status:empty {
+  display: none;
+}
+
+/* Headings take focus when a step replaces the install step; they are not controls. */
+.onboarding-form h2[tabindex='-1']:focus {
+  outline: none;
 }

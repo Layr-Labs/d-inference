@@ -325,13 +325,23 @@ sampler and routes (`swift test --filter 'DarkbloomHardwareLoadTests|DesktopHard
 
 ## Onboarding
 
-First run has three steps, **Link your account**, **Check this Mac** and
-**Start**. Start on the welcome view opens linking; an already linked Mac skips
-to the eligibility scan with the first step shown as done. An eligible Mac moves
+First run has four steps, **Install backend**, **Link your account**, **Check
+this Mac** and **Start**. Install backend stands in for every later step until
+the backend is connected with a snapshot: it shows the main process's status
+message while it connects or installs, and Install, Repair or Update backend
+with the reason when the status is `missing`, `error` or `incompatible`. Once
+the backend is ready it moves on to linking by itself (to the check on a linked
+Mac), with the install step done and focus on the new heading. A backend that is
+already installed opens on the welcome view at step 2 instead. A reconnect with a
+snapshot keeps the current step; a backend that goes missing, fails or starts
+installing mid-setup shows the install step until it is back.
+
+Start on the welcome view opens linking; an already linked Mac skips to the
+eligibility scan with the first two steps shown as done. An eligible Mac moves
 on by itself; an ineligible one gets its reasons and a waitlist; an unconfirmed
 one can check again or continue. "Explore the app first", beside the steps, leaves
-for the app from any step once the runtime has delivered a snapshot, and cancels
-a link in progress.
+for the app from any step once the runtime has delivered a snapshot, so never from
+a first install, and cancels a link in progress.
 
 - **Eligibility.** The scan reads the optional `Snapshot.eligibility` block
   (`desktop-app/src/shared/eligibility.ts`: `apple_silicon`, `memory`, `macos`,

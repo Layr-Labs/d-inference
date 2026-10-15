@@ -94,6 +94,52 @@ checks all 88 shard names and 4,120 MTP entries, and optionally validates payloa
 sizes/SHA256. It does not inspect every config/tokenizer/license asset or qualify
 inference. It performs no publication or network operations.
 
+## Prompt and tokenizer parity
+
+`prompt_golden.py` renders the pinned `chat_template.jinja` the way Transformers'
+`apply_chat_template` does, expands image placeholders as
+`processing_nemotron_h_omni.py` does, and tokenizes with the pinned
+`tokenizer.json` through the `tokenizers` library. It reads the reference files as
+data and checks their SHA-256 against revision
+`7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`. The committed corpus,
+`provider-swift/Tests/ProviderCoreTests/Fixtures/nemotron-super-prompt-golden.json`,
+holds request bodies, rendered prompts and token IDs only; the 17 MB tokenizer is
+not committed.
+
+Supply the reference files from the pinned snapshot in one directory holding
+`chat_template.jinja`, `tokenizer.json`, `tokenizer_config.json`,
+`processing_nemotron_h_omni.py`, `image_processing_nemotron_h_omni.py` and
+`preprocessor_config.json`. Create an isolated environment with only the pinned
+requirements, then regenerate or check the corpus:
+
+```sh
+python3 -m venv /tmp/nemotron-golden-venv
+/tmp/nemotron-golden-venv/bin/python -I -m pip install --only-binary :all: --no-deps \
+  -r scripts/nemotron-qualification/prompt-golden-requirements.txt
+/tmp/nemotron-golden-venv/bin/python -I scripts/nemotron-qualification/prompt_golden.py \
+  --model-dir /path/to/reference \
+  --check provider-swift/Tests/ProviderCoreTests/Fixtures/nemotron-super-prompt-golden.json
+```
+
+`--output <path>` writes a new corpus instead. The Swift suites
+`NemotronSuperPromptGoldenTests`, `NemotronSuperPromptContractTests` and
+`NemotronSuperLocalOutputTests` always check prompt text, image grids and
+placeholder expansion against the corpus. Token-ID parity through
+swift-transformers additionally needs the reference directory:
+
+```sh
+NEMOTRON_SUPER_REFERENCE_DIR=/path/to/reference swift test \
+  --package-path /tmp/nemotron-fixtures/provider --skip-build --force-resolved-versions -j 1 \
+  --filter 'NemotronSuperPromptGoldenTests|NemotronSuperPromptContractTests|NemotronSuperLocalOutputTests'
+```
+
+Without that variable `testRealTokenizerReproducesGoldenTokenIDs` skips with a
+message naming it; with it, the test first rejects files whose SHA-256 differs
+from the corpus. The reference behavior is the Hugging Face template over the
+client's JSON (vLLM's decoding of tool-call argument strings included). vLLM's
+pydantic re-serialization of tools, sampler grammars and tool-call argument key
+order are not modeled. Passing parity proves prompt bytes, not model quality.
+
 ## Admission and reservation calibration
 
 Full-checkpoint runtime calibration is required before enabling serving or

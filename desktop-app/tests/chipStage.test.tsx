@@ -83,7 +83,7 @@ describe('ChipStage', () => {
     expect(within(stage).queryByText('In progress')).not.toBeInTheDocument();
     expect(within(stage).queryByText('Waiting')).not.toBeInTheDocument();
     rerender(<ChipStage state={{ ...state, state: 'stopped' }} preview={false} />);
-    expect(within(stage).getByText('Provider stopped')).toBeVisible();
+    expect(within(stage).getByText('Stopped')).toBeVisible();
     expect(stage).toHaveAttribute('data-powered', 'false');
   });
 

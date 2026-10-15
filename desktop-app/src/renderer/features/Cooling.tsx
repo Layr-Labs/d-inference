@@ -29,7 +29,7 @@ export function Cooling({
           <strong>
             {cooling?.temperature == null ? '—' : `${Math.round(cooling.temperature)}°`}
           </strong>
-          <p>Cooling returns to macOS control when the provider stops.</p>
+          <p>Cooling returns to macOS control when serving stops.</p>
         </div>
         {fans.length > 0 && <FanCards fans={fans} />}
       </div>

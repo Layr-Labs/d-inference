@@ -92,7 +92,7 @@ export function LiveModels({ state }: { state: Snapshot }) {
       {models.length === 0 && (
         <p className={styles.empty}>
           {state.state === 'stopped'
-            ? 'Start providing to see your models working.'
+            ? 'Start serving to see your models working.'
             : stale
               ? 'Waiting for model activity.'
               : 'No models are currently loaded.'}

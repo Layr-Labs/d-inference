@@ -1,6 +1,6 @@
 # Darkbloom macOS app implementation plan
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-14
 
 Status: **In progress** — 2026-10-01 — Electron frontend and Swift CLI API implemented locally; release qualification remains open.
 
@@ -268,8 +268,8 @@ completed changes are not blindly replayed.
 |---|---|
 | Close window | Hide the window; provider and accepted work continue |
 | Quit desktop app | Exit Electron; provider, CLI API process, and native recovery remain independent |
-| Stop provider | Native drain and acknowledgement, then persistent stop; a timeout remains visibly draining |
-| Restart provider | Drain and restart the identified owner; preserve serving mode/configuration |
+| Stop serving | Native drain and acknowledgement, then persistent stop; a timeout remains visibly draining |
+| Restart serving | Drain and restart the identified owner; preserve serving mode/configuration |
 | Provider crash | Existing native watchdog policy owns recovery; Electron reconnects and displays state |
 | CLI API-process crash | launchd restores the API process; the backend reconciles operations without starting a second provider |
 | Sleep/wake | Connections resync; report observation gaps; native fan lease and runtime recovery retain ownership |

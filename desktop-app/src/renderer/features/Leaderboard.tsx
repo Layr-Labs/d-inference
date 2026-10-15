@@ -43,7 +43,7 @@ export function Leaderboard({ backend }: { backend: BackendState }) {
       <Header title="Leaderboard" description="The people powering Darkbloom." />
       <NetworkMap network={backend.network} />
       <div className={styles.heading}>
-        <h2>Top contributors</h2>
+        <h2>Top providers</h2>
         <span>Annualized earnings · past 24 hours</span>
       </div>
       {backend.leaderError && (

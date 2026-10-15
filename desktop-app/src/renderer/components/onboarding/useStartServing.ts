@@ -12,7 +12,7 @@ const idle: Phase = { name: 'idle' };
 // A start may download its models first.
 const startTimeoutMs = 40 * 60_000;
 
-// Contributing needs a linked account, so an unlinked Mac links first and starts the moment the
+// Serving needs a linked account, so an unlinked Mac links first and starts the moment the
 // account is linked. A runtime that rejects Autopilot by name leaves `rejected` set so the page
 // can offer the plain start instead.
 export function useStartServing(backend: BackendState, done: () => void, onRejected: () => void) {

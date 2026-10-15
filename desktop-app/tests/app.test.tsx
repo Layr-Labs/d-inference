@@ -100,8 +100,8 @@ describe('desktop operator journeys', () => {
     const remote = await screen.findByRole('button', { name: /Select Mac Studio.*View only/ });
     fireEvent.click(remote);
     expect(screen.getByText(/^View only\. Controls for this Mac/)).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Stop provider' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Restart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop serving' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restart serving' })).not.toBeInTheDocument();
   });
   it('downloads a catalog model into the Autopilot pool', { timeout: 15_000 }, async () => {
     render(<App />);

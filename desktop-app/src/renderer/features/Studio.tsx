@@ -52,7 +52,7 @@ export function Studio({
               onChange={() => setMode('combined')}
             />
             <strong>Alongside the network</strong>
-            <span>Reuse models while contributing to Darkbloom.</span>
+            <span>Reuse models while serving the Darkbloom network.</span>
           </label>
           <label className={mode === 'local' ? 'selected' : ''}>
             <input

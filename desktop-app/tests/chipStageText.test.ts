@@ -106,16 +106,16 @@ describe('stage text', () => {
       provider: 'stopped',
       reading: reading(false),
     });
-    expect(stopped).toMatchObject({ mode: 'Provider stopped', running: null });
-    expect(stopped.summary).toBe('Apple M3 Ultra: provider stopped.');
+    expect(stopped).toMatchObject({ mode: 'Stopped', running: null });
+    expect(stopped.summary).toBe('Apple M3 Ultra: not serving.');
     const starting = stageText({
       ...base,
       preview: false,
       provider: 'starting',
       reading: reading(false),
     });
-    expect(starting).toMatchObject({ mode: 'Provider starting', tokensPerSecond: null });
-    expect(starting.summary).toBe('Apple M3 Ultra: provider starting.');
+    expect(starting).toMatchObject({ mode: 'Starting…', tokensPerSecond: null });
+    expect(starting.summary).toBe('Apple M3 Ultra: starting to serve.');
     expect(
       stageText({
         ...base,

@@ -66,7 +66,7 @@ it('keeps a selected remote Mac view-only and refreshes its observed values', as
   fireEvent.click(screen.getByRole('button', { name: 'Select Mac Studio, View only' }));
   expect(screen.getByText(/^View only\. Controls for this Mac/)).toBeVisible();
   expect(screen.queryByRole('navigation', { name: 'Machine sections' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Restart' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Restart serving' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Manage models' })).not.toBeInTheDocument();
   expect(screen.queryByRole('region', { name: 'Health' })).not.toBeInTheDocument();
   const updated = {
@@ -110,7 +110,7 @@ it('applies local sections to This Mac even while a remote Mac is selected', asy
     'true',
   );
   expect(screen.getByRole('heading', { name: 'Models', level: 2 })).toBeVisible();
-  expect(screen.getByRole('button', { name: 'Restart' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Restart serving' })).toBeVisible();
 });
 
 it('keeps pending account approval visible while browsing a remote Mac', async () => {
@@ -165,7 +165,7 @@ it('keeps local controls in the workspace and cancellation in the global notific
       <OperationFeed backend={backend} />
     </>,
   );
-  expect(screen.getByRole('button', { name: 'Stop provider' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Stop serving' })).toBeVisible();
   const tabs = screen.getByRole('navigation', { name: 'Machine sections' });
   expect(
     within(tabs)

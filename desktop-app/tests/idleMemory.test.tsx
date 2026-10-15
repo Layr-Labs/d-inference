@@ -75,7 +75,7 @@ it('shows an existing custom idle period that is not a quick preset', async () =
   expect(unit()).toHaveValue('minutes');
   for (const preset of ['15 min', '1 h', '4 h'])
     expect(screen.getByRole('button', { name: preset })).toHaveAttribute('aria-pressed', 'false');
-  expect(screen.getByText(/Apply changes by restarting the provider/)).toBeVisible();
+  expect(screen.getByText(/Restart serving to apply changes/)).toBeVisible();
 });
 
 it('restores the last custom duration when models stop being kept loaded', async () => {

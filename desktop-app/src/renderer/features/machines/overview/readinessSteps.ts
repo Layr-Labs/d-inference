@@ -7,7 +7,7 @@ const chooseModels: StepAction = { kind: 'route', route: 'models', label: 'Choos
 const restart: StepAction = {
   kind: 'act',
   action: { action: 'restart' },
-  label: 'Restart provider',
+  label: 'Restart serving',
 };
 
 function modelList(names: string[]) {
@@ -60,13 +60,13 @@ function startStep(startable: NativeModel[]): ReadinessStep {
   return startable.length
     ? {
         id: 'start',
-        title: 'Start providing',
+        title: 'Start serving',
         detail: `${displayNames(startable)} ${isAre(startable.length)} selected and ready to serve.`,
         actions: [
           {
             kind: 'act',
             action: { action: 'start', models: startable.map((model) => model.id) },
-            label: 'Start providing',
+            label: 'Start serving',
           },
           chooseModels,
         ],
@@ -74,7 +74,7 @@ function startStep(startable: NativeModel[]): ReadinessStep {
     : {
         id: 'choose',
         title: 'Choose models to serve',
-        detail: 'Select at least one downloaded model, then start providing.',
+        detail: 'Select at least one downloaded model, then start serving.',
         actions: [chooseModels],
       };
 }
@@ -107,7 +107,7 @@ export function providerStep(state: Snapshot): [ReadinessStep, 'block' | 'wait']
       {
         id: 'draining',
         title: 'Finishing current requests',
-        detail: 'The provider takes no new requests while it drains.',
+        detail: 'This Mac takes no new requests while it finishes the current ones.',
         actions: [],
       },
       'wait',
@@ -116,8 +116,8 @@ export function providerStep(state: Snapshot): [ReadinessStep, 'block' | 'wait']
     return [
       {
         id: 'starting',
-        title: 'Starting the provider',
-        detail: 'Requests are served once it connects.',
+        title: 'Starting to serve',
+        detail: 'Requests are served once this Mac connects.',
         actions: [],
       },
       'wait',
@@ -126,8 +126,9 @@ export function providerStep(state: Snapshot): [ReadinessStep, 'block' | 'wait']
     return [
       {
         id: 'stale',
-        title: 'Restart the provider',
-        detail: 'The provider is running but its status is out of date. Restart it if this lasts.',
+        title: 'Restart serving',
+        detail:
+          'This Mac is still serving, but its status is out of date. Restart serving if this lasts.',
         actions: [restart],
       },
       'block',
@@ -178,7 +179,7 @@ export function providerStep(state: Snapshot): [ReadinessStep, 'block' | 'wait']
     return [
       {
         id: 'crashed',
-        title: 'Restart the provider',
+        title: 'Restart serving',
         detail: `${modelList(crashed)} stopped unexpectedly.`,
         actions: [restart],
       },

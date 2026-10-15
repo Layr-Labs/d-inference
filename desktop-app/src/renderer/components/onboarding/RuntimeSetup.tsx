@@ -20,7 +20,7 @@ export function RuntimeSetup({ backend }: { backend: BackendState }) {
       <h2>{missing ? 'Install Darkbloom to check this Mac.' : 'We couldn’t check this Mac.'}</h2>
       <p>
         {missing
-          ? 'Darkbloom installs its verified native runtime, then checks whether this Mac can serve models. Your provider works independently of this window.'
+          ? 'Darkbloom installs its verified native runtime, then checks whether this Mac can serve models. Serving continues when this window is closed.'
           : 'Darkbloom couldn’t reach its native runtime. Repair it and the check runs again.'}
       </p>
       {error && <Notice>{error}</Notice>}

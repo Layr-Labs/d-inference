@@ -17,8 +17,8 @@ function modeText(
   fresh: boolean,
 ) {
   if (measured) return 'Live from this Mac';
-  if (provider === 'stopped') return 'Provider stopped';
-  if (provider === 'starting') return 'Provider starting';
+  if (provider === 'stopped') return 'Stopped';
+  if (provider === 'starting') return 'Starting…';
   if (preview) return 'Simulated activity';
   return fresh ? 'Live from this Mac' : 'Waiting for live activity';
 }
@@ -58,7 +58,7 @@ export function stageText({
   const names = memory.models.map((model) => model.name);
   const machine = measured ? ` GPU ${measured.gpu} busy.` : '';
   const summary = !powered
-    ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.${machine}`
+    ? `${anatomy.name}: ${provider === 'starting' ? 'starting to serve' : 'not serving'}.${machine}`
     : `${anatomy.name}: ${preview ? PHASE_TEXT[stats.phase].toLowerCase() : 'live activity'}. ${
         running === null
           ? ''

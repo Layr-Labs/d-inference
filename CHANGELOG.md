@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — desktop serving wording
+
+- Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
+
+## Unreleased — desktop serving wording
+
+- Use one verb for putting a Mac to work across the desktop app: Home, This Mac, the menu bar, Overview next steps, Updates and Settings now say Start serving, Stop serving and Restart serving instead of mixing Start providing, Stop provider, Start provider, contributing and Keep providing. The menu bar shows Serving, Stopped, Starting…, Finishing requests or Connecting… instead of the raw runtime state.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

@@ -30,7 +30,7 @@ export function Home({
             onClick={() => (running ? void backend.act({ action: 'stop' }) : navigate('models'))}
           >
             {running ? <Pause size={14} /> : <Play size={14} />}{' '}
-            {running ? 'Stop provider' : 'Start providing'}
+            {running ? 'Stop serving' : 'Start serving'}
           </Button>
         }
       />

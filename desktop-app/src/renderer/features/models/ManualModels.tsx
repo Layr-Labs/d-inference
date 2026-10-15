@@ -66,7 +66,7 @@ export function ManualModels({
               void backend.act({ action: running ? 'switch' : 'start', models: chosen })
             }
           >
-            {running ? 'Apply selection' : 'Start providing'} <Check size={16} />
+            {running ? 'Apply selection' : 'Start serving'} <Check size={16} />
           </Button>
         }
       />

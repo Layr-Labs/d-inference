@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it } from 'vitest';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,18 @@ import { desktopBuildConfig } from '../electron-builder';
 
 const runtimes: PreviewRuntime[] = [];
 const directories: string[] = [];
+// A preview's API attaches to the installed CLI; give each test its own HOME with one, so the
+// results don't depend on whether this machine has Darkbloom installed.
+const savedHome = process.env.HOME;
+beforeEach(async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'desktop-preview-home-'));
+  directories.push(home);
+  await mkdir(path.join(home, '.darkbloom/bin'), { recursive: true });
+  await writeFile(path.join(home, '.darkbloom/bin/darkbloom'), '');
+  process.env.HOME = home;
+});
 afterEach(async () => {
+  process.env.HOME = savedHome;
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.stop()));
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),

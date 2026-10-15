@@ -86,13 +86,13 @@ describe('stage text', () => {
     );
     expect(summary('draining', true)).toContain('live activity. 7 in progress');
     expect(summary('running', false)).toBe('Apple M3 Ultra: waiting for live activity.');
-    expect(summary('draining', false)).toBe('Apple M3 Ultra: provider finishing current requests.');
-    expect(summary('stale', false)).toBe('Apple M3 Ultra: provider status out of date.');
+    expect(summary('draining', false)).toBe('Apple M3 Ultra: finishing current requests.');
+    expect(summary('stale', false)).toBe('Apple M3 Ultra: status out of date.');
     const measured = hardwareReadout(previewHardwareSample(16, true), true);
     expect(
       stageText({ ...base, preview: false, provider: 'stale', reading: reading(false), measured })
         .summary,
-    ).toBe('Apple M3 Ultra: provider status out of date. GPU 99% busy.');
+    ).toBe('Apple M3 Ultra: status out of date. GPU 99% busy.');
   });
 
   it('says the chip is live from this Mac while fresh measurements drive it', () => {

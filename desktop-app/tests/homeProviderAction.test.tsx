@@ -20,23 +20,23 @@ async function renderHome(state: Snapshot['state']) {
   render(<Home backend={backend} navigate={navigate} openMachine={vi.fn()} />);
   return { backend, navigate };
 }
-const startButton = () => screen.queryByRole('button', { name: 'Start providing' });
+const startButton = () => screen.queryByRole('button', { name: 'Start serving' });
 
-it.each(['running', 'stale'] as const)('offers Stop provider while %s', async (state) => {
+it.each(['running', 'stale'] as const)('offers Stop serving while %s', async (state) => {
   const { backend, navigate } = await renderHome(state);
   expect(startButton()).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Stop provider' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop serving' }));
   expect(backend.act).toHaveBeenCalledWith({ action: 'stop' });
   expect(navigate).not.toHaveBeenCalled();
 });
 
 it.each([
-  ['starting', 'Starting provider'],
+  ['starting', 'Starting…'],
   ['draining', 'Finishing requests'],
 ] as const)('waits out %s without offering Start or Stop', async (state, label) => {
   const { backend, navigate } = await renderHome(state);
   expect(startButton()).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Stop provider' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Stop serving' })).not.toBeInTheDocument();
   const button = screen.getByRole('button', { name: label });
   expect(button).toBeDisabled();
   fireEvent.click(button);

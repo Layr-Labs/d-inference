@@ -226,27 +226,27 @@ declaration of these values:
 
 <!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
 
-| Field | Production | Dev |
-|---|---|---|
-| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
-| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
-| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
-| `cliName` | `darkbloom` | `darkbloom-dev` |
-| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
-| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
-| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
-| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
-| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
-| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
-| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
-| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
-| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
-| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
-| `defaultLocalPort` | `8000` | `8001` |
-| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
-| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
-| `modelRevisionRef` | `main` | `darkbloom-dev` |
-| `releaseVersionMarker` | versions without it | `-dev.` |
+| Field | Production | Dev | Staging |
+|---|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` | `https://api.staging.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` | `wss://api.staging.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` | `darkbloom-enclave-staging` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` | `Darkbloom Staging.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` | `Darkbloom Staging` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` | `.darkbloom-staging` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` | `.config/darkbloom-staging` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` | `io.darkbloom.provider.staging` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` | `io.darkbloom.watchdog.staging` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` | `com.darkbloom.provider.staging` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` | `dev.darkbloom.provider.staging` |
+| `defaultLocalPort` | `8000` | `8001` | `8002` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` | `io.darkbloom.staging` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` | `darkbloom-staging` |
+| `releaseVersionMarker` | versions without it | `-dev.` | `-staging.` |
 
 <!-- END provider identity -->
 
@@ -315,6 +315,32 @@ An install of an earlier dev build in `~/.darkbloom` does not move to the new
 names. Its updater expects `Darkbloom.app`, so it cannot install a
 `Darkbloom Dev.app` release. Install the dev provider again with the dev
 `install.sh`.
+
+#### Staging Build Identity
+
+`staging` is a third build environment, listed in the identity table above
+beside production and dev. It is the staging analog of dev: the same source,
+its own install identity (`darkbloom-staging`, port `8002`, keychain prefix
+`io.darkbloom.staging`, cache namespace `darkbloom-staging`), and its own
+coordinator `wss://api.staging.darkbloom.dev/ws/provider`. It reads the shared
+production model CDN like dev. A `X.Y.Z-staging.N` version selects the staging
+identity (`scripts/install.sh`, `select_provider_identity`;
+`scripts/provider_release_identity.py`). For `staging`,
+`provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
+`DARKBLOOM_ENV_STAGING`.
+
+Staging is **dispatch-only**. No push or tag trigger resolves to staging, so a
+master push still publishes exactly one dev release; auto-publishing staging on
+a master push is a deferred decision (DBLM-771). Publish a staging build by hand:
+
+```bash
+gh workflow run release-swift.yml --ref master -f environment=staging
+```
+
+A staging run uses only `STAGING_*` secrets (`STAGING_R2_*`,
+`STAGING_COORDINATOR_URL`, `STAGING_RELEASE_KEY`). These secrets and the staging
+coordinator infra do not exist yet (a separate `darkbloom-devnet-infra` effort),
+so nothing publishes a staging release until they do.
 
 For a signed, notarized validation bundle without registration/publication:
 

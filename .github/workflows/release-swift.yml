@@ -30,18 +30,20 @@ name: Release Provider Bundle (Swift)
 # Every dev build carries the -dev.<run number> suffix: the build stamps it
 # into ProviderCore.version, so `darkbloom --version` shows it.
 #
-# Repo secrets use DEV_/PROD_ prefixes. Source verification gates every
+# Repo secrets use DEV_/PROD_/STAGING_ prefixes. Source verification gates every
 # credential-consuming job; release jobs do not need environment approvals.
 # This assumes trusted repository writers: YAML cannot constrain a hostile
 # writer who can change workflows and access repository secrets.
-#   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID
-#   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY
-#   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT
-#   DEV_R2_BUCKET         / PROD_R2_BUCKET
-#   DEV_R2_PUBLIC_URL     / PROD_R2_PUBLIC_URL
-#   DEV_COORDINATOR_URL   / PROD_COORDINATOR_URL
-#   DEV_RELEASE_KEY       / PROD_RELEASE_KEY
-# Apple signing secrets are shared (same cert for both envs).
+#   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID  / STAGING_R2_ACCESS_KEY_ID
+#   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY / STAGING_R2_SECRET_ACCESS_KEY
+#   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT       / STAGING_R2_ENDPOINT
+#   DEV_R2_BUCKET         / PROD_R2_BUCKET         / STAGING_R2_BUCKET
+#   DEV_R2_PUBLIC_URL     / PROD_R2_PUBLIC_URL     / STAGING_R2_PUBLIC_URL
+#   DEV_COORDINATOR_URL   / PROD_COORDINATOR_URL   / STAGING_COORDINATOR_URL
+#   DEV_RELEASE_KEY       / PROD_RELEASE_KEY       / STAGING_RELEASE_KEY
+# The STAGING_* secrets do not exist yet (DBLM-771); staging is dispatch-only
+# and cannot publish until they and the staging infra exist. Apple signing
+# secrets are shared (same cert for all envs).
 
 run-name: >-
   ${{ (github.ref_type == 'tag' && format('prod provider release {0}', github.ref_name)) ||
@@ -49,6 +51,7 @@ run-name: >-
       (inputs.resume_run_id && format('prod provider release (resume run {0})', inputs.resume_run_id)) ||
       (inputs.validation_only && format('dev provider validation build -dev.{0} (not published)', github.run_number)) ||
       (inputs.environment == 'dev' && format('dev provider release -dev.{0} (manual)', github.run_number)) ||
+      (inputs.environment == 'staging' && format('staging provider release -staging.{0} (manual)', github.run_number)) ||
       'prod provider release (manual)' }}
 
 on:
@@ -104,7 +107,12 @@ on:
         description: 'Target environment'
         required: true
         type: choice
-        options: [dev, prod]
+        # staging (DBLM-771) is dispatch-only: no push or tag trigger resolves
+        # to it, so a master push still publishes exactly one dev release.
+        # Auto-publishing staging on a master push is a deferred decision.
+        # A staging run needs STAGING_* secrets, which do not exist yet, so it
+        # cannot publish until the staging infra and STAGING_RELEASE_KEY exist.
+        options: [dev, staging, prod]
         default: dev
       version_override:
         description: 'Optional version string when running manually (otherwise derived from tag)'
@@ -309,13 +317,15 @@ jobs:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
           PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
+          STAGING_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_PUBLIC_URL || '' }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
           PROD_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_COORDINATOR_URL || '' }}
+          STAGING_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_COORDINATOR_URL || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
           # PROD_* and legacy values are empty unless the resolved environment
-          # is prod, so a dev run never receives them.
+          # is prod, so a dev or staging run never receives them.
           LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
           LEGACY_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.COORDINATOR_URL || '' }}
         run: |
@@ -1020,19 +1030,24 @@ jobs:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
           PROD_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ACCESS_KEY_ID || '' }}
+          STAGING_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_ACCESS_KEY_ID || '' }}
           DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
           PROD_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_SECRET_ACCESS_KEY || '' }}
+          STAGING_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_SECRET_ACCESS_KEY || '' }}
           DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
           PROD_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ENDPOINT || '' }}
+          STAGING_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_ENDPOINT || '' }}
           DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
           PROD_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_BUCKET || '' }}
+          STAGING_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_BUCKET || '' }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
           PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
+          STAGING_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_PUBLIC_URL || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
           # PROD_* and legacy values are empty unless the resolved environment
-          # is prod, so a dev run never receives them.
+          # is prod, so a dev or staging run never receives them.
           LEGACY_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ACCESS_KEY_ID || '' }}
           LEGACY_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_SECRET_ACCESS_KEY || '' }}
           LEGACY_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ENDPOINT || '' }}
@@ -1122,23 +1137,30 @@ jobs:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
           PROD_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ACCESS_KEY_ID || '' }}
+          STAGING_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_ACCESS_KEY_ID || '' }}
           DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
           PROD_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_SECRET_ACCESS_KEY || '' }}
+          STAGING_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_SECRET_ACCESS_KEY || '' }}
           DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
           PROD_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ENDPOINT || '' }}
+          STAGING_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_ENDPOINT || '' }}
           DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
           PROD_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_BUCKET || '' }}
+          STAGING_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_BUCKET || '' }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
           PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
+          STAGING_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_R2_PUBLIC_URL || '' }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
           PROD_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_COORDINATOR_URL || '' }}
+          STAGING_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_COORDINATOR_URL || '' }}
           DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
           PROD_RELEASE_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_RELEASE_KEY || '' }}
+          STAGING_RELEASE_KEY: ${{ needs.resolve-env.outputs.environment == 'staging' && secrets.STAGING_RELEASE_KEY || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
           # PROD_* and legacy values are empty unless the resolved environment
-          # is prod, so a dev run never receives them.
+          # is prod, so a dev or staging run never receives them.
           LEGACY_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ACCESS_KEY_ID || '' }}
           LEGACY_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_SECRET_ACCESS_KEY || '' }}
           LEGACY_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ENDPOINT || '' }}

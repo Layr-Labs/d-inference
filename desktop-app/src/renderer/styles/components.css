@@ -123,6 +123,11 @@
   color: var(--text-primary);
 }
 
+/* Space a failure's Get help link from the full-width action above it. */
+.get-help {
+  margin-top: 14px;
+}
+
 .text-link:not(.back):not(:disabled):hover svg:last-child {
   transform: translateX(2px);
 }

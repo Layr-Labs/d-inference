@@ -30,7 +30,7 @@ export function RuntimeSetup({ backend }: { backend: BackendState }) {
         <Download size={16} /> {missing ? 'Install runtime' : 'Repair runtime'}
       </Button>
       {error && (
-        <p>
+        <p className="get-help">
           <GetHelp />
         </p>
       )}

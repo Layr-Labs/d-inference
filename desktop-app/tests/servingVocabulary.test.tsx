@@ -33,7 +33,7 @@ it('offers Start serving and Stop serving on Home', async () => {
   const { rerender } = render(
     <Home backend={await backendIn('stopped')} navigate={vi.fn()} openMachine={vi.fn()} />,
   );
-  expect(screen.getByRole('button', { name: 'Start serving' })).toBeVisible();
+  expect(screen.getAllByRole('button', { name: 'Start serving' })[0]).toBeVisible();
   rerender(<Home backend={await backendIn('running')} navigate={vi.fn()} openMachine={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Stop serving' })).toBeVisible();
 });
@@ -44,7 +44,7 @@ it('offers Start, Stop and Restart serving in This Mac’s header', async () => 
   const { rerender } = render(
     <MachineHeader machine={machine} local backend={backend} navigate={vi.fn()} />,
   );
-  expect(screen.getByRole('button', { name: 'Start serving' })).toBeVisible();
+  expect(screen.getAllByRole('button', { name: 'Start serving' })[0]).toBeVisible();
   expect(screen.getByRole('button', { name: 'Restart serving' })).toHaveAttribute(
     'title',
     'Restart serving',

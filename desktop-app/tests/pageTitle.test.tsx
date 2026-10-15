@@ -37,6 +37,8 @@ const bridge: DesktopAPI = {
   onStatus: () => () => {},
   onNavigate: () => () => {},
   onHardware: () => () => {},
+  system: async () => ({ macosVersion: '27.0' }),
+  openSoftwareUpdate: async () => {},
 };
 
 beforeAll(async () => {

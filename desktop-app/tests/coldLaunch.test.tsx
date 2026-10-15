@@ -17,6 +17,8 @@ async function launch(status: DesktopStatus) {
     onStatus: (callback: typeof pushStatus) => ((pushStatus = callback), () => {}),
     onNavigate: () => () => {},
     onHardware: () => () => {},
+    system: async () => ({ macosVersion: '27.0' }),
+    openSoftwareUpdate: async () => {},
     read: () => new Promise(() => {}),
     act: vi.fn(),
     updateStatus: () => new Promise(() => {}),

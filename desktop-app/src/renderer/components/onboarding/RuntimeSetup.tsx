@@ -73,13 +73,7 @@ function MacOSRequired({ version }: { version: string }) {
   );
 }
 
-function InstallCLI({
-  backend,
-  returningUser,
-}: {
-  backend: BackendState;
-  returningUser: boolean;
-}) {
+function InstallCLI({ backend, returningUser }: { backend: BackendState; returningUser: boolean }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const { state, message, installFailed } = backend.status;

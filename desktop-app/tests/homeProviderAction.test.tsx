@@ -20,7 +20,8 @@ async function renderHome(state: Snapshot['state']) {
   render(<Home backend={backend} navigate={navigate} openMachine={vi.fn()} />);
   return { backend, navigate };
 }
-const startButton = () => screen.queryByRole('button', { name: 'Start serving' });
+// The header's button; a stopped This Mac's card (#1507) offers the same action further down.
+const startButton = () => screen.queryAllByRole('button', { name: 'Start serving' })[0] ?? null;
 
 it.each(['running', 'stale'] as const)('offers Stop serving while %s', async (state) => {
   const { backend, navigate } = await renderHome(state);

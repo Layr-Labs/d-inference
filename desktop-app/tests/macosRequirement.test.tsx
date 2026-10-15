@@ -68,7 +68,7 @@ describe('Home on an existing install', () => {
     render(<Home backend={backend} navigate={vi.fn()} openMachine={vi.fn()} />);
     expect(screen.getByRole('alert')).toHaveTextContent(prompt);
     // Serving is untouched: the provider can still be stopped as usual.
-    expect(screen.getByRole('button', { name: 'Stop provider' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop serving' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Open Software Update' }));
     expect(open).toHaveBeenCalledOnce();
   });

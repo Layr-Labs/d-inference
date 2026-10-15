@@ -134,7 +134,7 @@ export class Backend extends EventEmitter {
         return this.status({
           state: 'incompatible',
           message:
-            'The installed runtime is not compatible with this version of the app. Update Darkbloom.',
+            'The installed Darkbloom CLI is not compatible with this version of the app. Update the CLI.',
         });
       this.status({
         state: code === 'ENOENT' ? 'missing' : 'error',

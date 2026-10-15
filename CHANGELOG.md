@@ -6,7 +6,7 @@
 
 ## Unreleased — desktop help and next steps
 
-- Add **Help** to the desktop sidebar, linking the guide, the Darkbloom Slack and GitHub Discussions, and offer **Get help** next to failures: failed operation notifications, an unreachable runtime, failed sign-in (beside **Try again**), and a failed runtime install or repair.
+- Add **Help** to the desktop sidebar, linking the guide, the Darkbloom Slack and GitHub Discussions, and offer **Get help** next to failures: failed operation notifications, an unreachable Darkbloom CLI, failed sign-in (beside **Try again**), and a failed CLI install or repair.
 
 ## Unreleased — desktop onboarding order and exit
 

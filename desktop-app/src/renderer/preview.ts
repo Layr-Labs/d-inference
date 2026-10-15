@@ -77,6 +77,7 @@ export const previewAPI: DesktopAPI = {
     return { state: 'ready' };
   },
   async install() {},
+  async cancelInstall() {},
   async copy(text) {
     await navigator.clipboard.writeText(text);
   },

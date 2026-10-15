@@ -10,6 +10,7 @@ const api: DesktopAPI = {
   act: (action) => ipcRenderer.invoke('backend:act', action),
   status: () => ipcRenderer.invoke('backend:status'),
   install: () => ipcRenderer.invoke('backend:install'),
+  cancelInstall: () => ipcRenderer.invoke('backend:cancelInstall'),
   openExternal: (target) => ipcRenderer.invoke('app:external', target),
   copy: (text) => ipcRenderer.invoke('app:copy', text),
   updateStatus: () => ipcRenderer.invoke('app:update-status'),

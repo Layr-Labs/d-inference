@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop automatic backend install
+
+- The desktop app now installs its backend by itself the first time it opens on a Mac without one. It shows each step in plain language (“Downloading the backend… 42%”, “Verifying the backend’s signature…”, “Setting up device verification…”). If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**. An install in progress can be cancelled.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

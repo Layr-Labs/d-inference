@@ -4,7 +4,7 @@ import { Button, Notice } from '../UI';
 import { LinkPanel } from './LinkPanel';
 import type { AccountLink } from './useAccountLink';
 
-// Shown only once the backend is installed and connected; a linked Mac moves on by itself.
+// Shown only once the Darkbloom CLI is installed and connected; a linked Mac moves on by itself.
 export function LinkStep({ backend, link }: { backend: BackendState; link: AccountLink }) {
   if (!backend.state) return null;
   return (

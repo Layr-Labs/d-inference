@@ -17,7 +17,7 @@ type Step = 'install' | 'welcome' | 'link' | 'scan' | 'start';
 
 const stepIndex: Record<Step, number> = { install: 0, welcome: 1, link: 1, scan: 2, start: 3 };
 
-// Statuses in which the backend is absent, broken or being (re)installed. A brief reconnect
+// Statuses in which the CLI is absent, broken or being (re)installed at the user's request. A brief reconnect
 // once a snapshot has arrived keeps the current step instead.
 const unavailable: BackendState['status']['state'][] = [
   'missing',
@@ -27,12 +27,12 @@ const unavailable: BackendState['status']['state'][] = [
 ];
 
 export function Onboarding({ backend, done }: { backend: BackendState; done: () => void }) {
-  // Every later step needs the backend, so the install step stands in for them until it is
+  // Every later step needs the Darkbloom CLI, so the install step stands in for them until it is
   // connected with a snapshot.
   const ready = !!backend.state && !unavailable.includes(backend.status.state);
   const [step, setStep] = useState<Step>(ready ? 'welcome' : 'install');
-  // Set once the install step has shown something to install, repair or update: finishing it
-  // then goes straight on to linking rather than back to the welcome view.
+  // Set once the install step has offered an install, repair or update (or shown one the user
+  // started): finishing it then goes straight on to linking rather than back to the welcome view.
   const [installed, setInstalled] = useState(false);
   // Starting without a linked account sends people back to link it, then on to the start page
   // again once the check has passed.
@@ -52,7 +52,7 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
     link.cancel();
     done();
   };
-  // When the backend becomes ready, focus moves to the heading of the step that replaces the
+  // When the CLI becomes ready, focus moves to the heading of the step that replaces the
   // install step, so keyboard and screen reader users start from the new page.
   const stepElement = useRef<HTMLDivElement>(null);
   const previousView = useRef(view);

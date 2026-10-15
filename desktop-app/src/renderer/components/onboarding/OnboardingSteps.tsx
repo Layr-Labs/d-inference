@@ -1,6 +1,7 @@
 import { Check } from 'lucide-react';
 
-const steps = ['Install backend', 'Link your account', 'Check this Mac', 'Start'];
+// The first step's page is headed Install the Darkbloom CLI; its label stays short to fit.
+const steps = ['Install CLI', 'Link your account', 'Check this Mac', 'Start'];
 const linkStep = 1;
 
 // Linking is done only once the account is linked: local only passes it without linking.

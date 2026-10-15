@@ -10,6 +10,7 @@ import { Onboarding } from '../src/renderer/components/Onboarding';
 import { backendWith, models, operation, snapshot } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({
+  install: vi.fn(),
   act: vi.fn(),
   read: vi.fn(),
   openExternal: vi.fn(),
@@ -44,12 +45,13 @@ function toStartPage(state = snapshot(), done = vi.fn()) {
   return { done, update };
 }
 
-it('installs the backend first and checks this Mac once it connects', async () => {
+it('opens on Install the Darkbloom CLI and checks this Mac once it connects', async () => {
   localStorage.clear();
   backend = backendWith(undefined, { status: { state: 'missing' } });
   const { rerender } = render(<App />);
-  expect(heading('Install backend')).toBeVisible();
-  expect(screen.getByRole('button', { name: /Install backend/ })).toBeVisible();
+  expect(heading('Install the Darkbloom CLI')).toBeVisible();
+  expect(screen.getByRole('button', { name: /Install CLI/ })).toBeVisible();
+  expect(api.install).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
   backend = { ...backend, status: { state: 'ready' }, state: await previewAPI.read('state') };
   rerender(<App />);
@@ -130,7 +132,7 @@ it('links the account first, and opens the browser only from its button', async 
   const unlinked = snapshot({ linked: false });
   const { done, update } = renderUnlinked(unlinked);
   expect([...steps().querySelectorAll('li')].map((step) => step.textContent)).toEqual([
-    'Install backend',
+    'Install CLI',
     '2Link your account',
     '3Check this Mac',
     '4Start',

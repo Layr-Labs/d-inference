@@ -325,16 +325,21 @@ sampler and routes (`swift test --filter 'DarkbloomHardwareLoadTests|DesktopHard
 
 ## Onboarding
 
-First run has four steps, **Install backend**, **Link your account**, **Check
-this Mac** and **Start**. Install backend stands in for every later step until
-the backend is connected with a snapshot: it shows the main process's status
-message while it connects or installs, and Install, Repair or Update backend
-with the reason when the status is `missing`, `error` or `incompatible`. Once
-the backend is ready it moves on to linking by itself (to the check on a linked
-Mac), with the install step done and focus on the new heading. A backend that is
-already installed opens on the welcome view at step 2 instead. A reconnect with a
-snapshot keeps the current step; a backend that goes missing, fails or starts
-installing mid-setup shows the install step until it is back.
+The app is a front end to the Darkbloom CLI, which runs the background service
+that serves models. First run has four steps, **Install the Darkbloom CLI**
+(labelled **Install CLI** in the step indicator), **Link your account**, **Check
+this Mac** and **Start**. Install the Darkbloom CLI stands in for every later
+step until the CLI is connected with a snapshot. When the status is `missing`,
+`error` or `incompatible` it shows the reason with **Install CLI**, **Repair
+CLI** or **Update CLI**; the install starts only when the user clicks one, never
+by itself. While the CLI connects, or an install the user started runs, it shows
+the main process's status message ("Connecting to the Darkbloom CLI…",
+"Installing the Darkbloom CLI…") with a spinner and no button. Once the CLI is
+ready, setup moves on to linking (to the check on a linked Mac), with the install
+step done and focus on the new heading. A CLI that is already installed opens on
+the welcome view at step 2 instead. A reconnect with a snapshot keeps the current
+step; a CLI that goes missing, fails or is reinstalled mid-setup shows the install
+step until it is back.
 
 Start on the welcome view opens linking; an already linked Mac skips to the
 eligibility scan with the first two steps shown as done. An eligible Mac moves

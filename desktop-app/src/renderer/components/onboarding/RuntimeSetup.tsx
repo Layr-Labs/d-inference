@@ -5,15 +5,17 @@ import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
 import { Button, Notice } from '../UI';
 
-// The action each status offers; other statuses are waiting on the backend.
+// The button each status offers; other statuses are waiting on the CLI. Nothing installs until
+// the user clicks one.
 const actions: Partial<Record<DesktopStatus['state'], string>> = {
-  missing: 'Install backend',
-  error: 'Repair backend',
-  incompatible: 'Update backend',
+  missing: 'Install CLI',
+  error: 'Repair CLI',
+  incompatible: 'Update CLI',
 };
 
-// Onboarding's first step. It shows whatever the main process reports while the backend
-// installs or connects, and offers an install, repair or update only when one is needed.
+// Onboarding's first step, Install the Darkbloom CLI. It offers an install, repair or update
+// when one is needed, and shows whatever the main process reports while the CLI connects or
+// while an install the user started runs.
 export function RuntimeSetup({ backend }: { backend: BackendState }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
@@ -32,10 +34,10 @@ export function RuntimeSetup({ backend }: { backend: BackendState }) {
   }
   return (
     <>
-      <h2>Install backend</h2>
+      <h2>Install the Darkbloom CLI</h2>
       <p>
-        Darkbloom needs its backend, a background service that serves models on this Mac. It
-        installs once and updates automatically.
+        Darkbloom runs on its command-line tool. It installs once, runs a background service that
+        serves models on this Mac, and updates automatically.
       </p>
       {error && <Notice>{error}</Notice>}
       {/* One live region for both the progress and the reason, so each change is announced. */}
@@ -45,8 +47,8 @@ export function RuntimeSetup({ backend }: { backend: BackendState }) {
           (action
             ? ''
             : state === 'installing'
-              ? 'Installing the backend…'
-              : 'Connecting to the backend…')}
+              ? 'Installing the Darkbloom CLI…'
+              : 'Connecting to the Darkbloom CLI…')}
       </p>
       {action && (
         <Button variant="primary" disabled={!api || pending} onClick={() => void install()}>

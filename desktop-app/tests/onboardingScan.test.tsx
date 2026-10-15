@@ -164,14 +164,14 @@ describe('ineligible Mac', () => {
 });
 
 describe('when the result is not known yet', () => {
-  it('waits for the backend to deliver a snapshot, then checks a linked Mac', () => {
+  it('waits for the CLI to deliver a snapshot, then checks a linked Mac', () => {
     const connecting = backendWith(undefined, {
-      status: { state: 'connecting', message: 'Reconnecting to the runtime…' },
+      status: { state: 'connecting', message: 'Reconnecting to the Darkbloom CLI…' },
     });
     const { rerender } = render(<Onboarding backend={connecting} done={vi.fn()} />);
     elapse(30_000);
-    expect(heading('Install backend')).toBeVisible();
-    expect(screen.getByText('Reconnecting to the runtime…')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    expect(screen.getByText('Reconnecting to the Darkbloom CLI…')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Skip/ })).not.toBeInTheDocument();
     rerender(<Onboarding backend={backendWith(snapshot())} done={vi.fn()} />);
@@ -269,10 +269,10 @@ describe('leaving setup', () => {
     expect(done).toHaveBeenCalledOnce();
   });
 
-  it('is not offered before the backend connects, when there is no app to open', () => {
-    const missing = { state: 'missing', message: 'Install the runtime.' } as const;
+  it('is not offered before the CLI connects, when there is no app to open', () => {
+    const missing = { state: 'missing', message: 'Install the Darkbloom CLI.' } as const;
     render(<Onboarding backend={backendWith(undefined, { status: missing })} done={vi.fn()} />);
-    expect(heading('Install backend')).toBeVisible();
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Explore the app first/ })).toBeNull();
   });
 });

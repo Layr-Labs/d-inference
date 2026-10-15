@@ -10,7 +10,7 @@
 
 ## Unreleased — desktop CLI install progress
 
-- On a Mac without the Darkbloom CLI, the desktop app's setup shows **Install the Darkbloom CLI**; the install starts only when you click **Install CLI**. It then shows each step in plain language (“Downloading the CLI… 42%”, “Verifying the CLI’s signature…”, “Setting up device verification…”) with **Cancel**. If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**.
+- On a Mac without the Darkbloom CLI, the desktop app's setup shows **Install the Darkbloom CLI**; the install starts only when you click **Install CLI**. It then shows each step in plain language (“Downloading the CLI… 42%”, “Verifying the CLI’s signature…”, “Setting up device verification…”) with **Cancel**. If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**. A signed local preview build can now install a missing CLI the same way (it still never updates or repairs one, since its desktop API comes from the local build).
 
 ## Unreleased — desktop help and next steps
 

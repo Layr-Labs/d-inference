@@ -107,7 +107,7 @@ it('links an unlinked account first, then starts as soon as it is linked', async
   update({ ...unlinked, link });
   expect(screen.getByText('KXQF-7M2P')).toBeVisible();
   expect(screen.getByText('Waiting for approval…')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: /Open browser/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Open link page/ }));
   expect(api.openExternal).toHaveBeenCalledWith('link');
   expect(api.act).not.toHaveBeenCalled();
   update({ ...unlinked, linked: true });

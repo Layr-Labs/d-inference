@@ -65,7 +65,11 @@ export function RecommendedModels({
                   )
             }
           >
-            {missing.length ? 'Download & start Autopilot' : 'Start Autopilot'}
+            {!snapshot.linked
+              ? 'Link this Mac & start Autopilot'
+              : missing.length
+                ? 'Download & start Autopilot'
+                : 'Start Autopilot'}
           </Button>
         )}
       </header>

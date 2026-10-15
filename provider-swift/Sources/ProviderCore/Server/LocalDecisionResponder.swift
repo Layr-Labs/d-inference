@@ -3,8 +3,9 @@
 // `POST /v1/decisions` on the local endpoint. The upstream router has no
 // decision route, so this responder collects the body (same ceiling as the
 // media-bearing chat routes), runs `DecisionLocalServing` and answers with
-// the decision JSON or an OpenAI-shaped error envelope. Everything else
-// forwards unchanged.
+// the decision JSON. It sits INSIDE `CORSResponder`, whose error mapping turns
+// a thrown `DecisionRequestError` (400), engine or media error into an
+// OpenAI-shaped envelope. Everything else forwards unchanged.
 
 import Foundation
 import Hummingbird
@@ -46,16 +47,10 @@ where Inner.Context == BasicRequestContext {
                 status: .contentTooLarge,
                 message: "request body exceeds the \(maxUploadBytes / (1024 * 1024)) MiB local endpoint limit")
         }
-        // Engine and media errors travel to `CORSResponder`'s status mapping.
-        do {
-            let outcome = try await serve(try DecisionRequest.parse(Data(buffer: buffer)))
-            return Response(
-                status: .ok,
-                headers: [.contentType: "application/json"],
-                body: .init(byteBuffer: ByteBuffer(string: outcome.response.compactJSON)))
-        } catch let error as DecisionRequestError {
-            return CORSResponder<Inner>.openAIErrorResponse(
-                status: .badRequest, message: error.localizedDescription)
-        }
+        let outcome = try await serve(try DecisionRequest.parse(Data(buffer: buffer)))
+        return Response(
+            status: .ok,
+            headers: [.contentType: "application/json"],
+            body: .init(byteBuffer: ByteBuffer(string: outcome.response.compactJSON)))
     }
 }

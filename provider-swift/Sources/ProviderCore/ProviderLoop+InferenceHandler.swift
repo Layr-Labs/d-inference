@@ -434,23 +434,20 @@ extension ProviderLoop {
         let modelId = chatRequest.model
         // This metadata is provider-authored, never a caller model_type/name
         // heuristic. Revalidate against the actual acquired slot below.
+        let knownModelType = modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
         do {
             try ProviderPromptContractPipeline.validateNativeControls(templateControls,
-                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
+                modelType: knownModelType)
+            // Chat to a decision model, or a decision to any other model, is a
+            // deterministic 400 before acceptance. The loaded slot's type is
+            // re-checked by the scheduler (chat) and the decision runner.
+            if let knownModelType {
+                try DecisionServingGate.validate(
+                    modelType: knownModelType, servesDecision: decisionRequest != nil)
+            }
         } catch {
             rejectInvalidRequest() // Never publish raw decrypted validation details.
             return
-        }
-        // Chat to a decision model, or a decision to any other model, is a
-        // deterministic 400 before acceptance. The loaded slot's type is
-        // re-checked by the scheduler (chat) and the decision runner.
-        if let knownType = modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType {
-            do {
-                try DecisionServingGate.validate(modelType: knownType, servesDecision: decisionRequest != nil)
-            } catch {
-                rejectInvalidRequest()
-                return
-            }
         }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
@@ -864,16 +861,18 @@ extension ProviderLoop {
                 onLookupResolved: lookupReceiptFinalizer.resolve,
                 onCacheReady: receiptCallbacks.ready)
 
+            // The resolved slot, as the single-model engine views below see it.
+            let registryEntry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+                tokenizer: tokenizer, modelType: modelType,
+                container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
+                engineV2Bridge: slotEngineV2, visionGate: slotVisionGate)
+
             if let decisionRequest {
-                let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
-                    tokenizer: tokenizer, modelType: modelType,
-                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
-                    engineV2Bridge: slotEngineV2, visionGate: slotVisionGate)
                 await Self.serveDecision(DecisionServingContext(
                     requestId: requestId, modelId: modelId, request: decisionRequest,
                     modelType: modelType, container: slotContainer,
                     makeEngine: Self.decisionEngineFactory(
-                        modelId: modelId, entry: entry, cacheScope: cacheScope, remoteCache: remoteCache,
+                        modelId: modelId, entry: registryEntry, cacheScope: cacheScope, remoteCache: remoteCache,
                         usageSignal: v2UsageSignal, firstContentDeadline: firstContentDeadline,
                         profile: profile, serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation),
@@ -890,13 +889,7 @@ extension ProviderLoop {
             // "model not loaded" path unreachable on this code path while
             // still going through the upstream library for SSE encoding.
             let providerEngine = MultiModelBatchSchedulerEngine(
-                registryProvider: { @Sendable in
-                    [chatRequest.model: .init(
-                        tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
-                        engineV2Bridge: slotEngineV2,
-                        visionGate: slotVisionGate)]
-                },
+                registryProvider: { @Sendable in [chatRequest.model: registryEntry] },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
                 releaseModel: { _ in },

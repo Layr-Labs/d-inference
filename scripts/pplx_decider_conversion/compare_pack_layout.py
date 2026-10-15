@@ -11,7 +11,6 @@ import argparse
 import contextlib
 import json
 import os
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any

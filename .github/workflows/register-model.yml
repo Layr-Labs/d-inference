@@ -6,6 +6,11 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      publish_revision_only:
+        description: Publish and promote an uploaded revision without changing model metadata or prices
+        required: false
+        default: false
+        type: boolean
       prepare_bonsai_base:
         description: Publish the verified base-only Bonsai 9B revision before registration
         required: false
@@ -90,6 +95,11 @@ jobs:
   register:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
+      - name: Reject conflicting publication modes
+        if: ${{ inputs.publish_revision_only && inputs.prepare_bonsai_base }}
+        run: |
+          echo 'An uploaded revision cannot also request Bonsai artifact preparation.' >&2
+          exit 1
       - name: Check out the reviewed publisher
         if: ${{ inputs.prepare_bonsai_base }}
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -111,6 +121,7 @@ jobs:
           MODEL_VERSION: ${{ inputs.version }}
         run: python3 scripts/publish-bonsai9b-base.py
       - name: Build registration payload
+        if: ${{ !inputs.publish_revision_only }}
         env:
           MODEL_ID: ${{ inputs.model_id }}
           VERSION: ${{ inputs.version }}
@@ -191,14 +202,32 @@ jobs:
                | if $crp == "" then {} else {cache_read_price: ($crp | tonumber)} end)' > payload.json
           jq . payload.json
 
-      - name: Register model with coordinator
+      - name: Build revision-only payload
+        if: ${{ inputs.publish_revision_only }}
+        env:
+          VERSION: ${{ inputs.version }}
+          HUGGING_FACE_ARTIFACT_JSON: ${{ inputs.hugging_face_artifact_json }}
+        run: |
+          jq -n --arg version "$VERSION" \
+            --argjson hugging_face_artifact "${HUGGING_FACE_ARTIFACT_JSON:-null}" \
+            '{version: $version, hugging_face_artifact: $hugging_face_artifact}' > payload.json
+
+      - name: Publish model with coordinator
         env:
           COORDINATOR_URL: ${{ inputs.coordinator_url }}
           MODEL_REGISTRY_PUBLISHING_KEY: ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}
+          MODEL_ID: ${{ inputs.model_id }}
+          PUBLISH_REVISION_ONLY: ${{ inputs.publish_revision_only }}
         run: |
           test -n "$MODEL_REGISTRY_PUBLISHING_KEY"
+          if [ "$PUBLISH_REVISION_ONLY" = "true" ]; then
+            MODEL_PATH=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["MODEL_ID"], safe=""))')
+            ENDPOINT="/v1/admin/models/${MODEL_PATH}/publish-revision"
+          else
+            ENDPOINT="/v1/admin/models/register"
+          fi
           curl -fsS \
             -H "Authorization: Bearer ${MODEL_REGISTRY_PUBLISHING_KEY}" \
             -H "Content-Type: application/json" \
             --data @payload.json \
-            "${COORDINATOR_URL%/}/v1/admin/models/register"
+            "${COORDINATOR_URL%/}${ENDPOINT}"

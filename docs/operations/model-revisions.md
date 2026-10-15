@@ -66,6 +66,11 @@ Overwriting an already published R2 revision is rejected.
    timestamp/UUID version. Retry with the same version and identical files to
    resume an interrupted publication.
 
+   If the revision is already uploaded, the **Register Model** GitHub workflow
+   accepts `publish_revision_only=true`. It invokes `publish-revision` with the
+   version and optional pinned HF artifact, preserving model metadata and prices.
+   Leave `prepare_bonsai_base=false` for an already uploaded revision.
+
    To use a different HF source for this revision, add these flags to both the
    preview and publication commands:
 

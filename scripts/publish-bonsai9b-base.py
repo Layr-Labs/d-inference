@@ -26,16 +26,29 @@ def publish(manifest, source, helper_source, readback, endpoint):
         proof = verified[item["path"]]
         if not proof["verified"] or not proof.get("etag") or proof["sha256"] != item["sha256"] or proof["size_bytes"] != item["size_bytes"]:
             raise ValueError("Missing source-bound SHA256/size/ETag receipt")
-    bucket = "darkbloom-models"
     with tempfile.TemporaryDirectory(prefix="bonsai9b-base-publish-") as temporary:
         helper_path = Path(temporary) / "immutable_publisher.py"
         helper_path.write_text(helper_source)
         spec = importlib.util.spec_from_file_location("immutable_publisher", helper_path)
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
-        recorded = helper.read_object(bucket, source["r2_prefix"] + "/manifest.json", endpoint, temporary)
-        if recorded is None or helper.identity(json.loads(recorded)) != helper.identity(source):
-            raise ValueError("R2 source manifest differs from the verified backup")
+        failures = []
+        bucket = None
+        for candidate in ("darkbloom-models", "d-inf-models"):
+            try:
+                recorded = helper.read_object(candidate, source["r2_prefix"] + "/manifest.json", endpoint, temporary)
+            except RuntimeError as error:
+                if "AccessDenied" not in str(error) and "NoSuchBucket" not in str(error):
+                    raise
+                failures.append(candidate + ": access denied or bucket absent")
+                continue
+            if recorded is not None and helper.identity(json.loads(recorded)) == helper.identity(source):
+                bucket = candidate
+                break
+            failures.append(candidate + ": verified source manifest not found")
+        if bucket is None:
+            raise ValueError("No authorized source bucket found: " + "; ".join(failures))
+        print(json.dumps({"verified_source_bucket": bucket}), flush=True)
         reserved = helper.reserve_revision(manifest, bucket, endpoint, temporary)
         if not reserved:
             print(json.dumps({"status": "already_published", "r2_prefix": manifest["r2_prefix"]}), flush=True)

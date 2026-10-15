@@ -4,6 +4,15 @@ import { pinnedMemory, startingModel } from '../src/renderer/models/selection';
 import { models, snapshot } from './onboardingFixtures';
 
 const undownloaded = models.map((model) => ({ ...model, downloaded: false }));
+// A model the scan found on disk that the catalog doesn't list, like a leftover Hugging Face
+// copy. Its id sorts ahead of the catalog's lowercase ids.
+const localOnly = {
+  ...models[0],
+  id: 'prism-ml/Ternary-Bonsai-2-27B-mlx-2bit',
+  display_name: 'prism-ml/Ternary-Bonsai-2-27B-mlx-2bit',
+  network: false,
+};
+const withLocalOnly = () => snapshot({ models: [localOnly, ...models] });
 
 describe('starting model', () => {
   it('prefers an eligible model already on disk', () => {
@@ -12,6 +21,11 @@ describe('starting model', () => {
 
   it('otherwise picks the smallest eligible download', () => {
     expect(startingModel(snapshot({ models: undownloaded }))?.id).toBe('qwen-3.5-9b');
+  });
+
+  it('never picks a model the network does not list', () => {
+    expect(startingModel(withLocalOnly())?.id).toBe('gpt-oss-20b');
+    expect(startingModel(snapshot({ models: [localOnly] }))).toBeUndefined();
   });
 
   it('never picks an ineligible model', () => {
@@ -39,6 +53,18 @@ describe('start action', () => {
       pinned: ['gpt-oss-20b', 'qwen-3.5-9b'],
       downloads: ['qwen-3.5-9b'],
       endpoint: true,
+    });
+  });
+
+  it('drops pins found only on disk from onboarding starts, which always serve the network', () => {
+    expect(startAction(withLocalOnly(), 'autopilot', [localOnly.id])).toEqual({
+      action: 'autopilot',
+      models: ['gpt-oss-20b'],
+      pinned: [],
+      endpoint: true,
+    });
+    expect(startAction(withLocalOnly(), 'manual', [localOnly.id, 'gpt-oss-20b'])).toMatchObject({
+      models: ['gpt-oss-20b'],
     });
   });
 

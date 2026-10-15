@@ -1,17 +1,21 @@
 import { Pin } from 'lucide-react';
 import type { Snapshot } from '../../../shared/contracts';
 import { modelFacts, pinnedMemoryLine } from '../../models/facts';
+import { servesNetwork } from '../../models/selection';
 import styles from './pinList.module.css';
 
 export function PinList({
   snapshot,
   pinned,
   noun,
+  network,
   onChange,
 }: {
   snapshot: Snapshot;
   pinned: string[];
   noun: string;
+  // Serving the network, where only catalog models can be pinned.
+  network: boolean;
   onChange: (pinned: string[]) => void;
 }) {
   const toggle = (id: string) =>
@@ -22,13 +26,14 @@ export function PinList({
       <ul className={styles.pins}>
         {snapshot.models.map((model) => {
           const on = pinned.includes(model.id);
+          const usable = network ? servesNetwork(model) : model.eligible;
           return (
             <li key={model.id}>
-              <label className={styles.pin} data-on={on} data-disabled={!model.eligible}>
+              <label className={styles.pin} data-on={on} data-disabled={!usable}>
                 <input
                   type="checkbox"
                   checked={on}
-                  disabled={!model.eligible}
+                  disabled={!usable}
                   onChange={() => toggle(model.id)}
                 />
                 <span className={styles.pinMark} aria-hidden>
@@ -36,9 +41,9 @@ export function PinList({
                 </span>
                 <span className={styles.pinName}>
                   <strong>{model.display_name}</strong>
-                  <small>{modelFacts(model)}</small>
+                  <small>{modelFacts(model, network)}</small>
                 </span>
-                {model.eligible && (
+                {usable && (
                   <span className={styles.badge} data-ready={model.downloaded}>
                     {model.downloaded ? 'On this Mac' : 'Downloads on start'}
                   </span>

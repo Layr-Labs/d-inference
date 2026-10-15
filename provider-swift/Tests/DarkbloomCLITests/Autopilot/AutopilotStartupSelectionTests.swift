@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 import Testing
 @testable import darkbloom
@@ -44,6 +45,20 @@ struct AutopilotStartupSelectionTests {
         await #expect(throws: (any Error).self) {
             try await Start.prepareModelSelection(autopilot: true,
                 select: { ["chosen"] }, inventory: { _ in ["other-cached"] })
+        }
+    }
+
+    /// A local-only startup model (no catalog entry) never enters the
+    /// inventory; the error must name it rather than blame a verified model.
+    @Test func missingStartupModelsAreNamed() async throws {
+        do {
+            _ = try await Start.prepareModelSelection(autopilot: true,
+                select: { ["ternary-bonsai-2-27b", "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"] },
+                inventory: { _ in ["ternary-bonsai-2-27b"] })
+            Issue.record("A startup model outside the inventory must not enroll")
+        } catch let error as ValidationError {
+            #expect(error.message.contains("Not in the verified inventory: prism-ml/Ternary-Bonsai-2-27B-mlx-2bit."))
+            #expect(!error.message.contains("ternary-bonsai-2-27b,"))
         }
     }
 }

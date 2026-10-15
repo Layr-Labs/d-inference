@@ -6,7 +6,7 @@ import {
   poolState,
   runningDownload,
 } from '../src/renderer/features/models/pool';
-import { modelName } from '../src/renderer/models/facts';
+import { modelFacts, modelName } from '../src/renderer/models/facts';
 import { activeAutopilot, poolModels, poolSnapshot, succeeded } from './modelsFixtures';
 
 const byId = (id: string) => poolModels.find((model) => model.id === id)!;
@@ -36,6 +36,13 @@ describe('pool state', () => {
     expect(state('qwen-3.5-9b')).toBe('pool');
     expect(state('gpt-oss-20b')).toBe('loaded');
     expect(state('gemma-4-26b')).toBe('pinned');
+  });
+
+  it('never offers a model found only on disk to the pool', () => {
+    const localOnly = { ...byId('qwen-3.5-9b'), id: 'mlx-community/local', network: false };
+    expect(poolState(localOnly, activeAutopilot, false)).toBe('ineligible');
+    expect(modelFacts(localOnly, true)).toBe('Not on the Darkbloom network. Runs in Local only.');
+    expect(modelFacts(localOnly)).not.toContain('Darkbloom network');
   });
 
   it('keeps a downloaded model outside the pool until the pool is refreshed', () => {

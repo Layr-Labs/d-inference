@@ -130,3 +130,30 @@ it('falls back to choosing models manually when the runtime rejects Autopilot', 
   expect(done).toHaveBeenCalledOnce();
   expect(api.act).toHaveBeenCalledOnce();
 });
+
+// A Hugging Face copy the scan found on disk that the catalog doesn't list. Autopilot can't
+// enroll it, so it used to fail start with "could not all be verified".
+const diskOnly = {
+  ...models[0],
+  id: 'mlx-community/gemma-4-26B-A4B-it-qat-4bit',
+  display_name: 'mlx-community/gemma-4-26B-A4B-it-qat-4bit',
+  network: false,
+};
+
+it('starts Autopilot on a network model and never pins a disk-only model', async () => {
+  api.act.mockResolvedValue(operation('succeeded', '', 'autopilot'));
+  openAdvanced(snapshot({ models: [diskOnly, ...models] }));
+  expect(pin(/gemma-4-26B-A4B/)).toBeDisabled();
+  expect(pin(/gemma-4-26B-A4B/).closest('label')).toHaveTextContent(
+    'Not on the Darkbloom network. Runs in Local only.',
+  );
+  // Onboarding has no local-only mode (#1502), so a disk-only model can't be pinned here at all.
+  fireEvent.click(pin(/gemma-4-26B-A4B/));
+  expect(pin(/gemma-4-26B-A4B/)).not.toBeChecked();
+  fireEvent.click(screen.getByRole('button', { name: /Start serving with Autopilot/ }));
+  await waitFor(() =>
+    expect(api.act).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'autopilot', models: ['gpt-oss-20b'], pinned: [] }),
+    ),
+  );
+});

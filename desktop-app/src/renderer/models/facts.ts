@@ -8,9 +8,12 @@ export const gigabytes = (value: number) =>
 export const modelName = (models: NativeModel[], id: string) =>
   models.find((model) => model.id === id)?.display_name || id;
 
-// Size on disk or to download, and the memory need once the runtime has measured it.
-export function modelFacts(model: NativeModel) {
+// Size on disk or to download, and the memory need once the runtime has measured it. `network`
+// asks whether the model can serve Darkbloom, which a model found only on disk never can.
+export function modelFacts(model: NativeModel, network = false) {
   if (!model.eligible) return model.reason || 'Not available on this Mac.';
+  if (network && model.network === false)
+    return 'Not on the Darkbloom network. Runs in Local only.';
   return [
     `${gigabytes(model.size_gb)} ${model.downloaded ? 'on disk' : 'download'}`,
     model.memory_gb != null && `needs ${gigabytes(model.memory_gb)} memory`,

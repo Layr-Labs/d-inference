@@ -8,4 +8,4 @@ Prepare provider version `0.9.22` after published `0.9.21`. This source bump doe
 
 Return a structured HTTP 503 invalid_request_error when local POST admission has closed for a graceful drain. Preserve CORS headers, health checks, preflight requests, and ownership of already admitted responses.
 
-Recognize the exact Prism and intended Eigen Labs 9B identifiers through the same request, cache and local MTP policies; artifact publication and coordinator activation remain separate.
+Recognize the exact Prism and Eigen Labs 9B identifiers through the same request, cache and local MTP policies; artifact publication and coordinator activation remain separate.

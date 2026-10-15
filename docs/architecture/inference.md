@@ -1179,7 +1179,9 @@ Its optional Q4 head and original base weights match the inspected candidate.
 Public availability does not correct the sidecar layer-count declaration or
 substitute for final artifact, namespace and deployment qualification.
 
-The intended Eigen Labs copy is `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit`.
-Both exact identifiers use `Bonsai9BModelPolicy`; publication and the final
-Eigen revision must be verified independently before catalog registration.
+The Eigen Labs copy is published at
+[revision afce870aab56a267b2ab35c3e3309dcec76abd05](https://huggingface.co/EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit/tree/afce870aab56a267b2ab35c3e3309dcec76abd05).
+Both exact identifiers use `Bonsai9BModelPolicy`. The copy preserves publisher
+weights and runtime metadata, including the sidecar layer-count declaration.
+Artifact copying does not grant catalog or hosted-serving qualification.
 No family-name or substring alias is accepted.

@@ -66,7 +66,7 @@ for these exact fleet/candidate identities, not family names, aliases or substri
 - `EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit`
 - `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`
 - `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` (separate 9B policy)
-- `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` (same 9B policy; verify mirror publication before registration)
+- `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` (same separate 9B policy)
 - The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown

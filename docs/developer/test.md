@@ -376,6 +376,12 @@ registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
 These CPU-only checks do not prove Apple runtime behavior.
 
+`scripts/test-provider-release-publication.py` creates isolated local Git tags
+with verbatim annotations, including multiline opening paragraphs, extra blank
+lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
+text and payload/provenance digest guards without invoking signing or live
+publication.
+
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical
 links need exact provenance. Final full-tree lint needs intended additions/removals

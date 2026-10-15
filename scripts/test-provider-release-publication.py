@@ -16,6 +16,60 @@ PUB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PUB)
 
 
+def create_tag_repository(repo, tag, message):
+    # Real local objects, but no machine-wide identity, hooks or signing tools.
+    git_env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+    for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE'):
+        git_env.pop(name, None)
+    git = ['git', '-c', 'user.name=Release Test', '-c', 'user.email=test@example.com',
+           '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull]
+    subprocess.run(git + ['init', '-q', str(repo)], env=git_env, check=True, capture_output=True)
+    subprocess.run(git + ['commit', '--allow-empty', '-qm', 'Fixture'], cwd=repo,
+                   env=git_env, check=True, capture_output=True)
+    subprocess.run(git + ['tag', '-a', tag, '--cleanup=verbatim', '-F', '-'],
+                   input=message.encode(), cwd=repo, env=git_env, check=True, capture_output=True)
+    return dict(git_env, GIT_DIR=str(repo / '.git'), GIT_WORK_TREE=str(repo))
+
+
+class ReleaseChangelog(unittest.TestCase):
+    def test_original_annotation_text_is_preserved_with_and_without_signature_armor(self):
+        messages = {
+            'subject-and-body': 'Provider 0.9.20\n\n* Raise the cache write budget.\n* Add limits.\n',
+            'opening-bullets': '* Fix A\n* Fix B\n\n\nDetails paragraph.\n',
+            'multiline-paragraph': 'First line\nSecond line\nThird line\n\n\n\nDetails.\n\n\nFinal notes.\n',
+            'markdown': 'Keep this code:\n```sh\nprintf "café"\n```\n\n\n# A heading\n  indented text\n',
+            'inline-markers': 'Handle `-----BEGIN SSH SIGNATURE-----` safely.\n'
+                              'Mention "-----BEGIN PGP SIGNATURE-----" too.\n\nKeep $(not-a-command).\n',
+            'crlf': '* Fix A\r\n* Fix B\r\n\r\n\r\nDetails paragraph.\r\n',
+        }
+        for label, message in messages.items():
+            for armor in ('', 'SSH', 'PGP'):
+                with self.subTest(message=label, armor=armor), tempfile.TemporaryDirectory() as directory:
+                    # Armor is fixture data, not the result of a signing operation.
+                    signature = (f'-----BEGIN {armor} SIGNATURE-----\n'
+                                 f'fixture-signature\n-----END {armor} SIGNATURE-----\n') if armor else ''
+                    annotation = message + signature
+                    tag = 'v0.9.20'
+                    git_env = create_tag_repository(Path(directory) / 'repo', tag, annotation)
+                    raw = subprocess.run(['git', 'cat-file', 'tag', tag], env=git_env,
+                                         check=True, capture_output=True).stdout
+                    self.assertEqual(raw.split(b'\n\n', 1)[1], annotation.encode())
+                    with patch.dict(os.environ, git_env, clear=True):
+                        self.assertEqual(PUB.release_changelog({'RELEASE_TAG': tag, 'VERSION': '0.9.20'}),
+                                         message.strip())
+                        self.assertEqual(PUB.release_changelog({'GITHUB_REF_TYPE': 'tag', 'GITHUB_REF_NAME': tag,
+                                                               'VERSION': '0.9.20'}), message.strip())
+
+    def test_empty_and_missing_annotations_keep_the_version_fallback(self):
+        for message in ('', '-----BEGIN SSH SIGNATURE-----\nfixture\n-----END SSH SIGNATURE-----\n'):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                git_env = create_tag_repository(Path(directory) / 'repo', 'v0.9.20', message)
+                with patch.dict(os.environ, git_env, clear=True):
+                    for tag in ('v0.9.20', 'missing'):
+                        self.assertEqual(PUB.release_changelog({'RELEASE_TAG': tag, 'VERSION': '0.9.20'}),
+                                         'Release v0.9.20')
+
+
 class PublicationFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -220,24 +274,32 @@ class PublicationTests(PublicationFixture):
 
     def test_tag_annotation_is_retained_as_data_not_executable_code(self):
         repo = self.base / 'tag-repository'
-        # CI has no global committer identity. Configure both fixture commands,
-        # and suppress machine-wide config so a developer's defaults cannot
-        # hide an undeclared dependency (notably the annotated-tag identity).
-        git = ['git', '-c', 'user.name=Release Test', '-c', 'user.email=test@example.com']
-        git_env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
-        subprocess.run(git + ['init', '-q', str(repo)], env=git_env, check=True)
-        subprocess.run(git + ['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Fixture'],
-                       cwd=repo, env=git_env, check=True)
         marker = self.base / 'must-not-exist'
-        message = 'Restore release approvals\n\nDetailed notes with "quotes", `backticks`, and $(touch ' + str(marker) + ').\nSecond paragraph: café.\n'
-        subprocess.run(git + ['-c', 'tag.gpgsign=false', 'tag', '-a', self.env['GITHUB_REF_NAME'], '-F', '-'],
-                       input=message, text=True, cwd=repo, env=git_env, check=True)
+        message = ('* Restore release approvals\n* Preserve every opening line.\n\n\n'
+                   'Detailed notes with "quotes", `backticks`, and $(touch ' + str(marker) + ').\n'
+                   'Second paragraph: café.\n\n\nFinal paragraph.\n')
+        signature = '-----BEGIN SSH SIGNATURE-----\nfixture-signature\n-----END SSH SIGNATURE-----\n'
+        git_env = create_tag_repository(repo, self.env['GITHUB_REF_NAME'], message + signature)
         env = dict(self.env, GITHUB_REF_TYPE='tag')
-        with patch.dict(os.environ, {'GIT_DIR': str(repo / '.git'), 'GIT_WORK_TREE': str(repo)}):
+        with patch.dict(os.environ, git_env, clear=True):
             root = self.base / 'tagged-artifact'
             payload = PUB.prepare(root, self.base / PUB.BUNDLE, env)
         self.assertEqual(payload['changelog'], message.strip())
         self.assertEqual(json.loads((root / 'release-payload.json').read_text())['changelog'], message.strip())
+        self.assertEqual({key: value for key, value in payload.items() if key != 'changelog'},
+                         {key: value for key, value in self.payload.items() if key != 'changelog'})
+        self.assertEqual((root / PUB.BUNDLE).read_bytes(), (self.root / PUB.BUNDLE).read_bytes())
+        self.assertEqual((root / 'release-provenance.json').read_bytes(),
+                         (self.root / 'release-provenance.json').read_bytes())
+        env.update(RELEASE_PAYLOAD_SHA256=PUB.sha256(root / 'release-payload.json'),
+                   RELEASE_PROVENANCE_SHA256=PUB.sha256(root / 'release-provenance.json'))
+        self.assertEqual(PUB.checked_payload(root, env), payload)
+        for name in ('release-payload.json', 'release-provenance.json'):
+            original = (root / name).read_bytes()
+            (root / name).write_bytes(original + b'\n')
+            with self.subTest(tampered=name), self.assertRaisesRegex(ValueError, 'digest mismatch'):
+                PUB.checked_payload(root, env)
+            (root / name).write_bytes(original)
         self.assertFalse((root / 'qualification-request.json').exists())
         self.assertFalse(marker.exists())
         self.assertEqual(PUB.release_changelog(dict(env, GITHUB_REF_TYPE='branch')), 'Release v0.9.8')

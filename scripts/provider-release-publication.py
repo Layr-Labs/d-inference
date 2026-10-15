@@ -56,10 +56,15 @@ def release_changelog(env):
     if env.get('RELEASE_TAG') or env.get('GITHUB_REF_TYPE') == 'tag':
         # Read annotation text as data: never interpolate it into Python or a
         # shell program. Preserve multiline notes in the retained JSON payload.
-        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)',
-                                 '--', env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']], capture_output=True, text=True, check=True)
-        if result.stdout.strip():
-            return result.stdout.strip()
+        # Git identifies the signature suffix separately. Keep the original
+        # contents as bytes so paragraph spacing and CRLFs are not reformatted.
+        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)%00%(contents:signature)%00',
+                                 '--', env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']], capture_output=True, check=True)
+        if result.stdout:
+            contents, signature, _ = result.stdout.split(b'\0', 2)
+            notes = contents.removesuffix(signature).decode('utf-8').strip()
+            if notes:
+                return notes
     return f"Release v{env['VERSION']}"
 
 

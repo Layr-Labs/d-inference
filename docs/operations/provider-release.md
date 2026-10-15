@@ -348,23 +348,27 @@ credential. The version is `X.Y.Z-dev.branch.<run>`, which
 master dev lane's `X.Y.Z-dev.<run>`.
 
 ```bash
-gh workflow run release-dev-branch.yml --ref master \
-  -f ref=<branch> -f acknowledge_install_signature_gate=true
+gh workflow run release-dev-branch.yml --ref master -f ref=<branch>
 ```
 
-The lane is gated: without `acknowledge_install_signature_gate=true` it stops.
-The dev coordinator serves the self-signed build: its release-artifact check
-hashes the bundle rather than inspecting the Apple signature, and
-`MIN_TRUST=self_signed` is a device-attestation tier, not a code-signature
-tier. But the
-installer pins an Apple-anchored designated requirement for the real install
-path (`scripts/install.sh`, `verify_staged_app_signature`), so a fresh
-`darkbloom-dev` install rejects an ad-hoc or locally minted signature. Use this
-lane for coordinator-level testing until an Apple dev signing identity for the
-team is provisioned or the installer's `-dev.` requirement is adjusted. Because
-`/v1/releases/latest` orders by `created_at`, publishing makes the branch build
-the latest dev release; an existing install's self-updater may not downgrade to
-a lower run number, while a fresh install takes the newest.
+The installer accepts an ad-hoc signature for pre-release versions: for a
+version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
+relaxed designated requirement that keeps the bundle identifier
+`io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
+(`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
+the full Apple-team requirement unchanged, and a prod coordinator is never
+served a pre-release version. The dev coordinator also hashes the bundle rather
+than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
+device-attestation tier, not a code-signature tier.
+
+The installer is a pinned provider-contract snapshot, so the dev coordinator
+serves the relaxed installer only after the `darkbloom-platform` served copy is
+re-snapshotted from the merged commit in a separate platform PR. Until that
+re-snapshot lands, a fresh `darkbloom-dev` install still runs the old installer
+and rejects the self-signed build. Because `/v1/releases/latest` orders by
+`created_at`, publishing makes the branch build the latest dev release; an
+existing install's self-updater may not downgrade to a lower run number, while a
+fresh install takes the newest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

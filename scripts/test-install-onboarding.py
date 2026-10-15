@@ -20,9 +20,20 @@ class InstallerOnboardingTests(unittest.TestCase):
             start = source.index(name + "() {")
             return source[start:source.index("\n}\n", start) + 3]
 
+        def constant(name):
+            for line in source.splitlines():
+                if line.startswith(name + "="):
+                    return line + "\n"
+            raise AssertionError(f"{name} not found in install.sh")
+
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "calls"
-            script = function("select_provider_identity") + function("configure_device_verification") + r'''
+            # select_provider_identity reads the designated-requirement constants
+            # to pick the per-identity signature requirement, so define them here.
+            script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
+                      + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
+                      + function("select_provider_identity")
+                      + function("configure_device_verification")) + r'''
 profiles() {
     echo profiles >> "$ONBOARDING_TRACE"
     if [ "$ONBOARDING_ENROLLED" = yes ]; then

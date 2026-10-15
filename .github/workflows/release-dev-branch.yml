@@ -22,26 +22,18 @@ name: Release Dev-Branch Provider (self-signed)
 #     bytes and makes one HTTP registration call; it never runs the branch
 #     binary.
 #
-# SIGNATURE GATE (blocked decision — see the step `signature-gate` and the PR
-# that added this file):
-#   The installer scripts/install.sh (byte-identical to the dev coordinator's
-#   served copy, darkbloom-platform coordinator/api/install.sh) pins, for the
-#   real install path, the designated requirement
-#     anchor apple generic and identifier "io.darkbloom.provider"
-#       and certificate leaf[subject.OU] = "SLDQ2GJ6TL"
-#   (scripts/install.sh DARKBLOOM_DESIGNATED_REQUIREMENT, verify_staged_app_
-#   signature). An ad-hoc signature has no certificate chain and fails
-#   `anchor apple generic`; a locally minted dev certificate is not Apple
-#   anchored and fails it too. Only an Apple-issued certificate for team
-#   SLDQ2GJ6TL satisfies it. The coordinator itself only hash-verifies the
-#   bundle (coordinator/api/releases/artifact_verify.go), and MIN_TRUST=
-#   self_signed is a device-attestation tier, not a code-signature tier — so the
-#   dev coordinator will SERVE this build, but the current installer REFUSES to
-#   install it. This lane is therefore gated: it refuses to run until an
-#   operator sets `acknowledge_install_signature_gate: true`, confirming the
-#   build is for coordinator-level testing pending David's decision to either
-#   provision an Apple dev signing identity for team SLDQ2GJ6TL or relax the
-#   installer's `-dev.` requirement.
+# Signature model (option B):
+#   The installer accepts an ad-hoc / non-Apple-anchored signature for versions
+#   that carry a pre-release marker (-dev. or -staging.), while prod keeps the
+#   full Apple-team requirement unchanged (scripts/install.sh
+#   select_provider_identity and verify_staged_app_signature). A -dev.branch.N
+#   build is therefore installable once the dev coordinator serves the relaxed
+#   installer. The installer is a pinned provider-contract snapshot, so the
+#   darkbloom-platform served copy (scripts/install.sh and
+#   coordinator/api/install.sh) must be re-snapshotted from the merged
+#   d-inference commit in a separate darkbloom-platform PR before the dev
+#   coordinator serves it. Until that re-snapshot lands, the dev coordinator
+#   still serves the old installer and installs via it are rejected.
 
 run-name: >-
   dev-branch provider build of ${{ inputs.ref }} (-dev.branch.${{ github.run_number }})
@@ -53,11 +45,6 @@ on:
         description: 'Branch or commit SHA to build (any d-inference ref)'
         required: true
         type: string
-      acknowledge_install_signature_gate:
-        description: 'I understand the current installer rejects self-signed bundles; build for coordinator-level testing only'
-        required: true
-        type: boolean
-        default: false
 
 # One dev-branch publication at a time, serialized with itself. This never joins
 # the release-dev group that release-swift.yml uses for the master dev lane.
@@ -69,33 +56,8 @@ permissions:
   contents: read
 
 jobs:
-  resolve:
-    name: Gate dev-branch build on the signature decision
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    permissions:
-      contents: read
-    steps:
-      - name: Refuse until the signature gate is acknowledged
-        env:
-          ACKNOWLEDGED: ${{ inputs.acknowledge_install_signature_gate }}
-          REF: ${{ inputs.ref }}
-        run: |
-          set -euo pipefail
-          echo "Requested ref: $REF"
-          if [ "$ACKNOWLEDGED" != "true" ]; then
-            echo "::error::This lane is blocked. The installer pins an Apple-anchored"
-            echo "::error::certificate (anchor apple generic, leaf OU=SLDQ2GJ6TL); an"
-            echo "::error::ad-hoc/self-signed bundle installs nowhere today. The dev"
-            echo "::error::coordinator will serve it, but a fresh darkbloom-dev install"
-            echo "::error::rejects it. Re-dispatch with acknowledge_install_signature_gate=true"
-            echo "::error::only for coordinator-level testing, pending David's decision."
-            exit 1
-          fi
-          echo "Signature gate acknowledged; proceeding with a self-signed dev build."
-
   build-sign:
     name: Build and ad-hoc self-sign the branch provider
-    needs: resolve
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
@@ -248,7 +210,7 @@ jobs:
 
   publish:
     name: Register the dev build on the dev coordinator
-    needs: [resolve, build-sign]
+    needs: build-sign
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:

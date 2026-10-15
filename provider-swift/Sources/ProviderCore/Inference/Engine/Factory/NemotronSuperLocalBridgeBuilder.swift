@@ -28,6 +28,7 @@ enum NemotronSuperLocalBridgeBuilder {
         private let budget: GlobalKVCacheBudget
         private let contextLength: Int
         private var imageBinding: NemotronSuperLocalImageBinding?
+        private var textBinding: NemotronSuperLocalBinding?
         private var imageFaults: [(NativeConstructionScope, WholeMacUnboundedActivity)] = []
         private var quarantine: Owner?
         let speculates: Bool
@@ -60,6 +61,31 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// The owner's single text binding on its own bridge and tokenizer. No
+        /// registry lease or slot is manufactured; acquisition refuses once the
+        /// owner closes or retains a fault. `closeAfterDrain` drains it first.
+        func localTextBinding() throws -> NemotronSuperLocalBinding {
+            try lock.withLock {
+                guard closing == nil, imageFaults.isEmpty, installed != nil else {
+                    throw Failure.retirementIncomplete
+                }
+                if let textBinding { return textBinding }
+                let bridge = self.bridge, tokenizer = self.tokenizer
+                let binding = NemotronSuperLocalBinding(acquire: { [weak self] model in
+                    guard let self, self.acceptsLocalWork else { throw Failure.retirementIncomplete }
+                    return .init(tokenizer: tokenizer,
+                        releaseToken: OneShotRelease(release: { _ in }, modelId: model),
+                        modelType: "nemotron_h_omni", engineV2Bridge: bridge)
+                })
+                textBinding = binding
+                return binding
+            }
+        }
+
+        private var acceptsLocalWork: Bool {
+            lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }
+        }
+
         /// Uses this loaded owner's tokenizer and the pinned literal template.
         /// Input counts come from the admitted image processor, in message order.
         func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
@@ -89,6 +115,9 @@ enum NemotronSuperLocalBridgeBuilder {
                     messages: NemotronSuperPromptContract.messages(request.messages),
                     chatTemplate: template, tools: nil,
                     additionalContext: NemotronSuperPromptContract.additionalContext(body: body))
+                // Integration: expand through the prompt track's
+                // NemotronSuperPromptContract.expandImagePlaceholders so each span
+                // carries the reference <img>/</img> (19/20) wrapper.
                 guard raw.filter({ $0 == 18 }).count == featureCounts.count else {
                     throw NemotronSuperLocalImageBinding.Failure.invalidInput
                 }
@@ -142,13 +171,16 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// Slot owner must first close acquisition and drain local bindings. A
-        /// retained native engine is a fault, never evidence permitting a refund.
+        /// Slot owner must first close acquisition. This drains the owner's text
+        /// and image bindings; a retained native engine is a fault, never
+        /// evidence permitting a refund.
         func closeAfterDrain() async throws {
             let closing = lock.withLock { () -> Task<Void, Error> in
                 if let closing = self.closing { return closing }
                 let images = imageBinding
+                let text = textBinding
                 let task = Task { [self] in
+                    await text?.drain()
                     try await images?.drain()
                     guard !hasRetainedImageFault else { throw Failure.retirementIncomplete }
                     await bridge.shutdown()
@@ -157,6 +189,7 @@ enum NemotronSuperLocalBridgeBuilder {
                         installed?.closeAfterRetirement()
                         installed = nil
                         imageBinding = nil
+                        textBinding = nil
                     }
                 }
                 self.closing = task

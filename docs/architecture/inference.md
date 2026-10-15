@@ -26,7 +26,8 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 The unregistered `NemotronSuperLocalBridgeBuilder` assembles an installed Super
 language tower through the native CBv2 factory after rechecking a pending LOAD
 lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement and
-drains its own requests. It accepts pretokenized text only; media, tools, schemas
+drains its own requests; the owner mints one `localTextBinding` and drains it in
+`closeAfterDrain` before the image binding and bridge. It accepts pretokenized text only; media, tools, schemas
 and prefix reuse are rejected. The builder uses serial contiguous KV, bounded
 calibrated prefill, and no MTP unless the explicit opt-in below installs text
 speculation. These internal paths do not register a model or

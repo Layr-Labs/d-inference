@@ -1,0 +1,79 @@
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 38px;
+  margin-bottom: 10px;
+  padding: 9px 14px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  -webkit-app-region: no-drag;
+  transition:
+    background 0.16s,
+    color 0.16s;
+}
+.trigger:hover {
+  background: rgba(var(--contrast-rgb), 0.027);
+  color: var(--text-primary);
+}
+.list {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration);
+}
+.item:hover {
+  border-color: rgba(var(--contrast-rgb), 0.2);
+  background: rgba(var(--contrast-rgb), 0.03);
+}
+.item > span {
+  flex: 1;
+  min-width: 0;
+}
+.item strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.item small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.item > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.list ~ .version {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (max-width: 760px) {
+  .trigger {
+    justify-content: center;
+    gap: 0;
+    padding: 12px;
+  }
+  .trigger > span {
+    display: none;
+  }
+}

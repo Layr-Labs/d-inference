@@ -1,6 +1,7 @@
 import { Check, LoaderCircle, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import type { Operation } from '../../../shared/contracts';
+import { GetHelp } from '../Help';
 
 export function OperationToast({
   state,
@@ -15,11 +16,12 @@ export function OperationToast({
   onCancel?: () => void;
   onClose?: () => void;
 }) {
+  const failed = state === 'failed' || state === 'interrupted';
   return createPortal(
     <aside
       className={`operation ${state}`}
       aria-label="Operation notification"
-      role={state === 'failed' || state === 'interrupted' ? 'alert' : 'status'}
+      role={failed ? 'alert' : 'status'}
     >
       {state === 'running' ? (
         <LoaderCircle className="spin" size={17} />
@@ -32,6 +34,7 @@ export function OperationToast({
         <summary>{title}</summary>
         <pre>{message}</pre>
       </details>
+      {failed && <GetHelp />}
       {onCancel && (
         <button className="button quiet" onClick={onCancel}>
           Cancel

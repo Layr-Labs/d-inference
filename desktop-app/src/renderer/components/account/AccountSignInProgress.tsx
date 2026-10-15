@@ -2,6 +2,7 @@ import { ArrowUpRight, Check, Copy, LoaderCircle } from 'lucide-react';
 import { useState } from 'react';
 import type { Operation } from '../../../shared/contracts';
 import { api, type BackendState } from '../../useBackend';
+import { GetHelp } from '../Help';
 import styles from './account.module.css';
 
 export function AccountSignInProgress({
@@ -74,9 +75,16 @@ export function AccountSignInProgress({
             {backend.error}
           </p>
         )}
-        <button className="button primary" disabled={backend.busy || submitting} onClick={onRetry}>
-          Try again
-        </button>
+        <footer className={styles.signInActions}>
+          <button
+            className="button primary"
+            disabled={backend.busy || submitting}
+            onClick={onRetry}
+          >
+            Try again
+          </button>
+          <GetHelp />
+        </footer>
       </div>
     );
   return (

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { DesktopStatus } from '../../../shared/contracts';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
+import { GetHelp } from '../Help';
 import { Button, Notice } from '../UI';
 
 // The action each status offers during onboarding; other statuses are waiting on the backend.
@@ -84,6 +85,11 @@ export function RuntimeSetup({
         <Button variant="primary" disabled={!api || pending} onClick={() => void install()}>
           <Download size={16} /> {action}
         </Button>
+      )}
+      {error && (
+        <p>
+          <GetHelp />
+        </p>
       )}
     </>
   );

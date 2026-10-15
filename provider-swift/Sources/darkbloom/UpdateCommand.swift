@@ -160,9 +160,10 @@ struct Update: AsyncParsableCommand {
         print("Accepted requests drained. Restarting the installed provider...")
         do {
             try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
-            try await ServiceDrain.stopDrainedProvider(unloadService: false)
-            try LaunchAgent.restartAfterDrain()
-            ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
+            try await ServiceDrain.relaunchDrainedProvider(explicitConfig: configOptions.config) {
+                try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                try LaunchAgent.restartAfterDrain()
+            }
         } catch {
             session.release()
             try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")

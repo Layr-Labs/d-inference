@@ -28,7 +28,8 @@ language tower through the native CBv2 factory after rechecking a pending LOAD
 lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement and
 drains its own requests. It accepts pretokenized text only; media, tools, schemas
 and prefix reuse are rejected. The builder uses serial contiguous KV, bounded
-calibrated prefill, and no MTP. These internal paths do not register a model or
+calibrated prefill, and no MTP unless the explicit opt-in below installs text
+speculation. These internal paths do not register a model or
 expose an HTTP route. `NemotronSuperLocalLoad` owns an unpublished load transaction,
 checks the pinned config, reserves the conservative SDK quote and preserves
 charges on native completion faults. `NemotronSuperPromptContract` renders the
@@ -75,18 +76,27 @@ SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary
 roots, while failed completion retains resident objects and charges. Header-derived
 projection/expert-bank/image staging bounds and explicit backend allowance must
-still be checked against full-model measured peak memory. The separate Super MTP
-module/loader passes synthetic BF16 loading and equation tests using an explicitly
-unquantized KV variant. Official FP8 KV parity, target-hidden handoff, speculative
-accept/reject replay and performance evidence are not established; it is not an
-activated assistant. Bundling the upstream MTP tensors does not qualify execution.
+still be checked against full-model measured peak memory. Bundling the upstream
+MTP tensors does not qualify execution.
 The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
 application and standard JSON/SSE framing, defaults to absent, and requires
 explicit thinking-off for inline PNG media. No production caller installs it.
-Super FP8 codec/cache and text-hidden wrappers are separate opt-in components;
-synthetic tests now also exercise the eager FP8 head with unit-scale attention
-and replay. Lazy expert/output projection helpers expose explicit workspace and
-validity obligations; they are not wired into a stateful speculative assistant.
+
+`NemotronSuperLocalMTP` installs text speculation only when
+`DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction
+adds the embedded head's header-derived payload and loader construction allowance
+to its single LOAD claim, loads the head in its own fenced construction epoch, and
+the builder serves `NemotronSuperMTPTextTarget` with the SDK
+`NemotronSuperMTPAssistant`: greedy, one request, fixed depth
+(`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `1` to `3`) and serial target verification.
+The engine admits the assistant's bounded per-request charge (FP8 history, backlog,
+every draft step's dense FP8 output head and an unmeasured 256 MiB backend scratch
+allowance) before allocation and holds it until retirement. An owner with
+speculation refuses every media entry with `mediaWithSpeculation`. Synthetic
+fixtures show token-exact greedy output against the ordinary owner, forced
+rejection rollback and cancellation; serial verification cannot beat plain
+decode, and no full-model acceptance or speed is measured. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
 
 
 The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone

@@ -210,12 +210,6 @@ actor SpecDecArtifactFunnel {
             return .init(artifact: artifact, status: .candidate(artifact))
         }
 
-        // The 9B head remains an explicit local qualification candidate.
-        // It has no catalog/default activation contract yet.
-        if isBonsai9B {
-            return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
-        }
-
         guard let catalog else {
             return .init(
                 artifact: nil,

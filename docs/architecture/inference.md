@@ -639,8 +639,13 @@ envelope before cache lookup or engine submission, for both KV backends.
 This does not claim physical full-context capacity or alter pre-load listing
 metadata.
 
-The 9B MTP candidate additionally requires explicit `mtp_mode = "on"`
-and `mtp_drafter_path`; `auto` does not discover or download this sidecar.
+The default `mtp_mode = "auto"` requests MTP for these exact 9B identities.
+An optional `mtp_drafter_path` override takes precedence; otherwise the existing
+validated catalog `spec_dec` path prepares the assistant asynchronously and
+attaches it at an eligible idle boundary. No request waits for a download.
+The raw publisher sidecar has a zero-layer declaration and remains invalid
+for native binding: a separately qualified assistant and immutable catalog
+reference are required. `off` and the process kill switch disable MTP.
 `SpecDecArtifactFunnel.prepare` keeps the exact identity, Prism type, local
 artifact validation and kill-switch gates. `ProductionProviderMTPAssistantLoader`
 binds the independently validated head through the Prism wrapper, with exact
@@ -649,7 +654,7 @@ head's artifact contract and unchanged base precision are documented in
 `libs/mlx-swift-lm/docs/bonsai2.md`. Its strict binding accepts the inspected
 F16 and affine 4-bit/group-64 heads, preserving the original path for rollback.
 Actual model, cache and speed qualification
-remain separate from this explicit loading path.
+remain separate from this automatic intent and validated loading path.
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
@@ -1163,7 +1168,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 
 ### Bonsai 9B release verification mode
 
-With the explicit sidecar configured, `Qwen35InlineMTPAssistant` requires
+With a validated local or catalog sidecar available, `Qwen35InlineMTPAssistant` requires
 rectangular verification and `providerMTPVerificationPolicy` preserves that
 mode. The 9B drafter is bounded to depth two and one speculative request.
 Keep `mtp_acceptance = "exact"`; the generic automatic rectangular work-cap
@@ -1177,10 +1182,13 @@ The publisher checkpoint is publicly readable at
 [revision f4e28a59531731c41b6dfac88cf271bd58f0a287](https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-mlx-2bit/tree/f4e28a59531731c41b6dfac88cf271bd58f0a287).
 Its optional Q4 head and original base weights match the inspected candidate.
 Public availability does not correct the sidecar layer-count declaration or
-substitute for final artifact, namespace and deployment qualification.
+substitute for native runtime and deployment qualification.
 
 The Eigen Labs copy is published at
-[revision afce870aab56a267b2ab35c3e3309dcec76abd05](https://huggingface.co/EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit/tree/afce870aab56a267b2ab35c3e3309dcec76abd05).
+[revision 98deded13e48aae1f3e27d551d0e2582a7d0cc51](https://huggingface.co/EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit/tree/98deded13e48aae1f3e27d551d0e2582a7d0cc51).
+This documentation revision updates the EigenLabs model card, native MTP notes
+and checksum inventory; all runtime files match the original Eigen publication
+`afce870aab56a267b2ab35c3e3309dcec76abd05`.
 Both exact identifiers use `Bonsai9BModelPolicy`. The copy preserves publisher
 weights and runtime metadata, including the sidecar layer-count declaration.
 Artifact copying does not grant catalog or hosted-serving qualification.

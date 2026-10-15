@@ -9,7 +9,7 @@ private actor BonsaiMTPTestCatalog: SpecDecCatalogLooking {
     func model(id: String) async throws -> CatalogModel? { calls += 1; return nil }
 }
 
-@Suite("Bonsai 9B local MTP candidate policy")
+@Suite("Bonsai 9B automatic MTP policy")
 struct Bonsai9BMTPPolicyTests {
     @Test("the 9B candidate defaults to exact acceptance", arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
     func defaultAcceptancePreservesTargetSampling(modelID: String) {
@@ -23,7 +23,7 @@ struct Bonsai9BMTPPolicyTests {
             modelID: modelID).acceptance == .exact)
     }
 
-    @Test("only the exact 9B local opt-in reaches candidate inspection", arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
+    @Test("exact 9B defaults inspect local overrides or the validated catalog", arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
     func localCandidatePreservesScopeAndFallbacks(modelID: String) async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("bonsai9b-mtp-policy-\(UUID().uuidString)")
@@ -41,23 +41,24 @@ struct Bonsai9BMTPPolicyTests {
                                      cdnBaseURL: "http://127.0.0.1:1"), catalog: catalog)
         let cases: [(String, String, Bool, String?, [String: String], MTPFallbackReason?)] = [
             (modelID, "prism_hadamard_qwen35", true, directory.path, [:], nil),
-            (modelID, "prism_hadamard_qwen35", true, nil, [:], .targetUnsupported),
-            (modelID, "prism_hadamard_qwen35", true, " ", [:], .targetUnsupported),
+            (modelID, "prism_hadamard_qwen35", true, nil, [:], .artifactNotCached),
+            (modelID, "prism_hadamard_qwen35", true, " ", [:], .artifactNotCached),
             (modelID, "prism_hadamard_qwen35", true, "/missing-bonsai-head", [:], .localArtifactInvalid),
             (modelID, "prism_hadamard_qwen35", false, directory.path, [:], .configDisabled),
             (modelID, "prism_hadamard_qwen35", true, directory.path, ["DARKBLOOM_CBV2_MTP": "0"], .killSwitchDisabled),
-            ("prism-ml/Ternary-Bonsai-2-4B-mlx-2bit", "prism_hadamard_qwen35", true, directory.path, [:], .targetUnsupported),
-            ("prism-ml/bonsai-27b", "prism_hadamard_qwen35", true, directory.path, [:], .targetUnsupported),
-            (modelID.uppercased(), "prism_hadamard_qwen35", true, directory.path, [:], .targetUnsupported),
+            ("prism-ml/Ternary-Bonsai-2-4B-mlx-2bit", "prism_hadamard_qwen35", true, directory.path, [:], .configDisabled),
+            ("prism-ml/bonsai-27b", "prism_hadamard_qwen35", true, directory.path, [:], .configDisabled),
+            (modelID.uppercased(), "prism_hadamard_qwen35", true, directory.path, [:], .configDisabled),
         ]
         for (id, type, enabled, path, environment, reason) in cases {
-            let result = await funnel.prepare(.init(modelId: id, modelType: type, enabled: enabled,
-                localPath: path, allowDownload: true, environment: environment))
+            let result = await funnel.prepare(.init(modelId: id, modelType: type, enabled: enabled && MTPMode.auto.enablesMTP(
+                forModelType: type, embeddedArtifactDeclared: false, modelID: id),
+                localPath: path, allowDownload: false, environment: environment))
             #expect(result.status.reason == reason)
             #expect((result.artifact != nil) == (reason == nil))
             if reason == nil { #expect(result.artifact?.source == .local) }
         }
-        #expect(await catalog.calls == 0)
+        #expect(await catalog.calls == 2)
         await funnel.shutdown()
     }
 

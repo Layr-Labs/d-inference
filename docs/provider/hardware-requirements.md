@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -113,6 +113,21 @@ targets M5 Max testing; no minimum-RAM catalog value, full-context guarantee or
 MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
 exact artifact ID; all existing admission checks remain in effect. The artifact
 contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
+
+## pplx-decider qualification scope
+
+`EigenLabs/pplx-decider-v1-27b-MLX-4bit` (alias `pplx-decider-v1-27b`,
+`model_type` `pplx_decider_qwen35`) has the dense 4-bit Qwen 3.8 27B target
+layout of `EigenLabs/Qwen3.8-27B-4bit`, its BF16 vision tower, and a BF16
+255-row decision head in place of the vocabulary head. Both IDs carry the same
+exact-ID runtime requirement as the 27B target: `apple_m5` and `mlx_nax`
+(`ModelRuntimeRequirements.requiredCapabilities` in
+`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`).
+`EngineV2KVBackendPolicy` selects paging under `auto` and the SSD prefix cache
+defaults on for both IDs. The vision-capable pack has no measured activation
+floor, so the default reserve applies. No minimum-RAM catalog value or MTP
+capability is introduced; a decision samples one token per question. The
+serving path is [decision requests](../architecture/inference.md#decision-requests).
 
 ## Chip families
 

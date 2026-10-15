@@ -335,6 +335,20 @@ runs its implementation at explicit revisions and records native/full-model evid
 Public CI must not clone a moving private branch or replace failed qualification
 with a hash check. Refresh expected outputs only after review.
 
+pplx-decider reference vectors live verbatim in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Decision/pplx_decider_reference_vectors.json`:
+the outputs of the published `autojev.model` pure functions (`describe`,
+`options`, `decision_messages`, `answer`) and its readout probability math for
+fixed inputs. `DecisionJSONTests`, `DecisionPromptAndAnswerTests` and
+`DecisionRunnerTests` (scripted engine through the real scheduler and bridge)
+check the provider against them. They do not execute the model; the real-pack
+`PplxDeciderLiveTests` requires `DARKBLOOM_LIVE_MLX_TESTS=1` and
+`DARKBLOOM_LIVE_MLX_PPLX_DECIDER_PATH` set to a converted pack directory.
+
+```bash
+swift test --filter 'Decision|PplxDecider'
+```
+
 The retained console tests still read
 `coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
 `coordinator/tests/protocol/testdata/process_memory_wire.json`. These are fixtures,

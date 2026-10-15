@@ -113,8 +113,8 @@ default loopback bind, or put a reverse proxy in front before exposing it.
 
 ## Routes
 
-The responder stack is auth → CORS → `/metrics` → chat-upload interception →
-the upstream `MLXLMServer` router
+The responder stack is auth → CORS → `/metrics` → decisions → chat-upload
+interception → the upstream `MLXLMServer` router
 (`provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`,
 `makeLocalInferenceApplication`). Routes are registered in
 `libs/mlx-swift-lm/Libraries/MLXLMServer/HTTP/MLXServerApplication.swift`
@@ -127,6 +127,7 @@ the upstream `MLXLMServer` router
 | GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
+| POST | `/v1/decisions`, `/decisions` | Decision models only (`pplx_decider_qwen35`); same cap; JSON response or an OpenAI-style error envelope (`provider-swift/Sources/ProviderCore/Server/LocalDecisionResponder.swift`). Body and answers: [decision requests](../architecture/inference.md#decision-requests). Chat routes refuse decision models with 400 |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
 | POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |

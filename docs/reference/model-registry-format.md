@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-14
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -41,7 +41,8 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`model.safetensors.index.json`), `tokenizer` (`tokenizer.json`,
 `tokenizer_config.json`, `tokenizer.model`, `special_tokens_map.json`,
 `added_tokens.json`, `vocab.json`, `merges.txt`), `config` (`config.json`,
-`generation_config.json`, `quantize_config.json`), `template`
+`hadamard.json`, `decision_config.json`, `generation_config.json`,
+`quantize_config.json`), `template`
 (`chat_template.jinja`, `chat_template.json`), `preprocessor`
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.

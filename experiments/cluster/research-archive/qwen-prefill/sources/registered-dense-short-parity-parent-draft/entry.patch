@@ -1,0 +1,169 @@
+--- originals/run_selected_stage_load.py
++++ run_short_parity.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Private guarded one-stage loading probe; no forward or throughput qualification."""
++"""Private guarded registered short parity; independent numerical audit remains separate."""
+ import argparse
+ from datetime import datetime, timezone
+ import hashlib
+@@ -16,9 +16,9 @@
+ import uuid
+ 
+ sys.dont_write_bytecode = True
+-from stage_load_contract import (PROFILES, MINIMUM_FREE, MAX_STDOUT, MAX_STDERR,
++from short_parity_contract import (PROFILES, MINIMUM_FREE, MAX_STDOUT, MAX_STDERR,
+     NATIVE_SECONDS, PARENT_SECONDS, require, bounded_regular, input_pins,
+-    power_policy, resource_policy, native_command, validate_result)
++    power_policy, resource_policy, native_command, validate_result, token_inputs, live_output_bounds)
+ 
+ HERE = Path(__file__).resolve().parent
+ HELPERS = {
+@@ -39,7 +39,7 @@
+ def import_pinned(name):
+     path = HERE / name
+     require(sha(path) == HELPERS[name], 'Pinned private helper changed: ' + name)
+-    spec = importlib.util.spec_from_file_location('_stage_parent_' + path.stem, path)
++    spec = importlib.util.spec_from_file_location('_parity_parent_' + path.stem, path)
+     module = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(module)
+     return module
+@@ -51,7 +51,10 @@
+     parser.add_argument('--release', required=True, type=Path)
+     parser.add_argument('--model-dir', required=True, type=Path)
+     parser.add_argument('--profile', required=True, choices=PROFILES)
+-    parser.add_argument('--stage-index', required=True, choices=('0', '1'))
++    parser.add_argument('--tokens-file', required=True, type=Path)
++    parser.add_argument('--tokens-sha256', required=True)
++    parser.add_argument('--teacher-tokens-file', required=True, type=Path)
++    parser.add_argument('--teacher-tokens-sha256', required=True)
+     parser.add_argument('--expected-native-sha256', required=True)
+     parser.add_argument('--output', required=True, type=Path)
+     parser.add_argument('--reuse-bundle', type=Path)
+@@ -59,11 +62,10 @@
+     args = parser.parse_args(arguments)
+     require((args.reuse_bundle is None) == (args.expected_bundle_manifest_sha256 is None),
+             'Bundle reuse requires both path and expected manifest pin')
+-    for value in [args.expected_native_sha256] + ([args.expected_bundle_manifest_sha256] if args.reuse_bundle else []):
++    for value in [args.expected_native_sha256, args.tokens_sha256, args.teacher_tokens_sha256] + ([args.expected_bundle_manifest_sha256] if args.reuse_bundle else []):
+         require(re.fullmatch('[0-9a-f]{64}', value), 'Invalid explicit SHA-256 pin')
+-    for value in (args.runtime, args.release, args.model_dir, args.output):
++    for value in (args.runtime, args.release, args.model_dir, args.output, args.tokens_file, args.teacher_tokens_file):
+         require(value.is_absolute(), 'Explicit runtime, release, model and output paths must be absolute')
+-    args.stage_index = int(args.stage_index)
+     return args
+ 
+ 
+@@ -90,7 +92,8 @@
+ 
+ def output_bounds(out):
+     require((out / 'stdout.jsonl').stat().st_size <= MAX_STDOUT and
+-            (out / 'stderr.log').stat().st_size <= MAX_STDERR, 'Selected-stage output exceeded its byte bound')
++            (out / 'stderr.log').stat().st_size <= MAX_STDERR, 'Short-parity output exceeded its byte bound')
++    live_output_bounds(out / 'stdout.jsonl')
+ 
+ 
+ def supervise(process, out, tiny, receipt, profile, save, clock=time.monotonic, deadline=None):
+@@ -99,7 +102,7 @@
+     executable = out / 'bundle/cluster-inference'
+     while process.poll() is None:
+         observe(tiny, receipt, profile, process, executable)
+-        require(clock() < deadline, 'Parent selected-stage deadline exceeded after observation')
++        require(clock() < deadline, 'Parent short-parity deadline exceeded after observation')
+         output_bounds(out)
+         save()
+         try:
+@@ -107,13 +110,13 @@
+         except subprocess.TimeoutExpired:
+             pass
+     receipt.update(nativeExitCode=process.wait(), nativeReaped=True)
+-    require(clock() < deadline, 'Parent selected-stage deadline exceeded at completion')
+-    require(receipt['nativeExitCode'] == 0, 'Native selected-stage load failed')
++    require(clock() < deadline, 'Parent short-parity deadline exceeded at completion')
++    require(receipt['nativeExitCode'] == 0, 'Native short-parity load failed')
+     output_bounds(out)
+-    require((out / 'stderr.log').stat().st_size == 0, 'Selected-stage load emitted stderr')
++    require((out / 'stderr.log').stat().st_size == 0, 'Short-parity load emitted stderr')
+     result = validate_result(bounded_regular(out / 'stdout.jsonl', MAX_STDOUT),
+-                             receipt['registeredProfile'], receipt['stageIndex'])
+-    require(clock() < deadline, 'Parent selected-stage deadline exceeded after output validation')
++                             receipt['registeredProfile'], receipt['rawTokenInputs'])
++    require(clock() < deadline, 'Parent short-parity deadline exceeded after output validation')
+     receipt.update(result)
+ 
+ 
+@@ -131,11 +134,13 @@
+     reuse = import_pinned('owned_bundle_reference.py') if args.reuse_bundle is not None else None
+     out.mkdir(mode=0o700)
+     profile = PROFILES[args.profile]
+-    sources = [Path(__file__).resolve(), HERE / 'stage_load_contract.py'] + [HERE / name for name in HELPERS]
++    sources = [Path(__file__).resolve(), HERE / 'short_parity_contract.py', HERE / 'stage_load_contract.py'] + [HERE / name for name in HELPERS]
+     source_pins = {p.name: sha(p) for p in sources}
+-    receipt = dict(kind='private_guarded_registered_selected_stage_load_v2', schemaVersion=1,
++    receipt = dict(kind='private_guarded_registered_short_parity_v1', schemaVersion=1,
+         startedAtUTC=datetime.now(timezone.utc).isoformat(), status='preparing',
+-        registeredProfile=args.profile, stageIndex=args.stage_index, expectedIdentity=profile,
++        registeredProfile=args.profile, expectedIdentity=profile,
++        promptFile=str(args.tokens_file), teacherFile=str(args.teacher_tokens_file),
++        expectedPromptSHA256=args.tokens_sha256, expectedTeacherSHA256=args.teacher_tokens_sha256,
+         runtime=str(runtime), release=str(release), modelDirectory=str(directory),
+         expectedNativeSHA256=args.expected_native_sha256, privateSourceSHA256=source_pins,
+         nativeExecutionAttempted=False, nativeExecutions=0, nativePID=None,
+@@ -150,17 +155,24 @@
+         exitObservationContract='exact_owned_defunct_zero_rss_after_terminal_Popen_poll',
+         nativeResourcePolicyChanged=False, parentScreenGrantsNativeAllocationPermission=False,
+         independentMetadataAuditPerformed=False, independentTensorAuditPerformed=False,
+-        selectedStageWeightMaterializationRequested=True, modelForwardAuthorized=False,
++        independentNumericalAuditPerformed=False, fullThenPairWeightMaterializationRequested=True,
++        modelForwardAuthorized=True, nativeModelForwardLimitedToThreeStepsPerOwner=True,
+         physicalTwoMachineExecution=False, throughputQualification=False)
+     save = lambda: archive.write_json(out / 'receipt.json', receipt)
+     save()
+-    process = modules = source_manifest = bundle_sha = raw_pins = bundle_reference = None
++    process = modules = source_manifest = bundle_sha = raw_pins = bundle_reference = token_pins = None
+     try:
+         for source in sources:
+             shutil.copyfile(source, out / source.name)
+             (out / source.name).chmod(0o400)
+         raw_pins = input_pins(directory, profile)
+         receipt['rawMetadataPins'] = raw_pins
++        token_bytes, token_pins = token_inputs(args.tokens_file, args.teacher_tokens_file, args.tokens_sha256, args.teacher_tokens_sha256)
++        receipt['rawTokenInputs'] = token_pins
++        for name, data in zip(['prompt.json', 'teacher.json'], token_bytes):
++            with (out / name).open('xb') as stream:
++                os.fchmod(stream.fileno(), 0o400); stream.write(data)
++        receipt['tokenFilesArchivedWithoutReencoding'] = True
+         require(sha(release / 'cluster-inference') == args.expected_native_sha256, 'Native pin differs')
+         observe(tiny, receipt, profile)
+         live = tiny.read_command(['/bin/ps', '-axo', 'command='])
+@@ -187,7 +199,10 @@
+                 out / 'source/experiments/cluster/runtime', modules['artifacts'])
+         require(input_pins(directory, profile) == raw_pins, 'Input metadata changed before launch')
+         observe(tiny, receipt, profile)
+-        command = native_command(out / 'bundle/cluster-inference', directory, args.profile, args.stage_index)
++        require(token_inputs(args.tokens_file, args.teacher_tokens_file, args.tokens_sha256, args.teacher_tokens_sha256)[1] == token_pins, 'Original tokens changed before launch')
++        require(token_inputs(out / 'prompt.json', out / 'teacher.json', args.tokens_sha256, args.teacher_tokens_sha256)[1] == token_pins, 'Archived tokens changed before launch')
++        command = native_command(out / 'bundle/cluster-inference', directory, args.profile,
++            out / 'prompt.json', out / 'teacher.json', args.tokens_sha256, args.teacher_tokens_sha256)
+         environment = {key: value for key, value in os.environ.items()
+                        if not key.startswith(('MLX_', 'DARKBLOOM_', 'JACCL_'))}
+         environment.update(tiny.ENVIRONMENT)
+@@ -221,6 +236,9 @@
+         post('released_resources_and_power', lambda: observe(tiny, receipt, profile))
+         if raw_pins is not None:
+             post('raw_metadata_recheck', lambda: require(input_pins(directory, profile) == raw_pins, 'Input metadata changed'))
++        if token_pins is not None:
++            post('original_token_recheck', lambda: require(token_inputs(args.tokens_file, args.teacher_tokens_file, args.tokens_sha256, args.teacher_tokens_sha256)[1] == token_pins, 'Original raw tokens changed'))
++            post('archived_token_recheck', lambda: require(token_inputs(out / 'prompt.json', out / 'teacher.json', args.tokens_sha256, args.teacher_tokens_sha256)[1] == token_pins, 'Archived raw tokens changed'))
+         if modules and source_manifest and bundle_sha:
+             post('source_archive_bundle_recheck', lambda: archive.verify_archive(modules, out, source_manifest, bundle_sha, []))
+         if bundle_reference is not None:
+@@ -261,7 +279,7 @@
+ 
+ 
+ def interrupted(signum, _frame):
+-    raise KeyboardInterrupt('Selected-stage parent interrupted by signal ' + str(signum))
++    raise KeyboardInterrupt('Short-parity parent interrupted by signal ' + str(signum))
+ 
+ 
+ if __name__ == '__main__':

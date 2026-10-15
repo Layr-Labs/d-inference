@@ -1,0 +1,13 @@
+# Bounded short-cohort correction
+
+The retained solo run ended with SIGALRM at its fixed 300-second native lifetime. Only admission was published. Model-load completion, active request ordinal, and any completed sample are unknown. All 1,107 resource samples stayed AC/pressure1/zero-swap; minimum actual free was 14,642,626,560 bytes. The retained EPERM cleanup error is not erased or explained as proven; subsequent root postflight establishes current process absence and empty journal.
+
+The five Swift paths add optional `--measured-count 1…3` (default3), configure the existing owner to one warmup plus that many fresh requests, and publish bounded CPU-only model-loaded/retired-request records. Request.swift, Timing.swift, model loading, math, kernel controls and resource/300-second/120-second gates are unchanged. Publications occur outside request timing and after the request lifecycle/autorelease scope. Warmup eligibility still requires48 GDN layers,768 prefill/6096 decode calls and zero fallback.
+
+The strict consumer validates loaded source, each retired request, ordering and warmup counts using the same final-report checks. It requires final report equality with all progress, natural zero exit and existing cleanup/source/resource checks for cohort timing eligibility. Incomplete cohorts retain raw progress and last accepted phase but cannot aggregate. The unmodified safe26448 process helper remains the ownership authority.
+
+Run `build-commands.json` only after root grants the sole materialization/compiler slot. Preparation APFS-clones the exact44495956 source/cache ancestor; all3,292 source and9,502 dependency pins are checked before/after, proposed source count3,293. The same max-jobs2/owned-group build/check runner is reused; only metadata expected counts become22 accepted/42 rejected. No compilation/materialization/model/remote action has occurred.
+
+Eleven unique Python methods passed, including two actual bounded local Python children (complete stream and EOF after retired warmup). The prior16-test output redundantly discovered five imported legacy tests and is preserved. Source patch reversal and unchanged request/timing/resource authority passed. Native metadata checks are staged, not executed.
+
+Matched policy is three fresh owners per mode, each1 warmup+1 measured request; never pool a failed cohort. c448's existing parser already accepts1+1 and emits after release, so distributed nativec35c/controllerc448 need only new configurations. The original4bc3 timing package and failed solo86755 remain unchanged. New distributed configs and comparison binding are prepared separately in this same directory; no increased lifetime or guards.

@@ -1,0 +1,59 @@
+--- originals/prepare_packet.py
++++ prepare_packet.py
+@@ -1,4 +1,4 @@
+-"""Assemble the existing six-role packet; numerical policy stays in frozen d072."""
++"""Assemble the existing six-role packet against the frozen cut16 numerical gate."""
+ import argparse
+ import hashlib
+ import json
+@@ -6,17 +6,17 @@
+ import sys
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+-COMPARATOR = ROOT / 'registered-generation-numerical-audit-draft-20260915'
+-COMPARATOR_SHA = 'd072d1e04b673850ad94815335ccb3d5fb1db3a7d00d60abecc2fb14fca972f2'
+-PARENT = ROOT / 'qwen27b-owner-native-diagnostic-rerun-v2-20260915'
+-PARENT_SHA = '68bb635a1b28eefd54df3b49a72da12aabc0302fa6df085651e4f712c4f10e75'
+-AGREEMENT_SHA = '6a008e5e29f3bd4c2a79398700f0476bcd970111c95a88133a5becbb22f9973d'
+-REFERENCE = ROOT / 'qwen27b-full-generation-reference-physical-20260915/run-4/returned/native/worker-0.stdout'
+-REFERENCE_SHA = '65c39fab8ae0fd2dfe8b1a3839d299ab297a103affca7c6e5f45d6d72c53a36e'
++COMPARATOR = ROOT / 'qwen27b-cut16-numerical-audit-20260915'
++COMPARATOR_SHA = 'f3757094f14cc479e761b83b2a988551250bd61a9dba1797e91c3e564f29aebe'
++PARENT = ROOT / 'qwen27b-cut16-owner-qualification-20260915'
++PARENT_SHA = '4690e10bee7fcb9c9d5dfd76dd58c9b7344e1d9ee1479f24ea3976ef6d3c1641'
++AGREEMENT_SHA = '42c310634e03957f611a2c827347f1faf3d6bcc06003296b6c398932b4b56b2e'
++REFERENCE = ROOT / 'qwen27b-cut16-full-reference-20260915/physical-collect-1/returned/native/worker-0.stdout'
++REFERENCE_SHA = '539f0ed31bf4b95590d26df3468b2d3863520bc742d2c62cd37bcb8ca94d6e26'
+ SOURCE_ROLES = {
+     'prompt': ('inputs/prompt.ids.json', '6d4c8898c3d6f01ddd8c3e712cde5005c647db64937977dd907935146442e81e', 256*1024),
+-    'registered_request': ('inputs/request.json', 'd81435faed6ae00db8251530e96da2d276443a62ffa6a971925075b8ec447401', 64*1024),
+-    'registered_plan': ('provenance/recording-metadata.json', 'd1828272d22d62bd4573cf0da04aa7797e2b18aa59286bd34916cf77c7b8b9d4', 64*1024),
++    'registered_request': ('inputs/request.json', '3b9ca1f74695c1e79a895954cbb26e14857e83c5504c09f26a2f25ac66d00a4f', 64*1024),
++    'registered_plan': ('provenance/recording-metadata.json', '4c22d847bb83991a37d83a9c97be94eb8152f5341c8deaa4b3bf6e677eb6eeeb', 64*1024),
+ }
+ 
+ 
+@@ -33,7 +33,11 @@
+     if manifest.is_symlink() or manifest.stat().st_size > 1024**2 or digest(manifest) != expected:
+         raise ValueError('Frozen source manifest differs')
+     value = json.loads(manifest.read_bytes())
+-    for item in value['files']:
++    members = value['files']
++    if type(members) is dict:
++        members = [dict(path=name, bytes=item['bytes'], sha256=item['sha256'])
++                   for name, item in members.items()]
++    for item in members:
+         path = directory / item['path']
+         if path.is_symlink() or path.stat().st_size != item['bytes'] or digest(path) != item['sha256']:
+             raise ValueError('Frozen source member differs: ' + item['path'])
+--- originals/read_sidecar_remote.py
++++ read_sidecar_remote.py
+@@ -7,7 +7,7 @@
+ import stat
+ import subprocess
+ 
+-SIDECAR = '/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915/evidence/20801ced-ca29-4faf-b71a-9ebbe1886a14.json'
++SIDECAR = '/Users/developer/DarkbloomDev/qwen27b-cut16-owner-validation-20260915/evidence/20801ced-ca29-4faf-b71a-9ebbe1886a14.json'
+ JOURNAL = '/Users/developer/.darkbloom/cluster-device/native-device.lease'
+ 
+ 

@@ -1,0 +1,30 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReadinessExchange.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReadinessExchange.swift
+@@ -20,17 +20,21 @@
+             _ = try collective.sendCompleted(array, to: 1 - collective.rank,
+                 maximumBytes: 256, check: checked)
+         }
+-        func receive() throws {
++        func receive() throws -> [Int32] {
+             let actual = try collective.receiveCompleted(shape: [64], dtype: .int32,
+                 from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
+             try checked()
+-            guard actual == values else {
+-                throw ProbeError(disagreementMessage)
+-            }
++            return actual
+         }
+-        if collective.rank == 0 { try send(); try receive() }
+-        else { try receive(); try send() }
++        // Both ranks publish their digest before either rejects its peer's value.
++        // Completed send is not a peer-consumption acknowledgment.
++        let actual: [Int32]
++        if collective.rank == 0 { try send(); actual = try receive() }
++        else { actual = try receive(); try send() }
+         try checked()
++        guard actual == values else {
++            throw ProbeError(disagreementMessage)
++        }
+         return digest
+     }
+ }

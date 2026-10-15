@@ -1,0 +1,15 @@
+--- before/prepare_packet.py
++++ after/prepare_packet.py
+@@ -8,9 +8,9 @@
+ ROOT = Path(__file__).resolve().parent.parent
+ COMPARATOR = ROOT / 'registered-generation-numerical-audit-draft-20260915'
+ COMPARATOR_SHA = 'd072d1e04b673850ad94815335ccb3d5fb1db3a7d00d60abecc2fb14fca972f2'
+-PARENT = ROOT / 'qwen27b-owner-physical-parent-draft-20260915'
+-PARENT_SHA = '9c41f978a031babb56f6d5ba81bc397190f93419f5f70fe82e14f52ae617b34a'
+-AGREEMENT_SHA = '474d14971766fbde863afe417352e2e887fad18eccbfbf9c1e6992b1036af324'
++PARENT = ROOT / 'qwen27b-owner-jsonl-rerun-20260915'
++PARENT_SHA = '86998a7aaf2444e6e19b4f0f1c15faf11d0ae6385174c3b898b87dcf004ce534'
++AGREEMENT_SHA = '6578cc8c688664b83670d83b5794cd6e8f476c090bb072248359970aee42d634'
+ REFERENCE = ROOT / 'qwen27b-full-generation-reference-physical-20260915/run-4/returned/native/worker-0.stdout'
+ REFERENCE_SHA = '65c39fab8ae0fd2dfe8b1a3839d299ab297a103affca7c6e5f45d6d72c53a36e'
+ SOURCE_ROLES = {

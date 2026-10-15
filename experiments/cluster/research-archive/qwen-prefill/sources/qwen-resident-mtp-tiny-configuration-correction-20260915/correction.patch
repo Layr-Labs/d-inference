@@ -1,0 +1,17 @@
+--- MTPTinyModel.before.swift
++++ MTPTinyModel.swift
+@@ -72,7 +72,13 @@
+             "layers.0.mlp.up_proj", "layers.0.mlp.down_proj"] {
+             for suffix in ["weight", "scales", "biases"] { names.insert(module + "." + suffix) }
+         }
+-        return try Qwen35InlineMTPAssistant.loadVerifiedInline(configuration: configuration(),
++        let text = try JSONSerialization.jsonObject(with: configuration()) as! [String: Any]
++        let assistantConfiguration = try JSONSerialization.data(withJSONObject: [
++            "model_type": "qwen3_5", "text_config": text,
++            "mtplx_mtp": text["mtplx_mtp"]!,
++            "mtplx_mtp_quantization": text["mtplx_mtp_quantization"]!
++        ], options: [.sortedKeys])
++        return try Qwen35InlineMTPAssistant.loadVerifiedInline(configuration: assistantConfiguration,
+             target: target.model, inputEmbedding: embedding, parameterNames: names, verificationMode: .serialTarget,
+             read: { name, shape, dtype in
+                 let count = shape.reduce(1, *)

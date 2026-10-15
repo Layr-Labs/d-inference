@@ -1,0 +1,5 @@
+# Nonescaping evidence publisher correction
+
+Actual numerical runtime-5 failed before tests: Swift rejects forwarding a borrowed checker directly into the higher-order publisher. One synchronous nonescaping thunk now invokes the same checker. No escaping annotation, retained callback/data, new buffer, skipped check, reservation change or lifetime change is introduced. Existing before/after publish checks and fixed buffer ownership remain intact.
+
+Use the exact prepared3081-source/9832-dependency workspace and cache; preserve old compilation failure and canonical native already retained by preparation5. Run prepare, runtime, worker, capability, native, package sequentially via run_phase.py. Runtime/worker exact method lists, capability positive/negative/CPU-child checks, process ownership helper, strict canonical descriptor validator and numerical/resource policy contract are byte-exact. run_checks.py/package_native.py only substitute snapshot5 filenames with snapshot6. No model, GPU, remote or physical transport qualification is claimed.

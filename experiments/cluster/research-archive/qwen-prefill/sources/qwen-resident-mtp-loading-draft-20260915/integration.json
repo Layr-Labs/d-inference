@@ -1,0 +1,85 @@
+{
+  "schema": "qwen_resident_mtp_loading_overlay_v1",
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+      "operation": "replace",
+      "bytes": 6653,
+      "sha256": "2989045158ba2090ef4de7c1c5126166630eba2c772ba275947f777de2637c2d",
+      "baseSHA256": "4d440e9f9b2440f2c760262f95172d0f85d09683e43176b74ed165093e053cb5"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoadResources.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoadResources.swift",
+      "operation": "add",
+      "bytes": 1443,
+      "sha256": "e2690c0fbf34b3c778ea4e20c0f05aaa360758f89f26874e6eb0b7daa6495266",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoading.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoading.swift",
+      "operation": "add",
+      "bytes": 4697,
+      "sha256": "84902d676122f49482d84b19564f67754d64de8ee4c16873e02cb04d744203cc",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPMaterializer.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPMaterializer.swift",
+      "operation": "add",
+      "bytes": 3563,
+      "sha256": "8cc4aa4db00997ab758e830320fb45f60f050f442f8a4180abb738562e963e01",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPPlacement.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPPlacement.swift",
+      "operation": "add",
+      "bytes": 5276,
+      "sha256": "8d37c725376e21b08fedb7707f37296b0e404e59e5386be6aeeed1975d5b0d6c",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPReadProgress.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPReadProgress.swift",
+      "operation": "add",
+      "bytes": 1654,
+      "sha256": "af83f12020264286cb8d0326418bc2f9e3a4c3fbf712a6eb4aa3e8481e038657",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPSource.swift",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPSource.swift",
+      "operation": "add",
+      "bytes": 2685,
+      "sha256": "c6010cf2e1783c6ed79030e19a079678aadf6d64fda8a979f4327826b257d9d2",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+VerifiedLoading.swift",
+      "source": "proposed/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+VerifiedLoading.swift",
+      "operation": "add",
+      "bytes": 4439,
+      "sha256": "9009bfe0c89ff9e9bf3cb8827c137e9e7f3588709c9b6f8c92e2645148587a17",
+      "baseSHA256": null
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift",
+      "source": "proposed/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift",
+      "operation": "replace",
+      "bytes": 50595,
+      "sha256": "91ebb69967f398f4afe66fb836b62c4976672342f4dabe3d5c84a363319f223b",
+      "baseSHA256": "a47baf3565bb36c2aa1a609ec6f4aa29cf51db392ab0ae2f93ae822f0befc3f6"
+    }
+  ],
+  "baseVerifiedAgainstMain": true,
+  "mainMutated": false,
+  "mtpGenerationEnabled": false,
+  "workerProtocolChanged": false,
+  "capabilityChanged": false,
+  "nativeTypecheck": false,
+  "nativeExecution": false,
+  "notes": "Apply to isolated shared Runtime and its isolated MLXLLM dependency. Pending later owner/transaction integration."
+}

@@ -1,0 +1,716 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
+@@ -11,6 +11,7 @@
+     let recurrent: CBv2RecurrentRequestState
+     private(set) var rows: [CBv2SequenceKV?]
+     private var evaluation: CBv2RecurrentStateEvaluation?
++    private var verification: CBv2TargetVerification?
+     private var evaluationWasStaged = false
+     private(set) var committedTokens = 0
+     private(set) var isClosed = false
+@@ -42,7 +43,7 @@
+     }
+ 
+     func requireOpen() throws {
+-        guard !isClosed, !isFailed, evaluation == nil else {
++        guard !isClosed, !isFailed, evaluation == nil, verification == nil else {
+             throw ProbeError("CBv2 state is retired, failed or has unfinished work")
+         }
+     }
+@@ -118,6 +119,71 @@
+         }
+     }
+ 
++    func beginVerification(maximumSteps: Int, check: () throws -> Void) throws {
++        do {
++            try requireOpen(); try check()
++            guard (1...2).contains(maximumSteps), maximumSteps <= maximumTokens - committedTokens else {
++                throw ProbeError("Target verification exceeds the admitted request capacity")
++            }
++            try validateState(after: committedTokens); try check()
++            verification = try .init(base: committedTokens, maximumSteps: maximumSteps, rows: rows)
++        } catch { isFailed = true; throw error }
++    }
++
++    func stageVerification(check: () throws -> Void, additionalTargets: () -> [MLXArray],
++        forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> MLXArray,
++        validateOutput: (MLXArray) throws -> Void
++    ) throws -> MLXArray {
++        do {
++            guard !isClosed, !isFailed, evaluation == nil, let verification else {
++                throw ProbeError("No live target verification transaction")
++            }
++            return try verification.stage(recurrent: recurrent, bank: bank, rows: rows, check: check,
++                additionalTargets: additionalTargets, forward: forward, validate: { output, frontier in
++                    try validateOutput(output); try self.validateState(after: frontier)
++                })
++        } catch { isFailed = true; throw error }
++    }
++
++    func commitNextVerification(check: () throws -> Void) throws -> Int {
++        do {
++            guard !isClosed, !isFailed, evaluation == nil, let verification else {
++                throw ProbeError("No target verification prefix can be committed")
++            }
++            let frontier = try verification.commitNext(check: check, validate: { committed, staged in
++                // Pending suffix remains resident and visible to its existing
++                // evaluation. Validate that physical frontier separately from
++                // the oldest-first committed prefix; ordinary calls stay blocked.
++                try self.validateState(after: staged)
++                guard committed > self.committedTokens,
++                      Set(self.recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
++                        == Set(self.geometry.recurrent.modelLayerIndices) else {
++                    throw ProbeError("Target verification prefix lacks confirmed recurrent ownership")
++                }
++            })
++            committedTokens = frontier
++            return frontier
++        } catch { isFailed = true; throw error }
++    }
++
++    func reconcileVerification(keeping count: Int, check: () throws -> Void) throws -> Int {
++        do {
++            guard !isClosed, !isFailed, evaluation == nil, let verification else {
++                throw ProbeError("No target verification can be reconciled")
++            }
++            let frontier = try verification.reconcile(keeping: count, bank: bank, rows: rows,
++                check: check, validate: { frontier in
++                    try self.validateState(after: frontier)
++                    guard Set(self.recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
++                        == Set(self.geometry.recurrent.modelLayerIndices) else {
++                        throw ProbeError("Target verification did not reconcile every recurrent layer")
++                    }
++                })
++            committedTokens = frontier; self.verification = nil
++            return frontier
++        } catch { isFailed = true; throw error }
++    }
++
+     func validateState(after count: Int) throws {
+         for (index, optionalRow) in rows.enumerated() {
+             guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == count,
+@@ -154,8 +220,10 @@
+         guard !isClosed else { return }
+         Stream.gpu.synchronize(); Stream.cpu.synchronize()
+         var cleanupError: Error?
++        do { try verification?.discard() } catch { cleanupError = error }
++        verification = nil
+         if let evaluation, evaluationWasStaged {
+-            do { try evaluation.rollback() } catch { cleanupError = error }
++            do { try evaluation.rollback() } catch { cleanupError = cleanupError ?? error }
+         }
+         evaluation = nil; evaluationWasStaged = false
+         bank.releaseBoundRows()
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2TargetVerification.swift
+@@ -0,0 +1,122 @@
++import MLX
++import MLXLMCommon
++
++/// Serial, depth-one target verification. The committed generation plus at
++/// most two plain pending generations fit the existing three-generation ledger.
++/// No model, schedule, sampled token or distributed acknowledgement lives here.
++final class CBv2TargetVerification {
++    let base: Int
++    let maximumSteps: Int
++    private var pending: [CBv2RecurrentStateEvaluation] = []
++    private var active: CBv2RecurrentStateEvaluation?
++    private var activeWasEvaluated = false
++    private var failed = false
++    private var resolved = false
++    private(set) var stagedCount = 0
++    private(set) var committedCount = 0
++
++    init(base: Int, maximumSteps: Int, rows: [CBv2SequenceKV?]) throws {
++        guard base > 0, (1...2).contains(maximumSteps), base <= Int.max - maximumSteps,
++              !rows.isEmpty, rows.allSatisfy({
++            // This first seam is for the admitted Qwen full-attention rows.
++            // Do not assume a future windowed/borrowed implementation has the
++            // same full-prefix and storage budget as the current geometry.
++            ($0 as? CBv2FullSequenceKV).map { $0.maxLength >= base + maximumSteps } == true
++                && $0?.supportsSpeculativeWrites == true
++                && $0?.absoluteOffset == base && $0?.retainedCount == base
++        }) else { throw ProbeError("Target verification requires bounded full-KV rows at one committed frontier") }
++        self.base = base; self.maximumSteps = maximumSteps
++        for row in rows { row!.beginSpeculativeWrite() }
++    }
++
++    func stage(recurrent: CBv2RecurrentRequestState, bank: CBv2LayerCacheBank,
++               rows: [CBv2SequenceKV?], check: () throws -> Void,
++               additionalTargets: () -> [MLXArray],
++               forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> MLXArray,
++               validate: (MLXArray, Int) throws -> Void) throws -> MLXArray {
++        do {
++            guard !failed, !resolved, active == nil, committedCount == 0, stagedCount < maximumSteps else {
++                throw ProbeError("Target verification stage is replayed, failed or full")
++            }
++            try check()
++            let caches = bank.layerCaches(rowStates: [rows])
++            // bind() reads pending.last, not merely confirmedStateSnapshot().
++            // Thus the draft evaluation consumes the still-pending seed state.
++            active = try recurrent.bind(); activeWasEvaluated = false
++            let output = try forward(caches, active!)
++            try check()
++            let roots = try active!.evaluate(); activeWasEvaluated = true
++            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
++            eval([output] + roots + cacheRoots + additionalTargets())
++            try check()
++            try validate(output, base + stagedCount + 1)
++            try check()
++            pending.append(active!); stagedCount += 1; active = nil; activeWasEvaluated = false
++            return output
++        } catch { failed = true; throw error }
++    }
++
++    /// Commit only the oldest input while retaining the already-evaluated
++    /// suffix. Full KV rows still expose the speculative frontier; their prefix
++    /// is immutable. The receipt must describe both frontiers until reconcile.
++    func commitNext(check: () throws -> Void, validate: (Int, Int) throws -> Void) throws -> Int {
++        do {
++            guard !failed, !resolved, active == nil, !pending.isEmpty,
++                  pending.count == stagedCount - committedCount else {
++                throw ProbeError("Target verification has no next pending input to commit")
++            }
++            try check()
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++            try pending.first!.commit(); pending.removeFirst(); committedCount += 1
++            try validate(base + committedCount, base + stagedCount); try check()
++            return base + committedCount
++        } catch { failed = true; throw error }
++    }
++
++    /// Zero retained inputs is a successful restoration of the old committed
++    /// state. Any reconciliation error instead poisons the entire request.
++    func reconcile(keeping count: Int, bank: CBv2LayerCacheBank,
++                   rows: [CBv2SequenceKV?], check: () throws -> Void,
++                   validate: (Int) throws -> Void) throws -> Int {
++        do {
++            guard !failed, !resolved, active == nil, (committedCount...stagedCount).contains(count),
++                  pending.count == stagedCount - committedCount else {
++                throw ProbeError("Target verification retained prefix is invalid")
++            }
++            try check()
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++            let rejected = stagedCount - count
++            // Production recurrent ownership requires LIFO rollback, then FIFO
++            // commit. Remove only after success so retirement can retry cleanup.
++            while pending.count > count - committedCount { try pending.last!.rollback(); pending.removeLast() }
++            while !pending.isEmpty { try pending.first!.commit(); pending.removeFirst(); committedCount += 1 }
++            for row in rows { row!.rollback(rejected); row!.commitSpeculativeWrite() }
++            // Host rollback alone leaves the bank's device positionOffsets at
++            // the speculative frontier. Rebind immediately (also keeps later
++            // releaseBoundRows effective) before validating/publishing anything.
++            bank.invalidateBoundComposition()
++            _ = bank.layerCaches(rowStates: [rows])
++            try check(); try validate(base + count); try check()
++            resolved = true
++            return base + count
++        } catch { failed = true; throw error }
++    }
++
++    /// Whole-request retirement only. Partially executed attention writes are
++    /// released by the core, never described as a reusable reconciled prefix.
++    func discard() throws {
++        var failure: Error?
++        if let active, activeWasEvaluated {
++            do { try active.rollback() } catch { failure = error }
++        }
++        // An unevaluated binding is abandoned by evaluation.deinit. Drop it
++        // before recurrent.release(), including when forward threw mid-layer.
++        active = nil; activeWasEvaluated = false
++        while let last = pending.last {
++            do { try last.rollback(); pending.removeLast() }
++            catch { failure = failure ?? error; break }
++        }
++        resolved = true
++        if let failure { failed = true; throw failure }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
+@@ -29,6 +29,8 @@
+     private let hiddenSize: Int
+     private let producerStageFingerprint: String
+     private var schedule: QwenLayerStageAdmittedSchedule
++    private var verification: QwenTargetVerificationExecution?
++    private var usedVerificationRounds = Set<UUID>()
+ 
+     var committedTokens: Int { schedule.committedTokens }
+     var isClosed: Bool { state.isClosed }
+@@ -159,6 +161,85 @@
+             let output = try perform(tokens: tokens, frame: frame, incoming: incoming, capture: capture, check: check)
+             return try .init(output: output, committed: capture.takeCommitted(identity: identity,
+                 frame: frame, tokens: tokens, nativeCommittedTokens: state.committedTokens))
++        } catch { try fail(error) }
++    }
++
++    /// Private opt-in seam; ordinary generation never selects it. The owner
++    /// must charge the returned extra ledger alongside its assistant/transport
++    /// reservation, and keep that charge until all provisional/returned arrays
++    /// release. No distributed commit or accepted output is implied here.
++    func beginTargetVerification(profile: QwenRegisteredDenseModelProfile,
++        proposal: QwenResidentMTPProposal, generation: QwenLayerStageGenerationControl,
++        ownerCheck: (QwenTargetVerificationBudget) throws -> Void
++    ) throws -> QwenTargetVerificationBudget {
++        do {
++            try state.requireOpen()
++            guard case .generation = request, verification == nil,
++                  !usedVerificationRounds.contains(proposal.roundID),
++                  usedVerificationRounds.count < request.outputCount else {
++                throw ProbeError("Target verification requires a fresh bounded generation round")
++            }
++            let spec = try QwenTargetVerificationRequest(proposal: proposal, generation: generation)
++            let value = try QwenTargetVerificationExecution(request: spec, profile: profile, stage: stage,
++                identity: identity, state: state, schedule: schedule)
++            verification = value; usedVerificationRounds.insert(proposal.roundID)
++            try value.begin(ownerCheck: ownerCheck)
++            return value.resources.budget
++        } catch { try fail(error) }
++    }
++
++    func stageTargetVerification(roundID: UUID, step: Int, incoming: QwenTargetVerificationBoundary? = nil,
++        ownerCheck: (QwenTargetVerificationBudget) throws -> Void
++    ) throws -> QwenTargetVerificationOutput {
++        do {
++            guard let verification, verification.request.proposal.roundID == roundID else {
++                throw ProbeError("Target verification stage belongs to a different round")
++            }
++            return try verification.stage(step: step, incoming: incoming, ownerCheck: ownerCheck)
++        } catch { try fail(error) }
++    }
++
++    /// After agreement on acceptance, commit only the oldest pending input.
++    /// The owner joins BOTH prefix receipts before publishing its next token,
++    /// then obtains the existing continue/stop decision before another commit.
++    func commitNextTargetVerification(roundID: UUID,
++        ownerCheck: (QwenTargetVerificationBudget) throws -> Void
++    ) throws -> QwenTargetVerificationCommit {
++        do {
++            guard let verification, verification.request.proposal.roundID == roundID else {
++                throw ProbeError("Target prefix commit belongs to a different round")
++            }
++            let next = try verification.request.reconciledSchedule(schedule,
++                staged: verification.stagedCount, keeping: verification.committedCount + 1,
++                alreadyCommitted: verification.committedCount)
++            let result = try verification.commitNext(ownerCheck: ownerCheck)
++            guard result.localReceipt.committedInputs == next.committedTokens,
++                  state.committedTokens == next.committedTokens else {
++                throw ProbeError("Progressive target commit differs from its scheduled frontier")
++            }
++            schedule = next
++            return result
++        } catch { try fail(error) }
++    }
++
++    func reconcileTargetVerification(roundID: UUID, keepingInputs count: Int,
++        ownerCheck: (QwenTargetVerificationBudget) throws -> Void
++    ) throws -> QwenTargetVerificationCommit {
++        do {
++            guard let verification, verification.request.proposal.roundID == roundID else {
++                throw ProbeError("Target verification reconciliation belongs to a different round")
++            }
++            // Validate a VALUE COPY first. Publish the session schedule only
++            // after native KV/recurrent reconciliation has succeeded completely.
++            let next = try verification.request.reconciledSchedule(schedule,
++                staged: verification.stagedCount, keeping: count, alreadyCommitted: verification.committedCount)
++            let result = try verification.reconcile(keeping: count, ownerCheck: ownerCheck)
++            guard result.localReceipt.committedInputs == next.committedTokens,
++                  state.committedTokens == next.committedTokens else {
++                throw ProbeError("Target verification native and scheduled frontiers differ")
++            }
++            schedule = next; self.verification = nil
++            return result
+         } catch { try fail(error) }
+     }
+ 
+@@ -276,6 +357,7 @@
+     func cancel() throws { try retire(failed: true) }
+ 
+     private func retire(failed: Bool) throws {
++        defer { verification?.discardOutputs(); verification = nil }
+         do {
+             try MLX.withError { error in
+                 try state.retire(failed: failed)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationBudget.swift
+@@ -0,0 +1,31 @@
++/// Extra named ownership beyond the unchanged request state/fusion reservation.
++/// This is not a whole-kernel/workspace or measured process-peak prediction.
++struct QwenTargetVerificationBudget {
++    let additionalNativeBytes: Int
++    let additionalHostBytes: Int
++
++    static func derive(hiddenSize: Int, vocabularySize: Int, dtypeBytes: Int,
++                       rank: Int, steps: Int, bound: (Int) throws -> Int) throws -> Self {
++        guard (0...1).contains(rank), (1...2).contains(steps), (1...8192).contains(hiddenSize),
++              (1...262_144).contains(vocabularySize), [2, 4].contains(dtypeBytes) else {
++            throw ProbeError("Target verification capture geometry is outside its named bounds")
++        }
++        let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
++        func array(_ bytes: Int, count: Int) throws -> Int {
++            let actual = try bound(bytes)
++            guard actual >= bytes, bytes > 0 else { throw ProbeError("Target verification allocation bound is invalid") }
++            return try product([actual, count])
++        }
++        let hidden = try product([hiddenSize, dtypeBytes])
++        // Per step rank0 retains a residual and permits one handoff copy;
++        // rank1 retains an ingress and its pre-norm root.
++        // Full target rows use F32 upper bounds regardless of actual head dtype.
++        let native = try sum([array(hidden, count: steps * 2),
++            rank == 1 ? array(product([vocabularySize, 4]), count: steps) : 0,
++            array(4, count: steps)])
++        // One residual digest copy exists at a time. Remote framing/queues
++        // remain the owner's separate transport reservation, never hidden here.
++        return .init(additionalNativeBytes: native, additionalHostBytes: hidden)
++    }
++}
++
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationExecution.swift
+@@ -0,0 +1,146 @@
++import MLX
++@_spi(Cluster) import MLXLLM
++import MLXLMCommon
++
++/// Serialized target-only native work. The session owns it until resolution or
++/// whole-request retirement. No assistant, peer ACK or output publication here.
++final class QwenTargetVerificationExecution {
++    let request: QwenTargetVerificationRequest
++    let resources: QwenTargetVerificationResources
++    private let stage: LoadedQwenLayerStage
++    private let state: CBv2OwnedRequestState
++    private var stagedOutputs: [MLXArray] = []
++    private var stagedHidden: [MLXArray] = []
++    private var activeHidden: MLXArray?
++    var stagedCount: Int { stagedOutputs.count }
++    private(set) var committedCount = 0
++
++    init(request: QwenTargetVerificationRequest, profile: QwenRegisteredDenseModelProfile,
++         stage: LoadedQwenLayerStage, identity: QwenLayerStageSessionIdentity,
++         state: CBv2OwnedRequestState, schedule: QwenLayerStageAdmittedSchedule) throws {
++        let a = request.agreement.descriptor
++        guard (0...1).contains(stage.stageIndex), a.stageFingerprints.count == 2,
++              identity.requestFingerprint == request.agreement.request.fingerprint,
++              identity.sourceConfigurationSHA256 == a.sourceConfigurationSHA256,
++              identity.artifactAggregateSHA256 == a.artifactAggregateSHA256,
++              identity.storageCommitmentSHA256 == a.storageCommitmentSHA256,
++              identity.planFingerprint == a.planFingerprint,
++              identity.stageFingerprint == a.stageFingerprints[stage.stageIndex],
++              state.committedTokens == request.base, schedule.committedTokens == request.base,
++              schedule.nextSequence == request.descriptor.firstSequence else {
++            throw ProbeError("Target verification does not bind this loaded session and frontier")
++        }
++        self.request = request; self.stage = stage; self.state = state
++        resources = try .init(loaded: stage, profile: profile, request: request)
++    }
++
++    func begin(ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws {
++        try native(ownerCheck: ownerCheck) { checked in
++            try state.beginVerification(maximumSteps: request.maximumSteps, check: checked)
++        }
++    }
++
++    func stage(step: Int, incoming: QwenTargetVerificationBoundary?,
++               ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws -> QwenTargetVerificationOutput {
++        try native(ownerCheck: ownerCheck) { checked in
++            guard step == stagedCount, activeHidden == nil else { throw ProbeError("Target verification step is out of order") }
++            let token = try request.token(step: step)
++            if stage.stageIndex == 0 {
++                guard incoming == nil else { throw ProbeError("Target verification rank0 rejects residual ingress") }
++            } else {
++                guard let incoming else { throw ProbeError("Target verification rank1 requires provisional residual ingress") }
++                try incoming.validate(request: request, step: step, dtype: stage.activationDType)
++            }
++            try checked()
++            let input = MLXArray([Int32(token)]).reshaped([1, 1])
++            let output = try state.stageVerification(check: checked,
++                additionalTargets: { self.activeHidden.map { [$0] } ?? [] }, forward: { caches, evaluation in
++                    if self.stage.stageIndex == 0 {
++                        let model = self.stage.model as! any CBv2RecurrentMTPForwardable
++                        return model.cbv2ForwardWithHidden(input, caches: caches.map { $0 as! any KVCache },
++                            recurrentState: [evaluation], positionIds: nil).lastHidden
++                    }
++                    let value = try Qwen35ClusterMTPForward.forward(target: self.stage.model, tokens: input,
++                        residual: incoming!.array, caches: caches.map { $0 as! any KVCache },
++                        recurrentState: [evaluation], output: .decodeLastLogits)
++                    try checked() // native-primary before secondary Swift shape checks
++                    self.activeHidden = value.preNormHidden
++                    return value.value
++                }, validateOutput: { output in
++                    let profile = self.request.agreement.request.profile
++                    let shape = self.stage.stageIndex == 0 ? [1, 1, profile.hiddenSize] : [1, profile.vocabularySize]
++                    guard output.shape == shape, [.float16, .bfloat16, .float32].contains(output.dtype),
++                          self.stage.stageIndex != 0 || output.dtype == self.stage.activationDType else {
++                        throw ProbeError("Provisional target output differs from the loaded geometry")
++                    }
++                    if self.stage.stageIndex == 1 {
++                        guard let h = self.activeHidden, h.shape == [1, 1, profile.hiddenSize],
++                              h.dtype == self.stage.activationDType else { throw ProbeError("Provisional pre-norm hidden differs") }
++                    }
++                })
++            stagedOutputs.append(output)
++            if let activeHidden { stagedHidden.append(activeHidden); self.activeHidden = nil }
++            if stage.stageIndex == 0 {
++                let digest = sha256(output.asData().data); try checked()
++                return .provisionalHidden(.init(verificationFingerprint: request.fingerprint,
++                    producerStageFingerprint: request.agreement.descriptor.stageFingerprints[0],
++                    step: step, tokenID: token, payloadSHA256: digest, array: output))
++            }
++            return .provisionalLogits(output)
++        }
++    }
++
++    func commitNext(ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws -> QwenTargetVerificationCommit {
++        try native(ownerCheck: ownerCheck) { checked in
++            guard activeHidden == nil, committedCount < stagedCount else {
++                throw ProbeError("Target verification has no oldest pending output")
++            }
++            let previous = committedCount
++            let committed = try state.commitNextVerification(check: checked)
++            committedCount += 1
++            let rows = Array(stagedHidden.dropFirst(previous).prefix(1))
++            let receipt = QwenTargetVerificationLocalReceipt(verificationFingerprint: request.fingerprint,
++                rank: stage.stageIndex, base: request.base, stagedInputs: stagedCount,
++                retainedInputs: committedCount, committedInputs: committed,
++                pendingInputs: stagedCount - committedCount, newlyCommittedInputs: 1, isFinal: false)
++            return .init(receipt: receipt, hidden: rows)
++        }
++    }
++
++    func reconcile(keeping count: Int, ownerCheck: (QwenTargetVerificationBudget) throws -> Void
++    ) throws -> QwenTargetVerificationCommit {
++        try native(ownerCheck: ownerCheck) { checked in
++            guard activeHidden == nil, (committedCount...stagedCount).contains(count) else { throw ProbeError("Target reconciliation has unfinished work") }
++            let staged = stagedCount
++            let committed = try state.reconcileVerification(keeping: count, check: checked)
++            let newlyCommitted = count - committedCount
++            let rows = Array(stagedHidden.dropFirst(committedCount).prefix(newlyCommitted))
++            committedCount = count
++            let receipt = QwenTargetVerificationLocalReceipt(verificationFingerprint: request.fingerprint,
++                rank: stage.stageIndex, base: request.base, stagedInputs: staged,
++                retainedInputs: count, committedInputs: committed, pendingInputs: 0,
++                newlyCommittedInputs: newlyCommitted, isFinal: true)
++            discardOutputs()
++            return .init(receipt: receipt, hidden: rows)
++        }
++    }
++
++    func discardOutputs() { activeHidden = nil; stagedHidden.removeAll(); stagedOutputs.removeAll() }
++
++    private func native<T>(ownerCheck: (QwenTargetVerificationBudget) throws -> Void,
++                           _ body: (() throws -> Void) throws -> T) throws -> T {
++        // The supplied check is borrowed only for this synchronous handler;
++        // neither the callback nor its borrowed form is stored by the helper.
++        try withoutActuallyEscaping(ownerCheck) { borrowedCheck in
++            try MLX.withError { nativeError in
++                do {
++                    func checked() throws { try nativeError.check(); try resources.requireLive(ownerCheck: borrowedCheck) }
++                    try checked()
++                    let value = try body(checked)
++                    try nativeError.check()
++                    return value
++                } catch { try nativeError.check(); throw error }
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationRequest.swift
+@@ -0,0 +1,81 @@
++import Foundation
++
++/// Private local transaction identity, not a new MTP-enabled wire agreement.
++/// A future owner must bind an accepted-prefix decision to this fingerprint and
++/// obtain matching actual reconciliation receipts from both ranks.
++struct QwenTargetVerificationRequest {
++    struct Descriptor: Encodable {
++        let schema = "qwen_target_verification_v1"
++        let proposal: QwenResidentMTPProposal
++        let firstSequence: Int
++        let maximumSteps: Int
++    }
++    let agreement: QwenLayerStageGenerationAgreement
++    let descriptor: Descriptor
++    let fingerprint: String
++    var proposal: QwenResidentMTPProposal { descriptor.proposal }
++    var base: Int { proposal.committedTargetInputs }
++    var maximumSteps: Int { descriptor.maximumSteps }
++
++    init(proposal: QwenResidentMTPProposal, generation: QwenLayerStageGenerationControl) throws {
++        let agreement = generation.agreement, request = agreement.request
++        guard agreement.prefillPolicy == .serial, !generation.isFailed, generation.phase == .frame,
++              proposal.requestID == request.requestID, proposal.agreementFingerprint == agreement.fingerprint,
++              proposal.draftDepth == 1, !proposal.accepted,
++              proposal.committedTargetInputs == generation.committedTokens,
++              generation.committedTokens >= request.promptCount,
++              generation.selectedTokenCount == generation.committedTokens - request.promptCount + 1,
++              generation.lastTokenID == proposal.seedTokenID,
++              generation.tokenChainSHA256 == proposal.previousTokenChainSHA256,
++              !request.stopTokenIDs.contains(proposal.seedTokenID),
++              [proposal.seedTokenID, proposal.proposedTokenID].allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }) else {
++            throw ProbeError("Target verification proposal differs from the continued committed token chain")
++        }
++        let remaining = request.forwardCount - generation.completedFrames
++        guard remaining > 0 else { throw ProbeError("Target verification has no remaining target input") }
++        self.agreement = agreement
++        descriptor = .init(proposal: proposal, firstSequence: generation.completedFrames, maximumSteps: min(2, remaining))
++        fingerprint = try qwenGenerationFingerprint("target-verification", descriptor)
++        for step in 0..<maximumSteps { _ = try frame(step: step) }
++    }
++
++    func frame(step: Int) throws -> QwenLayerStageFrame {
++        guard (0..<maximumSteps).contains(step) else { throw ProbeError("Target verification step exceeds remaining output capacity") }
++        let frame = try agreement.request.frame(sequence: descriptor.firstSequence + step)
++        guard frame.phase == .decode, frame.tokenCount == 1, frame.tokenOffset == base + step else {
++            throw ProbeError("Target verification is not a contiguous decode input")
++        }
++        return frame
++    }
++    func token(step: Int) throws -> Int {
++        _ = try frame(step: step)
++        return step == 0 ? proposal.seedTokenID : proposal.proposedTokenID
++    }
++
++    func reconciledSchedule(_ original: QwenLayerStageAdmittedSchedule, staged: Int,
++                            keeping count: Int, alreadyCommitted: Int = 0) throws -> QwenLayerStageAdmittedSchedule {
++        guard (0...maximumSteps).contains(staged), (0...staged).contains(alreadyCommitted),
++              (alreadyCommitted...staged).contains(count),
++              original.committedTokens == base + alreadyCommitted,
++              original.nextSequence == descriptor.firstSequence + alreadyCommitted else {
++            throw ProbeError("Target verification schedule or retained prefix differs")
++        }
++        var next = original
++        for step in alreadyCommitted..<count { try next.commit(frame(step: step)) }
++        return next
++    }
++}
++
++/// LOCAL commit evidence only. It neither advances the bilateral generation
++/// control nor authorizes token publication or assistant history finalization.
++struct QwenTargetVerificationLocalReceipt: Encodable, Equatable {
++    let verificationFingerprint: String
++    let rank: Int
++    let base: Int
++    let stagedInputs: Int
++    let retainedInputs: Int
++    let committedInputs: Int
++    let pendingInputs: Int
++    let newlyCommittedInputs: Int
++    let isFinal: Bool
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationResources.swift
+@@ -0,0 +1,41 @@
++import MLX
++
++/// Rederives the base reservation from actual loaded source/Plan/request/rank;
++/// a caller-provided byte count is not accepted as a permit.
++final class QwenTargetVerificationResources {
++    let budget: QwenTargetVerificationBudget
++    private let base: QwenResidentRequestAllowance
++
++    init(loaded: LoadedQwenLayerStage, profile: QwenRegisteredDenseModelProfile,
++         request: QwenTargetVerificationRequest) throws {
++        let plan = loaded.plan, rank = loaded.stageIndex, r = request.agreement.request
++        guard (0...1).contains(rank), plan.stages.count == 2,
++              profile.configuration == plan.originalConfiguration,
++              profile.configurationSHA256 == loaded.receipt.sourceConfigurationSHA256,
++              profile.artifactAggregateSHA256 == loaded.receipt.verifiedAggregateSHA256,
++              loaded.receipt.planSHA256 == plan.fingerprint,
++              loaded.receipt.stagePlanSHA256 == plan.stages[rank].fingerprint,
++              profile.vocabularySize == r.profile.vocabularySize,
++              profile.geometry.hiddenSize == r.profile.hiddenSize,
++              profile.requiredNativeDType == r.profile.activationDType,
++              profile.requiredNativeDType == String(describing: loaded.activationDType),
++              loaded.receipt.bf16ConversionEnabled == profile.requiredBF16ConversionPolicy,
++              try profile.makePlanningPlan(stageCut: plan.stages[0].sourceRange.upperBound).fingerprint == plan.fingerprint else {
++            throw ProbeError("Target verification profile does not describe the loaded source and cut")
++        }
++        base = try .derive(profile: profile, plan: plan, rank: rank, maximumTokens: r.maximumTokens,
++            chunkSize: min(r.chunkSize, r.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
++        budget = try .derive(hiddenSize: r.profile.hiddenSize, vocabularySize: r.profile.vocabularySize,
++            dtypeBytes: loaded.activationDType.size, rank: rank, steps: request.maximumSteps,
++            bound: QwenResidentResourceEnvironment.allocationBound)
++    }
++
++    /// Mandatory owner callback must retain/charge this increment along with
++    /// its existing assistant and transport reservations until outputs release.
++    /// It is called before construction and throughout native work; no default.
++    func requireLive(ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws {
++        try base.requireLive(additionalNativeBytes: budget.additionalNativeBytes,
++                             additionalHostBytes: budget.additionalHostBytes)
++        try ownerCheck(budget)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationValues.swift
+@@ -0,0 +1,69 @@
++import MLX
++
++/// Provisional ingress is a distinct type, so ordinary committed decode cannot
++/// accept it accidentally. A transport must reconstruct these exact fields and
++/// an owned evaluated residual after validating its authenticated round binding.
++struct QwenTargetVerificationBoundary {
++    let verificationFingerprint: String
++    let producerStageFingerprint: String
++    let step: Int
++    let tokenID: Int
++    let payloadSHA256: String
++    let array: MLXArray
++
++    func ownedCopy(check: () throws -> Void) throws -> Self {
++        try MLX.withError { nativeError in
++            do {
++                try nativeError.check(); try check(); try nativeError.check()
++                let copy = try copySelectedTensor(array, selection: .all)
++                try nativeError.check(); try check()
++                guard copy.shape == array.shape, copy.dtype == array.dtype,
++                      sha256(copy.asData().data) == payloadSHA256 else {
++                    throw ProbeError("Target verification residual copy differs")
++                }
++                try nativeError.check(); try check()
++                return .init(verificationFingerprint: verificationFingerprint,
++                    producerStageFingerprint: producerStageFingerprint, step: step,
++                    tokenID: tokenID, payloadSHA256: payloadSHA256, array: copy)
++            } catch { try nativeError.check(); throw error }
++        }
++    }
++
++    func validate(request: QwenTargetVerificationRequest, step: Int, dtype: DType) throws {
++        let hidden = request.agreement.request.profile.hiddenSize
++        guard verificationFingerprint == request.fingerprint, self.step == step,
++              tokenID == (try request.token(step: step)),
++              producerStageFingerprint == request.agreement.descriptor.stageFingerprints[0],
++              array.shape == [1, 1, hidden], array.dtype == dtype,
++              array.nbytes == hidden * dtype.size else {
++            throw ProbeError("Target verification residual identity or shape differs")
++        }
++        let bound = try Memory.allocationFootprintUpperBound(byteCount: array.nbytes)
++        guard let storage = try array.evaluatedBufferInfo(), storage.isUnique,
++              storage.isRowContiguous, storage.dataOffset == 0, storage.dataElements == array.size,
++              storage.allocatedBytes >= array.nbytes, storage.allocatedBytes <= bound,
++              sha256(array.asData().data) == payloadSHA256 else {
++            throw ProbeError("Target verification ingress is not an owned evaluated residual")
++        }
++    }
++}
++
++enum QwenTargetVerificationOutput {
++    case provisionalHidden(QwenTargetVerificationBoundary)
++    case provisionalLogits(MLXArray)
++}
++
++/// Each native row becomes accessible once after its local prefix commit. The
++/// owner must still join both receipts before using them for assistant history.
++final class QwenTargetVerificationCommit {
++    let localReceipt: QwenTargetVerificationLocalReceipt
++    private var hidden: [MLXArray]?
++    init(receipt: QwenTargetVerificationLocalReceipt, hidden: [MLXArray]) {
++        localReceipt = receipt; self.hidden = hidden
++    }
++    func takeLocalHiddenRows() throws -> [MLXArray] {
++        guard let hidden else { throw ProbeError("Committed target rows were already consumed") }
++        self.hidden = nil; return hidden
++    }
++    func discard() { hidden = nil }
++}

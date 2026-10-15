@@ -1,0 +1,55 @@
+--- libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
++++ libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
+@@ -200,28 +200,30 @@
+ 
+     private func operation<T>(check: () throws -> Void,
+         _ body: (_ checked: () throws -> Void) throws -> T) throws -> T {
+-        try MLX.withError { nativeError in
+-            func checked() throws {
+-                try nativeError.check()
+-                guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
+-                    throw ProbeError("MTP proposal owner deadline expired")
+-                }
+-                try check(); try resources.requireLive(); try nativeError.check()
+-                guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
+-                    throw ProbeError("MTP proposal observation exceeded owner deadline")
+-                }
+-            }
+-            do {
+-                guard !isRetired, !control.failed else { throw ProbeError("MTP request is retired or failed") }
+-                try checked()
+-                return try body(checked)
+-            } catch {
+-                var primary: Error = error
+-                do { try nativeError.check() } catch { primary = error }
+-                control.fail()
+-                do { try retire(failed: true) }
+-                catch { throw ProbeError("MTP request failed (\(primary)); local retirement also failed (\(error))") }
+-                throw primary
++        try withoutActuallyEscaping(check) { borrowedCheck in
++            try MLX.withError { nativeError in
++                func checked() throws {
++                    try nativeError.check()
++                    guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
++                        throw ProbeError("MTP proposal owner deadline expired")
++                    }
++                    try borrowedCheck(); try resources.requireLive(); try nativeError.check()
++                    guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
++                        throw ProbeError("MTP proposal observation exceeded owner deadline")
++                    }
++                }
++                do {
++                    guard !isRetired, !control.failed else { throw ProbeError("MTP request is retired or failed") }
++                    try checked()
++                    return try body(checked)
++                } catch {
++                    var primary: Error = error
++                    do { try nativeError.check() } catch { primary = error }
++                    control.fail()
++                    do { try retire(failed: true) }
++                    catch { throw ProbeError("MTP request failed (\(primary)); local retirement also failed (\(error))") }
++                    throw primary
++                }
+             }
+         }
+     }

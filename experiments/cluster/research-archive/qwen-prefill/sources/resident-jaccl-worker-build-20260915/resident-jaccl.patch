@@ -1,0 +1,724 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -17,6 +17,7 @@
+             try emitJSON(checkQwenLongPrefillResidentSteps())
+             try emitJSON(checkQwenLongPrefillResidentSoloAdmission())
+             try emitJSON(checkQwenResidentBenchmarkWorkerCLI())
++            try emitJSON(checkQwenResidentJACCLAdmission())
+             return
+         }
+         if QwenResidentBenchmarkWorkerCLI.isRequested(arguments) {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentCohortAgreement.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentCohortAgreement.swift
+@@ -22,6 +22,7 @@
+         let profile: String, profileFingerprint: String
+         let schedulingPolicy: String, logitsDType: String
+         let transport: String, executionPath: String
++        let jacclConfigurationSHA256: String?
+         let requestCount: Int, warmupCount: Int
+         let tracePathsDisabled = true
+         let requests: [Entry]
+@@ -30,9 +31,11 @@
+     let descriptor: Descriptor
+     let fingerprint: String
+ 
+-    init(options: Options, requests: [QwenLongPrefillResidentRankRequest], warmupCount: Int) throws {
++    init(options: Options, requests: [QwenLongPrefillResidentRankRequest], warmupCount: Int,
++         jacclConfiguration: QwenResidentJACCLConfiguration? = nil) throws {
+         try QwenLongPrefillResidentRankAdmission.validate(
+-            options: options, requests: requests, warmupCount: warmupCount)
++            options: options, requests: requests, warmupCount: warmupCount,
++            jacclConfiguration: jacclConfiguration)
+         let first = requests[0]
+         let entries = try requests.enumerated().map { ordinal, request in
+             let identity = try request.identity
+@@ -53,6 +56,7 @@
+             schedulingPolicy: options.stagePrefillPolicy!.rawValue,
+             logitsDType: options.stageLogitsDType!, transport: options.transport.rawValue,
+             executionPath: options.executionPath.rawValue,
++            jacclConfigurationSHA256: jacclConfiguration?.fingerprint,
+             requestCount: requests.count, warmupCount: warmupCount, requests: entries)
+         let bytes = try canonicalJSONData(descriptor)
+         guard bytes.count <= Self.maximumEncodedBytes else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankAdmission.swift
+@@ -19,8 +19,19 @@
+ 
+ enum QwenLongPrefillResidentRankAdmission {
+     static func validate(options: Options, requests: [QwenLongPrefillResidentRankRequest],
+-                         warmupCount: Int) throws {
+-        try QwenLongPrefillRankAdmission.validateOptions(options)
++                         warmupCount: Int, jacclConfiguration: QwenResidentJACCLConfiguration? = nil) throws {
++        var common = options
++        if options.transport == .jaccl {
++            guard jacclConfiguration != nil else {
++                throw ProbeError("Resident JACCL requires its closed configuration admission")
++            }
++            // Reuse every existing numerical and mode restriction. This local
++            // projection does not weaken the public one-shot loopback gate.
++            common.transport = .loopbackTest
++        } else if jacclConfiguration != nil {
++            throw ProbeError("Loopback resident work must not carry a JACCL configuration")
++        }
++        try QwenLongPrefillRankAdmission.validateOptions(common)
+         guard options.prefillPhaseTraceFile == nil, options.prefillOwnerTraceFile == nil,
+               (1...QwenLayerStageResidentLifecycle.maximumCohortRequests).contains(requests.count),
+               (0..<requests.count).contains(warmupCount), let first = requests.first,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankOwner.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankOwner.swift
+@@ -55,13 +55,15 @@
+ /// unchanged. Each next readiness exchange is also the peer retirement barrier.
+ func runQwenLongPrefillResidentRankCohort(options: Options,
+     requests: [QwenLongPrefillResidentRankRequest], warmupCount: Int,
++    jacclConfiguration: QwenResidentJACCLConfiguration? = nil,
+     onModelReady: (QwenLongPrefillResidentRankReady) throws -> Void,
+     beforeRequest: (QwenLongPrefillResidentRequestStep) throws -> Void,
+     onRequestResult: (QwenLongPrefillResidentRequestStep, QwenLongPrefillResidentRankRequestReport) throws -> Void,
+     check: () throws -> Void
+ ) throws -> QwenLongPrefillResidentRankReport {
+     let cohortAgreement = try QwenLongPrefillResidentCohortAgreement(
+-        options: options, requests: requests, warmupCount: warmupCount)
++        options: options, requests: requests, warmupCount: warmupCount,
++        jacclConfiguration: jacclConfiguration)
+     let first = requests[0].local
+     let steps = requests.enumerated().map { ordinal, request in
+         QwenLongPrefillResidentRequestStep(ordinal: ordinal, excludedWarmup: ordinal < warmupCount,
+@@ -70,7 +72,15 @@
+             promptFileSHA256: request.local.promptFileSHA256)
+     }
+     try QwenLongPrefillResidentRequestStep.validate(steps)
++    try jacclConfiguration?.requireUnchanged(environment: ProcessInfo.processInfo.environment,
++        read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++    try check()
+     let collective = try Collective(transport: options.transport)
++    try jacclConfiguration?.requireUnchanged(environment: ProcessInfo.processInfo.environment,
++        read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++    try jacclConfiguration?.requireInitialized(rank: collective.rank, worldSize: collective.size,
++                                              transport: collective.transport)
++    try check()
+     var owner: QwenLongPrefillResidentRankOwner?
+     weak var model: Module?
+     var releaseAttempted = false
+@@ -91,7 +101,8 @@
+             }
+             memory.append(QwenStageMemoryObservation("resident_stage_loaded_no_request_state"))
+             try checked()
+-            try onModelReady(.init(rank: collective.rank, cohortAgreement: cohortAgreement.descriptor,
++            try onModelReady(.init(rank: collective.rank, transport: collective.transportLabel,
++                jacclConfiguration: jacclConfiguration?.receipt, cohortAgreement: cohortAgreement.descriptor,
+                 cohortReadiness: cohortReadiness, sourceLoad: receipt, arithmeticEnvironment: first.arithmetic,
+                 arithmeticEnvironmentSHA256: first.arithmeticEnvironmentSHA256, resourceAdmission: first.resource,
+                 requestCount: requests.count, warmupCount: warmupCount))
+@@ -109,7 +120,8 @@
+             guard model == nil else { throw ProbeError("Resident cohort did not release its stage") }
+             try checked()
+             memory.append(QwenStageMemoryObservation("resident_stage_released_cache_cleared"))
+-            return .init(rank: collective.rank, cohortAgreement: cohortAgreement.descriptor,
++            return .init(rank: collective.rank, transport: collective.transportLabel,
++                jacclConfiguration: jacclConfiguration?.receipt, cohortAgreement: cohortAgreement.descriptor,
+                 cohortReadiness: cohortReadiness, sourceLoad: receipt, arithmeticEnvironment: first.arithmetic,
+                 arithmeticEnvironmentSHA256: first.arithmeticEnvironmentSHA256, resourceAdmission: first.resource,
+                 warmupCount: warmupCount, requests: results, memory: memory)
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankReady.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankReady.swift
+@@ -5,7 +5,9 @@
+ struct QwenLongPrefillResidentRankReady: Encodable {
+     let kind = "qwen_long_prefill_resident_rank_ready", schemaVersion = 1
+     let rank: Int
+-    let worldSize = 2, transport = "loopback-test"
++    let worldSize = 2
++    let transport: String
++    let jacclConfiguration: QwenResidentJACCLConfiguration.Receipt?
+     let cohortAgreement: QwenLongPrefillResidentCohortAgreement.Descriptor
+     let cohortReadiness: QwenLongPrefillResidentCohortReadiness
+     let sourceLoad: QwenLayerStageLoadReceipt
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankReport.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankReport.swift
+@@ -14,7 +14,9 @@
+ struct QwenLongPrefillResidentRankReport: Encodable {
+     let kind = "qwen_long_prefill_resident_rank_cohort", schemaVersion = 1
+     let rank: Int
+-    let worldSize = 2, transport = "loopback-test"
++    let worldSize = 2
++    let transport: String
++    let jacclConfiguration: QwenResidentJACCLConfiguration.Receipt?
+     let cohortAgreement: QwenLongPrefillResidentCohortAgreement.Descriptor
+     let cohortReadiness: QwenLongPrefillResidentCohortReadiness
+     let sourceLoad: QwenLayerStageLoadReceipt
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentBenchmarkWorkerAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentBenchmarkWorkerAdmission.swift
+@@ -6,6 +6,7 @@
+     let options: Options
+     let requests: [QwenRegistered9BLongPrefillReferenceAdmission]
+     let rankRequests: [QwenLongPrefillResidentRankRequest]
++    let jacclConfiguration: QwenResidentJACCLConfiguration?
+ }
+ 
+ extension QwenResidentBenchmarkWorkerCLI {
+@@ -16,23 +17,25 @@
+     /// retained bytes, not fresh path reads, construct all four requests.
+     func preflight(open: QwenResidentBenchmarkWorkerOpen,
+         arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt,
++        jacclConfiguration: QwenResidentJACCLConfiguration? = nil,
+         read: (URL, Int) throws -> Data
+     ) throws -> QwenResidentBenchmarkWorkerAdmission {
+-        _ = try options(open: open)
++        _ = try options(open: open, jacclConfiguration: jacclConfiguration)
+         let configuration = try read(modelDirectory.appendingPathComponent("config.json"),
+                                      Self.maximumConfigurationBytes)
+         try Self.requireBounded(configuration, maximum: Self.maximumConfigurationBytes)
+         let prompt = try read(tokensFile, Self.maximumPromptBytes)
+-        return try admit(open: open, arithmetic: arithmetic, configuration: configuration, prompt: prompt)
++        return try admit(open: open, arithmetic: arithmetic, configuration: configuration, prompt: prompt,
++                         jacclConfiguration: jacclConfiguration)
+     }
+ 
+     /// Pure fixture/retained-input seam, still using actual registered and
+     /// resident admission constructors. No caller-created Options are accepted.
+     func admit(open: QwenResidentBenchmarkWorkerOpen,
+         arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt,
+-        configuration: Data, prompt: Data
++        configuration: Data, prompt: Data, jacclConfiguration: QwenResidentJACCLConfiguration? = nil
+     ) throws -> QwenResidentBenchmarkWorkerAdmission {
+-        let options = try options(open: open)
++        let options = try options(open: open, jacclConfiguration: jacclConfiguration)
+         try Self.requireBounded(configuration, maximum: Self.maximumConfigurationBytes)
+         try Self.requireBounded(prompt, maximum: Self.maximumPromptBytes)
+         let requests = try open.requests.map { request in
+@@ -53,9 +56,11 @@
+         case .rank:
+             rankRequests = zip(open.requests, requests).map { .init(epoch: $0.0.epoch, local: $0.1) }
+             try QwenLongPrefillResidentRankAdmission.validate(options: options, requests: rankRequests,
+-                warmupCount: QwenResidentBenchmarkWorkerCommand.warmupCount)
++                warmupCount: QwenResidentBenchmarkWorkerCommand.warmupCount,
++                jacclConfiguration: jacclConfiguration)
+         }
+-        return .init(options: options, requests: requests, rankRequests: rankRequests)
++        return .init(options: options, requests: requests, rankRequests: rankRequests,
++                     jacclConfiguration: jacclConfiguration)
+     }
+ 
+     private static func requireBounded(_ data: Data, maximum: Int) throws {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentBenchmarkWorkerCLI.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentBenchmarkWorkerCLI.swift
+@@ -14,6 +14,7 @@
+     let timeoutSeconds: Int
+     let schedulingPolicy: QwenLayerStagePrefillMeasurementFlow.SchedulingPolicy?
+     let stageCut: Int?
++    let transport: ClusterTransport?
+ 
+     static func isRequested(_ arguments: [String]) -> Bool {
+         arguments.indices.dropLast().contains {
+@@ -24,8 +25,8 @@
+     init(arguments: [String]) throws {
+         let required: Set<String> = ["--mode", "--role", "--model-dir",
+             "--artifact-aggregate-sha256", "--tokens-file", "--long-prompt-sha256"]
+-        let allowed = required.union(["--timeout-seconds", "--stage-prefill-policy", "--stage-cut"])
+-        guard arguments.count.isMultiple(of: 2), (12...18).contains(arguments.count) else {
++        let allowed = required.union(["--timeout-seconds", "--stage-prefill-policy", "--stage-cut", "--transport"])
++        guard arguments.count.isMultiple(of: 2), (12...20).contains(arguments.count) else {
+             throw ProbeError("Resident benchmark worker requires closed unique flag/value pairs")
+         }
+         var values: [String: String] = [:]
+@@ -63,17 +64,23 @@
+         }
+         let policy: QwenLayerStagePrefillMeasurementFlow.SchedulingPolicy?
+         let cut: Int?
++        let transport: ClusterTransport?
+         switch role {
+         case .solo:
+-            guard values["--stage-prefill-policy"] == nil, values["--stage-cut"] == nil else {
+-                throw ProbeError("Resident solo does not accept rank scheduling or a selected stage cut")
++            guard values["--stage-prefill-policy"] == nil, values["--stage-cut"] == nil,
++                  values["--transport"] == nil else {
++                throw ProbeError("Resident solo does not accept rank scheduling, transport or a selected stage cut")
+             }
+-            policy = nil; cut = nil
++            policy = nil; cut = nil; transport = nil
+         case .rank:
+             guard let raw = values["--stage-prefill-policy"],
+                   let selected = QwenLayerStagePrefillMeasurementFlow.SchedulingPolicy(rawValue: raw) else {
+                 throw ProbeError("Resident rank requires an explicit existing prefill scheduling policy")
+             }
++            guard let selectedTransport = ClusterTransport(rawValue: values["--transport"] ?? "loopback-test") else {
++                throw ProbeError("Resident rank transport must be jaccl or loopback-test")
++            }
++            transport = selectedTransport
+             policy = selected
+             cut = try values["--stage-cut"].map(decimal)
+             // Existing native selection remains the authority, without a copied
+@@ -88,11 +95,14 @@
+         timeoutSeconds = timeout
+         schedulingPolicy = policy
+         stageCut = cut
++        self.transport = transport
+     }
+ 
+     /// The open epoch is the only wire epoch source. Existing Options and long
+     /// CLI validators still own the fixed numerical/geometry/mode restrictions.
+-    func options(open: QwenResidentBenchmarkWorkerOpen) throws -> Options {
++    func options(open: QwenResidentBenchmarkWorkerOpen,
++        jacclConfiguration: QwenResidentJACCLConfiguration? = nil
++    ) throws -> Options {
+         try QwenResidentBenchmarkWorkerCommand.open(open).validate()
+         var arguments = ["--mode", role == .solo ? "qwen-long-prefill-solo-check" : "qwen-long-prefill-rank-check",
+             "--model-dir", modelDirectory.path, "--tokens-file", tokensFile.path,
+@@ -107,6 +117,17 @@
+                 "--stage-prefill-policy", policy.rawValue, "--stage-logits-dtype", "bfloat16"]
+             if let cut = stageCut { arguments += ["--stage-cut", String(cut)] }
+         }
+-        return try Options(arguments: arguments)
++        // Preserve the one-shot Options gate. Only this closed resident bridge
++        // may select JACCL after validating its separate configuration authority.
++        var options = try Options(arguments: arguments)
++        if role == .rank, transport == .jaccl {
++            guard jacclConfiguration != nil else {
++                throw ProbeError("Resident JACCL requires admitted effective environment and device configuration")
++            }
++            options.transport = .jaccl
++        } else if jacclConfiguration != nil {
++            throw ProbeError("JACCL configuration cannot be applied to solo or loopback resident work")
++        }
++        return options
+     }
+ }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentBenchmarkWorkerEntry.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentBenchmarkWorkerEntry.swift
+@@ -23,7 +23,10 @@
+             throw ProbeError("Resident benchmark requires its exact opening command before loading")
+         }
+         try checked()
++        let jacclConfiguration = try admitTransport(environment: ProcessInfo.processInfo.environment,
++            read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+         let admission = try preflight(open: open, arithmetic: arithmetic,
++            jacclConfiguration: jacclConfiguration,
+             read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+         let steps = admission.requests.enumerated().map { ordinal, request in
+             QwenLongPrefillResidentRequestStep(ordinal: ordinal, excludedWarmup: ordinal == 0,
+@@ -66,6 +69,7 @@
+             } else {
+                 let report = try runQwenLongPrefillResidentRankCohort(options: admission.options,
+                     requests: admission.rankRequests, warmupCount: 1,
++                    jacclConfiguration: admission.jacclConfiguration,
+                     onModelReady: { ready in
+                         try control.modelReady(QwenResidentBenchmarkWorkerReadyRecord(execution: ready,
+                             initialResources: initialResources, loadedResources: .require(),
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentJACCLConfiguration.swift
+@@ -0,0 +1,140 @@
++import Foundation
++
++/// Configuration admission only. This does not verify physical devices,
++/// connectivity, available memory, or permission to execute a model.
++struct QwenResidentJACCLConfiguration {
++    static let maximumMatrixBytes = 4096
++
++    struct Receipt: Encodable, Equatable {
++        let backend = "jaccl", topology = "mesh", worldSize = 2
++        let configuredRank: Int
++        let deviceMatrixPath: String, deviceMatrixSHA256: String
++        let coordinator: String, localDevice: String
++        let configurationFingerprint: String
++        let physicalDeviceIdentityVerified = false, physicalTransferQualified = false
++    }
++
++    private struct Environment: Equatable {
++        let rank: Int, matrixPath: String, coordinator: String
++    }
++
++    private let environment: Environment
++    private let matrixBytes: Data
++    let receipt: Receipt
++    var rank: Int { environment.rank }
++    var fingerprint: String { receipt.configurationFingerprint }
++
++    private init(environment: Environment, matrixBytes: Data, devices: [String]) throws {
++        let matrixSHA256 = sha256(matrixBytes)
++        // The local path and rank may differ between Macs. The raw matrix and
++        // coordinator must agree, in addition to the existing request/source Plan.
++        let common = try canonicalJSONData([
++            "schema": "qwen_resident_jaccl_configuration_v1", "backend": "jaccl",
++            "topology": "mesh", "worldSize": "2", "deviceMatrixSHA256": matrixSHA256,
++            "coordinator": environment.coordinator,
++        ])
++        self.environment = environment
++        self.matrixBytes = matrixBytes
++        receipt = .init(configuredRank: environment.rank, deviceMatrixPath: environment.matrixPath,
++            deviceMatrixSHA256: matrixSHA256, coordinator: environment.coordinator,
++            localDevice: devices[environment.rank], configurationFingerprint: sha256(common))
++    }
++
++    /// Injected IO permits actual admission to be exercised by CPU fixtures.
++    /// Runtime callers supply ProcessInfo.environment and the bounded reader.
++    static func admit(environment values: [String: String], read: (URL, Int) throws -> Data) throws -> Self {
++        let environment = try parseEnvironment(values)
++        let bytes = try read(URL(fileURLWithPath: environment.matrixPath), maximumMatrixBytes)
++        let devices = try parseMatrix(bytes)
++        return try .init(environment: environment, matrixBytes: bytes, devices: devices)
++    }
++
++    /// Recheck immediately before and after JACCL initialization, before loading.
++    /// JACCL opens the path itself; this is a bounded drift check, not atomic
++    /// attestation of that native file open or the physical link it initializes.
++    func requireUnchanged(environment values: [String: String], read: (URL, Int) throws -> Data) throws {
++        guard try Self.parseEnvironment(values) == environment,
++              try read(URL(fileURLWithPath: environment.matrixPath), Self.maximumMatrixBytes) == matrixBytes else {
++            throw ProbeError("Resident JACCL configuration changed around native initialization")
++        }
++    }
++
++    func requireInitialized(rank: Int, worldSize: Int, transport: ClusterTransport) throws {
++        guard transport == .jaccl, rank == self.rank, worldSize == 2 else {
++            throw ProbeError("Resident JACCL initialized a different backend, rank or world size")
++        }
++    }
++
++    private static func parseEnvironment(_ values: [String: String]) throws -> Environment {
++        // Native Config::from_env chooses the first PRESENT name, even empty.
++        // Refuse conflicting aliases rather than silently hiding an old value.
++        func selected(_ preferred: String, _ fallback: String) throws -> String {
++            if let first = values[preferred], let second = values[fallback], first != second {
++                throw ProbeError("Resident JACCL environment aliases conflict: \(preferred)/\(fallback)")
++            }
++            guard let value = values[preferred] ?? values[fallback], !value.isEmpty,
++                  value.utf8.count <= 4096, !value.utf8.contains(0) else {
++                throw ProbeError("Resident JACCL requires bounded nonempty \(preferred)/\(fallback)")
++            }
++            return value
++        }
++        guard values["JACCL_RING"] == nil, values["MLX_JACCL_RING"] == nil else {
++            throw ProbeError("Resident JACCL requires its explicit two-rank mesh without ring overrides")
++        }
++        let rawRank = try selected("JACCL_RANK", "MLX_RANK")
++        guard rawRank == "0" || rawRank == "1", let rank = Int(rawRank) else {
++            throw ProbeError("Resident JACCL rank must be exactly 0 or 1")
++        }
++        let path = try selected("JACCL_IBV_DEVICES", "MLX_IBV_DEVICES")
++        let components = path.split(separator: "/", omittingEmptySubsequences: false)
++        guard path.hasPrefix("/"), components.count > 1,
++              components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
++              !path.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
++            throw ProbeError("Resident JACCL matrix must use a bounded normalized absolute file path")
++        }
++        let coordinator = try selected("JACCL_COORDINATOR", "MLX_JACCL_COORDINATOR")
++        let endpoint = coordinator.split(separator: ":", omittingEmptySubsequences: false)
++        func decimal(_ text: Substring, maximum: Int) -> Int? {
++            guard !text.isEmpty, text.utf8.allSatisfy({ (48...57).contains($0) }),
++                  let value = Int(text), value <= maximum, String(value) == text else { return nil }
++            return value
++        }
++        guard endpoint.count == 2, let port = decimal(endpoint[1], maximum: 65535), port > 0 else {
++            throw ProbeError("Resident JACCL coordinator requires a canonical IPv4 address and port")
++        }
++        let octets = endpoint[0].split(separator: ".", omittingEmptySubsequences: false)
++        let numbers = octets.compactMap { decimal($0, maximum: 255) }
++        guard octets.count == 4, numbers.count == 4, numbers[0] > 0, numbers[0] < 224 else {
++            throw ProbeError("Resident JACCL coordinator must be a unicast IPv4 endpoint")
++        }
++        return .init(rank: rank, matrixPath: path, coordinator: coordinator)
++    }
++
++    private static func parseMatrix(_ bytes: Data) throws -> [String] {
++        guard !bytes.isEmpty, bytes.count <= maximumMatrixBytes else {
++            throw ProbeError("Resident JACCL device matrix exceeds its 4 KiB bound or is empty")
++        }
++        try validateWorkerJSON(bytes)
++        guard let rows = try JSONSerialization.jsonObject(with: bytes) as? [[Any]],
++              rows.count == 2, rows.allSatisfy({ $0.count == 2 }),
++              rows[0][0] is NSNull, rows[1][1] is NSNull,
++              let first = rows[0][1] as? String, let second = rows[1][0] as? String else {
++            throw ProbeError("Resident JACCL requires exactly two mesh ranks, null diagonal and one device per peer")
++        }
++        for name in [first, second] {
++            guard !name.isEmpty, name.utf8.count <= 63, name.utf8.allSatisfy({
++                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
++                    || $0 == 95 || $0 == 45 || $0 == 46
++            }) else { throw ProbeError("Resident JACCL device name is empty or outside its bounded identifier syntax") }
++        }
++        return [first, second]
++    }
++}
++
++extension QwenResidentBenchmarkWorkerCLI {
++    func admitTransport(environment: [String: String], read: (URL, Int) throws -> Data) throws
++        -> QwenResidentJACCLConfiguration? {
++        guard role == .rank, transport == .jaccl else { return nil }
++        return try .admit(environment: environment, read: read)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentJACCLConfigurationCheck.swift
+@@ -0,0 +1,115 @@
++import Foundation
++
++/// Invented environment and reader only; no actual interfaces or files touched.
++func checkQwenResidentJACCLConfiguration() throws -> (accepted: [String], rejected: [String]) {
++    let matrix = Data("[[null,\"rdma_en1\"],[\"rdma_en1\",null]]".utf8)
++    let environment = ["JACCL_RANK": "0", "JACCL_IBV_DEVICES": "/fixture/matrix.json",
++                       "JACCL_COORDINATOR": "169.254.70.46:29500"]
++    var accepted: [String] = [], rejected: [String] = []
++    func require(_ name: String, _ condition: Bool) throws {
++        guard condition else { throw ProbeError("Resident JACCL fixture failed: " + name) }
++        accepted.append(name)
++    }
++    func reject(_ name: String, _ body: () throws -> Void) throws {
++        do { try body() } catch { rejected.append(name); return }
++        throw ProbeError("Resident JACCL admitted invalid fixture: " + name)
++    }
++    func make(_ values: [String: String], bytes: Data? = nil) throws -> QwenResidentJACCLConfiguration {
++        try .admit(environment: values) { _, _ in bytes ?? matrix }
++    }
++    var reads: [(String, Int)] = []
++    let first = try QwenResidentJACCLConfiguration.admit(environment: environment) { url, cap in
++        reads.append((url.path, cap)); return matrix
++    }
++    try require("preferred environment and bounded single read", reads.count == 1 &&
++        reads[0].0 == "/fixture/matrix.json" && reads[0].1 == 4096 && first.rank == 0 &&
++        first.receipt.localDevice == "rdma_en1" && first.receipt.deviceMatrixSHA256 == sha256(matrix) &&
++        !first.receipt.physicalDeviceIdentityVerified && !first.receipt.physicalTransferQualified)
++    let fallback = ["MLX_RANK": "0", "MLX_IBV_DEVICES": "/fixture/matrix.json",
++                    "MLX_JACCL_COORDINATOR": "169.254.70.46:29500"]
++    try require("native fallback names", try make(fallback).receipt == first.receipt)
++    var aliases = environment
++    for (key, value) in fallback { aliases[key] = value }
++    try require("equal aliases are unambiguous", try make(aliases).receipt == first.receipt)
++    var remote = environment
++    remote["JACCL_RANK"] = "1"; remote["JACCL_IBV_DEVICES"] = "/other-host/matrix.json"
++    let second = try make(remote)
++    try require("common fingerprint excludes local rank and path", first.fingerprint == second.fingerprint &&
++        second.rank == 1 && second.receipt.deviceMatrixPath != first.receipt.deviceMatrixPath)
++    var changed = environment; changed["JACCL_COORDINATOR"] = "169.254.70.46:29501"
++    try require("common coordinator changes fingerprint", try make(changed).fingerprint != first.fingerprint)
++    try require("all raw matrix bytes bind fingerprint", try make(environment, bytes: matrix + Data([10])).fingerprint != first.fingerprint)
++    try first.requireInitialized(rank: 0, worldSize: 2, transport: .jaccl)
++    try require("actual backend rank and world match", true)
++    try first.requireUnchanged(environment: aliases) { _, _ in matrix }
++    try require("equivalent effective aliases pass unchanged check", true)
++    let maximum = matrix + Data(repeating: 32, count: 4096 - matrix.count)
++    try require("inclusive matrix byte bound", try make(environment, bytes: maximum).receipt.deviceMatrixSHA256 == sha256(maximum))
++    enum ReaderFailure: Error { case original }
++    do {
++        _ = try QwenResidentJACCLConfiguration.admit(environment: environment) { _, _ in throw ReaderFailure.original }
++        throw ProbeError("Resident JACCL swallowed its reader error")
++    } catch ReaderFailure.original { accepted.append("original reader failure propagates") }
++
++    let pairs = [("JACCL_RANK", "MLX_RANK"), ("JACCL_IBV_DEVICES", "MLX_IBV_DEVICES"),
++                 ("JACCL_COORDINATOR", "MLX_JACCL_COORDINATOR")]
++    for (preferred, fallback) in pairs {
++        var missing = environment; missing.removeValue(forKey: preferred)
++        try reject("missing " + preferred) { _ = try make(missing) }
++        var empty = environment; empty[preferred] = ""
++        try reject("empty preferred " + preferred) { _ = try make(empty) }
++        var conflict = aliases; conflict[fallback] = "different"
++        try reject("conflicting aliases " + preferred) { _ = try make(conflict) }
++    }
++    for rank in ["2", "-1", "01", "+1", "1.0", "0 "] {
++        var values = environment; values["JACCL_RANK"] = rank
++        try reject("rank " + rank) { _ = try make(values) }
++    }
++    for key in ["JACCL_RING", "MLX_JACCL_RING"] {
++        for value in ["", "0"] {
++            var values = environment; values[key] = value
++            try reject("presence selects ring " + key + "=" + value) { _ = try make(values) }
++        }
++    }
++    for path in ["relative.json", "/fixture/../matrix.json", "/fixture/./matrix.json",
++                 "/fixture//matrix.json", "/fixture/", "/fixture/\0matrix.json"] {
++        var values = environment; values["JACCL_IBV_DEVICES"] = path
++        try reject("matrix path " + String(path.utf8.count)) { _ = try make(values) }
++    }
++    for endpoint in ["localhost:29500", "::1:29500", "169.254.70.46", "169.254.70.46:0",
++                     "169.254.70.46:65536", "169.254.70.46:029500", "169.254.070.46:29500",
++                     "0.0.0.0:29500", "224.1.1.1:29500", "169.254.70.256:29500",
++                     "169.254.70.46:29500:1", "169.254.70.46:+1"] {
++        var values = environment; values["JACCL_COORDINATOR"] = endpoint
++        try reject("coordinator " + endpoint) { _ = try make(values) }
++    }
++    for json in ["", "{}", "[]", "[[null]]", "[[null,\"rdma_en1\"]]",
++                 "[[null,\"rdma_en1\"],[null,null]]", "[[0,\"rdma_en1\"],[\"rdma_en1\",null]]",
++                 "[[null,true],[\"rdma_en1\",null]]", "[[null,\"\"],[\"rdma_en1\",null]]",
++                 "[[null,\"rdma/en1\"],[\"rdma_en1\",null]]", "[[null,NaN],[\"rdma_en1\",null]]"] {
++        try reject("matrix schema " + String(json.utf8.count)) { _ = try make(environment, bytes: Data(json.utf8)) }
++    }
++    try reject("matrix beyond 4 KiB") { _ = try make(environment, bytes: maximum + Data([32])) }
++    try reject("effective environment drift") {
++        try first.requireUnchanged(environment: remote) { _, _ in matrix }
++    }
++    try reject("raw matrix drift") {
++        try first.requireUnchanged(environment: environment) { _, _ in matrix + Data([10]) }
++    }
++    for (rank, world, backend) in [(1, 2, ClusterTransport.jaccl), (0, 1, .jaccl), (0, 2, .loopbackTest)] {
++        try reject("initialized identity \(rank)/\(world)/\(backend.rawValue)") {
++            try first.requireInitialized(rank: rank, worldSize: world, transport: backend)
++        }
++    }
++    var invalidReads = 0
++    try reject("invalid environment before IO") {
++        _ = try QwenResidentJACCLConfiguration.admit(environment: [:]) { _, _ in
++            invalidReads += 1; return matrix
++        }
++    }
++    try require("invalid environment does not call reader", invalidReads == 0)
++    guard accepted.count == 11, rejected.count == 55 else {
++        throw ProbeError("Resident JACCL configuration fixture count changed")
++    }
++    return (accepted, rejected)
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentJACCLAdmissionCheck.swift
+@@ -0,0 +1,155 @@
++import Foundation
++
++struct QwenResidentJACCLCheckResult: Encodable {
++    let kind = "qwen_resident_jaccl_admission_check", cpuOnly = true
++    let acceptedCases: [String], rejectedCases: [String]
++    let actualOptionsAndRegisteredAdmissionsUsed = true
++    let environmentAndReaderWereInjected = true
++    let collectiveInitialized = false, modelPayloadsRead = false
++    let physicalTransferQualified = false, runtimeResourceAdmissionPerformed = false
++}
++
++/// Exercise the actual closed worker bridge and existing registered/cohort
++/// constructors, without opening a file or initializing a native collective.
++func checkQwenResidentJACCLAdmission() throws -> QwenResidentJACCLCheckResult {
++    let configurationCases = try checkQwenResidentJACCLConfiguration()
++    var accepted = configurationCases.accepted, rejected = configurationCases.rejected
++    func require(_ name: String, _ condition: Bool) throws {
++        guard condition else { throw ProbeError("Resident JACCL admission fixture failed: " + name) }
++        accepted.append(name)
++    }
++    func reject(_ name: String, _ body: () throws -> Void) throws {
++        do { try body() } catch { rejected.append(name); return }
++        throw ProbeError("Resident JACCL admitted invalid fixture: " + name)
++    }
++    let fixture = try QwenLongPrefillResidentCohortFixture()
++    let cohort = "fixture:jaccl"
++    let open = QwenResidentBenchmarkWorkerOpen(cohortID: cohort,
++        requests: try (1...4).map { index in
++            .init(requestID: cohort + QwenResidentBenchmarkWorkerCommand.suffixes[index - 1],
++                  epoch: try QwenLongPrefillResidentRankFixture.epoch(index))
++        })
++    let soloArguments = ["--mode", QwenResidentBenchmarkWorkerCLI.mode, "--role", "solo",
++        "--model-dir", "/fixture/model", "--tokens-file", "/fixture/prompt.json",
++        "--artifact-aggregate-sha256", QwenLongPrefillResidentRankFixture.artifactSHA256,
++        "--long-prompt-sha256", sha256(fixture.promptA)]
++    func replacing(_ args: [String], _ key: String, _ value: String) -> [String] {
++        var result = args; result[result.firstIndex(of: key)! + 1] = value; return result
++    }
++    let rankArguments = replacing(soloArguments, "--role", "rank") + ["--stage-prefill-policy", "serial_v1"]
++    let matrix = Data("[[null,\"rdma_en1\"],[\"rdma_en1\",null]]".utf8)
++    let environment = ["JACCL_RANK": "0", "JACCL_IBV_DEVICES": "/fixture/matrix.json",
++                       "JACCL_COORDINATOR": "169.254.70.46:29500"]
++    func transport(_ values: [String: String], bytes: Data? = nil) throws -> QwenResidentJACCLConfiguration {
++        try .admit(environment: values) { _, _ in bytes ?? matrix }
++    }
++    let config = try transport(environment)
++    func admit(_ cli: QwenResidentBenchmarkWorkerCLI, _ config: QwenResidentJACCLConfiguration? = nil) throws
++        -> QwenResidentBenchmarkWorkerAdmission {
++        try cli.admit(open: open, arithmetic: fixture.arithmetic, configuration: fixture.configuration,
++                      prompt: fixture.promptA, jacclConfiguration: config)
++    }
++    func agreement(_ value: QwenResidentBenchmarkWorkerAdmission) throws -> QwenLongPrefillResidentCohortAgreement {
++        try .init(options: value.options, requests: value.rankRequests, warmupCount: 1,
++                  jacclConfiguration: value.jacclConfiguration)
++    }
++    let loopback = try QwenResidentBenchmarkWorkerCLI(arguments: rankArguments)
++    let old = try admit(loopback)
++    try require("default rank remains loopback", old.options.transport == .loopbackTest && old.jacclConfiguration == nil)
++    let explicitLoopback = try QwenResidentBenchmarkWorkerCLI(arguments: rankArguments + ["--transport", "loopback-test"])
++    try require("explicit loopback retains agreement", try agreement(admit(explicitLoopback)).fingerprint == agreement(old).fingerprint)
++    let solo = try QwenResidentBenchmarkWorkerCLI(arguments: soloArguments)
++    var unusedReads = 0
++    let absentSolo = try solo.admitTransport(environment: [:]) { _, _ in unusedReads += 1; return matrix }
++    let absentLoopback = try loopback.admitTransport(environment: [:]) { _, _ in unusedReads += 1; return matrix }
++    try require("solo and loopback do not read JACCL environment files", unusedReads == 0 && absentSolo == nil && absentLoopback == nil)
++    let jacclArguments = rankArguments + ["--transport", "jaccl"]
++    let jaccl = try QwenResidentBenchmarkWorkerCLI(arguments: jacclArguments)
++    let admitted = try admit(jaccl, config)
++    for policy in QwenLayerStagePrefillMeasurementFlow.SchedulingPolicy.allCases {
++        let cli = try QwenResidentBenchmarkWorkerCLI(arguments: replacing(jacclArguments, "--stage-prefill-policy", policy.rawValue))
++        let value = try admit(cli, config)
++        try require("JACCL preserves registered request geometry and " + policy.rawValue,
++            value.options.transport == .jaccl && value.options.stagePrefillPolicy == policy &&
++            value.requests.count == 4 && value.rankRequests.map(\.epoch) == open.requests.map(\.epoch) &&
++            value.requests.allSatisfy { $0.configuration == fixture.configuration &&
++                $0.request.request.promptCount == 8192 && $0.request.request.chunkSize == 512 &&
++                $0.request.request.outputCount == 1 && $0.request.request.batchSize == 1 })
++    }
++    var remote = environment; remote["JACCL_RANK"] = "1"; remote["JACCL_IBV_DEVICES"] = "/remote/matrix.json"
++    let peer = try admit(jaccl, transport(remote))
++    let common = try agreement(admitted)
++    try require("two host intents join despite local rank and path", try agreement(peer).fingerprint == common.fingerprint &&
++        common.descriptor.jacclConfigurationSHA256 == config.fingerprint && common.descriptor.transport == "jaccl")
++    let cut = try QwenResidentBenchmarkWorkerCLI(arguments: jacclArguments + ["--stage-cut", "12"])
++    try require("JACCL selected cut uses native Plan", try admit(cut, config).requests.allSatisfy {
++        $0.plan.stages.map(\.sourceRange) == [0..<12, 12..<32]
++    })
++    var different = environment; different["JACCL_COORDINATOR"] = "169.254.70.46:29501"
++    try require("cohort binds coordinator", try agreement(admit(jaccl, transport(different))).fingerprint != common.fingerprint)
++    try require("cohort binds exact matrix bytes", try agreement(admit(jaccl,
++        transport(environment, bytes: matrix + Data([10])))).fingerprint != common.fingerprint)
++    let legacyJSON = try JSONSerialization.jsonObject(with: canonicalJSONData(agreement(old).descriptor)) as? [String: Any]
++    try require("legacy agreement omits optional new field", legacyJSON != nil && legacyJSON!["jacclConfigurationSHA256"] == nil)
++    var reads: [(String, Int)] = []
++    let preflight = try jaccl.preflight(open: open, arithmetic: fixture.arithmetic, jacclConfiguration: config) { url, cap in
++        reads.append((url.path, cap)); return reads.count == 1 ? fixture.configuration : fixture.promptA
++    }
++    try require("typed configuration keeps two bounded retained input reads", reads.count == 2 &&
++        reads[0].0 == "/fixture/model/config.json" && reads[0].1 == 1_048_576 &&
++        reads[1].0 == "/fixture/prompt.json" && reads[1].1 == 65_536 && preflight.jacclConfiguration?.fingerprint == config.fingerprint)
++
++    for backend in ["ring", "auto", "JACCL"] {
++        try reject("unknown backend " + backend) { _ = try QwenResidentBenchmarkWorkerCLI(arguments: rankArguments + ["--transport", backend]) }
++    }
++    for backend in ["jaccl", "loopback-test"] {
++        try reject("solo rejects transport " + backend) { _ = try QwenResidentBenchmarkWorkerCLI(arguments: soloArguments + ["--transport", backend]) }
++    }
++    try reject("duplicate transport selector") { _ = try QwenResidentBenchmarkWorkerCLI(arguments: jacclArguments + ["--transport", "jaccl"]) }
++    try reject("JACCL cannot create options without typed admission") { _ = try jaccl.options(open: open) }
++    var refusedReads = 0
++    try reject("JACCL missing authority before retained input IO") {
++        _ = try jaccl.preflight(open: open, arithmetic: fixture.arithmetic) { _, _ in refusedReads += 1; return fixture.configuration }
++    }
++    try require("missing JACCL authority does not call reader", refusedReads == 0)
++    try reject("JACCL authority cannot be reused for solo") { _ = try admit(solo, config) }
++    try reject("JACCL authority cannot be reused for loopback") { _ = try admit(loopback, config) }
++    let oneShot = ["--mode", "qwen-long-prefill-rank-check", "--model-dir", "/fixture/model",
++        "--tokens-file", "/fixture/prompt.json", "--artifact-aggregate-sha256", QwenLongPrefillResidentRankFixture.artifactSHA256,
++        "--long-prompt-sha256", sha256(fixture.promptA), "--epoch", open.requests[0].epoch,
++        "--transport", "loopback-test", "--stage-prefill-policy", "serial_v1", "--stage-logits-dtype", "bfloat16",
++        "--execution-path", "cbv2-contiguous", "--prompt-tokens", "8192", "--chunk-size", "512",
++        "--decode-tokens", "1", "--repeats", "1", "--warmups", "0", "--timeout-seconds", "300"]
++    try require("original one-shot loopback control admitted", try Options(arguments: oneShot).transport == .loopbackTest)
++    try reject("original one-shot Options still refuses JACCL") { _ = try Options(arguments: replacing(oneShot, "--transport", "jaccl")) }
++    try reject("original one-shot validator still refuses JACCL") { try QwenLongPrefillRankAdmission.validateOptions(admitted.options) }
++    try reject("resident JACCL direct call without authority") {
++        try QwenLongPrefillResidentRankAdmission.validate(options: admitted.options, requests: admitted.rankRequests, warmupCount: 1)
++    }
++    try reject("resident loopback direct call with JACCL authority") {
++        try QwenLongPrefillResidentRankAdmission.validate(options: old.options, requests: old.rankRequests, warmupCount: 1, jacclConfiguration: config)
++    }
++    func rejectOptions(_ name: String, _ mutate: (inout Options) -> Void) throws {
++        var options = admitted.options; mutate(&options)
++        try reject(name) { try QwenLongPrefillResidentRankAdmission.validate(options: options,
++            requests: admitted.rankRequests, warmupCount: 1, jacclConfiguration: config) }
++    }
++    try rejectOptions("JACCL cannot change logits precision") { $0.stageLogitsDType = "float32" }
++    try rejectOptions("JACCL still requires scheduling policy") { $0.stagePrefillPolicy = nil }
++    try rejectOptions("JACCL still binds registered artifact") { $0.expectedArtifactAggregateSHA256 = String(repeating: "0", count: 64) }
++    try rejectOptions("JACCL still binds prompt bytes") { $0.longPromptSHA256 = String(repeating: "0", count: 64) }
++    try rejectOptions("JACCL cannot enable phase traces") { $0.prefillPhaseTraceFile = URL(fileURLWithPath: "/fixture/phase") }
++    try rejectOptions("JACCL cannot relabel selected Plan") { $0.stageCut = 12 }
++    try reject("JACCL still validates registered config") {
++        _ = try jaccl.admit(open: open, arithmetic: fixture.arithmetic, configuration: Data("{}".utf8),
++                           prompt: fixture.promptA, jacclConfiguration: config)
++    }
++    try reject("JACCL still validates raw prompt") {
++        _ = try jaccl.admit(open: open, arithmetic: fixture.arithmetic, configuration: fixture.configuration,
++                           prompt: fixture.promptB, jacclConfiguration: config)
++    }
++    guard accepted.count == 24, rejected.count == 77 else {
++        throw ProbeError("Resident JACCL admission fixture count changed")
++    }
++    return .init(acceptedCases: accepted, rejectedCases: rejected)
++}

@@ -1,0 +1,21 @@
+--- Package.before.swift
++++ Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "MTPTinyForwardCheck", targets: ["MTPTinyForwardCheck"]),
+         .executable(name: "MTPSelectedLoadCheck", targets: ["MTPSelectedLoadCheck"]),
+         .executable(name: "MTPFactoryCheck", targets: ["MTPFactoryCheck"]),
+         .executable(name: "darkbloom-cluster-worker", targets: ["DarkbloomClusterWorker"]),
+@@ -17,6 +18,10 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "MTPTinyForwardCheck", dependencies: [
++            .product(name: "MLX", package: "mlx-swift"),
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/MTPTinyForwardCheck"),
+         .executableTarget(name: "MTPSelectedLoadCheck", dependencies: [
+             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),

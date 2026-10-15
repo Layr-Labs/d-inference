@@ -1,0 +1,17 @@
+--- canonical/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
++++ numerical/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
+@@ -24,11 +24,13 @@
+         directory = descriptor
+     }
+ 
+-    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64) throws {
++    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64,
++                 resourceCheck: () throws -> Void = {}) throws {
+         guard !evidence.isEmpty, evidence.count <= Self.maximumBytes,
+               requests.count < 16, !requests.contains(requestID) else { throw Failure.invalidRecord }
+         func check() throws {
+             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.expired }
++            try resourceCheck()
+         }
+         try check()
+         let name = requestID.uuidString.lowercased() + ".json"

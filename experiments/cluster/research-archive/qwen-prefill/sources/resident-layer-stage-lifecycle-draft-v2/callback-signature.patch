@@ -1,0 +1,12 @@
+--- v1/QwenLayerStageResidentOverlapCheck.swift
++++ v2/QwenLayerStageResidentOverlapCheck.swift
+@@ -74,8 +74,7 @@
+     init(_ context: OverlapContext, first: Bool) { self.context = context; self.first = first }
+ }
+ 
+-private func overlapThreadMain(_ pointer: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer? {
+-    guard let pointer else { return nil }
++private func overlapThreadMain(_ pointer: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
+     let payload = Unmanaged<OverlapThreadPayload>.fromOpaque(pointer).takeRetainedValue()
+     if payload.first { payload.context.runFirst() } else { payload.context.runContender() }
+     return nil

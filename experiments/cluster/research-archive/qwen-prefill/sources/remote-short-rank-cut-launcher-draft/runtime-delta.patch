@@ -1,0 +1,755 @@
+--- originals/launch_remote_long_ranks.py
++++ launch_remote_short_ranks.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Root-run registered9B 8K v4 diagnostic: two ranks on one remote loopback host."""
++"""Root-run registered9B short cut12 comparison: two ranks on one remote loopback host."""
+ import argparse
+ import json
+ from pathlib import Path
+@@ -10,8 +10,7 @@
+ from long_reference_inputs import ARTIFACT, CONFIGURATION, archive_inputs, is_sha256, require
+ from long_rank_artifacts import rank_file_receipts, verify_local
+ from long_rank_client import RemoteControl, RemoteMemoryGate, collect_metadata, create_remote, prepare_controls, upload_new
+-from long_rank_configuration import NATIVE_TIMEOUT_SECONDS, policy, timeout
+-from long_rank_identity import FLOW
++from long_rank_configuration import NATIVE_TIMEOUT_SECONDS, timeout
+ from long_rank_paths import absolute_path, host_alias
+ from long_rank_staging import prepare_ranks, verify_remote
+ from long_rank_supervision import supervise
+@@ -20,16 +19,14 @@
+ 
+ def main(argv=None):
+     parser = argparse.ArgumentParser(description=__doc__)
+-    for name in ('release','runtime','output','prompt-file','prompt-origin-file'):
++    for name in ('release','runtime','output','prompt-file','teacher-file','prompt-origin-file','prompt-prefix-file','source-text-file'):
+         parser.add_argument('--' + name,type=Path,required=True)
+-    for name in ('long-prompt-sha256','prompt-origin-sha256','artifact-aggregate-sha256','expected-native-sha256'):
++    for name in ('prompt-sha256','teacher-sha256','prompt-origin-sha256','artifact-aggregate-sha256','expected-native-sha256'):
+         parser.add_argument('--' + name,required=True)
+     parser.add_argument('--host',type=host_alias,required=True)
+     parser.add_argument('--remote-model-dir',required=True)
+     parser.add_argument('--remote-run-root')
+-    parser.add_argument('--stage-prefill-policy',type=policy,required=True)
+-    parser.add_argument('--stage-logits-dtype',choices=['bfloat16'],required=True)
+-    parser.add_argument('--parent-timeout-seconds',type=int,default=330)
++    parser.add_argument('--parent-timeout-seconds',type=int,default=210)
+     args = parser.parse_args(argv)
+     timeout(args.parent_timeout_seconds); absolute_path(args.remote_model_dir)
+     if args.remote_run_root: absolute_path(args.remote_run_root)
+@@ -39,19 +36,19 @@
+     output.mkdir(parents=True,mode=0o700)
+     epoch, gate, modules, ranks = uuid.uuid4().hex, RemoteMemoryGate(), None, []
+     children, handlers = [], {}
+-    receipt = dict(kind='remote_qwen_long_prefill_rank_launcher',schema_version=1,run_id=epoch,epoch=epoch,
++    receipt = dict(kind='remote_qwen_short_stage_rank_cut_launcher',schema_version=1,run_id=epoch,epoch=epoch,
+         execution_host=args.host,passed=False,native_execution_attempted=False,native_rank_count=2,
+-        transport='loopback-test',backend='ring',flow=FLOW,envelope_version=4,
+-        stage_prefill_policy=args.stage_prefill_policy,stage_logits_dtype=args.stage_logits_dtype,
+-        physical_two_machine_execution=False,throughput_qualification=False,independent_execution_oracle_run=False,
+-        full_reference_forward_requested=False,stage_model_forward_requested=True,timing_requested=True,timing_diagnostic_only=True,
++        transport='loopback-test',backend='ring',selected_stage_cut=12,source_layer_ranges=[[0,12],[12,32]],
++        physical_two_machine_execution=False,throughput_qualification=False,independent_execution_oracle_run=False,independent_comparison_oracle_run=False,
++        full_reference_forward_requested=False,stage_model_forward_requested=True,timing_requested=False,timing_diagnostic_only=False,
+         native_timeout_seconds=NATIVE_TIMEOUT_SECONDS,parent_timeout_seconds=args.parent_timeout_seconds,
+         expected_native_sha256=args.expected_native_sha256,artifact_aggregate_sha256=ARTIFACT,configuration_sha256=CONFIGURATION,
+         model_payload_copies_created=False,primary_failure=None,cleanup_errors=[],post_run_errors=[])
+     try:
+         launcher = archive_launcher(output); sources = archive_sources(runtime,output)
+         modules = load_archived_runtime(output,epoch)
+-        inputs = archive_inputs(args.prompt_file,args.long_prompt_sha256,args.prompt_origin_file,args.prompt_origin_sha256,output)
++        inputs = archive_inputs(args.prompt_file,args.prompt_sha256,args.teacher_file,args.teacher_sha256,
++            args.prompt_origin_file,args.prompt_origin_sha256,args.prompt_prefix_file,args.source_text_file,output)
+         receipt['inputs'] = inputs
+         warning = source_warning(output); receipt['stderr_contract'] = warning
+         bundle_hash = modules['bundle'].snapshot(args.release.resolve(strict=True),output / 'bundle')
+@@ -61,7 +58,7 @@
+         layout, allocation = create_remote(modules['processes'],args.host,args.remote_model_dir,args.remote_run_root,epoch)
+         receipt.update(remote_paths=layout,remote_port_reservation=allocation,hostfile=allocation['hostfile'])
+         ranks, config = prepare_ranks(output,layout,args.host,bundle_hash,args.expected_native_sha256,
+-            inputs,allocation['hostfile'],epoch,args.stage_prefill_policy)
++            inputs,allocation['hostfile'],epoch)
+         control_hash = prepare_controls(output,layout,config)
+         upload_new(modules['processes'],args.host,output / 'controls',layout['controls'])
+         control = RemoteControl(modules['processes'],args.host,layout,epoch,control_hash,output)
+@@ -73,7 +70,7 @@
+             and initial['actual_free_bytes'] >= 6 * 1024**3, 'Initial actual-free screen refused before remote bundle/model reads')
+         upload_new(modules['processes'],args.host,output / 'bundle',layout['bundle'])
+         for rank in ranks:
+-            for name in ('rank.json','prompt.json','hosts.json'):
++            for name in ('rank.json','prompt.json','teacher.json','hosts.json'):
+                 upload_new(modules['processes'],args.host,Path(rank['local']) / name,rank['directory'] + '/' + name)
+         before = control.call('before'); receipt['remote_before'] = before
+         verify_remote(before,config,expected_files); gate.consume(before['memory'])
+@@ -84,7 +81,7 @@
+             child = modules['processes'].start(rank); children.append(child); return child
+         def observe(seconds): gate.consume(control.call('observe',timeout=seconds))
+         receipt['native_execution_attempted'] = True; write_json(output / 'receipt.json',receipt)
+-        receipt['cohort'] = supervise(ranks,inputs,epoch,args.stage_prefill_policy,args.parent_timeout_seconds,
++        receipt['cohort'] = supervise(ranks,inputs,epoch,None,args.parent_timeout_seconds,
+             start,modules['processes'].stop_processes,observe)
+         cohort = receipt['cohort']; receipt['cleanup_errors'].extend(cohort['cleanup_errors'])
+         if not cohort['passed']:
+@@ -95,7 +92,7 @@
+         for name in ('config.json','manifest.json'):
+             require(before['model_metadata'][name]['sha256'] == after['model_metadata'][name]['sha256'], 'Remote original model metadata changed')
+         receipt['retrieved_remote_metadata'] = collect_metadata(modules['processes'],args.host,layout,before,after,output)
+-        verify_local(modules,output,sources,bundle_hash,launcher,inputs,config,control_hash,args.stage_prefill_policy,warning)
++        verify_local(modules,output,sources,bundle_hash,launcher,inputs,config,control_hash,None,warning)
+         receipt['source_bundle_raw_inputs_and_remote_model_unchanged_after_run'] = True
+         receipt['passed'] = cohort['passed']
+     except BaseException as error:
+@@ -115,7 +112,7 @@
+                                    if row['kind'] == 'supervisor' and row['rank'] == i})) for i in range(2)]
+         receipt['remote_pid_observations_are_not_reaping_proof'] = True
+         receipt['local_model_payload_verified'] = False
+-        receipt['resource_policy'] = 'remote initial actual free>=6GiB before bundle/model reads; posthash reclaimable>=8GiB; pressure<=2; zero reported swap; native300s and parent<=330s'
++        receipt['resource_policy'] = 'remote initial actual free>=6GiB before bundle/model reads; posthash reclaimable>=8GiB; pressure<=2; zero reported swap; native180s and parent<=210s'
+         try: receipt['rank_files'] = rank_file_receipts(output)
+         except BaseException as error:
+             receipt['passed'] = False
+--- originals/long_rank_artifacts.py
++++ long_rank_artifacts.py
+@@ -18,7 +18,7 @@
+ 
+ def rank_file_receipts(output):
+     records = []
+-    caps = [('rank.json',256 * 1024),('prompt.json',65536),('hosts.json',1024),
++    caps = [('rank.json',256 * 1024),('prompt.json',65536),('teacher.json',65536),('hosts.json',1024),
+             ('stdout.jsonl',MAX_STDOUT),('stderr.log',MAX_STDERR)]
+     for rank in range(2):
+         for name, maximum in caps:
+--- originals/long_rank_client.py
++++ long_rank_client.py
+@@ -113,7 +113,7 @@
+             requested.append((expected_remote, phase + '-' + name, item['sha256']))
+     require([row['rank'] for row in after['ranks']] == [0, 1], 'Remote rank metadata ordering differs')
+     for index, record in enumerate(after['ranks']):
+-        for name, key in (('rank.json', 'rank_configuration_sha256'), ('prompt.json', 'prompt_sha256'), ('hosts.json', 'hostfile_sha256')):
++        for name, key in (('rank.json', 'rank_configuration_sha256'), ('prompt.json', 'prompt_sha256'), ('teacher.json', 'teacher_sha256'), ('hosts.json', 'hostfile_sha256')):
+             requested.append((layout['rank_directories'][index] + '/' + name,
+                               'rank-' + str(index) + '-' + name, record[key]))
+     for remote, name, expected in requested:
+--- originals/long_rank_configuration.py
++++ long_rank_configuration.py
+@@ -1,19 +1,20 @@
+-"""Exact new v4 rank argv; the unchanged worker never rewrites staged inputs."""
++"""Exact short cut12 rank argv; unchanged worker preserves both raw inputs."""
+ import re
+ from long_reference_inputs import ARTIFACT, is_sha256, require
+ 
+-NATIVE_TIMEOUT_SECONDS, MAX_PARENT_SECONDS = 300, 330
+-POLICIES = ('serial_v1', 'prompt_lookahead_one_v1')
++NATIVE_TIMEOUT_SECONDS, MAX_PARENT_SECONDS = 180, 210
+ REQUIRED_ENVIRONMENT = {'DARKBLOOM_BF16_WEIGHTS': '1',
+     'DARKBLOOM_CBV2_ATTN_QUERY_BLOCK': '128', 'MLX_ENABLE_TF32': '1'}
+ 
+ 
+ def timeout(value):
+-    require(type(value) is int and 1 <= value <= MAX_PARENT_SECONDS, 'Parent timeout must be 1 through 330 seconds')
++    require(type(value) is int and 1 <= value <= MAX_PARENT_SECONDS, 'Parent timeout must be 1 through 210 seconds')
+ 
+ 
+ def policy(value):
+-    require(value in POLICIES, 'Explicit native serial_v1 or prompt_lookahead_one_v1 policy required')
++    # Keep the inherited supervisor's internal argument slot without admitting
++    # any public/native prefill policy in this fixed serialized short mode.
++    require(value is None, 'Short serialized ranks do not accept a prefill scheduling policy')
+     return value
+ 
+ 
+@@ -27,24 +28,23 @@
+     return value
+ 
+ 
+-def configuration(bundle, bundle_hash, model, prompt_sha256, rank, epoch, scheduling):
++def configuration(bundle, bundle_hash, model, prompt_sha256, teacher_sha256, rank, epoch, scheduling=None):
+     policy(scheduling)
+     require(type(rank) is int and rank in (0, 1) and type(epoch) is str
+             and re.fullmatch('[0-9a-f]{32}', epoch) is not None, 'Invalid rank/epoch')
+-    require(is_sha256(bundle_hash) and is_sha256(prompt_sha256), 'Bundle and raw prompt pins required')
++    require(is_sha256(bundle_hash) and is_sha256(prompt_sha256) and is_sha256(teacher_sha256), 'Bundle and raw prompt/teacher pins required')
+     return dict(bundle=str(bundle), bundle_sha256=bundle_hash, rank=rank, persistent=False,
+         model_directory=str(model), artifact_aggregate_sha256=ARTIFACT, timeout_seconds=NATIVE_TIMEOUT_SECONDS,
+         environment=dict(REQUIRED_ENVIRONMENT, MLX_RANK=str(rank)),
+         environment_files={'MLX_HOSTFILE': 'hosts.json'}, input_files={},
+-        arguments=['--mode', 'qwen-long-prefill-rank-check', '--model-dir', '@model',
++        arguments=['--mode', 'qwen-layer-stage-rank-check', '--model-dir', '@model',
+             '--artifact-aggregate-sha256', ARTIFACT, '--transport', 'loopback-test', '--epoch', epoch,
+-            '--execution-path', 'cbv2-contiguous', '--stage-prefill-policy', scheduling,
+-            '--stage-logits-dtype', 'bfloat16', '--tokens-file', '@rank/prompt.json',
+-            '--long-prompt-sha256', prompt_sha256, '--prompt-tokens', '8192', '--chunk-size', '512',
+-            '--decode-tokens', '1', '--repeats', '1', '--warmups', '0', '--seed', '7',
+-            '--timeout-seconds', str(NATIVE_TIMEOUT_SECONDS)])
++            '--execution-path', 'cbv2-contiguous', '--stage-cut', '12',
++            '--tokens-file', '@rank/prompt.json', '--teacher-tokens-file', '@rank/teacher.json',
++            '--prompt-tokens', '65', '--chunk-size', '32', '--decode-tokens', '4',
++            '--repeats', '1', '--warmups', '0', '--seed', '7', '--timeout-seconds', str(NATIVE_TIMEOUT_SECONDS)])
+ 
+ 
+-def require_configuration(value, bundle, bundle_hash, model, prompt_sha256, rank, epoch, scheduling):
+-    require(value == configuration(bundle, bundle_hash, model, prompt_sha256, rank, epoch, scheduling),
+-            'Rank configuration differs from exact v4 raw-input/arithmetic/epoch contract')
++def require_configuration(value, bundle, bundle_hash, model, prompt_sha256, teacher_sha256, rank, epoch, scheduling=None):
++    require(value == configuration(bundle, bundle_hash, model, prompt_sha256, teacher_sha256, rank, epoch, scheduling),
++            'Rank configuration differs from exact short cut12 raw-input/arithmetic/epoch contract')
+--- originals/long_rank_contract.py
++++ long_rank_contract.py
+@@ -1,75 +1,80 @@
+-"""Closed v4 outer launch identities; inner numerical/action audit is separate."""
+-import re
++"""Closed short-rank outer identity/retirement checks; numerical audit is separate."""
+ from long_reference_inputs import ARTIFACT, CONFIGURATION, require, is_sha256
+-from long_rank_identity import FLOW, canonical, sha, known_agreement, validate_request, environment_receipt
++from long_rank_configuration import policy
++from long_rank_identity import canonical, recorded_request, request_fingerprint, validate_request
++from short_cut_request import equal
++from short_cut_expected import (PLAN_SHA256,SOURCE_LAYOUT_SHA256,SOURCE_MODEL_BYTES,
++    STAGE_PLAN_SHA256,STAGE_CONFIGURATION_SHA256,NAMED_STATE_AND_BOUNDARY_BYTES)
+ 
+-READY, FINAL = 'qwen_long_prefill_rank_ready', 'qwen_long_prefill_rank_report'
+-COMMON = {'kind','schemaVersion','epoch','rank','worldSize','transport','backend','flow','envelopeVersion',
+-          'agreementFingerprint','agreement','promptFileSHA256'}
+-HASH_FIELDS = {'storageCommitmentSHA256','planFingerprint','producerStageFingerprint','consumerStageFingerprint',
+-               'producerConstructionConfigurationSHA256','consumerConstructionConfigurationSHA256'}
++READY, FINAL = 'qwen_layer_stage_rank_ready', 'qwen_layer_stage_rank_report'
++COMMON={'kind','schemaVersion','epoch','rank','worldSize','transport','backend'}
++FINAL_FIELDS={'completed','correctnessOnly','throughputMeasurementValid','modelForwardCompared','physicalTransferQualified',
++    'sourceLoad','request','frames','allRequestStateRetired','modelReleased','conservativeStateAndBoundaryBytes','memory'}
+ 
+ 
+-def flags(record, **expected):
+-    for key, value in expected.items():
+-        require(type(record.get(key)) is bool and record[key] is value, 'Wrong native flag: ' + key)
++def flags(record,**expected):
++    for key,value in expected.items():
++        require(type(record.get(key)) is bool and record[key] is value,'Wrong native flag: '+key)
+ 
+ 
+-def agreement(record, epoch, scheduling, inputs):
+-    value = record.get('agreement')
+-    known = known_agreement(epoch, scheduling, inputs)
+-    require(type(value) is dict and set(value) == set(known) | HASH_FIELDS, 'Unexpected v4 agreement fields')
+-    for key, expected in known.items():
+-        require(type(value[key]) is type(expected) and value[key] == expected, 'Agreement differs: ' + key)
+-    require(all(is_sha256(value[key]) for key in HASH_FIELDS), 'Invalid source/stage agreement hash')
+-    fingerprint = sha(b'qwen-profiled-prefill-start-agreement-v1\n' + canonical(value))
+-    require(record.get('agreementFingerprint') == fingerprint, 'V4 agreement fingerprint differs')
+-
+-
+-def validate(record, index, rank, epoch, scheduling, inputs, first=None):
+-    require(type(record) is dict, 'Rank record must be an object')
+-    fields = COMMON | ({'modelsReadyAgreementValidated','freshRequestStateCreated'} if index == 0 else
+-        {'completed','correctnessOnly','throughputMeasurementValid','modelForwardCompared','physicalTransferQualified',
+-         'sourceLoad','request','arithmeticEnvironment','arithmeticEnvironmentSHA256','resourceAdmission','execution',
+-         'allRequestStateRetired','modelReleased','memory'})
+-    require(set(record) == fields, 'Unexpected v4 rank record fields')
+-    for key, expected in dict(kind=READY if index == 0 else FINAL,schemaVersion=1,epoch=epoch,rank=rank,
+-        worldSize=2,transport='loopback-test',backend='ring',flow=FLOW,envelopeVersion=4,
+-        promptFileSHA256=inputs['prompt_file_sha256']).items():
+-        require(type(record[key]) is type(expected) and record[key] == expected, 'Rank identity differs: ' + key)
+-    agreement(record, epoch, scheduling, inputs)
+-    if index == 0:
+-        flags(record, modelsReadyAgreementValidated=True, freshRequestStateCreated=False)
+-        return
++def validate(record,index,rank,epoch,scheduling,inputs,first=None):
++    policy(scheduling)
++    require(type(record) is dict and set(record)==COMMON|(FINAL_FIELDS if index==1 else set()),'Unexpected short rank record fields')
++    for key,value in dict(kind=READY if index==0 else FINAL,schemaVersion=1,epoch=epoch,rank=rank,
++        worldSize=2,transport='loopback-test',backend='ring').items():
++        require(type(record[key]) is type(value) and record[key]==value,'Rank identity differs: '+key)
++    if index==0:return
++    require(first is not None,'Missing ready record')
+     flags(record,completed=True,correctnessOnly=True,throughputMeasurementValid=False,modelForwardCompared=False,
+         physicalTransferQualified=False,allRequestStateRetired=True,modelReleased=True)
+-    require(first is not None and canonical(record['agreement']) == canonical(first['agreement'])
+-            and record['agreementFingerprint'] == first['agreementFingerprint'], 'Final agreement changed')
+-    validate_request(record['request'], epoch, inputs)
+-    source = record['sourceLoad']
+-    require(type(source) is dict and type(source.get('stageIndex')) is int and source['stageIndex'] == rank
+-        and source.get('verifiedAggregateSHA256') == ARTIFACT and source.get('sourceConfigurationSHA256') == CONFIGURATION,
+-        'Wrong verified local source/stage receipt')
+-    require(source.get('storageCommitmentSHA256') == record['agreement']['storageCommitmentSHA256'], 'Source storage agreement differs')
+-    require(canonical(record['arithmeticEnvironment']) == canonical(environment_receipt())
+-        and record['arithmeticEnvironmentSHA256'] == record['agreement']['arithmeticEnvironmentSHA256'], 'Arithmetic receipt differs')
+-    for name in ('resourceAdmission','execution'):
+-        require(type(record[name]) is dict and record[name], 'Missing opaque native ' + name)
+-    phases = ['before_stage_load','stage_loaded_no_request_state','stage_request_retired_weights_resident',
+-              'stage_model_released_cache_cleared']
+-    require(type(record['memory']) is list and len(record['memory']) == len(phases), 'Native memory phase count differs')
+-    for row, phase in zip(record['memory'], phases):
+-        require(type(row) is dict and set(row) == {'phase','activeMLXBytes','cachedMLXBytes','peakMLXBytesSinceProcessStart'}
+-            and row['phase'] == phase, 'Native memory phase differs')
+-        require(all(type(row[key]) is int and row[key] >= 0 for key in
+-            ('activeMLXBytes','cachedMLXBytes','peakMLXBytesSinceProcessStart')), 'Invalid native memory counters')
+-    require(record['memory'][-1]['cachedMLXBytes'] == 0, 'Native final cache-clear assertion differs')
+-    # Component inventories, residuals, actions, clocks, final logits and true
+-    # baseline comparison remain owned by the separately frozen CPU oracle.
++    equal(record['conservativeStateAndBoundaryBytes'],NAMED_STATE_AND_BOUNDARY_BYTES,'Wrong short named-state/boundary bound')
++    validate_request(record['request'],epoch,inputs)
++    source=record['sourceLoad'];require(type(source) is dict,'Missing verified source receipt')
++    known=dict(schemaVersion=1,stageIndex=rank,verifiedAggregateSHA256=ARTIFACT,sourceConfigurationSHA256=CONFIGURATION,
++        sourceParameterLayoutSHA256=SOURCE_LAYOUT_SHA256,sourceModelTensorBytes=SOURCE_MODEL_BYTES,
++        planSHA256=PLAN_SHA256,stagePlanSHA256=STAGE_PLAN_SHA256[rank],
++        constructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[rank],embeddingActivationDType='bfloat16',bf16ConversionEnabled=True)
++    for key,value in known.items():equal(source.get(key),value,'Wrong verified source/cut identity: '+key)
++    require(is_sha256(source.get('storageCommitmentSHA256')),'Invalid shared storage pin')
++    frames=record['frames'];steps=recorded_request(epoch,inputs)['steps']
++    require(type(frames) is list and len(frames)==6,'Incomplete short frame coverage')
++    for completion,step in zip(frames,steps):
++        require(type(completion) is dict and completion.get('kind')=='qwen_layer_stage_rank_frame_completion','Wrong frame completion namespace')
++        capture=completion.get('capture');require(type(capture) is dict and capture.get('kind')=='qwen_layer_stage_rank_frame_capture','Wrong frame capture namespace')
++        equal(capture.get('frame'),step['frame'],'Wrong frame coordinates/order')
++        equal(capture.get('committedTokens'),step['frame']['tokenOffset']+step['frame']['tokenCount'],'Wrong committed frontier')
++        equal([capture.get('sourceLayerStart'),capture.get('sourceLayerEnd')],[[0,12],[12,32]][rank],'Wrong cut stage range')
++        identity=capture.get('identity');require(type(identity) is dict,'Missing captured stage identity')
++        expected=dict(stageIndex=rank,requestFingerprint=request_fingerprint(epoch),artifactAggregateSHA256=ARTIFACT,
++            sourceConfigurationSHA256=CONFIGURATION,storageCommitmentSHA256=source['storageCommitmentSHA256'],
++            planFingerprint=PLAN_SHA256,stageFingerprint=STAGE_PLAN_SHA256[rank],
++            constructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[rank],bf16ConversionEnabled=True,activationDType='bfloat16')
++        for key,value in expected.items():equal(identity.get(key),value,'Wrong frame identity: '+key)
++        require(is_sha256(completion.get('headerSHA256')) and is_sha256(capture.get('boundaryPayloadSHA256')),'Missing native boundary hashes')
++        shape=capture.get('boundaryShape')
++        require(type(shape) is list and len(shape)==3 and type(shape[2]) is int and 1<=shape[2]<=8192,'Invalid bounded residual shape')
++        equal(shape[:2],[1,step['frame']['tokenCount']],'Residual batch/token shape differs')
++        equal(capture.get('boundaryDType'),'bfloat16','Residual dtype differs from source activation policy')
++        phase='consumed_ack_received_and_validated' if rank==0 else 'consumed_ack_send_completed'
++        require(completion.get('completedTransportPhase')==phase,'Incomplete consumed acknowledgement')
++    phases=['before_stage_load','stage_loaded_request_admitted','stage_request_retired_weights_resident','stage_model_released_cache_cleared']
++    require(type(record['memory']) is list and len(record['memory'])==len(phases),'Native memory phase count differs')
++    for row,phase in zip(record['memory'],phases):
++        require(type(row) is dict and set(row)=={'phase','activeMLXBytes','cachedMLXBytes','peakMLXBytesSinceProcessStart'}
++            and row['phase']==phase,'Native memory phase differs')
++        require(all(type(row[key]) is int and row[key]>=0 for key in ('activeMLXBytes','cachedMLXBytes','peakMLXBytesSinceProcessStart')),'Invalid native memory counter')
++    require(record['memory'][-1]['cachedMLXBytes']==0,'Native final cache clear differs')
++    # State inventories, numerical values, logits and baseline equality stay
++    # opaque here; the separately frozen short-rank oracle owns those checks.
+ 
+ 
+ def peers(readers):
+-    if all(reader.rows for reader in readers):
+-        require(canonical(readers[0].rows[0]['agreement']) == canonical(readers[1].rows[0]['agreement'])
+-            and readers[0].rows[0]['agreementFingerprint'] == readers[1].rows[0]['agreementFingerprint'],
+-            'Peers disagree on their complete v4 agreement')
++    if not all(len(reader.rows)==2 for reader in readers):return
++    a,b=(reader.rows[1] for reader in readers)
++    require(canonical(a['request'])==canonical(b['request']),'Peers disagree on request history')
++    for key in ('storageCommitmentSHA256','sourceParameterLayoutSHA256','sourceModelTensorBytes','planSHA256'):
++        equal(a['sourceLoad'][key],b['sourceLoad'][key],'Peers disagree on source: '+key)
++    for left,right in zip(a['frames'],b['frames']):
++        require(left['headerSHA256']==right['headerSHA256'],'Peers disagree on boundary header')
++        for key in ('boundaryPayloadSHA256','boundaryShape','boundaryDType'):
++            equal(left['capture'].get(key),right['capture'].get(key),'Peers disagree on residual metadata: '+key)
+--- originals/long_rank_control.py
++++ long_rank_control.py
+@@ -74,9 +74,10 @@
+         require(saved_rank.get('input_files') == {}
+             and saved_rank.get('environment_files') == {'MLX_HOSTFILE': 'hosts.json'}
+             and saved_rank.get('environment') == rank['required_environment'],
+-            'Worker must preserve raw prompt/hostfile and exact arithmetic environment')
++            'Worker must preserve raw prompt/teacher/hostfile and exact arithmetic environment')
+         item = dict(rank=rank['rank'], rank_configuration_sha256=file_sha256(native / 'rank.json'))
+         for name, key, size_key, maximum in [('prompt.json','prompt_sha256','prompt_size_bytes',65536),
++                                            ('teacher.json','teacher_sha256','teacher_size_bytes',65536),
+                                             ('hosts.json','hostfile_sha256','hostfile_size_bytes',1024)]:
+             path = native / name
+             require(path.is_file() and not path.is_symlink() and 0 < path.stat().st_size <= maximum
+@@ -85,6 +86,7 @@
+             item[key], item[size_key] = file_sha256(path), path.stat().st_size
+         require(json.loads((native / 'hosts.json').read_text()) == config['hostfile'], 'Remote loopback hostfile changed')
+         item['raw_prompt_reencoded'] = False
++        item['raw_teacher_reencoded'] = False
+         rank_records.append(item)
+     require(file_sha256(model / 'config.json') == config['configuration_sha256'], 'Remote model configuration changed')
+     aggregate = verify_model(model, config['artifact_sha256'])
+--- originals/long_rank_identity.py
++++ long_rank_identity.py
+@@ -1,73 +1,36 @@
+-"""Source-derived local profile/history identities; no model or numerical oracle."""
++"""Short cut12 request/source pins; no numerical row, state or Plan reconstruction."""
+ import hashlib
+ import json
++import re
+ import uuid
+-from long_reference_inputs import ARTIFACT, CONFIGURATION, PROFILE, PROFILE_SHA256, VOCABULARY, require
+-from long_rank_configuration import REQUIRED_ENVIRONMENT
+-
+-FLOW = 'profiled_prefill_measurement_v1'
++from long_reference_inputs import require
++from short_cut_request import recorded_request as short_request, equal
+ 
+ 
+ def canonical(value):
+-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
++    return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+ 
+ 
+-def sha(data):
+-    return hashlib.sha256(data).hexdigest()
++def sha(raw):
++    return hashlib.sha256(raw).hexdigest()
+ 
+ 
+-def request_identity(epoch, prompt):
+-    identifier = str(uuid.UUID(hex=epoch))
+-    fingerprint = sha('\n'.join(['qwen-stage-profiled-prefill-request-v1', PROFILE, PROFILE_SHA256,
+-        identifier, 'batch=1', 'prompt=8192', 'chunk=512', 'output=1']).encode())
+-    recorded = sha('\n'.join(['qwen-layer-stage-profiled-prefill-recorded-request-v1', PROFILE, PROFILE_SHA256,
+-        fingerprint, 'vocabulary=' + str(VOCABULARY), 'prompt=' + ','.join(map(str, prompt)), 'teacher=']).encode())
+-    return identifier, fingerprint, recorded
++def request_id(epoch):
++    require(type(epoch) is str and re.fullmatch('[0-9a-f]{32}',epoch), 'Invalid rank epoch')
++    return str(uuid.UUID(hex=epoch))
+ 
+ 
+-def recorded_request(epoch, prompt):
+-    identifier, _, fingerprint = request_identity(epoch, prompt)
+-    steps = []
+-    for index in range(16):
+-        offset = index * 512
+-        steps.append(dict(frame=dict(phase='prefill', sequence=index, tokenOffset=offset, tokenCount=512,
+-            finalPromptChunk=index == 15), tokenIDs=prompt[offset:offset + 512], committedTokens=offset + 512))
+-    return dict(request=dict(profile=PROFILE, requestID=identifier, batchSize=1,
+-        promptCount=8192, chunkSize=512, outputCount=1), vocabularySize=VOCABULARY,
+-        promptTokenIDs=prompt, teacherTokenIDs=[], steps=steps, fingerprint=fingerprint)
++def request_fingerprint(epoch):
++    return sha(('qwen-stage-request-v1|' + request_id(epoch) + '|65|32|4').encode())
+ 
+ 
+-def validate_request(actual, epoch, inputs):
+-    require(type(actual) is dict and type(actual.get('request')) is dict, 'Missing profiled request')
+-    expected = recorded_request(epoch, inputs['prompt'])
+-    copied = dict(actual, request=dict(actual['request']))
+-    identifier = copied['request'].get('requestID')
+-    require(type(identifier) is str and str(uuid.UUID(identifier)) == str(uuid.UUID(hex=epoch)), 'Request UUID differs from epoch')
+-    copied['request']['requestID'] = str(uuid.UUID(identifier))
+-    require(canonical(copied) == canonical(expected), 'Exact admitted raw-prompt history differs')
++def recorded_request(epoch,inputs):
++    return short_request(request_id(epoch),inputs)
+ 
+ 
+-def environment_receipt():
+-    return dict(contract='qwen_cbv2_query128_bf16_tf32_default_v1', requiredValues=dict(REQUIRED_ENVIRONMENT),
+-        requiredAbsentNames=['MLX_METAL_GPU_ARCH', 'MLX_SDPA_BLOCKS'], full512TokenChunkQueryBlocks=4,
+-        defaultBindings={
+-            'MLX_METAL_GPU_ARCH': 'detect actual Metal device architecture; no override',
+-            'MLX_SDPA_BLOCKS': 'source default 0; native adaptive block selection',
+-            'MLX_ENABLE_TF32': 'explicit 1 matches pinned source default; permits eligible NAX paths',
+-            'DARKBLOOM_BF16_WEIGHTS': 'explicit 1 converts stored Float16 tensors to BFloat16 before subsequent arithmetic',
+-            'DARKBLOOM_CBV2_ATTN_QUERY_BLOCK': 'explicit 128 matches pinned source default; chunk512 uses four query blocks'},
+-        actualProcessEnvironmentMustBePassedBeforeMLXInitialization=True,
+-        sourceBinaryMetalLibraryAndHardwareIdentityStillRequired=True, sameChunkFullModelReferenceStillRequired=True,
+-        doesNotValidateOtherTimingOrResourceEnvironment=True, numericalOrPerformanceQualificationEstablished=False)
+-
+-
+-def known_agreement(epoch, scheduling, inputs):
+-    identifier, fingerprint, recorded = request_identity(epoch, inputs['prompt'])
+-    return dict(version=4, flow=FLOW, profile=PROFILE, profileFingerprint=PROFILE_SHA256,
+-        schedulingPolicy=scheduling, epoch=epoch, requestID=identifier, requestFingerprint=fingerprint,
+-        recordedRequestFingerprint=recorded, promptCount=8192, chunkSize=512, outputCount=1, batchSize=1,
+-        frameCount=16, vocabularySize=VOCABULARY, hiddenSize=4096,
+-        promptTokenIDsSHA256=inputs['prompt_token_ids_sha256'], sourceConfigurationSHA256=CONFIGURATION,
+-        artifactAggregateSHA256=ARTIFACT, bf16ConversionEnabled=True, nativeDType='bfloat16', logitsDType='bfloat16',
+-        arithmeticEnvironmentSHA256=sha(canonical(environment_receipt())),
+-        selectionPolicy='mlx_argmax_all_axes_with_finite_guard_v1')
++def validate_request(value,epoch,inputs):
++    require(type(value) is dict and type(value.get('request')) is dict, 'Missing short recorded request')
++    request=value['request'];native_id=request.get('requestID')
++    require(type(native_id) is str, 'Invalid native request ID type')
++    normalized=dict(value,request=dict(request,requestID=native_id.lower()))
++    equal(normalized,recorded_request(epoch,inputs),'Native request differs from epoch/prompt/teacher/timeline')
+--- originals/long_rank_records.py
++++ long_rank_records.py
+@@ -7,7 +7,7 @@
+ from long_rank_configuration import timeout, hostfile
+ from long_rank_warning import check_stderr, WARNING
+ 
+-MAX_STDOUT = MAX_LINE = 8 * 1024**2
++MAX_STDOUT, MAX_LINE = 64 * 1024**2, 60 * 1024**2
+ MAX_STDERR = len(WARNING)
+ 
+ 
+--- originals/long_rank_staging.py
++++ long_rank_staging.py
+@@ -1,26 +1,28 @@
+-"""Stage immutable rank files and exact raw prompt bytes for both owners."""
++"""Stage immutable rank files and exact raw prompt/teacher bytes for both owners."""
+ import json
+ from pathlib import Path
+ from prefill_compute_archive import digest, write_json
+-from long_reference_inputs import ARTIFACT, CONFIGURATION, require
++from long_reference_inputs import ARTIFACT, CONFIGURATION, require, read_pinned
+ from long_rank_configuration import configuration, require_configuration, hostfile, REQUIRED_ENVIRONMENT
+ 
+ 
+-def prepare_ranks(output, layout, host, bundle_hash, binary_hash, inputs, endpoints, epoch, scheduling):
++def prepare_ranks(output, layout, host, bundle_hash, binary_hash, inputs, endpoints, epoch, scheduling=None):
+     hostfile(endpoints)
+     ranks, pinned = [], []
+-    prompt = (output / 'inputs/prompt.json').read_bytes()
++    prompt = read_pinned(output / 'inputs/prompt.json', inputs['prompt_file_sha256'], 65536)
++    teacher = read_pinned(output / 'inputs/teacher.json', inputs['teacher_file_sha256'], 65536)
+     hosts = json.dumps(endpoints).encode()
+     for index, directory in enumerate(layout['rank_directories']):
+         local = output / ('rank-' + str(index)); local.mkdir(mode=0o700)
+-        config = configuration(layout['bundle'], bundle_hash, layout['model'], inputs['prompt_file_sha256'], index, epoch, scheduling)
++        config = configuration(layout['bundle'], bundle_hash, layout['model'], inputs['prompt_file_sha256'], inputs['teacher_file_sha256'], index, epoch, scheduling)
+         write_json(local / 'rank.json', config)
+-        for name, raw in [('prompt.json', prompt), ('hosts.json', hosts)]:
++        for name, raw in [('prompt.json', prompt), ('teacher.json', teacher), ('hosts.json', hosts)]:
+             with (local / name).open('xb') as stream: stream.write(raw)
+             (local / name).chmod(0o400)
+         ranks.append(dict(rank=index, host=host, directory=directory, local=str(local), bundle=layout['bundle']))
+         pinned.append(dict(rank=index, directory=directory, rank_sha256=digest(local / 'rank.json'),
+             prompt_sha256=digest(local / 'prompt.json'), prompt_size_bytes=len(prompt),
++            teacher_sha256=digest(local / 'teacher.json'), teacher_size_bytes=len(teacher),
+             hostfile_sha256=digest(local / 'hosts.json'), hostfile_size_bytes=len(hosts),
+             required_environment=dict(REQUIRED_ENVIRONMENT, MLX_RANK=str(index))))
+     controls = dict(layout, run_id=epoch, ranks=pinned, bundle_sha256=bundle_hash, hostfile=endpoints,
+@@ -36,21 +38,23 @@
+     require([row['rank'] for row in record['ranks']] == [0, 1], 'Remote rank receipt order differs')
+     for received, expected in zip(record['ranks'], config['ranks']):
+         require(received['rank_configuration_sha256'] == expected['rank_sha256'], 'Remote rank configuration differs')
+-        require(received['raw_prompt_reencoded'] is False, 'Remote raw prompt was reencoded')
+-        for key in ('prompt_sha256','prompt_size_bytes','hostfile_sha256','hostfile_size_bytes'):
++        require(received['raw_prompt_reencoded'] is False and received['raw_teacher_reencoded'] is False, 'Remote raw prompt/teacher was reencoded')
++        for key in ('prompt_sha256','prompt_size_bytes','teacher_sha256','teacher_size_bytes','hostfile_sha256','hostfile_size_bytes'):
+             require(type(received[key]) is type(expected[key]) and received[key] == expected[key], 'Remote staged input differs: ' + key)
+ 
+ 
+-def verify_local_rank_inputs(output, config, inputs, scheduling):
++def verify_local_rank_inputs(output, config, inputs, scheduling=None):
+     for index, rank in enumerate(config['ranks']):
+         directory = output / ('rank-' + str(index))
+         path = directory / 'rank.json'
+         require(path.stat().st_size <= 256 * 1024 and digest(path) == rank['rank_sha256'], 'Local rank configuration changed')
+         require_configuration(json.loads(path.read_text()), config['bundle'], config['bundle_sha256'], config['model'],
+-            inputs['prompt_file_sha256'], index, config['run_id'], scheduling)
+-        for name, key in [('prompt.json','prompt_sha256'), ('hosts.json','hostfile_sha256')]:
++            inputs['prompt_file_sha256'], inputs['teacher_file_sha256'], index, config['run_id'], scheduling)
++        for name, key in [('prompt.json','prompt_sha256'), ('teacher.json','teacher_sha256'), ('hosts.json','hostfile_sha256')]:
+             require(digest(directory / name) == rank[key], 'Local rank input changed')
+-        require((directory / 'prompt.json').read_bytes() == (output / 'inputs/prompt.json').read_bytes(), 'Rank raw prompt bytes differ')
++        for name in ('prompt.json','teacher.json'):
++            pin=inputs['prompt_file_sha256' if name=='prompt.json' else 'teacher_file_sha256']
++            require(read_pinned(directory / name, pin, 65536) == read_pinned(output / 'inputs' / name, pin, 65536), 'Rank raw input bytes differ')
+     for item in inputs['files']:
+         path = output / item['path']
+         require(path.stat().st_size == item['size_bytes'] and digest(path) == item['sha256'], 'Retained origin/input changed')
+--- originals/long_rank_supervision.py
++++ long_rank_supervision.py
+@@ -23,6 +23,8 @@
+                 reason = 'local_parent_deadline'; break
+             if clock() >= next_memory:
+                 memory(min(3, remaining)); next_memory = clock() + 1
++            if clock() >= deadline:
++                reason = 'local_parent_deadline'; break
+             if all(code is not None for code in codes):
+                 break
+             sleep(min(.05, max(0, deadline - clock())))
+@@ -52,6 +54,6 @@
+         cancellation_reason=reason, error=error, cleanup_errors=cleanup_errors,
+         passed=complete and reason is None and not cleanup_errors,
+         validation=dict(records_per_rank=[len(reader.rows) for reader in readers],
+-                        shared_agreement_matches=all(reader.rows for reader in readers) and reason is None,
++                        shared_source_request_identity_matches=all(reader.rows for reader in readers) and reason is None,
+                         nested_execution_oracle_run=False),
+         remote_cleanup_contract='both unchanged rank_worker finally blocks own native PGIDs; cancel files and native alarms bound failure')
+--- originals/long_rank_test_support.py
++++ long_rank_test_support.py
+@@ -1,47 +1,52 @@
+-"""Fabricated metadata and process-shaped fakes; never executes native code."""
+-import json
++"""Fabricated short DTOs and process handles; no candidate/model input reads."""
+ from long_reference_inputs import ARTIFACT, CONFIGURATION
+-from long_rank_identity import canonical, sha, known_agreement, recorded_request, environment_receipt
++from long_rank_identity import canonical,sha,recorded_request,request_fingerprint
++from short_cut_expected import (PLAN_SHA256,SOURCE_LAYOUT_SHA256,SOURCE_MODEL_BYTES,STAGE_PLAN_SHA256,
++    STAGE_CONFIGURATION_SHA256,NAMED_STATE_AND_BOUNDARY_BYTES)
++from short_cut_test_fixture import (RAW_PROMPT,RAW_TEACHER,RAW_ORIGIN,RAW_PREFIX,RAW_TEXT,pinned_inputs,
++    PROMPT,TEACHER,inputs as fixture_inputs)
+ from long_rank_warning import WARNING
+ 
+-EPOCH = 'a' * 32
+-ENDPOINTS = [['127.0.0.1:31001'], ['127.0.0.1:31002']]
+-RAW_PROMPT = (json.dumps([3] * 8192,separators=(',',':')) + '\n').encode()
+-INPUTS = dict(prompt=[3] * 8192,teacher=[],prompt_file_sha256=sha(RAW_PROMPT),
+-    prompt_token_ids_sha256=sha(','.join(['3'] * 8192).encode()))
++EPOCH='a'*32
++ENDPOINTS=[['127.0.0.1:31001'],['127.0.0.1:31002']]
++INPUTS=fixture_inputs()
+ 
+ 
+-def fixtures(rank,scheduling='serial_v1',plan='b' * 64,epoch=EPOCH,inputs=INPUTS):
+-    descriptor = known_agreement(epoch,scheduling,inputs)
+-    descriptor.update(storageCommitmentSHA256='b' * 64,planFingerprint=plan,
+-        producerStageFingerprint='c' * 64,consumerStageFingerprint='d' * 64,
+-        producerConstructionConfigurationSHA256='e' * 64,consumerConstructionConfigurationSHA256='f' * 64)
+-    fingerprint = sha(b'qwen-profiled-prefill-start-agreement-v1\n' + canonical(descriptor))
+-    common = dict(schemaVersion=1,epoch=epoch,rank=rank,worldSize=2,transport='loopback-test',backend='ring',
+-        flow='profiled_prefill_measurement_v1',envelopeVersion=4,agreement=descriptor,agreementFingerprint=fingerprint,
+-        promptFileSHA256=inputs['prompt_file_sha256'])
+-    ready = dict(common,kind='qwen_long_prefill_rank_ready',modelsReadyAgreementValidated=True,freshRequestStateCreated=False)
+-    final = dict(common,kind='qwen_long_prefill_rank_report',completed=True,correctnessOnly=True,
+-        throughputMeasurementValid=False,modelForwardCompared=False,physicalTransferQualified=False,
+-        sourceLoad=dict(stageIndex=rank,verifiedAggregateSHA256=ARTIFACT,sourceConfigurationSHA256=CONFIGURATION,
+-                        storageCommitmentSHA256=descriptor['storageCommitmentSHA256']),
+-        request=recorded_request(epoch,inputs['prompt']),arithmeticEnvironment=environment_receipt(),
+-        arithmeticEnvironmentSHA256=descriptor['arithmeticEnvironmentSHA256'],
+-        resourceAdmission={'fabricated':'opaque resource admission'},execution={'fabricated':'not a numerical fixture'},
+-        allRequestStateRetired=True,modelReleased=True,
++def fixtures(rank,scheduling=None,plan=PLAN_SHA256,epoch=EPOCH,inputs=INPUTS,storage='b'*64):
++    request=recorded_request(epoch,inputs)
++    common=dict(schemaVersion=1,epoch=epoch,rank=rank,worldSize=2,transport='loopback-test',backend='ring')
++    ready=dict(common,kind='qwen_layer_stage_rank_ready')
++    source=dict(schemaVersion=1,stageIndex=rank,verifiedAggregateSHA256=ARTIFACT,sourceConfigurationSHA256=CONFIGURATION,
++        sourceParameterLayoutSHA256=SOURCE_LAYOUT_SHA256,sourceModelTensorBytes=SOURCE_MODEL_BYTES,planSHA256=plan,
++        stagePlanSHA256=STAGE_PLAN_SHA256[rank],constructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[rank],
++        embeddingActivationDType='bfloat16',bf16ConversionEnabled=True,storageCommitmentSHA256=storage)
++    frames=[]
++    for step in request['steps']:
++        frame=step['frame'];capture=dict(kind='qwen_layer_stage_rank_frame_capture',frame=frame,
++            committedTokens=frame['tokenOffset']+frame['tokenCount'],sourceLayerStart=[0,12][rank],sourceLayerEnd=[12,32][rank],
++            identity=dict(stageIndex=rank,requestFingerprint=request_fingerprint(epoch),artifactAggregateSHA256=ARTIFACT,
++                sourceConfigurationSHA256=CONFIGURATION,storageCommitmentSHA256=storage,planFingerprint=plan,
++                stageFingerprint=STAGE_PLAN_SHA256[rank],constructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[rank],
++                bf16ConversionEnabled=True,activationDType='bfloat16'),boundaryPayloadSHA256='d'*64,
++                boundaryShape=[1,frame['tokenCount'],4096],boundaryDType='bfloat16')
++        frames.append(dict(kind='qwen_layer_stage_rank_frame_completion',capture=capture,headerSHA256='e'*64,
++            completedTransportPhase='consumed_ack_received_and_validated' if rank==0 else 'consumed_ack_send_completed'))
++    final=dict(common,kind='qwen_layer_stage_rank_report',completed=True,correctnessOnly=True,throughputMeasurementValid=False,
++        modelForwardCompared=False,physicalTransferQualified=False,sourceLoad=source,request=request,frames=frames,
++        allRequestStateRetired=True,modelReleased=True,conservativeStateAndBoundaryBytes=NAMED_STATE_AND_BOUNDARY_BYTES,
+         memory=[dict(phase=phase,activeMLXBytes=0,cachedMLXBytes=0,peakMLXBytesSinceProcessStart=100) for phase in
+-            ['before_stage_load','stage_loaded_no_request_state','stage_request_retired_weights_resident','stage_model_released_cache_cleared']])
++            ['before_stage_load','stage_loaded_request_admitted','stage_request_retired_weights_resident','stage_model_released_cache_cleared']])
+     return [ready,final]
+ 
+ 
+ class Child:
+-    def __init__(self,pid,code): self.pid,self.code,self.waits = pid,code,0
+-    def poll(self): return self.code
++    def __init__(self,pid,code):self.pid,self.code,self.waits=pid,code,0
++    def poll(self):return self.code
+     def wait(self,timeout=0):
+-        if self.code is None: raise AssertionError('Fake wait on running process')
+-        self.waits += 1; return self.code
++        if self.code is None:raise AssertionError('Fake wait on running process')
++        self.waits+=1;return self.code
+ 
+ 
+ def write_records(directory,rows,stderr=WARNING):
+-    (directory / 'stdout.jsonl').write_bytes(b''.join(canonical(row) + b'\n' for row in rows))
+-    (directory / 'stderr.log').write_bytes(stderr)
++    (directory/'stdout.jsonl').write_bytes(b''.join(canonical(row)+b'\n' for row in rows))
++    (directory/'stderr.log').write_bytes(stderr)
+--- originals/long_reference_inputs.py
++++ long_reference_inputs.py
+@@ -1,4 +1,4 @@
+-"""Pinned raw prompt and opaque tokenization provenance; no model reads."""
++"""Pinned short natural prefix/teacher provenance; no import-time file reads."""
+ import hashlib
+ import json
+ from pathlib import Path
+@@ -7,9 +7,12 @@
+ 
+ ARTIFACT = '127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b'
+ CONFIGURATION = 'c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423'
+-PROFILE = 'long_prefill_8k_v1'
+-PROFILE_SHA256 = '2b7f484488df61c4f6042acfb472a8099828c8a6246819501c88d4f6e07bcc0b'
+-VOCABULARY, PROMPT_COUNT, CHUNK_SIZE = 248320, 8192, 512
++PROMPT_SHA256 = '667b2e8232e3fc941469be79c3a178469b7d90c23d6f3ef1de4bd8bd87a813fc'
++TEACHER_SHA256 = 'aad3b6387a197e052f32d75bd3d0aead834da80e577279665e04966e81c27fbc'
++ORIGIN_SHA256 = '0afffd9b1863f785f4f3880f71c21305177f36cb825e29e506983ff0f745cfc1'
++PREFIX96_SHA256 = '36b9329c650a57fb8c5a30c13aeafc8155047d14527f62d824c3e7e104a968d2'
++SOURCE_TEXT_SHA256 = '6a76e63af205e75c3e702a7e85be76d1d0575133d9deffd171d6de6e7b3db920'
++VOCABULARY, PROMPT_COUNT, CHUNK_SIZE = 248320, 65, 32
+ MAX_PROMPT_BYTES, MAX_ORIGIN_BYTES = 65536, 2 * 1024**2
+ 
+ 
+@@ -33,39 +36,57 @@
+     return raw
+ 
+ 
+-def parse_prompt(raw):
+-    require(0 < len(raw) <= MAX_PROMPT_BYTES, 'Prompt exceeds 64 KiB')
++def parse_tokens(raw, count):
++    require(0 < len(raw) <= MAX_PROMPT_BYTES, 'Token input exceeds 64 KiB')
+     def reject(value):
+-        raise ValueError('Prompt admits only strict JSON integers')
++        raise ValueError('Tokens admit only strict JSON integers')
+     def integer(value):
+-        require(value != '-0', 'Prompt rejects negative-zero integer spelling')
++        require(value != '-0', 'Tokens reject negative-zero integer spelling')
+         return int(value)
+     values = json.loads(raw, parse_float=reject, parse_constant=reject, parse_int=integer)
+-    require(type(values) is list and len(values) == PROMPT_COUNT
++    require(type(values) is list and len(values) == count
+             and all(type(x) is int and 0 <= x < VOCABULARY for x in values),
+-            'Prompt must contain exactly 8192 in-vocabulary integers')
++            'Wrong fixed token count/type/vocabulary')
+     return values
+ 
+ 
+-def archive_inputs(prompt_file, prompt_sha256, origin_file, origin_sha256, output):
+-    raw = read_pinned(prompt_file, prompt_sha256, MAX_PROMPT_BYTES)
+-    prompt = parse_prompt(raw)
+-    # The caller independently audited tokenization. Preserve the origin bytes
+-    # and explicit pin without inventing or trusting a provenance JSON schema.
+-    origin = read_pinned(origin_file, origin_sha256, MAX_ORIGIN_BYTES)
+-    directory = output / 'inputs'
+-    directory.mkdir(mode=0o700)
+-    for name, content in [('prompt.json', raw), ('prompt-origin.json', origin)]:
+-        target = directory / name
+-        with target.open('xb') as stream:
+-            stream.write(content)
+-        target.chmod(0o400)
+-    require(read_pinned(prompt_file, prompt_sha256, MAX_PROMPT_BYTES) == raw
+-            and read_pinned(origin_file, origin_sha256, MAX_ORIGIN_BYTES) == origin,
+-            'Pinned input changed during archive')
+-    return dict(prompt=prompt, teacher=[], prompt_file_sha256=prompt_sha256,
+-                prompt_token_ids_sha256=hashlib.sha256(','.join(map(str, prompt)).encode()).hexdigest(),
+-                prompt_origin_file_sha256=origin_sha256, prompt_origin_schema_audited_by_launcher=False,
+-                raw_prompt_reencoded=False,
+-                files=[dict(path=p.relative_to(output).as_posix(), sha256=digest(p), size_bytes=p.stat().st_size)
+-                       for p in sorted(directory.iterdir())])
++def archive_inputs(prompt_file, prompt_sha256, teacher_file, teacher_sha256,
++                   origin_file, origin_sha256, prefix_file, text_file, output):
++    require((prompt_sha256, teacher_sha256, origin_sha256) == (PROMPT_SHA256, TEACHER_SHA256, ORIGIN_SHA256),
++            'Only the registered short prompt/teacher/origin pins are admitted')
++    sources = [('prompt.json', prompt_file, prompt_sha256, MAX_PROMPT_BYTES),
++               ('teacher.json', teacher_file, teacher_sha256, MAX_PROMPT_BYTES),
++               ('origin-receipt.json', origin_file, origin_sha256, MAX_ORIGIN_BYTES),
++               ('origin-prompt-96.json', prefix_file, PREFIX96_SHA256, MAX_PROMPT_BYTES),
++               ('source-text.txt', text_file, SOURCE_TEXT_SHA256, MAX_PROMPT_BYTES)]
++    retained = {name: read_pinned(path, pin, cap) for name, path, pin, cap in sources}
++    prompt, teacher = parse_tokens(retained['prompt.json'], 65), parse_tokens(retained['teacher.json'], 3)
++    prefix = parse_tokens(retained['origin-prompt-96.json'], 96)
++    origin = json.loads(retained['origin-receipt.json'])
++    require(type(origin) is dict and type(origin.get('tokenization')) is dict
++            and type(origin.get('native_calls')) is list, 'Wrong pinned origin structure')
++    tokenization = origin['tokenization']
++    require(type(tokenization.get('prompt_ids')) is list and prompt == tokenization['prompt_ids'][:65]
++            and prompt == prefix[:65] and tokenization.get('source_text_sha256') == SOURCE_TEXT_SHA256
++            and teacher == [4087, 13, 271] and origin.get('baseline_teacher_tokens') == teacher,
++            'Natural-text prefix/teacher history differs from pinned origin')
++    calls = [c for c in origin['native_calls'] if type(c) is dict and c.get('name') == 'cbv2-native']
++    require(len(calls) == 1 and calls[0].get('status') == 'validated'
++            and type(calls[0].get('exit_code')) is int and calls[0]['exit_code'] == 0
++            and calls[0].get('rank_evidence_sha256', {}).get('rank-0/teacher.json') == teacher_sha256,
++            'Named original CBv2 teacher evidence differs')
++    directory = output / 'inputs'; directory.mkdir(mode=0o700)
++    for name, path, pin, cap in sources:
++        with (directory / name).open('xb') as stream:
++            stream.write(retained[name])
++        (directory / name).chmod(0o400)
++        require(read_pinned(path, pin, cap) == retained[name], 'Pinned input changed during archive')
++    logical = lambda values: hashlib.sha256(json.dumps(values, separators=(',', ':')).encode()).hexdigest()
++    return dict(prompt=prompt, teacher=teacher, prompt_file_sha256=prompt_sha256,
++        teacher_file_sha256=teacher_sha256, prompt_token_ids_sha256=logical(prompt),
++        teacher_token_ids_sha256=logical(teacher), token_ids_hash_encoding='compact_json_integer_array_utf8',
++        prompt_origin_file_sha256=origin_sha256,
++        prompt_origin_schema_audited_by_launcher=True, named_teacher_call='cbv2-native',
++        raw_prompt_reencoded=False, raw_teacher_reencoded=False,
++        files=[dict(path=p.relative_to(output).as_posix(), sha256=digest(p), size_bytes=p.stat().st_size)
++               for p in sorted(directory.iterdir())])

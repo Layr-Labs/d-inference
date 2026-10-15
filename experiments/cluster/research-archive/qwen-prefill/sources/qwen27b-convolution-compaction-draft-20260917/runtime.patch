@@ -1,0 +1,403 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
+@@ -16,10 +16,13 @@
+     private(set) var isClosed = false
+     private(set) var isFailed = false
+     let maximumTokens: Int
++    private let convolutionCompaction: QwenConvolutionCompactionRows?
+ 
+-    init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int) throws {
++    init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int,
++         convolutionCompaction: QwenConvolutionCompactionRows? = nil) throws {
+         guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
+             promptCount <= 32_768 - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
++        try convolutionCompaction?.require(geometry)
+         let backend = CBv2ContiguousKVBackend(config: .init(
+             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
+         let rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
+@@ -39,6 +42,7 @@
+         self.bank = CBv2LayerCacheBank(caches: geometry.caches)
+         self.recurrent = recurrent; self.rows = rows
+         self.maximumTokens = promptCount + outputCount
++        self.convolutionCompaction = convolutionCompaction
+     }
+ 
+     func requireOpen() throws {
+@@ -71,6 +75,8 @@
+                     .deliver(to: observer, check: check)
+             }
+             let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
++            try convolutionCompaction?.stage(owner: recurrent, evaluation: evaluation!,
++                roots: recurrentRoots, check: check)
+             let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+             if let observer {
+                 try CBv2OwnerPhaseObservation(phase: .rootStagingEnd, tokenCount: tokenCount, committedTokens: committedTokens)
+@@ -82,6 +88,7 @@
+             }
+             eval([output] + recurrentRoots + cacheRoots)
+             try check()
++            try convolutionCompaction?.requireEvaluated(recurrent)
+             if let observer {
+                 try CBv2OwnerPhaseObservation(phase: .evaluationEnd, tokenCount: tokenCount, committedTokens: committedTokens)
+                     .deliver(to: observer, check: check)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenConvolutionCompaction.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import MLX
++
++/// Private opt-in authority derived from the actual resident reservation. This
++/// consumes only its named convolution allowance; it grants no workspace credit.
++struct QwenConvolutionCompaction {
++    let rows: QwenConvolutionCompactionRows
++    private let rank: Int
++    private let configurationSHA256: String
++    private let artifactSHA256: String
++    private let planSHA256: String
++    private let stageSHA256: String
++    private let requestFingerprint: String
++
++    init(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
++         rank: Int, request: QwenLayerStageGenerationRequest,
++         allowance: QwenResidentRequestAllowance) throws {
++        guard profile.model == .qwen38TwentySevenB, (0...1).contains(rank),
++              plan.stages.count == 2, plan.stages[0].sourceRange == 0..<16,
++              plan.stages[1].sourceRange == 16..<64,
++              plan.originalConfiguration == profile.configuration,
++              request.profile.hiddenSize == profile.geometry.hiddenSize,
++              request.profile.vocabularySize == profile.vocabularySize,
++              request.profile.activationDType == "bfloat16", request.stopTokenIDs.isEmpty else {
++            throw ProbeError("Convolution compaction requires the registered plain 27B 16/48 reservation")
++        }
++        let actual = try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank,
++            maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        guard actual.stateBytes == allowance.stateBytes, actual.fusionBytes == allowance.fusionBytes,
++              actual.reservedBytes == allowance.reservedBytes else {
++            throw ProbeError("Convolution compaction differs from the charged request allowance")
++        }
++        rows = try .init(rank: rank, bound: QwenResidentResourceEnvironment.allocationBound)
++        guard rows.namedConvolutionBytes <= actual.stateBytes else {
++            throw ProbeError("Convolution copy allowance is absent from the admitted state ledger")
++        }
++        self.rank = rank; configurationSHA256 = profile.configurationSHA256
++        artifactSHA256 = profile.artifactAggregateSHA256; planSHA256 = plan.fingerprint
++        stageSHA256 = plan.stages[rank].fingerprint; requestFingerprint = request.fingerprint
++    }
++
++    func require(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
++                 request: QwenLayerStageAdmittedRequest) throws {
++        guard case .generation(let generation) = request,
++              generation.fingerprint == requestFingerprint, stage.stageIndex == rank,
++              stage.plan.fingerprint == planSHA256, plan.fingerprint == planSHA256,
++              stage.receipt.stagePlanSHA256 == stageSHA256,
++              stage.receipt.sourceConfigurationSHA256 == configurationSHA256,
++              stage.receipt.verifiedAggregateSHA256 == artifactSHA256 else {
++            throw ProbeError("Convolution compaction does not belong to this loaded request/stage")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenConvolutionCompactionRows.swift
+@@ -0,0 +1,131 @@
++import MLX
++import MLXLMCommon
++
++/// Mechanics shared with the model-free transaction fixture. Production reaches
++/// this only through QwenConvolutionCompaction's actual profile/reservation join.
++struct QwenConvolutionCompactionRows {
++    let spec: CBv2RecurrentStateSpec
++    let compactAllocationBound: Int
++    let compactThreeGenerationBytes: Int
++    let namedConvolutionBytes: Int
++    private let localLayerCount: Int
++
++    init(rank: Int, bound: (Int) throws -> Int) throws {
++        guard (0...1).contains(rank) else { throw ProbeError("Invalid convolution compaction rank") }
++        let registered = QwenDenseRegisteredSpecification.all.first { $0.model == .qwen38TwentySevenB }!
++        let g = try registered.expectedGeometry()
++        let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
++        localLayerCount = rank == 0 ? 16 : 48
++        let indices = (0..<localLayerCount).filter { ($0 + 1) % g.fullAttentionInterval != 0 }
++        let channels = try sum([product([2, g.linearKeyHeads, g.linearKeyDimension]),
++                                product([g.linearValueHeads, g.linearValueDimension])])
++        let convShape = [1, g.convolutionKernel - 1, channels]
++        let logicalBF16 = try product(convShape + [2]), logicalF32 = try product(convShape + [4])
++        let compactBound = try bound(logicalBF16), namedBound = try bound(logicalF32)
++        guard compactBound >= logicalBF16, namedBound >= logicalF32 else {
++            throw ProbeError("Invalid convolution allocator bound")
++        }
++        compactAllocationBound = compactBound
++        compactThreeGenerationBytes = try product([3, indices.count, compactBound])
++        // This is exactly the existing allowance(b.convolutionBytesPerLayer,
++        // 3 * b.recurrentLayers) term. No SSM/KV/fusion/workspace is repurposed.
++        namedConvolutionBytes = try product([3, g.layers - g.layers / g.fullAttentionInterval, namedBound])
++        guard compactThreeGenerationBytes <= namedConvolutionBytes else {
++            throw ProbeError("Compact convolution generations exceed their existing named allowance")
++        }
++        spec = .init(layers: indices.map {
++            .init(modelLayerIndex: $0, convShape: convShape, convDType: .bfloat16,
++                  ssmShape: [1, g.linearValueHeads, g.linearValueDimension, g.linearKeyDimension],
++                  ssmDType: .float32)
++        })
++    }
++
++    func require(_ geometry: CBv2RequestGeometry) throws {
++        guard geometry.recurrent == spec, geometry.kvDType == .bfloat16,
++              geometry.kinds.count == localLayerCount / 4,
++              geometry.kinds.enumerated().allSatisfy({ index, kind in
++                  kind.modelLayerIndex == index * 4 + 3 && kind.kvHeads == 4
++                      && kind.queryHeads == 24 && kind.headDim == 256
++              }) else {
++            throw ProbeError("Convolution compaction differs from actual local state geometry")
++        }
++    }
++
++    /// All semantic guards and all lazy copy construction precede any wrapper
++    /// mutation. No array data is read and no graph is evaluated here.
++    func stage(owner: CBv2RecurrentRequestState, evaluation: CBv2RecurrentStateEvaluation,
++               roots: [MLXArray], check: () throws -> Void) throws {
++        try check()
++        let confirmed = owner.confirmedStateSnapshot()
++        let indices = spec.modelLayerIndices
++        guard !evaluation.isCaptured, !owner.isReleased, owner.spec == spec,
++              roots.count == 2 * indices.count,
++              confirmed == nil || Set(confirmed!.keys) == Set(indices),
++              owner.materializedByteCount == (try QwenLongPrefillCheckedBytes.product([
++                  owner.byteCount, confirmed == nil ? 1 : 2])) else {
++            throw ProbeError("Convolution compaction requires exactly one plain pending generation")
++        }
++        var forbidden = Set<ObjectIdentifier>()
++        var pending = [MLXArray]()
++        pending.reserveCapacity(indices.count)
++        for (position, layer) in spec.layers.enumerated() {
++            let index = layer.modelLayerIndex
++            let input = evaluation.inputState(modelLayerIndex: index)
++            if let committed = confirmed?[index] {
++                guard let a = input?.conv, let b = input?.ssm,
++                      let oldConv = committed.conv, let oldSSM = committed.ssm,
++                      a === oldConv, b === oldSSM else {
++                    throw ProbeError("Convolution input is not the confirmed plain generation")
++                }
++            } else if input != nil {
++                throw ProbeError("Convolution first generation has an unconfirmed input")
++            }
++            for state in [input, confirmed?[index]].compactMap({ $0 }) {
++                guard let conv = state.conv, let ssm = state.ssm,
++                      conv.shape == layer.convShape, conv.dtype == layer.convDType,
++                      ssm.shape == layer.ssmShape, ssm.dtype == layer.ssmDType else {
++                    throw ProbeError("Convolution input/confirmed geometry differs")
++                }
++                forbidden.insert(ObjectIdentifier(conv)); forbidden.insert(ObjectIdentifier(ssm))
++            }
++            guard let state = owner.state(modelLayerIndex: index),
++                  let conv = state.conv, let ssm = state.ssm,
++                  conv.shape == layer.convShape, conv.dtype == layer.convDType,
++                  ssm.shape == layer.ssmShape, ssm.dtype == layer.ssmDType,
++                  roots[2 * position] === conv, roots[2 * position + 1] === ssm else {
++                throw ProbeError("Convolution pending roots or geometry differ")
++            }
++            forbidden.insert(ObjectIdentifier(ssm)); pending.append(conv)
++        }
++        let pendingIDs = pending.map(ObjectIdentifier.init)
++        guard Set(pendingIDs).count == indices.count,
++              Set(pendingIDs).isDisjoint(with: forbidden) else {
++            throw ProbeError("Convolution pending wrapper aliases input, confirmed state or another component")
++        }
++        let compact = pending.map { $0.contiguous() }
++        try check()
++        guard zip(pending, compact).allSatisfy({ pair in
++            pair.0.shape == pair.1.shape && pair.0.dtype == pair.1.dtype
++        }) else {
++            throw ProbeError("Convolution copy changed its logical geometry")
++        }
++        for (target, replacement) in zip(pending, compact) { target._updateInternal(replacement) }
++        // A failure now is still pending-only. The existing owner catch marks
++        // failed; existing retirement synchronizes and rolls back, never reuses.
++        try check()
++    }
++
++    /// Nonblocking metadata only, after the one existing joint eval. Do not
++    /// require unique=true: Metal completion handlers can still hold references.
++    func requireEvaluated(_ owner: CBv2RecurrentRequestState) throws {
++        for layer in spec.layers {
++            guard let conv = owner.state(modelLayerIndex: layer.modelLayerIndex)?.conv,
++                  conv.shape == layer.convShape, conv.dtype == layer.convDType,
++                  let buffer = try conv.evaluatedBufferInfo(), buffer.dataOffset == 0,
++                  buffer.dataElements == conv.size, buffer.isRowContiguous,
++                  buffer.allocatedBytes >= conv.nbytes, buffer.allocatedBytes <= compactAllocationBound else {
++                throw ProbeError("Evaluated convolution tail is not independently bounded compact storage")
++            }
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -26,6 +26,7 @@
+     profile: QwenRegisteredDenseModelProfile,
+     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+     collective: Collective, requestAllowance: QwenResidentRequestAllowance,
++    convolutionCompaction: QwenConvolutionCompaction? = nil,
+     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
+ ) throws -> QwenGenerationDiagnosticEvidence {
+     let resources = try MLX.withError { nativeError in
+@@ -45,7 +46,8 @@
+         rank: collective.rank, resources: resources)
+     defer { capture.discard() }
+     let result = try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
+-        collective: collective, diagnostics: capture, onCommittedToken: onCommittedToken, check: check)
++        collective: collective, diagnostics: capture, convolutionCompaction: convolutionCompaction,
++        onCommittedToken: onCommittedToken, check: check)
+     // The core has validated both retirement acknowledgements and its final
+     // native error check. Only CPU values are assembled outside that scope.
+     return try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank])
+@@ -56,17 +58,19 @@
+ func observeQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
+     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+     collective: Collective, observer: @escaping QwenGenerationPhaseObserver,
++    convolutionCompaction: QwenConvolutionCompaction? = nil,
+     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationResult {
+     try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
+         collective: collective, diagnostics: nil, observation: observer,
+-        onCommittedToken: onCommittedToken, check: check)
++        convolutionCompaction: convolutionCompaction, onCommittedToken: onCommittedToken, check: check)
+ }
+ 
+ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
+     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
+     observation: QwenGenerationPhaseObserver? = nil,
++    convolutionCompaction: QwenConvolutionCompaction? = nil,
+     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationResult {
+     try MLX.withError { nativeError in
+@@ -90,7 +94,8 @@
+             var producer: QwenGenerationLookaheadProducer?
+             do {
+                 if let observation { try observeQwenGenerationPhase(observation, .stateBegin, check: checked) }
+-                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
++                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
++                    convolutionCompaction: convolutionCompaction)
+                 session = owned
+                 if let observation { try observeQwenGenerationPhase(observation, .stateEnd, localCommittedTokens: owned.committedTokens, check: checked) }
+                 if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
+@@ -47,12 +47,15 @@
+     }
+ 
+     convenience init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
+-                     generationRequest: QwenLayerStageGenerationRequest) throws {
+-        try self.init(stage: stage, plan: plan, admittedRequest: .generation(generationRequest))
++                     generationRequest: QwenLayerStageGenerationRequest,
++                     convolutionCompaction: QwenConvolutionCompaction? = nil) throws {
++        try self.init(stage: stage, plan: plan, admittedRequest: .generation(generationRequest),
++            convolutionCompaction: convolutionCompaction)
+     }
+ 
+     private init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
+-                 admittedRequest request: QwenLayerStageAdmittedRequest) throws {
++                 admittedRequest request: QwenLayerStageAdmittedRequest,
++                 convolutionCompaction: QwenConvolutionCompaction? = nil) throws {
+         guard plan.stages.indices.contains(stage.stageIndex), plan.stages.count == 2,
+             stage.plan.fingerprint == plan.fingerprint else { throw ProbeError("Stage session received a different source plan") }
+         let descriptor = plan.stages[stage.stageIndex], receipt = stage.receipt
+@@ -90,11 +93,13 @@
+                 throw ProbeError("Generation profile differs from the actual loaded stage geometry/dtype")
+             }
+         }
++        try convolutionCompaction?.require(stage: stage, plan: plan, request: request)
+         let geometry = try CBv2RequestGeometry(model: stage.model, family: .qwen35, feedForwardKind: "dense",
+             layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
+             configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
+         self.state = try CBv2OwnedRequestState(geometry: geometry,
+-            promptCount: request.promptCount, outputCount: request.outputCount)
++            promptCount: request.promptCount, outputCount: request.outputCount,
++            convolutionCompaction: convolutionCompaction?.rows)
+         self.stage = stage; self.descriptor = descriptor; self.request = request
+         self.adapter = CBv2SteppableLanguageModelAdapter(stage.model)
+         self.hiddenSize = hidden; self.producerStageFingerprint = plan.stages[0].fingerprint
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -11,12 +11,17 @@
+ 
+     /// Explicit private phase-memory entry; ordinary loads retain no recorder.
+     @_spi(Benchmark) public static func loadPhaseMemoryObservation(_ configuration: QwenResidentLoadConfiguration,
+-        bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
+-        try loadInternal(configuration, bootstrap: bootstrap, observeMemory: true)
++        bootstrap: QwenResidentBootstrap? = nil, compactConvolutionState: Bool = false) throws -> QwenResidentRuntime {
++        try loadInternal(configuration, bootstrap: bootstrap, observeMemory: true,
++            compactConvolutionState: compactConvolutionState)
+     }
+ 
+     private static func loadInternal(_ configuration: QwenResidentLoadConfiguration,
+-        bootstrap: QwenResidentBootstrap?, observeMemory: Bool) throws -> QwenResidentRuntime {
++        bootstrap: QwenResidentBootstrap?, observeMemory: Bool,
++        compactConvolutionState: Bool = false) throws -> QwenResidentRuntime {
++        guard !compactConvolutionState || observeMemory else {
++            throw ProbeError("Convolution compaction requires the explicit observed owner")
++        }
+         // nil preserves the legacy experimental native TCP bootstrap.
+         let nativeBootstrap = try bootstrap?.make(configuration: configuration)
+         let directory = configuration.modelDirectory
+@@ -55,7 +60,10 @@
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
+-            let common = try admission.loadAgreementFingerprint()
++            let ordinaryCommon = try admission.loadAgreementFingerprint()
++            let common = compactConvolutionState
++                ? sha256(try canonicalJSONData([ordinaryCommon, "qwen27b-private-compact-convolution-v1"]))
++                : ordinaryCommon
+             let capacity = try MLX.withError { nativeError in
+                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
+                 do {
+@@ -106,7 +114,8 @@
+             try control.loaded()
+             try memory?.markReady(now: DispatchTime.now().uptimeNanoseconds)
+             return .init(admission: admission, control: control, collective: collective,
+-                stage: stage!, capacity: capacity, lifecycle: lifecycle, phaseMemory: memory)
++                stage: stage!, capacity: capacity, lifecycle: lifecycle, phaseMemory: memory,
++                compactConvolutionState: compactConvolutionState)
+         } catch {
+             let primary = error; control.fail(); stage = nil
+             do {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -33,6 +33,7 @@
+     private let operation = NSLock()
+     private let lifecycle: QwenLayerStageResidentLifecycle
+     private let phaseMemory: QwenResidentMemoryRecorder?
++    private let compactConvolutionState: Bool
+     private var stage: QwenResidentLoadedStage?
+     private weak var model: Module?
+     private struct Reservation {
+@@ -51,7 +52,8 @@
+ 
+     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
+          stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
+-         phaseMemory: QwenResidentMemoryRecorder? = nil) {
++         phaseMemory: QwenResidentMemoryRecorder? = nil, compactConvolutionState: Bool = false) {
++        self.compactConvolutionState = compactConvolutionState
+         self.phaseMemory = phaseMemory
+         self.admission = admission; self.control = control; self.collective = collective
+         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
+@@ -315,12 +317,16 @@
+                             agreement: agreement, base: reserved.allowance, prefill: reserved.prefillAllowance,
+                             budget: budget, ownerCapacity: reserved.ownerCapacity, control: control, deadline: reserved.deadline, memory: phaseMemory)
+                         phaseResources = resources
++                        let compaction = compactConvolutionState ? try QwenConvolutionCompaction(
++                            profile: stage.profile, plan: admission.plan, rank: collective.rank,
++                            request: reserved.request, allowance: reserved.allowance) : nil
+                         let recorder = try QwenGenerationPhaseRecorder.forResident(resources)
+                         defer { recorder.fail() }
+                         try recorder.begin(expected: resources.identity)
+                         result = try observeQwenLayerStageGenerationRequest(loaded: stage.loaded,
+                             plan: admission.plan, agreement: agreement, collective: collective,
+-                            observer: { try recorder.observe($0) }, onCommittedToken: committedToken, check: check)
++                            observer: { try recorder.observe($0) }, convolutionCompaction: compaction,
++                            onCommittedToken: committedToken, check: check)
+                         try recorder.seal()
+                         phaseExport = try .init(resources: resources, trace: recorder.successfulTrace(), execution: result)
+                         evidence = nil

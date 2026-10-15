@@ -1,0 +1,99 @@
+--- a/fabricated_rank.py
++++ b/fabricated_rank.py
+@@ -99,9 +99,16 @@
+ 
+ def native(jobfile,rank,scenario):
+     jobs=json.loads(Path(jobfile).read_bytes());v=RankValidator(jobs,lambda r:{},lambda r,e:'0'*64);job=jobs[rank]
+-    opened=json.loads(sys.stdin.buffer.readline());emit('ready',ready(v,rank,os.getpid()),job)
++    opened=json.loads(sys.stdin.buffer.readline())
++    if scenario in ('retry','retry_partial','retry_unknown'):
++        diagnostic=b'[jaccl] Connection attempt 0 waiting 1000 ms\n'
++        if scenario=='retry_partial':diagnostic=diagnostic[:-1]
++        if scenario=='retry_unknown':diagnostic+=b'warning\n'
++        os.write(2,diagnostic[:7]);os.write(2,diagnostic[7:])
++    emit('ready',ready(v,rank,os.getpid()),job)
+     for i in range(4):
+         command=json.loads(sys.stdin.buffer.readline())
++        if scenario=='retry_late' and i==0:os.write(2,b'[jaccl] Connection attempt 0 waiting 1000 ms\n')
+         if scenario=='hang' and i==0:
+             import time;time.sleep(10)
+         row=result(v,rank,command)
+--- a/remote_resident.py
++++ b/remote_resident.py
+@@ -18,6 +18,7 @@
+ from solo_resources import ResourceGate
+ from worker_contract import WorkerSpec, event, open_command, run_command
+ from worker_processes import PipeWorkers, cleanup_error_text
++from jaccl_stderr import JacclPipeWorkers
+ 
+ 
+ def control(job, operation):
+@@ -74,6 +75,7 @@
+     def collect(kind,command):
+         def validate(index,raw):
+             value=event(raw,spec,kind,command)
++            if kind=='ready':pipes.seal_bootstrap()
+             forward(raw)
+             return value
+         return pipes.collect('native-'+kind,validate)[0]
+@@ -84,7 +86,7 @@
+         os.set_blocking(input_fd,False);os.set_blocking(output_fd,False)
+         guard('prelaunch')
+         first=read_command();exact(first,opened,'Open command differs from predeclared job')
+-        pipes=PipeWorkers((spec,),run/'native',timeout,guard)
++        pipes=JacclPipeWorkers((spec,),run/'native',timeout,guard,jaccl_rank=job['rank'])
+         pipes.start()
+         owner=dict(schema='resident_remote_owner_v1',jobSHA256=job_sha,rank=job['rank'],nativeSHA256=job['native_sha256'],
+             nativePID=pipes.children[0].pid,nativePGID=pipes.children[0].pid,supervisorPID=os.getpid(),
+@@ -116,6 +118,7 @@
+             receipt['nativeExitCodes']=[p.returncode for p in pipes.children]
+             receipt['outputComplete']=pipes.complete_output
+             receipt['cleanupErrors']=list(pipes.cleanup_errors)
++            receipt['bootstrapDiagnostics']=pipes.retry_diagnostics.summary()
+             try:receipt['streams']=pipes.retained_streams()
+             except BaseException as error:
+                 receipt['postflightErrors'].append(dict(operation='retained_stream_hashes',error=cleanup_error_text(error)[0]))
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -17,6 +17,7 @@
+ from physical_common import (Pins,canonical,exact,fields,host,make_jobs,parse,path,read_plan,require,
+     verify_launcher,write_new,write_json)
+ from rank_validation import RankValidator
++from jaccl_stderr import validate_retry_bytes
+ from solo_resources import validate_local
+ from worker_adapter import ResidentWorkerCohort
+ from worker_contract import WorkerSpec,SUFFIXES
+@@ -144,6 +145,21 @@
+         name='events/rank-%d-%02d-%s.jsonl'%(rank,index,event['type']);write_new(self.output/name,line)
+         value=hashlib.sha256(line).hexdigest();self.records.append(dict(path=name,sha256=value,size_bytes=len(line)))
+         self.indices[rank]+=1;return value
++
++
++def validate_completed_streams(output,rank,terminal):
++    output=Path(output)
++    require({item['stream'] for item in terminal['streams']}=={'stdin','stdout','stderr'}
++        and len(terminal['streams'])==3,'Remote stream coverage differs')
++    for item in terminal['streams']:
++        require(item['worker']==0,'Unexpected remote stream worker')
++        local=snapshot(output/('pipes/worker-%d.%s'%(rank,item['stream'])),160*1024**2,keep=False,empty=True)
++        if item['stream']=='stderr':
++            require(local['size_bytes']==0,'Unexpected SSH stderr')
++            native=snapshot(output/('remote-rank-%d/native/worker-0.stderr'%rank),180,empty=True)
++            require(native['sha256']==item['sha256'] and native['size_bytes']==item['bytes'],'Native stderr identity differs')
++            exact(validate_retry_bytes(rank,native['raw']),terminal['bootstrapDiagnostics'],'Native bootstrap diagnostics differ')
++        else:require(local['sha256']==item['sha256'] and local['size_bytes']==item['bytes'],'SSH/native raw stream mismatch')
+ 
+ 
+ def main(arguments=None):
+@@ -205,10 +221,8 @@
+                     require(terminal['status']=='completed' and terminal['completedRequests']==4 and terminal['nativeExitCodes']==[0]
+                         and terminal['outputComplete'] is True and terminal['sourceInputsUnchanged'] is True
+                         and not terminal['cleanupErrors'] and not terminal['postflightErrors'],'Remote terminal failed')
+-                    for item in terminal['streams']:
+-                        local=snapshot(output/('pipes/worker-%d.%s'%(rank,item['stream'])),160*1024**2,keep=False,empty=True)
+-                        require(local['sha256']==item['sha256'] and local['size_bytes']==item['bytes'],'SSH/native raw stream mismatch')
+                 receipt['retrievedFiles']+=remote.retrieve(rank,terminal)
++                if receipt['status']=='completed':validate_completed_streams(output,rank,terminal)
+             except BaseException as error:
+                 receipt['postflightErrors'].append(dict(rank=rank,operation='remote_terminal_or_retrieval',error=cleanup_error_text(error)[0]))
+                 if not isinstance(error,Exception) and isinstance(primary,(Exception,type(None))):primary=error

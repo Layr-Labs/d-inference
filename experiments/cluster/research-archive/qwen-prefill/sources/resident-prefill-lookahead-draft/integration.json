@@ -1,0 +1,55 @@
+{
+  "changes": [
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift",
+      "sha256": "98a212857978f16bdf99dbd25e30e82ae1bd0135b184cdc9234ffdc34b9e7622",
+      "bytes": 2130
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift",
+      "sha256": "9c4afbd7f4a1567ddea2ac6529be841ba03b9c1772d5b53a67c55ce588addea4",
+      "bytes": 3751
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift",
+      "sha256": "4ff030d6a92e4284dd20d3eaba57c7b7ff9dcd14fc328bb29d6a193882896230",
+      "bytes": 4060
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "sha256": "43586716d0a1287359343d07a5809ed2e6ca84a20deaab21a9ed8f66786cb0d7",
+      "bytes": 22105
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift",
+      "sha256": "253da3d4b24f74265f27ecc385e370815a6f643b43722ed45aacd66717595718",
+      "bytes": 961
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift",
+      "sha256": "e969afee7dd263e8fe7cd6515f6450f7b7a978009c13cd83f9fe7789067a420a",
+      "bytes": 12467
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "sha256": "ecd473554fb622006714010e95685a3a9338156e431527101498d7f4d38c1fea",
+      "bytes": 6158
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "sha256": "664ce9b8fe425c7676599ff2c834ba1d10429111f1c944dce5e2862654c408d9",
+      "bytes": 18995
+    }
+  ],
+  "mainEdited": false,
+  "nativeCompiled": false,
+  "enabled": false
+}

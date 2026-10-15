@@ -1,0 +1,55 @@
+{
+  "base": "corrected MTP proposal c850c95127adacab0a7ee81481d8d6e8f9043b96098d1d7f8ebec75282a4ba71",
+  "files": [
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift",
+      "sha256": "15e2f0f4b429282150665d6ff5cfb9d453c986f0c06998728043b96a73e0d6c5",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2TargetVerification.swift",
+      "sha256": "2a5836084824aae1a1d5abb4ef97afc3460be6c4cf2a71418785374b6bf2e6f0",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2TargetVerification.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift",
+      "sha256": "d1d7b252e80c276fcdbfab9511a0d21f3539d984b840f04f951edeb14d8afac1",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationBudget.swift",
+      "sha256": "3397138069f3a8162d66c226bc2a56a0eda960b1b8303a9f439ad074c204c770",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationBudget.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationExecution.swift",
+      "sha256": "cbd6b4844cc1b9f301f66e028d6762f8d921575f6d5bb723f8cd7da6dc3a1c0a",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationExecution.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationRequest.swift",
+      "sha256": "735ea7b4883ff7be993dae2dd6dd005c00950c109b026d03e4183111c163f027",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationRequest.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationResources.swift",
+      "sha256": "523ade0587ba008dd49a3ff1fd43027d173fe1f53e9ed3502e42d7153b0cb21c",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationResources.swift"
+    },
+    {
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationValues.swift",
+      "sha256": "b9bd37d071a92ec83bd4fee70a0ba7bb25b7c104c28637c1e8648f17d705dd21",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationValues.swift"
+    }
+  ],
+  "servingOrWireHookedUp": false,
+  "foundationCommand": "foundation-command.json",
+  "nativeFixture": "Tests/TargetVerificationNativeCheck.swift",
+  "nativeFixtureIntegration": "Optional private Runtime source only, invoked by a separate bounded SPI executable; not a product path.",
+  "testsExecuted": false,
+  "independentReview": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-target-verification-review-20260915/source-review.json",
+    "sha256": "d95713851c8fb4af8f73356158b0e66a720fd057ac0d95759a6bee1474274462",
+    "result": "No remaining concrete source blocker; no reviewer execution."
+  }
+}

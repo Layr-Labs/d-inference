@@ -1,0 +1,23 @@
+{
+  "baseProtectedManifestSHA256": "dc8bdd1c4c68e257b0c256b0ffc0acd0a00ae68306eb37ef3c3d8f7811067f0b",
+  "composeAfter": [
+    "qwen9b-native-protected-result-correction-20260917",
+    "qwen9b-native-protected-scope-fixture-correction-20260917"
+  ],
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift",
+      "preimageSHA256": null,
+      "proposedSHA256": "b5d5724062c4805118fb0273b600a72eff598ceeb4e20f159ff6e74e0e6a9de4",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-canonical-description-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift",
+      "preimageSHA256": "da3cf391fb0597b1b114ff4277d96308bfd2a874e32d67fc18302171f68d4b8c",
+      "proposedSHA256": "89f1920604d7151269efd6bc67b7136a99ac3f8c1369ad0b59d28915f2104ea8",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-canonical-description-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift"
+    }
+  ],
+  "mainMutation": false,
+  "native3RuntimeSnapshotSHA256": "04b84b03a8f3f1a576a6bd7bcecdf8fc4760f97d75c12d4a9c4f24a577352b49"
+}

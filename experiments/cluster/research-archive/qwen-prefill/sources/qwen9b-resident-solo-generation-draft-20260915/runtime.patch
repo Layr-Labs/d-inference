@@ -1,0 +1,977 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift
+@@ -0,0 +1,105 @@
++import Foundation
++
++struct QwenResidentSoloCLI {
++    static let mode = "qwen-resident-solo-generation"
++    let reference: QwenFullGenerationReferenceCLI
++    let expectedTokensFile: URL
++    let expectedTokensSHA256: String
++
++    init(arguments: [String]) throws {
++        guard arguments.count == 28 else { throw ProbeError("Resident solo requires exactly fourteen option pairs") }
++        var base: [String] = [], expectedPath: String?, expectedSHA: String?
++        var seen = Set<String>()
++        for i in stride(from: 0, to: arguments.count, by: 2) {
++            let key = arguments[i], value = arguments[i+1]
++            guard seen.insert(key).inserted, !value.isEmpty, value.utf8.count <= 4096,
++                  !value.utf8.contains(0) else { throw ProbeError("Repeated or invalid solo option") }
++            switch key {
++            case "--expected-token-ids-file": expectedPath = value
++            case "--expected-token-ids-sha256": expectedSHA = value
++            case "--mode":
++                guard value == Self.mode else { throw ProbeError("Wrong resident solo namespace") }
++                base += [key, QwenFullGenerationReferenceCLI.mode]
++            default: base += [key,value]
++            }
++        }
++        guard let expectedPath, expectedPath.hasPrefix("/"), let expectedSHA,
++              qwenStageWireIsSHA256(expectedSHA) else { throw ProbeError("Solo expected IDs need an absolute pinned input") }
++        let value = try QwenFullGenerationReferenceCLI(arguments: base)
++        guard value.definition.specification.model == .qwen35NineB, value.stageCut == 4,
++              value.promptCount == 8192, value.chunkSize == 512, value.outputCount == 128,
++              value.stopTokenIDs.isEmpty else { throw ProbeError("Resident solo requires the matched registered9B 8192/512/128 request") }
++        reference = value
++        expectedTokensFile = URL(fileURLWithPath: expectedPath); expectedTokensSHA256 = expectedSHA
++    }
++
++    func preflight(environment: [String:String], read: (URL,Int) throws -> Data,
++                   makeUUID: () -> UUID = UUID.init) throws -> QwenResidentSoloPreflight {
++        var prompt: Data?
++        let first = try reference.preflight(environment: environment, read: { url, cap in
++            let data = try read(url,cap)
++            if url == reference.tokensFile { prompt = data }
++            return data
++        })
++        let raw = try read(expectedTokensFile,16_384)
++        guard !raw.isEmpty, raw.count <= 16_384, sha256(raw) == expectedTokensSHA256,
++              let prompt else { throw ProbeError("Resident solo expected IDs or retained prompt differs") }
++        try validateWorkerJSON(raw)
++        let expected = try JSONDecoder().decode([Int].self,from: raw)
++        guard expected.count == 128, expected.allSatisfy({ (0..<248_320).contains($0) }) else {
++            throw ProbeError("Resident solo requires exactly128 valid expected target IDs")
++        }
++        let source = first.admission.source
++        var requests = [first.admission]
++        for _ in 0..<3 {
++            let next = try QwenRegisteredGenerationReferenceSource(definition: source.definition,
++                configuration: source.configuration, manifest: source.manifest, promptData: prompt,
++                expectedPromptSHA256: source.promptFileSHA256, promptCount: 8192, requestID: makeUUID(),
++                stageCut: 4, chunkSize: 512, outputCount: 128, stopTokenIDs: [], arithmetic: source.arithmetic)
++            requests.append(try .init(source: next, request: next.request))
++        }
++        return try .init(first: first, requests: requests, expectedTokenIDs: expected,
++            expectedTokenFileSHA256: expectedTokensSHA256)
++    }
++}
++
++struct QwenResidentSoloPreflight {
++    let first: QwenFullGenerationReferencePreflight
++    let requests: [QwenGenerationReferenceAdmission]
++    let expectedTokenIDs: [Int]
++    let expectedTokenFileSHA256: String
++    let warmupCount = 1
++    let measuredCount = 3
++
++    init(first: QwenFullGenerationReferencePreflight, requests: [QwenGenerationReferenceAdmission],
++         expectedTokenIDs: [Int], expectedTokenFileSHA256: String) throws {
++        let base = first.admission
++        guard requests.count == 4, Set(requests.map { $0.request.requestID }).count == 4,
++              requests[0].request.requestID == base.request.requestID,
++              expectedTokenIDs.count == 128, expectedTokenIDs.allSatisfy({ (0..<248_320).contains($0) }),
++              qwenStageWireIsSHA256(expectedTokenFileSHA256) else {
++            throw ProbeError("Resident solo cohort identity/count differs")
++        }
++        for next in requests {
++            guard next.source.configuration == base.source.configuration,
++                  next.source.manifest == base.source.manifest,
++                  next.source.specification.model == .qwen35NineB,
++                  next.source.plan.fingerprint == base.source.plan.fingerprint,
++                  next.source.arithmetic == base.source.arithmetic,
++                  next.source.promptFileSHA256 == base.source.promptFileSHA256,
++                  next.request.promptTokenIDs == base.request.promptTokenIDs,
++                  next.request.profile == base.request.profile,
++                  next.request.promptCount == 8192, next.request.chunkSize == 512,
++                  next.request.outputCount == 128, next.request.maximumTokens == 8320,
++                  next.request.stopTokenIDs.isEmpty,
++                  try canonicalJSONData(next.requirements.namedTensors) == canonicalJSONData(base.requirements.namedTensors),
++                  next.requirements.capturedRowsCPUBytes == base.requirements.capturedRowsCPUBytes,
++                  next.requirements.temporaryFloat32RowBytes == base.requirements.temporaryFloat32RowBytes,
++                  next.requirements.namedTensorByteCeiling == base.requirements.namedTensorByteCeiling else {
++                throw ProbeError("Resident solo cohort source, history or resource shape was substituted")
++            }
++        }
++        self.first = first; self.requests = requests; self.expectedTokenIDs = expectedTokenIDs
++        self.expectedTokenFileSHA256 = expectedTokenFileSHA256
++    }
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCheck.swift
+@@ -0,0 +1,130 @@
++import Foundation
++
++struct QwenResidentSoloCheckRecord: Encodable {
++    let kind = "qwen_resident_solo_generation_check"
++    let accepted: Int
++    let rejected: Int
++    let modelOrKernelExecuted = false
++    let actualRetirementProved = false
++}
++
++/// Admission/clock/lifecycle contracts only. Actual kernel dispatch and native
++/// state retirement remain required from the later one-load physical cohort.
++func checkQwenResidentSoloGeneration() throws -> QwenResidentSoloCheckRecord {
++    guard let path = ProcessInfo.processInfo.environment["DARKBLOOM_RETAINED_PROFILE_FIXTURE"] else {
++        throw ProbeError("Solo CPU check requires the retained registered profile fixture")
++    }
++    let data = try BoundedProbeInput.data(URL(fileURLWithPath: path), maximumBytes: 1_048_576)
++    guard sha256(data) == "1a7e2d74df5e055ec31c12478f49d1d07d1bb48cc64d150248859defb518cd25",
++          let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
++          let row = root["nine"] as? [String: Any],
++          let configText = row["configuration"] as? String, let config = Data(base64Encoded: configText),
++          let manifestText = row["manifest"] as? String, let manifest = Data(base64Encoded: manifestText) else {
++        throw ProbeError("Solo retained profile fixture differs")
++    }
++    let prompt = try JSONEncoder().encode(Array(repeating: 17, count: 8192))
++    let expected = try JSONEncoder().encode(Array(repeating: 19, count: 128))
++    let ids = (1...4).map { UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", $0))! }
++    let arguments = ["--mode", QwenResidentSoloCLI.mode,
++        "--model-dir", "/invented/model", "--tokens-file", "/invented/prompt.json", "--tokens-sha256", sha256(prompt),
++        "--request-id", ids[0].uuidString.lowercased(), "--stage-cut", "4", "--output-count", "128",
++        "--stop-token-ids", "[]", "--timeout-seconds", "300",
++        "--registered-dense-profile", "registered_qwen35_9b", "--prompt-count", "8192", "--chunk-size", "512",
++        "--expected-token-ids-file", "/invented/expected.json", "--expected-token-ids-sha256", sha256(expected)]
++    var accepted = 0, rejected = 0
++    func require(_ value: Bool, _ message: String) throws {
++        guard value else { throw ProbeError("Solo CPU check: \(message)") }; accepted += 1
++    }
++    func refuse(_ body: () throws -> Void) throws {
++        do { try body() } catch { rejected += 1; return }
++        throw ProbeError("Solo CPU check accepted an invalid case")
++    }
++    func changed(_ flag: String, _ value: String) -> [String] {
++        var copy = arguments; copy[copy.firstIndex(of: flag)! + 1] = value; return copy
++    }
++    func read(_ url: URL, _: Int) throws -> Data {
++        switch url.path {
++        case "/invented/model/config.json": return config
++        case "/invented/model/manifest.json": return manifest
++        case "/invented/prompt.json": return prompt
++        case "/invented/expected.json": return expected
++        default: throw ProbeError("Unexpected fabricated solo read")
++        }
++    }
++    let environment = QwenLongPrefillArithmeticEnvironment.requiredValues
++    let cli = try QwenResidentSoloCLI(arguments: arguments)
++    var index = 1, reads = 0
++    let input = try cli.preflight(environment: environment,
++        read: { url, cap in reads += 1; return try read(url, cap) },
++        makeUUID: { defer { index += 1 }; return ids[index] })
++    try require(reads == 4 && input.requests.map { $0.request.requestID } == ids
++        && input.warmupCount == 1 && input.measuredCount == 3, "one pinned source and four fresh request identities")
++    try require(input.requests.allSatisfy { $0.request.forwardCount == 143 && $0.request.finalCommittedTokens == 8319 },
++        "full 128 target selections require127 decode forwards")
++    try require(input.requests.allSatisfy { $0.source.plan.fingerprint == input.first.admission.source.plan.fingerprint },
++        "same full-reference planning identity across requests")
++    for (flag, value) in [("--mode", "qwen-registered-full-generation-reference"),
++        ("--registered-dense-profile", "registered_qwen38_27b"), ("--stage-cut", "16"),
++        ("--prompt-count", "8191"), ("--chunk-size", "256"), ("--output-count", "1"),
++        ("--stop-token-ids", "[19]"), ("--expected-token-ids-file", "relative"),
++        ("--expected-token-ids-sha256", String(repeating: "A", count: 64))] {
++        try refuse { _ = try QwenResidentSoloCLI(arguments: changed(flag, value)) }
++    }
++    try refuse { _ = try QwenResidentSoloCLI(arguments: Array(arguments.dropLast())) }
++    var repeated = arguments; repeated[0] = "--expected-token-ids-file"
++    try refuse { _ = try QwenResidentSoloCLI(arguments: repeated) }
++    try refuse { _ = try cli.preflight(environment: environment, read: read, makeUUID: { ids[0] }) }
++    try refuse { _ = try cli.preflight(environment: environment, read: { url, cap in
++        url.lastPathComponent == "expected.json" ? expected + Data([32]) : try read(url, cap)
++    }) }
++    for bad in [Data("[true]".utf8), Data("[1,]".utf8),
++                try JSONEncoder().encode(Array(repeating: 19, count: 127)),
++                try JSONEncoder().encode(Array(repeating: 248_320, count: 128))] {
++        let value = try QwenResidentSoloCLI(arguments: changed("--expected-token-ids-sha256", sha256(bad)))
++        try refuse { _ = try value.preflight(environment: environment, read: { url, cap in
++            url.lastPathComponent == "expected.json" ? bad : try read(url, cap)
++        }) }
++    }
++    var wrongEnvironment = environment; wrongEnvironment["MLX_ENABLE_TF32"] = "0"; reads = 0
++    try refuse { _ = try cli.preflight(environment: wrongEnvironment,
++        read: { url, cap in reads += 1; return try read(url, cap) }) }
++    try require(reads == 0, "arithmetic refusal precedes inputs and native initialization")
++    try refuse { _ = try QwenResidentSoloPreflight(first: input.first,
++        requests: Array(input.requests.dropLast()), expectedTokenIDs: input.expectedTokenIDs,
++        expectedTokenFileSHA256: input.expectedTokenFileSHA256) }
++    let stamps = (0..<128).map { UInt64(2_000_000_000 + $0 * 1_000_000) }
++    let timing = try QwenResidentSoloTiming(start: 1_000_000_000, selected: stamps, retired: 3_000_000_000)
++    try require(timing.prefillSeconds == 1 && timing.prefillTokensPerSecond == 8192
++        && abs(timing.decodeTokensPerSecond - 1000) < 0.000001, "8192 prefill and127 decode denominator")
++    try require(!timing.includesLoading && timing.includesFreshStateConstruction
++        && !timing.includesDiagnosticRowOrStateCapture && !timing.externalTTFTMeasured, "clock boundary labels")
++    try refuse { _ = try QwenResidentSoloTiming(start: 1, selected: Array(stamps.dropLast()), retired: 3_000_000_000) }
++    try refuse { _ = try QwenResidentSoloTiming(start: stamps[0], selected: stamps, retired: 3_000_000_000) }
++    try refuse { _ = try QwenResidentSoloTiming(start: 1, selected: stamps, retired: stamps.last! - 1) }
++    var reversed = stamps; reversed.swapAt(31,32)
++    try refuse { _ = try QwenResidentSoloTiming(start: 1, selected: reversed, retired: 3_000_000_000) }
++    let lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: 4)
++    for request in input.requests {
++        let identity = QwenLayerStageResidentRequestIdentity(requestID: request.request.requestID,
++            epoch: request.request.requestID, recordedRequestFingerprint: request.request.fingerprint)
++        let result = try lifecycle.withRequest(identity: identity) { 128 }
++        try require(result == 128 && !lifecycle.snapshot.requestScopeActive, "fresh serial request scope returns CPU values")
++    }
++    try require(lifecycle.snapshot.admittedRequests == 4 && lifecycle.snapshot.completedRequestScopes == 4,
++        "warmup is a counted admission")
++    try lifecycle.withModelRelease {}
++    try require(lifecycle.snapshot.releaseCallbackCompleted, "trusted release callback completed")
++    let failure = try QwenLayerStageResidentLifecycle(maximumRequests: 4)
++    let identity = QwenLayerStageResidentRequestIdentity(requestID: ids[0], epoch: ids[0],
++        recordedRequestFingerprint: input.requests[0].request.fingerprint)
++    enum Marker: Error { case warmup }
++    do { let _: Int = try failure.withRequest(identity: identity) { throw Marker.warmup } }
++    catch Marker.warmup { accepted += 1 }
++    try require(failure.snapshot.failed && failure.snapshot.completedRequestScopes == 0,
++        "failed warmup cannot become a measured result")
++    try refuse { _ = try failure.withRequest(identity: .init(requestID: ids[1], epoch: ids[1],
++        recordedRequestFingerprint: input.requests[1].request.fingerprint)) { 128 } }
++    try failure.withModelRelease {}
++    try require(failure.snapshot.releaseCallbackCompleted, "failed body permits independent final cleanup")
++    return .init(accepted: accepted, rejected: rejected)
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift
+@@ -0,0 +1,196 @@
++import Foundation
++import MLX
++import MLXNN
++@_spi(ClusterBenchmark) import MLXLLM
++@_spi(ClusterBenchmark) import MLXLMCommon
++
++struct QwenResidentSoloKernelEligibility: Encodable {
++    let gatedDeltaLayers: Int
++    let fusedProjectionLayers: Int
++    let warmupDispatch: QwenGatedDeltaWarmupObservation
++    let configuredQueryBlockSize: Int
++    let queryBlockDispatchIndependentlyCounted = false
++    let measuredRequestDispatchObservationEnabled = false
++    let optimizedAgainstAllPossibleSoloPolicies = false
++
++    init(model: Module, warmup: QwenGatedDeltaWarmupObservation) throws {
++        let counts = qwen35BenchmarkFusedProjectionCounts(model)
++        let block = cbv2BenchmarkConfiguredQueryBlockSize()
++        guard counts.gatedDeltaLayers == 24, counts.fusedLayers == 24, block == 128,
++              warmup.nativePrefillCalls == 24 * 16,
++              warmup.nativeDecodeCalls == 24 * 127,
++              warmup.operationsFallbackCalls == 0, warmup.invalidGeometryCalls == 0 else {
++            throw ProbeError("Solo warmup did not establish the required native GDN/fusion/query-block eligibility")
++        }
++        gatedDeltaLayers = counts.gatedDeltaLayers; fusedProjectionLayers = counts.fusedLayers
++        warmupDispatch = warmup; configuredQueryBlockSize = block
++    }
++}
++
++struct QwenResidentSoloCohortRequest: Encodable {
++    let ordinal: Int
++    let isWarmup: Bool
++    let execution: QwenResidentSoloRequestResult
++}
++
++struct QwenResidentSoloCohortReport: Encodable {
++    let kind = "qwen_resident_solo_generation_report"
++    let schemaVersion = 1
++    let completed = true
++    let verifiedFullModelLoads = 1
++    let warmupCount = 1
++    let measuredCount = 3
++    let freshRequestsAdmitted = 4
++    let modelReleased = true
++    let allRequestStateRetired = true
++    let prefixReuse = false
++    let mtpEnabled = false
++    let allocatorPolicy = "disable_freed_buffer_cache_v1"
++    let unusedDiagnosticAllowanceStillReserved = true
++    let independentNumericalComparisonPerformed = false
++    let physicalOrPerformanceQualificationEstablished = false
++    let externalTTFTMeasured = false
++    let source: QwenLongPrefillReferenceSource
++    let sourceLoad: VerifiedQwenDiagnosticReceipt
++    let expectedTokenFileSHA256: String
++    let kernelEligibility: QwenResidentSoloKernelEligibility
++    let requests: [QwenResidentSoloCohortRequest]
++    let resources: QwenFullGenerationReferenceResourceReceipt
++    let memory: [QwenStageMemoryObservation]
++    let runtime: QwenDenseStageLoadRuntimeObservation
++}
++
++/// Owns exactly one full model and reuses the existing serialized lifecycle.
++/// Only CPU result values can escape the request body/autorelease scope.
++private final class QwenResidentSoloModelOwner {
++    private var loaded: LoadedModel?
++    private weak var model: Module?
++    private let lifecycle: QwenLayerStageResidentLifecycle
++
++    init(loaded: LoadedModel) throws {
++        lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: 4)
++        self.loaded = loaded; model = loaded.model
++    }
++
++    func request(_ admission: QwenGenerationReferenceAdmission, expected: [Int],
++                 admitResources: () throws -> Void, check: () throws -> Void) throws -> QwenResidentSoloRequestResult {
++        let id = admission.request.requestID
++        return try lifecycle.withRequest(identity: .init(requestID: id, epoch: id,
++            recordedRequestFingerprint: admission.request.fingerprint)) {
++            try autoreleasepool {
++                guard let loaded else { throw ProbeError("Resident solo full model was released") }
++                return try runQwenResidentSoloRequest(loaded: loaded, admission: admission,
++                    expectedTokenIDs: expected, admitResources: admitResources, check: check)
++            }
++        }
++    }
++
++    func eligibility(_ warmup: QwenGatedDeltaWarmupObservation) throws -> QwenResidentSoloKernelEligibility {
++        guard let loaded else { throw ProbeError("Solo eligibility lacks its resident model") }
++        return try .init(model: loaded.model, warmup: warmup)
++    }
++
++    func release() throws {
++        try lifecycle.withModelRelease {
++            try MLX.withError { fault in
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try fault.check()
++                loaded = nil
++                guard model == nil else { throw ProbeError("Resident solo model remained retained after request scopes") }
++                Memory.clearCache(); try fault.check()
++            }
++        }
++    }
++}
++
++func produceQwenResidentSoloCohort(directory: URL, preflight: QwenResidentSoloPreflight,
++    resources: QwenFullGenerationReferenceResources) throws -> QwenResidentSoloCohortReport {
++    var owner: QwenResidentSoloModelOwner?
++    weak var model: Module?
++    var releaseAttempted = false
++    var memory = [QwenStageMemoryObservation("before_resident_solo_load")]
++    do {
++        return try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try resources.check(); try nativeError.check() }
++            do {
++                try checked()
++                let (source, receipt) = try autoreleasepool {
++                    let loaded = try loadQwenRegisteredGenerationReferenceBaseline(directory: directory,
++                        preflight: preflight.first, resources: resources, check: checked)
++                    model = loaded.model
++                    let admitted = try admitQwenRegisteredGenerationReferenceSource(
++                        loaded: loaded, admission: preflight.first.admission.source)
++                    try resources.modelLoaded(admitted.1)
++                    owner = try QwenResidentSoloModelOwner(loaded: loaded)
++                    try checked()
++                    return admitted
++                }
++                memory.append(QwenStageMemoryObservation("resident_solo_loaded_no_request_state"))
++                var results: [QwenResidentSoloCohortRequest] = []
++                var eligibility: QwenResidentSoloKernelEligibility?
++                var requestAdmissions = 0
++                for (ordinal, admission) in preflight.requests.enumerated() {
++                    try checked()
++                    let now = DispatchTime.now().uptimeNanoseconds
++                    let addition = now.addingReportingOverflow(120_000_000_000)
++                    guard !addition.overflow else { throw ProbeError("Solo request deadline overflow") }
++                    let deadline = min(resources.deadline, addition.partialValue)
++                    func requestCheck() throws {
++                        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Resident solo request deadline expired") }
++                        try checked()
++                        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Solo request expired during resource check") }
++                    }
++                    func request() throws -> QwenResidentSoloRequestResult {
++                        guard let owner, requestAdmissions == ordinal else { throw ProbeError("Solo admission order differs") }
++                        return try owner.request(admission, expected: preflight.expectedTokenIDs,
++                            admitResources: {
++                                // The inherited ledger is admitted once for a four-request serial
++                                // cohort. Every request has already passed the exact same-geometry
++                                // preflight; its live check is repeated before any fresh state.
++                                if ordinal == 0 { try resources.admitRequest(preflight.first.admission.requirements) }
++                                try requestCheck()
++                                requestAdmissions += 1
++                            }, check: requestCheck)
++                    }
++                    let result: QwenResidentSoloRequestResult
++                    if ordinal == 0 {
++                        let observed = try withQwenGatedDeltaWarmupObservation(request)
++                        result = observed.0
++                        guard let owner else { throw ProbeError("Warmup owner disappeared") }
++                        eligibility = try owner.eligibility(observed.1)
++                    } else {
++                        guard eligibility != nil else { throw ProbeError("Measured request lacks warmup kernel eligibility") }
++                        result = try request()
++                    }
++                    try requestCheck()
++                    results.append(.init(ordinal: ordinal, isWarmup: ordinal == 0, execution: result))
++                    memory.append(QwenStageMemoryObservation("resident_solo_request_\(ordinal)_retired"))
++                }
++                guard requestAdmissions == 4, results.count == 4, let eligibility, let owned = owner else {
++                    throw ProbeError("Resident solo cohort ended before all four retired requests")
++                }
++                releaseAttempted = true; try owned.release(); owner = nil
++                guard model == nil else { throw ProbeError("Resident solo did not release its full model") }
++                try checked()
++                memory.append(QwenStageMemoryObservation("resident_solo_model_released"))
++                return .init(source: source, sourceLoad: receipt,
++                    expectedTokenFileSHA256: preflight.expectedTokenFileSHA256, kernelEligibility: eligibility,
++                    requests: results, resources: try resources.completedReceipt(), memory: memory,
++                    runtime: QwenDenseStageLoadRuntimeObservation())
++            } catch { try nativeError.check(); throw error }
++        }
++    } catch {
++        let primary = error
++        var cleanup: [String] = []
++        if let owner, !releaseAttempted {
++            releaseAttempted = true
++            do { try owner.release() } catch { cleanup.append(String(describing: error)) }
++        }
++        owner = nil
++        do { try MLX.withError { fault in
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try fault.check()
++        } } catch { cleanup.append(String(describing: error)) }
++        if model != nil { cleanup.append("resident solo full model remains retained") }
++        if !cleanup.isEmpty { throw ProbeError("Resident solo cohort failed (\(primary)); cleanup: \(cleanup.joined(separator: "; "))") }
++        throw primary
++    }
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift
+@@ -0,0 +1,100 @@
++import Darwin
++import Foundation
++import MLX
++import MLXLLM
++import SoloDeviceExclusion
++
++/// A dedicated process retains the exact shared solo exclusion through exit,
++/// including failed model teardown. It never records or clears an owner journal.
++private enum QwenResidentSoloDeviceScope {
++    nonisolated(unsafe) static var held: ClusterDeviceExclusion?
++
++    static func acquire() throws {
++        guard Thread.isMainThread, held == nil,
++              let entry = getpwuid(geteuid()), let home = entry.pointee.pw_dir else {
++            throw ProbeError("Resident solo requires one process owner and its system user home")
++        }
++        let path = String(cString: home)
++        guard path.hasPrefix("/"), path != "/" else { throw ProbeError("Invalid system user home") }
++        held = try ClusterDeviceExclusion(directoryURL:
++            URL(fileURLWithPath: path).appendingPathComponent(".darkbloom/cluster-device", isDirectory: true))
++    }
++}
++
++private struct QwenResidentSoloAdmitted: Encodable {
++    let kind = "qwen_resident_solo_generation_admitted"
++    let schemaVersion = 1
++    let verifiedModelLoaded = false
++    let freshRequestStateCreated = false
++    let canonicalDeviceExclusionHeld = true
++    let warmupCount = 1
++    let measuredCount = 3
++    let requestedOutputCount = 128
++    let maximumTokens = 8320
++    let requestIDs: [UUID]
++    let requestFingerprints: [String]
++    let profile: QwenLayerStageGenerationProfile
++    let promptFileSHA256: String
++    let promptTokenIDsSHA256: String
++    let expectedTokenFileSHA256: String
++    let manifestSHA256: String
++    let artifactSHA256: String
++    let configurationSHA256: String
++    let referencePlanSHA256: String
++    let processLifetimeSeconds: Int
++    let perRequestMaximumSeconds = 120
++    let prefixReuse = false
++    let mtpEnabled = false
++    let externalTTFTMeasured = false
++}
++
++extension QwenResidentSoloCLI {
++    func run() throws {
++        // One alarm includes metadata, model load, all four requests, teardown
++        // and stdout. Native work cannot extend it with a new request.
++        alarm(UInt32(reference.timeoutSeconds)); defer { alarm(0) }
++        let priorSIGPIPE = signal(SIGPIPE, SIG_IGN)
++        defer { signal(SIGPIPE, priorSIGPIPE) }
++        let began = DispatchTime.now().uptimeNanoseconds
++        let end = began.addingReportingOverflow(UInt64(reference.timeoutSeconds) * 1_000_000_000)
++        guard !end.overflow else { throw ProbeError("Resident solo absolute deadline overflow") }
++        let input = try preflight(environment: ProcessInfo.processInfo.environment,
++            read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++        try QwenResidentSoloDeviceScope.acquire()
++        let resources = QwenFullGenerationReferenceResources(preflight: input.first, deadline: end.partialValue)
++        try resources.check()
++        let first = input.first.admission
++        try publishSolo(QwenResidentSoloAdmitted(
++            requestIDs: input.requests.map { $0.request.requestID },
++            requestFingerprints: input.requests.map { $0.request.fingerprint }, profile: first.request.profile,
++            promptFileSHA256: first.source.promptFileSHA256,
++            promptTokenIDsSHA256: first.source.promptTokenIDsSHA256,
++            expectedTokenFileSHA256: input.expectedTokenFileSHA256, manifestSHA256: input.first.manifestSHA256,
++            artifactSHA256: first.source.resource.artifactAggregateSHA256,
++            configurationSHA256: first.source.resource.configurationSHA256,
++            referencePlanSHA256: first.source.plan.fingerprint,
++            processLifetimeSeconds: reference.timeoutSeconds), check: resources.check)
++        // Same BF16 target and cache policy as the matched resident cohort.
++        // Setting this before construction does not create an MTP module.
++        _qwen35MTPEnabled = false
++        try MLX.withError { fault in
++            Memory.cacheLimit = 0
++            Memory.clearCache()
++            try fault.check(); try resources.check()
++            guard Memory.cacheMemory == 0 else { throw ProbeError("Solo allocator retained freed buffers before load") }
++        }
++        let report = try produceQwenResidentSoloCohort(directory: reference.directory,
++            preflight: input, resources: resources)
++        try publishSolo(report, check: resources.check)
++    }
++
++    private func publishSolo<T: Encodable>(_ value: T, check: () throws -> Void) throws {
++        try check()
++        var data = try canonicalJSONData(value)
++        // Only CPU timing/token/metadata values; no tensor row or state payload.
++        guard !data.isEmpty, data.count <= 128 * 1024 else { throw ProbeError("Resident solo output exceeds its bound") }
++        data.append(10); try check()
++        try FileHandle.standardOutput.write(contentsOf: data)
++        try check()
++    }
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloRequest.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloRequest.swift
+@@ -0,0 +1,95 @@
++import Foundation
++import MLX
++
++/// Same full-model CBv2 session, frame/completion contract and finite native
++/// argmax as the reference. This measurement path never asks for a CPU full-row
++/// or state snapshot. The caller owns the loaded model, resource and time gates.
++func runQwenResidentSoloRequest(loaded: LoadedModel, admission: QwenGenerationReferenceAdmission,
++    expectedTokenIDs: [Int], admitResources: () throws -> Void, check: () throws -> Void
++) throws -> QwenResidentSoloRequestResult {
++    var session: CBv2RequestSession?
++    do {
++        return try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
++            do {
++                let request = admission.request
++                guard request.promptCount == 8192, request.chunkSize == 512, request.outputCount == 128,
++                      request.maximumTokens == 8320, request.stopTokenIDs.isEmpty,
++                      expectedTokenIDs.count == 128,
++                      expectedTokenIDs.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }) else {
++                    throw ProbeError("Resident solo differs from the matched 8K/128 geometry")
++                }
++                _ = try admitQwenRegisteredGenerationReferenceSource(loaded: loaded, admission: admission.source)
++                guard try QwenLongPrefillArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
++                    == admission.source.arithmetic else { throw ProbeError("Resident solo arithmetic changed") }
++                try checked(); try admitResources(); try checked()
++                let start = DispatchTime.now().uptimeNanoseconds
++                let owned = try CBv2RequestSession(loaded: loaded, promptCount: 8192, outputCount: 128)
++                session = owned
++                guard owned.committedTokens == 0, owned.committedPromptTokens == 0,
++                      owned.decodeForwardCount == 0, !owned.isClosed, !owned.isFailed else {
++                    throw ProbeError("Resident solo did not begin with fresh request state")
++                }
++                var tokens: [Int] = [], stamps: [UInt64] = []
++                var completedFrames = 0
++                for sequence in 0..<request.forwardCount {
++                    let frame = try request.frame(sequence: sequence)
++                    let selected: (Int, UInt64)? = try autoreleasepool {
++                        try checked()
++                        let output: MLXArray
++                        switch frame.phase {
++                        case .prefill:
++                            output = try owned.prefillChunk(Array(request.promptTokenIDs[
++                                frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)]),
++                                final: frame.finalPromptChunk, check: checked)
++                        case .decode:
++                            guard let prior = tokens.last else { throw ProbeError("Solo decode lacks its committed target token") }
++                            output = try owned.decode(prior, check: checked)
++                        }
++                        let expectsLogits = frame.finalPromptChunk || frame.phase == .decode
++                        guard owned.committedTokens == frame.tokenOffset + frame.tokenCount,
++                              owned.committedPromptTokens == min(request.promptCount, owned.committedTokens),
++                              owned.decodeForwardCount == max(0, owned.committedTokens - request.promptCount),
++                              output.shape == [1, expectsLogits ? request.profile.vocabularySize : 1],
++                              String(describing: output.dtype) == request.profile.activationDType else {
++                            throw ProbeError("Resident solo forward differs from its exact committed frame")
++                        }
++                        try checked()
++                        guard expectsLogits else { return nil }
++                        let token = try QwenGenerationReferenceCapture.token(output, request: request, check: checked)
++                        guard tokens.count < expectedTokenIDs.count, token == expectedTokenIDs[tokens.count] else {
++                            throw ProbeError("Resident solo selected target differs from pinned expected sequence")
++                        }
++                        return (token, DispatchTime.now().uptimeNanoseconds)
++                    }
++                    completedFrames += 1
++                    if let (token, stamp) = selected { tokens.append(token); stamps.append(stamp) }
++                }
++                let completion = try QwenGenerationReferenceCompletion(request: request, reason: .length,
++                    selectedTokenIDs: tokens, completedFrames: completedFrames)
++                try completion.requireSession(promptCount: 8192, outputCount: 128,
++                    committedPromptTokens: owned.committedPromptTokens, decodeForwardCount: owned.decodeForwardCount,
++                    committedTokens: owned.committedTokens)
++                try checked(); try owned.finishGeneration(completion); try checked()
++                guard owned.isClosed, !owned.isFailed, tokens == expectedTokenIDs else {
++                    throw ProbeError("Resident solo state or token guard did not complete")
++                }
++                let timing = try QwenResidentSoloTiming(start: start, selected: stamps,
++                    retired: DispatchTime.now().uptimeNanoseconds)
++                return .init(requestID: request.requestID, requestFingerprint: request.fingerprint,
++                    selectedTokenIDs: tokens, selectedTokenIDsSHA256: qwenGenerationTokenHash(tokens),
++                    completedFrames: completedFrames, committedTokens: completion.committedTokens, timing: timing)
++            } catch { try nativeError.check(); throw error }
++        }
++    } catch {
++        let primary = error
++        var cleanup: [String] = []
++        if let session {
++            do { try MLX.withError { fault in try session.cancel(); try fault.check() } }
++            catch { cleanup.append(String(describing: error)) }
++            if !session.isClosed || !session.isFailed { cleanup.append("solo request state was not failed and retired") }
++        }
++        if !cleanup.isEmpty { throw ProbeError("Resident solo request failed (\(primary)); cleanup: \(cleanup.joined(separator: "; "))") }
++        throw primary
++    }
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloTiming.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloTiming.swift
+@@ -0,0 +1,54 @@
++import Foundation
++
++struct QwenResidentSoloTiming: Encodable {
++    let clock = "DispatchTime.uptimeNanoseconds.same_process"
++    let requestStartNanoseconds: UInt64
++    let selectedTokenNanoseconds: [UInt64]
++    let retiredNanoseconds: UInt64
++    let prefillSeconds: Double
++    let decodeSeconds: Double
++    let prefillTokensPerSecond: Double
++    let decodeTokensPerSecond: Double
++    let includesLoading = false
++    let includesSourceAndResourceAdmission = false
++    let includesFreshStateConstruction = true
++    let includesPerForwardOwnershipValidation = true
++    let includesDiagnosticRowOrStateCapture = false
++    let includesTransport = false
++    let externalTTFTMeasured = false
++
++    init(start: UInt64, selected: [UInt64], retired: UInt64) throws {
++        guard selected.count == 128, let first = selected.first, let last = selected.last,
++              start < first, first < last, last <= retired,
++              zip(selected, selected.dropFirst()).allSatisfy({ $0 <= $1 }) else {
++            throw ProbeError("Resident solo token timing order or count differs")
++        }
++        requestStartNanoseconds = start; selectedTokenNanoseconds = selected; retiredNanoseconds = retired
++        prefillSeconds = Double(first - start) / 1e9
++        decodeSeconds = Double(last - first) / 1e9
++        prefillTokensPerSecond = 8192 / prefillSeconds
++        decodeTokensPerSecond = 127 / decodeSeconds
++    }
++}
++
++struct QwenResidentSoloRequestResult: Encodable {
++    let requestID: UUID
++    let requestFingerprint: String
++    let selectedTokenIDs: [Int]
++    let selectedTokenIDsSHA256: String
++    let completedFrames: Int
++    let committedTokens: Int
++    let timing: QwenResidentSoloTiming
++    let promptCount = 8192
++    let chunkSize = 512
++    let requestedOutputCount = 128
++    let finishReason = "length"
++    let expectedTokenSequenceMatched = true
++    let allRequestStateRetired = true
++    let modelRemainsResident = true
++    let prefixReuse = false
++    let mtpEnabled = false
++    let fullVocabularyRowsCaptured = false
++    let stateSnapshotsCaptured = false
++    let independentFullRowStateComparisonPerformed = false
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/main.swift
+@@ -1,20 +1,18 @@
+ import Darwin
+ import Foundation
+ 
+-/// Private reference executable; the original broad benchmark Main is retained
+-/// outside this source overlay and is not changed in any existing build.
+ @main
+ struct Main {
+     static func main() {
+         do {
+             let arguments = Array(CommandLine.arguments.dropFirst())
+-            if arguments == ["--mode", "qwen-registered-full-generation-reference-check"] {
+-                try emitJSON(checkQwenFullGenerationReferenceEntry())
++            if arguments == ["--mode", "qwen-resident-solo-generation-check"] {
++                try emitJSON(checkQwenResidentSoloGeneration())
+                 return
+             }
+-            try QwenFullGenerationReferenceCLI(arguments: arguments).run()
++            try QwenResidentSoloCLI(arguments: arguments).run()
+         } catch {
+-            log("full-generation-reference: \(error)")
++            log("resident-solo-generation: \(error)")
+             exit(1)
+         }
+     }
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift
+@@ -320,7 +320,14 @@
+         state = state.asType(.float32)
+     }
+ 
+-    if GatedDeltaKernelManager.shared.kernel != nil {
++    let usesNativeKernel = GatedDeltaKernelManager.shared.kernel != nil
++    if let counter = qwenGatedDeltaWarmupCounter {
++        counter.record(native: usesNativeKernel, tokenCount: q.dim(1), batch: B,
++            keyHeads: q.dim(2), valueHeads: Hv, keyDim: Dk, valueDim: Dv,
++            bf16: q.dtype == .bfloat16 && k.dtype == .bfloat16 && v.dtype == .bfloat16,
++            stateFP32: state.dtype == .float32)
++    }
++    if usesNativeKernel {
+         return gatedDeltaKernel(q: q, k: k, v: v, g: g, beta: beta, state: state, mask: mask)
+     }
+ 
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/QwenResidentBenchmarkObservation.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/QwenResidentBenchmarkObservation.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import MLX
++import MLXNN
++
++/// Process-local, main-thread, warmup-only counters. No MLX array is retained.
++/// The benchmark removes the observer before entering any measured request.
++@_spi(ClusterBenchmark)
++public struct QwenGatedDeltaWarmupObservation: Encodable {
++    public let nativePrefillCalls: Int
++    public let nativeDecodeCalls: Int
++    public let operationsFallbackCalls: Int
++    public let invalidGeometryCalls: Int
++}
++
++final class QwenGatedDeltaWarmupCounter {
++    var prefill = 0, decode = 0, fallback = 0, invalid = 0
++    func record(native: Bool, tokenCount: Int, batch: Int, keyHeads: Int,
++                valueHeads: Int, keyDim: Int, valueDim: Int, bf16: Bool, stateFP32: Bool) {
++        guard Thread.isMainThread, batch == 1, keyHeads == 16, valueHeads == 32,
++              keyDim == 128, valueDim == 128, bf16, stateFP32,
++              tokenCount == 1 || tokenCount == 512 else { invalid += 1; return }
++        if !native { fallback += 1 }
++        else if tokenCount == 512 { prefill += 1 }
++        else { decode += 1 }
++    }
++    var observation: QwenGatedDeltaWarmupObservation {
++        .init(nativePrefillCalls: prefill, nativeDecodeCalls: decode,
++              operationsFallbackCalls: fallback, invalidGeometryCalls: invalid)
++    }
++}
++
++// The private benchmark owns the only synchronous model executor on main.
++// Other users leave this nil. No lock/array copy/counter work occurs when nil.
++nonisolated(unsafe) var qwenGatedDeltaWarmupCounter: QwenGatedDeltaWarmupCounter?
++
++@_spi(ClusterBenchmark)
++public func withQwenGatedDeltaWarmupObservation<T>(_ body: () throws -> T) throws
++    -> (T, QwenGatedDeltaWarmupObservation) {
++    guard Thread.isMainThread, qwenGatedDeltaWarmupCounter == nil else {
++        throw NSError(domain: "QwenResidentBenchmark", code: 1,
++            userInfo: [NSLocalizedDescriptionKey: "Warmup observation requires one main-thread owner"])
++    }
++    let counter = QwenGatedDeltaWarmupCounter()
++    qwenGatedDeltaWarmupCounter = counter
++    defer { qwenGatedDeltaWarmupCounter = nil }
++    let result = try body()
++    return (result, counter.observation)
++}
++
++@_spi(ClusterBenchmark)
++public func qwen35BenchmarkFusedProjectionCounts(_ model: Module) -> (gatedDeltaLayers: Int, fusedLayers: Int) {
++    let layers = model.namedModules().compactMap { $0.1 as? Qwen35GatedDeltaNet }
++    return (layers.count, layers.filter(\.hasFusedInputProjection).count)
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2BenchmarkQueryBlock.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2BenchmarkQueryBlock.swift
+@@ -0,0 +1,5 @@
++/// Read-only configured dispatch policy; this is not an actual kernel counter.
++@_spi(ClusterBenchmark)
++public func cbv2BenchmarkConfiguredQueryBlockSize() -> Int {
++    CBv2AttentionV1.queryBlockSize
++}
+--- a/experiments/cluster/inference/Sources/SoloDeviceExclusion/ClusterDeviceExclusion.swift
++++ b/experiments/cluster/inference/Sources/SoloDeviceExclusion/ClusterDeviceExclusion.swift
+@@ -0,0 +1,154 @@
++import Foundation
++import Darwin
++
++public enum ClusterDeviceExclusionError: Error, Equatable, CustomStringConvertible {
++    case invalid(String)
++    public var description: String { switch self { case .invalid(let message): return message } }
++}
++
++/// One process's exclusive local device scope. Solo callers retain this object
++/// through actual in-process engine teardown. A cluster leader/daemon launcher
++/// must not hold it: the native owner child acquires its own scope.
++///
++/// A native owner's nonempty journal is sticky across process death. Construction
++/// never truncates or recovers it, and even the owner SPI can resolve only a
++/// journal recorded by this same live object after it acquired an empty file.
++public final class ClusterDeviceExclusion: @unchecked Sendable {
++    private let lock = NSLock()
++    private let directory: Int32
++    private let descriptor: Int32
++    private let directoryPath: String
++    private let directoryIdentity: stat
++    private let identity: stat
++    private var recorded = false
++    private var recordedBytes: Data?
++    private var resolved = false
++
++    public convenience init(directoryURL: URL) throws {
++        try self.init(directoryURL: directoryURL, beforeFinalValidation: {})
++    }
++
++    // Internal deterministic filesystem-race seam; production always uses the
++    // public initializer above, with no callback or path replacement.
++    init(directoryURL: URL, beforeFinalValidation: () throws -> Void) throws {
++        let dir = try Self.openDirectory(directoryURL)
++        var dirStat = stat()
++        guard fstat(dir, &dirStat) == 0, dirStat.st_uid == geteuid(),
++              dirStat.st_mode & S_IFMT == S_IFDIR, dirStat.st_mode & 0o077 == 0 else {
++            Darwin.close(dir); throw ClusterDeviceExclusionError.invalid("Lease directory must be private and owned")
++        }
++        let fd = openat(dir, "native-device.lease", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
++        guard fd >= 0 else { Darwin.close(dir); throw ClusterDeviceExclusionError.invalid("Cannot open device lease") }
++        var value = stat(), path = stat()
++        guard fstat(fd, &value) == 0, fstatat(dir, "native-device.lease", &path, AT_SYMLINK_NOFOLLOW) == 0,
++              value.st_dev == path.st_dev, value.st_ino == path.st_ino, value.st_uid == geteuid(), value.st_nlink == 1,
++              value.st_mode & S_IFMT == S_IFREG, value.st_mode & 0o077 == 0,
++              flock(fd, LOCK_EX | LOCK_NB) == 0 else {
++            Darwin.close(fd); Darwin.close(dir); throw ClusterDeviceExclusionError.invalid("Device lease unavailable or unsafe")
++        }
++        guard fstat(fd, &value) == 0, value.st_size == 0 else {
++            Darwin.close(fd); Darwin.close(dir)
++            throw ClusterDeviceExclusionError.invalid("Unresolved native ownership journal; explicit recovery required")
++        }
++        directory = dir; descriptor = fd; identity = value
++        directoryPath = directoryURL.path; directoryIdentity = dirStat
++        try beforeFinalValidation()
++        // Solo never records a journal, so construction itself must establish
++        // that the configured path still names this held exclusion.
++        try requireSameFile()
++        guard fstat(descriptor, &value) == 0, value.st_size == 0 else {
++            throw ClusterDeviceExclusionError.invalid("Native ownership journal appeared during device acquisition")
++        }
++    }
++
++    @_spi(OwnerService) public func recordNativeOwnership(_ data: Data) throws {
++        try lock.withLock {
++            guard !recorded, !resolved, !data.isEmpty, data.count <= 16_384 else {
++                throw ClusterDeviceExclusionError.invalid("Lease journal is repeated or outside its bound")
++            }
++            try requireSameFile()
++            var current = stat()
++            guard fstat(descriptor, &current) == 0, current.st_size == 0 else {
++                throw ClusterDeviceExclusionError.invalid("Lease journal is no longer empty")
++            }
++            recorded = true // A partial write is unresolved; it is never retried.
++            var offset = 0
++            while offset < data.count {
++                let count = data.withUnsafeBytes { Darwin.pwrite(descriptor, $0.baseAddress!.advanced(by: offset), data.count - offset, off_t(offset)) }
++                if count < 0 && errno == EINTR { continue }
++                guard count > 0 else { throw ClusterDeviceExclusionError.invalid("Lease journal write failed") }
++                offset += count
++            }
++            guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw ClusterDeviceExclusionError.invalid("Lease journal sync failed") }
++            try requireSameFile()
++            try requireContents(data)
++            recordedBytes = data
++        }
++    }
++
++    @_spi(OwnerService) public func resolveNativeOwnership() throws {
++        try lock.withLock {
++            guard recorded, !resolved, let recordedBytes else { throw ClusterDeviceExclusionError.invalid("No unresolved journal belongs to this device scope") }
++            try requireSameFile()
++            try requireContents(recordedBytes)
++            guard ftruncate(descriptor, 0) == 0, fsync(descriptor) == 0 else { throw ClusterDeviceExclusionError.invalid("Lease clear failed") }
++            resolved = true
++        }
++    }
++
++    private func requireContents(_ expected: Data) throws {
++        var information = stat()
++        guard fstat(descriptor, &information) == 0, information.st_size == expected.count else {
++            throw ClusterDeviceExclusionError.invalid("Native ownership journal content changed")
++        }
++        var bytes = [UInt8](repeating: 0, count: expected.count)
++        var offset = 0
++        while offset < bytes.count {
++            let count = bytes.withUnsafeMutableBytes { Darwin.pread(descriptor, $0.baseAddress!.advanced(by: offset), $0.count - offset, off_t(offset)) }
++            if count < 0 && errno == EINTR { continue }
++            guard count > 0 else { throw ClusterDeviceExclusionError.invalid("Native ownership journal read failed") }
++            offset += count
++        }
++        guard Data(bytes) == expected else { throw ClusterDeviceExclusionError.invalid("Native ownership journal content changed") }
++    }
++
++    private func requireSameFile() throws {
++        var current = stat(), path = stat(), directoryNow = stat(), directoryName = stat()
++        guard fstat(directory, &directoryNow) == 0, lstat(directoryPath, &directoryName) == 0,
++              directoryNow.st_dev == directoryIdentity.st_dev, directoryNow.st_ino == directoryIdentity.st_ino,
++              directoryName.st_dev == directoryIdentity.st_dev, directoryName.st_ino == directoryIdentity.st_ino,
++              directoryNow.st_uid == geteuid(), directoryNow.st_mode & 0o077 == 0, directoryNow.st_nlink > 0,
++              fstat(descriptor, &current) == 0, fstatat(directory, "native-device.lease", &path, AT_SYMLINK_NOFOLLOW) == 0,
++              current.st_dev == identity.st_dev, current.st_ino == identity.st_ino,
++              path.st_dev == identity.st_dev, path.st_ino == identity.st_ino, current.st_nlink == 1,
++              current.st_uid == geteuid(), current.st_mode & S_IFMT == S_IFREG, current.st_mode & 0o077 == 0 else {
++            throw ClusterDeviceExclusionError.invalid("Lease journal replaced")
++        }
++    }
++
++    private static func openDirectory(_ url: URL) throws -> Int32 {
++        let pieces = url.path.split(separator: "/", omittingEmptySubsequences: false)
++        guard url.isFileURL, url.path.hasPrefix("/"), pieces.count > 1, url.path.utf8.count <= 4096,
++              pieces.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
++              !url.path.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
++            throw ClusterDeviceExclusionError.invalid("Invalid lease directory")
++        }
++        var fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
++        guard fd >= 0 else { throw ClusterDeviceExclusionError.invalid("Cannot open lease directory root") }
++        do {
++            for piece in pieces.dropFirst() {
++                let name = String(piece)
++                var next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++                if next < 0 && errno == ENOENT {
++                    guard mkdirat(fd, name, 0o700) == 0 || errno == EEXIST else { throw ClusterDeviceExclusionError.invalid("Cannot create lease directory") }
++                    next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++                }
++                guard next >= 0 else { throw ClusterDeviceExclusionError.invalid("Lease directory is missing or follows a link") }
++                Darwin.close(fd); fd = next
++            }
++            return fd
++        } catch { Darwin.close(fd); throw error }
++    }
++
++    deinit { Darwin.close(descriptor); Darwin.close(directory) }
++}
+--- a/experiments/cluster/inference/Package.swift
++++ b/experiments/cluster/inference/Package.swift
+@@ -12,7 +12,9 @@
+         .package(path: "../../../libs/mlx-swift-lm"),
+     ],
+     targets: [
++        .target(name: "SoloDeviceExclusion"),
+         .executableTarget(name: "ClusterInference", dependencies: [
++            "SoloDeviceExclusion",
+             .product(name: "Cmlx", package: "mlx-swift"),
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "MLXNN", package: "mlx-swift"),

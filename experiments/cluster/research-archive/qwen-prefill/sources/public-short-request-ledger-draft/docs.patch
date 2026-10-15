@@ -1,0 +1,36 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -175,6 +175,11 @@
+ one-stage load/release path with current resource admission. Its public fixture
+ passes 21 accepted/122 rejected checks; native materialization remains
+ unqualified. No forward permission or numerical parity follows from the pure tests.
++
++The [short request ledger](QWEN_DENSE_SHORT_LEDGER.md) derives a separate 3/2/2
++state, fusion and evidence allowance for registered 9B/27B full-reference and
++stage-pair scopes. Its pure checks establish no allocator provenance, execution
++permission or whole-process memory bound.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -62,6 +62,19 @@
+ The 30-source public runner shares the registered-profile metadata input. These
+ pure CLI, budget and resource predicates do not execute the private live gate
+ or materialization. Native materialization remains unqualified.
++
++Run the [short request memory-ledger fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_LEDGER.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortRequestLedger/run.sh
++```
++
++The standalone fixture passed 31 accepted/42 rejected checks with empty stderr;
++public runner execution remains pending. The 21-source runner reuses the shared
++registered-profile metadata. Invented allocator callbacks test exact short state,
++fusion and evidence allowances without qualifying resource admission or native
++forward execution.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

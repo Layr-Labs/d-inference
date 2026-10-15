@@ -33,6 +33,13 @@ registry entry. Both listeners bind 127.0.0.1 and require a per-run bearer
 token written to `<state>/auth-token`. The engine sees only `--engine-env`
 entries as its runtime-policy environment.
 
+CPU-only client checks (SSE timing math, abort accounting, parsing, PNG
+generator; no runner or GPU):
+
+```sh
+python3 -B -I -m unittest discover -s scripts/nemotron-qualification -p test_super_runner_client.py
+```
+
 ## Build
 
 Use the qualification harness (see [README.md](README.md)). Validation can use a

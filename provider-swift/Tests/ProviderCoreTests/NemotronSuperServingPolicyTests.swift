@@ -63,9 +63,10 @@ struct NemotronSuperServingPolicyTests {
         #expect(try NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: plan.environment, speculates: true) == 8)
         // Every request's fixed bytes at the served 65,536-token context and the
-        // 1 GiB prefix bank; above the 38,433,323,149-byte minimum grant
-        // measured for depth 3 x 8 without the bank.
+        // 1 GiB prefix bank: above the minimum grants measured for depth 3 x 8,
+        // 39,507,064,973 bytes with the bank and 38,433,323,149 without it.
         #expect(plan.admissionKVBytes == (36 << 30) + (1 << 30))
+        #expect(plan.admissionKVBytes > 39_507_064_973)
         #expect(plan.admissionKVBytes - plan.prefixBankBytes > 38_433_323_149)
     }
 

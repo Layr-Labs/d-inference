@@ -253,8 +253,9 @@ speculating owner's fixed per-request charge, which bounds the assistant's FP8
 history, its FP32 trusted backlog and every draft step's scores by the
 configured context: about 30.2 KB per token per request (3.44 GB at 32,768,
 4.43 GB at 65,536 and 6.41 GB at 131,072, measured). Eight requests' LOAD claim
-is admitted at 65,536 (36 GiB of KV headroom) and refused at 131,072 on 256 GB,
-because the claim still counts the installed weights until the owner is built.
+is admitted at 65,536 (36 GiB of KV headroom and the 1 GiB prefix bank,
+130.7 GB in all) and refused at 131,072 on 256 GB, because the claim still
+counts the installed weights until the owner is built.
 The plain owner's fixed bytes stay 516,253,712 at any context.
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified

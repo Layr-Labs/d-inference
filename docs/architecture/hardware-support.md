@@ -35,10 +35,10 @@ before macOS and other processes take any. A 128 GB Mac (115.2 GiB cap) cannot
 admit the default load; 192 GB leaves 30.0 GiB under the cap, which also holds a
 16-image request (24.5 GiB of media). Only a 256 GB M3 Ultra is measured: load
 peak physical footprint 80.5 GB, MLX active 75.0 GB after load and 121.0 GB
-charged during a load at a 28 GiB grant; at the 65,536-token context a load
-claiming 129.6 GB (36 GiB of KV headroom) was admitted and one claiming
-140.3 GB (46 GiB, as eight speculative requests at 131,072 tokens need) was
-refused. The registry floor derived from this is
+charged during a load at a 28 GiB grant; at the 65,536-token context loads
+claiming 129.6 GB (36 GiB of KV headroom) and 130.7 GB (with the 1 GiB prefix
+bank) were admitted and one claiming 140.3 GB (46 GiB, below what eight
+speculative requests at 131,072 tokens need) was refused. The registry floor derived from this is
 in the [registry reference](../reference/model-registry-format.md#nemotron-super).
 Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,

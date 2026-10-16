@@ -177,10 +177,16 @@ enum NemotronSuperLocalBridgeBuilder {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
                     throw Failure.retirementIncomplete
                 }
-                return NemotronSuperVisionSubmission.make(try NemotronSuperVisionPreparation.prepare(
+                let prepared = try NemotronSuperVisionPreparation.prepare(
                     installed: installed, prompt: input.promptTokens.map(Int32.init),
                     normalizedImages: input.normalizedImages, maximumFeatureBytes: maximumFeatureBytes,
-                    construction: construction))
+                    construction: construction)
+                // The features are evaluated; a non-finite value would decode
+                // as garbage, so the request fails instead of streaming it.
+                for feature in prepared.features where !all(isFinite(feature)).item(Bool.self) {
+                    throw NemotronSuperLocalImageBinding.Failure.invalidFeatures
+                }
+                return NemotronSuperVisionSubmission.make(prepared)
             }
         }
 

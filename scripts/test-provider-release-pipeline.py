@@ -80,6 +80,23 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn('\n  ' + job, CALLER)
         self.assertEqual(CALLER.count('uses: ./.github/workflows/release-provider.yml'), 3)
 
+    def test_staging_lane_is_gated_off_until_the_infra_var_is_set(self):
+        # A master push builds and publishes dev unconditionally; staging only
+        # when the STAGING_ENABLED repo variable is 'true' (set once the staging
+        # stack and STAGING_* secrets exist), so a push never burns a second
+        # build that would hard-fail at staging publication for want of secrets.
+        dev = CALLER.split('\n  dev:\n', 1)[1].split('\n  staging:\n', 1)[0]
+        staging = CALLER.split('\n  staging:\n', 1)[1].split('\n  prod:\n', 1)[0]
+        prod = CALLER.split('\n  prod:\n', 1)[1]
+        staging_if = staging.split('    if:', 1)[1].split('    concurrency:', 1)[0]
+        self.assertIn("vars.STAGING_ENABLED == 'true'", staging_if)
+        # The gate ANDs with the trigger routing, so disabling it drops staging
+        # entirely while dev still matches the push.
+        self.assertIn("(github.event_name == 'push' && github.ref_type == 'branch')", staging_if)
+        self.assertNotIn("vars.STAGING_ENABLED", dev)
+        self.assertNotIn("vars.STAGING_ENABLED", prod)
+        self.assertEqual(CALLER.count("vars.STAGING_ENABLED"), 1)
+
     def test_reusable_workflow_takes_the_environment_as_a_called_input(self):
         header = RELEASE.split('\njobs:\n', 1)[0]
         self.assertIn('\non:\n  workflow_call:\n', header)
@@ -341,7 +358,12 @@ class ReleasePipelineTests(unittest.TestCase):
         # Both SDK lanes pass the environment so retained diagnostics never clash.
         self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'build-provider'))
         self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk'))
-        self.assertIn('provider-sdk-test-diagnostics-${{ inputs.environment }}-', ACTION)
+        # Release lanes add an -<environment>- infix; a caller passing no
+        # environment (the warm lane) keeps the historical name with no empty
+        # double dash.
+        self.assertIn("provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-", ACTION)
+        self.assertNotIn('provider-sdk-test-diagnostics--', ACTION)
+        self.assertNotRegex(WARM, r'(?m)^\s+environment:')
 
 
 if __name__ == '__main__':

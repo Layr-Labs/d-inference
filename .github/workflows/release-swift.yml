@@ -129,10 +129,16 @@ jobs:
     secrets: inherit
 
   # Master push: publish staging alongside dev. Manual staging dispatch.
+  # Gated OFF until the staging stack exists: set the STAGING_ENABLED repo
+  # variable to 'true' once darkbloom-devnet-infra PR 18 is applied and the
+  # STAGING_* secrets exist. Unset (the default) means a master push builds and
+  # publishes dev only, so provider pushes never burn a second build that would
+  # hard-fail at staging publication for want of credentials.
   staging:
     if: >-
-      ${{ (github.event_name == 'push' && github.ref_type == 'branch') ||
-          (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging') }}
+      ${{ vars.STAGING_ENABLED == 'true' &&
+          ((github.event_name == 'push' && github.ref_type == 'branch') ||
+           (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')) }}
     # One staging publication at a time, parallel to the dev lane in the same run.
     concurrency:
       group: release-staging

@@ -66,11 +66,16 @@ extension EngineV2SlotFactory {
             guard let mtp = root.mtp, mtp.targetIdentity == ObjectIdentifier(root.textTower) else {
                 return .init(artifact: nil, status: .disabled(.metadataMissing, configured: true))
             }
-            return .init(artifact: nil, status: .init(configured: true, active: false, reason: nil,
-                source: .inline, revision: root.artifact.identity.revision,
-                sourceRevision: root.artifact.identity.revision,
-                artifactBytes: UInt64(root.artifact.inventory.bytes(in: .mtp)), assistantBytes: 0))
+            return .init(artifact: nil, status: glm5NextInlineStatus(root: root, active: false))
         }
+    }
+
+    /// The embedded predictor's inline status. Its weights were charged with
+    /// the full root, so it never adds assistant residency.
+    static func glm5NextInlineStatus(root: GLM5NextModel, active: Bool) -> MTPActivationStatus {
+        MTPActivationStatus(configured: true, active: active, reason: nil, source: .inline,
+            revision: root.artifact.identity.revision, sourceRevision: root.artifact.identity.revision,
+            artifactBytes: UInt64(root.artifact.inventory.bytes(in: .mtp)), assistantBytes: 0)
     }
 
     /// Exact rectangular verification (scalar-dense rows, row-exact affine

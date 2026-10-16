@@ -6,7 +6,7 @@ import ProviderCoreFoundation
 extension EngineV2Factory {
     /// Offline GLM baseline through the real managed loader and ordinary slot
     /// factory. Caller-supplied pinned metadata does not register a public model.
-    /// Deliberately target-only and cache-free until the separate profile gates.
+    /// Deliberately target-only and cache-free: a baseline, never a serving profile.
     /// maximumContextLength is a required enforced engine bound. Keep the
     /// returned bound in reports; it does not replace the source config maximum.
     @_spi(Benchmarking)

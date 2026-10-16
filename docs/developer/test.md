@@ -81,7 +81,7 @@ The continuation suites (`GLM5NextTextModelTests`, `GLM5NextMTPTests`,
 They are not full-checkpoint or provider acceptance tests. Keep their receipts
 separate from the earlier prerequisite suites; a previous passing binary does
 not validate newly added source. The provider's `GLM5NextPromptPolicyTests`
-renders the shipped `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` template with the
+renders the shipped `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` template with the
 unpatched pinned Swift-Jinja. It must match every official-template golden byte
 for byte, including list-shaped tool results that reach each rewritten `[0]`
 access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that

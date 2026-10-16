@@ -74,11 +74,15 @@ extension EngineV2Bridge {
 
     var hasGLM5NextNativeOwner: Bool { glm5NextNativeOwner != nil }
 
+    /// Content-free marker for a GLM request whose reservation exceeds the
+    /// slot's whole pool; it rides the existing capacity rejection.
+    static let glm5NextExceedsSlotCapacity = "request_exceeds_slot_capacity"
+
     /// The one GLM predicate for the process fault fence: an owned native
-    /// bridge, or any bridge serving the locally qualified GLM identity
+    /// bridge, or any bridge serving an exact GLM identity
     /// (which can then never fall back to ownerless admission or growth).
     nonisolated var isGLM5NextManaged: Bool {
-        glm5NextNativeOwner != nil || modelId == GLM5NextLocalQualification.modelID
+        glm5NextNativeOwner != nil || GLM5NextCoordinatorServing.isManagedModelID(modelId)
     }
 
     #if DEBUG

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -71,7 +71,8 @@ lower the activation reserve or replace actual per-request byte admission.
 
 ### GLM5Next implementation boundary
 
-`glm5_next` remains outside the production supported set. The native SDK has an
+`glm5_next` is in the production supported set only as the exact catalog build
+`glm-5.3-flash` (`EngineV2SupportedModels`, `GLM5NextCoordinatorServing`). The native SDK has an
 unregistered `GLM5NextTextModel`, trained `GLM5NextMTP`, vision tower and
 `GLM5NextModel` wrapper. `GLM5NextArtifactLoader` validates the pinned file
 inventory and reads bounded tensor ranges instead of materializing a second
@@ -88,12 +89,26 @@ full-artifact qualification. Source lives under
 required paged, complete-prefix and trained-MTP gates.
 
 An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
-can admit the exact pinned artifact into standalone discovery without changing
-`EngineV2SupportedModels` or coordinator advertisement. The local selection
-cannot bypass managed loading, native ownership, memory admission or backend
-requirements. Coordinator-connected mode refuses GLM in
-`ProviderLoop.ensureModelLoaded` before any catalog request, because no served
-context bound exists there. GLM MTP is on under the default `mtp_mode = "auto"`;
+can admit the exact pinned local artifact into standalone discovery without
+changing coordinator advertisement. The local selection cannot bypass managed
+loading, native ownership, memory admission or backend requirements.
+
+Coordinator-connected mode serves only catalog model `glm-5.3-flash`, delivered
+through the ordinary model-revision download, through the same managed load
+(`ProviderLoop.coordinatorGLM5NextPlan`, `GLM5NextCoordinatorServing.resolvePlan`).
+Before any reservation it requires Apple M5 Max or M5 Ultra with at least
+256 GiB (`GLM5NextHardwareRequirement`; the provider reports `glm5_next_v1`
+only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
+(`ModelRuntimeRequirements`), the native step-scratch price
+(`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
+version and aggregate, the revision receipt must match it and hash to that
+aggregate, and the admitted load hashes every file against the same manifest.
+An R2-only revision names its native identity by catalog id and version. The
+reviewed shipped template remains mandatory. The enforced context is 262,144
+tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog
+`max_context_length` lowers it and a larger one refuses the load. A revision
+swap borrows the activation's writer lease
+(`GLM5NextArtifactOwnership.borrowingCallerLease`). GLM MTP is on under the default `mtp_mode = "auto"`;
 local startup skips GLM only when `mtp_mode = "off"` or the `DARKBLOOM_CBV2_MTP`
 kill switch disables MTP (`GLM5NextLocalServing`).
 A GLM slot is published only when its bundle and engine report
@@ -108,23 +123,79 @@ embedded MTP layer (`GLM5NextManagedLoad.executionPolicy`); the reference
 per-token KDA and selection graphs exceed MLX's Metal resource limit at real
 prompt lengths. Routed-expert prefill on Neural-Accelerator GPUs runs the NAX
 expert kernel for affine 4-bit and NVFP4 banks (`RoutedExperts.fusedDecodeNAXPrefill`;
-other GPUs keep MLX's sorted gather). The policy is part of the encrypted checkpoint storage identity
+other GPUs keep MLX's sorted gather), and prefill chunks past position 2,048 run the
+native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). The policy is part of the encrypted checkpoint storage identity
 (`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
 engine prices one worst-case step at setup and stays inactive when it exceeds
-the post-load envelope; each sparse query token retains about 46 MB of
-selected-latent reads until the step fence. With four requests a 512-token step
-prices 33.6 GB and a 1,024-token step 62.9 GB at 8K context, against about
-56.8 GB of admission on a 256 GiB host after load, so the GLM scheduler caps
-prefill chunks and steps at 512 tokens and disables solo stripes
-(`EngineV2Factory.glm5NextMaximumStepTokens`, `glm5NextServingScheduler`). These
-limits rise after in-kernel paged reads remove the retained reads and re-pricing
-admits a larger step. A refused activation names the native reason (for example
+the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
+with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
+selection row per query, retained until the step fence (about 46 MB per query
+across 11 DSA layers). A longer row whose selection rows would read at least
+its history instead reads its whole latent plane once per layer through
+the page table and runs the contiguous arithmetic over it
+(`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),
+so its retained reads are bounded by the history, not the chunk. The GLM
+scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
+and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
+`glm5NextServingScheduler`). The price splits into setup bytes for the step
+geometry and a rate per context token of each request, which covers the
+request's index metadata reads, pooled index planes, latent reads and page
+tables in both its step and the chained decode successor
+(`GLM5NextStepScratch`, `PagedKVBackend.glm5NextStepScratch`). The setup check
+charges that rate for the most history the step's rows can hold: every row at
+the context limit, or the pool's whole token capacity when smaller
+(`GLM5NextPagedModelBinding.validateStepEnvelope`), or the all-rows-at-context
+price when that is smaller. Reads, writes and tables the step owner retains
+count for every DSA layer; a layer's temporaries (scores, pooled index planes,
+selections, gather blocks) count once, twice for overlap with a neighbour
+(`GLM5NextStepBytes`), which stays at least 1.6 times the step memory
+measured on the real artifact at 32K, 128K and 262K context. For 2,048-token
+steps at a 262,144-token context the setup is about 5.6, 7.4 and 11.0 GB for
+1, 2 and 4 rows, and the rate about 55 KB per context token
+(`GLM5NextStepPriceTests`). A refused activation names the native reason (for example
 `capacityExhausted(needed:available:)`) and the step geometry in the load error
 (`EngineV2Factory.glm5NextActivationRefusal`).
 
 Automatic KV selection resolves paged for every GLM target; an explicit
 contiguous selection, the paged kill switch or the crash-loop guard refuses the
 GLM load rather than degrading (`EngineV2Factory.prepareProductionBackend`).
+GLM request memory is per reserved token (prompt + max output) plus fixed
+request charges. Target KV is 33,836 bytes per token: each of the 11 DSA layers
+stores one FP32 row of the 512-wide latent (no rotary part) plus 128 index-key,
+128 pool-gate and one validity column; a full 262,144-token request stores
+8,869,904,384 bytes. The 34 KDA layers carry fixed recurrent state
+(155,975,680 bytes per generation, three live generations). The embedded MTP
+layer stores 3,074 bytes of history per token; its serving plan charges
+33,900 bytes per reserved token across its resident, working and host copies
+plus a fixed part (`GLM5NextMTPExecution.memoryPlan`,
+`EngineV2.resolvedAuxiliaryBytesPerToken`). Native step scratch splits into a
+setup envelope and a price per context token (`PagedKVBackend.glm5NextStepScratch`).
+The bridge prices and reports `kv_bytes_per_token` = target KV + step scratch
++ MTP per token (`EngineV2SlotFactory`, `EngineV2MTPAdmissionCharges`) beside the
+engine's fixed request bytes; that rate drives `active_token_budget_max`, the
+oversized-request refusal and the publication check. It is not a second
+reservation, so step scratch is never charged twice: a paged GLM bridge makes no
+shared-budget claim of its own (`EngineV2Bridge.submitTokenized` reserves only
+for contiguous slots). One ledger, the engine's `AdmissionV2` bound to the GLM
+process-memory owner, charges each request's target KV, MTP state and fixed
+bytes at admission, and charges each step's scratch as a transient reservation
+when the step is built (`PagedKVBackend` step work, `AdmissionV2.reserveTransient`).
+Admission does not yet pre-reserve the per-token scratch, so a full ledger
+refuses the step rather than the request; that native change is deferred. Coordinator publication requires the slot pool to
+hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`),
+and a request whose reservation exceeds the whole pool is refused as
+`token_budget_exhausted: request_exceeds_slot_capacity` instead of queueing.
+The engine's activation check prices step scratch for every row at the full
+context against the same capacity, so the protected scheduler's running-row
+cap is the largest value that check admits
+(`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
+2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
+context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
+so a 56.8 GB grant runs two or three rows; four need about 72.4 GB, because pool
+tokens and the admissible ceiling derive from the same capacity. Publication
+also charges one step's setup and the admission watermark
+(`GLM5NextCoordinatorServing.fullContextRefusal`).
+
 Request concurrency follows `engine_v2_max_concurrent` (default 4, at most 8
 without a reviewed profile); GLM adds no width-1 pin, and native step pricing
 and per-request admission bound what runs together. The protected profile is
@@ -141,7 +212,7 @@ batch is 1, and the profile composes with the complete-prefix store
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
-one-partial-prefill default, which a 512-token step could not share anyway. The bridge advertises the enforced
+one-partial-prefill default. The bridge advertises the enforced
 context, so an over-length request is refused with 400 before native admission,
 and an omitted `max_tokens` defaults to half the bound. Omitted sampling fields
 use the artifact's `generation_config.json` (`EngineV2SamplingDefaults`).
@@ -202,11 +273,11 @@ suffix until EOS so quoted XML delimiters and a later malformed call cannot
 commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. Ambiguous
 string unions and unsupported indirect schemas are not inferred. This parser
-does not implement constrained decoding or enable GLM model advertisement.
+does not implement constrained decoding or advertise function calling.
 The request-local [GLM prompt contract](../reference/protocol-messages.md#unregistered-glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
-`EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`, and local LOAD refuses any other
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
 unpatched. It is the official template with numeric attribute access written as
 `[0]` subscripts; the official hash remains the golden rendering authority and

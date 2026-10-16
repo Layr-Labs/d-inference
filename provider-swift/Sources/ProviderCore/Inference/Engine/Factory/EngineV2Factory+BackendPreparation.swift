@@ -86,6 +86,16 @@ extension EngineV2Factory {
             self.glm5NextBudget = glm5NextBudget
         }
 
+        /// The GLM step price for the geometry the engine prices at activation;
+        /// nil for other backends or once the backend has been consumed.
+        func glm5NextStepScratch(maximumDraftTokens: Int) throws -> GLM5NextStepScratch? {
+            try lock.withLock {
+                guard let paged = backend as? PagedKVBackend else { return nil }
+                return try EngineV2Factory.glm5NextStepScratch(
+                    paged, scheduler: schedulerConfig, maximumDraftTokens: maximumDraftTokens)
+            }
+        }
+
         func consume(
             model: any LanguageModel,
             maxConcurrentRequests: Int,
@@ -241,7 +251,7 @@ extension EngineV2Factory {
                 environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
             let maximumBuffer = MLX.GPU.deviceInfo().maxBufferSize
             guard maximumBuffer > 0 else { throw EngineV2ProductionError.noKVHeadroom }
-            let scheduler = glm5NextServingScheduler(policy.scheduler, context: context)
+            var scheduler = glm5NextServingScheduler(policy.scheduler, context: context)
             let paged = try glm.makeCBv2PagedBackend(
                 kvBytesCapacity: cappedCapacity,
                 maximumBatchSize: scheduler.maxConcurrentRequests,
@@ -251,6 +261,9 @@ extension EngineV2Factory {
                 maximumScratchBytes: min(cappedCapacity, maximumBuffer),
                 segmentBytes: 64 << 20, maximumBufferBytes: maximumBuffer)
             if let protected = model as? GLM5NextProtectedModel {
+                scheduler.maxConcurrentRequests = try glm5NextActivatableRows(
+                    paged, scheduler: scheduler, layerKinds: layerKinds, context: context,
+                    capacityBytes: cappedCapacity, maximumScratchBytes: min(cappedCapacity, maximumBuffer))
                 guard let kvBudget, residentPrefixCache == nil, hybridPrefixCache == nil else {
                     throw EngineV2ProductionError.pagedUnavailable(
                         "GLM protected MTP requires the actual process budget; resident and hybrid prefixes are unsupported")
@@ -475,5 +488,66 @@ extension EngineV2Factory {
             }
         }
         return try contiguousPreparation()
+    }
+}
+
+extension EngineV2Factory {
+    /// One row's query per step, as the engine bounds it at activation: its
+    /// prefill chunk or solo stripe, or an MTP verification of 1 + drafts.
+    static func glm5NextStepScratch(
+        _ paged: PagedKVBackend, scheduler: CBv2SchedulerConfig, maximumDraftTokens: Int
+    ) throws -> GLM5NextStepScratch? {
+        try paged.glm5NextStepScratch(
+            maximumRequests: scheduler.maxConcurrentRequests,
+            maximumStepTokens: max(scheduler.maxBatchedTokensPerStep, scheduler.soloPrefillStripeTokens ?? 0),
+            maximumRowTokens: max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0,
+                1 + max(0, maximumDraftTokens)))
+    }
+
+    /// The largest running-row cap the engine's activation check admits
+    /// (`GLM5NextPagedModelBinding.validateStepEnvelope`), using its split
+    /// bound: step setup plus the per-context-token price of min(pool tokens,
+    /// rows × context) within the admissible capacity. The native check also
+    /// accepts a smaller exact all-rows price it does not expose, so this cap
+    /// never exceeds what activation accepts. Below one row the engine reports
+    /// its own refusal.
+    static func glm5NextActivatableRows(
+        _ paged: PagedKVBackend, scheduler: CBv2SchedulerConfig, layerKinds: [CBv2LayerKind],
+        context: Int, capacityBytes: Int, maximumScratchBytes: Int
+    ) throws -> Int {
+        let tokenBytes = layerKinds.reduce(0) {
+            $0 + ($1.headDim + $1.valueHeadDim) * DType.float32.size
+        }
+        var rows = scheduler.maxConcurrentRequests
+        while rows > 1 {
+            var candidate = scheduler
+            candidate.maxConcurrentRequests = rows
+            guard let scratch = try glm5NextStepScratch(
+                paged, scheduler: candidate,
+                maximumDraftTokens: GLM5NextMTPVerification.maximumRectangularDepth)
+            else { return rows }
+            if glm5NextActivationAdmits(scratch, rows: rows, context: context,
+                capacityBytes: capacityBytes, tokenBytes: tokenBytes,
+                maximumScratchBytes: maximumScratchBytes,
+                watermarkFraction: AdmissionV2.Config().watermarkFraction)
+            { break }
+            rows -= 1
+        }
+        return rows
+    }
+
+    /// The split-bound arithmetic of the native activation check.
+    static func glm5NextActivationAdmits(
+        _ scratch: GLM5NextStepScratch, rows: Int, context: Int, capacityBytes: Int,
+        tokenBytes: Int, maximumScratchBytes: Int, watermarkFraction: Double
+    ) -> Bool {
+        guard rows > 0, context > 0, tokenBytes > 0, capacityBytes > 0 else { return false }
+        let ceiling = min(
+            maximumScratchBytes, capacityBytes - Int(Double(capacityBytes) * watermarkFraction))
+        let (history, historyOverflow) = rows.multipliedReportingOverflow(by: context)
+        let (variable, variableOverflow) = scratch.bytesPerContextToken
+            .multipliedReportingOverflow(by: min(capacityBytes / tokenBytes, history))
+        let (required, requiredOverflow) = variable.addingReportingOverflow(scratch.setupBytes)
+        return !historyOverflow && !variableOverflow && !requiredOverflow && required <= ceiling
     }
 }

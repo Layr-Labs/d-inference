@@ -168,11 +168,8 @@ extension EngineV2SlotFactory {
             handle.bind(sourceTarget: root, servingTarget: protected)
             // Embedded weights were charged with the full root; no second
             // assistant residency or sidecar artifact may be added here.
-            let status = MTPActivationStatus(configured: true, active: true, reason: nil, source: .inline,
-                revision: root.artifact.identity.revision, sourceRevision: root.artifact.identity.revision,
-                artifactBytes: UInt64(root.artifact.inventory.bytes(in: .mtp)), assistantBytes: 0)
             return .init(snapshot: snapshot, servingModel: protected, assistant: handle,
-                mtpStatus: status, mtpArtifact: nil)
+                mtpStatus: glm5NextInlineStatus(root: root, active: true), mtpArtifact: nil)
         }
 
         var assistant: ProviderMTPAssistantHandle?

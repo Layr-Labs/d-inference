@@ -90,28 +90,30 @@ extension EngineV2Factory {
     /// The single source of GLM step geometry; the paged backend's query bound,
     /// the engine's step-scratch envelope and the scheduler all derive from it.
     /// The native engine prices one worst-case step at setup and refuses
-    /// activation when it exceeds the post-load envelope. Each sparse query
-    /// token retains its selected-latent reads (~46 MB across 11 DSA layers)
-    /// until the step fence. With 4 requests the pinned price is 33.6 GB for a
-    /// 512-token step versus 62.9 GB for 1,024 at 8K context (46.3 / 72.3 GB at
-    /// 32K), against about 56.8 GB of admission on a 256 GiB host after load,
-    /// so 1,024 does not fit with two or more concurrent requests. Raise both
-    /// once in-kernel paged reads remove the retained reads and re-pricing
-    /// admits the larger step (measured prefill: 512-token chunks ≈ 1,300
-    /// tok/s, 2,048 ≈ 1,570 tok/s).
-    static let glm5NextMaximumPrefillChunkTokens = 512
-    static let glm5NextMaximumStepTokens = 512
+    /// activation when it exceeds the post-load envelope (about 56.8 GB on a
+    /// 256 GiB host, shared with KV). A prefill-sized paged row reads its
+    /// latent history once per DSA layer instead of retaining ~46 MB of
+    /// selected latents per query token. The price is a setup amount for the
+    /// step geometry (about 11 GB for 2,048-token steps and 4 rows) plus about
+    /// 55 KB per context token of each request (`GLM5NextStepScratch`), which
+    /// the engine charges for the history its pool can hold
+    /// (GLM5NextStepPriceTests).
+    static let glm5NextMaximumPrefillChunkTokens = 2048
+    static let glm5NextMaximumStepTokens = 2048
+    /// Narrows both GLM limits for a test whose small fixture context must
+    /// still span a chunk boundary; it can never widen them.
+    @TaskLocal static var glm5NextStepTokensForTesting: Int?
 
-    /// Bounds the GLM scheduler to its explicit context and step limits. Solo
-    /// stripes, including an operator override, are always disabled.
+    /// Installs the GLM chunk and step limits, bounded by the context; the
+    /// generic 512-token default chunk is not GLM's geometry. Solo stripes,
+    /// including an operator override, are always disabled.
     static func glm5NextServingScheduler(_ base: CBv2SchedulerConfig, context: Int)
         -> CBv2SchedulerConfig
     {
         var scheduler = base
-        scheduler.prefillChunkSize = min(
-            context, scheduler.prefillChunkSize, glm5NextMaximumPrefillChunkTokens)
-        scheduler.maxBatchedTokensPerStep = min(
-            context, scheduler.maxBatchedTokensPerStep, glm5NextMaximumStepTokens)
+        let narrowed = max(1, glm5NextStepTokensForTesting ?? Int.max)
+        scheduler.prefillChunkSize = min(context, glm5NextMaximumPrefillChunkTokens, narrowed)
+        scheduler.maxBatchedTokensPerStep = min(context, glm5NextMaximumStepTokens, narrowed)
         scheduler.soloPrefillStripeTokens = nil
         scheduler.soloPrefillStripeMediaCeiling = nil
         return scheduler

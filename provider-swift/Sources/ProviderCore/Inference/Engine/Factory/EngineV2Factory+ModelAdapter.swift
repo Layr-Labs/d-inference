@@ -44,19 +44,15 @@ extension EngineV2Factory {
                 throws -> [any CBv2AttendingLayerCache]
 
         init?(model: any LanguageModel) {
-            switch model {
-            case let glm as GLM5NextProtectedModel:
-                layerKinds = glm.root.textTower.cbv2LayerKinds
-                modelCapabilities = glm.root.textTower.cbv2Capabilities
-                newCaches = { make in try glm.root.textTower.newCacheV2(makeLayerCache: make) }
-            case let glm as GLM5NextTextModel:
+            // Every GLM serving identity (text tower, root, protected model)
+            // describes and allocates through its one original text tower.
+            if let glm = EngineV2Factory.glm5NextTarget(model: model) {
                 layerKinds = glm.cbv2LayerKinds
                 modelCapabilities = glm.cbv2Capabilities
                 newCaches = { make in try glm.newCacheV2(makeLayerCache: make) }
-            case let glm as GLM5NextModel:
-                layerKinds = glm.textTower.cbv2LayerKinds
-                modelCapabilities = glm.textTower.cbv2Capabilities
-                newCaches = { make in try glm.textTower.newCacheV2(makeLayerCache: make) }
+                return
+            }
+            switch model {
             case let gemma as Gemma4TextModel:
                 layerKinds = gemma.cbv2LayerKinds
                 modelCapabilities = .attentionOnly

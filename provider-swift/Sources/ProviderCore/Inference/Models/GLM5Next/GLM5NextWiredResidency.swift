@@ -7,11 +7,11 @@ import MLX
 /// Without a standing residency set every command buffer must make the
 /// ~165 GiB NVFP4 payload resident again. On a 256 GiB host prefill then runs
 /// at a quarter of its speed (measured 263–367 versus 1,246 tok/s for
-/// 512-token chunks on an M5 Ultra); decode is unaffected. The ticket requests
-/// the shared safe ceiling, not the payload size: the residency walk over
-/// already-allocated buffers is unordered, so a payload-sized request could
-/// leave weight banks out while it wires the KV pool. The ceiling still leaves
-/// max(16 GiB, 10%) of physical memory unwired.
+/// 512-token chunks on an M5 Ultra); decode is unaffected. The wired-memory
+/// ticket requests the shared safe ceiling, not the payload size: the residency
+/// walk over already-allocated buffers is unordered, so a payload-sized request
+/// could leave weight banks out while it wires the KV pool. The ceiling still
+/// leaves max(16 GiB, 10%) of physical memory unwired.
 final class GLM5NextWiredResidency: @unchecked Sendable {
     static let environmentFlag = "DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY"
 

@@ -52,19 +52,24 @@ struct GLM5NextProtectedFactoryTests {
         try await withFixture { fixture in
             let container = try await fixture.load()
             let tokenizer = await container.tokenizer
-            let bundle = try await EngineV2SlotFactory.makeProductionBundle(
-                modelId: fixture.plan.weights.catalog.id, modelType: "glm5_next", isVLM: false,
-                modelDirectory: fixture.directory, container: container,
-                tokenizer: TokenizerHandle(tokenizer),
-                sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity, maxConcurrentRequests: 1,
-                kvBudget: fixture.budget, kvBackendConfig: "paged",
-                weightHash: fixture.plan.weights.manifest.aggregateSHA256,
-                specDecPreparation: fixture.mtpPreparation,
-                assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
-                environment: fixture.environment, startServingTelemetry: false)
+            // Checkpoints are captured at interior chunk ends, and the 1,536-token
+            // fixture context fits any prompt in one 2,048-token chunk.
+            let bundle = try await EngineV2Factory.$glm5NextStepTokensForTesting.withValue(512) {
+                try await EngineV2SlotFactory.makeProductionBundle(
+                    modelId: fixture.plan.weights.catalog.id, modelType: "glm5_next", isVLM: false,
+                    modelDirectory: fixture.directory, container: container,
+                    tokenizer: TokenizerHandle(tokenizer),
+                    sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity,
+                    maxConcurrentRequests: 1, kvBudget: fixture.budget, kvBackendConfig: "paged",
+                    weightHash: fixture.plan.weights.manifest.aggregateSHA256,
+                    specDecPreparation: fixture.mtpPreparation,
+                    assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
+                    environment: fixture.environment, startServingTelemetry: false)
+            }
             fixture.bridges.append(bundle.bridge)
             let store = try #require(bundle.bridge.ssdHybridCheckpointStore)
             let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
+            #expect(engine.schedulerConfig.prefillChunkSize == 512)
             #expect(bundle.mtpStatus.active)
             #expect(store.identity == fixture.identity && store.kvBudget === fixture.budget)
             #expect(
@@ -144,8 +149,11 @@ struct GLM5NextProtectedFactoryTests {
             #expect(engine.completeCheckpointCodec?.isNativePagedGLM5Next == true)
             #expect(engine.schedulerConfig.enablePrefixCache)
             #expect(engine.schedulerConfig.maxConcurrentRequests == 2)
-            #expect(engine.schedulerConfig.maxBatchedTokensPerStep == EngineV2Factory.glm5NextMaximumStepTokens)
-            #expect(engine.schedulerConfig.prefillChunkSize == EngineV2Factory.glm5NextMaximumPrefillChunkTokens)
+            let context = fixture.sizing.maxContextLength
+            #expect(engine.schedulerConfig.maxBatchedTokensPerStep
+                == min(context, EngineV2Factory.glm5NextMaximumStepTokens))
+            #expect(engine.schedulerConfig.prefillChunkSize
+                == min(context, EngineV2Factory.glm5NextMaximumPrefillChunkTokens))
             #expect(await bundle.bridge.canSubmitWithNativeOwner())
             try await fixture.run(bundle.bridge, tokens: [3, 3], id: "default-serving")
         }
@@ -239,8 +247,12 @@ struct GLM5NextProtectedFactoryTests {
                     == String(describing: GLM5NextExecutionPolicy.serving))
             #expect(model.root.textTower.executionPolicy == .serving)
             #expect(model.root.mtp?.executionPolicy == .serving)
-            #expect(backend.schedulerConfig.prefillChunkSize <= 512)
-            #expect(backend.schedulerConfig.maxBatchedTokensPerStep <= 512)
+            #expect(
+                backend.schedulerConfig.prefillChunkSize
+                    == min(model.maximumContextLength, EngineV2Factory.glm5NextMaximumPrefillChunkTokens))
+            #expect(
+                backend.schedulerConfig.maxBatchedTokensPerStep
+                    == min(model.maximumContextLength, EngineV2Factory.glm5NextMaximumStepTokens))
             #expect(backend.schedulerConfig.soloPrefillStripeTokens == nil)
             #expect(
                 storage.fingerprintFields["storage.nativeProfile"]

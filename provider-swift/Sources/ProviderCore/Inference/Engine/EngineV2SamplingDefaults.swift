@@ -72,7 +72,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
         }
         switch modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "nemotron_h": return EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
-        case "glm5_next": return modelId == GLM5NextLocalQualification.modelID
+        case "glm5_next": return GLM5NextCoordinatorServing.isManagedModelID(modelId)
         default: return false
         }
     }

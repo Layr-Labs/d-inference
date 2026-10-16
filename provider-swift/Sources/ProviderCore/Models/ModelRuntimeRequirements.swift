@@ -31,6 +31,9 @@ public struct ProviderRuntimeCapability: RawRepresentable, Codable, Hashable, Se
     public static let modelRevisions = Self(rawValue: "model_revisions_v1")
     public static let appleM5 = Self(rawValue: "apple_m5")
     public static let mlxNAX = Self(rawValue: "mlx_nax")
+    /// This build serves GLM-5.3-Flash and the Mac passes
+    /// `GLM5NextHardwareRequirement` (M5 Max/Ultra, at least 256 GiB).
+    public static let glm5Next = Self(rawValue: "glm5_next_v1")
 }
 
 /// Pure, dependency-injected capability detection. Production supplies the
@@ -107,6 +110,7 @@ public enum ProviderRuntimeCapabilityDetector {
             naxAvailable: naxAvailable,
             liveMetallibHash: { boundMetallibHash }
         ).union([.modelRevisions])
+            .union(GLM5NextHardwareRequirement.refusal(hardware: hardware) == nil ? [.glm5Next] : [])
     }
 }
 
@@ -150,6 +154,13 @@ public enum ModelRuntimeRequirements {
     public static let qwen38RequiredCapabilities: Set<ProviderRuntimeCapability> = [
         .appleM5, .mlxNAX,
     ]
+    /// The coordinator catalog build and the local qualification download.
+    public static let glm5NextModelIDs: Set<String> = [
+        GLM5NextCoordinatorServing.catalogModelID, GLM5NextLocalQualification.modelID,
+    ]
+    public static let glm5NextRequiredCapabilities: Set<ProviderRuntimeCapability> = [
+        .appleM5, .mlxNAX, .glm5Next,
+    ]
 
     public static func requiredCapabilities(
         for modelID: String,
@@ -158,6 +169,9 @@ public enum ModelRuntimeRequirements {
         var required = Set(catalogRequirements ?? [])
         if qwen38ConcreteModelIDs.contains(modelID) {
             required.formUnion(qwen38RequiredCapabilities)
+        }
+        if glm5NextModelIDs.contains(modelID) {
+            required.formUnion(glm5NextRequiredCapabilities)
         }
         return required
     }

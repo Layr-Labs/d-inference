@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -17,7 +17,7 @@ can resume. Waiting and shadow Autopilot preserve the normal picker and `--model
 
 ## Local GLM qualification
 
-`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`
+`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
 can include the experimental GLM root only when
 `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
 Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
@@ -38,21 +38,26 @@ Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
 (absorbed sparse attention, parallel-threshold selection, native KDA
 recurrence, fused hyper-connections and routed-expert combine), recorded in the
 encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
-`EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
 GLM MTP verifies up to three drafted tokens per round in one target forward with
 an adaptive depth; its greedy output is not token-identical to target-only
 decode. `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` selects serial single-proposal
 verification instead.
-Prefill chunks and steps are each at most 512 tokens, and solo prefill stripes are off, including
+Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes are off, including
 `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. Requests that omit sampling fields use the
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
 runs through the native GLM media path; the embedded-MTP serving engine accepts
 prepared causal media, so image rows prefill and decode target-only (no MTP
 speculation, no prefix reuse). Video input is refused with HTTP 400.
-Coordinator advertisement and default cohorts continue excluding GLM regardless
-of this variable (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
-`GLM5NextLocalQualification`; `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`,
-`EngineV2SupportedModels`).
+This variable never advertises the local identity to the coordinator
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
+`GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves
+only the catalog build `glm-5.3-flash`, downloaded by the normal revision path,
+on Apple M5 Max or M5 Ultra with at least 256 GB; other Macs report the exact
+refusal (chip and memory) in the load error and `doctor`
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextCoordinatorServing.swift`,
+`GLM5NextCoordinatorServing`; `provider-swift/Sources/ProviderCore/Models/GLM5NextHardwareRequirement.swift`).
+`--local` does not serve the catalog build; use the selection file above.
 
 ## `darkbloom cache`
 

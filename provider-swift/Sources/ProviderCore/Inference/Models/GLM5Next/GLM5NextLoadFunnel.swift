@@ -4,9 +4,9 @@ import MLXLMCommon
 import MLXVLM
 import ProviderCoreFoundation
 
-/// Load-funnel helpers for the bounded local server. Plans come from the
-/// explicit local selection (`GLM5NextLocalQualification`); coordinator-mode
-/// GLM loading is refused by `ProviderLoop.ensureModelLoaded`.
+/// Load-funnel helpers shared by the coordinator (`ProviderLoop.ensureModelLoaded`,
+/// plans from `GLM5NextCoordinatorServing`) and the bounded local server
+/// (`StandaloneServer.ensureModelLoaded`, plans from `GLM5NextLocalQualification`).
 enum GLM5NextLoadFunnel {
     static func preparation(plan: GLM5NextArtifactPlan, mode: MTPMode, externalPath: String?) throws
         -> SpecDecPreparation
@@ -126,8 +126,9 @@ enum GLM5NextLoadFunnel {
 
 /// GLM serves only through its embedded native MTP owner, so a configuration
 /// that disables MTP makes every GLM load fail with `nativeMTPRequired`. The
-/// local model list uses the same predicate as `GLM5NextLoadFunnel` so such a
-/// model is reported not loadable instead of advertised.
+/// local and coordinator model lists use the same predicate as
+/// `GLM5NextLoadFunnel` so such a model is reported not loadable instead of
+/// advertised.
 public enum GLM5NextLocalServing {
     static func configuresNativeMTP(_ mode: MTPMode, modelID: String) -> Bool {
         mode.enablesMTP(forModelType: "glm5_next", embeddedArtifactDeclared: true, modelID: modelID)
@@ -139,6 +140,14 @@ public enum GLM5NextLocalServing {
         processMTPEnabled && configuresNativeMTP(mode, modelID: modelID)
     }
 
+    /// False only for an exact `glm5_next` model that cannot load under `mode`.
+    static func isLoadable(
+        _ model: ModelInfo, mode: MTPMode, processMTPEnabled: Bool = CBv2MTPConfig.envEnabled
+    ) -> Bool {
+        !GLM5NextPromptPolicy.applies(modelType: model.modelType)
+            || nativeMTPAvailable(mode: mode, modelID: model.id, processMTPEnabled: processMTPEnabled)
+    }
+
     /// Splits out exact `glm5_next` models that cannot load under `mode`.
     /// Every other model passes through unchanged.
     public static func partition(
@@ -147,11 +156,10 @@ public enum GLM5NextLocalServing {
         var loadable: [ModelInfo] = []
         var unavailable: [ModelInfo] = []
         for model in models {
-            if GLM5NextPromptPolicy.applies(modelType: model.modelType),
-                !nativeMTPAvailable(mode: mode, modelID: model.id, processMTPEnabled: processMTPEnabled) {
-                unavailable.append(model)
-            } else {
+            if isLoadable(model, mode: mode, processMTPEnabled: processMTPEnabled) {
                 loadable.append(model)
+            } else {
+                unavailable.append(model)
             }
         }
         return (loadable, unavailable)

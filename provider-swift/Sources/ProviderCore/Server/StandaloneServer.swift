@@ -1770,7 +1770,7 @@ public actor StandaloneServer {
             ?? ModelScanner.resolveLocalPath(modelID: modelId) else {
             throw StandaloneServerError.modelNotFound(modelId)
         }
-        let glmLocal: GLM5NextLocalQualification.LocalPlan?
+        let glmLocal: GLM5NextServingPlan?
         if GLM5NextPromptPolicy.applies(modelType: modelInfo.modelType) {
             let local = try GLM5NextLocalQualification.resolveLocalPlan(modelID: modelId, directory: modelPath)
             guard ModelScanner.glm5NextLoadQuotationIsCurrent(

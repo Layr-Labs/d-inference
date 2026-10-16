@@ -145,7 +145,7 @@ struct GLM5NextLocalQualificationTests {
         let fixture = try GLM5NextManagedFixture()
         let plan = try fixture.plan()
         for (context, expected) in [(4096, 2048), (32, 16), (1, 1), (65_536, 4096)] {
-            let bounded = try GLM5NextLocalQualification.LocalPlan(
+            let bounded = try GLM5NextServingPlan(
                 plan: plan, maximumContextLength: context).boundedSizing(sizing)
             #expect(bounded.maxContextLength == context)
             #expect(bounded.defaultMaxTokens == expected)
@@ -154,22 +154,23 @@ struct GLM5NextLocalQualificationTests {
     }
 
     @Test func servingSchedulerBoundsEveryGLMStep() {
-        var base = CBv2SchedulerConfig(maxConcurrentRequests: 2, maxBatchedTokensPerStep: 4096,
-            prefillChunkSize: 2048, soloPrefillStripeTokens: 4096, soloPrefillStripeMediaCeiling: 2048)
-        // A 1,024-token step exceeds the measured step-scratch envelope with
-        // two or more concurrent requests; raise only after native re-pricing.
-        #expect(EngineV2Factory.glm5NextMaximumPrefillChunkTokens == 512)
-        #expect(EngineV2Factory.glm5NextMaximumStepTokens == 512)
+        let base = CBv2SchedulerConfig(maxConcurrentRequests: 2, maxBatchedTokensPerStep: 4096,
+            prefillChunkSize: 4096, soloPrefillStripeTokens: 8192, soloPrefillStripeMediaCeiling: 2048)
+        // The native step price of a 2,048-token step fits the post-load
+        // envelope with four requests at 8K and 32K (GLM5NextStepPriceTests).
+        #expect(EngineV2Factory.glm5NextMaximumPrefillChunkTokens == 2048)
+        #expect(EngineV2Factory.glm5NextMaximumStepTokens == 2048)
         var scheduler = EngineV2Factory.glm5NextServingScheduler(base, context: 4096)
-        #expect(scheduler.prefillChunkSize == 512 && scheduler.maxBatchedTokensPerStep == 512)
+        #expect(scheduler.prefillChunkSize == 2048 && scheduler.maxBatchedTokensPerStep == 2048)
         #expect(scheduler.soloPrefillStripeTokens == nil && scheduler.soloPrefillStripeMediaCeiling == nil)
         #expect(scheduler.maxConcurrentRequests == 2)
         scheduler = EngineV2Factory.glm5NextServingScheduler(base, context: 32)
         #expect(scheduler.prefillChunkSize == 32 && scheduler.maxBatchedTokensPerStep == 32)
-        base.prefillChunkSize = 256
-        base.maxBatchedTokensPerStep = 384
-        scheduler = EngineV2Factory.glm5NextServingScheduler(base, context: 4096)
-        #expect(scheduler.prefillChunkSize == 256 && scheduler.maxBatchedTokensPerStep == 384)
+        // The generic production default chunk (512) does not narrow GLM's.
+        scheduler = EngineV2Factory.glm5NextServingScheduler(
+            EngineV2Factory.productionSchedulerConfig(maxConcurrentRequests: 4, environment: [:]),
+            context: 32_768)
+        #expect(scheduler.prefillChunkSize == 2048 && scheduler.maxBatchedTokensPerStep == 2048)
     }
 
     /// Request concurrency follows the operator cap and its reviewed-profile
@@ -200,7 +201,7 @@ struct GLM5NextLocalQualificationTests {
             nativeCompletionFault: nil, scheduler: scheduler))
         #expect(refusal.hasPrefix("GLM protected engine did not activate its issued tuple: "))
         #expect(refusal.contains("paged attention work: \(scratch)"))
-        #expect(refusal.contains("max_concurrent_requests=4 step_tokens=512 prefill_chunk_tokens=512"))
+        #expect(refusal.contains("max_concurrent_requests=4 step_tokens=2048 prefill_chunk_tokens=2048"))
         #expect(!refusal.contains("mtp:") && !refusal.contains("native completion fault"))
         let description = String(describing: EngineV2ProductionError.pagedUnavailable(refusal))
         #expect(description.contains("needed: 99268888418, available: 56801301254"))
@@ -210,23 +211,24 @@ struct GLM5NextLocalQualificationTests {
         #expect(combined.contains("mtp: no drafter supplied; native completion fault: stepWatchdog"))
     }
 
-    /// The exact pinned download identity defaults the encrypted SSD store on;
-    /// the global flag still opts out, and near-miss identities stay off.
+    /// The exact local download and catalog build default the encrypted SSD
+    /// store on; the global flag still opts out, and near-miss identities stay off.
     @Test func pinnedIdentityDefaultsCompletePrefixOn() {
-        let modelID = GLM5NextLocalQualification.modelID
-        for value in [nil, "", "  ", "1", "on"] as [String?] {
-            let environment = value.map { [PrefixCachePolicy.environmentFlag: $0] } ?? [:]
-            #expect(PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment))
-        }
-        for value in ["0", "false", "off", "junk"] {
-            #expect(!PrefixCachePolicy.isEnabled(
-                modelId: modelID, environment: [PrefixCachePolicy.environmentFlag: value]))
+        for modelID in [GLM5NextLocalQualification.modelID, GLM5NextCoordinatorServing.catalogModelID] {
+            for value in [nil, "", "  ", "1", "on"] as [String?] {
+                let environment = value.map { [PrefixCachePolicy.environmentFlag: $0] } ?? [:]
+                #expect(PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment))
+            }
+            for value in ["0", "false", "off", "junk"] {
+                #expect(!PrefixCachePolicy.isEnabled(
+                    modelId: modelID, environment: [PrefixCachePolicy.environmentFlag: value]))
+            }
         }
         for other in ["EigenLabs/GLM-5.3-Flash-MLX-4bit", "eigenlabs/glm-5.3-flash-mlx-4bit-mtp",
-            "glm-5.3-flash", " \(modelID)", "synthetic/glm5"] {
+            "GLM-5.3-Flash", " glm-5.3-flash", " \(GLM5NextLocalQualification.modelID)", "synthetic/glm5"] {
             #expect(!PrefixCachePolicy.isEnabled(modelId: other, environment: [:]))
         }
-        // Not a coordinator grant: advertisement still excludes GLM.
+        // Not a family grant: only the exact catalog build is advertised.
         #expect(!EngineV2SupportedModels.isSupported(modelType: "glm5_next"))
     }
 
@@ -397,7 +399,9 @@ private struct GLM5NextStandaloneHost {
     }
 
     func server(mtpMode: MTPMode) -> StandaloneServer {
-        StandaloneServer(config: .init(engineV2KVBackend: "paged", mtpMode: mtpMode), models: [model],
+        StandaloneServer(config: .init(
+            runtimeCapabilities: ModelRuntimeRequirements.glm5NextRequiredCapabilities,
+            engineV2KVBackend: "paged", mtpMode: mtpMode), models: [model],
             kvBudgetForTesting: nil)
     }
 }

@@ -24,7 +24,7 @@ embedding/output matrices are Q4 despite a BF16 claim in its model card. Neither
 discrepancy should be silently repaired or treated as parity evidence.
 
 `shipped_artifact` identifies the template in our own
-`EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` artifact as a separate identity. That
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact as a separate identity. That
 template is the official source with its four numeric attribute accesses written
 as `[0]` subscripts, because the pinned Swift-Jinja cannot parse the official
 spelling. The official hash remains the upstream rendering authority. This entry

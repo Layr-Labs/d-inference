@@ -145,7 +145,7 @@ Its existence does not add a qualified provider cache capability. Complete reuse
 still requires one accepted frontier across sparse pages, convolution/recurrence
 and trained MTP, charged import/export ownership, the protected native binding,
 and a verified encrypted restore path. For the locally selected
-`EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`, SSD eligibility defaults on
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`, SSD eligibility defaults on
 (`PrefixCachePolicy.isGLM5NextDefaultModel`) and binds the protected tuple's
 full-state store; `DARKBLOOM_PREFIX_CACHE=0` opts out. GLM remains outside the
 registered coordinator serving models; see the

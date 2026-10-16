@@ -18,7 +18,9 @@ extension VisionTowerBudget {
         else {
             throw EngineV2VisionPrefillError.invalidVisionGrid(mediaIndex: 0)
         }
-        let maximumPatches = min(32_000, limits.operatorMaxPatches ?? 32_000)
+        let maximumPatches = min(
+            GLM5NextVisionBudget.maximumFramePatches,
+            limits.operatorMaxPatches ?? GLM5NextVisionBudget.maximumFramePatches)
         guard patches <= maximumPatches else {
             throw EngineV2VisionPrefillError.towerBudgetExceeded(
                 "GLM frame exceeds native/operator patch limit")

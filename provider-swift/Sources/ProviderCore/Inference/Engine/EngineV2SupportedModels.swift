@@ -23,6 +23,10 @@
 //   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
 //                       artifact/sidecar validity and per-request bounds remain
 //                       mandatory; this does not activate automatic MTP.
+//   * `glm5_next`    — only the exact coordinator catalog build
+//                       (`GLM5NextCoordinatorServing.catalogModelID`); its load
+//                       still requires the catalog identity, hardware gate and
+//                       embedded MTP. The local download stays local-only.
 //
 // Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
@@ -76,6 +80,9 @@ public enum EngineV2SupportedModels {
     public static func isSupported(model: ModelInfo) -> Bool {
         if normalized(model.modelType) == "nemotron_h" {
             return isNemotron35ListingModelID(model.id)
+        }
+        if model.modelType == "glm5_next" {
+            return model.id == GLM5NextCoordinatorServing.catalogModelID
         }
         return isSupported(modelType: model.modelType)
     }

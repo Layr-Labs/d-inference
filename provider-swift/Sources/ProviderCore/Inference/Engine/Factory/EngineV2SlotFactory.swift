@@ -468,7 +468,7 @@ enum EngineV2SlotFactory {
             }
         }
 
-        let targetKVBytesPerToken: Int
+        var targetKVBytesPerToken: Int
         if let preparedBackend {
             targetKVBytesPerToken = slotKVBytesPerToken(
                 resolvedKind: preparedBackend.kind,
@@ -480,6 +480,22 @@ enum EngineV2SlotFactory {
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
         } else {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
+        }
+        // GLM step scratch grows with each row's context, so it is reported and
+        // reserved per token beside KV; its setup envelope is not per token.
+        let glm5NextTarget = EngineV2Factory.glm5NextTarget(model: servingModel)
+        var glm5NextStepSetupBytes = 0
+        if glm5NextTarget != nil, let preparedBackend {
+            guard let scratch = try preparedBackend.glm5NextStepScratch(
+                maximumDraftTokens: mtpConfig.maxDraftTokens),
+                let rate = GLM5NextCoordinatorServing.requestBytesPerToken(
+                    kvBytesPerToken: targetKVBytesPerToken,
+                    stepScratchBytesPerToken: scratch.bytesPerContextToken)
+            else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM step-scratch price unavailable")
+            }
+            targetKVBytesPerToken = rate
+            glm5NextStepSetupBytes = scratch.setupBytes
         }
         let assistantStateBytesPerToken = assistantHandle?.drafter?.requestStateBytesPerToken ?? 0
         let assistantStateTokenGranularity =
@@ -555,7 +571,8 @@ enum EngineV2SlotFactory {
             unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
-            advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
+            advertisedContextTokens: glm5NextTarget != nil ? sizing.maxContextLength
+                : Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
                 ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
@@ -623,7 +640,8 @@ enum EngineV2SlotFactory {
             assistant: assistantHandle,
             assistantBytes: mtpStatus.assistantBytes,
             mtpArtifact: prepared.mtpArtifact,
-            mtpStatus: mtpStatus)
+            mtpStatus: mtpStatus,
+            glm5NextStepSetupBytes: glm5NextStepSetupBytes)
     }
 
     /// Full-attention marginal KV rate used by shared request admission and

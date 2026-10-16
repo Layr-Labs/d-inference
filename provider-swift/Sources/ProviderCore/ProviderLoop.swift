@@ -795,7 +795,11 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(model: model) {
+            // GLM serves only with its embedded MTP; never advertise a build
+            // whose every load would refuse under this MTP configuration.
+            if EngineV2SupportedModels.isSupported(model: model),
+                GLM5NextLocalServing.isLoadable(model, mode: config.config.backend.mtpMode)
+            {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)

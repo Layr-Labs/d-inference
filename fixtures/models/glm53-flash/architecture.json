@@ -213,7 +213,7 @@
     }
   ],
   "shipped_artifact": {
-    "repository": "EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp",
+    "repository": "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
     "immutable_revision_recorded": false,
     "weight_identity_recorded": false,
     "chat_template_sha256": "46b2e2137e2759355b3e0e3e90cf4bd172b568437a75588af5c457cc8c095b2e",

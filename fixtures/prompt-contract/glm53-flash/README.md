@@ -7,7 +7,7 @@ raw-candidate repair, tokenizer comparison or native inference qualification.
   `zai-org/GLM-5.3-Flash@91b69215804f2d2036a8867f6ce44848e278dcda`. It remains
   the rendering authority for `goldens.json`.
 - `eigenlabs-chat_template.jinja` is the 10,954-byte template shipped in the
-  `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` artifact. It replaces the official
+  `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact. It replaces the official
   source's four numeric attribute accesses (`m.content.0.type`,
   `tr.output.0.type`, `m.content.0.output`, `entry.output.0.type`) with `[0]`
   subscripts. The pinned Swift-Jinja 2.3.6 renderer cannot parse the official

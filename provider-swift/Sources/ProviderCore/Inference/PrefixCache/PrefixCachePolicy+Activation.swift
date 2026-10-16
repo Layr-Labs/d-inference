@@ -23,7 +23,7 @@ extension PrefixCachePolicy {
 
     /// Default SSD activation is separate from backend selection. Only these
     /// exact Qwen, Gemma QAT, GPT-OSS 20B, Nemotron Lightning, Bonsai 2, MiMo and
-    /// locally selected GLM-5.3-Flash artifacts default on; an affirmative global flag
+    /// exact GLM-5.3-Flash artifacts default on; an affirmative global flag
     /// opts other models into their existing capability/identity gates. This
     /// keeps offline cache comparisons available without enabling other artifacts
     /// merely because their attention backend defaults to paged.
@@ -59,12 +59,12 @@ extension PrefixCachePolicy {
         }
     }
 
-    /// GLM has no listing alias: its only local identity is the exact download
-    /// pinned by the qualification selection. This grants no coordinator
-    /// capability; the protected native tuple must still issue the full-state
-    /// profile, and the target-only benchmark loader pins the cache off.
+    /// GLM has no listing alias: the exact coordinator catalog build and the
+    /// exact local qualification download. This grants no capability; the
+    /// protected native tuple must still issue the full-state profile, and the
+    /// target-only benchmark loader pins the cache off.
     private static func isGLM5NextDefaultModel(_ modelId: String) -> Bool {
-        modelId == GLM5NextLocalQualification.modelID
+        GLM5NextCoordinatorServing.isManagedModelID(modelId)
     }
 
     /// Empty/unset uses the exact-model default, including when launchd omits

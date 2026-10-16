@@ -36,7 +36,7 @@ quality evidence. The complete metadata contract is
 The raw candidate template differs from the official revision, and its embedding
 and output matrices are Q4 despite its card's BF16 description. Preserve these
 discrepancies in intake evidence; do not repair the raw snapshot in place. Our
-own `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` artifact ships a separately identified
+own `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact ships a separately identified
 template: the official source with numeric attribute access written as `[0]`
 subscripts, which the pinned Swift-Jinja can parse. Its identity, derivation and
 golden equivalence are recorded in `fixtures/prompt-contract/glm53-flash/`. No

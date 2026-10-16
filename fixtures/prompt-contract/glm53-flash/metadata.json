@@ -11,7 +11,7 @@
     "copyright": "Copyright (c) 2026 Z.AI Co., Ltd"
   },
   "artifact_template": {
-    "repository": "EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp",
+    "repository": "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
     "path": "chat_template.jinja",
     "fixture": "eigenlabs-chat_template.jinja",
     "bytes": 10954,

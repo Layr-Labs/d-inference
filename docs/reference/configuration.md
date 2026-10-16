@@ -16,14 +16,14 @@ This process-local opt-in is independent of the coordinator supported-model set.
 | Variable / field | Default / behavior | Consumer |
 |---|---|---|
 | `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` | Unset: disabled. Otherwise an absolute path to a regular JSON selection file, at most 4 MiB; not a boolean and not forwarded to launchd | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift` (`selection`) |
-| `catalog`, `manifest` | Required complete `CatalogModel` and `ModelManifest` objects using their ordinary JSON keys; dates are ISO-8601. Both identify exactly `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`. The catalog's Hugging Face artifact binds that repository and a concrete revision. No network catalog request is made | `GLM5NextLocalQualification.selection` |
+| `catalog`, `manifest` | Required complete `CatalogModel` and `ModelManifest` objects using their ordinary JSON keys; dates are ISO-8601. Both identify exactly `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`. The catalog's Hugging Face artifact binds that repository and a concrete revision. No network catalog request is made | `GLM5NextLocalQualification.selection` |
 | `expectedAggregateSHA256` | Required lowercase 64-digit SHA-256 pin; must equal both catalog and manifest aggregates. This is the exact local artifact selection, not an assertion that bytes are verified or published | `GLM5NextLocalQualification.validate` |
 | `maximumContextLength` | Optional positive enforced context bound, default `4096`; must not exceed the source model's maximum. Read once per LOAD together with the artifact plan; controls engine sizing and request admission, not source metadata. A request that omits `max_tokens` gets half the bound. A prompt plus output budget above the bound is refused with HTTP 400 `advertised_context_exceeded` before native admission | `GLM5NextLocalQualification.LocalPlan.boundedSizing`; `EngineV2Factory.makeBridge` |
 | `tokenizer` | Not supported. A present field refuses the whole selection: the LOAD quotation covers only the tokenizer shipped in the pinned weight snapshot | `GLM5NextLocalQualification.Selection` |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | On: a published GLM engine holds standing wired residency for its weights, bounded by the MiMo safe ceiling (physical memory minus max(16 GiB, 10%)) and released only after proven retirement. Rollback: trimmed, case-insensitive `0`, `false`, `no`, `off`. Acceleration only, never load admission; without it 512-token prefill chunks measured 263–367 instead of 1,246 tok/s on a 256 GiB M5 Ultra. Forwarded to the launchd provider job | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`, `prepare`) |
 
 The weight snapshot's `chat_template.jinja` must be the reviewed template
-shipped in `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`
+shipped in `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
 (`GLM5NextPromptPolicy.templateSHA256`); any other template refuses the LOAD
 even when it renders (`GLM5NextLocalQualification.requireShippedTemplate`).
 
@@ -43,13 +43,15 @@ model with a message, and the local server's model list omits it
 (`GLM5NextLocalServing.partition`); any LOAD fails before weight allocation.
 When a selection is missing or invalid, startup prints the specific reason
 (`GLM5NextLocalQualification.localSelectionRefusal`).
-Coordinator-connected mode does not load GLM: `ProviderLoop.ensureModelLoaded`
-refuses it before any catalog request, because no served context bound exists.
+Coordinator-connected mode needs no setting: it serves only catalog build
+`glm-5.3-flash` with a 262,144-token enforced context, on Apple M5 Max or
+M5 Ultra with at least 256 GiB, and only while MTP is enabled
+(`ProviderLoop.coordinatorGLM5NextPlan`). The selection file is ignored there.
 There is no assistant-floor,
 post-build or wedge-recovery fallback to target-only: those paths unload or
 refuse the GLM slot instead.
 
-For the pinned identity the encrypted SSD prefix store defaults on;
+For the pinned local identity and `glm-5.3-flash` the encrypted SSD prefix store defaults on;
 `DARKBLOOM_PREFIX_CACHE=0` disables it
 (`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`,
 `PrefixCachePolicy.isEnabled`). The KV backend needs no setting: automatic

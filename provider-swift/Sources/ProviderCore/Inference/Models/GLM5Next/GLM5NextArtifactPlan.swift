@@ -235,11 +235,20 @@ struct GLM5NextArtifactPlan: Sendable {
             throw GLM5NextManagedLoadError.metadata(
                 "only indexed safetensors weights are supported")
         }
-        guard let source = catalog.huggingFaceArtifact else {
+        // A Hugging Face source names the native identity; an R2-only catalog
+        // revision is named by its catalog id and version. Either way the file
+        // digests below, not this label, authenticate the bytes.
+        let sourceRepository: String
+        let sourceRevision: String
+        if let source = catalog.huggingFaceArtifact {
+            // Validates the exact repository/revision syntax without any I/O.
+            _ = try source.downloadURL(for: "config.json")
+            (sourceRepository, sourceRevision) = (source.repoID, source.revision)
+        } else if let version = catalog.version {
+            (sourceRepository, sourceRevision) = (catalog.id, version)
+        } else {
             throw GLM5NextManagedLoadError.invalidManifest
         }
-        // Validates the exact repository/revision syntax without any I/O.
-        _ = try source.downloadURL(for: "config.json")
         let config = try JSONDecoder().decode(
             GLM5NextConfiguration.self,
             from: weights.readMetadata("config.json", maximumBytes: 2 << 20))
@@ -333,8 +342,8 @@ struct GLM5NextArtifactPlan: Sendable {
             weights: weights, configuration: config,
             descriptors: descriptors, storage: storage,
             nativeIdentity: .init(
-                repository: source.repoID,
-                revision: source.revision, files: identityFiles), processorConfiguration: processor,
+                repository: sourceRepository,
+                revision: sourceRevision, files: identityFiles), processorConfiguration: processor,
             quotation: quotation, templateSHA256: template, eosTokenIDs: eos)
     }
 

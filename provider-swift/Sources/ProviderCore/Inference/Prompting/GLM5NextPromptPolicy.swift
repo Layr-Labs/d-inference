@@ -8,7 +8,7 @@ import MLXLMServer
 /// registration, raw-checkpoint repair or constrained-decoding capability.
 enum GLM5NextPromptPolicy {
     /// The only recognized template: the one shipped in
-    /// `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`. It is the official template
+    /// `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`. It is the official template
     /// (`0c4099f3…`, still the golden rendering authority) with its four `.0.`
     /// attribute accesses written as `[0].`, because the pinned Swift-Jinja
     /// cannot parse the official spelling.
@@ -146,8 +146,9 @@ enum GLM5NextPromptPolicy {
     }
 
     /// This is the text-contract path, not a family-wide media capability
-    /// predicate. A future verified vision wrapper uses the same throwing
-    /// additionalContext resolver and its own owned media preparation path.
+    /// predicate. The media path (`EngineV2VisionPrefill.glm5NextUserInput`)
+    /// normalizes a text-only copy through it, then restores symbolic media
+    /// parts in its own owned preparation.
     static func normalizedTextInput(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,

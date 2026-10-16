@@ -53,7 +53,7 @@ successful SDK build as proof of the [complete integration](../design/glm53-flas
 The GLM official template uses numeric attribute access such as
 `content.0.type`, which the pinned Swift-Jinja 2.3.6 does not parse. Builds use
 the ordinary locked Swift-Jinja pin with no SwiftPM edit mode or dependency
-patch. Our `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` artifact instead ships a
+patch. Our `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact instead ships a
 separately identified template that writes those accesses as `[0]` subscripts.
 Its derivation and equivalence evidence are in
 `fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or

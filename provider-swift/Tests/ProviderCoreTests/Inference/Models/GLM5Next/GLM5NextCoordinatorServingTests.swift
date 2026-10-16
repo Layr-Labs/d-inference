@@ -1,0 +1,252 @@
+import Foundation
+import MLXLLM
+@testable import MLXLMCommon
+import ProviderCoreFoundation
+import Testing
+
+@testable import ProviderCore
+
+private func hardware(_ family: ChipFamily, _ tier: ChipTier, _ memoryGiB: UInt64) -> HardwareInfo {
+    HardwareInfo(
+        machineModel: "test", chipName: "Apple \(family.rawValue) \(tier.rawValue)",
+        chipFamily: family, chipTier: tier, memoryGb: memoryGiB, memoryAvailableGb: memoryGiB,
+        cpuCores: CpuCores(total: 18, performance: 12, efficiency: 6),
+        gpuCores: 40, memoryBandwidthGbs: 600)
+}
+
+/// GLM-5.3-Flash text dimensions from fixtures/models/glm53-flash/architecture.json.
+private func glm53TextConfiguration() throws -> GLM5NextTextConfiguration {
+    let sparse = Set(stride(from: 3, through: 43, by: 4))
+    let layers = Array(0..<45)
+    let text: [String: Any] = [
+        "model_type": "glm5_next_text", "vocab_size": 154880, "hidden_size": 4096,
+        "intermediate_size": 12288, "moe_intermediate_size": 2048,
+        "num_hidden_layers": 45, "num_attention_heads": 64, "num_key_value_heads": 64,
+        "head_dim": 0, "qk_head_dim": 256, "qk_nope_head_dim": 256, "qk_rope_head_dim": 0,
+        "v_head_dim": 256, "q_lora_rank": 1536, "kv_lora_rank": 512, "mla_use_nope": true,
+        "layer_types": layers.map { sparse.contains($0) ? "deepseek_sparse_attention" : "linear_attention" },
+        "mlp_layer_types": layers.map { $0 < 3 ? "dense" : "sparse" },
+        "indexer_types": layers.map { _ in "full" },
+        "linear_attn_config": [
+            "num_heads": 64, "head_dim": 128, "gate_lower_bound": -5,
+            "short_conv_kernel_size": 4, "kda_layers": layers.filter { !sparse.contains($0) },
+            "full_attn_layers": layers.filter { sparse.contains($0) },
+        ],
+        "index_head_dim": 128, "index_n_heads": 32, "index_topk": 2048, "index_kpool": 4,
+        "index_kpool_compress": true, "index_kpool_always_select_tail": true,
+        "indexer_rope_interleave": true, "index_share_for_mtp_iteration": true,
+        "mhc": true, "hc_mult": 4, "hc_eps": 1e-6, "hc_sinkhorn_iters": 20,
+        "first_k_dense_replace": 3, "n_routed_experts": 288, "n_shared_experts": 1,
+        "num_experts_per_tok": 8, "n_group": 1, "topk_group": 1,
+        "norm_topk_prob": true, "routed_scaling_factor": 2.5, "scoring_func": "sigmoid",
+        "topk_method": "noaux_tc", "moe_router_dtype": "float32", "output_router_logits": false,
+        "router_aux_loss_coef": 0.001, "num_nextn_predict_layers": 1, "hidden_act": "silu",
+        "swiglu_limit": 10, "rms_norm_eps": 1e-5, "attention_bias": false,
+        "attention_dropout": 0, "max_position_embeddings": 1_048_576, "initializer_range": 0.02,
+        "use_cache": true, "tie_word_embeddings": false, "dtype": "bfloat16",
+        "pad_token_id": 0, "eos_token_id": [2],
+    ]
+    return try JSONDecoder().decode(GLM5NextTextConfiguration.self,
+        from: JSONSerialization.data(withJSONObject: text, options: .sortedKeys))
+}
+
+struct GLM5NextHardwareGateTests {
+    @Test func onlyM5MaxOrUltraWith256GiBQualifies() {
+        #expect(GLM5NextHardwareRequirement.refusal(hardware: hardware(.m5, .max, 256)) == nil)
+        #expect(GLM5NextHardwareRequirement.refusal(hardware: hardware(.m5, .ultra, 512)) == nil)
+        for (family, tier, memory, chip) in [
+            (ChipFamily.m5, ChipTier.max, UInt64(128), "M5 Max"), (.m5, .max, 255, "M5 Max"),
+            (.m5, .pro, 256, "M5 Pro"), (.m5, .base, 256, "M5"), (.m5, .unknown, 512, "M5 Unknown"),
+            (.m4, .max, 256, "M4 Max"), (.m3, .ultra, 512, "M3 Ultra"), (.m6, .ultra, 512, "M6 Ultra"),
+        ] {
+            let refusal = GLM5NextHardwareRequirement.refusal(hardware: hardware(family, tier, memory))
+            #expect(refusal == "GLM-5.3-Flash requires Apple M5 Max or M5 Ultra with at least 256 GB "
+                + "unified memory; this Mac is \(chip) with \(memory) GB")
+        }
+    }
+
+    @Test func capabilityIsReportedOnlyOnQualifyingHardware() {
+        let qualified = ProviderRuntimeCapabilityDetector.detectPrepared(
+            hardware: hardware(.m5, .max, 256), boundMetallibHash: "abc", naxAvailable: { true })
+        #expect(qualified == [.appleM5, .mlxNAX, .modelRevisions, .glm5Next])
+        let small = ProviderRuntimeCapabilityDetector.detectPrepared(
+            hardware: hardware(.m5, .max, 128), boundMetallibHash: "abc", naxAvailable: { true })
+        #expect(!small.contains(.glm5Next))
+        #expect(ProviderRuntimeCapability.glm5Next.rawValue == "glm5_next_v1")
+    }
+
+    /// Older providers report apple_m5 + mlx_nax but not glm5_next_v1, so the
+    /// embedded rule fails them closed even when the catalog omits it.
+    @Test func exactGLMIdentitiesRequireAllThreeCapabilities() {
+        for id in [GLM5NextCoordinatorServing.catalogModelID, GLM5NextLocalQualification.modelID] {
+            #expect(ModelRuntimeRequirements.requiredCapabilities(for: id)
+                == [.appleM5, .mlxNAX, .glm5Next])
+            #expect(!ModelRuntimeRequirements.isEligible(modelID: id,
+                catalogRequirements: [.appleM5, .mlxNAX], available: [.appleM5, .mlxNAX, .modelRevisions]))
+            #expect(ModelRuntimeRequirements.isEligible(modelID: id,
+                catalogRequirements: [.appleM5, .mlxNAX], available: [.appleM5, .mlxNAX, .glm5Next]))
+        }
+        #expect(ModelRuntimeRequirements.requiredCapabilities(for: "glm-5.3-flash-r2").isEmpty)
+    }
+}
+
+struct GLM5NextCoordinatorServingTests {
+    private func model(_ id: String) -> ModelInfo {
+        .init(id: id, modelType: "glm5_next", sizeBytes: 1, estimatedMemoryGb: 1)
+    }
+
+    @Test func onlyTheExactCatalogBuildIsAdvertised() {
+        #expect(EngineV2SupportedModels.isSupported(model: model("glm-5.3-flash")))
+        for id in [GLM5NextLocalQualification.modelID, "GLM-5.3-Flash", "glm-5.3-flash ", "other/glm5"] {
+            #expect(!EngineV2SupportedModels.isSupported(model: model(id)))
+        }
+        // The catalog build never takes the selection-file local path.
+        #expect(!GLM5NextLocalQualification.isSupportedLocally(model: model("glm-5.3-flash"), environment: [:]))
+    }
+
+    @Test func contextBoundIs262144AndNeverWidenedByTheCatalog() throws {
+        #expect(GLM5NextCoordinatorServing.maximumContextLength == 262_144)
+        #expect(try GLM5NextCoordinatorServing.servedContextLength(catalogMaximum: nil) == 262_144)
+        #expect(try GLM5NextCoordinatorServing.servedContextLength(catalogMaximum: 262_144) == 262_144)
+        #expect(try GLM5NextCoordinatorServing.servedContextLength(catalogMaximum: 131_072) == 131_072)
+        for invalid in [0, -1, 262_145, 1_048_576] {
+            #expect(throws: GLM5NextManagedLoadError.self) {
+                try GLM5NextCoordinatorServing.servedContextLength(catalogMaximum: invalid)
+            }
+        }
+    }
+
+    /// 11 DSA layers × (512 latent + 128 index key + 128 pool gate + 1 validity)
+    /// FP32 columns. KDA layers add no per-token bytes.
+    @Test func targetKVIsExactPerToken() throws {
+        let text = try glm53TextConfiguration()
+        let rate = GLM5NextCoordinatorServing.targetKVBytesPerToken(text)
+        #expect(rate == 33_836)
+        #expect(rate * GLM5NextCoordinatorServing.maximumContextLength == 8_869_904_384)
+        #expect(GLM5NextCoordinatorServing.requestBytesPerToken(
+            kvBytesPerToken: rate, stepScratchBytesPerToken: 1_000) == 34_836)
+        #expect(GLM5NextCoordinatorServing.requestBytesPerToken(
+            kvBytesPerToken: rate, stepScratchBytesPerToken: -1) == nil)
+        #expect(GLM5NextCoordinatorServing.requestBytesPerToken(
+            kvBytesPerToken: .max, stepScratchBytesPerToken: 1) == nil)
+    }
+
+    /// The embedded MTP layer keeps 3,074 B of history per token (latent, index
+    /// key, pool gate, two validity bytes). Its serving-policy plan charges
+    /// 33,900 B per reserved token across six resident copies, two draft and
+    /// three priming working copies and 64 host bytes, independent of step size.
+    @Test func mtpHistoryIsChargedPerReservedToken() throws {
+        let text = try glm53TextConfiguration()
+        let bound = GLM5NextCoordinatorServing.maximumContextLength
+        for step in [512, EngineV2Factory.glm5NextMaximumStepTokens] {
+            let plan = try GLM5NextMTPExecution.memoryPlan(configuration: text, maximumInputs: bound,
+                limits: .init(maximumPrefillTokens: step, maximumDraftTokens: 1),
+                executionPolicy: GLM5NextManagedLoad.executionPolicy)
+            #expect(plan.cacheBuffers.reduce(0) { $0 + $1.logicalBytes * $1.allocationCount }
+                == 3_074 * bound)
+            let spec = plan.specification
+            let perToken = (spec.resident + spec.working).reduce(spec.hostBytesPerToken) {
+                $0 + $1.logicalBytesPerToken * $1.allocationCount
+            }
+            #expect(perToken == 33_900)
+        }
+    }
+
+    /// Calibrated split bound (2048-token steps, 262,144 context): on a
+    /// 56.8 GB grant two rows activate and four do not. Pool tokens and the
+    /// admissible ceiling derive from one capacity, so a smaller pool cannot
+    /// admit four rows either; they need at least ~72.4 GB.
+    @Test func calibratedActivationRowsOnA256GiBGrant() {
+        let rate = 55_057, context = 262_144, kv = 33_836
+        func admits(_ rows: Int, setup: Int, capacity: Int) -> Bool {
+            EngineV2Factory.glm5NextActivationAdmits(
+                GLM5NextStepScratch(setupBytes: setup, bytesPerContextToken: rate),
+                rows: rows, context: context, capacityBytes: capacity, tokenBytes: kv,
+                maximumScratchBytes: capacity, watermarkFraction: 0.05)
+        }
+        let grant = 56_800_000_000
+        #expect(admits(1, setup: 5_589_138_629, capacity: grant))
+        #expect(admits(2, setup: 7_398_234_550, capacity: grant))
+        #expect(!admits(4, setup: 11_016_754_072, capacity: grant))
+        #expect(!admits(4, setup: 11_016_754_072, capacity: 515_000 * kv))
+        #expect(admits(4, setup: 11_016_754_072, capacity: 72_400_000_000))
+        #expect(!admits(4, setup: 11_016_754_072, capacity: 72_300_000_000))
+    }
+
+    /// Calibrated 256 GiB arithmetic: one-row setup, the engine's fixed bytes
+    /// and (KV + scratch + MTP) per token at the bound within pool − watermark.
+    @Test func advertisedBoundMustFitAlone() {
+        let setup = 5_589_138_629, fixed = 4_000_000_000, context = 262_144
+        let rate = 33_836 + 55_057 + 33_900
+        let needed = setup + fixed + rate * context
+        func refusal(_ admissible: Int) -> String? {
+            // pool − Int(pool × 0.05) == admissible for pool = admissible / 0.95 rounded up.
+            let pool = UInt64((Double(admissible) / 0.95).rounded(.up))
+            return GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: pool,
+                watermarkFraction: 0.05, stepSetupBytes: setup, fixedRequestBytes: fixed,
+                bytesPerToken: rate, context: context)
+        }
+        #expect(refusal(needed + 1_000) == nil)
+        #expect(refusal(needed - 1_000)?.contains("cannot hold one 262144-token request") == true)
+        #expect(GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: .max, watermarkFraction: 0.05,
+            stepSetupBytes: 0, fixedRequestBytes: 1, bytesPerToken: .max, context: 2) != nil)
+        #expect(GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: .max, watermarkFraction: 0.05,
+            stepSetupBytes: 0, fixedRequestBytes: 0, bytesPerToken: 0, context: 1) != nil)
+        #expect(GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: .max, watermarkFraction: 0.05,
+            stepSetupBytes: -1, fixedRequestBytes: 0, bytesPerToken: 1, context: 1) != nil)
+    }
+
+    /// Catalog entry -> receipt manifest -> recomputed aggregate; an R2-only
+    /// entry names the native identity by catalog id and version.
+    @Test func catalogRevisionResolvesTheManagedPlan() throws {
+        let id = GLM5NextCoordinatorServing.catalogModelID
+        let fixture = try GLM5NextManagedFixture(
+            modelID: id, chatTemplate: GLM5NextManagedFixture.shippedTemplate())
+        try ModelDownloader.writeRevisionReceipt(fixture.manifest, at: fixture.directory)
+        let catalog = CatalogModel(
+            id: id, s3Name: fixture.manifest.r2Prefix, displayName: "Z.ai: GLM-5.3-Flash", sizeGb: 1,
+            version: fixture.manifest.version, r2Prefix: fixture.manifest.r2Prefix,
+            aggregateSHA256: fixture.manifest.aggregateSHA256, maxContextLength: 262_144,
+            requiredProviderCapabilities: [.appleM5, .mlxNAX])
+        let serving = try GLM5NextCoordinatorServing.resolvePlan(
+            modelID: id, directory: fixture.directory, catalog: catalog)
+        #expect(serving.maximumContextLength == 262_144)
+        #expect(serving.plan.nativeIdentity.repository == id)
+        #expect(serving.plan.nativeIdentity.revision == fixture.manifest.version)
+        #expect(serving.plan.usesShippedPromptTemplate)
+
+        let other = CatalogModel(id: id, s3Name: "x", displayName: "x", sizeGb: 1,
+            version: fixture.manifest.version, r2Prefix: fixture.manifest.r2Prefix,
+            aggregateSHA256: String(repeating: "0", count: 64))
+        #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
+            try GLM5NextCoordinatorServing.resolvePlan(modelID: id, directory: fixture.directory, catalog: other)
+        }
+        #expect(throws: GLM5NextManagedLoadError.self) {
+            try GLM5NextCoordinatorServing.resolvePlan(modelID: id, directory: fixture.directory, catalog: nil)
+        }
+        #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
+            try GLM5NextCoordinatorServing.resolvePlan(
+                modelID: GLM5NextLocalQualification.modelID, directory: fixture.directory, catalog: catalog)
+        }
+        try FileManager.default.removeItem(at: fixture.directory.appendingPathComponent(".darkbloom-manifest.json"))
+        #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
+            try GLM5NextCoordinatorServing.resolvePlan(modelID: id, directory: fixture.directory, catalog: catalog)
+        }
+    }
+
+    @Test func revisionSwapBorrowsTheCallersWriterLease() throws {
+        let fixture = try GLM5NextManagedFixture(
+            modelID: GLM5NextCoordinatorServing.catalogModelID,
+            chatTemplate: GLM5NextManagedFixture.shippedTemplate())
+        try ModelDownloader.writeRevisionReceipt(fixture.manifest, at: fixture.directory)
+        let catalog = CatalogModel(id: fixture.manifest.modelID, s3Name: "x", displayName: "x", sizeGb: 1,
+            version: fixture.manifest.version, r2Prefix: fixture.manifest.r2Prefix,
+            aggregateSHA256: fixture.manifest.aggregateSHA256)
+        let plan = try GLM5NextCoordinatorServing.resolvePlan(
+            modelID: catalog.id, directory: fixture.directory, catalog: catalog).plan
+        let borrowed = try GLM5NextArtifactOwnership.borrowingCallerLease(plan: plan)
+        try borrowed.claim(plan: plan)
+        #expect(throws: GLM5NextManagedLoadError.lifecycle) { try borrowed.claim(plan: plan) }
+        borrowed.release()
+    }
+}

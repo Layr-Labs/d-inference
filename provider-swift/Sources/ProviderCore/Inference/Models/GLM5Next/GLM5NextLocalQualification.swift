@@ -5,7 +5,7 @@ import ProviderCoreFoundation
 /// whose readers advertise coordinator capacity and select default cohorts.
 public enum GLM5NextLocalQualification {
     public static let environmentKey = "DARKBLOOM_EXPERIMENTAL_GLM5_NEXT"
-    public static let modelID = "EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp"
+    public static let modelID = "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp"
 
     struct Selection: Decodable {
         let catalog: CatalogModel
@@ -59,25 +59,6 @@ public enum GLM5NextLocalQualification {
         return selected
     }
 
-    /// One selection read per load: the plan and its execution bound travel
-    /// together so a concurrently edited selection file cannot mix them.
-    struct LocalPlan {
-        let plan: GLM5NextArtifactPlan
-        let maximumContextLength: Int
-
-        /// The default output budget leaves half the bound for the prompt, so a
-        /// request that omits `max_tokens` cannot exceed the bound by default.
-        /// Longer requests are refused at the bridge's advertised context.
-        func boundedSizing(_ sizing: SlotSizingSnapshot) throws -> SlotSizingSnapshot {
-            let context = try GLM5NextExecutionBound.require(maximumContextLength,
-                modelMaximum: sizing.maxContextLength)
-            return .init(weightsBytes: sizing.targetWeightsBytes,
-                auxiliaryWeightBytes: sizing.auxiliaryWeightBytes,
-                fp16KVBytesPerToken: sizing.fp16KVBytesPerToken, maxContextLength: context,
-                defaultMaxTokens: min(sizing.defaultMaxTokens, max(1, context / 2)))
-        }
-    }
-
     static let defaultMaximumContextLength = 4096
 
     static func validate(modelID: String, aggregate: String, expectedAggregate: String) throws {
@@ -91,8 +72,9 @@ public enum GLM5NextLocalQualification {
     public static func isSupportedLocally(
         model: ModelInfo, environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        if EngineV2SupportedModels.isSupported(model: model) { return true }
-        guard model.modelType == "glm5_next" else { return false }
+        guard model.modelType == "glm5_next" else {
+            return EngineV2SupportedModels.isSupported(model: model)
+        }
         return (try? requireLocalSelection(model: model, environment: environment)) != nil
     }
 
@@ -101,8 +83,7 @@ public enum GLM5NextLocalQualification {
     public static func localSelectionRefusal(
         model: ModelInfo, environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
-        guard model.modelType == "glm5_next", !EngineV2SupportedModels.isSupported(model: model)
-        else { return nil }
+        guard model.modelType == "glm5_next" else { return nil }
         do {
             try requireLocalSelection(model: model, environment: environment)
             return nil
@@ -140,10 +121,12 @@ public enum GLM5NextLocalQualification {
         return (supported, unsupported)
     }
 
+    /// One selection read per load: the plan and its execution bound travel
+    /// together so a concurrently edited selection file cannot mix them.
     static func resolveLocalPlan(
         modelID: String, directory: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) throws -> LocalPlan {
+    ) throws -> GLM5NextServingPlan {
         let selected = try selection(environment: environment)
         try validate(modelID: modelID, aggregate: selected.manifest.aggregateSHA256,
             expectedAggregate: selected.expectedAggregateSHA256)

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -19,9 +19,15 @@ activation floors or minimum serveable KV headroom. The RAM-tier table remains
 subject to the same load gate. Precision controls and fallback are in the
 [CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
 
-GLM-5.3-Flash has no qualified provider hardware tier. Its
-[in-progress native implementation](../design/glm53-flash-native.md) does not
-make a downloaded four-bit artifact serveable or reduce these memory safeguards.
+GLM-5.3-Flash (`glm-5.3-flash`) loads only on Apple M5 Max or M5 Ultra with at
+least 256 GB of unified memory. The provider reports runtime capability
+`glm5_next_v1` only on such a Mac, the catalog build additionally requires
+`apple_m5` and `mlx_nax`, and every other Mac refuses the load with its chip
+and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host the
+post-load admission is about 56.8 GB: one 262,144-token request fits, and
+shorter requests run concurrently by their actual reserved tokens. The
+[native implementation](../design/glm53-flash-native.md) does not reduce these
+memory safeguards.
 
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).

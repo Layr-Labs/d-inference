@@ -262,6 +262,22 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // GLM reserves bytes per actual reserved token, so a request larger than
+        // the whole pool can never be admitted here. Refuse it as capacity so
+        // routing moves on instead of queueing it behind running work.
+        if glm5NextNativeOwner != nil,
+            (requestReservationBytes(tokenCount: worstCaseTokens).map { UInt64($0) } ?? .max)
+                > kvBackendPoolBytes()
+        {
+            usageSignal?.finalizeLookup(
+                failure: .capacity,
+                fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error(
+                "token_budget_exhausted: \(Self.glm5NextExceedsSlotCapacity) "
+                    + "(\(worstCaseTokens) reserved tokens)"))
+            continuation.finish()
+            return stream
+        }
 
         // Prefer resident pages when they save at least as much prefill as
         // the durable tier. A shorter memory hit must not hide a longer SSD

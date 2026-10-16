@@ -8,13 +8,22 @@ final class GLM5NextArtifactOwnership: @unchecked Sendable {
     private let weightDirectory: URL
     private let weightIdentity: ModelRevisionIdentity
     private var leases: [ModelArtifactWriteLease]
+    private let fencedByCaller: Bool
     private var claimed = false
     private var quarantined = false
 
-    private init(plan: GLM5NextArtifactPlan, leases: [ModelArtifactWriteLease]) {
+    private init(plan: GLM5NextArtifactPlan, leases: [ModelArtifactWriteLease], fencedByCaller: Bool = false) {
         weightDirectory = plan.weights.directory
         weightIdentity = ModelRevisionIdentity(plan.weights.manifest)
         self.leases = leases
+        self.fencedByCaller = fencedByCaller
+    }
+
+    /// Revision activation already holds this model's writer lease for the
+    /// whole swap; flock does not nest, so borrow that fence instead.
+    static func borrowingCallerLease(plan: GLM5NextArtifactPlan) throws -> GLM5NextArtifactOwnership {
+        try plan.weights.recheck()
+        return .init(plan: plan, leases: [], fencedByCaller: true)
     }
 
     static func acquire(plan: GLM5NextArtifactPlan) throws -> GLM5NextArtifactOwnership {
@@ -33,7 +42,7 @@ final class GLM5NextArtifactOwnership: @unchecked Sendable {
 
     func claim(plan: GLM5NextArtifactPlan) throws {
         try lock.withLock {
-            guard !leases.isEmpty, !claimed, !quarantined,
+            guard !leases.isEmpty || fencedByCaller, !claimed, !quarantined,
                 plan.weights.directory == weightDirectory,
                 ModelRevisionIdentity(plan.weights.manifest) == weightIdentity
             else {

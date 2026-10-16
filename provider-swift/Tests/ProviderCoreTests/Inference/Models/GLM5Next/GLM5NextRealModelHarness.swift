@@ -21,7 +21,7 @@ final class GLM5NextRealModelHarness: @unchecked Sendable {
     let environment = ProcessInfo.processInfo.environment
     let root: URL
     let directory: URL
-    let localPlan: GLM5NextLocalQualification.LocalPlan
+    let localPlan: GLM5NextServingPlan
     var plan: GLM5NextArtifactPlan { localPlan.plan }
     let maximumContext: Int
     let budget: GlobalKVCacheBudget

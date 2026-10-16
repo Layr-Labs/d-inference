@@ -290,6 +290,7 @@ enum NemotronSuperLocalBridgeBuilder {
         construction: NativeConstructionScope, mtp: NemotronSuperLocalMTP.Head? = nil,
         modelID: String = NemotronSuperLocalBinding.modelID,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         leaseShares: OwnerShares? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
@@ -309,7 +310,7 @@ enum NemotronSuperLocalBridgeBuilder {
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
-            pinned: installed.isPinnedCheckpoint, modelID: modelID)
+            pinned: installed.isPinnedCheckpoint, physicalBytes: physicalBytes, modelID: modelID)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
         if kvBackend == .paged, prefixCache != nil {
             throw NemotronSuperLocalKVBackend.Failure.pagedPrefixReuse

@@ -107,7 +107,7 @@ enum NemotronSuperServingPolicy {
     /// global kill switch, wins. The builder sizes the same bank from the same
     /// grant, requests and keys.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
-                         kvBytesCapacity: Int,
+                         kvBytesCapacity: Int, pinned: Bool = true,
                          physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
         let speculates = Self.speculates(mode: mode, environment: base)
         let requests = concurrentRequests(configured: configuredConcurrency, speculates: speculates)
@@ -129,13 +129,13 @@ enum NemotronSuperServingPolicy {
         if environment[flag] == nil, !paged,
             let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
                 kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
-                physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
+                pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
             kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates) + bank {
             environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
-            physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
+            pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
         return LoadPlan(environment: environment, speculates: speculates, requests: requests,
             prefixBankBytes: bank,
             admissionKVBytes: min(kvBytesCapacity,

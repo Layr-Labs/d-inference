@@ -68,7 +68,8 @@ struct NemotronSuperServingPolicyTests {
         // prefix bank this 100 GiB grant sizes on a 256 GiB machine (16 GiB):
         // above the 38,433,323,149-byte minimum grant measured for depth 3 x 8
         // without a bank.
-        #expect(plan.admissionKVBytes == (36 << 30) + (16 << 30))
+        #expect(plan.admissionKVBytes
+            == NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true) + (16 << 30))
         #expect(plan.admissionKVBytes - plan.prefixBankBytes > 38_433_323_149)
     }
 
@@ -116,7 +117,8 @@ struct NemotronSuperServingPolicyTests {
             base: [NemotronSuperLocalMTP.depthKey: "1", NemotronSuperLocalMTP.verificationKey: "rectangular"],
             mode: .on, configuredConcurrency: 2, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
         #expect(narrow.requests == 2 && narrow.environment[NemotronSuperLocalMTP.depthKey] == "1")
-        #expect(narrow.admissionKVBytes == 2 * (17 << 28) + (2 << 30) + (16 << 30))
+        #expect(narrow.admissionKVBytes
+            == NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true) + (16 << 30))
         let wide = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(wide.requests == 8, "one captured verify window bounds speculation")
@@ -246,14 +248,15 @@ struct NemotronSuperServingPolicyTests {
         #expect(operatorBank.maximumBytes == 2 << 30 && operatorBank.maximumEntries == 32)
         let plan = NemotronSuperServingPolicy.loadPlan(base: sized, mode: .auto,
             configuredConcurrency: nil, kvBytesCapacity: large, physicalBytes: Self.machine)
-        #expect(plan.prefixBankBytes == 2 << 30 && plan.admissionKVBytes == (26 << 30) + (2 << 30))
+        let floor = Policy.admissionKVBytes(requests: 8, speculates: true)
+        #expect(plan.prefixBankBytes == 2 << 30 && plan.admissionKVBytes == floor + (2 << 30))
         // Too small for a default bank, so the plan leaves the switch unset;
         // an operator who sets it still gets no bank from the default.
-        let tight: Int = 34 * gib
+        let tight: Int = floor + gib
         let off = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: nil, kvBytesCapacity: tight, physicalBytes: Self.machine)
         #expect(off.prefixBankBytes == 0 && off.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
-        #expect(off.admissionKVBytes == 26 << 30)
+        #expect(off.admissionKVBytes == floor)
         #expect(NemotronSuperLocalPrefixCache.config(environment: memory, kvBytesCapacity: tight,
             requests: 8, speculates: true, physicalBytes: Self.machine) == nil)
     }
@@ -277,6 +280,41 @@ struct NemotronSuperServingPolicyTests {
             let claim: Int = floor + plan.prefixBankBytes
             #expect(plan.admissionKVBytes == claim && claim < grant, "\(mode) \(grantGiB)")
         }
+    }
+
+    /// The plan sizes the bank from the builder's own inputs: the installed
+    /// checkpoint's pinned-ness and the loader's machine memory. Pinned and
+    /// generic (fixture) owners agree on a 64 and a 256 GiB machine; a plan
+    /// that sized a generic owner's bank as the pinned one's would not.
+    @Test(arguments: [64, 256] as [UInt64])
+    func plannedBankIsTheBuiltBankForPinnedAndGenericOwners(physicalGiB: UInt64) throws {
+        typealias Policy = NemotronSuperServingPolicy
+        let physical = physicalGiB << 30
+        let gib: Int = 1 << 30
+        for pinned in [true, false] {
+            for mode in [MTPMode.auto, .off] {
+                for grantGiB in [8, 40, 48, 60, 100, 155] {
+                    let grant: Int = grantGiB * gib
+                    let plan = Policy.loadPlan(base: [:], mode: mode, configuredConcurrency: nil,
+                        kvBytesCapacity: grant, pinned: pinned, physicalBytes: physical)
+                    let requests = try NemotronSuperLocalBridgeBuilder.concurrentRequests(
+                        environment: plan.environment, speculates: plan.speculates)
+                    let built = NemotronSuperLocalPrefixCache.config(environment: plan.environment,
+                        kvBytesCapacity: grant, requests: requests, speculates: plan.speculates,
+                        pinned: pinned, physicalBytes: physical)?.maximumBytes ?? 0
+                    let label = "\(physicalGiB) GiB pinned=\(pinned) \(mode) grant \(grantGiB) GiB"
+                    #expect(built == plan.prefixBankBytes, "\(label)")
+                    #expect(plan.admissionKVBytes == min(grant,
+                        Policy.admissionKVBytes(requests: requests, speculates: plan.speculates) + built), "\(label)")
+                }
+            }
+        }
+        let pinned = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: 100 * gib, pinned: true, physicalBytes: physical)
+        let generic = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: 100 * gib, pinned: false, physicalBytes: physical)
+        #expect(generic.prefixBankBytes == 1 << 30)
+        #expect(pinned.prefixBankBytes == (physicalGiB == 256 ? 16 << 30 : 0), "\(physicalGiB) GiB")
     }
 
     /// The measured machine (256 GiB of unified memory).
@@ -323,7 +361,8 @@ struct NemotronSuperServingPolicyTests {
         // Media is a serving reservation, not LOAD transient.
         #expect(footprint.nativeLoadTransientBytes == 15_938_749_104)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (36 << 30) + media) / 1_073_741_824
+        let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
+        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + admission + media) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
         #expect(abs(footprint.estimatedMemoryGb - 136.324_139_233_678_58) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,

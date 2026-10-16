@@ -77,7 +77,8 @@ extension ProviderLoop {
             owner = try await nemotronSuperSlotLoader.load(.init(modelID: modelID, directory: directory,
                 kvBytesCapacity: reslice.grantBytes, admissionKVBytes: plan.admissionKVBytes,
                 defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
-                environment: plan.environment, budget: kvBudget))
+                environment: plan.environment, budget: kvBudget,
+                physicalBytes: nemotronSuperSlotLoader.physicalBytes))
         } catch {
             // Retained weights stay resident: survivors keep their shrunk
             // grants until a regrow recomputes with them in the budget.
@@ -143,7 +144,9 @@ extension ProviderLoop {
 
     /// Provider policy under this grant: `mtp_mode` and the kill switch pick
     /// speculation; the slot policy's explicit `engine_v2_max_concurrent` bounds
-    /// concurrency, else the measured default applies.
+    /// concurrency, else the measured default applies. The slot loader's
+    /// pinned-ness and machine memory size the prefix bank exactly as its
+    /// builder will.
     func nemotronSuperLoadPlan(modelID: String, kvBytesCapacity: Int) -> NemotronSuperServingPolicy.LoadPlan {
         let backend = loopConfig.config.backend
         let explicit = backend.engineV2MaxConcurrentIsExplicit
@@ -152,7 +155,8 @@ extension ProviderLoop {
             base: nemotronSuperEnvironment ?? ProcessInfo.processInfo.environment,
             mode: backend.mtpMode,
             configuredConcurrency: explicit ? engineV2MaxConcurrent(forModel: modelID) : nil,
-            kvBytesCapacity: kvBytesCapacity)
+            kvBytesCapacity: kvBytesCapacity, pinned: nemotronSuperSlotLoader.pinned,
+            physicalBytes: nemotronSuperSlotLoader.physicalBytes)
     }
 
     private func nemotronSuperMTPStatus(speculates: Bool) -> MTPActivationStatus {

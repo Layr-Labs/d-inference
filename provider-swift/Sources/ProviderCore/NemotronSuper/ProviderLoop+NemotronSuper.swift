@@ -17,6 +17,12 @@ extension ProviderLoop {
         modelSlots[modelID]?.modelContainer.nemotronSuper != nil
     }
 
+    /// The exact Super serving identity of an advertised or resident id.
+    func isNemotronSuperIdentity(_ modelID: String) -> Bool {
+        NemotronSuperServingPolicy.isServingIdentity(modelID: modelID,
+            modelType: advertisedModels[modelID]?.modelType ?? modelSlots[modelID]?.modelType)
+    }
+
     /// Called by `ensureModelLoaded` inside its load gate, after eviction.
     /// Success publishes the slot and finishes the load; a throw has already
     /// released or retained every resource this load took.
@@ -41,41 +47,11 @@ extension ProviderLoop {
         MLXMemoryGuard.configureOnce()
 
         await acquireResliceGate()
-        let reslice: NewcomerReslice
         do {
-            reslice = try await resliceShrinkingForNewcomer(modelId: modelID,
-                weightBytes: Int(clamping: modelInfo.sizeBytes), fp16KVBytesPerToken: kvRate,
-                maxContextLength: NemotronSuperServingPolicy.contextTokens)
+            try await installNemotronSuperSlot(modelID: modelID, directory: directory,
+                modelInfo: modelInfo, fp16KVBytesPerToken: kvRate, before: before, started: started)
         } catch {
             releaseResliceGate()
-            if case .modelLoadFailed(let message)? = error as? InferenceError {
-                recordModelLoadError(model: modelID, message: message)
-            }
-            throw error
-        }
-        let owner: NemotronSuperSlotOwner
-        let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: reslice.grantBytes)
-        do {
-            owner = try await nemotronSuperSlotLoader.load(.init(modelID: modelID, directory: directory,
-                kvBytesCapacity: reslice.grantBytes, admissionKVBytes: plan.admissionKVBytes,
-                defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
-                environment: plan.environment, budget: kvBudget))
-        } catch {
-            if case NemotronSuperSlotError.retainedFault? = error as? NemotronSuperSlotError {
-                nemotronSuperRetainedWeightBytes += modelInfo.sizeBytes
-            }
-            await restoreNewcomerReslice(reslice)
-            releaseResliceGate()
-            if error is CancellationError { throw error }
-            throw nemotronSuperLoadFailure(error, modelID: modelID)
-        }
-        do {
-            try await publishNemotronSuperSlot(owner, modelID: modelID, directory: directory,
-                modelInfo: modelInfo, before: before, plan: plan, reslice: reslice, started: started)
-        } catch {
-            if await retireUnpublishedNemotronSuper(owner) { await restoreNewcomerReslice(reslice) }
-            releaseResliceGate()
-            if error is CancellationError { throw error }
             throw nemotronSuperLoadFailure(error, modelID: modelID)
         }
         releaseResliceGate()
@@ -87,10 +63,43 @@ extension ProviderLoop {
         try await finishModelLoad(modelID: modelID, deviceActivity: deviceActivity)
     }
 
+    /// Re-slice, load and publish. Caller holds the re-slice gate; a throw
+    /// has released or retained everything this load took.
+    private func installNemotronSuperSlot(modelID: String, directory: URL, modelInfo: ModelInfo,
+        fp16KVBytesPerToken: Int, before: WeightHashSnapshot, started: ContinuousClock.Instant
+    ) async throws {
+        let reslice = try await resliceShrinkingForNewcomer(modelId: modelID,
+            weightBytes: Int(clamping: modelInfo.sizeBytes), fp16KVBytesPerToken: fp16KVBytesPerToken,
+            maxContextLength: NemotronSuperServingPolicy.contextTokens)
+        let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: reslice.grantBytes)
+        let owner: NemotronSuperSlotOwner
+        do {
+            owner = try await nemotronSuperSlotLoader.load(.init(modelID: modelID, directory: directory,
+                kvBytesCapacity: reslice.grantBytes, admissionKVBytes: plan.admissionKVBytes,
+                defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
+                environment: plan.environment, budget: kvBudget))
+        } catch {
+            // Retained weights stay resident: survivors keep their shrunk
+            // grants until a regrow recomputes with them in the budget.
+            if case NemotronSuperSlotError.retainedFault? = error as? NemotronSuperSlotError {
+                nemotronSuperRetainedWeightBytes += modelInfo.sizeBytes
+            } else {
+                await restoreNewcomerReslice(reslice)
+            }
+            throw error
+        }
+        do {
+            try await publishNemotronSuperSlot(owner, modelID: modelID, directory: directory,
+                modelType: modelInfo.modelType, before: before, reslice: reslice, started: started)
+        } catch {
+            if await retireUnpublishedNemotronSuper(owner) { await restoreNewcomerReslice(reslice) }
+            throw error
+        }
+    }
+
     /// Post-build checks and publication. Caller holds the re-slice gate.
     private func publishNemotronSuperSlot(_ owner: NemotronSuperSlotOwner, modelID: String,
-        directory: URL, modelInfo: ModelInfo, before: WeightHashSnapshot,
-        plan: NemotronSuperServingPolicy.LoadPlan, reslice: NewcomerReslice,
+        directory: URL, modelType: String?, before: WeightHashSnapshot, reslice: NewcomerReslice,
         started: ContinuousClock.Instant
     ) async throws {
         // The same measured post-build guard every engine passes.
@@ -126,7 +135,7 @@ extension ProviderLoop {
                 mtpArtifact: nil, mtpStatus: status),
             modelContainer: .nemotronSuper(owner), tokenizer: owner.tokenizer, sizing: owner.sizing,
             modelArtifactSHA256: artifactHash, cacheEligibleWeightHash: nil,
-            isVLM: false, modelType: modelInfo.modelType, lastInferenceAt: .now)
+            isVLM: false, modelType: modelType, lastInferenceAt: .now)
         await completeNewcomerReslice(reslice)
     }
 
@@ -199,7 +208,9 @@ extension ProviderLoop {
 
     /// Coordinator-visible load failures stay the transient 503 shape; the
     /// recorded diagnostic names the refusal without paths or payload data.
+    /// Cancellation passes through unrecorded.
     private func nemotronSuperLoadFailure(_ error: Error, modelID: String) -> Error {
+        if error is CancellationError { return error }
         if case .modelLoadFailed(let message)? = error as? InferenceError {
             recordModelLoadError(model: modelID, message: message)
             return error

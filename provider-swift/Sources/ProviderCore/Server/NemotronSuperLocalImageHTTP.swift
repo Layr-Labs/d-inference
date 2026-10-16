@@ -11,8 +11,8 @@ import MLXVLM
 /// no image binding, so media requests get 400. The qualification runner
 /// installs `service` on the local HTTP stack (`LocalInferenceHTTP` plumbs
 /// it); a managed provider slot serves coordinator and local-endpoint
-/// requests through `engine(body:servesMedia:)`. The type name predates text
-/// support.
+/// requests through `engine(body:hasMedia:servesMedia:cacheScope:)`. The type
+/// name predates text support.
 struct NemotronSuperLocalImageHTTP: Sendable {
     private let images: NemotronSuperLocalImageBinding?
     private let text: NemotronSuperLocalBinding

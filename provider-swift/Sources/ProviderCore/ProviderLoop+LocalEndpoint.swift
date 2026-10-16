@@ -124,9 +124,7 @@ extension ProviderLoop {
     func acquireModelForLocal(_ modelId: String, managedSuper: Bool = false) async throws
         -> MultiModelBatchSchedulerEngine.AcquiredModel {
         // The generic engine never serves Super: its owner renders and parses.
-        guard managedSuper || !NemotronSuperServingPolicy.isServingIdentity(
-            modelID: modelId, modelType: advertisedModels[modelId]?.modelType ?? modelSlots[modelId]?.modelType)
-        else {
+        guard managedSuper || !isNemotronSuperIdentity(modelId) else {
             throw MultiModelBatchSchedulerEngineError.requestRejected(
                 "\(modelId) is served only through chat completions")
         }

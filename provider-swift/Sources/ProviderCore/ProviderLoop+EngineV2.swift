@@ -450,11 +450,8 @@ extension ProviderLoop {
         // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
         // budget at any instant. Engine-side shrink semantics: in-flight
         // reservations untouched; new reserves fail until the pool drains.
-        for entry in existing {
-            if let target = targets[entry.slot.modelId], target < entry.previousGrant {
-                await entry.bridge.updateKVBytesCapacity(target)
-            }
-        }
+        let reslice = NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+        await shrinkSurvivors(reslice)
 
         // Phase 2 — build the newcomer with its grant. Restore-on-throw,
         // in the Codex-review order: (1) release the newcomer's weights,
@@ -475,7 +472,7 @@ extension ProviderLoop {
                 container: newcomerBox.borrowModel(),
                 tokenizer: tokenizer,
                 sizing: sizing,
-                kvBytesCapacity: targets[modelId] ?? 0,
+                kvBytesCapacity: reslice.grantBytes,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
                 modelArtifactSHA256: modelArtifactSHA256,
@@ -486,38 +483,32 @@ extension ProviderLoop {
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
             clearCacheAfterConfirmedNativeOwnership()
-            for entry in existing {
-                guard nativeMiMoAllowsReclamation() else { break }
-                await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
-            }
+            await restoreNewcomerReslice(reslice)
             throw error
         }
 
         // Phase 3 — grow-side targets (rare on load: the budget shrank, so
         // proportional shares shrink too; kept for self-healing when a
         // previous state left a slot under-granted).
-        for entry in existing {
-            if let target = targets[entry.slot.modelId], target > entry.previousGrant {
-                guard nativeMiMoAllowsReclamation() else { break }
-                await entry.bridge.updateKVBytesCapacity(target)
-            }
-        }
+        await completeNewcomerReslice(reslice)
         return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
     }
 
-    /// A newcomer grant whose engine its own owner builds (the managed Super
-    /// load), with the restore point of every shrunk survivor.
+    /// A newcomer's re-sliced grant with every survivor's target and restore
+    /// point: built by `resliceAndBuildEngineV2Bundle`, or by
+    /// `resliceShrinkingForNewcomer` for an engine its own owner builds.
     struct NewcomerReslice {
         let grantBytes: Int
         fileprivate let existing: [ExistingSlotGrant]
         fileprivate let targets: [String: Int]
     }
 
-    /// Phase 1 of `resliceAndBuildEngineV2Bundle` for an owner-built engine:
-    /// refuse a slice leaving any slot below its floor, else shrink survivors
-    /// and return the newcomer's grant. CALLER HOLDS the re-slice gate through
-    /// installation and calls `completeNewcomerReslice` or, once a failed
-    /// newcomer's memory is released, `restoreNewcomerReslice`.
+    /// Phase 1 of `resliceAndBuildEngineV2Bundle` for an owner-built engine
+    /// (the managed Super load): refuse a slice leaving any slot below its
+    /// floor, else shrink survivors and return the newcomer's grant. CALLER
+    /// HOLDS the re-slice gate through installation and calls
+    /// `completeNewcomerReslice` or, once a failed newcomer's memory is
+    /// released, `restoreNewcomerReslice`.
     internal func resliceShrinkingForNewcomer(
         modelId: String, weightBytes: Int, fp16KVBytesPerToken: Int, maxContextLength: Int
     ) async throws -> NewcomerReslice {
@@ -536,12 +527,18 @@ extension ProviderLoop {
             throw InferenceError.modelLoadFailed("loading '\(modelId)' would leave a model below its "
                 + "serviceable KV grant (fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
         }
-        for entry in existing {
-            if let target = targets[entry.slot.modelId], target < entry.previousGrant {
+        let reslice = NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+        await shrinkSurvivors(reslice)
+        return reslice
+    }
+
+    /// Phase 1: shrink-side targets, before the newcomer allocates.
+    private func shrinkSurvivors(_ reslice: NewcomerReslice) async {
+        for entry in reslice.existing {
+            if let target = reslice.targets[entry.slot.modelId], target < entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
-        return NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
     }
 
     /// Phase 3 after the newcomer's slot is installed: grow-side targets.

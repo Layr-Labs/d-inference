@@ -1268,8 +1268,7 @@ extension ProviderLoop {
         if nativeMiMoRefusesRequest(modelId) { return true }
         // A retained Super fault refuses every later Super load until restart.
         if nemotronSuperRetainedWeightBytes > 0, modelSlots[modelId] == nil,
-            NemotronSuperServingPolicy.isServingIdentity(modelID: modelId,
-                modelType: advertisedModels[modelId]?.modelType) { return true }
+            isNemotronSuperIdentity(modelId) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the

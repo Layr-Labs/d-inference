@@ -25,7 +25,7 @@ _spec.loader.exec_module(client)
 
 SCHEMA = "nemotron-super-memory-calibration/1"
 MIB = 1 << 20
-REQUEST_KINDS = ("media_ingress", "media", "kv")
+REQUEST_KINDS = ("media_ingress", "media", "kv", "prefill_lane")
 
 
 class Calibration:
@@ -101,7 +101,8 @@ class Calibration:
         row = {"workload": name, "status": sample["status"], "error": sample.get("error"),
                "prompt_tokens": sample.get("prompt_tokens"), "completion_tokens": sample.get("completion_tokens"),
                "reserved_by_kind_sampled_max": reserved, "request_reserved_bytes": request_bytes,
-               "request_reserved_bytes_definition": "max over samples of media_ingress+media+kv held at once",
+               "request_reserved_bytes_definition":
+                   "max over samples of media_ingress+media+kv+prefill_lane held at once",
                "activation_reserve_bytes": reserve,
                "measured_mlx_peak_delta_bytes": mlx_delta,
                "measured_phys_footprint_delta_bytes": footprint_delta,

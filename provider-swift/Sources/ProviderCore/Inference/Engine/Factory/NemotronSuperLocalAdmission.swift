@@ -26,23 +26,17 @@ extension NemotronSuperLocalBridgeBuilder {
     }
 
     /// Fixed bytes each request reserves beyond the engine's own (recurrent
-    /// generations and any speculation charge): the graph path's ModelOpt
-    /// workspace for the largest chunk the engine may run, plus one batched
-    /// decode row. Requests prefill as separate forwards that may share a
-    /// step, so every request carries a whole chunk. The eager reference keeps
-    /// its own bounded tiles and has neither quote.
-    static func requestWorkspaceBytes(_ language: NemotronHModel, prefillLimit: Int) throws -> Int {
-        let prefill = language.modelOptGraphPrefillWorkspaceBytes(tokens: prefillLimit) ?? 0
-        let row: Int
+    /// generations and any speculation charge): one batched decode row. Prompt
+    /// chunks run one per step, so their activations are the owner's single
+    /// prefill lane (`NemotronSuperLocalPrefill`), not a per-request charge.
+    /// The eager reference keeps its own bounded tiles and has no row quote.
+    static func requestWorkspaceBytes(_ language: NemotronHModel) throws -> Int {
         do {
             // Only the row workspace is used; the KV element width does not enter it.
-            row = try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
+            return try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
         } catch NemotronSuperDecodeCharge.Failure.unsupportedExecution {
-            row = 0
+            return 0
         }
-        let (total, overflow) = prefill.addingReportingOverflow(row)
-        guard !overflow else { throw Failure.unsupportedSizing }
-        return total
     }
 
     /// The KV grant cannot serve the configured requests: the bridge carves

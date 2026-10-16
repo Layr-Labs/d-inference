@@ -102,7 +102,11 @@ file cache, and the receipt cannot tell which you had.
 
 Charge kinds: `load` (pending LOAD claim), `media_ingress` and `media` (the
 image binding's `-ingress`/`-media` reservations), `kv` (bridge request
-reservations, which include each request's fixed prefill workspace), `ballast`.
+reservations: recurrent state, any speculation charge, one decode row and KV),
+`prefill_lane` (the owner's one prompt-chunk activation allowance, held from
+before the first request until retirement; the checkpoint path charges the
+SDK's full-model `prefillActivationBoundBytes` for the configured chunk),
+`ballast`. `sampled_max_request_charges_held` includes the lane.
 Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
 the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
 (`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one
@@ -121,7 +125,12 @@ head and refuses the opt-in. Concurrency is the same kind of switch:
 `--engine-env DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` serves N requests with
 row-exact batched decode (`1`…`64`) or, with rectangular speculation, verifies up
 to N requests in one captured window per round (`1`…`8`); request N + 1 gets 429.
-The speculative grant default does not scale with N: pass `--kv-capacity-gib`
+Prompts prefill in chunks of `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens
+(default 2048, at most the calibrated limit), one chunk per step beside every
+decode or verify row; `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`
+(`0`…`64`, default 0) adds decode-only steps between chunks while requests
+decode. Chunk geometry never depends on concurrency, so outputs match solo
+serving. The speculative grant default does not scale with N: pass `--kv-capacity-gib`
 from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
 `kv_grant_refused` load.
 

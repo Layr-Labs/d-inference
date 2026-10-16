@@ -65,10 +65,12 @@ actor NemotronSuperLocalLoad {
                     setting: speculation)
             }
             try Task.checkCancellation()
+            // The pinned checkpoint charges the SDK's full-model prefill bound.
             let built = try await NemotronSuperLocalBridgeBuilder.make(installed: candidate,
                 tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity, kvBudget: budget, loadLease: claim,
-                construction: construction, mtp: head, environment: environment)
+                construction: construction, mtp: head, measuredPrefillBound: true,
+                environment: environment)
             owner = built
             try Task.checkCancellation()
             // Installation/setup has fenced. The standard ledger now sees live

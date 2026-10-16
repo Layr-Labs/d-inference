@@ -46,3 +46,11 @@ that many requests, and the speculative owner (rectangular verification) into
 up to eight concurrent requests verified in one exact captured window per
 round, each committing its own accepted prefix; serial verification stays one
 request. Synthetic fixtures show token-exact output against solo plain decode.
+Prompts prefill in fixed chunks (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`,
+default 2048 tokens), at most one chunk per step beside every decode or verify
+row, optionally with decode-only steps between chunks
+(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`); a request's chunks are
+the same as when it is served alone. The prefill activation charge is one
+owner-wide lane, reserved before the first request and held until retirement
+(the pinned checkpoint charges the SDK's measured whole-chunk bound), instead
+of a prefill workspace in every request's reservation.

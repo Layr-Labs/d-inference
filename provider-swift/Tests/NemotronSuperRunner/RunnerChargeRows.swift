@@ -3,6 +3,8 @@ import MLXLMCommon
 
 enum RunnerChargeKind: String, Sendable {
     case load, mediaIngress = "media_ingress", media, kv, ballast
+    /// The owner's prefill activation lane (NemotronSuperLocalPrefill).
+    case prefillLane = "prefill_lane"
 }
 
 struct RunnerChargeRow: Sendable {
@@ -15,7 +17,8 @@ extension GlobalKVCacheBudget {
     /// LOAD rows come from the pending-load table, request rows from the
     /// read-only reservation snapshot; both are read inside the budget's
     /// isolation. Kinds follow the reservation-ID suffixes
-    /// NemotronSuperLocalImageBinding uses; every other request ID is a bridge
+    /// NemotronSuperLocalImageBinding and the owner's prefill lane use; every
+    /// other request ID is a bridge
     /// (KV) reservation in this single-owner runner.
     func runnerChargeRows(ballastID: String) -> [RunnerChargeRow] {
         var rows = pendingLoads.values.map {
@@ -25,7 +28,8 @@ extension GlobalKVCacheBudget {
             let kind: RunnerChargeKind =
                 id == ballastID ? .ballast
                 : id.hasSuffix("-ingress") ? .mediaIngress
-                : id.hasSuffix("-media") ? .media : .kv
+                : id.hasSuffix("-media") ? .media
+                : id.hasSuffix("-prefill") ? .prefillLane : .kv
             rows.append(RunnerChargeRow(id: id, kind: kind, bytes: bytes))
         }
         return rows.sorted { $0.id < $1.id }

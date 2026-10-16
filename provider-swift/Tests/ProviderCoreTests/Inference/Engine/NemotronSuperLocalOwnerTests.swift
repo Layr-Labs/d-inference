@@ -93,19 +93,23 @@ extension NemotronSuperLocalOwnerTests {
         return (owner, installed, residency, budget, lease)
     }
 
-    /// Each request's shared-budget charge carries the graph path's explicit
-    /// ModelOpt workspace for the largest chunk the engine may run and one
-    /// batched decode row, from admission until the request retires.
+    /// Each request's shared-budget charge carries one batched decode row from
+    /// admission until it retires; the owner's single prefill lane (the graph
+    /// path's ModelOpt workspace for one chunk) is held from before the first
+    /// request until native retirement, whatever the number of requests.
     @Test(.timeLimit(.minutes(1)))
-    func everyRequestChargeIncludesTheGraphPrefillWorkspace() async throws {
+    func requestsChargeADecodeRowAndTheOwnerOnePrefillLane() async throws {
         let (owner, installed, residency, budget, lease) = try await Self.owner()
         let language = try #require(installed.model?.languageModel)
-        let limit = try #require(language.calibratedPrefillTokenLimit)
-        let prefill = try #require(language.modelOptGraphPrefillWorkspaceBytes(tokens: limit))
+        let chunk = owner.prefill.chunkTokens
+        #expect(chunk == min(2048, try #require(language.calibratedPrefillTokenLimit)))
+        let prefill = try #require(language.modelOptGraphPrefillWorkspaceBytes(tokens: chunk))
         let row = try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
-        let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(
-            language, prefillLimit: limit)
-        #expect(prefill > 0 && row > 0 && workspace == prefill + row)
+        let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
+        #expect(prefill > 0 && row > 0 && workspace == row && owner.prefillLaneBytes == prefill)
+        let lane = await budget.reservationBytesSnapshot()
+        #expect(lane.count == 1 && lane.first?.key.hasSuffix("-prefill") == true
+            && lane.first?.value == UInt64(prefill))
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
@@ -117,9 +121,10 @@ extension NemotronSuperLocalOwnerTests {
         try await owner.localTextBinding().run(request: request, promptTokens: [1, 2, 3]) { _ in
             await observed.record(await budget.reservationBytesSnapshot())
         }
-        #expect(await observed.rows == [[expected]])
-        #expect(await budget.reservationBytesSnapshot().isEmpty)
+        #expect(await observed.rows == [[expected, prefill].sorted()])
+        #expect(await budget.reservationBytesSnapshot() == lane)
         try await owner.closeAfterDrain()
+        #expect(await budget.reservationBytesSnapshot().isEmpty)
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
         #expect(await budget.outstandingReservedBytes() == 0)
@@ -194,8 +199,7 @@ extension NemotronSuperLocalOwnerTests {
         let engine = try #require(ownedEngine as? EngineV2)
         #expect(engine.resolvedFixedBytesPerRequest
             == charge.recurrentGenerations * charge.recurrentBytesPerGeneration)
-        let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(
-            language, prefillLimit: try #require(language.calibratedPrefillTokenLimit))
+        let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
         #expect(owner.admitLocalRequest() && owner.admitLocalRequest() && !owner.admitLocalRequest())
         owner.finishLocalRequest()
@@ -244,6 +248,6 @@ extension NemotronSuperLocalOwnerTests {
 private actor SuperOwnerCharges {
     var rows: [[Int]] = []
     func record(_ snapshot: [String: UInt64]) {
-        if rows.isEmpty { rows.append(snapshot.values.map { Int($0) }) }
+        if rows.isEmpty { rows.append(snapshot.values.map { Int($0) }.sorted()) }
     }
 }

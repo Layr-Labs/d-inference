@@ -26,6 +26,80 @@ public enum ClusterOnboardingRole: String, Codable, Sendable, Equatable {
     case member
 }
 
+/// How the cluster serves, chosen by the person and kept on the leader until changed: publicly through Darkbloom's
+/// coordinator (`darkbloom cluster`, the default), or on the leading Mac's local API only (`darkbloom cluster local`),
+/// where no Mac of the cluster contacts a coordinator: no registration, heartbeat, public traffic or billing.
+public enum ClusterServingScope: Sendable, Equatable {
+    case publicServing
+    /// The local API listens on `bind` and needs its API key.
+    case localOnly(bind: String)
+
+    /// Every interface of the leading Mac (LAN or tailnet) unless the person chose an address (owner, 2026-10-15).
+    public static let localOnlyDefaultBind = "0.0.0.0"
+
+    /// Loopback: what a saved address that is not one the API takes falls back to (never a wider exposure).
+    static let loopbackBind = "127.0.0.1"
+
+    /// The scope a record keeps (nil from an older build or before the first choice: public).
+    public init(localOnly: Bool?, bind: String?) {
+        guard localOnly == true else { self = .publicServing; return }
+        self = .localOnly(bind: bind.map { Self.isValidBind($0) ? $0 : Self.loopbackBind } ?? Self.localOnlyDefaultBind)
+    }
+
+    /// The scope a message carries (`localOnly`, `bind`): nil when it carries none, or an address the API does not take
+    /// (a local-only scope without an address listens everywhere, as the default does).
+    public static func carried(localOnly: Bool?, bind: String?) -> ClusterServingScope? {
+        guard let localOnly else { return nil }
+        guard localOnly else { return .publicServing }
+        let address = bind ?? localOnlyDefaultBind
+        return isValidBind(address) ? .localOnly(bind: address) : nil
+    }
+
+    public var isLocalOnly: Bool { bind != nil }
+
+    public var bind: String? {
+        if case .localOnly(let bind) = self { return bind }
+        return nil
+    }
+
+    /// An address the local API may listen on: `localhost` or a numeric IPv4/IPv6 address (`0.0.0.0` = every one).
+    public static func isValidBind(_ text: String) -> Bool {
+        guard !text.isEmpty, text.utf8.count <= 64 else { return false }
+        if text == "localhost" { return true }
+        var v4 = in_addr(), v6 = in6_addr()
+        return inet_pton(AF_INET, text, &v4) == 1 || inet_pton(AF_INET6, text, &v6) == 1
+    }
+
+    /// True when hosts other than this Mac can reach the API (any address that is not loopback).
+    public var reachableFromNetwork: Bool {
+        guard let bind else { return false }
+        return !(bind == "localhost" || bind == "::1" || bind.hasPrefix("127."))
+    }
+
+    /// One plain line for the screens: how the cluster serves when it runs.
+    public var line: String {
+        switch self {
+        case .publicServing:
+            return "Serving through Darkbloom (public traffic when the coordinator supports clusters)"
+        case .localOnly(let bind):
+            let reach = bind == Self.localOnlyDefaultBind ? "on this Mac's networks (LAN or tailnet)"
+                : reachableFromNetwork ? "at \(bind)" : "on this Mac only (\(bind))"
+            return "Local only: no coordinator; the API listens \(reach) and needs its API key (`darkbloom local` shows it)"
+        }
+    }
+}
+
+/// What `darkbloom cluster` was asked for on the command line: `darkbloom cluster local` asks for local-only serving
+/// (and may name the model); plain `darkbloom cluster` asks for nothing and keeps the saved scope.
+public struct ClusterOnboardingRequest: Sendable, Equatable {
+    /// Nil: keep how the cluster serves now.
+    public var scope: ClusterServingScope?
+    /// A model id or title to choose without the list (`darkbloom cluster local <model>`).
+    public var model: String?
+
+    public init(scope: ClusterServingScope? = nil, model: String? = nil) { self.scope = scope; self.model = model }
+}
+
 /// What `darkbloom cluster` finds on this Mac when it starts.
 public struct ClusterOnboardingResume: Sendable, Equatable {
     public var role: ClusterOnboardingRole?
@@ -34,6 +108,8 @@ public struct ClusterOnboardingResume: Sendable, Equatable {
     /// The leader asked the cluster to serve (kept across restarts).
     public var serving: Bool
     public var modelName: String?
+    /// How the cluster serves (kept across restarts, as the leader saved it).
+    public var scope: ClusterServingScope = .publicServing
     /// On a member: the derived control leader's name (commands typed here run there).
     public var leaderName: String?
     /// Why derivation picked the leader, and its term.
@@ -263,13 +339,20 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     public var deployment: String?
     /// `ClusterLocalServing.notice` when rank 0 serves on its local API only (no coordinator with cluster support).
     public var notice: String? = nil
-    public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil) {
-        self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice
+    /// The API also listens on the serving Mac's network addresses (local-only serving's default); nil from an older build.
+    public var network: Bool? = nil
+    public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil, network: Bool? = nil) {
+        self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice; self.network = network
     }
 
     /// "API at http://localhost:8000 on this Mac": the serving API listens on loopback on the Mac that runs rank 0, so
-    /// when that is the other Mac the line names it (this Mac's own loopback serves nothing).
-    public var apiLine: String { "API at http://localhost:\(port) on \(servedBy)" }
+    /// when that is the other Mac the line names it (this Mac's own loopback serves nothing). Listening on the network
+    /// too, the line says so: other computers use that Mac's LAN or tailnet address with the same port.
+    public var apiLine: String {
+        let base = "API at http://localhost:\(port) on \(servedBy)"
+        guard network == true else { return base }
+        return base + ", and at port \(port) of \(servedBy == "this Mac" ? "its" : "that Mac's") LAN or tailnet address"
+    }
 
     /// The local-serving line as this screen shows it. The part that serves words it for its own Mac ("this Mac's
     /// API"); on the screen of the other Mac (a member's status, or a leader whose API moved) it is that Mac's API,
@@ -299,10 +382,15 @@ public enum ClusterOnboardingSync {
 
     public static let dueEverySeconds: Double = 15
 
-    /// `memberServing` nil: the member did not answer (asked again at the next check).
-    public static func action(leaderServing: Bool, leaderModel: String?, memberServing: Bool?, memberModel: String?) -> Action {
+    /// `memberServing` nil: the member did not answer (asked again at the next check). `memberLocalOnly` nil: the
+    /// member's build does not report the serving scope, so only the model and the start are compared.
+    public static func action(leaderServing: Bool, leaderModel: String?, memberServing: Bool?, memberModel: String?,
+                              leaderLocalOnly: Bool = false, memberLocalOnly: Bool? = nil) -> Action {
         guard let memberServing else { return .none }
-        if leaderServing { return memberServing && memberModel == leaderModel ? .none : .serve(leaderModel) }
+        if leaderServing {
+            let scopeAgrees = memberLocalOnly.map { $0 == leaderLocalOnly } ?? true
+            return memberServing && memberModel == leaderModel && scopeAgrees ? .none : .serve(leaderModel)
+        }
         return memberServing ? .stop : .none
     }
 }
@@ -353,6 +441,9 @@ public struct ClusterOnboardingOperations: Sendable {
     /// DEVELOPER ONLY: one loud line for the setup screen when a developer setting overrides the planner (a forced
     /// deployment mode, `ClusterForcedModeSetting`); nil, the default and every user's case, says nothing.
     public var developerNotice: @Sendable () -> String?
+    /// Saves how the cluster serves on the control leader (kept until changed). While it serves, the leading Mac's
+    /// part starts again in the new scope by itself; its lines say so.
+    public var setScope: @Sendable (_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure>
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -374,13 +465,15 @@ public struct ClusterOnboardingOperations: Sendable {
                 recheckFit: @escaping @Sendable (Int) -> String? = { _ in nil },
                 afterRestart: @escaping @Sendable () -> String? = { nil },
                 saveDiagnostics: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("No diagnostics file can be saved here.")) },
-                developerNotice: @escaping @Sendable () -> String? = { nil }) {
+                developerNotice: @escaping @Sendable () -> String? = { nil },
+                setScope: @escaping @Sendable (ClusterServingScope) -> Result<[String], ClusterOnboardingFailure>
+                    = { _ in .failure(.init("This build cannot change how the cluster serves.")) }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
         self.status = status; self.stop = stop; self.provision = provision; self.verifyTeardown = verifyTeardown
         self.useLinkPort = useLinkPort; self.recheckFit = recheckFit; self.afterRestart = afterRestart; self.saveDiagnostics = saveDiagnostics
-        self.developerNotice = developerNotice
+        self.developerNotice = developerNotice; self.setScope = setScope
     }
 }
 
@@ -481,12 +574,13 @@ public protocol ClusterOnboardingConsole: AnyObject {
 
 /// Runs the onboarding on a console with the operations given; returns the exit status.
 public enum ClusterOnboardingDriver {
-    public static func run(_ operations: ClusterOnboardingOperations, console: ClusterOnboardingConsole) -> Int32 {
+    public static func run(_ operations: ClusterOnboardingOperations, console: ClusterOnboardingConsole,
+                           request: ClusterOnboardingRequest = .init()) -> Int32 {
         let resume = operations.resume()
         switch resume.role {
-        case .member: return member(resume, operations, console)
-        case .leader: return leader(resume, operations, console, justPaired: false)
-        case nil: return onboard(operations, console)
+        case .member: return member(resume, operations, console, request: request)
+        case .leader: return leader(resume, operations, console, justPaired: false, request: request)
+        case nil: return onboard(operations, console, request: request)
         }
     }
 
@@ -507,7 +601,8 @@ public enum ClusterOnboardingDriver {
     }
 
     /// No pairing yet: checks, then find a waiting leader or become one.
-    static func onboard(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+    static func onboard(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
+                        request: ClusterOnboardingRequest = .init()) -> Int32 {
         console.say("Darkbloom cluster setup")
         console.say("")
         console.say("Checking this Mac's Thunderbolt cable…")
@@ -574,16 +669,21 @@ public enum ClusterOnboardingDriver {
                 return 1
             }
             console.say(localNetworkLine)
+            // The leader chooses how the cluster serves; a member that was asked for local serving says where to ask.
+            if request.scope?.isLocalOnly == true {
+                console.say("To serve locally only (no coordinator), run `darkbloom cluster local` on \(peerName).")
+            }
             console.say("Nothing else to do on this Mac: \(peerName) chooses the model and starts this Mac's part.")
             return 0
         case .leader:
-            return leader(.init(role: .leader, peerName: peerName), operations, console, justPaired: true)
+            return leader(.init(role: .leader, peerName: peerName), operations, console, justPaired: true, request: request)
         }
     }
 
     /// A member: `darkbloom cluster` works here too. Every command runs on the derived control leader, forwarded over
     /// the link control channel, and its answer is shown here.
-    static func member(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+    static func member(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
+                       request: ClusterOnboardingRequest = .init()) -> Int32 {
         let leader = resume.leaderName ?? resume.peerName ?? "the leading Mac"
         console.say("This Mac is a member of the cluster led by \(leader).")
         switch operations.ensureService() {
@@ -593,12 +693,12 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         console.say("Commands typed here run on \(leader) over the cable.")
-        return menu(resume, operations, console)
+        return menu(resume, operations, console, request: request)
     }
 
     /// The leader: the model and options, the sync, the start, serving.
     static func leader(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations,
-                       _ console: ClusterOnboardingConsole, justPaired: Bool) -> Int32 {
+                       _ console: ClusterOnboardingConsole, justPaired: Bool, request: ClusterOnboardingRequest = .init()) -> Int32 {
         switch operations.ensureService() {
         case .success(let line): console.say(line)
         case .failure(let failure):
@@ -611,19 +711,32 @@ public enum ClusterOnboardingDriver {
         // straight to the choice.
         if !justPaired, resume.serving || resume.modelName != nil {
             console.say("This Mac leads the cluster.")
-            return menu(resume, operations, console)
+            return menu(resume, operations, console, request: request)
         }
-        return chooseAndServe(operations, console)
+        return chooseAndServe(operations, console, scope: request.scope ?? resume.scope, saveScope: request.scope != nil,
+                              model: request.model)
     }
 
     /// Status, then one key: the same on every member (a member's commands are forwarded to the leader).
-    static func menu(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+    /// `darkbloom cluster local` comes here asking for local-only serving: a cluster that is not serving (or asked for
+    /// a model by name) goes to the choice and starts that way; a serving cluster switches and serves again.
+    static func menu(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
+                     request: ClusterOnboardingRequest = .init()) -> Int32 {
+        if let wanted = request.scope {
+            if request.model != nil || !resume.serving {
+                return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model)
+            }
+            if wanted != resume.scope { return changeScope(to: wanted, resume, operations, console) }
+        }
         for line in operations.status() { console.say("  " + line) }
         if resume.serving {
             console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to check both Macs released their memory.")
         } else {
             console.say("Not serving. Press m to choose a model and serve, v to check both Macs released their memory, enter to leave it as it is.")
         }
+        // The other way to serve, one key: `l` serves locally only, `p` through Darkbloom again (kept until changed).
+        console.say(resume.scope.isLocalOnly ? "This cluster serves locally only (no coordinator); press p to serve through Darkbloom instead."
+                                             : "Press l to serve locally only (no coordinator).")
         while true {
             guard let key = console.key(milliseconds: 60_000) else {
                 if console.closed { return 0 }
@@ -631,6 +744,10 @@ public enum ClusterOnboardingDriver {
             }
             switch key {
             case "\r", "\n", "q", "Q": return 0
+            case "l" where !resume.scope.isLocalOnly, "L" where !resume.scope.isLocalOnly:
+                return changeScope(to: .localOnly(bind: ClusterServingScope.localOnlyDefaultBind), resume, operations, console)
+            case "p" where resume.scope.isLocalOnly, "P" where resume.scope.isLocalOnly:
+                return changeScope(to: .publicServing, resume, operations, console)
             case "t" where resume.serving, "T" where resume.serving: return test(operations, console) ? 0 : 1
             case "s" where resume.serving, "S" where resume.serving:
                 switch operations.stop() {
@@ -650,16 +767,45 @@ public enum ClusterOnboardingDriver {
                     for line in failure.lines { console.say(line) }
                     return 1
                 }
-            case "m", "M": return chooseAndServe(operations, console)
+            case "m", "M": return chooseAndServe(operations, console, scope: resume.scope)
             default: continue
             }
         }
     }
 
+    /// Saves the other way to serve on the control leader. A serving cluster starts its leading part again that way
+    /// (the setup and the model stay), so the screen waits for it as it does after a start.
+    static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume,
+                            _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+        console.say(wanted.isLocalOnly ? "Serving locally only from now on (no coordinator)…" : "Serving through Darkbloom from now on…")
+        switch operations.setScope(wanted) {
+        case .success(let lines): for line in lines { console.say("  " + line) }
+        case .failure(let failure):
+            for line in failure.lines { console.say("  " + line) }
+            console.say("Nothing was changed.")
+            return 1
+        }
+        console.say(wanted.line + ".")
+        guard resume.serving else {
+            console.say("Not serving now: the next start serves this way. Press m in `darkbloom cluster` to choose a model.")
+            return 0
+        }
+        return awaitReady(title: resume.modelName ?? "the model", operations, console) ? 0 : 1
+    }
+
     /// How long the start waits for n after the model is chosen (the choice is the start).
     static let startSeconds = 3
 
-    static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+    /// Each reason once, where it first appears.
+    static func reasonsInOrder(_ reasons: [String]) -> [String] {
+        var seen = Set<String>()
+        return reasons.filter { seen.insert($0).inserted }
+    }
+
+    /// The choice, then the start. `scope` is how it will serve (what the screen says); `saveScope` saves it on the
+    /// control leader first (`darkbloom cluster local`); `model` names the choice so the list is not asked.
+    static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
+                               scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil) -> Int32 {
         console.say("")
         console.say("Reading both Macs over the cable…")
         let notes = ClusterOnboardingMailbox<String>()
@@ -699,13 +845,32 @@ public enum ClusterOnboardingDriver {
         let blocked = choices.indices.filter { choices[$0].blocker != nil }
         if !blocked.isEmpty {
             console.say("  Not offered:")
-            for index in blocked { console.say("     \(choices[index].title): \(choices[index].blocker!)") }
+            // One line per reason, the models it holds back named before it, in the order the planner listed them.
+            for reason in Self.reasonsInOrder(blocked.compactMap { choices[$0].blocker }) {
+                let titles = blocked.filter { choices[$0].blocker == reason }.map { choices[$0].title }
+                console.say("     \(titles.joined(separator: ", ")): \(reason)")
+            }
         }
         guard !open.isEmpty else {
             console.say("No model can be served by these Macs now; the reasons are above.")
             return 1
         }
         var chosen: Int?
+        if let model {
+            // Named on the command line: matched to a model id or title, without the list's question.
+            let named = { (index: Int) in
+                [choices[index].modelID, choices[index].title].contains { $0?.caseInsensitiveCompare(model) == .orderedSame }
+            }
+            if let index = open.first(where: named) {
+                chosen = index
+                console.say("Chosen: \(choices[index].title).")
+            } else if let index = blocked.first(where: named) {
+                console.say("\(choices[index].title) is not offered on these Macs: \(choices[index].blocker!)")
+                return 1
+            } else {
+                console.say("No model on the list is named \(model); choose one by its number.")
+            }
+        }
         while chosen == nil {
             guard let typed = console.line(prompt: "Choose a model [1-\(open.count), enter = 1]: ") else { return 1 }
             let text = typed.trimmingCharacters(in: .whitespaces)
@@ -744,7 +909,9 @@ public enum ClusterOnboardingDriver {
                 }
             }
         }
-        console.say("Options: always on (each Mac starts its part again by itself); public serving through Darkbloom is off in this build.")
+        console.say(scope.isLocalOnly
+            ? "Options: always on (each Mac starts its part again by itself); \(scope.line.prefix(1).lowercased() + scope.line.dropFirst())."
+            : "Options: always on (each Mac starts its part again by itself); public serving through Darkbloom is off in this build.")
         // The choice is the start: a moment to stop it, no second question.
         console.say("Starting \(choice.title) on both Macs in \(startSeconds) s; press n to stop here.")
         let deadline = Date().addingTimeInterval(Double(startSeconds))
@@ -774,6 +941,15 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say("  " + line) }
             return 1
         }
+        // After the adopt (which stopped a running model first), so the scope never restarts the old model.
+        if saveScope {
+            switch operations.setScope(scope) {
+            case .success(let lines): for line in lines { console.say("  " + line) }
+            case .failure(let failure):
+                for line in failure.lines { console.say("  " + line) }
+                return 1
+            }
+        }
         switch operations.serve() {
         case .success(let lines): for line in lines { console.say("  " + line) }
         case .failure(let failure):
@@ -781,6 +957,17 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         console.say("Starting both Macs' parts and loading the model…")
+        guard awaitReady(title: choice.title, operations, console) else { return 1 }
+        let tested = test(operations, console)
+        console.say("")
+        console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
+        console.say("Nothing else is needed on the other Mac." + (operations.afterRestart().map { " " + $0 } ?? ""))
+        return tested ? 0 : 1
+    }
+
+    /// Waits for the started cluster with its progress, then says where it serves; false (with the last errors and the
+    /// diagnostics offer) when it did not become ready.
+    static func awaitReady(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
         let progress = ClusterOnboardingMailbox<String>()
         let finished = ClusterOnboardingMailbox<Result<ClusterOnboardingReady, ClusterOnboardingFailure>>()
         Thread.detachNewThread { finished.post(operations.waitReady { progress.post($0) }) }
@@ -793,18 +980,14 @@ public enum ClusterOnboardingDriver {
         for line in progress.take() { console.say("  " + line) }
         switch ready! {
         case .success(let where_):
-            for line in where_.lines(model: choice.title) { console.say(line + ".") }
+            for line in where_.lines(model: title) { console.say(line + ".") }
+            return true
         case .failure(let failure):
             for line in failure.lines { console.say(line) }
             offerDiagnostics(operations, console)
             console.say("Both Macs keep trying by themselves; run `darkbloom cluster` here to see how it is going.")
-            return 1
+            return false
         }
-        let tested = test(operations, console)
-        console.say("")
-        console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
-        console.say("Nothing else is needed on the other Mac." + (operations.afterRestart().map { " " + $0 } ?? ""))
-        return tested ? 0 : 1
     }
 
     /// One key to save a diagnostics file (redacted) after a start that did not finish.

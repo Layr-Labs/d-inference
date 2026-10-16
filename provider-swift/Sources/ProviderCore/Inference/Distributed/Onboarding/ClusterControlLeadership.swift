@@ -628,13 +628,22 @@ public enum ClusterControlWords {
 
 /// A `darkbloom cluster` command, as a member forwards it to the control leader over the link control channel.
 public struct ClusterControlRequest: Codable, Sendable, Equatable {
+    /// `scope`: how the cluster serves from now on (`localOnly`, `bind`), saved on the leader. A leader whose build
+    /// predates an operation cannot decode the request and answers with a failure.
     public enum Operation: String, Codable, Sendable {
-        case status, reachMembers, planModels, adopt, serve, stop, readiness, test, verifyTeardown
+        case status, reachMembers, planModels, adopt, serve, stop, readiness, test, verifyTeardown, scope
     }
     public var op: Operation
     /// `adopt`: the choice's index as `planModels` listed it on the leader.
     public var index: Int?
-    public init(op: Operation, index: Int? = nil) { self.op = op; self.index = index }
+    public var localOnly: Bool?
+    public var bind: String?
+    public init(op: Operation, index: Int? = nil, scope: ClusterServingScope? = nil) {
+        self.op = op; self.index = index; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+    }
+
+    /// `scope`'s value; nil when it names none or an address the local API does not take.
+    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, bind: bind) }
 }
 
 /// The leader's answer, shown as it is on the Mac that asked.

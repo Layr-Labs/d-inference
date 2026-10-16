@@ -46,7 +46,8 @@ extension ClusterOnboardingOperations {
             recheckFit: { live.recheckFit($0) },
             afterRestart: { live.afterRestart() },
             saveDiagnostics: { live.saveDiagnostics() },
-            developerNotice: { ClusterForcedModeSetting.notice(environment: ProcessInfo.processInfo.environment) })
+            developerNotice: { ClusterForcedModeSetting.notice(environment: ProcessInfo.processInfo.environment) },
+            setScope: { live.setScope($0) })
     }
 }
 
@@ -85,11 +86,14 @@ final class OnboardingLive: @unchecked Sendable {
         // After onboarding the role is the derived control leadership, not who drove the screens.
         let record = try? store.readRecord()
         guard let claim = record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) else {
-            return .init(role: role, peerName: leadership.peerName, serving: leadership.serving, modelName: leadership.modelName)
+            var resume = ClusterOnboardingResume(role: role, peerName: leadership.peerName, serving: leadership.serving, modelName: leadership.modelName)
+            resume.scope = leadership.scope
+            return resume
         }
         let leads = claim.leaderID == pairing.localMemberID
         var resume = ClusterOnboardingResume(role: leads ? .leader : .member, peerName: leadership.peerName, serving: leadership.serving,
                                              modelName: leadership.modelName)
+        resume.scope = leadership.scope
         resume.leaderName = leads ? nil : leaderName
         resume.leaderReason = claim.reason
         resume.term = claim.term
@@ -218,6 +222,9 @@ final class OnboardingLive: @unchecked Sendable {
             return .init(lines: [], failed: false, leaderID: leaderID, ready: once.ready, progress: once.line)
         case .test: return lines(localTestRequest())
         case .verifyTeardown: return lines(localVerifyTeardown())
+        case .scope:
+            guard let scope = request.scope else { return lines(.failure(.init("No way of serving was named, or its address is not one the API takes."))) }
+            return lines(localSetScope(scope))
         }
     }
 
@@ -414,13 +421,14 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
-    /// The service for this session only (no login agent), with the reason it will not start at login.
+    /// The service for this session only (no login agent). The screen says what to do after a restart; why it cannot
+    /// start at login (`reason`, e.g. an ad-hoc signed build) goes to the service log, not the screen.
     private func sessionService(executable: URL, arguments: [String], reason: String) -> Result<String, ClusterOnboardingFailure> {
         do {
             let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
-            return .success((started ? "Started this Mac's cluster service for this session" : "This Mac's cluster service is running")
-                + ", but it could not be set to start at login (\(reason)): after a restart of this Mac, "
-                + "run `darkbloom cluster` here again.")
+            Self.logLoginAgentReason(reason)
+            return .success((started ? "Started this Mac's cluster service" : "This Mac's cluster service is running")
+                + " (after a restart of this Mac, run `darkbloom cluster` again).")
         } catch let failure as ClusterOnboardingFailure {
             return .failure(failure)
         } catch {
@@ -436,6 +444,18 @@ final class OnboardingLive: @unchecked Sendable {
 
     static func reason(_ error: Error) -> String {
         (error as? ClusterOnboardingFailure)?.lines.joined(separator: " ") ?? "\(error)"
+    }
+
+    /// Why the service runs for this session only, appended to its log (`~/.darkbloom/cluster-setup/service.log`,
+    /// opened append-only because the running service writes there too).
+    static func logLoginAgentReason(_ reason: String) {
+        guard let log = try? ClusterService.paths().log else { return }
+        let descriptor = open(log.path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { return }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let line = "\(ISO8601DateFormatter().string(from: Date())) onboarding: the cluster service does not start at login: "
+            + ClusterConsoleText.bounded(reason, maximum: 300) + "\n"
+        try? handle.write(contentsOf: Data(line.utf8))
     }
 
     // MARK: - The leader
@@ -872,11 +892,53 @@ final class OnboardingLive: @unchecked Sendable {
         routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
     }
 
+    func setScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
+        // Long enough for the rank 0 part to stop (it releases its memory first) and start again.
+        routed(.init(op: .scope, scope: scope), seconds: Self.scopeRestartSeconds + 30, acting: true, local: { localSetScope(scope) }) { $0.lines }
+    }
+
+    static let scopeRestartSeconds: Double = 400
+
+    /// Saves how the cluster serves on this (control leader) Mac and gives the member the same scope. While the
+    /// cluster serves, the Mac that runs rank 0 starts its part again that way (its service keys the part by the
+    /// scope); this waits until that part started again, so the readiness asked next is the new part's.
+    func localSetScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
+        guard let current = leadership else { return .failure(.init("This Mac is not paired with a cluster.")) }
+        let saved = scope.isLocalOnly ? "Saved on \(here): the cluster serves locally only and never contacts a coordinator."
+            : "Saved on \(here): the cluster serves through Darkbloom (its leading Mac registers with the coordinator)."
+        if current.scope == scope { return .success([saved]) }
+        let startsBefore = rankZeroStarts()
+        do {
+            try store.updateRecord { $0.leadership?.scope = scope }
+        } catch {
+            return .failure(.init("This Mac's setup record could not be saved: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
+        }
+        guard current.serving else { return .success([saved]) }
+        // The member records the scope from a start of the model it already runs (it needs it only if control moves).
+        _ = try? command(.init(op: .serve, model: current.modelName, deployment: current.deployment, scope: scope), seconds: 10)
+        let later = "The leading Mac's part has not started again yet; its cluster service does so by itself."
+        guard let before = startsBefore else { return .success([saved, later]) }
+        let deadline = Date().addingTimeInterval(Self.scopeRestartSeconds)
+        while Date() < deadline {
+            if let now = rankZeroStarts(), now > before {
+                return .success([saved, "The leading Mac's part started again this way; it loads the model now."])
+            }
+            sleep(2)
+        }
+        return .success([saved, later])
+    }
+
+    /// How many times the part that runs rank 0 has started (this Mac's, or the other Mac's over the link).
+    func rankZeroStarts() -> Int? {
+        if context.savedConfiguration().configuration?.role == .leader { return ClusterService.published()?.child.starts }
+        return (try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))?.child.starts
+    }
+
     func localServe() -> Result<[String], ClusterOnboardingFailure> {
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
-            _ = try command(.init(op: .serve, model: title, deployment: leadership?.deployment))
+            _ = try command(.init(op: .serve, model: title, deployment: leadership?.deployment, scope: leadership?.scope))
         } catch let failure as ClusterSetupFailure {
             return .failure(.init(["\(peerName) was not started yet: \(failure.text)", Self.startsWhenItAnswers(peerName)]))
         } catch {
@@ -982,6 +1044,16 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
+    /// Where a ready cluster serves, as `session()` saw it. The API reaches the network only once the part that serves
+    /// says it serves locally only by choice (its log line), so a part still running the earlier way is never named so.
+    func ready(_ now: (local: Bool, session: ClusterServiceStatus.Session?, child: ClusterServiceStatus.Child?, error: String?),
+               port: Int) -> ClusterOnboardingReady {
+        let notice = now.local ? ClusterService.servingNotice() : now.child?.notice
+        let byChoice = notice == ClusterLocalServing.localOnlyNotice
+        return .init(servedBy: now.local ? here : peerName, port: port, deployment: leadership?.deployment, notice: notice,
+                     network: byChoice ? (leadership?.scope.reachableFromNetwork ?? false) : nil)
+    }
+
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
     func readinessOnce() -> (ready: ClusterOnboardingReady?, line: String) {
         let published = ClusterService.published()
@@ -1000,8 +1072,7 @@ final class OnboardingLive: @unchecked Sendable {
         var line: String
         if let session = now.session, session.observed {
             if session.ready, let port = session.port {
-                return (.init(servedBy: now.local ? here : peerName, port: port, deployment: leadership?.deployment,
-                              notice: now.local ? ClusterService.servingNotice() : now.child?.notice), "ready")
+                return (ready(now, port: port), "ready")
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
         } else if let child = now.child, let end = child.lastEnd, !child.running {
@@ -1079,13 +1150,13 @@ final class OnboardingLive: @unchecked Sendable {
         let now = session()
         if leadership?.serving != true {
             lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + $0 } ?? "").")
+            if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
         } else if let session = now.session, session.observed {
             if session.ready {
                 // The deployment first, then where the API is.
                 // The local-serving line is worded for the screen it lands on (`noticeLine`): a member's status says
                 // that Mac's API, as the API line above names it.
-                let ready = ClusterOnboardingReady(servedBy: now.local ? here : peerName, port: session.port ?? 0, deployment: leadership?.deployment,
-                                                   notice: now.local ? ClusterService.servingNotice() : now.child?.notice)
+                let ready = ready(now, port: session.port ?? 0)
                 lines.append(ready.lines(model: model)[0] + ".")
                 lines.append(ready.apiLine + " (\(session.readyRanks) of \(session.ranks) parts ready).")
                 if let notice = ready.noticeLine { lines.append(notice + ".") }

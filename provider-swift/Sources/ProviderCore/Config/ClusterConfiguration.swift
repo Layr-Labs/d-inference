@@ -85,6 +85,10 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         }
     }
 
+    /// The refusal when a peer's installed native worker is not the build the capability was made with (the two Macs
+    /// run different Darkbloom builds); the onboarding says it in plain words (`ClusterSetupPlanning.differentBuilds`).
+    static let peerBuildDiffers = "Peer native build differs from the capability"
+
     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
         func require(_ value: Bool, _ message: String) throws {
             guard value else { throw ClusterConfigurationError.invalid(message) }
@@ -111,7 +115,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
                         "Peer installation paths must be absolute and shell-safe")
             // The first compatibility contract is one installed native build on
             // both hosts. This pin is checked on installation/start, not here.
-            try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, "Peer native build differs from the capability")
+            try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, Self.peerBuildDiffers)
             try require(ClusterConfigurationSyntax.label(peer.jacclDevice, maximum: 63), "Invalid JACCL device name")
         }
         // After the peers: the refusal names the workers the record describes.

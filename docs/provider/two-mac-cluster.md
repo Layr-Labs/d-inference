@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -69,7 +69,8 @@ Serving locally on this Mac's API; public serving needs a coordinator with clust
 
 Nothing to do: the next start registers with the coordinator once it supports
 clusters. A coordinator that refuses this pair is not treated this way; the
-start fails and says why.
+start fails and says why. To serve without any coordinator, use
+[`darkbloom cluster local`](#serving-locally-only).
 
 Counting every key: `y` on the other Mac, and `y` and enter on the leader
 (three keys), plus at most one macOS approval per Mac.
@@ -83,6 +84,51 @@ does, and its answer is shown as it is.
 
 If both Macs start waiting at the same moment, the pairing's own rule picks one
 to keep waiting (it leads) and the other says so and joins it.
+
+## Serving locally only
+
+`darkbloom cluster local` serves the pair for you alone: the same steps, model
+choice, planner, copies, speculative decoding, caches, failover and stop as
+`darkbloom cluster`, but no Mac of the cluster contacts a coordinator. Nothing
+registers, sends heartbeats, takes public traffic or bills, and serving needs
+no network beyond the cable.
+
+1. On the leader, run:
+
+   ```bash
+   darkbloom cluster local
+   ```
+
+   Not paired yet, it pairs first as in [the steps](#the-steps-once). Name a
+   model to skip the list: `darkbloom cluster local Qwen3.5-9B` (its id or the
+   name the list shows). On a cluster that already serves, it switches the
+   cluster to local only and waits until it serves again.
+2. Read the API's place from the ready screen:
+
+   ```
+   API at http://localhost:8000 on this Mac, and at port 8000 of its LAN or tailnet address.
+   Serving locally only on this Mac's API: no coordinator, no public traffic.
+   ```
+
+3. Get the key: `darkbloom local` on the Mac the screen names prints the base
+   URL, the network URL and the API key. Every request needs the key.
+
+The API listens on every network of the leading Mac (LAN or tailnet) by
+default. To keep it on that Mac alone, run
+`darkbloom cluster local --bind 127.0.0.1`; `--bind` takes `localhost` or a
+numeric IPv4 or IPv6 address. The API has no TLS, so the key and the text
+cross the network in the clear: on a network you do not trust, keep it on the
+Mac or reach it over a tailnet (encrypted). With the macOS firewall on, macOS
+may ask once to let Darkbloom accept incoming connections.
+
+The choice is kept: after a restart or reboot both Macs serve locally only
+again, until you switch back. In `darkbloom cluster`, `p` serves through
+Darkbloom again and `l` serves locally only; on a serving cluster the leading
+Mac's part restarts that way and the screen waits for it. The model list still
+reads Darkbloom's catalog when the network is up (to download a model neither
+Mac has); with no network, it lists the models already on the Macs. Only
+catalog models are served. Qualification records never gate local-only
+serving.
 
 ## Models
 
@@ -177,7 +223,8 @@ a member that missed a start or a stop (asleep, restarting, cable out) is
 started or stopped as soon as it answers again. The screen says which Mac
 serves the API. A signed release installs the cluster service as a login agent
 ([always on](cluster-always-on.md)); an ad-hoc development build keeps the
-service in the session that ran `darkbloom cluster` and says why.
+service in the session that ran `darkbloom cluster`, says to run it again after
+a restart, and writes why to `~/.darkbloom/cluster-setup/service.log`.
 
 After a restart or power cut a Mac serves again once it is logged in. With
 automatic login on (System Settings → Users & Groups; needs FileVault off) that

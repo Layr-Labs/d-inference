@@ -55,6 +55,16 @@ import Darwin
         stoppedLeaderOffersTeardown()
         modelTitlesAreCatalogNames()
         deploymentTravelsWithTheStart()
+        // `darkbloom cluster local` (2026-10-15): failing first on 69ba75be7.
+        localFromScratch()
+        localOnAStoppedLeader()
+        localSwitchesAServingCluster()
+        localAgainShowsTheMenu()
+        menuKeysSwitchTheScope()
+        localNamesTheModel()
+        memberJoinsWithLocal()
+        servingScopeValues()
+        notOfferedGroupedByReason()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -200,7 +210,11 @@ import Darwin
             recheckFit: { index in recorder.note("recheckFit \(index)"); return recheck },
             afterRestart: { afterRestart },
             saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): darkbloom-cluster-diagnostics.json in your home folder."]) },
-            developerNotice: { developerNotice })
+            developerNotice: { developerNotice },
+            setScope: { scope in
+                recorder.note(scope.bind.map { "setScope local \($0)" } ?? "setScope public")
+                return .success([scope.isLocalOnly ? "Saved: this cluster serves locally only." : "Saved: this cluster serves through Darkbloom."])
+            })
     }
 
     /// One driver run on a pseudo-terminal: the keys are typed only once the text before them is on screen.
@@ -213,7 +227,7 @@ import Darwin
         private(set) var keys = 0
         let done = DispatchSemaphore(value: 0)
 
-        init(_ operations: ClusterOnboardingOperations) {
+        init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init()) {
             var primary: Int32 = -1, secondary: Int32 = -1
             var window = winsize(ws_row: 50, ws_col: 132, ws_xpixel: 0, ws_ypixel: 0)
             precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
@@ -233,7 +247,7 @@ import Darwin
             let slaveFD = secondary
             Thread.detachNewThread { [self] in
                 let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD)
-                let code = ClusterOnboardingDriver.run(operations, console: console)
+                let code = ClusterOnboardingDriver.run(operations, console: console, request: request)
                 console.restore()
                 usleep(100_000)
                 lock.lock(); exitCode = code; lock.unlock()
@@ -822,5 +836,210 @@ import Darwin
                "a start without a line (an older leader) drops the old model's line")
         expect(D.recorded(afterStartOf: nil, deployment: nil, recorded: line) == line, "a start naming no model changes nothing")
         expect(D.recorded(afterStartOf: "m", deployment: "Serving m\u{1B}]0;x\u{7}", recorded: line) == nil, "a line with control characters is not recorded")
+    }
+
+    // MARK: - `darkbloom cluster local` (owner 2026-10-15): failing first on 69ba75be7 (no scope, no request).
+
+    static let localRequest = ClusterOnboardingRequest(scope: .localOnly(bind: ClusterServingScope.localOnlyDefaultBind))
+    static let localReady = ClusterOnboardingReady(servedBy: "this Mac", port: 8000,
+        deployment: "Serving Qwen3.5-9B across both Macs: pipeline, M4 Max 16 layers / M4 Max 16 layers",
+        notice: "Serving locally only on this Mac's API: no coordinator, no public traffic", network: true)
+
+    /// From scratch with `darkbloom cluster local`: the same pairing and choice, the screen says the cluster serves
+    /// locally only, and the scope is saved after the adopt and before the start.
+    static func localFromScratch() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+            .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+            pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), readyResult: .success(localReady)), request: localRequest)
+        expect(run.waitFor("Does the other Mac show 123 456?"), "local from scratch: the same pairing")
+        run.type("y")
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "local from scratch: the same choice")
+        run.type("\r")
+        expect(run.finish() == 0, "local from scratch: exit 0")
+        let text = run.text
+        expect(text.contains("Options: always on (each Mac starts its part again by itself); local only: no coordinator; the API listens on this Mac's networks (LAN or tailnet) and needs its API key (`darkbloom local` shows it).\n"),
+               "local from scratch: the options line says local only")
+        expect(!text.contains("public serving through Darkbloom is off"), "local from scratch: no public-serving line")
+        expect(text.contains("API at http://localhost:8000 on this Mac, and at port 8000 of its LAN or tailnet address.\n"),
+               "local from scratch: the API line names the network")
+        expect(text.contains("Serving locally only on this Mac's API: no coordinator, no public traffic.\n"), "local from scratch: the local-only line")
+        expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0",
+            "setScope local 0.0.0.0", "serve", "waitReady", "testRequest"], "local from scratch: scope saved after the adopt, before the start: \(recorder.all)")
+        expect(run.keys == 2, "local from scratch: the same two keys (y, enter), got \(run.keys)")
+        transcript("local-from-scratch", text, keys: run.keys)
+    }
+
+    /// `darkbloom cluster local` on a paired leader that is not serving: straight to the choice (the command asks to serve).
+    static func localOnAStoppedLeader() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([]), readyResult: .success(localReady)), request: localRequest)
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "local, stopped leader: goes to the choice")
+        run.type("2\r")
+        expect(run.finish() == 0, "local, stopped leader: exit 0")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "recheckFit 1", "adopt 1", "setScope local 0.0.0.0", "serve", "waitReady", "testRequest"],
+               "local, stopped leader: no menu, scope then start: \(recorder.all)")
+    }
+
+    /// `darkbloom cluster local` while the cluster serves through Darkbloom: switched at once (no menu, no key), and the
+    /// screen waits for the leading part to serve again.
+    static func localSwitchesAServingCluster() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([]), readyResult: .success(localReady)), request: localRequest)
+        expect(run.finish() == 0, "local switch: exit 0")
+        let text = run.text
+        expect(text.contains("Serving locally only from now on (no coordinator)…\n"), "local switch: said first")
+        expect(text.contains("  Saved: this cluster serves locally only.\n"), "local switch: the leader's lines")
+        expect(text.contains("Serving locally only on this Mac's API: no coordinator, no public traffic.\n"), "local switch: ready again, local only")
+        expect(recorder.all == ["ensureService", "setScope local 0.0.0.0", "waitReady"], "local switch: \(recorder.all)")
+        expect(run.keys == 0, "local switch: no key")
+    }
+
+    /// `darkbloom cluster local` when it already serves locally only: the ordinary menu, which says so and offers `p`.
+    static func localAgainShowsTheMenu() {
+        let recorder = Recorder()
+        var resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B")
+        resume.scope = .localOnly(bind: "0.0.0.0")
+        let run = TerminalRun(operations(recorder, resume: resume, pairEvents: [], pairResult: .failed([])), request: localRequest)
+        expect(run.waitFor("This cluster serves locally only (no coordinator); press p to serve through Darkbloom instead."), "local again: the menu says it")
+        run.type("\r")
+        expect(run.finish() == 0, "local again: enter leaves it")
+        expect(recorder.all == ["ensureService", "status"], "local again: nothing changed: \(recorder.all)")
+    }
+
+    /// Plain `darkbloom cluster`: `l` switches a serving cluster to local only, `p` back; each waits for it to serve.
+    static func menuKeysSwitchTheScope() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([]), readyResult: .success(localReady)))
+        expect(run.waitFor("Press l to serve locally only (no coordinator)."), "menu: the l key is offered")
+        run.type("l")
+        expect(run.finish() == 0, "menu l: exit 0")
+        expect(recorder.all == ["ensureService", "status", "setScope local 0.0.0.0", "waitReady"], "menu l: \(recorder.all)")
+
+        let back = Recorder()
+        var resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B")
+        resume.scope = .localOnly(bind: "0.0.0.0")
+        let again = TerminalRun(operations(back, resume: resume, pairEvents: [], pairResult: .failed([])))
+        expect(again.waitFor("press p to serve through Darkbloom instead."), "menu: the p key is offered when local only")
+        again.type("l")
+        again.type("p")
+        expect(again.finish() == 0, "menu p: exit 0")
+        expect(back.all == ["ensureService", "status", "setScope public", "waitReady"], "menu p (l ignored while local only): \(back.all)")
+        expect(again.text.contains("Serving through Darkbloom from now on…\n"), "menu p: said")
+
+        let stopped = Recorder()
+        let idle = TerminalRun(operations(stopped, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([])))
+        expect(idle.waitFor("Press l to serve locally only (no coordinator)."), "menu, stopped: the l key is offered")
+        idle.type("l")
+        expect(idle.finish() == 0, "menu l, stopped: exit 0")
+        expect(stopped.all == ["ensureService", "status", "setScope local 0.0.0.0"], "menu l, stopped: saved, nothing started: \(stopped.all)")
+        expect(idle.text.contains("Not serving now: the next start serves this way."), "menu l, stopped: when it applies")
+    }
+
+    /// `darkbloom cluster local <model>`: the named model (id or title, any case) is chosen without the list's question.
+    static func localNamesTheModel() {
+        let recorder = Recorder()
+        var request = localRequest
+        request.model = "qwen3.8-27b-4bit-MTP"
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([]), readyResult: .success(localReady)), request: request)
+        expect(run.finish() == 0, "named model: exit 0")
+        expect(run.text.contains("Chosen: Qwen3.8-27B-4bit-mtp.\n"), "named model: said")
+        expect(!run.text.contains("Choose a model ["), "named model: no question")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "recheckFit 1", "adopt 1", "setScope local 0.0.0.0", "serve", "waitReady", "testRequest"],
+               "named model: adopt (which stops the old one) before the scope: \(recorder.all)")
+
+        let blocked = Recorder()
+        request.model = "gpt-oss-20b"
+        let refused = TerminalRun(operations(blocked, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([])), request: request)
+        expect(refused.finish() == 1, "named blocked model: exit 1")
+        expect(refused.text.contains("gpt-oss-20b is not offered on these Macs: not granted for this pair of chips\n"), "named blocked model: why")
+        expect(blocked.all == ["ensureService", "reachMembers", "planModels"], "named blocked model: nothing adopted: \(blocked.all)")
+
+        let unknown = Recorder()
+        request.model = "no-such-model"
+        let asked = TerminalRun(operations(unknown, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([])), request: request)
+        expect(asked.waitFor("No model on the list is named no-such-model; choose one by its number."), "unknown model: said")
+        expect(asked.waitFor("Choose a model [1-2, enter = 1]: "), "unknown model: the list asks")
+        asked.type("\r")
+        expect(asked.finish() == 0, "unknown model: the first choice served after enter")
+        expect(unknown.all.contains("adopt 0"), "unknown model: the typed choice is adopted: \(unknown.all)")
+    }
+
+    /// Shorter screens (owner, 2026-10-15): models held back for the same reason share one line, reasons in list order.
+    static func notOfferedGroupedByReason() {
+        let builds = "the two Macs run different Darkbloom builds; install the same Darkbloom on both"
+        let grouped = [choices[0],
+            ClusterOnboardingModelChoice(title: "gemma-4-26b-qat-4bit", lines: [], blocker: builds),
+            ClusterOnboardingModelChoice(title: "Bonsai", lines: [], blocker: "not supported on a cluster yet"),
+            ClusterOnboardingModelChoice(title: "gpt-oss-20b", lines: [], blocker: builds)]
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M4 Max, 128 GB", serving: false),
+            pairEvents: [], pairResult: .failed([]), choices: grouped))
+        expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "grouped: the one open choice")
+        let text = run.text
+        expect(text.contains("  Not offered:\n     gemma-4-26b-qat-4bit, gpt-oss-20b: \(builds)\n     Bonsai: not supported on a cluster yet\n"),
+               "grouped: one line per reason, in list order: \(text)")
+        run.type("\r")
+        expect(run.finish() == 0, "grouped: the open choice still serves")
+    }
+
+    /// A member asked for local serving while it pairs says where that is chosen (the leader chooses).
+    static func memberJoinsWithLocal() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, pairEvents: [.searching, .joining, .connected,
+            .code("123456", peer: ["Apple M5 Ultra, 256 GB"]), .peerDecided(true)],
+            pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB")), request: localRequest)
+        expect(run.waitFor("Press y if it does"), "member local: the code question")
+        run.type("y")
+        expect(run.finish() == 0, "member local: exit 0")
+        expect(run.text.contains("To serve locally only (no coordinator), run `darkbloom cluster local` on Apple M5 Ultra, 256 GB.\n"), "member local: where to ask")
+        expect(!recorder.all.contains { $0.hasPrefix("setScope") }, "member local: nothing saved while pairing: \(recorder.all)")
+    }
+
+    /// The scope's values: from the record, the bind addresses it takes, what reaches the network, and its line.
+    static func servingScopeValues() {
+        typealias S = ClusterServingScope
+        expect(S(localOnly: nil, bind: nil) == .publicServing, "scope: an older record is public")
+        expect(S(localOnly: false, bind: "::") == .publicServing, "scope: public ignores a bind")
+        expect(S(localOnly: true, bind: nil) == .localOnly(bind: "0.0.0.0"), "scope: local only listens everywhere by default")
+        expect(S(localOnly: true, bind: "::1") == .localOnly(bind: "::1"), "scope: a chosen bind is kept")
+        expect(S(localOnly: true, bind: "0.0.0.0 --no-auth") == .localOnly(bind: "127.0.0.1"), "scope: a saved address the API does not take falls back to loopback")
+        expect(S.carried(localOnly: nil, bind: "::") == nil, "carried: none")
+        expect(S.carried(localOnly: false, bind: nil) == .publicServing, "carried: public")
+        expect(S.carried(localOnly: true, bind: nil) == .localOnly(bind: "0.0.0.0"), "carried: local only, every interface")
+        expect(S.carried(localOnly: true, bind: "my-mac.local") == nil, "carried: an address the API does not take is refused")
+        for good in ["0.0.0.0", "127.0.0.1", "::", "::1", "localhost", "2001:db8::10"] { expect(S.isValidBind(good), "bind accepted: \(good)") }
+        for bad in ["", "my-mac.local", "0.0.0.0 ", "0.0.0.0;x", "256.1.1.1", "tailnet", String(repeating: "1", count: 80)] {
+            expect(!S.isValidBind(bad), "bind refused: \(bad)")
+        }
+        expect(S.localOnly(bind: "0.0.0.0").reachableFromNetwork, "0.0.0.0 reaches the network")
+        expect(S.localOnly(bind: "2001:db8::10").reachableFromNetwork, "an address reaches its network")
+        for loopback in ["127.0.0.1", "::1", "localhost"] { expect(!S.localOnly(bind: loopback).reachableFromNetwork, "loopback stays on this Mac: \(loopback)") }
+        expect(!S.publicServing.reachableFromNetwork && S.publicServing.bind == nil, "public: no local-only bind")
+        expect(S.localOnly(bind: "127.0.0.1").line.contains("the API listens on this Mac only (127.0.0.1)"), "line: loopback")
+        expect(S.localOnly(bind: "2001:db8::10").line.contains("the API listens at 2001:db8::10"), "line: an address")
+
+        typealias Sync = ClusterOnboardingSync
+        expect(Sync.action(leaderServing: true, leaderModel: "m", memberServing: true, memberModel: "m", leaderLocalOnly: true, memberLocalOnly: false)
+               == .serve("m"), "sync: a member that missed the scope is sent the start again")
+        expect(Sync.action(leaderServing: true, leaderModel: "m", memberServing: true, memberModel: "m", leaderLocalOnly: true, memberLocalOnly: true)
+               == .none, "sync: the same scope is left alone")
+        expect(Sync.action(leaderServing: true, leaderModel: "m", memberServing: true, memberModel: "m", leaderLocalOnly: true, memberLocalOnly: nil)
+               == .none, "sync: an older member (no scope reported) is compared by model only")
+
+        let here = ClusterOnboardingReady(servedBy: "this Mac", port: 8000, network: true)
+        expect(here.apiLine == "API at http://localhost:8000 on this Mac, and at port 8000 of its LAN or tailnet address", "ready: network, this Mac")
+        let there = ClusterOnboardingReady(servedBy: "Apple M4 Max, 128 GB", port: 8000, network: true)
+        expect(there.apiLine == "API at http://localhost:8000 on Apple M4 Max, 128 GB, and at port 8000 of that Mac's LAN or tailnet address", "ready: network, that Mac")
+        expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).apiLine == "API at http://localhost:8000 on this Mac", "ready: loopback unchanged")
+        let older = try? JSONDecoder().decode(ClusterOnboardingReady.self, from: Data(#"{"servedBy":"this Mac","port":8000}"#.utf8))
+        expect(older?.network == nil, "ready: an older Mac's answer decodes without the network field")
     }
 }

@@ -97,6 +97,52 @@ final class EndpointBox: @unchecked Sendable {
         try require(weighted=="0-64@1|0-64@3" && ClusterServedSpeedRecords.Setup.cuts(weighted,layerCount:64,mode:.tensorParallel,ranks:2)==[]
             && ClusterServedSpeedRecords.Setup.tensorShares(weighted)==[1,3], "weighted tensor-parallel session cut is \(weighted)")
     }
+    /// `darkbloom cluster local` (2026-10-15): the leader part's start for each scope, the service's part key (a scope
+    /// change restarts rank 0, public keeps the earlier key), the log line that says how the CURRENT run serves, and
+    /// the scope on the wire (an older build's message carries none). Failing first on 69ba75be7 (no such API).
+    static func localOnlyServing() throws {
+        let base=["start","--local","--distributed"]
+        try require(ClusterLocalServing.leaderArguments(base,scope:.publicServing)==base,"public start changed")
+        try require(ClusterLocalServing.leaderArguments(base,scope:.localOnly(bind:"0.0.0.0"))==base+["--no-coordinator","--bind","0.0.0.0"],
+            "local-only start does not skip the coordinator on every interface")
+        try require(ClusterLocalServing.soloArguments(["start","--local"],scope:.localOnly(bind:"::1"))==["start","--local","--bind","::1"],
+            "local-only solo server not on the chosen address")
+        try require(ClusterLocalServing.soloArguments(["start","--local"],scope:.publicServing)==["start","--local"],"public solo server changed")
+        let sha=String(repeating:"a",count:64)
+        let publicKey=ClusterLocalServing.partKey(setupSHA256:sha,scope:.publicServing)
+        let localKey=ClusterLocalServing.partKey(setupSHA256:sha,scope:.localOnly(bind:"0.0.0.0"))
+        try require(publicKey=="cluster:"+sha,"public part key changed (a running part would restart on upgrade)")
+        try require(localKey != publicKey && ClusterLocalServing.scopeChangedOnly(from:publicKey,to:localKey)
+            && ClusterLocalServing.scopeChangedOnly(from:localKey,to:ClusterLocalServing.partKey(setupSHA256:sha,scope:.localOnly(bind:"::1"))),
+            "a scope change is not seen as one")
+        try require(!ClusterLocalServing.scopeChangedOnly(from:publicKey,to:"cluster:"+String(repeating:"b",count:64)+":local-only@0.0.0.0")
+            && !ClusterLocalServing.scopeChangedOnly(from:publicKey,to:publicKey) && !ClusterLocalServing.scopeChangedOnly(from:"solo:m",to:publicKey)
+            && !ClusterLocalServing.scopeChangedOnly(from:nil,to:publicKey),"a new setup, the same key or a solo server read as a scope change")
+        let banner="darkbloom 0.9.20 (local / distributed)"
+        try require(ClusterLocalServing.notice(inLog:"\(banner)\n\(ClusterLocalServing.localOnlyLogLine)\nListening on 0.0.0.0:8000\n")
+            == ClusterLocalServing.localOnlyNotice,"local-only run not read from its log line")
+        try require(ClusterLocalServing.notice(inLog:"\(ClusterLocalServing.localOnlyLogLine)\n\(ClusterLocalServing.registeredLogLine)\n")==nil,
+            "an earlier local-only run read as the current one")
+        try require(ClusterLocalServing.notice(inLog:"\(ClusterLocalServing.registeredLogLine)\n\(ClusterLocalServing.logLine)\n") == ClusterLocalServing.notice,
+            "the fallback line changed")
+        try require(ClusterLocalServing.localOnlyNotice.contains("this Mac's API") && !ClusterLocalServing.localOnlyNotice.contains("\n"),
+            "the local-only line is not worded for the screen's this/that Mac rewrite")
+        try require(ClusterLocalServing.noCoordinatorFlag=="--no-coordinator","start flag name differs from `darkbloom start`")
+
+        let local=ClusterServiceCommand(op:.serve,model:"m",scope:.localOnly(bind:"0.0.0.0"))
+        let decoded=try JSONDecoder().decode(ClusterServiceCommand.self,from:JSONEncoder().encode(local))
+        try require(decoded.scope == .localOnly(bind:"0.0.0.0"),"the start does not carry the local-only scope")
+        let older=try JSONDecoder().decode(ClusterServiceCommand.self,from:Data(#"{"op":"serve","model":"m"}"#.utf8))
+        try require(older.scope==nil,"an older leader's start read as a scope")
+        let tampered=try JSONDecoder().decode(ClusterServiceCommand.self,from:Data(#"{"op":"serve","localOnly":true,"bind":"0.0.0.0 --no-auth"}"#.utf8))
+        try require(tampered.scope==nil,"a start with an address the API does not take was accepted")
+        let publicStart=try JSONDecoder().decode(ClusterServiceCommand.self,from:JSONEncoder().encode(ClusterServiceCommand(op:.serve,scope:.publicServing)))
+        try require(publicStart.scope == .publicServing,"the public scope is not carried")
+        let request=try JSONDecoder().decode(ClusterControlRequest.self,from:JSONEncoder().encode(ClusterControlRequest(op:.scope,scope:.localOnly(bind:"::1"))))
+        try require(request.op == .scope && request.scope == .localOnly(bind:"::1"),"the forwarded scope request does not round-trip")
+        let status=try JSONDecoder().decode(ClusterServiceStatus.self,from:Data(#"{"serving":true,"sessionLeader":false,"child":{"running":true,"starts":1}}"#.utf8))
+        try require(status.localOnly==nil,"an older member's status read as a scope")
+    }
     static func main() async throws {
         signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}
         let root=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("installed-check-"+UUID().uuidString)
@@ -112,6 +158,7 @@ final class EndpointBox: @unchecked Sendable {
         try metadataChecks(fixture,prepared)
         try linkProbeHistory()
         try tensorParallelSessionCut()
+        try localOnlyServing()
         try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)

@@ -302,11 +302,13 @@ public final class ClusterService: @unchecked Sendable {
                 say("synced this Mac's cache settings to the member (\(String(ClusterMemberCacheControl.digest(cache).prefix(12))))")
             }
             switch ClusterOnboardingSync.action(leaderServing: leadership.serving, leaderModel: leadership.modelName,
-                                                memberServing: member?.serving, memberModel: member?.modelName) {
+                                                memberServing: member?.serving, memberModel: member?.modelName,
+                                                leaderLocalOnly: leadership.scope.isLocalOnly, memberLocalOnly: member?.localOnly) {
             case .none: return
             case .serve(let model):
-                if send(.init(op: .serve, model: model, deployment: leadership.deployment), seconds: 10) != nil {
-                    say("the member had missed the start: started its part")
+                let runsIt = member?.serving == true && member?.modelName == model
+                if send(.init(op: .serve, model: model, deployment: leadership.deployment, scope: leadership.scope), seconds: 10) != nil {
+                    say(runsIt ? "synced how the cluster serves to the member" : "the member had missed the start: started its part")
                 }
             case .stop:
                 if send(.init(op: .stop), seconds: 10) != nil { say("the member had missed the stop: stopped its part") }
@@ -351,6 +353,8 @@ public final class ClusterService: @unchecked Sendable {
                     let recorded = $0.leadership?.deployment
                     $0.leadership?.deployment = ClusterOnboardingDeployment.recorded(afterStartOf: command.model, deployment: command.deployment,
                                                                                      recorded: recorded)
+                    // The leader's serving scope, so it holds when control moves here (an older leader sends none).
+                    if let scope = command.scope { $0.leadership?.scope = scope }
                 }
             }
             say(command.op == .serve ? "the leader started the cluster" : "the leader stopped the cluster")
@@ -546,6 +550,7 @@ public final class ClusterService: @unchecked Sendable {
                     ? cacheStore.digest(leaderPin: $0.leaderPin) : nil },
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
+            value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             return value
         }
     }
@@ -669,16 +674,20 @@ public final class ClusterService: @unchecked Sendable {
         let saved = context.savedConfiguration()
         let reference = try? saved.reference.get()
         let serving = record.leadership?.serving ?? false
+        // How the cluster serves (kept until the person changes it). Only rank 0's part depends on it.
+        let scope = record.leadership?.scope ?? .publicServing
+        let leadsSession = saved.configuration?.role == .leader
         let runningSolo = lock.withLock { child != nil && childSetup?.hasPrefix("solo:") == true }
         let want = partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
                               model: saved.configuration?.publicModelID ?? record.leadership?.modelName, runningSolo: runningSolo)
-        // What runs is keyed: "cluster:<setup digest>" (this Mac's part of the saved setup) or "solo:<model>"
-        // (degraded serving on this Mac alone). A part of another key is stopped before the wanted one starts.
+        // What runs is keyed: "cluster:<setup digest>" (this Mac's part of the saved setup; rank 0's also names a
+        // local-only scope) or "solo:<model>" (degraded serving on this Mac alone). A part of another key is stopped
+        // before the wanted one starts, so a change of scope starts rank 0 again that way.
         let key: String?
         switch want {
         case .keep: return
         case .none: key = nil
-        case .cluster: key = reference.map { "cluster:" + $0.sha256 }
+        case .cluster: key = reference.map { ClusterLocalServing.partKey(setupSHA256: $0.sha256, scope: leadsSession ? scope : .publicServing) }
         case .solo(let model): key = "solo:" + model
         }
         let (running, setup, ended) = lock.withLock { () -> (Process?, String?, Bool) in
@@ -714,7 +723,11 @@ public final class ClusterService: @unchecked Sendable {
             let solo = setup?.hasPrefix("solo:") == true
             say(key == nil ? (solo ? "stopping the solo server" : "the leader stopped serving: stopping this Mac's part")
                 : key!.hasPrefix("solo:") ? "serving alone: stopping this Mac's part first"
-                : solo ? "the cluster re-forms: stopping the solo server first" : "the setup changed: restarting this Mac's part")
+                : solo ? "the cluster re-forms: stopping the solo server first"
+                : ClusterLocalServing.scopeChangedOnly(from: setup, to: key)
+                    ? (scope.isLocalOnly ? "serving locally only now (no coordinator): restarting this Mac's part"
+                                         : "serving through Darkbloom now: restarting this Mac's part")
+                : "the setup changed: restarting this Mac's part")
             _ = running
             _ = stopChild(say: say, seconds: 300)
             if key != nil { lock.withLock { nextStart = .distantPast; backoff = 3 } }
@@ -732,12 +745,15 @@ public final class ClusterService: @unchecked Sendable {
         let arguments: [String]
         let what: String
         if case .solo(let model) = want {
-            arguments = settings.soloArguments + ["--model", model, "--port", String(Self.soloPort)]
+            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
             what = "degraded: serving \(model) on this Mac alone"
         } else {
             guard let configuration = saved.configuration else { return }
-            arguments = configuration.role == .leader ? settings.leaderArguments : settings.followerArguments
-            what = "this Mac's part: " + (configuration.role == .leader ? "rank 0 and the serving API" : "rank \(configuration.localRank)")
+            arguments = configuration.role == .leader ? ClusterLocalServing.leaderArguments(settings.leaderArguments, scope: scope)
+                                                      : settings.followerArguments
+            what = "this Mac's part: " + (configuration.role == .leader
+                ? "rank 0 and the serving API" + (scope.isLocalOnly ? " (local only, no coordinator)" : "")
+                : "rank \(configuration.localRank)")
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }

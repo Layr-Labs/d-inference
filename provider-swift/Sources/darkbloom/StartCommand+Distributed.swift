@@ -18,7 +18,12 @@ extension Start {
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         try signals.requireNotTerminated()
-        let member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
+        // Local only by choice (`darkbloom cluster local`, `--no-coordinator`): no coordinator connection is ever
+        // built, so nothing can refuse or end it. Otherwise the leader registers as a control-only member first.
+        let member: ProviderLoop?
+        if noCoordinator { member = nil } else {
+            member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
+        }
         // A session that stops without being asked says so at once: the wait
         // for its workers that follows can be the whole progress limit.
         let announce: @Sendable (DistributedInstalledStopNotice) -> Void = { printError($0.message) }
@@ -42,11 +47,13 @@ extension Start {
         // (The signal handler was installed first thing; a stop latched before
         // this point runs as soon as it is attached below.)
 
-        let memberTask = Task { try await member.run() }
+        let memberTask = member.map { member in Task { try await member.run() } }
         // Public (registered with the coordinator) or local only: decided once,
-        // by the registration wait, before the API opens.
+        // by the registration wait, before the API opens; at once without a coordinator.
         let scope = DistributedServingScope()
-        let memberExit = Task {
+        if member == nil { await scope.decide(.localOnly) }
+        let memberExit = Task { () -> Result<Void, Error>? in
+            guard let member, let memberTask else { return nil }
             let result = await memberTask.result
             // Serving locally only: the control loop was ended on purpose (or ended
             // by the coordinator's answer); it never advertised this leader.
@@ -59,21 +66,23 @@ extension Start {
             return result
         }
         let task = Task {
-            do {
-                try await member.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
-                await scope.decide(.publicServing)
-            } catch where ClusterLocalServing.servesLocally(after: error) && !Task.isCancelled {
-                // The coordinator cannot take the member role (unreachable, or
-                // without the role): serve on the local API only. The member
-                // connection closes, so nothing is advertised; the device lock
-                // and native lease stay held. A refusal of this member is not
-                // caught here and fails the start as before.
-                await scope.decide(.localOnly)
-                memberTask.cancel()
-                printError(error.localizedDescription)
-            } catch {
-                await scope.decide(.failed)
-                throw error
+            if let member, let memberTask {
+                do {
+                    try await member.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
+                    await scope.decide(.publicServing)
+                } catch where ClusterLocalServing.servesLocally(after: error) && !Task.isCancelled {
+                    // The coordinator cannot take the member role (unreachable, or
+                    // without the role): serve on the local API only. The member
+                    // connection closes, so nothing is advertised; the device lock
+                    // and native lease stay held. A refusal of this member is not
+                    // caught here and fails the start as before.
+                    await scope.decide(.localOnly)
+                    memberTask.cancel()
+                    printError(error.localizedDescription)
+                } catch {
+                    await scope.decide(.failed)
+                    throw error
+                }
             }
             try Task.checkCancellation()
             try await server.start()
@@ -81,7 +90,9 @@ extension Start {
                 throw DistributedStartRuntimeError.listenerStopped
             }
             print("darkbloom \(ProviderCore.version) (local / distributed)")
-            printError(await scope.decided() == .localOnly ? ClusterLocalServing.logLine : ClusterLocalServing.registeredLogLine)
+            let decided = await scope.decided()
+            printError(member == nil ? ClusterLocalServing.localOnlyLogLine
+                : decided == .localOnly ? ClusterLocalServing.logLine : ClusterLocalServing.registeredLogLine)
             print("Model: \(session.model.publicModelID)")
             print("Listening on \(bind):\(boundPort); connection details: darkbloom local")
             return await withFanActivityLease(providerVersion: ProviderCore.version) {
@@ -91,7 +102,7 @@ extension Start {
         let stop: @Sendable () -> Void = {
             Task { await scope.decide(.failed) }
             task.cancel()
-            memberTask.cancel()
+            memberTask?.cancel()
             Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance) }
         }
         signals.attach {
@@ -110,14 +121,14 @@ extension Start {
                 await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance)
             }
             let status = await cleanup.value
-            memberTask.cancel()
+            memberTask?.cancel()
             _ = await memberExit.value
             if !status.cleanupComplete {
                 printError("Distributed cleanup is unresolved. Each owner keeps waiting for its worker and clears its own journal when that worker exits; `darkbloom cluster recover` reports what is left.")
             }
             throw error
         }
-        memberTask.cancel()
+        memberTask?.cancel()
         let memberResult = await memberExit.value
         guard status.cleanupComplete else {
             throw DistributedStartRuntimeError.cleanupUnresolved
@@ -125,9 +136,9 @@ extension Start {
         if status.failed { throw DistributedStartRuntimeError.sessionFailed }
         // Serving locally only, the control loop's end was the plan, not a failure.
         if await scope.decided() == .localOnly { return }
-        if case .failure(let error) = memberResult, !(error is CancellationError) { throw error }
+        if case .failure(let error)? = memberResult, !(error is CancellationError) { throw error }
         // A stop nobody asked for is never a clean exit: a supervisor restarts it.
-        if await member.memberStopReason != nil { throw DistributedStartRuntimeError.memberControlEnded }
+        if let member, await member.memberStopReason != nil { throw DistributedStartRuntimeError.memberControlEnded }
     }
 }
 

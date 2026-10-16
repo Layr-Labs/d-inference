@@ -59,6 +59,10 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Use the saved distributed cluster for local serving and register its leader as a control-only member (requires --local).")
     var distributed = false
 
+    @Flag(name: .customLong("no-coordinator"),
+          help: "With --distributed: serve the saved cluster on the local API only and never contact the coordinator (`darkbloom cluster local` starts it this way).")
+    var noCoordinator = false
+
     @Flag(help: "With --cluster-member: install the member as an always-on background service (starts at login, waits for the cluster link, restarts with backoff, coordinated updates).")
     var alwaysOn = false
 
@@ -80,6 +84,12 @@ struct Start: AsyncParsableCommand {
             }
         } else if alwaysOn || supervise {
             throw ValidationError("--always-on and --supervise apply to --cluster-member only.")
+        }
+        if noCoordinator {
+            guard distributed else {
+                throw ValidationError("--no-coordinator applies to --distributed only (plain --local never contacts the coordinator).")
+            }
+            guard coordinatorURL == nil else { throw ValidationError("--no-coordinator never contacts a coordinator: drop --coordinator-url.") }
         }
         guard distributed else { return }
         guard local, !foreground, !localEndpoint else {

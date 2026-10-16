@@ -95,12 +95,12 @@ extension Cluster.Setup {
             soloArguments: ["start", "--local"] + (config.map { ["--config", $0] } ?? []))
     }
 
-    /// Bare `darkbloom cluster` on a terminal: the leader-first onboarding.
-    /// Run again, it shows where this Mac stands and the next step.
-    func runOnboarding() async throws {
+    /// Bare `darkbloom cluster` on a terminal: the leader-first onboarding (`darkbloom cluster local` asks it for
+    /// local-only serving). Run again, it shows where this Mac stands and the next step.
+    static func runOnboarding(config: String?, modelDir: String?, worker: String?, request: ClusterOnboardingRequest) async throws {
         Darkbloom.ensureLogging()
-        let service = try Self.serviceSettings(config: configOptions.config, modelDir: modelDir, worker: worker)
-        let serviceArguments = ["cluster", "service"] + (configOptions.config.map { ["--config", $0] } ?? [])
+        let service = try Self.serviceSettings(config: config, modelDir: modelDir, worker: worker)
+        let serviceArguments = ["cluster", "service"] + (config.map { ["--config", $0] } ?? [])
             + (worker.map { ["--worker", $0] } ?? [])
         let operations = try ClusterOnboardingOperations.live(.init(service: service, serviceArguments: serviceArguments))
         let instance: ClusterConsoleInstanceLock
@@ -111,7 +111,7 @@ extension Cluster.Setup {
         let code = await Task.detached {
             let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO)
             defer { console.restore() }
-            return ClusterOnboardingDriver.run(operations, console: console)
+            return ClusterOnboardingDriver.run(operations, console: console, request: request)
         }.value
         withExtendedLifetime(instance) {}
         if code != 0 { throw ExitCode(code) }

@@ -130,9 +130,19 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     public var modelName: String?
     /// How the chosen model is served, in one line from the adopted plan ("Serving … across both Macs: pipeline, …").
     public var deployment: String?
+    /// How the cluster serves (`ClusterServingScope`), kept until the person changes it: true after
+    /// `darkbloom cluster local`, with the local API's address in `localBind` (nil: every interface). Nil or false:
+    /// through the coordinator, as before. A member records the leader's choice from its start command.
+    public var localOnly: Bool?
+    public var localBind: String?
 
     public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
         self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since
+    }
+
+    public var scope: ClusterServingScope {
+        get { ClusterServingScope(localOnly: localOnly, bind: localBind) }
+        set { localOnly = newValue.isLocalOnly ? true : nil; localBind = newValue.bind }
     }
 }
 

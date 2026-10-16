@@ -53,6 +53,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     public var servicePID: Int32? = nil
     /// Set while the control leader sets the cluster up again by itself after a Darkbloom update (its line).
     public var updating: String? = nil
+    /// This Mac's record says the cluster serves locally only (`ClusterServingScope`); the leader sends the start again
+    /// to a member whose answer differs from its own. Nil from an older build.
+    public var localOnly: Bool? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String
@@ -103,14 +106,22 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// `serve`: the leader's deployment line for `model` (mode and each Mac's share), recorded by the member so it shows
     /// the same line when it leads (`ClusterOnboardingDeployment.recorded`). Nil from an older build.
     public var deployment: String?
+    /// `serve`: how the leader serves (`ClusterServingScope`), recorded by the member so the scope holds when control
+    /// moves to it: true for local only, with the API's address in `bind`. Nil from an older build (nothing recorded).
+    public var localOnly: Bool?
+    public var bind: String?
     public init(op: Operation, model: String? = nil, text: String? = nil, cache: ClusterCacheSettingsSync? = nil,
                 clusterID: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
                 facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil,
-                serving: Bool? = nil, deployment: String? = nil) {
+                serving: Bool? = nil, deployment: String? = nil, scope: ClusterServingScope? = nil) {
         self.op = op; self.model = model; self.text = text; self.cache = cache; self.clusterID = clusterID
         self.claim = claim; self.running = running; self.facts = facts
         self.alonePlan = alonePlan; self.control = control; self.serving = serving; self.deployment = deployment
+        self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
     }
+
+    /// The scope a `serve` carries; nil when the sender's build sends none or its address is not one the API takes.
+    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, bind: bind) }
 }
 
 /// A test request's answer, sent back over the link.

@@ -77,12 +77,13 @@ enum ClusterSetupPlanning {
             let layout: ClusterModelLayout
             switch reading.layout {
             case .success(let value): layout = value
-            case .failure(let error): return blocked("the planner cannot read this model's layers yet (\(error.text))")
+            // The reading's own error stays out of the screen's line: it names internal checks, not anything to do.
+            case .failure: return blocked(notClusterModel)
             }
             let capability: (record: ClusterRuntimeCapability, data: Data, sha256: String)
             switch reading.capability {
             case .success(let value): capability = value
-            case .failure(let error): return blocked("this build's cluster runtime does not run it (\(error.text))")
+            case .failure: return blocked(notClusterModel)
             }
             guard !reading.tokenizerFiles.isEmpty else { return blocked("its manifest names no tokenizer file") }
             let pair = pairDescription(description, folder: reading.model.folder, publicModelID: reading.model.modelID,
@@ -128,6 +129,8 @@ enum ClusterSetupPlanning {
             } catch is ClusterPairServingRefusal {
                 // No stage adapter of this build runs the model.
                 return blocked(noStageAdapter)
+            } catch where String(describing: error).contains(ClusterConfiguration.peerBuildDiffers) {
+                return blocked(differentBuilds)
             } catch {
                 return blocked("Planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))).")
             }
@@ -136,6 +139,11 @@ enum ClusterSetupPlanning {
 
     /// The plain blocker for a model no cluster stage adapter of this build runs.
     static let noStageAdapter = "This build has no cluster stage adapter for this model."
+    /// The plain blocker for a model folder the cluster cannot read or run (not a model, or a version of it the cluster
+    /// runtime does not take).
+    static let notClusterModel = "not supported on a cluster yet"
+    /// The plain blocker when the two Macs' installed cluster workers differ: nothing can be planned on both until they match.
+    static let differentBuilds = "the two Macs run different Darkbloom builds; install the same Darkbloom on both"
     /// The plain blocker when every placement these Macs can hold is a shape that diverged on these chips.
     static let everyShapeDiverged = "Every way these Macs can hold it diverged from its single-Mac reference on these chips."
 

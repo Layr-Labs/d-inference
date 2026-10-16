@@ -75,10 +75,13 @@ struct NemotronSuperLocalMTPTests {
         #expect(EngineV2Factory.calibratedPrefillTokenLimit(model: target) == limit)
         #expect(EngineV2Factory.cbv2LayerKinds(model: target) == adapter.cbv2LayerKinds)
         let resolved = try #require(EngineV2Factory.ProductionModelAdapter(model: target))
-        #expect(resolved.modelCapabilities.supportsMTP && !adapter.cbv2Capabilities.supportsMTP)
-        for model in [adapter, target] as [any LanguageModel] {
+        var capabilities = adapter.cbv2Capabilities
+        #expect(!capabilities.supportsMTP)
+        capabilities.supportsMTP = true
+        #expect(resolved.modelCapabilities == capabilities)
+        for served in [adapter, target] as [any LanguageModel] {
             let config = EngineV2Factory.productionSchedulerConfig(
-                maxConcurrentRequests: 1, model: model, environment: [:])
+                maxConcurrentRequests: 1, model: served, environment: [:])
             #expect(config.prefillChunkSize <= limit && config.soloPrefillStripeTokens == nil)
         }
         fixture.installed.closeAfterRetirement()

@@ -31,6 +31,7 @@ enum NemotronSuperLocalBridgeBuilder {
         private var textBinding: NemotronSuperLocalBinding?
         private var imageFaults: [(NativeConstructionScope, WholeMacUnboundedActivity)] = []
         private var quarantine: Owner?
+        private var localRequestAdmitted = false
         let speculates: Bool
 
         fileprivate init(bridge: EngineV2Bridge, installed: NemotronSuperInstallation.Installed,
@@ -81,6 +82,19 @@ enum NemotronSuperLocalBridgeBuilder {
                 return binding
             }
         }
+
+        /// The bridge serves one request: admits one local HTTP request, text
+        /// or image, until `finishLocalRequest()`. Callers finish only after
+        /// the admitted work returned, which follows native retirement.
+        func admitLocalRequest() -> Bool {
+            lock.withLock {
+                guard !localRequestAdmitted else { return false }
+                localRequestAdmitted = true
+                return true
+            }
+        }
+
+        func finishLocalRequest() { lock.withLock { localRequestAdmitted = false } }
 
         private var acceptsLocalWork: Bool {
             lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }

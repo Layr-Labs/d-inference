@@ -17,7 +17,7 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     private let text: NemotronSuperLocalBinding
     private let tokenizer: TokenizerHandle
     private let template: Data
-    private let gate = SuperHTTPRequestGate()
+    private let owner: NemotronSuperLocalBridgeBuilder.Owner
 
     init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data) throws {
         _ = try NemotronSuperPromptContract.verifiedTemplate(templateBytes)
@@ -27,10 +27,11 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         images = owner.speculates ? nil : try owner.localImageBinding()
         tokenizer = owner.bridge.tokenizer
         template = templateBytes
+        self.owner = owner
     }
 
     /// Rejects new text work and joins it. `Owner.closeAfterDrain()` drains
-    /// the same text binding and the image binding again before retirement.
+    /// this text binding again, then the image binding, before retirement.
     func drain() async { await text.drain() }
 
     func service(body: Data, request: OpenAIChatCompletionRequest,
@@ -45,29 +46,11 @@ struct NemotronSuperLocalImageHTTP: Sendable {
             route = .mediaRefused
         }
         return MLXOpenAIService(
-            engine: SuperHTTPEngine(route: route, body: body, template: template, gate: gate),
+            engine: SuperHTTPEngine(route: route, body: body, template: template, owner: owner),
             responseStore: responseStore, metrics: metrics)
     }
 }
 
-/// The owner's bridge serves one request. A second request is refused with
-/// the local busy status before any response starts; an image would otherwise
-/// reserve and prepare media only for the bridge to refuse it.
-final class SuperHTTPRequestGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var occupied = false
-
-    func admit() -> Bool {
-        lock.withLock {
-            guard !occupied else { return false }
-            occupied = true
-            return true
-        }
-    }
-
-    /// Only after the admitted work returned, which follows native retirement.
-    func release() { lock.withLock { occupied = false } }
-}
 
 /// A service instance owns exactly one immutable raw request. Unknown raw-body
 /// controls are preserved for the plan's and owners' fail-closed validation.
@@ -81,7 +64,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let route: Route
     let body: Data
     let template: Data
-    let gate: SuperHTTPRequestGate
+    let owner: NemotronSuperLocalBridgeBuilder.Owner
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -120,16 +103,18 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
-        guard gate.admit() else {
+        // The owner's bridge serves one request; an image would otherwise
+        // reserve and prepare media only for the bridge to refuse it.
+        guard owner.admitLocalRequest() else {
             throw MultiModelBatchSchedulerEngineError.queueFull("unpublished Super owner is busy")
         }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output)
         let scope = LocalRequestCancellation.current
-        let gate = self.gate
+        let owner = self.owner
         let task = Task {
             let registration = scope?.register { relay.cancel() }
-            defer { registration?.remove(); gate.release() }
+            defer { registration?.remove(); owner.finishLocalRequest() }
             do {
                 try Task.checkCancellation()
                 try await execute { event in await relay.accept(event) }

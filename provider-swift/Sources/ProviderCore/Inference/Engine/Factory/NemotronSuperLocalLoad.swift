@@ -77,6 +77,10 @@ actor NemotronSuperLocalLoad {
             lease = nil
             phase = .ready
             return built.bridge
+        } catch NemotronSuperLocalBridgeBuilder.Failure.retirementIncomplete {
+            // A bridge that did not retire may still use the installation.
+            phase = .retainedFault; quarantine = self
+            throw NemotronSuperLocalBridgeBuilder.Failure.retirementIncomplete
         } catch {
             await retireFailedLoad()
             throw error

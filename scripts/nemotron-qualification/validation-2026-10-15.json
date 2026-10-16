@@ -1,7 +1,7 @@
 {
   "date": "2026-10-15",
-  "sdk_source_commit": "8f09647605a3",
-  "provider_source_commit": "1594767c8",
+  "sdk_source_commit": "637b1c82deae",
+  "provider_source_commit": "4441094c5",
   "hardware": {
     "chip": "Apple M3 Ultra",
     "cpu_cores": 28,
@@ -120,12 +120,65 @@
     }
   },
   "not_yet_qualified": [
-    "prefill target 700-800 tok/s not reached",
-    "MTP with batching",
-    "prefill/decode co-scheduling",
-    "long-context quality",
-    "signed shared-slot/catalog/coordinator integration",
-    "production discovery or routing"
+    "production discovery, managed load, coordinator request path and capacity quotes for Super",
+    "platform registration, prompt sidecar and admission",
+    "R2 publication; public Hugging Face source",
+    "paged KV and prefix caching",
+    "prefill target 700-800 tok/s (measured ~480-540)",
+    "long-context quality"
   ],
-  "log_note": "Numbers come from receipts kept on the original machine; synthetic fixture results are not model evidence."
+  "log_note": "Numbers come from receipts kept on the original machine; synthetic fixture results are not model evidence.",
+  "fixture_tests_at_serving_heads": {
+    "sdk": {
+      "swift_testing_passed": 203,
+      "failed": 0,
+      "skipped_opt_in_benchmarks": 12,
+      "xctest_passed": 6
+    },
+    "provider": {
+      "swift_testing_passed": 59,
+      "failed": 0,
+      "xctest_passed": 22,
+      "xctest_skipped": 1
+    },
+    "note": "includes fastpath through 19824b8d and provider master ab423c1c0"
+  },
+  "ship_check_endpoint_release_runner": {
+    "build": "serving snapshot s1 (SDK 92a9d3d1, provider 66095c26e); serving/fastpath changes since are tests and type-check fixes plus fastpath 19824b8d",
+    "cold_start_to_ready_s": 34.0,
+    "exactness": "MTP depth 3 byte-identical to plain on 6/6 natural prompts; tiled prefill rewords 4/6 vs exact prefill with correct answers",
+    "plain_max_concurrent_8": {
+      "ttft_s": {
+        "128": 0.55,
+        "2048": 4.26,
+        "image_1024x1024": 3.22
+      },
+      "decode_tok_s": 27.9,
+      "aggregate_tok_s_short_prompts": {
+        "1": 24.2,
+        "4": 52.2,
+        "8": 62.5
+      },
+      "ttft_p50_s_at_8_clients": 1.75
+    },
+    "mtp_depth3_max_concurrent_8": {
+      "ttft_s": {
+        "128": 0.51,
+        "2048": 3.79
+      },
+      "decode_tok_s": {
+        "128": 64.7,
+        "2048": 52.4
+      },
+      "aggregate_tok_s_short_prompts": {
+        "1": 50.9,
+        "4": 72.2,
+        "8": 76.4
+      },
+      "ttft_p50_s_at_8_clients": 1.17,
+      "kv_grant_gib": 28
+    },
+    "paged_kv": "not used (contiguous only)",
+    "prefix_cache": "not enabled"
+  }
 }

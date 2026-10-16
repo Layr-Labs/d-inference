@@ -30,6 +30,15 @@ struct GLM5NextLocalQualificationTests {
             #expect(!MTPMode.off.enablesMTP(forModelType: "glm5_next", embeddedArtifactDeclared: declared))
         }
         #expect(BackendSettings().mtpMode == .auto)
+        // Defaults alone (no config, no environment) serve both GLM identities,
+        // local and coordinator, with MTP and rectangular verification.
+        for id in [GLM5NextLocalQualification.modelID, "glm-5.3-flash"] {
+            #expect(GLM5NextLocalServing.nativeMTPAvailable(
+                mode: BackendSettings().mtpMode, modelID: id, processMTPEnabled: true))
+        }
+        #expect(SpecDecArtifactFunnel.killSwitchEnabled(environment: [:]))
+        #expect(MiMoV26DecodeDefaults.isEnabled(
+            GLM5NextProtectedModel.rectangularVerifyEnvironmentKey, environment: [:]))
         #expect(!MTPMode.auto.enablesMTP(forModelType: "glm5", embeddedArtifactDeclared: false))
         #expect(!MTPMode.auto.enablesMTP(forModelType: "qwen3", embeddedArtifactDeclared: false))
     }

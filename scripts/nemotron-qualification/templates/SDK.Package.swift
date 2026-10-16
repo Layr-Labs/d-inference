@@ -85,6 +85,7 @@ let package = Package(
                 "Integration/Nemotron/NemotronSuperPrefixReuseTests.swift",
                 "Integration/Nemotron/NemotronSuperPrefixBankLifecycleTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPPrefixReuseTests.swift",
+                "Integration/Nemotron/NemotronSuperMediaPrefixReuseTests.swift",
                 "Unit/Models/NemotronSuperPrefixCheckpointGeometryTests.swift",
                 "CBv2SchedulerTestSupport.swift",
                 "CBv2HistoricalCheckpointGeometryTests.swift",

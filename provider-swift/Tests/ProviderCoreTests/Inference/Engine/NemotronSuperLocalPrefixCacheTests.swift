@@ -160,6 +160,58 @@ struct NemotronSuperLocalPrefixCacheTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    private static func runImage(_ owner: Builder.Owner, prompt: [Int], cacheScope: String?)
+        async throws -> String {
+        let events = SuperPrefixRun()
+        let pixels = MLXArray((0 ..< 16).map { (index: Int) -> Float in Float(index) / 16 })
+            .reshaped([1, 1, 4, 4])
+        try await owner.localImageBinding().run(request: .init(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: 12),
+            input: .init(promptTokens: prompt, normalizedImages: [pixels]),
+            cacheScope: cacheScope) { await events.record($0) }
+        #expect(await events.errors.isEmpty)
+        return await events.text
+    }
+
+    /// An image turn binds an identity of its evaluated features: the next
+    /// turn with the same image restores the deepest chunk boundary and
+    /// streams the cold text, on the plain and on the speculating owner
+    /// (target-only there). Without a cache scope an image request neither
+    /// restores nor publishes.
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func sameImageTurnRestoresTheColdText(speculates: Bool) async throws {
+        let budget = Self.budget()
+        let warmFixture = try SuperMTPInstalledFixture().make()
+        let coldFixture = try SuperMTPInstalledFixture().make()
+        let leases = [try await Self.lease(warmFixture, "image-warm", budget: budget, speculates: speculates),
+                      try await Self.lease(coldFixture, "image-cold", budget: budget, speculates: speculates)]
+        let warm = try await Self.owner(warmFixture, environment: Self.environment, budget: budget,
+            lease: leases[0], speculates: speculates)
+        let cold = try await Self.owner(coldFixture, environment: Self.environment, budget: budget,
+            lease: leases[1], speculates: speculates)
+        // One image feature (a 4 x 4 one-channel raster), then text: a grid end.
+        let turn: [Int] = [1, 18] + Array(Self.donor.prefix(18))
+        let nextTurn: [Int] = turn + [5, 9, 1, 4, 22, 7, 3, 8, 30]
+        let warmBank = try #require(await Self.bank(warm))
+        _ = try await Self.runImage(warm, prompt: turn, cacheScope: nil)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(warmBank.stats.entries == 0)
+        _ = try await Self.runImage(warm, prompt: turn, cacheScope: "")
+        let published = await Self.eventually { warmBank.stats.entries == 1 }
+        #expect(published)
+        let restored = try await Self.runImage(warm, prompt: nextTurn, cacheScope: "")
+        let deepest: Int = turn.count / Self.chunk * Self.chunk
+        #expect(warmBank.stats.adoptions == 1)
+        #expect(warmBank.stats.tokensSaved == deepest)
+        let coldText = try await Self.runImage(cold, prompt: nextTurn, cacheScope: "")
+        #expect(!coldText.isEmpty)
+        #expect(restored == coldText)
+        try await warm.closeAfterDrain()
+        try await cold.closeAfterDrain()
+        #expect(await budget.reservationBytesSnapshot().isEmpty)
+        for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
+    }
+
     /// A bank that does not fit the shared budget fails the load after the
     /// engine retired, refunding the lane already reserved.
     @Test(.timeLimit(.minutes(2))) func bankThatDoesNotFitFailsTheLoadAndRefundsTheLane() async throws {

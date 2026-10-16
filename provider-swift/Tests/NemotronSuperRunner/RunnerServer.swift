@@ -115,8 +115,14 @@ final class RunnerServer: @unchecked Sendable {
     private func diagnosticsRouter(status: @escaping @Sendable () async -> RunnerJSON) -> Router<BasicRequestContext> {
         let router = Router()
         router.add(middleware: RunnerBearerAuth(token: token))
-        let sampler = sampler, ballast = ballast, budget = budget
+        let sampler = sampler, ballast = ballast, budget = budget, bridge = serving.bridge
         router.get("/runner/status") { _, _ in jsonResponse(await status()) }
+        router.get("/runner/engine") { _, _ in
+            jsonResponse(await RunnerEngineDiagnostics.json(bridge: bridge))
+        }
+        router.post("/runner/engine/profile/reset") { _, _ in
+            jsonResponse(RunnerEngineDiagnostics.resetProfile())
+        }
         router.get("/runner/memory") { _, _ in jsonResponse(await sampler.snapshot()) }
         router.post("/runner/peaks/reset") { _, _ in jsonResponse(await sampler.resetPeaks()) }
         // Test-only headroom control: a real ledger reservation that shrinks the

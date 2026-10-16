@@ -36,9 +36,15 @@ enum NemotronSuperServingPolicy {
     /// quote. Unmeasured; the full-checkpoint load peaked 1.6 GB below the
     /// quote that includes it.
     static let backendAllowanceBytes = 2 << 30
-    /// Measured full-checkpoint default (M3 Ultra, 256 GB): depth-3 exact
-    /// rectangular speculation serving up to eight requests.
+    /// Measured full-checkpoint default (M3 Ultra, 256 GB, natural chat, code,
+    /// math and long-form prompts, greedy): exact rectangular speculation for
+    /// up to eight requests, the draft depth set by the requests decoding in
+    /// the step (`defaultDepthByRequests`, at most `defaultDraftDepth`).
+    /// Aggregate tok/s, plain owner against the best fixed depth: 32.5 / 57.0
+    /// (depth 3) alone, 50.7 / 65.0 (2) at two, 67.2 / 78.4 (2) at four and
+    /// 82.8 / 86.9 (1) at eight clients.
     static let defaultDraftDepth = 3
+    static let defaultDepthByRequests = [3, 2, 2, 2, 1]
     static let defaultConcurrentRequests = 8
 
     /// Exact registry id and canonical `model_type`; no alias or substring.
@@ -91,7 +97,7 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Speculation and concurrency come from provider policy and replace any
-    /// value of those keys; the depth defaults to `defaultDraftDepth`.
+    /// value of those keys; the depth defaults to `defaultDepthByRequests`.
     /// Verification, prefill chunk, decode-step and KV storage keys keep the
     /// operator's value or the builder default. Either owner turns exact
     /// prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant holds
@@ -107,7 +113,8 @@ enum NemotronSuperServingPolicy {
         if speculates {
             environment[NemotronSuperLocalMTP.enabledKey] = "1"
             if environment[NemotronSuperLocalMTP.depthKey] == nil {
-                environment[NemotronSuperLocalMTP.depthKey] = String(defaultDraftDepth)
+                environment[NemotronSuperLocalMTP.depthKey] =
+                    defaultDepthByRequests.map(String.init).joined(separator: ",")
             }
         } else {
             environment.removeValue(forKey: NemotronSuperLocalMTP.enabledKey)

@@ -83,8 +83,9 @@ actor NemotronSuperLocalLoad {
         do {
             let staging = try makeStaging()
             let source = staging.source
-            let quote = try NemotronSuperInstallation.requiredLoadBytes(
+            let installation = try NemotronSuperInstallation.loadQuote(
                 source: source, backendAllowanceBytes: backendAllowanceBytes)
+            let quote = installation.totalBytes
             // Speculation adds the embedded head's payload and loader
             // construction allowance to the same LOAD claim, before allocation.
             let speculation = try NemotronSuperLocalMTP.Setting.resolve(environment: environment)
@@ -92,10 +93,12 @@ actor NemotronSuperLocalLoad {
                 guard let head = staging.head else { throw Failure.identity }
                 return try head.quote()
             }
-            let (claimBytes, overflow) = quote.addingReportingOverflow(
-                try headQuote.map(NemotronSuperLocalMTP.loadSupplementBytes) ?? 0)
+            if let headQuote { _ = try NemotronSuperLocalMTP.loadSupplementBytes(headQuote) }
+            let sequential = headQuote != nil && NemotronSuperLoadClaim.mayReturnStagingBuffers()
+            let claimBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+                sequential: sequential)
             let admission = admissionKVBytes ?? kvBytesCapacity
-            guard !overflow, admission >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
+            guard admission >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
                     weightBytes: UInt64(claimBytes), minimumKVBytes: UInt64(admission))
@@ -109,6 +112,10 @@ actor NemotronSuperLocalLoad {
             try Task.checkCancellation()
             var head: NemotronSuperLocalMTP.Head?
             if let speculation, let headQuote, let loader = staging.head {
+                // The claim holds one transient: the installation's staging
+                // must leave MLX's cache before the head's construction.
+                guard !sequential || NemotronSuperLoadClaim.returnStagingBuffers(budget: budget)
+                else { throw Failure.capacity }
                 head = .init(module: try loader.load(candidate, headQuote, construction), setting: speculation)
             }
             try Task.checkCancellation()

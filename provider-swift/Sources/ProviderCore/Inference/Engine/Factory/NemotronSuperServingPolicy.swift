@@ -153,12 +153,28 @@ enum NemotronSuperServingPolicy {
         return max(1, requests) * perRequest + (2 << 30)
     }
 
-    /// LOAD charges of the pinned checkpoint, header-derived and recorded from
-    /// its full load: the installation quote including `backendAllowanceBytes`,
-    /// and the embedded head's payload and construction supplement. The
-    /// managed load recomputes and claims both from the verified shards.
-    static let pinnedInstallationLoadBytes: UInt64 = 82_100_665_864
-    static let pinnedHeadLoadBytes: UInt64 = 8_848_271_480
+    /// LOAD quotes of the pinned checkpoint, header-derived and recorded from
+    /// its verified shards: the installation's resident payload and staging
+    /// (including `backendAllowanceBytes`), and the embedded head's payload and
+    /// construction allowance. The managed load recomputes them and claims
+    /// `NemotronSuperLoadClaim.bytes`: both payloads and the larger transient.
+    static let pinnedInstallationPayloadBytes: UInt64 = 73_213_230_600
+    static let pinnedInstallationStagingBytes: UInt64 = 8_887_435_264
+    static let pinnedHeadPayloadBytes: UInt64 = 1_769_654_296
+    static let pinnedHeadConstructionBytes: UInt64 = 7_078_617_184
+    static var pinnedInstallationLoadBytes: UInt64 { pinnedInstallationPayloadBytes + pinnedInstallationStagingBytes }
+    static var pinnedHeadLoadBytes: UInt64 { pinnedHeadPayloadBytes + pinnedHeadConstructionBytes }
+
+    /// The managed load's LOAD bytes for the installation and, when it
+    /// speculates, the head (transients sequential).
+    static func pinnedLoadClaimBytes(speculates: Bool) -> UInt64 {
+        let bytes = try? NemotronSuperLoadClaim.bytes(
+            installationPayload: Int(pinnedInstallationPayloadBytes),
+            staging: Int(pinnedInstallationStagingBytes),
+            headPayload: speculates ? Int(pinnedHeadPayloadBytes) : 0,
+            construction: speculates ? Int(pinnedHeadConstructionBytes) : 0, sequential: true)
+        return UInt64(bytes ?? Int.max)
+    }
 
     struct DiscoveryFootprint: Equatable {
         /// The default configuration's LOAD claim (installation and head),
@@ -176,7 +192,7 @@ enum NemotronSuperServingPolicy {
     /// and the load leaves room for an image. The prefix bank is not part of
     /// it: `loadPlan` enables the bank only when the grant also holds it.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
-        let load = pinnedInstallationLoadBytes + pinnedHeadLoadBytes
+        let load = pinnedLoadClaimBytes(speculates: true)
         let lane = UInt64(NemotronHModel.prefillActivationBoundBytes(
             tokens: NemotronSuperLocalPrefill.defaultChunkTokens))
         let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))

@@ -170,16 +170,48 @@ struct NemotronSuperServingPolicyTests {
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
             + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_013_708_416)
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
-        // Media is a serving reservation, not LOAD transient.
-        #expect(footprint.nativeLoadTransientBytes == 15_938_749_104)
+        // Media is a serving reservation, not LOAD transient. The LOAD claim
+        // holds both payloads and the larger of the two sequential transients
+        // (the installation's 8,887,435,264-byte staging, not the head's
+        // 7,078,617,184-byte construction).
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_870_320_160)
+        #expect(footprint.nativeLoadTransientBytes == 8_860_131_920)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (36 << 30) + media) / 1_073_741_824
+        let expected = Double(83_870_320_160 + (12 << 30) + (36 << 30) + media) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        #expect(abs(footprint.estimatedMemoryGb - 136.324_139_233_678_58) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 129.731_663_253_158_33) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes
         #expect(Double(plainBytes) / 1_073_741_824 < footprint.estimatedMemoryGb)
+    }
+
+    @Test func loadClaimHoldsThePayloadsAndTheLargerSequentialTransient() throws {
+        typealias Claim = NemotronSuperLoadClaim
+        // Plain: the installation alone, sequential or not.
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 0, construction: 0,
+            sequential: true) == 130)
+        // A head: both payloads and the larger transient; summed only when the
+        // staging buffers cannot be returned before the head's construction.
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: true) == 135)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 40,
+            sequential: true) == 145)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: false) == 155)
+        #expect(throws: Claim.Failure.invalidQuote) {
+            try Claim.bytes(installationPayload: .max, staging: 1, headPayload: 0, construction: 0,
+                sequential: true)
+        }
+        #expect(throws: Claim.Failure.invalidQuote) {
+            try Claim.bytes(installationPayload: 1, staging: -1, headPayload: 0, construction: 0,
+                sequential: true)
+        }
+        // The pinned checkpoint: the plain claim is unchanged; speculation adds
+        // the head's payload, not its construction (below the staging).
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false) == 82_100_665_864)
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true)
+            == 82_100_665_864 + 1_769_654_296)
     }
 
     private static let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
@@ -339,14 +371,23 @@ struct NemotronSuperServingPolicyTests {
         #expect(EngineV2SupportedModels.isSupported(model: info))
         // The recorded constants equal the SDK quotes over the verified shards.
         let opened = try await NemotronSuperCheckpoint.open(directory: directory)
+        let installation = try NemotronSuperInstallation.loadQuote(source: opened.source,
+            backendAllowanceBytes: NemotronSuperServingPolicy.backendAllowanceBytes)
+        #expect(installation.payloadBytes == Int(NemotronSuperServingPolicy.pinnedInstallationPayloadBytes))
+        #expect(installation.stagingBytes == Int(NemotronSuperServingPolicy.pinnedInstallationStagingBytes))
         #expect(try NemotronSuperInstallation.requiredLoadBytes(source: opened.source,
             backendAllowanceBytes: NemotronSuperServingPolicy.backendAllowanceBytes)
             == Int(NemotronSuperServingPolicy.pinnedInstallationLoadBytes))
         let staging = try NemotronSuperLocalLoad.Staging.pinned(configData: opened.inputs.configData,
             source: opened.source)
         let head = try #require(staging.head)
-        #expect(try NemotronSuperLocalMTP.loadSupplementBytes(head.quote())
+        let headQuote = try head.quote()
+        #expect(headQuote.payloadBytes == Int(NemotronSuperServingPolicy.pinnedHeadPayloadBytes))
+        #expect(headQuote.constructionBytes == Int(NemotronSuperServingPolicy.pinnedHeadConstructionBytes))
+        #expect(try NemotronSuperLocalMTP.loadSupplementBytes(headQuote)
             == Int(NemotronSuperServingPolicy.pinnedHeadLoadBytes))
+        #expect(try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote, sequential: true)
+            == Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true)))
         #expect(opened.inputs.fp16KVBytesPerToken == 8192 && opened.inputs.eosTokenIDs == [2, 11])
     }
 

@@ -13,6 +13,21 @@ struct RunnerLoadSettings: Sendable {
     /// The only runtime-policy environment the engine sees (A/B switches).
     let engineEnvironment: [String: String]
     let verifyParallelism: Int
+    /// KV headroom the LOAD claim holds; nil claims the whole grant.
+    var admissionKVBytes: Int? = nil
+
+    /// The managed slot's LOAD KV headroom under this grant
+    /// (`NemotronSuperServingPolicy.loadPlan`): every configured request's
+    /// fixed bytes, 2 GiB and the owner's prefix bank, never above the grant.
+    static func managedAdmissionKVBytes(grantBytes: Int, environment: [String: String]) -> Int {
+        let speculates = environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1"
+        let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
+            environment: environment, speculates: speculates)) ?? 1
+        let bank = NemotronSuperLocalPrefixCache.config(environment: environment, kvBytesCapacity: grantBytes,
+            requests: requests, speculates: speculates)?.maximumBytes ?? 0
+        return min(grantBytes,
+            NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: speculates) + bank)
+    }
 
     /// The opt-in speculation the engine environment selects; the load
     /// transaction reads the same entries. nil is the plain arm.

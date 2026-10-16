@@ -100,12 +100,15 @@ enum NemotronSuperServingPolicy {
     /// value of those keys; the depth defaults to `defaultDepthByRequests`.
     /// Verification, prefill chunk, decode-step and KV storage keys keep the
     /// operator's value or the builder default. Either owner turns exact
-    /// prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant holds
-    /// every request's fixed bytes beside the bank and its KV stays contiguous
-    /// (the bank lives in the contiguous engine); an operator value,
-    /// including the global kill switch, wins.
+    /// prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant has
+    /// room for a `defaultPrefixBankBytes` bank (or an operator-sized one)
+    /// beside every request's fixed bytes and its KV stays contiguous (the
+    /// bank lives in the contiguous engine); an operator value, including the
+    /// global kill switch, wins. The builder sizes the same bank from the same
+    /// grant, requests and keys.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
-                         kvBytesCapacity: Int) -> LoadPlan {
+                         kvBytesCapacity: Int,
+                         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
         let speculates = Self.speculates(mode: mode, environment: base)
         let requests = concurrentRequests(configured: configuredConcurrency, speculates: speculates)
         var environment = base
@@ -125,12 +128,14 @@ enum NemotronSuperServingPolicy {
         let paged = (try? NemotronSuperLocalKVBackend.resolve(environment: environment)) == .paged
         if environment[flag] == nil, !paged,
             let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
-                kvBytesCapacity: kvBytesCapacity, modelID: modelID)?.maximumBytes,
+                kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
+                physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
             kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates) + bank {
             environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
-            kvBytesCapacity: kvBytesCapacity, modelID: modelID)?.maximumBytes ?? 0
+            kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
+            physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
         return LoadPlan(environment: environment, speculates: speculates, requests: requests,
             prefixBankBytes: bank,
             admissionKVBytes: min(kvBytesCapacity,
@@ -151,6 +156,57 @@ enum NemotronSuperServingPolicy {
     static func admissionKVBytes(requests: Int, speculates: Bool) -> Int {
         let perRequest = speculates ? speculativeRequestBoundBytes : plainRequestBoundBytes
         return max(1, requests) * perRequest + (2 << 30)
+    }
+
+    // MARK: - Prefix checkpoint bank
+
+    /// Largest default bank. One long-prompt entry (a first and a newest
+    /// checkpoint) measured 0.39-0.44 GB at ~5.9K tokens on the full
+    /// checkpoint, so this keeps a few dozen long entries.
+    static let maximumDefaultPrefixBankBytes = 16 << 30
+    /// Smallest default bank: about two long entries. Less is no bank.
+    static let minimumDefaultPrefixBankBytes = 1 << 30
+    static let prefixBankGranuleBytes = 256 << 20
+
+    /// The default exact-prefix bank of the pinned checkpoint's owner under a
+    /// KV grant, carved from that grant. Two slacks bound it:
+    ///
+    ///     serving = grant - admissionKVBytes(requests, speculates)
+    ///                     - prefill lane bound(chunk) - one image's media charge
+    ///     load    = memory cap - activation reserve - LOAD bytes (installation
+    ///                     and any head) - admissionKVBytes - lane bound
+    ///     bank    = min(16 GiB, grant / 4, serving / 2, load / 2),
+    ///               rounded down to 256 MiB; no bank below 1 GiB
+    ///
+    /// Serving: the lane and media charges come from the same ledger the grant
+    /// describes, so half of what remains beside them stays free for KV, more
+    /// images and other owners. Load: the single LOAD claim, taken before any
+    /// allocation, holds the installation, any head, the lane, the bank and the
+    /// requests' KV (`NemotronSuperLocalLoad`), so half of what the machine's
+    /// cap leaves beside the rest stays free for other memory and images. The
+    /// grant / 4 term is the engine's own bank ceiling when a re-slice shrinks
+    /// the grant. An unparseable or out-of-range chunk key gives no bank (the
+    /// load then refuses the key itself).
+    static func defaultPrefixBankBytes(kvBytesCapacity: Int, requests: Int, speculates: Bool,
+                                       environment: [String: String],
+                                       physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
+        var chunk = NemotronSuperLocalPrefill.defaultChunkTokens
+        if let raw = environment[NemotronSuperLocalPrefill.chunkKey]?.trimmingCharacters(in: .whitespaces) {
+            guard let value = Int(raw), (1 ... contextTokens).contains(value) else { return 0 }
+            chunk = value
+        }
+        guard kvBytesCapacity > 0, let media = mediaChargeBytes(imageCount: 1) else { return 0 }
+        let admission = admissionKVBytes(requests: requests, speculates: speculates)
+        let lane = NemotronHModel.prefillActivationBoundBytes(tokens: chunk)
+        let serving = kvBytesCapacity - admission - lane - Int(clamping: media)
+        let claim = Int(clamping: pinnedLoadClaimBytes(speculates: speculates))
+        let usable = Int(clamping: UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes))
+            - Int(clamping: UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [modelID]))
+        let load = usable - claim - admission - lane
+        guard serving > 0, load > 0 else { return 0 }
+        let bank = min(maximumDefaultPrefixBankBytes, kvBytesCapacity / 4, serving / 2, load / 2)
+        let rounded = bank - bank % prefixBankGranuleBytes
+        return rounded >= minimumDefaultPrefixBankBytes ? rounded : 0
     }
 
     /// LOAD quotes of the pinned checkpoint, header-derived and recorded from

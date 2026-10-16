@@ -44,7 +44,8 @@ enum RunnerCheckpointLoad {
             "head_payload_bytes": headQuote.map { .bytes($0.payloadBytes) } ?? .null,
             "head_construction_bytes": headQuote.map { .bytes($0.constructionBytes) } ?? .null,
             "load_claim_bytes": .bytes(claim),
-            "pending_load_claim_bytes": .bytes(claim + settings.kvCapacityBytes)])
+            "pending_load_claim_bytes": .bytes(claim + (settings.admissionKVBytes ?? settings.kvCapacityBytes)),
+            "admission_kv_bytes": .bytes(settings.admissionKVBytes ?? settings.kvCapacityBytes)])
         let tokenizer = try await phases.run("tokenizer") {
             TokenizerHandle(try await LocalTokenizerLoader().load(from: directory))
         }
@@ -59,6 +60,7 @@ enum RunnerCheckpointLoad {
         do {
             bridge = try await transaction.load(configData: configData, source: source, tokenizer: tokenizer,
                 eosTokenIDs: checkpoint.eosTokenIDs, sizing: sizing, kvBytesCapacity: settings.kvCapacityBytes,
+                admissionKVBytes: settings.admissionKVBytes,
                 backendAllowanceBytes: settings.backendAllowanceBytes, environment: settings.engineEnvironment)
             phases.finish("native_load", start: started, outcome: "ok")
         } catch {

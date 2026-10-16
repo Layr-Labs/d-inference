@@ -21,6 +21,9 @@ actor NemotronSuperLocalLoad {
             -> NemotronSuperInstallation.Installed
         /// The embedded speculation head; nil when the staging carries none.
         let head: Head?
+        /// The pinned checkpoint: its LOAD claim also covers the owner's
+        /// prefill lane and prefix bank (`NemotronSuperLocalBridgeBuilder.OwnerShares`).
+        var pinned = false
 
         struct Head {
             let quote: () throws -> NemotronSuperMTPModule.LoadQuote
@@ -41,7 +44,7 @@ actor NemotronSuperLocalLoad {
             return Staging(source: source, install: { residency, allowance, construction in
                 try NemotronSuperInstallation.stage(configuration: configuration, source: source,
                     residency: residency, backendAllowanceBytes: allowance, construction: construction)
-            }, head: head)
+            }, head: head, pinned: true)
         }
     }
 
@@ -60,7 +63,12 @@ actor NemotronSuperLocalLoad {
 
     /// The pinned checkpoint. `admissionKVBytes` is the KV headroom the LOAD
     /// claim requires (nil: the whole grant, the qualification runner's
-    /// contract); the grant itself is the engine's admission ceiling.
+    /// contract), including any prefix bank; the grant itself is the engine's
+    /// admission ceiling. One claim, taken before any allocation, covers the
+    /// whole loaded owner: installation, any head, the prefill lane, the bank
+    /// and the requests' KV. Once the weights are resident (MLX usage) their
+    /// share is handed over to live usage, and the builder hands the lane and
+    /// bank shares to their reservations, so each byte is counted once.
     func load(configData: Data, source: ModelOptCheckpointSource,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
@@ -95,13 +103,21 @@ actor NemotronSuperLocalLoad {
             }
             if let headQuote { _ = try NemotronSuperLocalMTP.loadSupplementBytes(headQuote) }
             let sequential = headQuote != nil && NemotronSuperLoadClaim.mayReturnStagingBuffers()
-            let claimBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+            let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
                 sequential: sequential)
+            let shares = staging.pinned
+                ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: environment,
+                    kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil)
+                : nil
+            let ownerBytes = (shares?.lane ?? 0) + (shares?.bank ?? 0)
+            let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
+            // The bank is part of the admission; the claim holds it once, as a share.
             let admission = admissionKVBytes ?? kvBytesCapacity
-            guard admission >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
+            let kvFloor = admission - (shares?.bank ?? 0)
+            guard !ownerOverflow, kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
-                    weightBytes: UInt64(claimBytes), minimumKVBytes: UInt64(admission))
+                    weightBytes: UInt64(claimBytes), minimumKVBytes: UInt64(kvFloor))
             else { throw Failure.capacity }
             lease = claim
             try Task.checkCancellation()
@@ -114,16 +130,27 @@ actor NemotronSuperLocalLoad {
             if let speculation, let headQuote, let loader = staging.head {
                 // The claim holds one transient: the installation's staging
                 // must leave MLX's cache before the head's construction.
-                guard !sequential || NemotronSuperLoadClaim.returnStagingBuffers(budget: budget)
+                guard !sequential || NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget)
                 else { throw Failure.capacity }
                 head = .init(module: try loader.load(candidate, headQuote, construction), setting: speculation)
+                // Live usage takes over the payloads below; leave it no cached
+                // construction buffers to count.
+                if sequential { _ = NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget) }
             }
             try Task.checkCancellation()
+            // The installation and any head are resident and counted as MLX
+            // usage now: as the ordinary managed load does, hand their share of
+            // the claim over to that live view, keeping the owner shares and the
+            // KV floor until the builder takes them.
+            if shares != nil {
+                guard await budget.reducePendingLoad(claim, remainingWeightBytes: UInt64(ownerBytes))
+                else { throw Failure.capacity }
+            }
             let built = try await NemotronSuperLocalBridgeBuilder.make(installed: candidate,
                 tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
-                kvBytesCapacity: kvBytesCapacity, admissionKVBytes: admission, kvBudget: budget,
+                kvBytesCapacity: kvBytesCapacity, admissionKVBytes: kvFloor, kvBudget: budget,
                 loadLease: claim, construction: construction, mtp: head, modelID: modelID,
-                environment: environment)
+                environment: environment, leaseShares: shares)
             owner = built
             try Task.checkCancellation()
             // Installation/setup has fenced. The standard ledger now sees live

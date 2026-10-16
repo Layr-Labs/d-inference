@@ -237,9 +237,45 @@ enum NemotronSuperLocalBridgeBuilder {
         }
     }
 
+    /// The owner-level reservations a pinned load's LOAD claim also holds, so
+    /// one claim before allocation covers everything the loaded owner keeps:
+    /// the prefill lane at the measured whole-chunk bound and the default (or
+    /// operator) prefix bank, which paged KV never has.
+    struct OwnerShares: Equatable, Sendable {
+        let lane: Int
+        let bank: Int
+    }
+
+    /// `OwnerShares` of the pinned checkpoint's owner under this grant and
+    /// runtime policy, computed as `make` computes the lane and the bank. A
+    /// chunk key outside 1...`maximumContextTokens` counts no lane share (the
+    /// builder refuses the key itself).
+    static func pinnedOwnerShares(environment: [String: String], kvBytesCapacity: Int, speculates: Bool,
+                                  physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) throws
+        -> OwnerShares {
+        var chunk = NemotronSuperLocalPrefill.defaultChunkTokens
+        if let raw = environment[NemotronSuperLocalPrefill.chunkKey]?.trimmingCharacters(in: .whitespaces) {
+            chunk = Int(raw).flatMap {
+                (1 ... NemotronSuperServingPolicy.maximumContextTokens).contains($0) ? $0 : nil
+            } ?? 0
+        }
+        let lane = chunk > 0 ? NemotronHModel.prefillActivationBoundBytes(tokens: chunk) : 0
+        let requests = try concurrentRequests(environment: environment, speculates: speculates)
+        let paged = (try? NemotronSuperLocalKVBackend.resolve(environment: environment)) == .paged
+        let bank = paged ? 0 : NemotronSuperLocalPrefixCache.config(environment: environment,
+            kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
+            physicalBytes: physicalBytes)?.maximumBytes ?? 0
+        return OwnerShares(lane: lane, bank: bank)
+    }
+
     /// `loadLease` is the real existing pending LOAD claim, never a new permit;
     /// it must hold at least `admissionKVBytes` (nil: the whole grant) of KV
-    /// headroom. KV grant/sizing must come from the existing slot re-slice and
+    /// headroom. With `leaseShares` the caller has already handed the resident
+    /// installation's share of the claim over to live usage and the lease holds
+    /// exactly those owner shares beside its KV floor; each share is released
+    /// right before its own reservation, so no byte is counted twice. Without
+    /// them the lease must still cover the installation's payload, and the lane
+    /// and bank are admitted on their own. KV grant/sizing must come from the existing slot re-slice and
     /// loaded sizing path. Native setup/probes run inside the SDK construction
     /// scope. Caller must retain a faulted scope and its charged installation
     /// until restart. `mtp` installs speculation for text requests; image
@@ -254,11 +290,13 @@ enum NemotronSuperLocalBridgeBuilder {
         construction: NativeConstructionScope, mtp: NemotronSuperLocalMTP.Head? = nil,
         modelID: String = NemotronSuperLocalBinding.modelID,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        leaseShares: OwnerShares? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
-        guard installed.receipt.payloadBytes > 0,
+        let leaseWeightBytes = leaseShares.map { $0.lane + $0.bank } ?? installed.receipt.payloadBytes
+        guard installed.receipt.payloadBytes > 0, leaseWeightBytes >= 0,
             await kvBudget.recheckPendingLoad(loadLease,
-                minimumWeightBytes: UInt64(installed.receipt.payloadBytes),
+                minimumWeightBytes: UInt64(leaseWeightBytes),
                 minimumKVBytes: UInt64(max(0, admissionKVBytes ?? kvBytesCapacity)))
         else { throw Failure.loadAdmissionLost }
         guard sizing.weightsBytes >= installed.receipt.payloadBytes,
@@ -270,7 +308,8 @@ enum NemotronSuperLocalBridgeBuilder {
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
-            kvBytesCapacity: kvBytesCapacity, modelID: modelID)
+            kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
+            pinned: installed.isPinnedCheckpoint, modelID: modelID)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
         if kvBackend == .paged, prefixCache != nil {
             throw NemotronSuperLocalKVBackend.Failure.pagedPrefixReuse
@@ -334,7 +373,15 @@ enum NemotronSuperLocalBridgeBuilder {
             throw refusal
         }
         // One prompt chunk runs per step, so one lane covers every request's
-        // prefill. It is reserved before the bridge can admit any request.
+        // prefill. It is reserved before the bridge can admit any request,
+        // taking over the lease's lane share (any excess is admitted here).
+        if let leaseShares {
+            guard await kvBudget.reducePendingLoad(loadLease, remainingWeightBytes: UInt64(leaseShares.bank))
+            else {
+                try await retireUnpublished(bridge, budget: kvBudget, releasing: [])
+                throw Failure.loadAdmissionLost
+            }
+        }
         let laneID = NemotronSuperLocalPrefill.laneReservationID()
         let laneReserved =
             laneBytes == 0 ? true : await kvBudget.reserveBytes(requestID: laneID, bytes: UInt64(laneBytes))
@@ -369,6 +416,12 @@ enum NemotronSuperLocalBridgeBuilder {
             guard bytes == prefixCache.maximumBytes else {
                 try await retireUnpublished(bridge, budget: kvBudget, releasing: reserved)
                 throw NemotronSuperLocalPrefixCache.Failure.unavailable
+            }
+            if leaseShares != nil {
+                guard await kvBudget.reducePendingLoad(loadLease, remainingWeightBytes: 0) else {
+                    try await retireUnpublished(bridge, budget: kvBudget, releasing: reserved)
+                    throw Failure.loadAdmissionLost
+                }
             }
             let id = NemotronSuperLocalPrefixCache.bankReservationID()
             guard await kvBudget.reserveBytes(requestID: id, bytes: UInt64(bytes)) else {

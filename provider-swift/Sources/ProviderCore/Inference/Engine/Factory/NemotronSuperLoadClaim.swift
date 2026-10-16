@@ -41,11 +41,12 @@ enum NemotronSuperLoadClaim {
         ProviderLoop.nativeProcessAllowsReclamation()
     }
 
-    /// After the installation's last fenced epoch: returns its freed staging
-    /// buffers to the system so the head's construction cannot stack on them.
-    /// False (nothing done) when reclamation became unsafe since the claim;
-    /// the caller then fails the load rather than exceed its claim.
-    static func returnStagingBuffers(budget: GlobalKVCacheBudget) -> Bool {
+    /// After a phase's last fenced epoch: returns its freed transient buffers
+    /// from MLX's cache to the system, so the installation's staging cannot
+    /// stack on the head's construction, nor either on live usage. False
+    /// (nothing done) when reclamation became unsafe since the claim; before
+    /// the head the caller then fails the load rather than exceed its claim.
+    static func returnCachedLoadBuffers(budget: GlobalKVCacheBudget) -> Bool {
         guard mayReturnStagingBuffers() else { return false }
         let activity = budget.serviceBudget.beginUnboundedActivity()
         defer { activity.finish() }

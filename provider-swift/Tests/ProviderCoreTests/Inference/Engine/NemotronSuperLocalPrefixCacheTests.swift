@@ -31,7 +31,8 @@ struct NemotronSuperLocalPrefixCacheTests {
 
     static let memoryKey = "DARKBLOOM_PREFIX_CACHE_MEMORY"
     /// Four-token chunks: checkpoints at every fourth token of the tiny fixture.
-    static let environment = [NemotronSuperLocalPrefill.chunkKey: "4", memoryKey: "1"]
+    static let chunk: Int = 4
+    static let environment = [NemotronSuperLocalPrefill.chunkKey: String(chunk), memoryKey: "1"]
     static let grant: Int = 2 << 30
 
     @Test func bankIsAnExplicitOptInOfThePlainOwnerOnly() throws {
@@ -135,7 +136,7 @@ struct NemotronSuperLocalPrefixCacheTests {
         let published = await Self.eventually { warmBank.stats.entries == 1 }
         #expect(published)
         let restored = try await Self.run(warm, prompt: Self.adopter)
-        let deepest: Int = Self.donor.count / 4 * 4
+        let deepest: Int = Self.donor.count / Self.chunk * Self.chunk
         #expect(warmBank.stats.adoptions == 1)
         #expect(warmBank.stats.tokensSaved == deepest)
         let coldText = try await Self.run(cold, prompt: Self.adopter)
@@ -159,8 +160,11 @@ struct NemotronSuperLocalPrefixCacheTests {
         let budget = Self.budget()
         let lease = try await Self.lease(fixture, "small", budget: budget)
         let language = try #require(fixture.installed.model?.languageModel)
-        let lane = NemotronSuperLocalPrefill.laneBytes(language, chunkTokens: 4, measuredBound: false)
+        let lane = NemotronSuperLocalPrefill.laneBytes(language, chunkTokens: Self.chunk,
+            measuredBound: false)
         let bank: Int = Self.grant / 8
+        // Ballast leaves room for the lane and half the bank: the largest
+        // reservation that still fits, found by bisection, minus both.
         var low: UInt64 = 0
         var high: UInt64 = 64 << 30
         while low < high {
@@ -172,7 +176,6 @@ struct NemotronSuperLocalPrefixCacheTests {
                 high = middle - 1
             }
         }
-        // Room for the lane and half the bank.
         let free = UInt64(lane + bank / 2)
         #expect(low > free)
         #expect(await budget.reserveBytes(requestID: "ballast", bytes: low - free))

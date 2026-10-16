@@ -325,19 +325,19 @@ enum NemotronSuperLocalBridgeBuilder {
         // The bank keeps checkpoints between requests, beyond any request's
         // charge: its whole budget is reserved before the first request and
         // held until native retirement, like the lane.
-        let bankBytes = await bridge.superPrefixBankBytes
-        var bankID: String?
+        var bank: (id: String, bytes: Int)?
         if let prefixCache {
-            guard bankBytes == prefixCache.maximumBytes else {
+            let bytes = await bridge.superPrefixBankBytes
+            guard bytes == prefixCache.maximumBytes else {
                 try await retireUnpublished(bridge, budget: kvBudget, releasing: [laneID])
                 throw NemotronSuperLocalPrefixCache.Failure.unavailable
             }
             let id = NemotronSuperLocalPrefixCache.bankReservationID()
-            guard await kvBudget.reserveBytes(requestID: id, bytes: UInt64(bankBytes)) else {
+            guard await kvBudget.reserveBytes(requestID: id, bytes: UInt64(bytes)) else {
                 try await retireUnpublished(bridge, budget: kvBudget, releasing: [laneID])
                 throw NemotronSuperLocalPrefixCache.Failure.bankRefused
             }
-            bankID = id
+            bank = (id, bytes)
         }
         // Without speculation the dedicated image binding uses causal
         // embeddings and no checkpoint identity; execution stays contiguous.
@@ -345,7 +345,7 @@ enum NemotronSuperLocalBridgeBuilder {
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
-                     prefixBankID: bankID, prefixBankBytes: bankID == nil ? 0 : bankBytes)
+                     prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0)
     }
 
     /// A bridge that never reached an owner: shut it down and, only once the

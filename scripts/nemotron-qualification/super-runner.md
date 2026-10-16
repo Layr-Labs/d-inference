@@ -134,7 +134,9 @@ Prompts prefill in chunks of `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens
 decode or verify row; `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`
 (`0`…`64`, default 0) adds decode-only steps between chunks while requests
 decode. Chunk geometry never depends on concurrency, so outputs match solo
-serving.
+serving. The speculative grant default does not scale with N: pass `--kv-capacity-gib`
+from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
+`kv_grant_refused` load.
 
 Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the plain owner the SDK's resident
@@ -154,9 +156,7 @@ the bank. `bench_super.py` alternates cold and warm requests and each cold one
 publishes too, so a one-entry bank evicts the warm body before its repeat: give
 long-context warm runs two entries, for example `--engine-env
 DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES=1073741824` at the default grant. Each sample
-records the bank counters as `prefix_cache_after`. The speculative grant default does not scale with N: pass `--kv-capacity-gib`
-from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
-`kv_grant_refused` load.
+records the bank counters as `prefix_cache_after`.
 
 ## Shutdown
 

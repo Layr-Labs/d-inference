@@ -130,9 +130,21 @@ cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
 `NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1`: `PrefixCachePolicy.hybridConfig` sizes the SDK's
-resident recurrent checkpoint bank (`min(1 GiB, KV grant / 8)` unless
-`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` sets it), the backend carves it from the KV
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`. For the pinned checkpoint
+`NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
+recurrent checkpoint bank from the KV grant:
+`slack = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
+`bank = min(16 GiB, grant / 4, slack / 2)` rounded down to 256 MiB, and no bank
+below 1 GiB (eight speculating requests: none at a 34 GiB grant, 9 GiB at
+60 GiB, 16 GiB from about 80 GiB). The lane and media charges come from the
+same ledger the grant describes, so half of what is left beside them stays
+free; `grant / 4` is the engine's own bank ceiling when a re-slice shrinks the
+grant. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
+holds up to one entry per 256 MiB (at least 32). The managed slot's
+`loadPlan` sizes the same bank from the same grant, requests and keys, turns
+the switch on only when it is non-zero and adds it to the LOAD claim's KV
+headroom. The backend carves the bank from the KV
 grant before the grant check, and its whole budget is reserved in the shared
 budget from before the first request until native retirement, like the lane; a
 bank that does not fit fails the load and a retained native fault keeps it
@@ -149,7 +161,9 @@ a scope it stays cold and never publishes. On the speculating owner
 the target is built with `exactPrefixCheckpoints` too and each checkpoint also
 holds the assistant's queued prompt history, so a restored request drafts from
 the same history as a cold one.
-`UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
+`UnserviceableGrant.minimumGrantBytes` and the slot's re-slice floor include
+the bank, so a larger bank also keeps a co-resident load from shrinking the
+grant below it. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 

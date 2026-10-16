@@ -140,11 +140,16 @@ from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
 
 Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the owner the SDK's resident
-recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized `min(1 GiB,
-KV grant / 8)` (512 MiB at the default 4 GiB grant: one entry of two 162.3 MiB
-checkpoints plus up to 16,384 tokens of KV) or by
-`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`, carved from `--kv-capacity-gib` and charged
-as `prefix_bank` from load to retirement. Checkpoints sit only at multiples of
+recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized like the
+managed slot's: `NemotronSuperServingPolicy.defaultPrefixBankBytes` of
+`--kv-capacity-gib` for the pinned checkpoint (half of what the grant leaves
+beside every request's fixed bytes, the prefill lane and one image, at most a
+quarter of the grant and 16 GiB, none below 1 GiB; 16 GiB at
+`--kv-capacity-gib 100`, none at 34), `min(1 GiB, KV grant / 8)` for synthetic
+weights, or `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`. It is carved from the grant
+and charged as `prefix_bank` from load to retirement. One long entry holds two
+162.3 MiB checkpoints, the prompt's KV and, on the speculating owner, 8 KiB of
+assistant history per checkpoint token (0.39-0.44 GB at ~5.9K tokens). Checkpoints sit only at multiples of
 the prefill chunk, so a request restores the deepest chunk boundary below its
 last prompt token that a previous text request published, and prompts shorter
 than one chunk restore nothing. On the speculating owner each checkpoint also
@@ -157,8 +162,8 @@ reports the bank's `adoptions`, `tokens_saved`, `lookup_matches`, `misses`,
 `cached_tokens` stays 0 on this route. `kv_grant.minimum_grant_bytes` includes
 the bank. `bench_super.py` alternates cold and warm requests and each cold one
 publishes too, so a one-entry bank evicts the warm body before its repeat: give
-long-context warm runs two entries, for example `--engine-env
-DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES=1073741824` at the default grant. Each sample
+long-context warm runs a grant with a default bank or an explicit one, for
+example `--engine-env DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES=1073741824`. Each sample
 records the bank counters as `prefix_cache_after`.
 
 ## Shutdown

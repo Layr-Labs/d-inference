@@ -261,7 +261,8 @@ enum NemotronSuperLocalBridgeBuilder {
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
-            kvBytesCapacity: kvBytesCapacity, modelID: modelID)
+            kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
+            pinned: installed.isPinnedCheckpoint, modelID: modelID)
         try Task.checkCancellation()
         let (bridge, prefill, laneBytes) = try installed.withNativeSetup(
             construction: construction

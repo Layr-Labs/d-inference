@@ -35,21 +35,27 @@ struct NemotronSuperLocalPrefixCacheTests {
     static let environment = [NemotronSuperLocalPrefill.chunkKey: String(chunk), memoryKey: "1"]
     static let grant: Int = 2 << 30
 
+    /// The synthetic fixtures are not the pinned checkpoint: their bank keeps
+    /// `PrefixCachePolicy.hybridConfig`'s generic default size.
+    private static func config(_ environment: [String: String]) -> CBv2HybridPrefixCacheConfig? {
+        Prefix.config(environment: environment, kvBytesCapacity: grant, requests: 1, speculates: false,
+            pinned: false)
+    }
+
     @Test func bankIsAnExplicitOptIn() throws {
         let grant = Self.grant
-        #expect(Prefix.config(environment: [:], kvBytesCapacity: grant) == nil)
-        let config = try #require(Prefix.config(
-            environment: [Self.memoryKey: "1"], kvBytesCapacity: grant))
+        #expect(Self.config([:]) == nil)
+        let config = try #require(Self.config([Self.memoryKey: "1"]))
         let eighth: Int = grant / 8
         #expect(config.maximumBytes == eighth)
         #expect(config.modelID == NemotronSuperLocalBinding.modelID)
         #expect(config.promptContractID.hasSuffix(NemotronSuperPromptContract.templateSHA256))
         for disabled in [["DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE": "0"], ["DARKBLOOM_PREFIX_CACHE": "0"]] {
             let environment = disabled.merging([Self.memoryKey: "1"]) { $1 }
-            #expect(Prefix.config(environment: environment, kvBytesCapacity: grant) == nil)
+            #expect(Self.config(environment) == nil)
         }
         let sized = [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "67108864"]
-        #expect(Prefix.config(environment: sized, kvBytesCapacity: grant)?.maximumBytes == 67_108_864)
+        #expect(Self.config(sized)?.maximumBytes == 67_108_864)
         let id = Prefix.bankReservationID()
         #expect(Prefix.isBankReservationID(id) && !NemotronSuperLocalPrefill.isLaneReservationID(id))
     }

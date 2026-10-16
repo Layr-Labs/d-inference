@@ -25,6 +25,8 @@ struct SuperMTPInstalledFixture {
         channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
     static let hidden = 32
     static let vocabulary = 64
+    /// Attention head width; the paged KV kernels take 64, 128, 256 or 512.
+    @TaskLocal static var attentionHeadDim = 16
     private struct Tensor { let dtype: String; let shape: [Int]; let data: Data }
 
     static func configuration() -> NemotronHConfiguration {
@@ -32,7 +34,8 @@ struct SuperMTPInstalledFixture {
             numAttentionHeads: 2, numKeyValueHeads: 1, mambaNumHeads: 2, mambaHeadDim: 16,
             ssmStateSize: 8, convKernel: 4, nGroups: 1, intermediateSize: 32,
             moeIntermediateSize: 32, moeSharedExpertIntermediateSize: 32, nRoutedExperts: 4,
-            numExpertsPerTok: 2, hybridOverridePattern: "M*E", headDim: 16, nSharedExperts: 1,
+            numExpertsPerTok: 2, hybridOverridePattern: "M*E", headDim: attentionHeadDim,
+            nSharedExperts: 1,
             numNextnPredictLayers: 1, mtpLayersBlockType: ["attention", "moe"], moeLatentSize: 16)
     }
 

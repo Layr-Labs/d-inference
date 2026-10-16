@@ -33,5 +33,9 @@
   `<unk>`; non-finite image features fail the request.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
+- Opt-in paged attention KV (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged`): the
+  segmented native paged backend, charged by the engine's process-memory owner,
+  with the decode rows reserved for the owner's lifetime; it never falls back to
+  contiguous storage and keeps the text prefix bank off.
 - Needs at least 192 GB of unified memory; only 256 GB is measured.
   Coordinator-side registration remains a separate step.

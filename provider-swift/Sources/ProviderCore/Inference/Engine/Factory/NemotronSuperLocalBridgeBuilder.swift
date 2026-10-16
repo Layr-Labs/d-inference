@@ -253,13 +253,8 @@ enum NemotronSuperLocalBridgeBuilder {
     static func pinnedOwnerShares(environment: [String: String], kvBytesCapacity: Int, speculates: Bool,
                                   physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) throws
         -> OwnerShares {
-        var chunk = NemotronSuperLocalPrefill.defaultChunkTokens
-        if let raw = environment[NemotronSuperLocalPrefill.chunkKey]?.trimmingCharacters(in: .whitespaces) {
-            chunk = Int(raw).flatMap {
-                (1 ... NemotronSuperServingPolicy.maximumContextTokens).contains($0) ? $0 : nil
-            } ?? 0
-        }
-        let lane = chunk > 0 ? NemotronHModel.prefillActivationBoundBytes(tokens: chunk) : 0
+        let lane = NemotronSuperLocalPrefill.requestedChunkTokens(environment: environment)
+            .map(NemotronSuperLocalPrefill.pinnedLaneBytes) ?? 0
         let requests = try concurrentRequests(environment: environment, speculates: speculates)
         let paged = (try? NemotronSuperLocalKVBackend.resolve(environment: environment)) == .paged
         let bank = paged ? 0 : NemotronSuperLocalPrefixCache.config(environment: environment,

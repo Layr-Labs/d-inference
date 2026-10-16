@@ -230,7 +230,7 @@ struct NemotronSuperServingPolicyTests {
         let wide = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [chunk: "4096"], physicalBytes: Self.machine)
         #expect(narrowChunk == 9 << 30 && wide == 5 << 30)
-        for invalid in ["0", "-1", "abc", "16385"] {
+        for invalid in ["0", "-1", "abc", "262145"] {
             #expect(Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [chunk: invalid], physicalBytes: Self.machine) == 0, "\(invalid)")
         }

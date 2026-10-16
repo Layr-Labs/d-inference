@@ -26,7 +26,21 @@ enum NemotronSuperLocalMTP {
     /// bounded assistant charge, on top of the SDK's explicit array quotes.
     static let backendScratchBytes = 256 << 20
 
-    enum Failure: Error, Equatable { case invalidDepth, invalidVerification, loadQuote }
+    enum Failure: Error, Equatable {
+        case invalidDepth, invalidVerification, loadQuote
+        /// The shared budget cannot hold the engine's round work and captured
+        /// windows; nothing was admitted.
+        case roundRefused
+    }
+
+    private static let roundSuffix = "-nemotron-super-mtp-round"
+
+    /// Budget reservation ID of an owner's MTP round work, distinct from
+    /// request, lane, bank and decode-row IDs.
+    static func roundReservationID() -> String { UUID().uuidString + roundSuffix }
+
+    /// True for a reservation ID made by `roundReservationID()`.
+    static func isRoundReservationID(_ id: String) -> Bool { id.hasSuffix(roundSuffix) }
 
     /// Header-derived head payload plus loader construction allowance; not a
     /// measured peak. Charged inside the owner's single pending LOAD claim.

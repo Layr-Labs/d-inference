@@ -51,13 +51,19 @@ enum NemotronSuperLocalBridgeBuilder {
         /// where the bridge reserves it with each request.
         let decodeRowsBytes: Int
         private let decodeRowsID: String?
+        /// Speculating owners: the assistant's round work and the captured
+        /// verify windows, sized once per engine (`ownerBytes` of the engine's
+        /// MTP admission) and reserved in the shared budget like the lane.
+        let mtpRoundBytes: Int
+        private let mtpRoundID: String?
 
         fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
                          speculates: Bool, maximumLocalRequests: Int,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
-                         decodeRowsID: String?, decodeRowsBytes: Int) {
+                         decodeRowsID: String?, decodeRowsBytes: Int,
+                         mtpRoundID: String?, mtpRoundBytes: Int) {
             self.bridge = bridge
             self.modelID = modelID
             self.installed = installed
@@ -68,6 +74,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.prefillLaneID = prefillLaneID; self.prefillLaneBytes = prefillLaneBytes
             self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
             self.decodeRowsID = decodeRowsID; self.decodeRowsBytes = decodeRowsBytes
+            self.mtpRoundID = mtpRoundID; self.mtpRoundBytes = mtpRoundBytes
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -223,6 +230,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     await budget.release(requestID: prefillLaneID)
                     if let prefixBankID { await budget.release(requestID: prefixBankID) }
                     if let decodeRowsID { await budget.release(requestID: decodeRowsID) }
+                    if let mtpRoundID { await budget.release(requestID: mtpRoundID) }
                     lock.withLock {
                         installed?.closeAfterRetirement()
                         installed = nil
@@ -359,13 +367,28 @@ enum NemotronSuperLocalBridgeBuilder {
             }
             rows = (id, rowsBytes)
         }
+        // A speculating engine sizes its round work and captured windows once,
+        // whatever the number of requests; reserve them before any request.
+        let roundBytes = await bridge.superMTPOwnerBytes
+        var round: (id: String, bytes: Int)?
+        if roundBytes > 0 {
+            let id = NemotronSuperLocalMTP.roundReservationID()
+            guard roundBytes < Int.max,
+                await kvBudget.reserveBytes(requestID: id, bytes: UInt64(roundBytes))
+            else {
+                try await retireUnpublished(bridge, budget: kvBudget,
+                    releasing: [laneID] + (rows.map { [$0.id] } ?? []))
+                throw NemotronSuperLocalMTP.Failure.roundRefused
+            }
+            round = (id, roundBytes)
+        }
         // The bank keeps checkpoints between requests, beyond any request's
         // charge: its whole budget is reserved before the first request and
         // held until native retirement, like the lane.
         var bank: (id: String, bytes: Int)?
         if let prefixCache {
             let bytes = await bridge.superPrefixBankBytes
-            let reserved = [laneID] + (rows.map { [$0.id] } ?? [])
+            let reserved = [laneID] + (rows.map { [$0.id] } ?? []) + (round.map { [$0.id] } ?? [])
             guard bytes == prefixCache.maximumBytes else {
                 try await retireUnpublished(bridge, budget: kvBudget, releasing: reserved)
                 throw NemotronSuperLocalPrefixCache.Failure.unavailable
@@ -386,7 +409,8 @@ enum NemotronSuperLocalBridgeBuilder {
                      speculates: mtp != nil, maximumLocalRequests: requests,
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
-                     decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0)
+                     decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,
+                     mtpRoundID: round?.id, mtpRoundBytes: round?.bytes ?? 0)
     }
 
     /// A bridge that never reached an owner: shut it down and, only once the
@@ -401,6 +425,13 @@ enum NemotronSuperLocalBridgeBuilder {
 
 private extension EngineV2Bridge {
     var superLocalEngineRetired: Bool { ownedEngine == nil }
+    /// The engine's once-per-engine MTP bytes; zero without a speculating
+    /// declaration that sizes them. `Int.max` when unresolved.
+    var superMTPOwnerBytes: Int {
+        guard let resolution = (ownedEngine as? EngineV2)?.resolvedMTPAdmission else { return 0 }
+        guard case .bounded(let value) = resolution else { return Int.max }
+        return value.ownerBytes
+    }
     /// The constructed engine's checkpoint bank budget; zero without a bank.
     var superPrefixBankBytes: Int {
         (ownedEngine as? EngineV2)?.hybridPrefixCache?.config.maximumBytes ?? 0

@@ -68,6 +68,7 @@ enum RunnerCheckpointLoad {
             "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": true,
             "speculation": RunnerLoadSettings.speculationJSON(speculation),
             "kv_grant": await RunnerKVGrant.json(bridge: bridge, grantBytes: settings.kvCapacityBytes),
+            "request_charge": await RunnerRequestCharge.json(bridge: bridge),
         ])
         return RunnerServing(bridge: bridge, tokenizer: tokenizer, imageHook: hook, identity: identity,
             retire: {

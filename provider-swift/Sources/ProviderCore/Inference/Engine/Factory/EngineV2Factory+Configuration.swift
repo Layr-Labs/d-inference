@@ -87,6 +87,57 @@ extension EngineV2Factory {
         return config
     }
 
+    /// The single source of GLM step geometry; the paged backend's query bound,
+    /// the engine's step-scratch envelope and the scheduler all derive from it.
+    /// The native engine prices one worst-case step at setup and refuses
+    /// activation when it exceeds the post-load envelope. Each sparse query
+    /// token retains its selected-latent reads (~46 MB across 11 DSA layers)
+    /// until the step fence. With 4 requests the pinned price is 33.6 GB for a
+    /// 512-token step versus 62.9 GB for 1,024 at 8K context (46.3 / 72.3 GB at
+    /// 32K), against about 56.8 GB of admission on a 256 GiB host after load,
+    /// so 1,024 does not fit with two or more concurrent requests. Raise both
+    /// once in-kernel paged reads remove the retained reads and re-pricing
+    /// admits the larger step (measured prefill: 512-token chunks ≈ 1,300
+    /// tok/s, 2,048 ≈ 1,570 tok/s).
+    static let glm5NextMaximumPrefillChunkTokens = 512
+    static let glm5NextMaximumStepTokens = 512
+
+    /// Bounds the GLM scheduler to its explicit context and step limits. Solo
+    /// stripes, including an operator override, are always disabled.
+    static func glm5NextServingScheduler(_ base: CBv2SchedulerConfig, context: Int)
+        -> CBv2SchedulerConfig
+    {
+        var scheduler = base
+        scheduler.prefillChunkSize = min(
+            context, scheduler.prefillChunkSize, glm5NextMaximumPrefillChunkTokens)
+        scheduler.maxBatchedTokensPerStep = min(
+            context, scheduler.maxBatchedTokensPerStep, glm5NextMaximumStepTokens)
+        scheduler.soloPrefillStripeTokens = nil
+        scheduler.soloPrefillStripeMediaCeiling = nil
+        return scheduler
+    }
+
+    /// Names every native reason the protected GLM engine stayed inactive, with
+    /// the step geometry it was priced at, so a refused load (for example a
+    /// step-scratch `capacityExhausted(needed:available:)`) is diagnosable from
+    /// the error and logs. Nil when the engine activated its issued tuple.
+    static func glm5NextActivationRefusal(
+        mtpInactiveReason: String?, pagedAttentionWorkInactiveReason: String?,
+        nativeCompletionFault: String?, scheduler: CBv2SchedulerConfig
+    ) -> String? {
+        let reasons = [
+            mtpInactiveReason.map { "mtp: \($0)" },
+            pagedAttentionWorkInactiveReason.map { "paged attention work: \($0)" },
+            nativeCompletionFault.map { "native completion fault: \($0)" },
+        ].compactMap { $0 }
+        guard !reasons.isEmpty else { return nil }
+        return "GLM protected engine did not activate its issued tuple: "
+            + reasons.joined(separator: "; ")
+            + " [max_concurrent_requests=\(scheduler.maxConcurrentRequests)"
+            + " step_tokens=\(scheduler.maxBatchedTokensPerStep)"
+            + " prefill_chunk_tokens=\(scheduler.prefillChunkSize)]"
+    }
+
     static let qwen4BatchedQSAEnvKey = "DARKBLOOM_QWEN4_BATCHED_QSA"
 
     /// Install the serving policy on the exact target before backend probes

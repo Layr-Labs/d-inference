@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 import MLXVLM
 
 enum GLM5NextExecutionBoundError: Error, Equatable, CustomStringConvertible {
@@ -62,11 +63,33 @@ enum GLM5NextExecutionBound {
 
 /// A real trained assistant and its source root. This is a load/engine owner,
 /// never a request-state map. Only the SDK's admitted factory creates histories.
-final class GLM5NextProtectedModel: Module, LanguageModel {
+final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpointKVTypeProviding {
     let root: GLM5NextModel
     let execution: GLM5NextMTPExecution
     let assistant: GLM5NextMTPAdapter
     let maximumContextLength: Int
+
+    var cbv2CompleteCheckpointKVDTypes: [DType]? { root.textTower.cbv2CompleteCheckpointKVDTypes }
+
+    /// Resolve before fingerprinting the SSD namespace as well as before engine
+    /// assembly. The identity must describe the actual one-proposal policy.
+    func resolvedMTPConfiguration(_ config: CBv2MTPConfig, drafter: (any CBv2MTPDrafter)?) throws
+        -> CBv2MTPConfig
+    {
+        guard (drafter as? GLM5NextMTPAdapter) === assistant,
+            config.effectiveEnabled, config.verificationMode == .serialTarget
+        else {
+            throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
+        }
+        var config = config
+        config.maxDraftTokens = min(1, config.maxDraftTokens)
+        // The baseline native GLM model has no adaptive top-two policy
+        // capability. Use its genuine single-proposal serial profile rather
+        // than passing nil into the recurrent adaptive-driver eligibility gate.
+        config.fixedDraftTokens = min(1, config.fixedDraftTokens ?? 1)
+        config.maxSpeculativeBatch = 1
+        return config
+    }
 
     init(root: GLM5NextModel, maximumContextLength: Int) throws {
         guard let predictor = root.mtp else {
@@ -93,19 +116,17 @@ final class GLM5NextProtectedModel: Module, LanguageModel {
     func newCache(parameters: GenerateParameters?) -> [any KVCache] {
         root.newCache(parameters: parameters)
     }
+    /// The non-throwing LanguageModel step entry points have no provider caller:
+    /// serving runs only through the issued native steppable, whose admission
+    /// enforces the bound. They never touch the MTP execution sized to that
+    /// bound, so they delegate unchanged instead of adding a process abort.
     func callAsFunction(_ inputs: MLXArray, cache: [any KVCache]?) -> MLXArray {
-        precondition(
-            (try? requireInput(inputs, cache: cache ?? [])) != nil,
-            "GLM protected forward exceeds its enforced context")
-        return root(inputs, cache: cache)
+        root(inputs, cache: cache)
     }
     func callAsFunction(_ input: LMInput.Text, cache: [any KVCache]?, state: LMOutput.State?)
         -> LMOutput
     {
-        precondition(
-            (try? requireInput(input.tokens, cache: cache ?? [])) != nil,
-            "GLM protected forward exceeds its enforced context")
-        return root(input, cache: cache, state: state)
+        root(input, cache: cache, state: state)
     }
 
     private func requireInput(_ tokens: MLXArray, cache: [any KVCache]) throws {
@@ -131,8 +152,9 @@ final class GLM5NextProtectedResources {
 
     init(
         model: GLM5NextProtectedModel, config: PagedKVPoolConfig,
-        budget: GlobalKVCacheBudget
+        budget: GlobalKVCacheBudget, completePrefixCache: (any CBv2CompletePrefixCache)? = nil
     ) throws {
+        let store = try Self.checkedStore(completePrefixCache, budget: budget)
         try GLM5NextExecutionBound.validateBackend(config, prepared: model.maximumContextLength)
         guard model.execution.maximumInputs == model.maximumContextLength else {
             throw GLM5NextExecutionBoundError.backendMismatch(
@@ -148,12 +170,51 @@ final class GLM5NextProtectedResources {
         do {
             resources = try model.execution.makeNativeResources(
                 assistant: model.assistant,
-                config: config, processMemoryOwner: processOwner, construction: scope)
+                config: config, processMemoryOwner: processOwner, construction: scope,
+                completePrefixCache: store, mediaOwner: model.root)
         } catch {
             // The scope itself retains every native root on failed completion.
             if scope.snapshot.isRetainedFault { GLM5NextRetainedConstruction.keep(scope) }
             throw error
         }
+    }
+
+    /// A profile name never authorizes a substitute store, including one with
+    /// identical durable identity. The SDK tuple owns this exact object.
+    func validateBinding(completePrefixCache: (any CBv2CompletePrefixCache)?) throws {
+        let store = try Self.checkedStore(completePrefixCache, budget: budget)
+        let profile =
+            store == nil
+            ? "glm5_next_native_paged_serial_mtp_v1"
+            : "glm5_next_native_paged_full_state_serial_mtp_v1"
+        guard resources.completePrefixCache === store,
+            resources.processMemoryOwner === processOwner,
+            resources.contract.profile == profile,
+            resources.contract.supportsNativeCompletePrefix == (store != nil)
+        else {
+            throw EngineV2ProductionError.pagedUnavailable(
+                "GLM protected prefix tuple changed: exact_store=\(resources.completePrefixCache === store), "
+                    + "exact_process_owner=\(resources.processMemoryOwner === processOwner), "
+                    + "issued_profile=\(resources.contract.profile), expected_profile=\(profile)")
+        }
+    }
+
+    private static func checkedStore(
+        _ cache: (any CBv2CompletePrefixCache)?, budget: GlobalKVCacheBudget
+    ) throws -> SSDHybridCheckpointStore? {
+        guard let cache else { return nil }
+        guard let store = cache as? SSDHybridCheckpointStore,
+            store.kvBudget === budget, !store.isClosed,
+            [
+                store.identity.modelAggregateHash, store.identity.promptContractID,
+                store.identity.buildID, store.identity.numericsFingerprint,
+            ].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
+            store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+        else {
+            throw EngineV2ProductionError.pagedUnavailable(
+                "GLM requires its budget-bound encrypted full-state store")
+        }
+        return store
     }
 }
 

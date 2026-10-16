@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -37,7 +37,11 @@ Provider ownership regressions are in `GLM5NextManagedKernelTests`. In a fresh,
 isolated test process, set `DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC=1` and select
 that suite to exercise actual bridge MTP submission, checked partial-load
 cleanup, expert-source retirement, and the resolved-tokenizer preallocation
-probe. These use tiny local fixtures, not the full downloaded model.
+probe. These use tiny local fixtures, not the full downloaded model. With the
+same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
+opt-in refuses target-only GLM before any load state exists. The pure
+`GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
+the KV rate derived from the pinned architecture evidence.
 
 The retained-fault tests deliberately poison their process and must run **one
 selector per fresh process**, never as flags on the full suite:
@@ -45,12 +49,14 @@ selector per fresh process**, never as flags on the full suite:
 | Selector | Required flag | Evidence |
 |---|---|---|
 | `failedCleanupFenceRetainsPartialNativeRootsAndPermit` | `DARKBLOOM_TEST_GLM5_RETAINED_FAULT=1` | Partial tensor roots and the real pending permit survive failed cleanup |
-| `glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor` | `DARKBLOOM_TEST_GLM5_RETAINED_RESLICE=1` | Inner load failure neither drops the newcomer nor regrows survivors |
+| `glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor` | `DARKBLOOM_TEST_GLM5_RETAINED_RESLICE=1` | Inner load failure keeps the newcomer and charges it, so survivors cannot regrow into it |
+| `unprovenPostBuildUnwindKeepsLeaseOwnershipAndCharge` | `DARKBLOOM_TEST_GLM5_RETAINED_FAULT=1` | A refused post-build unwind keeps the pending lease, loading marker, ownership and activity; fleet budgets exclude the charge; other families still build |
 | `ordinaryFactoryRunsTextHTTPImageAndProtectedEmbeddedMTP` | `DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC=1`, `DARKBLOOM_TEST_GLM5_RETAINED_SHUTDOWN=1` | A refused bridge retirement retains its actual native owner |
 
 The last flag is omitted for the ordinary successful bridge/retirement test.
 No test manufactures a positive native completion receipt. See
-`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextManagedLoadTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextManagedLoadTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextLocalLoadPolicyTests.swift`
 and `provider-swift/Tests/ProviderCoreTests/Inference/Engine/EngineV2ProductionWiringTests.swift`.
 
 After building the SDK test product and staging its source-matched Metal
@@ -75,7 +81,11 @@ The continuation suites (`GLM5NextTextModelTests`, `GLM5NextMTPTests`,
 They are not full-checkpoint or provider acceptance tests. Keep their receipts
 separate from the earlier prerequisite suites; a previous passing binary does
 not validate newly added source. The provider's `GLM5NextPromptPolicyTests`
-exercises request translation against pinned official-template goldens.
+renders the shipped `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` template with the
+unpatched pinned Swift-Jinja. It must match every official-template golden byte
+for byte, including list-shaped tool results that reach each rewritten `[0]`
+access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
+only the shipped template is recognized and passes the load-time render check.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`
@@ -93,9 +103,8 @@ The optional bundle contains `config.json`, `model.safetensors.index.json`,
 `metadata.json`, `header-audit.json` and `headers/*.safetensors.json` at the
 recorded raw revision. Header hashes are checked; no tensor payload is read.
 Without the variable, that full-header test is explicitly disabled; the compact
-projection and tiny-fixture tests remain enabled. Neither proves external
-tokenizer-composition compatibility, managed serving integration or a hardware
-tier. See the [raw quotation contract](../reference/model-registry-format.md#raw-glm-discovery-quotation).
+projection and tiny-fixture tests remain enabled. Neither proves managed
+serving integration or a hardware tier. See the [raw quotation contract](../reference/model-registry-format.md#raw-glm-discovery-quotation).
 
 `scripts/prepare-glm53-fixtures.py` prepares synthetic numerical oracles using
 the pinned official Transformers CPU implementation, never real BF16 weights.
@@ -121,6 +130,24 @@ use `.disabled` only when the reference supplies already-selected frames.
 Both modes retain frame, token and byte limits. This is not a provider request
 option or a serving-capability declaration
 (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/GLM5NextProcessor.swift`).
+
+Real-checkpoint image correctness is a separate, explicit lane
+(`libs/mlx-swift-lm/Tests/MLXLMTests/Kernel/LLM/GLM5NextRealVisionTests.swift`).
+It generates shapes, counting, rendered-text, bar-chart, two-image and
+8000-token images in process and checks the greedy answers through the direct
+multimodal forward and the paged CBv2 engine with the `.serving` policy, next to
+a concurrent text request:
+
+```bash
+GLM53_REAL_VISION=1 GLM53_REAL_MODEL_DIR=/path/to/artifact \
+GLM53_REAL_PROFILE_DIR=/path/with/identity.json \
+  ../../scripts/run-nested-suite.sh 'GLM5NextRealVisionTests' --no-parallel
+```
+
+`GLM53_VISION_REFERENCE_DIR` adds the official Transformers processor/tower
+comparison for the same artifact's vision weights; `GLM53_REAL_STORAGE=q4`
+selects the affine layout, `GLM53_REAL_VISION_TOKENS` the answer budget and
+`GLM53_REAL_VISION_LARGE=0` skips the 8000-token image.
 
 The SDK's reference-math policy disables TF32 on M5 for float32 comparisons
 (`libs/mlx-swift-lm/CONTRIBUTING.md`). This test precision setting is not proof

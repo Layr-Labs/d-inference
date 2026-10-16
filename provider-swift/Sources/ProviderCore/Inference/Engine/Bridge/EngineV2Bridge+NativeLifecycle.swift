@@ -50,6 +50,9 @@ extension EngineV2Bridge {
     func canSubmitWithNativeOwner() -> Bool {
         guard !nativeShutdownClosed else { return false }
         do {
+            if isGLM5NextManaged {
+                try GLM5NextLoadFaultState.requireHealthy()
+            }
             if let owner = glm5NextNativeOwner {
                 try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
                 guard nativeTransaction == nil, nativeTransactionID == nil,
@@ -70,6 +73,13 @@ extension EngineV2Bridge {
     }
 
     var hasGLM5NextNativeOwner: Bool { glm5NextNativeOwner != nil }
+
+    /// The one GLM predicate for the process fault fence: an owned native
+    /// bridge, or any bridge serving the locally qualified GLM identity
+    /// (which can then never fall back to ownerless admission or growth).
+    nonisolated var isGLM5NextManaged: Bool {
+        glm5NextNativeOwner != nil || modelId == GLM5NextLocalQualification.modelID
+    }
 
     #if DEBUG
     func installGLM5NextRetirementRefusalForTesting(_ refusal: @escaping @Sendable () throws -> Void) throws {

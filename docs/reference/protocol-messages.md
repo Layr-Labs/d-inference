@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -297,7 +297,7 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Qwen4 SSD-offload allowance or exact `mimo_v2` supplement above raw stored bytes: at least 1 GiB. Exact `glm5_next` instead adds native-copy/tokenizer bytes **after** disk × 1.2, at least 321 MiB, with no SSD subtraction; see [raw GLM quotation](model-registry-format.md#raw-glm-discovery-quotation). Checked addition and source/catalog floors apply; invalid/missing declarations retain platform legacy pricing. OS, activation and request-KV reserves are unchanged |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Qwen4 SSD-offload allowance or exact `mimo_v2` supplement above raw stored bytes: at least 1 GiB. Exact `glm5_next` likewise adds its supplement to raw source bytes (no disk × 1.2): native copies, tokenizer allowance and a `ceil(disk / 32)` residual, at least 1 GiB + 321 MiB, with no SSD subtraction; see [raw GLM quotation](model-registry-format.md#raw-glm-discovery-quotation). Checked addition and source/catalog floors apply; invalid/missing declarations retain platform legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go)
@@ -1108,16 +1108,19 @@ candidate remains unregistered and does not establish deployed platform support.
 
 | Request-body control | Native text contract | Provider source |
 |---|---|---|
-| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `low`, `high`, `max`; nested, top-level, then template precedence; default `max`. Invalid shadowed values also reject. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`) |
+| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and invalid shadowed values reject; the template has no thinking-off level. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`) |
 | `clear_thinking`, `chat_template_kwargs.clear_thinking` | Boolean only; top-level precedes template value; default `false`. This clears historical reasoning, not newly generated reasoning. | Same source and symbols |
 | Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. | Same source (`normalizedTextInput`, `validateHistory`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
-| Unqualified modes | Reject binary thinking controls, forced tool calls, strict tool decoding, JSON output modes and media on this text path. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` |
+| Unqualified modes | Reject binary thinking controls, forced tool calls, strict tool decoding, JSON output modes and media. GLM image input uses the native causal media path when the slot's engine accepts prepared causal media; otherwise, and for any video, local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 
 `LocalResponseRequest` retains request-local raw controls for the same later
 loaded-model check; capture alone grants no capability
 (`provider-swift/Sources/ProviderCore/Server/LocalResponseRequest.swift`). The
-official-template fixtures under `fixtures/prompt-contract/glm53-flash/` do not
-repair the differing raw Q4 artifact template or prove full HTTP/sidecar parity.
+fixtures under `fixtures/prompt-contract/glm53-flash/` keep the official template
+as the golden authority and separately identify the `EigenLabs` artifact template
+recognized by `GLM5NextPromptPolicy.templateSHA256`; a LOAD with any other
+template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not repair the
+differing raw Vontra Q4 template or prove full HTTP/sidecar parity.
 See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`

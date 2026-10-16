@@ -2,27 +2,26 @@ import Foundation
 import MLXLLM
 import ProviderCoreFoundation
 
-/// Keep the ordinary disk × 1.2 LOAD basis and ADD the native construction
-/// scratch, rather than substituting measured residency or lowering headroom.
+/// Exact source bytes plus explicit native construction scratch, tokenizer and
+/// the measured residual allowance (`GLM5NextDiscoveryLoadFootprint
+/// .residualAllowanceBytes`). Must equal the discovery estimate for the same
+/// snapshot; activation and minimum-KV headroom are still added by the gate.
 struct GLM5NextLoadQuotation: Sendable {
-    let genericWeightAllowanceBytes: UInt64
+    let sourceBytes: UInt64
     let nativeTransientBytes: UInt64
     let tokenizerAllowanceBytes: UInt64
+    let residualAllowanceBytes: UInt64
     let requiredWeightBytes: UInt64
     let textBytes: UInt64
     let visionBytes: UInt64
     let mtpBytes: UInt64
     var estimatedWeightsGb: Double { Double(requiredWeightBytes) / 1_073_741_824 }
 
-    init(
-        manifest: ModelManifest, inventory: GLM5NextWeightInventory,
-        tokenizerManifest: ModelManifest
-    ) throws {
+    init(manifest: ModelManifest, inventory: GLM5NextWeightInventory) throws {
         guard manifest.totalSizeBytes > 0 else { throw GLM5NextManagedLoadError.invalidManifest }
-        let disk = UInt64(manifest.totalSizeBytes)
-        // ceil(6 * disk / 5), calculated without floating-point under-rounding.
-        genericWeightAllowanceBytes = try Self.add(
-            disk, try Self.add(disk / 5, disk % 5 == 0 ? 0 : 1))
+        sourceBytes = UInt64(manifest.totalSizeBytes)
+        residualAllowanceBytes = GLM5NextDiscoveryLoadFootprint.residualAllowanceBytes(
+            sourceBytes: sourceBytes)
         textBytes = UInt64(inventory.bytes(in: .text))
         visionBytes = UInt64(inventory.bytes(in: .vision))
         mtpBytes = UInt64(inventory.bytes(in: .mtp))
@@ -41,7 +40,7 @@ struct GLM5NextLoadQuotation: Sendable {
         scratch = try Self.add(scratch, banks.values.max() ?? 0)
         scratch = try Self.add(scratch, try Self.add(visionBytes, visionBytes))
         nativeTransientBytes = try Self.add(scratch, (256 << 20) + (1 << 20))
-        let tokenizerBytes = try tokenizerManifest.files.filter {
+        let tokenizerBytes = try manifest.files.filter {
             !$0.path.hasSuffix(".safetensors")
         }
         .reduce(UInt64(0)) { try Self.add($0, UInt64($1.sizeBytes)) }
@@ -49,7 +48,7 @@ struct GLM5NextLoadQuotation: Sendable {
         guard !expanded.overflow else { throw GLM5NextManagedLoadError.admission }
         tokenizerAllowanceBytes = max(64 << 20, expanded.partialValue)
         requiredWeightBytes = try Self.add(
-            genericWeightAllowanceBytes,
+            try Self.add(sourceBytes, residualAllowanceBytes),
             try Self.add(nativeTransientBytes, tokenizerAllowanceBytes))
     }
 

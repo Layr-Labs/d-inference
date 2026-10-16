@@ -85,6 +85,9 @@ extension EngineV2Factory {
     /// The engine and resolved backend metadata used for admission and telemetry.
     public struct ProductionBuild {
         var glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil
+        /// The protected model's enforced context. The bridge advertises it so
+        /// over-length requests fail before native admission.
+        var glm5NextMaximumContextTokens: Int? = nil
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
@@ -234,28 +237,32 @@ extension EngineV2Factory {
                 throw EngineV2ProductionError.noKVHeadroom
             }
         }
-        let (backend, caches) = try preparedBackend.consume(
-            model: model,
-            maxConcurrentRequests: maxConcurrentRequests)
-        let glmNative = preparedBackend.glm5NextNative
         var mtpConfig = mtpConfig
-        if let glmNative {
-            guard glmNative.budget === kvBudget,
-                (mtpDrafter as? GLM5NextMTPAdapter) === glmNative.resources.assistant,
-                mtpConfig.effectiveEnabled, mtpConfig.verificationMode == .serialTarget,
-                prefixCache == nil, completePrefixCache == nil,
-                preparedBackend.hybridPrefixCache == nil else {
+        if let protected = model as? GLM5NextProtectedModel {
+            guard preparedBackend.glm5NextModel === protected,
+                prefixCache == nil, !preparedBackend.residentPrefixCacheEnabled,
+                preparedBackend.hybridPrefixCache == nil, checkpointQuantization == nil else {
                 throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
             }
-            mtpConfig.maxDraftTokens = min(1, mtpConfig.maxDraftTokens)
-            mtpConfig.fixedDraftTokens = mtpConfig.fixedDraftTokens.map { min(1, $0) }
-            mtpConfig.maxSpeculativeBatch = 1
+            mtpConfig = try protected.resolvedMTPConfiguration(mtpConfig, drafter: mtpDrafter)
+            // Also refuse a different store on a previously issued preparation,
+            // before its one-shot consumption check can obscure the mismatch.
+            try preparedBackend.glm5NextNative?.validateBinding(completePrefixCache: completePrefixCache)
         }
+        let (backend, caches) = try preparedBackend.consume(
+            model: model, maxConcurrentRequests: maxConcurrentRequests,
+            completePrefixCache: completePrefixCache, kvBudget: kvBudget)
+        let glmNative = preparedBackend.glm5NextNative
+        try glmNative?.validateBinding(completePrefixCache: completePrefixCache)
+        let modelCapabilities = glmNative?.resources.model.cbv2Capabilities ?? preparedBackend.modelCapabilities
+        let boundCompletePrefixCache: (any CBv2CompletePrefixCache)?
+        if let glmNative { boundCompletePrefixCache = glmNative.resources.completePrefixCache }
+        else { boundCompletePrefixCache = completePrefixCache }
         if let violation = EngineV2.backendCapabilityViolation(
-            capabilities: preparedBackend.modelCapabilities, backend: backend) {
+            capabilities: modelCapabilities, backend: backend) {
             throw EngineV2ProductionError.pagedUnavailable(violation)
         }
-        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
+        let effectivePrefixCache = modelCapabilities.supportsPrefixReuse
             ? prefixCache : nil
         var schedulerConfig = preparedBackend.schedulerConfig
         schedulerConfig.enablePrefixCache =
@@ -269,7 +276,7 @@ extension EngineV2Factory {
             benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
                 model: model, backend: preparedBackend.kind, store: completePrefixCache,
                 constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
-        let processOwner: EngineProcessMemoryOwner?
+        let processOwner: (any CBv2ProcessMemoryOwner)?
         if let glmNative {
             guard glmNative.resources.backend === backend,
                 glmNative.resources.backend.pool.bytesMaterialized == 0,
@@ -277,7 +284,7 @@ extension EngineV2Factory {
                 !glmNative.scope.snapshot.isRetainedFault else {
                 throw EngineV2ProductionError.pagedUnavailable("GLM protected backend was consumed before engine admission")
             }
-            processOwner = glmNative.processOwner
+            processOwner = glmNative.resources.processMemoryOwner
         } else if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required
             // reserve-before-allocation boundary. Contiguous keeps its existing
@@ -300,20 +307,21 @@ extension EngineV2Factory {
             admissionConfig.layerElementBytes = preparedBackend.nativeLayerDTypes.map(\.size)
         }
         let steppable: any CBv2SteppableModel
-        if let glmNative {
-            steppable = glmNative.resources.model
-        } else if let glm = glm5NextTarget(model: model) {
-            steppable = GLM5NextSteppableModel(target: glm, root: model as? GLM5NextModel)
-        } else {
-            steppable = CBv2SteppableLanguageModelAdapter(model)
-        }
         let cacheProvider: any CBv2LayerCacheProvider
         if let glmNative {
+            steppable = glmNative.resources.model
             cacheProvider = glmNative.resources.cacheProvider
-        } else if let target = glm5NextTarget(model: model), let paged = backend as? PagedKVBackend {
-            cacheProvider = try GLM5NextCausalCacheBank(target: target, root: model as? GLM5NextModel,
-                backend: paged, caches: caches)
+        } else if let target = glm5NextTarget(model: model) {
+            let root = model as? GLM5NextModel
+            steppable = GLM5NextSteppableModel(target: target, root: root)
+            if let paged = backend as? PagedKVBackend {
+                cacheProvider = try GLM5NextCausalCacheBank(target: target, root: root,
+                    backend: paged, caches: caches)
+            } else {
+                cacheProvider = CBv2LayerCacheBank(caches: caches)
+            }
         } else {
+            steppable = CBv2SteppableLanguageModelAdapter(model)
             cacheProvider = CBv2LayerCacheBank(caches: caches)
         }
         let engine = EngineV2(
@@ -329,7 +337,7 @@ extension EngineV2Factory {
             admissionConfig: admissionConfig,
             prefixCache: effectivePrefixCache,
             hybridPrefixCache: preparedBackend.hybridPrefixCache,
-            completePrefixCache: completePrefixCache,
+            completePrefixCache: boundCompletePrefixCache,
             checkpointQuantization: checkpointQuantization,
             completeCheckpointKVDTypes: preparedBackend.nativeLayerDTypes,
             mtpDrafter: mtpDrafter,
@@ -348,6 +356,18 @@ extension EngineV2Factory {
             if let glmOwner { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: reason) }
             throw reason
         }
+        if let glmNative, let glmOwner {
+            do {
+                try glmNative.validateBinding(completePrefixCache: engine.completePrefixCache)
+                if let refusal = glm5NextActivationRefusal(
+                    mtpInactiveReason: engine.mtpInactiveReason,
+                    pagedAttentionWorkInactiveReason: engine.pagedAttentionWorkInactiveReason,
+                    nativeCompletionFault: engine.nativeCompletionFault?.reason.rawValue,
+                    scheduler: preparedBackend.schedulerConfig) {
+                    throw EngineV2ProductionError.pagedUnavailable(refusal)
+                }
+            } catch { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: error) }
+        }
         var build = ProductionBuild(
             engine: engine,
             fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
@@ -365,6 +385,9 @@ extension EngineV2Factory {
                 } ?? preparedBackend.kvQuantization,
             admissionWatermarkFraction: admissionConfig.watermarkFraction)
         build.glm5NextNativeOwner = glmOwner
+        if glmOwner != nil {
+            build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength
+        }
         return build
     }
 }

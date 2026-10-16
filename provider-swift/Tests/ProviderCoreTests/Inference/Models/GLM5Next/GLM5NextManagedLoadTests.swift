@@ -13,16 +13,26 @@ import Testing
 
 /// Self-contained local artifact. The synthetic template is deliberately NOT
 /// the official template, and no production path or downloaded model is used.
-private final class GLM5NextManagedFixture {
+/// `modelID`/`directory` let isolated host tests place the synthetic bytes
+/// under the locally qualified identity in a private HF-style cache.
+final class GLM5NextManagedFixture {
     let directory: URL
     let manifest: ModelManifest
     let catalog: CatalogModel
     let configuration: GLM5NextConfiguration
 
-    init() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    /// The reviewed template the provider recognizes (`GLM5NextPromptPolicy.templateSHA256`).
+    static func shippedTemplate() throws -> String {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<7 { root.deleteLastPathComponent() }
+        return try String(contentsOf: root.appendingPathComponent(
+            "fixtures/prompt-contract/glm53-flash/eigenlabs-chat_template.jinja"), encoding: .utf8)
+    }
+
+    init(modelID: String? = nil, directory: URL? = nil, chatTemplate: String? = nil) throws {
+        let root = directory ?? FileManager.default.temporaryDirectory.appendingPathComponent(
             "glm5-managed-\(UUID())")
-        directory = root
+        self.directory = root
         let text: [String: Any] = [
             "model_type": "glm5_next_text", "vocab_size": 154900, "hidden_size": 64,
             "intermediate_size": 64, "moe_intermediate_size": 64,
@@ -108,7 +118,7 @@ private final class GLM5NextManagedFixture {
             "<|image|>": 154854, "<|video|>": 154855, "<|begin_of_image|>": 154830,
             "<|end_of_image|>": 154831, "<|begin_of_video|>": 154832, "<|end_of_video|>": 154833,
         ]
-        let added: [[String: Any]] = vocabulary.filter { $0.key != "x" }.map { token, id in
+        let added: [[String: Any]] = vocabulary.sorted { $0.key < $1.key }.filter { $0.key != "x" }.map { token, id in
             [
                 "id": id, "content": token, "single_word": false, "lstrip": false,
                 "rstrip": false, "normalized": false, "special": true,
@@ -123,7 +133,7 @@ private final class GLM5NextManagedFixture {
                 "byte_fallback": false, "fuse_unk": false,
             ],
         ]
-        let template = """
+        let template = chatTemplate ?? """
             {% for message in messages %}{% if message['content'] is string %}{{ message['content'] }}{% else %}{% for part in message['content'] %}{% if part['type'] == 'image' %}<|begin_of_image|><|image|><|end_of_image|>{% elif part['type'] == 'video' %}<|begin_of_video|><|video|><|end_of_video|>{% else %}{{ part['text'] }}{% endif %}{% endfor %}{% endif %}{% endfor %}x
             """
         let processorMedia: [String: Any] = [
@@ -164,7 +174,7 @@ private final class GLM5NextManagedFixture {
             combined.update(data: Data(SHA256.hash(data: files[name]!)))
         }
         let aggregate = combined.finalize().map { String(format: "%02x", $0) }.joined()
-        let id = "synthetic/glm5-\(UUID())"
+        let id = modelID ?? "synthetic/glm5-\(UUID())"
         manifest = .init(
             schemaVersion: 1, modelID: id, version: "synthetic-v1", r2Prefix: "synthetic/v1",
             aggregateSHA256: aggregate, totalSizeBytes: entries.reduce(0) { $0 + $1.sizeBytes },
@@ -173,9 +183,11 @@ private final class GLM5NextManagedFixture {
             id: id, s3Name: "synthetic", displayName: "synthetic", sizeGb: 1,
             version: manifest.version, r2Prefix: manifest.r2Prefix,
             huggingFaceArtifact: .init(
-                repoID: "synthetic/glm5", revision: String(repeating: "a", count: 40)),
-            aggregateSHA256: aggregate)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+                repoID: modelID ?? "synthetic/glm5", revision: String(repeating: "a", count: 40)),
+            aggregateSHA256: aggregate, totalSizeBytes: manifest.totalSizeBytes,
+            fileCount: manifest.fileCount)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: directory != nil)
         for (name, bytes) in files { try bytes.write(to: root.appendingPathComponent(name)) }
     }
     deinit {
@@ -285,7 +297,9 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         let longBytes = longer.cacheBuffers.reduce(0) { $0 + $1.logicalBytes * $1.allocationCount }
         #expect(longBytes > shortBytes)
     }
-    @Test func outerLoadAllowanceNeverReplacesGenericHeadroomOrAutoEnablesMTP() throws {
+    /// GLM serves only with its embedded MTP, so `.auto` now enables it (no
+    /// operator knob); the load allowance still never replaces generic headroom.
+    @Test func outerLoadAllowanceNeverReplacesGenericHeadroomAndAutoEnablesGLMMTP() throws {
         let fixture = try GLM5NextManagedFixture()
         let plan = try fixture.plan()
         let larger = plan.quotation.estimatedWeightsGb + 10
@@ -295,7 +309,7 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
                 >= plan.quotation.requiredWeightBytes)
         #expect(
             try GLM5NextLoadFunnel.preparation(plan: plan, mode: .auto, externalPath: nil).status
-                .configured == false)
+                .configured)
         #expect(
             try GLM5NextLoadFunnel.preparation(plan: plan, mode: .on, externalPath: nil).artifact
                 == nil)
@@ -306,7 +320,8 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
     }
 
     @Test func offlineManifestMappingRequiresAnIndependentExpectedIdentity() throws {
-        let fixture = try GLM5NextManagedFixture()
+        // The qualification entry accepts only the locally qualified identity.
+        let fixture = try GLM5NextManagedFixture(modelID: GLM5NextLocalQualification.modelID)
         let url = fixture.directory.appendingPathComponent("qualification-manifest.json")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -337,26 +352,19 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         #expect(estimate.sourceBytes == UInt64(fixture.manifest.totalSizeBytes))
         #expect(estimate.nativeTransientBytes == plan.quotation.nativeTransientBytes)
         #expect(estimate.tokenizerAllowanceBytes == plan.quotation.tokenizerAllowanceBytes)
+        #expect(estimate.residualAllowanceBytes == plan.quotation.residualAllowanceBytes)
         #expect(estimate.totalBytes == plan.quotation.requiredWeightBytes)
         #expect(info.estimatedMemoryGb == plan.quotation.estimatedWeightsGb)
         #expect(info.nativeLoadTransientBytes == estimate.supplementBytes)
         #expect(info.ssdOffloadedWeightBytes == nil)
-        #expect(
-            ModelScanner.glm5NextLoadQuotationIsCurrent(
-                info, directory: fixture.directory, tokenizerDirectory: fixture.directory))
-        let separateTokenizer = fixture.directory.appendingPathComponent("different-tokenizer")
-        #expect(
-            ModelScanner.parseModelInfo(
-                snapshotDir: fixture.directory,
-                modelName: info.id, tokenizerDirectory: separateTokenizer) == nil)
-        #expect(
-            !ModelScanner.glm5NextLoadQuotationIsCurrent(
-                info, directory: fixture.directory, tokenizerDirectory: separateTokenizer))
+        // The shared pre-allocation recheck must not read GLM's declaration
+        // as a stale Qwen4 SSD-offload allowance.
+        #expect(Qwen4ExpLoadFootprint.isCurrent(info, directory: fixture.directory))
+        #expect(ModelScanner.glm5NextLoadQuotationIsCurrent(info, directory: fixture.directory))
         var underquote = info
         underquote.nativeLoadTransientBytes = estimate.supplementBytes - 1
         #expect(
-            !ModelScanner.glm5NextLoadQuotationIsCurrent(
-                underquote, directory: fixture.directory, tokenizerDirectory: fixture.directory))
+            !ModelScanner.glm5NextLoadQuotationIsCurrent(underquote, directory: fixture.directory))
         let wire =
             try JSONSerialization.jsonObject(with: JSONEncoder().encode(info)) as! [String: Any]
         #expect((wire["native_load_transient_bytes"] as? UInt64) == estimate.supplementBytes)
@@ -365,8 +373,7 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         try Data(repeating: 0, count: 16 << 20).write(
             to: fixture.directory.appendingPathComponent("tokenizer.json"))
         #expect(
-            !ModelScanner.glm5NextLoadQuotationIsCurrent(
-                info, directory: fixture.directory, tokenizerDirectory: fixture.directory))
+            !ModelScanner.glm5NextLoadQuotationIsCurrent(info, directory: fixture.directory))
     }
 
     @Test func frameBudgetPricesGLMQueryTilesAndRejectsOversizedBuffers() throws {
@@ -409,10 +416,32 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         #expect(
             plan.quotation.textBytes > 0 && plan.quotation.visionBytes > 0
                 && plan.quotation.mtpBytes > 0)
-        #expect(plan.quotation.requiredWeightBytes > plan.quotation.genericWeightAllowanceBytes)
-        #expect(plan.rawTemplateSHA256 == plan.selectedTemplateSHA256)
-        #expect(!plan.expectsOfficialReferenceTemplate && !plan.usesSeparateTokenizer)
+        let quote = plan.quotation
+        #expect(quote.sourceBytes == UInt64(fixture.manifest.totalSizeBytes))
+        #expect(quote.residualAllowanceBytes == 1 << 30)
+        #expect(quote.requiredWeightBytes == quote.sourceBytes + quote.nativeTransientBytes
+            + quote.tokenizerAllowanceBytes + quote.residualAllowanceBytes)
+        #expect(plan.templateSHA256 == fixture.manifest.files.first {
+            $0.path == "chat_template.jinja" }?.sha256)
+        #expect(!plan.usesShippedPromptTemplate)
         #expect(plan.eosTokenIDs == [2, 4])
+    }
+
+    /// The pinned renderer cannot parse the official spelling, so only the
+    /// shipped artifact template is recognized and passes the load-time render check.
+    @Test func onlyTheShippedArtifactTemplateIsRecognizedAndRenders() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<7 { root.deleteLastPathComponent() }
+        let prompts = root.appendingPathComponent("fixtures/prompt-contract/glm53-flash")
+        let fixture = try GLM5NextManagedFixture()
+        let shipped = try fixture.plan(replacingTemplate: String(
+            contentsOf: prompts.appendingPathComponent("eigenlabs-chat_template.jinja"), encoding: .utf8))
+        #expect(shipped.usesShippedPromptTemplate)
+        #expect(TemplateRenderCheck.renderOK(at: fixture.directory) == true)
+        let official = try fixture.plan(replacingTemplate: String(
+            contentsOf: prompts.appendingPathComponent("chat_template.jinja"), encoding: .utf8))
+        #expect(!official.usesShippedPromptTemplate)
+        #expect(TemplateRenderCheck.renderOK(at: fixture.directory) == false)
     }
 
     @Test func inspectionDoesNotReadOrHashWeightPayloads() throws {
@@ -437,7 +466,7 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         let plan = try fixture.plan()
         try Data("changed".utf8).write(
             to: fixture.directory.appendingPathComponent("chat_template.jinja"))
-        #expect(throws: GLM5NextManagedLoadError.self) { try plan.tokenizer.recheck() }
+        #expect(throws: GLM5NextManagedLoadError.self) { try plan.weights.recheck() }
         #expect(throws: GLM5NextManagedLoadError.self) { try fixture.plan() }
     }
 
@@ -490,50 +519,6 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         #expect(await budget.finishPendingLoad(permit))
         await #expect(throws: GLM5NextManagedLoadError.self) {
             try await GLM5NextManagedLoad.adopting(plan: plan, budget: budget, permit: permit)
-        }
-    }
-
-    @Test func explicitReviewedMetadataCompositionBindsBothManifestsWithoutRewrite() throws {
-        let weights = try GLM5NextManagedFixture()
-        let metadata = try GLM5NextManagedFixture()
-        let entries = metadata.manifest.files.filter {
-            $0.path != "weights.safetensors" && $0.path != "model.safetensors.index.json"
-        }
-        try FileManager.default.removeItem(
-            at: metadata.directory.appendingPathComponent("weights.safetensors"))
-        try FileManager.default.removeItem(
-            at: metadata.directory.appendingPathComponent("model.safetensors.index.json"))
-        var hash = SHA256()
-        for file in entries.sorted(by: { $0.path < $1.path }) {
-            let data = try Data(contentsOf: metadata.directory.appendingPathComponent(file.path))
-            hash.update(data: Data(SHA256.hash(data: data)))
-        }
-        let aggregate = hash.finalize().map { String(format: "%02x", $0) }.joined()
-        let manifest = ModelManifest(
-            schemaVersion: 1, modelID: metadata.catalog.id,
-            version: "metadata-v1", r2Prefix: "synthetic/metadata", aggregateSHA256: aggregate,
-            totalSizeBytes: entries.reduce(0) { $0 + $1.sizeBytes }, fileCount: entries.count,
-            files: entries, createdAt: metadata.manifest.createdAt)
-        let catalog = CatalogModel(
-            id: metadata.catalog.id, s3Name: "metadata", displayName: "metadata", sizeGb: 0,
-            version: manifest.version, r2Prefix: manifest.r2Prefix, aggregateSHA256: aggregate)
-        let composition = try GLM5NextTokenizerComposition(
-            directory: metadata.directory, catalog: catalog,
-            manifest: manifest, weightAggregateSHA256: weights.manifest.aggregateSHA256)
-        let plan = try GLM5NextArtifactPlan.inspect(
-            directory: weights.directory, catalog: weights.catalog,
-            manifest: weights.manifest, tokenizerComposition: composition)
-        #expect(plan.usesSeparateTokenizer)
-        #expect(
-            plan.nativeIdentity.files["config.json"]?.sha256
-                == weights.manifest.files.first { $0.path == "config.json" }?.sha256)
-        let wrong = try GLM5NextTokenizerComposition(
-            directory: metadata.directory, catalog: catalog,
-            manifest: manifest, weightAggregateSHA256: String(repeating: "0", count: 64))
-        #expect(throws: GLM5NextManagedLoadError.self) {
-            try GLM5NextArtifactPlan.inspect(
-                directory: weights.directory, catalog: weights.catalog,
-                manifest: weights.manifest, tokenizerComposition: wrong)
         }
     }
 
@@ -720,6 +705,17 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
                 && output.logits.asType(.float32).asArray(Float.self).allSatisfy(\.isFinite)
         }
         #expect(result)
+        // The re-slice weight equals the engine's admitted FP32 row rate for
+        // the actual loaded layer kinds (not a hand-written geometry).
+        let sizing = try await GLM5NextLoadFunnel.sizing(container: container!, defaultMaxTokens: 16)
+        let kinds = try await container!.perform { context in
+            try #require(context.model as? GLM5NextModel).textTower.cbv2LayerKinds
+        }
+        #expect(!kinds.isEmpty && sizing.fp16KVBytesPerToken > 0)
+        #expect(sizing.fp16KVBytesPerToken == EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .paged, pagedPoolDType: "float32",
+            nativeLayerDTypes: Array(repeating: .float32, count: kinds.count),
+            layerKinds: kinds, nominalFP16BytesPerToken: 0, servingModelIsGPTOSS: false))
         await ModelContainerLoading.releaseExternalResources(in: container)
         container = nil
     }
@@ -741,6 +737,8 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
             from: fixture.directory,
             modelID: fixture.catalog.id, nativeGLM5Load: load)
         let container = try #require(serving.autoregressive)
+        // The fixture is not Sendable; closures capture only its immutable ID.
+        let catalogID = fixture.catalog.id
         let textEngine = try await container.perform { context -> EngineV2 in
             let root = try #require(context.model as? GLM5NextModel)
             #expect(try EngineV2Factory.directServingModel(model: root, isVLM: true) === root)
@@ -753,9 +751,17 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
                     kvBytesCapacity: 256 << 20, maxConcurrentRequests: 1, kvBudget: budget,
                     kvBackend: .contiguous, maxContextLength: 64)
             }
+            // Target-only GLM is a benchmark baseline, never a serving engine.
+            #expect(throws: EngineV2ProductionError.self) {
+                try EngineV2Factory.makeProductionBuild(
+                    model: root, modelID: catalogID,
+                    tokenizer: context.tokenizer, kvBytesCapacity: 256 << 20, maxConcurrentRequests: 1,
+                    kvBudget: budget, kvBackend: .paged, maxContextLength: 64)
+            }
             let build = try EngineV2Factory.makeProductionBuild(
-                model: root, modelID: fixture.catalog.id,
+                model: root, modelID: catalogID,
                 tokenizer: context.tokenizer, kvBytesCapacity: 256 << 20, maxConcurrentRequests: 1,
+                constructionPurpose: .benchmark,
                 kvBudget: budget, kvBackend: .paged, maxContextLength: 64)
             #expect(build.kvBackendKind == .paged && build.pagedPoolDType == "float32")
             #expect(build.usesProcessMemoryOwner)
@@ -811,8 +817,11 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         await #expect(throws: (any Error).self) {
             try await EngineV2VisionPrefill.glm5NextUserInput(request: required, controls: .init())
         }
-        let prepared = try await EngineV2VisionPrefill.prepare(
-            container: container, request: request)
+        // The serving entry point dispatches GLM to its native media builder.
+        let prepared = try await EngineV2VisionPrefill.prepare(container: container, request: request)
+        let direct = try await EngineV2VisionPrefill.prepareGLM5NextMedia(
+            container: container, request: request, templateControls: .init())
+        #expect(direct.promptTokens == prepared.promptTokens && direct.spans == prepared.spans)
         #expect(prepared.attention == .causal && prepared.positionState == nil)
         #expect(prepared.spans.count == 1 && prepared.spanKinds == [.image])
         #expect(prepared.embeddings[0].shape == [1, prepared.spans[0].length, 64])
@@ -880,6 +889,12 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
             isVLM: false, container: container, specDecPreparation: mtpPreparation,
             maximumContextLength: 32)
         #expect(mtp.mtpArtifact == nil && mtp.assistantBytes == 0)
+        // GLM never falls back to its ownerless target-only root.
+        if mtp.servingModel is GLM5NextProtectedModel {
+            #expect(throws: GLM5NextManagedLoadError.nativeMTPRequired) {
+                try mtp.fallingBack(.assistantResliceFloor)
+            }
+        }
         try #require(
             CBv2MTPConfig.envEnabled, "bridge regression requires DARKBLOOM_CBV2_MTP enabled")
         let mtpBridge = try await container.perform { context -> EngineV2Bridge in
@@ -903,14 +918,16 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
                     kvBackend: .paged, maxContextLength: 64)
             }
             return try EngineV2Factory.makeBridge(
-                modelId: fixture.catalog.id,
+                modelId: catalogID,
                 tokenizer: TokenizerHandle(context.tokenizer), eosTokenIds: [], defaultMaxTokens: 3,
                 maxConcurrentRequests: 1, kvBytesPerToken: 1, kvBudget: budget
             ) {
                 try EngineV2Factory.makeProductionBuild(
                     model: mtp.servingModel,
-                    modelID: fixture.catalog.id, tokenizer: context.tokenizer,
-                    kvBytesCapacity: 256 << 20, maxConcurrentRequests: 1, kvBudget: budget,
+                    modelID: catalogID, tokenizer: context.tokenizer,
+                    // Logical segmented grant includes the provider's unchanged
+                    // 1 GiB service floor; this does not materialize 2 GiB.
+                    kvBytesCapacity: 2 << 30, maxConcurrentRequests: 1, kvBudget: budget,
                     mtpDrafter: mtp.assistant?.drafter,
                     mtpConfig: .init(
                         enabled: true, maxDraftTokens: 1, maxSpeculativeBatch: 1,
@@ -936,6 +953,8 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
             }
         } catch { oversizedRefused = true }
         #expect(oversizedRefused && oversizedTokens == 0)
+        let faultAfterRefusal = mtpEngine.nativeCompletionFault
+        #expect(faultAfterRefusal == nil)
         let mtpStream = await mtpBridge.submitTokenized(
             promptTokens: [3, 3],
             request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 3),
@@ -946,7 +965,63 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
             if case .info(_, let count, _, _) = event { mtpTokens = count }
             if case .error(let reason) = event { bridgeErrors.append(reason) }
         }
-        #expect(mtpTokens == 3 && bridgeErrors.isEmpty)
+        #expect(mtpTokens == 3 && bridgeErrors.isEmpty, "bridge errors: \(bridgeErrors)")
+        // The artifact's sampling defaults run on the same protected engine.
+        let sampled = await mtpBridge.submitTokenized(
+            promptTokens: [3, 3],
+            request: .init(
+                model: fixture.catalog.id, messages: [], temperature: 1, top_p: 0.95, max_tokens: 3),
+            requestId: "glm-bridge-sampled", cacheEnabled: false)
+        var sampledTokens = 0
+        var sampledErrors: [String] = []
+        for await event in sampled {
+            if case .info(_, let count, _, _) = event { sampledTokens = count }
+            if case .error(let reason) = event { sampledErrors.append(reason) }
+        }
+        #expect(sampledTokens == 3 && sampledErrors.isEmpty, "sampled errors: \(sampledErrors)")
+        // The protected engine's issued contract accepts prepared causal media:
+        // an image row prefills and decodes on the MTP engine, and text keeps
+        // serving afterwards. This fixture bridge admits one request at a time
+        // (`maxConcurrentRequests: 1`), so the rows are submitted in sequence.
+        #expect(await mtpBridge.servesGLM5NextMedia)
+        let protectedImage = try await EngineV2VisionPrefill.prepare(container: container, request: request)
+        let protectedMedia = await mtpBridge.submitTokenized(
+            promptTokens: protectedImage.promptTokens,
+            request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 2),
+            requestId: "glm-bridge-image", cacheEnabled: false,
+            multimodal: protectedImage.multimodalInput(), mediaKind: protectedImage.mediaKind)
+        var mediaTokens = 0
+        var mediaErrors: [String] = []
+        for await event in protectedMedia {
+            if case .info(_, let count, _, _) = event { mediaTokens = count }
+            if case .error(let reason) = event { mediaErrors.append(reason) }
+        }
+        let followingText = await mtpBridge.submitTokenized(
+            promptTokens: [3, 3],
+            request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 3),
+            requestId: "glm-bridge-image-text", cacheEnabled: false)
+        var followingTokens = 0
+        for await event in followingText {
+            if case .info(_, let count, _, _) = event { followingTokens = count }
+            if case .error(let reason) = event { mediaErrors.append(reason) }
+        }
+        #expect(mediaTokens == 2 && followingTokens == 3 && mediaErrors.isEmpty,
+            "protected media errors: \(mediaErrors)")
+        #expect(mtpEngine.nativeCompletionFault == nil)
+        // The enforced bound is advertised: over-length work is a client
+        // rejection before native admission, never a retained engine fault.
+        #expect(mtpBridge.advertisedContextTokens == 32)
+        let overBound = await mtpBridge.submitTokenized(
+            promptTokens: [3, 3],
+            request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 31),
+            requestId: "glm-bridge-over-bound", cacheEnabled: false)
+        var overBoundErrors: [String] = []
+        for await event in overBound {
+            if case .error(let reason) = event { overBoundErrors.append(reason) }
+        }
+        #expect(overBoundErrors == [Qwen4SupportPolicy.contextRejectionMessage])
+        #expect(mtpEngine.nativeCompletionFault == nil)
+        #expect(await mtpBridge.canSubmitWithNativeOwner())
         #if DEBUG
             if ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_RETAINED_SHUTDOWN"] == "1" {
                 try await mtpBridge.installGLM5NextRetirementRefusalForTesting {

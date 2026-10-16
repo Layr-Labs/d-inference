@@ -3,6 +3,7 @@ import Foundation
 import Jinja
 import MLXLMCommon
 import MLXLMServer
+import ProviderCoreFoundation
 import Testing
 
 @testable import ProviderCore
@@ -53,16 +54,44 @@ struct GLM5NextPromptPolicyTests {
             prepared: prepared, request: request, modelType: "glm5_next", templateControls: controls)
     }
 
-    @Test func officialTemplateAndFullPolicyRendersMatchPinnedGoldens() throws {
+    /// Official upstream template: the golden rendering authority, never a
+    /// loadable identity under the pinned Swift-Jinja.
+    private static let officialTemplateSHA256 = "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5"
+
+    /// The shipped template exactly as the serving tokenizer compiles it.
+    private func shippedTemplate() throws -> Template {
+        let source = try Data(contentsOf: fixtures.appendingPathComponent("eigenlabs-chat_template.jinja"))
+        #expect(source.count == 10_954)
+        #expect(sha(source) == GLM5NextPromptPolicy.templateSHA256)
+        let text = String(decoding: source, as: UTF8.self)
+        let served = NemotronTemplateFilters.bindingFilters(
+            in: normalizeSwiftJinjaTemplate(text), modelType: "glm5_next")
+        #expect(served == text)
+        return try Template(served, with: .init(lstripBlocks: true, trimBlocks: true))
+    }
+
+    @Test func shippedTemplateIsTheOfficialSourceWithSubscriptAccessOnly() throws {
+        let official = try String(
+            contentsOf: fixtures.appendingPathComponent("chat_template.jinja"), encoding: .utf8)
+        let shipped = try String(
+            contentsOf: fixtures.appendingPathComponent("eigenlabs-chat_template.jinja"), encoding: .utf8)
+        #expect(official.utf8.count == 10_950)
+        #expect(sha(Data(official.utf8)) == Self.officialTemplateSHA256)
+        #expect(official.components(separatedBy: ".0.").count == 5)
+        #expect(official.replacingOccurrences(of: ".0.", with: "[0].") == shipped)
+        // Why the official identity is not accepted: the pinned renderer
+        // rejects numeric attribute access at parse time.
+        #expect(throws: (any Error).self) {
+            try Template(official, with: .init(lstripBlocks: true, trimBlocks: true))
+        }
+    }
+
+    @Test func shippedTemplateAndFullPolicyRendersMatchOfficialGoldens() throws {
         let corpus = try JSONDecoder().decode(Corpus.self,
             from: Data(contentsOf: fixtures.appendingPathComponent("goldens.json")))
-        let source = try Data(contentsOf: fixtures.appendingPathComponent("chat_template.jinja"))
-        #expect(source.count == 10_950)
-        #expect(sha(source) == GLM5NextPromptPolicy.templateSHA256)
-        #expect(corpus.templateSHA256 == GLM5NextPromptPolicy.templateSHA256)
+        #expect(corpus.templateSHA256 == Self.officialTemplateSHA256)
         #expect(corpus.cases.count == 7)
-        let template = try Template(String(decoding: source, as: UTF8.self),
-            with: .init(lstripBlocks: true, trimBlocks: true))
+        let template = try shippedTemplate()
         for fixture in corpus.cases {
             let body = try JSONEncoder().encode(fixture.request)
             let remoteInput = try normalized(body)
@@ -90,6 +119,36 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
+    /// The goldens hold only string tool results. These list-shaped results
+    /// reach all four rewritten `[0]` accesses; the expected bytes are the
+    /// official template's Jinja2 3.1.6 render of each shape.
+    @Test func shippedTemplateRendersRewrittenToolResultBranchesLikeOfficial() throws {
+        let template = try shippedTemplate()
+        let call: [String: any Sendable] = [
+            "role": "assistant", "content": "",
+            "tool_calls": [[
+                "id": "c1", "type": "function",
+                "function": ["name": "lookup", "arguments": ["q": "x"] as [String: any Sendable]]
+                    as [String: any Sendable],
+            ] as [String: any Sendable]],
+        ]
+        let parts: [[String: any Sendable]] = [["type": "text", "text": "R"]]
+        let results: [String: [String: any Sendable]] = [
+            "text parts": ["role": "tool", "tool_call_id": "c1", "content": parts],
+            "ordered outputs": [
+                "role": "tool", "content": [["tool_call_id": "c1", "output": parts] as [String: any Sendable]],
+            ],
+            "unordered outputs": ["role": "tool", "content": [["output": parts] as [String: any Sendable]]],
+        ]
+        for (name, result) in results {
+            let messages: [[String: any Sendable]] = [["role": "user", "content": "go"], call, result]
+            let rendered = try template.render([
+                "messages": try .init(any: messages), "add_generation_prompt": .boolean(true),
+            ])
+            #expect(rendered == "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>go<|assistant|><think></think><tool_call>lookup<arg_key>q</arg_key><arg_value>x</arg_value></tool_call><|observation|><tool_response>R</tool_response><|assistant|><think>", "\(name)")
+        }
+    }
+
     @Test func exactFamilySelectionDoesNotFollowUserModelNames() {
         for type in ["glm5_next", "glm5_next_text", "glm5_next_mtp"] {
             #expect(GLM5NextPromptPolicy.applies(modelType: type))
@@ -111,7 +170,17 @@ struct GLM5NextPromptPolicyTests {
                 #expect(context["preserve_thinking"] == nil)
             }
         }
-        for effort in ["none", "off", "0", "medium", "xhigh", "LOW", " low", ""] {
+        // OpenAI effort names map to the nearest level the template renders.
+        for (requested, rendered) in [("minimal", "low"), ("medium", "high"), ("xhigh", "max")] {
+            let context = try GLM5NextPromptPolicy.additionalContext(request: request,
+                controls: .init(reasoningEffort: requested))
+            #expect(context["reasoning_effort"] as? String == rendered)
+        }
+        let nested = OpenAIChatCompletionRequest(model: "not-registered", messages: [],
+            reasoning: .init(effort: "medium"))
+        #expect(try GLM5NextPromptPolicy.additionalContext(request: nested, controls: .init())[
+            "reasoning_effort"] as? String == "high")
+        for effort in ["none", "off", "0", "MEDIUM", "LOW", " low", ""] {
             #expect(throws: (any Error).self) {
                 try GLM5NextPromptPolicy.additionalContext(request: request,
                     controls: .init(reasoningEffort: effort))
@@ -127,7 +196,7 @@ struct GLM5NextPromptPolicyTests {
 
     @Test func malformedAndShadowedRawControlsFailClosed() throws {
         let controls: [[String: Any]] = [
-            ["reasoning_effort": NSNull()], ["reasoning_effort": false], ["reasoning_effort": "medium"],
+            ["reasoning_effort": NSNull()], ["reasoning_effort": false], ["reasoning_effort": "none"],
             ["clear_thinking": NSNull()], ["clear_thinking": 0], ["clear_thinking": "false"],
             ["enable_thinking": false], ["preserve_thinking": true],
             ["reasoning": ["enabled": true]], ["reasoning": NSNull()],
@@ -154,6 +223,19 @@ struct GLM5NextPromptPolicyTests {
         let context = try GLM5NextPromptPolicy.additionalContext(request: request, controls: captured)
         #expect(context["reasoning_effort"] as? String == "high")
         #expect(context["clear_thinking"] as? Bool == false)
+    }
+
+    @Test func decodedControlsCarryClearThinkingWithTopLevelPrecedence() throws {
+        for (json, expected) in [
+            (#"{"clear_thinking":true}"#, true),
+            (#"{"chat_template_kwargs":{"clear_thinking":true}}"#, true),
+            (#"{"clear_thinking":false,"chat_template_kwargs":{"clear_thinking":true}}"#, false),
+            (#"{}"#, nil),
+        ] as [(String, Bool?)] {
+            let controls = ProviderLoop.extractChatTemplateControls(from: Data(json.utf8))
+            #expect(controls.clearThinking == expected, "\(json)")
+            #expect(controls.clearThinking == controls.rawGLM5Controls.clearThinking)
+        }
     }
 
     @Test func modesDoNotAdvertiseConstrainedDecodingFromInstructions() throws {

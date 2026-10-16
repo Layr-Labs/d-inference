@@ -9,6 +9,11 @@ import ProviderCoreFoundation
 /// caller may bind its existing pending-load generation; isolated qualification
 /// can claim the same real budget API instead. Neither path manufactures credit.
 actor GLM5NextManagedLoad {
+    /// Every provider GLM target, and the embedded MTP layer that inherits it,
+    /// uses this one policy. The reference KDA/selection graphs grow per token
+    /// and exceed MLX's Metal resource limit at real prompt lengths.
+    static let executionPolicy = GLM5NextExecutionPolicy.serving
+
     nonisolated let plan: GLM5NextArtifactPlan
     private let budget: GlobalKVCacheBudget
     private let permit: PendingModelLoadLease
@@ -50,7 +55,6 @@ actor GLM5NextManagedLoad {
                 quotation: plan.quotation)
         else { throw GLM5NextManagedLoadError.admission }
         try plan.weights.recheck()
-        try plan.tokenizer.recheck()
         try Task.checkCancellation()
         return .init(
             plan: plan, budget: budget, permit: permit, ownsPermit: false,
@@ -80,7 +84,6 @@ actor GLM5NextManagedLoad {
         do {
             try Task.checkCancellation()
             try plan.weights.recheck()
-            try plan.tokenizer.recheck()
             return .init(plan: plan, budget: budget, permit: permit, ownsPermit: true, hooks: hooks)
         } catch {
             await budget.finishPendingLoad(permit)
@@ -101,18 +104,16 @@ actor GLM5NextManagedLoad {
             try artifactOwnership!.claim(plan: plan)
             try await recheckPermit()
             try plan.weights.recheck()
-            try plan.tokenizer.recheck()
             // No detached unjoined hash task: cancellation never releases the
             // permit or artifact lock while a reader still owns the source.
             try await GLM5NextConstructionLane.shared.verify(plan)
             try await recheckPermit()
-            let tokenizer = try await LocalTokenizerLoader().load(from: plan.tokenizer.directory)
+            let tokenizer = try await LocalTokenizerLoader().load(from: plan.weights.directory)
             try Task.checkCancellation()
             try plan.weights.recheck()
-            try plan.tokenizer.recheck()
             guard
                 TemplateRenderCheck.renderOK(
-                    at: plan.tokenizer.directory, modelID: plan.weights.catalog.id) == true
+                    at: plan.weights.directory, modelID: plan.weights.catalog.id) == true
             else {
                 throw GLM5NextManagedLoadError.metadata(
                     "installed template does not render; no automatic repair")
@@ -129,7 +130,6 @@ actor GLM5NextManagedLoad {
                     owner: owner))
             try Task.checkCancellation()
             try plan.weights.recheck()
-            try plan.tokenizer.recheck()
             // The construction lane has joined native evaluation before handing
             // over an already-evaluated, serial ModelContainer. No model alias is
             // retained here; the ordinary newcomer owner now owns retirement.
@@ -211,7 +211,6 @@ private actor GLM5NextConstructionLane {
 
     func verify(_ plan: GLM5NextArtifactPlan) throws {
         try plan.weights.verifyAuxiliaryContents(nativeIdentity: plan.nativeIdentity)
-        if plan.usesSeparateTokenizer { try plan.tokenizer.verifyContents() }
     }
 
     func construct(
@@ -235,8 +234,9 @@ private actor GLM5NextConstructionLane {
                 return try MLX.withError { error in
                     let artifact = try GLM5NextArtifactLoader(
                         directory: plan.weights.directory,
-                        expectedIdentity: plan.nativeIdentity, storage: .vontraQ4,
-                        constructionRoots: owner.roots)
+                        expectedIdentity: plan.nativeIdentity, storage: plan.storage,
+                        constructionRoots: owner.roots,
+                        executionPolicy: GLM5NextManagedLoad.executionPolicy)
                     owner.retain(artifact)
                     guard artifact.configuration == plan.configuration,
                         artifact.inventory.entries.values.map(\.tensor).sorted(by: {
@@ -253,6 +253,10 @@ private actor GLM5NextConstructionLane {
                         configuration: plan.processorConfiguration, tokenizer: tokenizer)
                     let model = try GLM5NextModel(artifact: artifact, loadMTP: loadMTP)
                     owner.retain(model)
+                    guard model.textTower.executionPolicy == GLM5NextManagedLoad.executionPolicy,
+                        model.mtp.map({ $0.executionPolicy == GLM5NextManagedLoad.executionPolicy })
+                            ?? true
+                    else { throw GLM5NextManagedLoadError.identityMismatch }
                     // All source ranges are bounded and already evaluated; this
                     // is the final complete-owned-root fence, not a BF16 copy.
                     try owner.roots.evaluate(model.parameters().flattened().map(\.1))
@@ -260,12 +264,8 @@ private actor GLM5NextConstructionLane {
                     try error.check()
                     try Task.checkCancellation()
                     try plan.weights.recheck()
-                    try plan.tokenizer.recheck()
                     var configuration = ModelConfiguration(
-                        directory: plan.weights.directory,
-                        tokenizerSource: plan.usesSeparateTokenizer
-                            ? .directory(plan.tokenizer.directory) : nil,
-                        eosTokenIds: plan.eosTokenIDs)
+                        directory: plan.weights.directory, eosTokenIds: plan.eosTokenIDs)
                     configuration.toolCallFormat = .glm5
                     let container = ModelContainer(
                         context: ModelContext(

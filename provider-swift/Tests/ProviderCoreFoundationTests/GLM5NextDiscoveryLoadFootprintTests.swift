@@ -48,12 +48,14 @@ private struct GLMFootprintMetadata {
 @Suite struct GLM5NextDiscoveryLoadFootprintTests {
     @Test func pricesAllExpertsMTPVisionAndNonWeightFiles() throws {
         var fixture = GLMFootprintMetadata()
-        let quote = try #require(fixture.estimate())
+        let quote = try #require(try fixture.estimate())
         let native: UInt64 = 2 * 64 + 128 + 2 * 16 + (257 << 20)
         #expect(quote.nativeTransientBytes == native)
         #expect(quote.tokenizerAllowanceBytes == 64 << 20)
-        #expect(quote.supplementBytes == native + (64 << 20))
-        #expect(quote.totalBytes == quote.sourceBytes + (quote.sourceBytes + 4) / 5 + quote.supplementBytes)
+        // Tiny sources take the 1-GiB residual floor; no disk × 1.2 padding.
+        #expect(quote.residualAllowanceBytes == 1 << 30)
+        #expect(quote.supplementBytes == native + (64 << 20) + (1 << 30))
+        #expect(quote.totalBytes == quote.sourceBytes + quote.supplementBytes)
         #expect(quote.storedBytes == fixture.payload + 512)
         // The active expert count is never a discount on the full source/bank.
         var text = try #require(fixture.config["text_config"] as? [String: Any])
@@ -61,8 +63,47 @@ private struct GLMFootprintMetadata {
         fixture.config["text_config"] = text
         #expect(try fixture.estimate()?.nativeTransientBytes == native)
         fixture.files["tokenizer.json"] = 20 << 20
-        let expanded = try #require(fixture.estimate())
+        let expanded = try #require(try fixture.estimate())
         #expect(expanded.tokenizerAllowanceBytes == (expanded.sourceBytes - expanded.storedBytes) * 8)
+    }
+
+    /// The NVFP4 hybrid is quoted from its exact stored bytes: U8 FP8 scales
+    /// and the F32 per-tensor scale count byte for byte; nothing is padded.
+    @Test func pricesNVFP4ExpertTensorsFromExactBytes() throws {
+        var fixture = GLMFootprintMetadata()
+        var quantization: [String: Any] = ["bits": 4, "group_size": 64, "mode": "affine"]
+        let nvfp4: [String: Any] = ["bits": 4, "group_size": 16, "mode": "nvfp4"]
+        for expert in 0 ..< 2 {
+            let base = "model.language_model.layers.0.mlp.experts.\(expert).gate_proj"
+            quantization[base] = nvfp4
+            fixture.tensors[base + ".scales"] = [
+                "dtype": "U8", "shape": [2, 4], "data_offsets": [fixture.payload, fixture.payload + 8]]
+            fixture.payload += 8
+            fixture.tensors[base + ".weight_scale_2"] = [
+                "dtype": "F32", "shape": expert == 0 ? [] : [1],
+                "data_offsets": [fixture.payload, fixture.payload + 4]]
+            fixture.payload += 4
+        }
+        // Without the NVFP4 declaration the byte tensors are refused.
+        #expect(try fixture.estimate() == nil)
+        fixture.config["quantization"] = quantization
+        let quote = try #require(try fixture.estimate())
+        #expect(quote.storedBytes == fixture.payload + 512)
+        // Each stacked bank is one tensor role; the packed words stay largest.
+        #expect(quote.nativeTransientBytes == 2 * 64 + 128 + 2 * 16 + (257 << 20))
+
+        var bad = fixture
+        quantization["model.language_model.layers.0.self_attn.q_b_proj"] = ["bits": 8, "group_size": 64, "mode": "affine"]
+        bad.config["quantization"] = quantization
+        #expect(try bad.estimate() == nil)
+        bad = fixture
+        bad.tensors["model.language_model.layers.0.mlp.experts.0.gate_proj.scales"] = [
+            "dtype": "U8", "shape": [8], "data_offsets": [272, 280]]
+        #expect(try bad.estimate() == nil)
+        bad = fixture
+        bad.tensors["model.language_model.layers.0.mlp.experts.0.gate_proj.weight_scale_2"] = [
+            "dtype": "BF16", "shape": [2], "data_offsets": [280, 284]]
+        #expect(try bad.estimate() == nil)
     }
 
     @Test func refusesUnknownRolesBadFramingAndOversizedMetadata() throws {
@@ -124,11 +165,25 @@ private struct GLMFootprintMetadata {
             largestTensor: raw.largestTensorBytes, largestExpertBank: raw.largestExpertBankBytes,
             visionBytes: raw.visionBytes)
         let disk = raw.storedBytes + raw.nonWeightBytes
-        let expected = disk + (disk + 4) / 5 + 2 * raw.largestTensorBytes + raw.largestExpertBankBytes
+        let expected = disk + (disk + 31) / 32 + 2 * raw.largestTensorBytes + raw.largestExpertBankBytes
             + 2 * raw.visionBytes + (257 << 20) + max(64 << 20, 8 * raw.nonWeightBytes)
         #expect(quote.totalBytes == expected)
-        #expect(quote.totalBytes == 222_714_752_471)
-        #expect(quote.supplementBytes == 4_624_662_032)
+        #expect(quote.residualAllowanceBytes == 5_679_429_439)
+        #expect(quote.totalBytes == 192_045_833_503)
+        #expect(quote.supplementBytes == 10_304_091_471)
+        // Measured envelope: the staged Q4 target (text + vision) is resident at
+        // 177,510,375,680 B MLX-active after load and peaks at 180.89 GB through
+        // a 512-token prefill; adding the 4,183,317,120-byte MTP layer keeps the
+        // projected peak below the quote, which still fits a 256-GiB Mac's
+        // 90% cap after the 5.5-GiB activation and 1-GiB minimum-KV headroom.
+        let measuredPeakWithMTP: UInt64 = 180_890_000_000 + 4_183_317_120
+        #expect(quote.totalBytes > measuredPeakWithMTP + quote.residualAllowanceBytes)
+        let cap = UInt64(Double(UInt64(256) << 30) * 0.9)
+        #expect(quote.totalBytes + (11 << 29) + (1 << 30) < cap)
+        #expect(GLM5NextDiscoveryLoadFootprint.residualAllowanceBytes(sourceBytes: 32) == 1 << 30)
+        #expect(GLM5NextDiscoveryLoadFootprint.residualAllowanceBytes(sourceBytes: 64 << 30) == 2 << 30)
+        #expect(GLM5NextDiscoveryLoadFootprint.residualAllowanceBytes(sourceBytes: (64 << 30) + 1)
+            == (2 << 30) + 1)
         for stored in [UInt64(0), UInt64.max, UInt64(Int64.max)] {
             #expect(throws: (any Error).self) {
                 try GLM5NextDiscoveryLoadFootprint.quotation(
@@ -172,6 +227,6 @@ private struct GLMFootprintMetadata {
                 return .init(tensors: tensors, fileBytes: file, payloadBytes: file - header - 8)
             })
         #expect(reads == 43)
-        #expect(try #require(quote).totalBytes == 222_714_752_471)
+        #expect(try #require(quote).totalBytes == 192_045_833_503)
     }
 }

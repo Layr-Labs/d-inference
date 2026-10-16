@@ -21,12 +21,15 @@ enum EngineV2ServingPreparation: Sendable {
         return autoregressive?.mtpStatus ?? .disabled(.targetUnsupported, configured: false)
     }
     var mtpArtifact: SpecDecArtifact? { autoregressive?.mtpArtifact }
-    func fallingBack(_ reason: MTPFallbackReason) -> Self {
+    /// GLM's embedded MTP engine carries the only checked native completion
+    /// receipt, so its preparation never falls back to target-only.
+    var requiresGLM5NextNativeMTP: Bool { autoregressive?.servingModel is GLM5NextProtectedModel }
+    func fallingBack(_ reason: MTPFallbackReason) throws -> Self {
         if case .nativeMiMo(let value) = self {
             return .nativeMiMo(.init(container: value.container, load: value.load,
                 transaction: value.transaction, status: value.status.fallingBack(reason)))
         }
-        if let autoregressive { return .autoregressive(autoregressive.fallingBack(reason)) }
+        if let autoregressive { return .autoregressive(try autoregressive.fallingBack(reason)) }
         return .diffusion
     }
 }

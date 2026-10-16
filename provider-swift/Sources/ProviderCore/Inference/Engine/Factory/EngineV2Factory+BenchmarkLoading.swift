@@ -17,6 +17,13 @@ extension EngineV2Factory {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws -> (container: ModelContainer, session: EngineV2BenchmarkSession, maximumContextLength: Int) {
         try GLM5NextLoadFaultState.requireHealthy()
+        // The pinned GLM identity defaults SSD on for serving. This baseline is
+        // cache-free, so an unset flag is pinned off; an explicit opt-in refuses.
+        var environment = environment
+        if environment[PrefixCachePolicy.environmentFlag]?
+            .trimmingCharacters(in: .whitespaces).isEmpty ?? true {
+            environment[PrefixCachePolicy.environmentFlag] = "0"
+        }
         guard !PrefixCachePolicy.isEnabled(modelId: catalog.id, environment: environment),
             !PrefixCachePolicy.isMemoryEnabled(environment: environment) else {
             throw EngineV2BenchmarkSession.Failure.unexpectedResidentCache
@@ -33,10 +40,20 @@ extension EngineV2Factory {
         defer { if !retained { activity.finish() } }
         var newcomer: EngineV2NewcomerBox?
         var built: ProviderEngineBundle?
+        // Every owner an unproven completion may still back stays alive for
+        // the process; nothing is released or refunded after this.
+        func retainForProcess() {
+            var owners: [AnyObject] = [budget, activity]
+            if let newcomer { owners.append(newcomer) }
+            if let built { owners.append(built) }
+            GLM5NextLoadFaultState.retain(owners)
+            retained = true
+        }
         do {
-            newcomer = EngineV2NewcomerBox(try await loadBenchmarkContainer(modelID: catalog.id, directory: directory,
+            let loaded = EngineV2NewcomerBox(try await loadBenchmarkContainer(modelID: catalog.id, directory: directory,
                 glm5Catalog: catalog, glm5Manifest: manifest, kvBudget: budget).container)
-            let loadedSizing = try await GLM5NextLoadFunnel.sizing(container: newcomer!.borrow(), defaultMaxTokens: 32)
+            newcomer = loaded
+            let loadedSizing = try await GLM5NextLoadFunnel.sizing(container: loaded.borrow(), defaultMaxTokens: 32)
             let sizing = SlotSizingSnapshot(weightsBytes: loadedSizing.targetWeightsBytes,
                 auxiliaryWeightBytes: loadedSizing.auxiliaryWeightBytes,
                 fp16KVBytesPerToken: loadedSizing.fp16KVBytesPerToken,
@@ -46,12 +63,12 @@ extension EngineV2Factory {
             }
             let grant = try benchmarkProductionGrant(modelId: catalog.id, sizing: sizing,
                 environment: environment, operatorReserveBytes: operatorReserveBytes)
-            let tokenizer = try await newcomer!.borrow().perform { TokenizerHandle($0.tokenizer) }
+            let tokenizer = try await loaded.borrow().perform { TokenizerHandle($0.tokenizer) }
             let preparation = SpecDecPreparation(artifact: nil,
                 status: .disabled(.configDisabled, configured: false))
             let bundle = try await EngineV2SlotFactory.makeProductionBundle(modelId: catalog.id,
                 modelType: "glm5_next", isVLM: true, modelDirectory: directory,
-                container: newcomer!.borrow(), tokenizer: tokenizer, sizing: sizing,
+                container: loaded.borrow(), tokenizer: tokenizer, sizing: sizing,
                 kvBytesCapacity: grant.grantBytes, maxConcurrentRequests: 1, constructionPurpose: .benchmark,
                 kvBudget: budget, activationReserveBytes: reserve, kvBackendConfig: "paged",
                 kvQuantizationConfig: "native", checkpointQuantizationConfig: "native",
@@ -76,23 +93,16 @@ extension EngineV2Factory {
                 postBuildHeadroomBytes: sample.runtimeRemainingBytes)
             // Evidence must retain this enforced bound, not label the result
             // with the original checkpoint's advertised maximum context.
-            return (try newcomer!.borrow(), session, context)
+            return (try loaded.borrow(), session, context)
         } catch {
             if GLM5NextLoadFunnel.isUnproven(error) {
-                retained = true
-                var owners: [AnyObject] = [budget, activity]
-                if let newcomer { owners.append(newcomer) }
-                if let built { owners.append(built) }
-                GLM5NextLoadFaultState.retain(owners)
+                retainForProcess()
                 throw error
             }
             if let built {
                 do { try await GLM5NextRetirement.beforeRelease(built.bridge) }
                 catch {
-                    var owners: [AnyObject] = [budget, activity, built]
-                    if let newcomer { owners.append(newcomer) }
-                    GLM5NextLoadFaultState.retain(owners)
-                    retained = true
+                    retainForProcess()
                     throw GLM5NextManagedLoadError.retirementUnproven
                 }
             }

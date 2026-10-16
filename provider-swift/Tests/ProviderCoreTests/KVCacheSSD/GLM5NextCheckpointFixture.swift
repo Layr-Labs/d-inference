@@ -26,6 +26,16 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
     })
     private var stores: [SSDHybridCheckpointStore] = []
     private var engines: [EngineV2] = []
+    private var nativeContracts: [ObjectIdentifier: UUID] = [:]
+    private var retainedConstructionScopes: [NativeConstructionScope] = []
+    private var retirementUnproven = false
+    private var cleanupProven = false
+
+    private enum CleanupError: Error {
+        case retirementUnproven
+        case outstandingBudget(UInt64)
+        case cleanupNotConfirmed
+    }
 
     init() throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
@@ -59,8 +69,49 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
         return store
     }
 
-    func makeEngine(store: SSDHybridCheckpointStore) throws -> EngineV2 {
+    func makeEngine(store: SSDHybridCheckpointStore, withMTP: Bool = false) throws -> EngineV2 {
         let model = try Self.makeModel()
+        if withMTP {
+            let predictor = try GLM5NextMTP(target: model) { try Self.tensor($0, inventory: model.inventory) }
+            let factory = try GLM5NextMTPExecution(target: model, predictor: predictor,
+                maximumInputs: 1536, storage: .contiguous)
+            let assistant = try GLM5NextMTPAdapter(target: model, predictor: predictor, factory: factory)
+            let limits = try CBv2PagedGatheredAttentionLimits(maximumBatchSize: 1,
+                maximumQueryTokens: Self.chunk, maximumContextTokens: 1536,
+                maximumInFlightGraphs: 2, maximumScratchBytes: 128 << 20,
+                admissionMode: .stepOwned(.pinnedMetal))
+            let construction = NativeConstructionScope()
+            let resources: GLM5NextMTPExecution.NativeResources
+            do {
+                resources = try factory.makeNativeResources(assistant: assistant,
+                    config: .init(capacityBytes: 64 << 20, dtype: .float32,
+                        maxPrefillChunk: Self.chunk, nominalMaxSequenceLength: 1536,
+                        maxBufferLength: 16 << 20, segmentSizeBytes: 64 << 10,
+                        layerDTypes: model.cbv2CompleteCheckpointKVDTypes, gatheredAttention: limits),
+                    processMemoryOwner: budget.makeEngineMemoryOwner(),
+                    construction: construction, completePrefixCache: store)
+            } catch {
+                if construction.snapshot.isRetainedFault {
+                    retainedConstructionScopes.append(construction)
+                    retainAfterUnprovenRetirement()
+                }
+                throw error
+            }
+            let engine = EngineV2(model: resources.model, layerKinds: model.cbv2LayerKinds,
+                backend: resources.backend, cacheProvider: resources.cacheProvider,
+                sampler: CBv2GreedySampler(), schedulerConfig: .init(maxConcurrentRequests: 1,
+                    maxBatchedTokensPerStep: Self.chunk, prefillChunkSize: Self.chunk,
+                    maxConcurrentPartialPrefills: 1,
+                    maxWaiting: 4, enablePrefixCache: true),
+                admissionConfig: model.cbv2NativeAdmissionConfig, completePrefixCache: store,
+                mtpDrafter: assistant, mtpConfig: .init(enabled: true, maxDraftTokens: 1,
+                    maxSpeculativeBatch: 1, fixedDraftTokens: 1, verificationMode: .serialTarget),
+                processMemoryOwner: resources.processMemoryOwner, nativeCompletionTracking: true,
+                nativeExecutionContract: resources.contract)
+            nativeContracts[ObjectIdentifier(engine)] = resources.contract.id
+            engines.append(engine)
+            return engine
+        }
         let backend = try model.makeCBv2PagedBackend(
             kvBytesCapacity: 64 << 20, maximumBatchSize: 1, maximumQueryTokens: Self.chunk,
             maximumContextTokens: 1536, maximumScratchBytes: 128 << 20,
@@ -70,16 +121,17 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
             cacheProvider: CBv2LayerCacheBank(caches: backend.makeLayerCaches()),
             sampler: CBv2GreedySampler(), schedulerConfig: .init(
                 maxConcurrentRequests: 1, maxBatchedTokensPerStep: Self.chunk,
-                prefillChunkSize: Self.chunk, maxWaiting: 4, enablePrefixCache: true),
+                prefillChunkSize: Self.chunk, maxConcurrentPartialPrefills: 1,
+                maxWaiting: 4, enablePrefixCache: true),
             admissionConfig: model.cbv2NativeAdmissionConfig, completePrefixCache: store,
             processMemoryOwner: budget.makeEngineMemoryOwner())
         engines.append(engine)
         return engine
     }
 
-    func request(id: UInt64, scope: String = "tenant-a") -> CBv2Request {
+    func request(id: UInt64, scope: String = "tenant-a", maxTokens: Int = 2) -> CBv2Request {
         .init(id: .init(id), promptTokens: tokens, sampling: .init(temperature: 0),
-              maxTokens: 2, cacheSalt: scope, prefixCacheReceiptID: .init(id + 10_000))
+              maxTokens: maxTokens, cacheSalt: scope, prefixCacheReceiptID: .init(id + 10_000))
     }
 
     func file(store: SSDHybridCheckpointStore) throws -> URL {
@@ -105,8 +157,14 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
 
     /// Observes the existing pre-sampler frontier, without a replacement model
     /// or fabricated cache counters. Native evaluation remains on engine queue.
-    func run(engine: EngineV2, request: CBv2Request) async throws -> Output {
+    func run(engine: EngineV2, request: CBv2Request, expectMTP: Bool = false) async throws -> Output {
+        let previousMTP: CBv2MTPMetrics?
+        if expectMTP { previousMTP = try #require(engine.mtpMetricsSnapshot()) }
+        else { previousMTP = nil }
         let frontier = Frontier()
+        let tracking = engine.loopForTesting.nativeShutdownState
+        let loan = try tracking?.beginLoan(owner: frontier)
+        defer { engine.loopForTesting.nativeDiagnosticLoanEnded(loan) }
         engine.loopForTesting.setPrefillFrontierCapture { id, values in
             if id == request.id { frontier.set(values) }
         }
@@ -125,13 +183,30 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
         }
         let logits = try engine.loopForTesting.onEngineQueueSync {
             let value = try #require(frontier.take())
-            return try withError { fault in
-                eval(value)
-                try fault.check()
-                let values = value.asType(.float32).asArray(Float.self)
-                try fault.check()
+            let mark = tracking?.rootMark ?? 0
+            engine.loopForTesting.retainNativeWork([value], owners: [frontier])
+            do {
+                let values = try withError { fault in
+                    eval(value)
+                    try fault.check()
+                    let values = value.asType(.float32).asArray(Float.self)
+                    try fault.check()
+                    return values
+                }
+                try engine.loopForTesting.requireNativeWork()
+                if let tracking { tracking.retireCompleted(tracking.rootIDs(since: mark)) }
                 return values
+            } catch {
+                engine.loopForTesting.failNativeCompletion(.nativeWorkFailed)
+                throw error
             }
+        }
+        if let previousMTP {
+            let metrics = try #require(engine.mtpMetricsSnapshot())
+            #expect(metrics.active)
+            #expect(metrics.rounds > previousMTP.rounds)
+            #expect(metrics.proposedTokens > previousMTP.proposedTokens)
+            #expect(metrics.serialVerificationRounds > previousMTP.serialVerificationRounds)
         }
         return .init(logits: logits, tokens: tokens, usage: try #require(usage))
     }
@@ -143,14 +218,53 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
             makeImportPlan: { try engine.planCompleteCheckpointImport(manifest: $0, request: request) })
     }
 
-    func close() async {
-        for engine in engines { await engine.shutdown() }
-        engines.removeAll()
-        for store in stores { await store.closeAndWait() }
-        stores.removeAll()
+    func retire(_ engine: EngineV2) async throws {
+        guard let contractID = nativeContracts[ObjectIdentifier(engine)] else {
+            await engine.shutdown()
+            return
+        }
+        let outcome = await engine.shutdownReportingNativeCompletion()
+        guard case .quiescent(let receipt) = outcome,
+            engine.nativeShutdownExecutionContractID == contractID,
+            receipt.engineID == engine.nativeShutdownEngineID,
+            receipt.executionContractID == contractID, receipt.generation == 1
+        else {
+            retainAfterUnprovenRetirement()
+            throw CleanupError.retirementUnproven
+        }
     }
 
-    func remove() { try? FileManager.default.removeItem(at: root) }
+    func close() async throws {
+        var firstFailure: (any Error)?
+        for engine in engines {
+            do { try await retire(engine) }
+            catch { if firstFailure == nil { firstFailure = error } }
+        }
+        // Attempt every owner even after a failed engine drain, but never drop
+        // the fixture's references or files without confirmed retirement.
+        for store in stores { await store.closeAndWait() }
+        if let firstFailure { throw firstFailure }
+        guard !retirementUnproven else { throw CleanupError.retirementUnproven }
+        let remaining = await budget.outstandingReservedBytes()
+        guard remaining == 0 else {
+            retainAfterUnprovenRetirement()
+            throw CleanupError.outstandingBudget(remaining)
+        }
+        engines.removeAll()
+        nativeContracts.removeAll()
+        stores.removeAll()
+        cleanupProven = true
+    }
+
+    func remove() throws {
+        guard cleanupProven, !retirementUnproven else { throw CleanupError.cleanupNotConfirmed }
+        try FileManager.default.removeItem(at: root)
+    }
+
+    private func retainAfterUnprovenRetirement() {
+        retirementUnproven = true
+        GLM5NextLoadFaultState.retain([self])
+    }
 
     private static func makeModel() throws -> GLM5NextTextModel {
         let text: [String: Any] = [
@@ -197,20 +311,24 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
         let inventory = try GLM5NextWeightInventory.validate(
             configuration: configuration, tensors: headers, storage: .float32)
         return try GLM5NextTextModel(configuration: configuration.textConfig, inventory: inventory) { name in
-            let shape = try #require(inventory.entries[name]?.tensor.shape)
-            let count = shape.reduce(1, *)
-            let salt = name.utf8.reduce(0) { ($0 + Int($1)) % 17 }
-            let values: [Float]
-            if name.contains("norm.weight") || name.hasSuffix("_scale") {
-                values = Array(repeating: 1, count: count)
-            } else if name.hasSuffix("A_log") || name.hasSuffix("dt_bias") {
-                values = Array(repeating: -0.5, count: count)
-            } else if name.hasSuffix(".bias") || name.hasSuffix("_base") {
-                values = Array(repeating: 0, count: count)
-            } else {
-                values = (0..<count).map { Float(($0 * 3 + salt) % 19 - 9) * 0.015 }
-            }
-            return MLXArray(values, shape)
+            try Self.tensor(name, inventory: inventory)
         }
+    }
+
+    private static func tensor(_ name: String, inventory: GLM5NextWeightInventory) throws -> MLXArray {
+        let shape = try #require(inventory.entries[name]?.tensor.shape)
+        let count = shape.reduce(1, *)
+        let salt = name.utf8.reduce(0) { ($0 + Int($1)) % 17 }
+        let values: [Float]
+        if name.contains("norm.weight") || name.hasSuffix("_scale") {
+            values = Array(repeating: 1, count: count)
+        } else if name.hasSuffix("A_log") || name.hasSuffix("dt_bias") {
+            values = Array(repeating: -0.5, count: count)
+        } else if name.hasSuffix(".bias") || name.hasSuffix("_base") {
+            values = Array(repeating: 0, count: count)
+        } else {
+            values = (0..<count).map { Float(($0 * 3 + salt) % 19 - 9) * 0.015 }
+        }
+        return MLXArray(values, shape)
     }
 }

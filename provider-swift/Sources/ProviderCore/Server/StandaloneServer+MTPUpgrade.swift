@@ -208,7 +208,7 @@ extension StandaloneServer {
         } catch {
             if let replacement {
                 do { try await GLM5NextRetirement.beforeRelease(replacement.bridge) }
-                catch { GLM5NextLoadFaultState.retain([self, replacement]); throw error }
+                catch { await GLM5NextRetirement.retainUnpublished(replacement, with: [self]); throw error }
                 replacement.releaseAssistant()
             }
             prepared?.assistant?.release()
@@ -262,7 +262,7 @@ extension StandaloneServer {
         do { try await GLM5NextRetirement.beforeRelease(original.bridge) }
         catch {
             retainActivity = true
-            GLM5NextLoadFaultState.retain([self, original.bundle, staged.replacement, deviceActivity])
+            await GLM5NextRetirement.retainUnpublished(original.bundle, with: [self, staged.replacement, deviceActivity])
             throw error
         }
         original.bundle.releaseAssistant()
@@ -288,7 +288,7 @@ extension StandaloneServer {
         do { try await GLM5NextRetirement.beforeRelease(staged.replacement.bridge) }
         catch {
             retainActivity = true
-            GLM5NextLoadFaultState.retain([self, staged.replacement, deviceActivity])
+            await GLM5NextRetirement.retainUnpublished(staged.replacement, with: [self, deviceActivity])
             return
         }
         staged.replacement.releaseAssistant()

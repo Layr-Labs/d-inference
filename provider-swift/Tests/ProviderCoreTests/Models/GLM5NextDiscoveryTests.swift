@@ -20,8 +20,7 @@ import ProviderCoreFoundation
             }
             #expect(ModelScanner.glm5NextLoadEstimate(snapshotDir: root) == before)
             #expect(ModelScanner.parseModelInfo(snapshotDir: root, modelName: info.id) == info)
-            #expect(ModelScanner.glm5NextLoadQuotationIsCurrent(
-                info, directory: root, tokenizerDirectory: root))
+            #expect(ModelScanner.glm5NextLoadQuotationIsCurrent(info, directory: root))
             #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("_provenance/provider-integrity-manifest.json").path))
         }
     }

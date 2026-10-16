@@ -50,14 +50,14 @@ register the architecture with the model factories or provider. Follow the
 [prerequisite test procedure](test.md#glm5next-prerequisite-tests); do not use a
 successful SDK build as proof of the [complete integration](../design/glm53-flash-native.md).
 
-The GLM candidate's official template requires numeric attribute access such as
-`content.0.type`, which the pinned Swift-Jinja release does not parse. A local
-editable dependency patch can validate that missing syntax, but it is not a
-clean locked build or a distributable dependency revision. Record the patch,
-base revision and every other resolved pin for such a run; keep provider and
-SDK renderer sources identical. A reviewed upstream or fork revision remains a
-release gate. Do not rewrite the model template or modify ignored build
-checkouts to hide the parser limitation.
+The GLM official template uses numeric attribute access such as
+`content.0.type`, which the pinned Swift-Jinja 2.3.6 does not parse. Builds use
+the ordinary locked Swift-Jinja pin with no SwiftPM edit mode or dependency
+patch. Our `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` artifact instead ships a
+separately identified template that writes those accesses as `[0]` subscripts.
+Its derivation and equivalence evidence are in
+`fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
+rewrite another artifact's template to hide the parser limitation.
 
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the

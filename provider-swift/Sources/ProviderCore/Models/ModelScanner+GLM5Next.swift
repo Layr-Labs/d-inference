@@ -3,15 +3,12 @@ import Foundation
 import ProviderCoreFoundation
 
 extension ModelScanner {
-    /// Raw same-directory profile only. Callers resolving a tokenizer override
-    /// must pass it explicitly; a different composition needs its own quotation.
+    /// Raw same-directory profile: the tokenizer shipped in the weight snapshot.
     static func glm5NextLoadEstimate(
-        snapshotDir: URL, sizeBytes: UInt64? = nil, tokenizerDirectory: URL? = nil
+        snapshotDir: URL, sizeBytes: UInt64? = nil
     ) -> GLM5NextDiscoveryLoadFootprint.Estimate? {
         let root = snapshotDir.standardizedFileURL
-        guard tokenizerDirectory == nil || tokenizerDirectory?.standardizedFileURL == root,
-            let files = GLM5NextDiscoveryInventory.files(at: root)
-        else { return nil }
+        guard let files = GLM5NextDiscoveryInventory.files(at: root) else { return nil }
         // Reuse the existing regular-FD, bounded readers; no payload is read.
         guard let config = Qwen4ExpMmapFootprint.boundedIndex(root.appendingPathComponent("config.json")),
             let index = Qwen4ExpMmapFootprint.boundedIndex(root.appendingPathComponent("model.safetensors.index.json")),
@@ -29,15 +26,12 @@ extension ModelScanner {
         return estimate
     }
 
-    /// Bridge pre-allocation recheck. The tokenizer argument is intentionally
-    /// required: a raw discovery quote cannot authorize a different composition.
-    static func glm5NextLoadQuotationIsCurrent(
-        _ info: ModelInfo, directory: URL, tokenizerDirectory: URL
-    ) -> Bool {
+    /// Bridge pre-allocation recheck against the raw same-directory quote.
+    static func glm5NextLoadQuotationIsCurrent(_ info: ModelInfo, directory: URL) -> Bool {
         guard info.modelType == "glm5_next", (info.ssdOffloadedWeightBytes ?? 0) == 0,
             info.estimatedMemoryGb.isFinite,
             let estimate = glm5NextLoadEstimate(
-                snapshotDir: directory, sizeBytes: info.sizeBytes, tokenizerDirectory: tokenizerDirectory),
+                snapshotDir: directory, sizeBytes: info.sizeBytes),
             let supplement = info.nativeLoadTransientBytes,
             supplement >= estimate.supplementBytes,
             info.estimatedMemoryGb >= Double(estimate.totalBytes) / 1_073_741_824

@@ -1,7 +1,9 @@
 import CoreFoundation
 import Foundation
 
-/// Metadata-only pricing of the raw, same-directory affine-Q4 load. This is not
+/// Metadata-only pricing of the raw, same-directory affine-Q4 load, or of the
+/// hybrid whose feed-forward modules are NVIDIA NVFP4 (U32 words, U8 FP8 scales
+/// per 16 inputs and an F32 `weight_scale_2`). This is not
 /// architecture qualification: the managed loader still validates its complete
 /// native inventory and source identity before allocation.
 public enum GLM5NextDiscoveryLoadFootprint {
@@ -22,9 +24,25 @@ public enum GLM5NextDiscoveryLoadFootprint {
         public let sourceBytes: UInt64
         public let nativeTransientBytes: UInt64
         public let tokenizerAllowanceBytes: UInt64
-        /// GLM's wire supplement is added AFTER the generic disk × 1.2 basis.
+        public let residualAllowanceBytes: UInt64
+        /// GLM's wire supplement above the raw source bytes (no disk × 1.2):
+        /// native copy scratch + tokenizer + residual allowance.
         public let supplementBytes: UInt64
         public let totalBytes: UInt64
+    }
+
+    /// The managed loader copies one bounded tensor or expert bank at a time
+    /// into owned arrays, so the generic disk × 1.2 padding over-counts GLM by
+    /// ~34 GiB and refuses it on 256 GiB Macs. The envelope is instead the exact
+    /// source bytes plus explicit native scratch, tokenizer and this residual.
+    /// Measured on the staged 122-shard Q4 artifact: MLX active after the
+    /// target load equals the text+vision payload (177,510,375,672 B) and the
+    /// MLX peak through a 512-token prefill is 180.89 GB, i.e. ≤ 3.38 GB
+    /// over residency, below the native scratch alone. The residual (1/32 of
+    /// source, ≥ 1 GiB) covers unmeasured host/allocator overhead and the
+    /// MTP-on construction path; activation and minimum-KV reserves still apply.
+    public static func residualAllowanceBytes(sourceBytes: UInt64) -> UInt64 {
+        max(1 << 30, sourceBytes / 32 + (sourceBytes % 32 == 0 ? 0 : 1))
     }
 
     private enum Refusal: Error { case metadata, overflow }
@@ -55,7 +73,7 @@ public enum GLM5NextDiscoveryLoadFootprint {
             let experts = integer(text["n_routed_experts"]), (1...2048).contains(experts),
             let vision = config["vision_config"] as? [String: Any],
             vision["model_type"] as? String == "glm5_next_vision",
-            nativeQ4(config),
+            let packing = nativePacking(config),
             let rawIndex = try JSONSerialization.jsonObject(with: index) as? [String: Any],
             let weightMap = rawIndex["weight_map"] as? [String: String],
             !weightMap.isEmpty, weightMap.count <= 200_000,
@@ -111,7 +129,7 @@ public enum GLM5NextDiscoveryLoadFootprint {
                     weightMap[name] == shard,
                     let tensor = raw as? [String: Any],
                     let dtype = tensor["dtype"] as? String,
-                    let shape = tensor["shape"] as? [Any], !shape.isEmpty, shape.count <= 8,
+                    let shape = tensor["shape"] as? [Any], shape.count <= 8,
                     let offsets = tensor["data_offsets"] as? [Any], offsets.count == 2,
                     let start = integer(offsets[0]), let end = integer(offsets[1]), end > start,
                     end <= header.payloadBytes
@@ -120,8 +138,16 @@ public enum GLM5NextDiscoveryLoadFootprint {
                 switch dtype {
                 case "U32", "F32": bytes = 4
                 case "BF16": bytes = 2
+                case "U8" where packing.declaresNVFP4: bytes = 1
                 default: throw Refusal.metadata
                 }
+                // NVFP4 scales are the only byte tensors and its per-tensor
+                // scale the only scalar; neither appears in the affine build.
+                let isGlobalScale = name.hasSuffix(".weight_scale_2")
+                guard !isGlobalScale || (packing.declaresNVFP4 && dtype == "F32" && shape.count <= 1),
+                    shape.isEmpty == isGlobalScale || (isGlobalScale && shape.count == 1),
+                    dtype != "U8" || (shape.count == 2 && name.hasSuffix(".scales"))
+                else { throw Refusal.metadata }
                 for rawDimension in shape {
                     guard let dimension = integer(rawDimension), dimension > 0 else {
                         throw Refusal.metadata
@@ -140,7 +166,8 @@ public enum GLM5NextDiscoveryLoadFootprint {
                 guard metadataBytes <= maximumMetadataBytes else { throw Refusal.metadata }
 
                 if name.hasPrefix("model.visual."), name.count > "model.visual.".count {
-                    guard dtype != "U32", !name.contains(".mlp.experts.") else { throw Refusal.metadata }
+                    guard dtype != "U32", dtype != "U8", !isGlobalScale, !name.contains(".mlp.experts.")
+                    else { throw Refusal.metadata }
                     visionBytes = try add(visionBytes, bytes)
                 } else {
                     let components = name.split(separator: ".", omittingEmptySubsequences: false)
@@ -151,7 +178,7 @@ public enum GLM5NextDiscoveryLoadFootprint {
                             guard components.count == 9, components[4] == "mlp", components[5] == "experts",
                                 let expert = UInt64(components[6]), String(expert) == String(components[6]), expert < experts,
                                 ["gate_proj", "up_proj", "down_proj"].contains(String(components[7])),
-                                ["weight", "scales", "biases"].contains(String(components[8]))
+                                ["weight", "scales", "biases", "weight_scale_2"].contains(String(components[8]))
                             else { throw Refusal.metadata }
                             // Same destination as nativeName: remove ONLY the expert ID.
                             let bank = components.enumerated().filter { $0.offset != 6 }
@@ -191,29 +218,44 @@ public enum GLM5NextDiscoveryLoadFootprint {
             largestExpertBank > 0, largestExpertBank <= storedBytes,
             visionBytes > 0, visionBytes <= storedBytes else { throw Refusal.metadata }
         let source = try add(storedBytes, nonWeightBytes)
-        let generic = try add(source, try add(source / 5, source % 5 == 0 ? 0 : 1))
         let native = try add(
             try add(try multiply(largestTensor, 2), largestExpertBank),
             try add(try multiply(visionBytes, 2), 257 << 20))
         let tokenizer = max(64 << 20, try multiply(nonWeightBytes, 8))
-        let supplement = try add(native, tokenizer)
-        let total = try add(generic, supplement)
+        let residual = residualAllowanceBytes(sourceBytes: source)
+        let supplement = try add(try add(native, tokenizer), residual)
+        let total = try add(source, supplement)
         guard total <= UInt64(Int64.max) else { throw Refusal.overflow }
         return .init(storedBytes: storedBytes, sourceBytes: source,
             nativeTransientBytes: native, tokenizerAllowanceBytes: tokenizer,
-            supplementBytes: supplement, totalBytes: total)
+            residualAllowanceBytes: residual, supplementBytes: supplement, totalBytes: total)
     }
 
-    private static func nativeQ4(_ config: [String: Any]) -> Bool {
+    private struct Packing { let declaresNVFP4: Bool }
+
+    /// Affine Q4/group64 by default. Per-module overrides may only select
+    /// NVFP4 (4 bits, group 16) for language-model feed-forward modules; the
+    /// managed loader validates the exact module set against its inventory.
+    private static func nativePacking(_ config: [String: Any]) -> Packing? {
         let keys = ["quantization", "quantization_config"].filter { config[$0] != nil }
-        guard !keys.isEmpty else { return false }
-        return keys.allSatisfy { key in
+        guard !keys.isEmpty else { return nil }
+        var declaresNVFP4: Bool?
+        for key in keys {
             guard let q = config[key] as? [String: Any],
-                Set(q.keys).isSubset(of: ["bits", "group_size", "mode"]),
                 integer(q["bits"]) == 4, integer(q["group_size"]) == 64,
-                q["mode"] as? String == "affine" else { return false }
-            return true
+                q["mode"] as? String == "affine" else { return nil }
+            var nvfp4 = false
+            for (module, raw) in q where !["bits", "group_size", "mode"].contains(module) {
+                guard module.hasPrefix("model.language_model.layers."), module.contains(".mlp."),
+                    let override = raw as? [String: Any], override.count == 3,
+                    integer(override["bits"]) == 4, integer(override["group_size"]) == 16,
+                    override["mode"] as? String == "nvfp4" else { return nil }
+                nvfp4 = true
+            }
+            guard declaresNVFP4 == nil || declaresNVFP4 == nvfp4 else { return nil }
+            declaresNVFP4 = nvfp4
         }
+        return declaresNVFP4.map(Packing.init)
     }
 
     private static func integer(_ raw: Any?) -> UInt64? {

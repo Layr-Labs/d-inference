@@ -23,7 +23,7 @@ struct GLM5NextLoadHooks: Sendable {
 final class GLM5NextConstructionOwner: @unchecked Sendable {
     let roots: GLM5NextArtifactLoadRoots
     private let hooks: GLM5NextLoadHooks?
-    private var stream: Stream?
+    private var stream: MLX.Stream?
     private var artifact: GLM5NextArtifactLoader?
     private var model: GLM5NextModel?
     private var container: ModelContainer?
@@ -33,7 +33,7 @@ final class GLM5NextConstructionOwner: @unchecked Sendable {
         self.hooks = hooks
         roots = GLM5NextArtifactLoadRoots(beforeEvaluation: hooks?.beforeEvaluation)
     }
-    func capture(stream: Stream) { self.stream = stream }
+    func capture(stream: MLX.Stream) { self.stream = stream }
     func retain(_ artifact: GLM5NextArtifactLoader) { self.artifact = artifact }
     func retain(_ model: GLM5NextModel) {
         self.model = model

@@ -212,6 +212,17 @@
       "numeric_provenance_verified": false
     }
   ],
+  "shipped_artifact": {
+    "repository": "EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp",
+    "immutable_revision_recorded": false,
+    "weight_identity_recorded": false,
+    "chat_template_sha256": "46b2e2137e2759355b3e0e3e90cf4bd172b568437a75588af5c457cc8c095b2e",
+    "chat_template_bytes": 10954,
+    "chat_template_matches_official_pin": false,
+    "chat_template_derived_from_sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+    "chat_template_derivation": "official_numeric_attribute_access_written_as_subscript",
+    "chat_template_fixture": "fixtures/prompt-contract/glm53-flash/eigenlabs-chat_template.jinja"
+  },
   "qualification": {
     "full_model_weights_downloaded": true,
     "downloaded_candidate_repository": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",

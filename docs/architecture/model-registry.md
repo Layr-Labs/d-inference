@@ -22,7 +22,7 @@ catalog. Exact supported layouts and parameters belong in the [manifest referenc
 The [raw GLM discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
 uses bounded headers and non-weight file sizes, not a successful-download
 receipt. A malformed GLM inventory has no generic loadable discovery fallback;
-a separate tokenizer composition is outside this profile. These checks do not
+only the tokenizer shipped in the snapshot is supported. These checks do not
 replace catalog/source identity or native pre-allocation validation.
 
 ## Publication

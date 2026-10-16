@@ -7,14 +7,40 @@ import MLXLMServer
 /// Prompt semantics of the pinned official GLM-5.3-Flash template, not a model
 /// registration, raw-checkpoint repair or constrained-decoding capability.
 enum GLM5NextPromptPolicy {
-    static let templateSHA256 = "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5"
+    /// The only recognized template: the one shipped in
+    /// `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`. It is the official template
+    /// (`0c4099f3…`, still the golden rendering authority) with its four `.0.`
+    /// attribute accesses written as `[0].`, because the pinned Swift-Jinja
+    /// cannot parse the official spelling.
+    static let templateSHA256 = "46b2e2137e2759355b3e0e3e90cf4bd172b568437a75588af5c457cc8c095b2e"
 
     static func applies(modelType: String?) -> Bool {
         modelType == "glm5_next" || modelType == "glm5_next_text" || modelType == "glm5_next_mtp"
     }
 
+    /// The template renders low, high or max. The other OpenAI effort names map
+    /// to the nearest of those, matching the platform prompt sidecar. GLM has
+    /// no thinking-off level, so `none` and unknown values are refused.
     enum Effort: String, Sendable, Equatable, Decodable {
         case low, high, max
+
+        init?(requested: String) {
+            switch requested {
+            case "minimal", "low": self = .low
+            case "medium", "high": self = .high
+            case "xhigh", "max": self = .max
+            default: return nil
+            }
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            guard let effort = Self(requested: try container.decode(String.self)) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container, debugDescription: "unsupported GLM reasoning effort")
+            }
+            self = effort
+        }
     }
 
     /// Request-local original declarations survive the legacy model-blind
@@ -92,7 +118,7 @@ enum GLM5NextPromptPolicy {
         func validate() throws {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
-                    "controls require reasoning_effort low/high/max and Boolean clear_thinking; binary thinking controls are unsupported")
+                    "controls require reasoning_effort minimal/low/medium/high/xhigh/max and Boolean clear_thinking; binary thinking controls are unsupported")
             }
         }
     }
@@ -106,8 +132,8 @@ enum GLM5NextPromptPolicy {
         else { throw invalid("binary thinking controls are unsupported; use reasoning_effort") }
         func checked(_ value: String?) throws -> Effort? {
             guard let value else { return nil }
-            guard let effort = Effort(rawValue: value) else {
-                throw invalid("reasoning_effort must be low, high or max")
+            guard let effort = Effort(requested: value) else {
+                throw invalid("reasoning_effort must be minimal, low, medium, high, xhigh or max")
             }
             return effort
         }

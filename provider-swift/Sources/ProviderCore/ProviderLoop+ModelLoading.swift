@@ -199,7 +199,7 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
-        try GLM5NextLoadFaultState.requireHealthy()
+        try GLM5NextLoadFaultState.requireHealthy(modelType: advertisedModels[modelId]?.modelType)
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
@@ -266,20 +266,17 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
-        let glmPlan: GLM5NextArtifactPlan?
+        // Coordinator-connected GLM is not enabled: it is never advertised
+        // here and has no reviewed served-context bound, so its MTP history and
+        // KV would be sized for the 1,048,576-token model maximum. Refuse
+        // before any catalog request or reservation; only the bounded local
+        // server (`GLM5NextLocalQualification`) loads GLM.
         if GLM5NextPromptPolicy.applies(modelType: modelInfo.modelType) {
-            let plan = try await GLM5NextLoadFunnel.resolvePlan(modelID: modelId, directory: modelPath,
-                coordinatorURL: loopConfig.coordinatorURL)
-            guard ModelScanner.glm5NextLoadQuotationIsCurrent(
-                modelInfo, directory: plan.weights.directory,
-                tokenizerDirectory: plan.tokenizer.directory) else {
-                throw GLM5NextManagedLoadError.admission
-            }
-            glmPlan = plan
-        } else { glmPlan = nil }
-        var glmOwnership: GLM5NextArtifactOwnership? = nil
-        defer { glmOwnership?.release() }
-        let estimatedLoadGb = GLM5NextLoadFunnel.estimatedWeightsGb(scanned: modelInfo.estimatedMemoryGb, plan: glmPlan)
+            let message = "Model '\(modelId)' (glm5_next) loads only in the bounded local server; "
+                + "coordinator-connected GLM serving is not enabled"
+            recordModelLoadError(model: modelId, message: message)
+            throw InferenceError.modelLoadFailed(message)
+        }
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -288,10 +285,7 @@ extension ProviderLoop {
             nativeLoad = inspected
         } else { nativeLoad = nil }
         var mtpPreparation: SpecDecPreparation
-        if let glmPlan {
-            mtpPreparation = try GLM5NextLoadFunnel.preparation(plan: glmPlan,
-                mode: loopConfig.config.backend.mtpMode, externalPath: loopConfig.config.backend.mtpDrafterPath)
-        } else if let nativeLoad {
+        if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: loopConfig.config.backend.mtpMode,
                 externalPath: loopConfig.config.backend.mtpDrafterPath,
                 embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
@@ -334,7 +328,7 @@ extension ProviderLoop {
             // while it was suspended at the gate).
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
-            try GLM5NextLoadFaultState.requireHealthy()
+            try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
@@ -354,12 +348,9 @@ extension ProviderLoop {
                 revisionDirectory: revisionDirectory, autopilotCommandId: autopilotCommandId)
             return
         }
-        try GLM5NextLoadFaultState.requireHealthy()
-        glmOwnership = try glmPlan.map { try GLM5NextArtifactOwnership.acquire(plan: $0) }
         isLoadingAny = true
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        var retainGLMActivity = false
-        defer { if !retainGLMActivity { deviceActivity.finish() } }
+        defer { deviceActivity.finish() }
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
@@ -388,7 +379,6 @@ extension ProviderLoop {
         // The generation handle survives every load phase and catch cleanup.
         let pendingLoadID = "pending-load:\(modelId)"
         var pendingLoad: PendingModelLoadLease?
-        var glmNewcomer: EngineV2NewcomerBox?
         modelsLoading.insert(modelId)
         // The insert happens AFTER the specDecPreparation suspension above —
         // a hard swap during that await can have dropped this model from
@@ -422,7 +412,7 @@ extension ProviderLoop {
             // eligible native Qwen4 uses its validated incremental-copy envelope;
             // other layouts retain disk×1.2. Activation/minimum KV are additional.
             let targetWeightsGb = Self.loadGateWeightsGb(
-                estimatedWeightsGb: nativeLoad?.estimatedWeightsGb ?? estimatedLoadGb,
+                estimatedWeightsGb: nativeLoad?.estimatedWeightsGb ?? modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
             do {
                 try await evictUntilAvailable(
@@ -455,8 +445,9 @@ extension ProviderLoop {
                 return
             }
             do {
-                var pendingLoadBytes = GLM5NextLoadFunnel.pendingBytes(
-                    scanned: modelInfo.estimatedMemoryGb, plan: glmPlan, extra: extraWeightBytes)
+                var pendingLoadBytes = Self.pendingLoadReservationBytes(
+                    estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                    extraWeightBytes: extraWeightBytes)
                 pendingLoad = await kvBudget.claimPendingLoad(
                     requestID: pendingLoadID, weightBytes: pendingLoadBytes)
                 if pendingLoad == nil, extraWeightBytes > 0 {
@@ -464,8 +455,8 @@ extension ProviderLoop {
                     // Retry the independently serveable target once, without eviction.
                     mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
                     extraWeightBytes = 0
-                    pendingLoadBytes = GLM5NextLoadFunnel.pendingBytes(
-                        scanned: modelInfo.estimatedMemoryGb, plan: glmPlan, extra: 0)
+                    pendingLoadBytes = Self.pendingLoadReservationBytes(
+                        estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
                     pendingLoad = await kvBudget.claimPendingLoad(
                         requestID: pendingLoadID, weightBytes: pendingLoadBytes)
                 }
@@ -487,19 +478,13 @@ extension ProviderLoop {
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
-            let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
+            let artifactIdentityRequired = reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
                 requireFreshCryptographicHash: artifactIdentityRequired)
-            if let glmPlan {
-                guard preLoadHash.hash == glmPlan.weights.manifest.aggregateSHA256 else {
-                    throw GLM5NextManagedLoadError.identityMismatch
-                }
-                try glmPlan.weights.recheck()
-            }
             if !artifactIdentityRequired {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
@@ -528,14 +513,8 @@ extension ProviderLoop {
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
             try checkAutopilotLoadOwnership(autopilotCommandId)
-            let glmLoad: GLM5NextManagedLoad?
-            if let glmPlan, let pendingLoad {
-                glmLoad = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
-                    permit: pendingLoad, artifactOwnership: glmOwnership)
-            } else { glmLoad = nil }
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(
-                from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
-            if glmPlan != nil { glmNewcomer = newcomer }
+                from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -553,9 +532,6 @@ extension ProviderLoop {
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
-                if let glmPlan, postLoadHash.hash != glmPlan.weights.manifest.aggregateSHA256 {
-                    throw GLM5NextManagedLoadError.identityMismatch
-                }
                 let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
@@ -605,16 +581,8 @@ extension ProviderLoop {
             // Target-only sizing snapshot. After assistant load/bind, the slot
             // factory replaces its auxiliary component with the bytes actually
             // retained before final re-slicing and installation.
-            let targetSizing: SlotSizingSnapshot
-            if glmPlan != nil {
-                targetSizing = try await GLM5NextLoadFunnel.sizing(container: newcomer.borrow(),
-                    defaultMaxTokens: Self.schedulerDefaultMaxTokens)
-                mtpPreparation = try await EngineV2SlotFactory.glm5NextInlinePreparation(
-                    container: newcomer.borrow(), enabled: mtpPreparation.status.configured && mtpPreparation.status.reason == nil)
-            } else {
-                targetSizing = try await newcomer.borrowModel().sizing(
-                    modelPath: modelPath, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
-            }
+            let targetSizing = try await newcomer.borrowModel().sizing(
+                modelPath: modelPath, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
 
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -697,10 +665,6 @@ extension ProviderLoop {
                     cacheEligibleWeightHash: cacheEligibleWeightHash
                 )
             } catch let error as InferenceError {
-                if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) {
-                    releaseResliceGate()
-                    throw error
-                }
                 // Already shaped (e.g. the re-slice floor refusal) — record +
                 // rethrow unchanged so loadErrorStatusCode sees the original.
                 // The unwind ordering (release newcomer weights → clearCache
@@ -713,10 +677,6 @@ extension ProviderLoop {
                 }
                 throw error
             } catch {
-                if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) {
-                    releaseResliceGate()
-                    throw error
-                }
                 releaseResliceGate()
                 clearCacheAfterConfirmedNativeOwnership()
                 let message =
@@ -734,6 +694,15 @@ extension ProviderLoop {
             var engineBundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
+            // The re-slice gate is held: an unproven unwind must still release it.
+            func unwindHoldingResliceGate() async throws {
+                do {
+                    try await unwindBuiltSlotAndRegrow(modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                } catch {
+                    releaseResliceGate()
+                    throw error
+                }
+            }
 
             // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): engine
             // construction can retain additional load-time memory beyond the
@@ -770,7 +739,8 @@ extension ProviderLoop {
                 logger.warning(
                     "mtp: model=\(modelId) fallback reason=\(reason.rawValue); rebuilding target-only")
                 await engineV2Runtime.unregister(modelId: modelId)
-                try await GLM5NextRetirement.beforeRelease(engineV2Bridge)
+                do { try await GLM5NextRetirement.beforeRelease(engineV2Bridge) }
+                catch { releaseResliceGate(); throw error }
                 engineBundle.releaseAssistant()
                 clearCacheAfterConfirmedNativeOwnership()
                 do {
@@ -814,8 +784,7 @@ extension ProviderLoop {
                 // while the aborted newcomer's weights are still resident
                 // would let Σ(grants) exceed the true fleet budget. Still
                 // holding the re-slice gate; release only after.
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 let message = "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
@@ -833,8 +802,7 @@ extension ProviderLoop {
             // timing await above. Never install a new slot after teardown has
             // begun; unwind the bridge and weights under the re-slice gate.
             if isShuttingDown || Task.isCancelled {
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 throw CancellationError()
             }
@@ -843,8 +811,7 @@ extension ProviderLoop {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate
                 // and wedge every future load.
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 throw InferenceError.modelLoadFailed(
                     "internal: newcomer container missing at install for '\(modelId)'")
@@ -879,20 +846,6 @@ extension ProviderLoop {
             try await finishModelLoad(modelID: modelId, deviceActivity: deviceActivity)
         } catch {
             // Keep the load gate through cleanup and survivor-grant restoration.
-            if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) {
-                glmOwnership?.retainAfterUnprovenCompletion()
-                retainGLMActivity = true
-                var owners: [AnyObject] = [self, deviceActivity]
-                if let glmNewcomer { owners.append(glmNewcomer) }
-                GLM5NextLoadFaultState.retain(owners)
-                isLoadingAny = false
-                for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] { waiter.resume(throwing: error) }
-                releaseLoadGateWaiters()
-                throw error // Keep the real pending lease and activation marker; no reclaim/regrow.
-            }
-            if glmPlan != nil, let glmNewcomer {
-                await glmNewcomer.releaseAfterExternalResources()
-            }
             if let nativeLoad {
                 await finishNativeMiMoLoadFailure(modelID: modelId, load: nativeLoad, error: error)
                 throw error
@@ -916,16 +869,14 @@ extension ProviderLoop {
             await refreshActivationReserve()
             await resliceGrowSurvivors()
             isLoadingAny = false
-            let loadError: any Error = error as? GLM5NextManagedLoadError == .admission
-                ? InferenceError.modelLoadFailed("Insufficient memory for '\(modelId)' at native GLM allocation") : error
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume(throwing: loadError)
+                waiter.resume(throwing: error)
             }
             releaseLoadGateWaiters()
             // The load is over (failed): builds deferred behind it are
             // re-offered now — the box's arithmetic is back to pre-load.
             await retryReserveDeferredPrefetches()
-            throw loadError
+            throw error
         }
     }
 
@@ -1043,8 +994,11 @@ extension ProviderLoop {
         await engineV2Runtime.unregister(modelId: modelId)
         do { try await GLM5NextRetirement.beforeRelease(engineV2) }
         catch {
+            // The slot stays in modelSlots/modelsUnloading (weights counted,
+            // excluded from re-slicing and eviction); charge its KV claim so
+            // survivors never regrow into pages the faulted engine may hold.
             retainActivity = true
-            GLM5NextLoadFaultState.retain([self, engineBundle, deviceActivity])
+            await GLM5NextRetirement.retainUnpublished(engineBundle, with: [self, deviceActivity])
             return false
         }
         engineBundle.releaseAssistant()
@@ -1485,15 +1439,13 @@ extension ProviderLoop {
     }
 
     private func loadModelContainer(from directory: URL, modelID: String,
-                                     nativeMiMoLoad: MiMoV26ServingLoad? = nil,
-                                     nativeGLM5Load: GLM5NextManagedLoad? = nil) async throws -> ProviderModelContainer {
+                                    nativeMiMoLoad: MiMoV26ServingLoad? = nil) async throws -> ProviderModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel. Shared with the
         // standalone server via `ModelContainerLoading`.
-        try await ModelContainerLoading.loadServingContainer(from: directory, modelID: modelID,
-            nativeMiMoLoad: nativeMiMoLoad, nativeGLM5Load: nativeGLM5Load)
+        try await ModelContainerLoading.loadServingContainer(from: directory, modelID: modelID, nativeMiMoLoad: nativeMiMoLoad)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

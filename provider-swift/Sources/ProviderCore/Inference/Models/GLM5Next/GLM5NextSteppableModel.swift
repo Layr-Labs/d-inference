@@ -3,8 +3,11 @@ import MLXLLM
 import MLXLMCommon
 import MLXVLM
 
-/// Provider execution bridge over the original GLM target. The root is retained
-/// when present; no second text model, recurrent cache or vision owner is made.
+/// Target-only execution bridge over the original GLM target, constructed only
+/// for `.benchmark` engines (`prepareProductionBackend` refuses it for serving).
+/// The root is retained when present; no second text model, recurrent cache or
+/// vision owner is made. The non-recurrent forwards are protocol requirements
+/// EngineV2 never calls for a model with a recurrent-state spec.
 final class GLM5NextSteppableModel: CBv2RecurrentMTPSteppableModel,
     CBv2RecurrentPrefillSteppableModel, CBv2PositionedMultimodalSteppableModel,
     CBv2CompleteCheckpointKVTypeProviding, CBv2TargetAuxiliaryAllocationProviding

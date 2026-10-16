@@ -92,6 +92,13 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
             && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
     }
 
+    /// GLM serves only through its embedded-MTP native owner, and its managed
+    /// loader validates the trained head, so automatic intent needs no config
+    /// declaration probe. `off` and the process kill switch still disable it.
+    private static func isAutomaticGLM5NextTarget(modelType: String?) -> Bool {
+        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "glm5_next"
+    }
+
     func enablesMTP(
         forModelType modelType: String?,
         embeddedArtifactDeclared: Bool,
@@ -103,7 +110,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID) {
+            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
+                || Self.isAutomaticGLM5NextTarget(modelType: modelType) {
                 return true
             }
             guard embeddedArtifactDeclared,

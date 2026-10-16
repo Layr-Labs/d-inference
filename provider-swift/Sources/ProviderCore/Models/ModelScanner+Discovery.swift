@@ -115,7 +115,7 @@ extension ModelScanner {
     // MARK: - Model Parsing
 
     /// Parse model info from a snapshot directory (fast, no weight hashing).
-    static func parseModelInfo(snapshotDir: URL, modelName: String, tokenizerDirectory: URL? = nil) -> ModelInfo? {
+    static func parseModelInfo(snapshotDir: URL, modelName: String) -> ModelInfo? {
         let configPath = snapshotDir.appendingPathComponent("config.json")
 
         let (modelType, parameters) = FileManager.default.fileExists(atPath: configPath.path)
@@ -123,8 +123,7 @@ extension ModelScanner {
             : (nil, nil)
 
         let quantization = detectQuantization(modelName: modelName, snapshotDir: snapshotDir)
-        let glmLoad = modelType == "glm5_next" ? glm5NextLoadEstimate(
-            snapshotDir: snapshotDir, tokenizerDirectory: tokenizerDirectory) : nil
+        let glmLoad = modelType == "glm5_next" ? glm5NextLoadEstimate(snapshotDir: snapshotDir) : nil
         // An unknown/malformed GLM layout is not a loadable disk×1.2 fallback.
         if modelType == "glm5_next", glmLoad == nil { return nil }
         // GLM already counted its closed inventory with checked arithmetic.

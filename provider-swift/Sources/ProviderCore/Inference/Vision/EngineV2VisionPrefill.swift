@@ -319,8 +319,8 @@ public enum EngineV2VisionPrefill {
     ) async throws -> PreparedSubmission {
         try MediaIngest.rejectUnsupportedAudio(request)
         if await container.perform({ $0.model is GLM5NextModel }) {
-            return try await prepareGLM5Next(container: container, request: request,
-                templateControls: templateControls)
+            return try await prepareGLM5NextMedia(
+                container: container, request: request, templateControls: templateControls)
         }
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
@@ -369,75 +369,6 @@ public enum EngineV2VisionPrefill {
             } catch let mlxError as MLX.MLXError {
                 throw Self.visionPrefillError(for: mlxError)
             }
-        }
-    }
-
-    /// Decode with the existing bounded ingest, but preserve GLM's native
-    /// tool/history values and interleaved symbolic media parts. No URL or media
-    /// bytes enter the prompt, and non-user media is rejected rather than lost.
-    static func glm5NextUserInput(request: OpenAIChatCompletionRequest,
-                                  controls: ChatTemplateControls) async throws -> UserInput {
-        var textRequest = request
-        for index in request.messages.indices {
-            let message = request.messages[index]
-            if case .parts(let parts) = message.content {
-                for part in parts {
-                    switch part {
-                    case .text: break
-                    case .imageURL, .videoURL:
-                        guard message.role == .user else {
-                            throw EngineV2VisionPrefillError.unsupportedMedia("GLM media requires a user role")
-                        }
-                    case .inputAudio, .unsupported:
-                        throw EngineV2VisionPrefillError.unsupportedMedia("GLM supports image/video parts only")
-                    }
-                }
-            }
-            textRequest.messages[index].content = .text(message.textContent)
-        }
-        let prepared = try ToolChoicePromptPolicy.prepare(textRequest, modelType: "glm5_next")
-        let normalized = try GLM5NextPromptPolicy.normalizedTextInput(request: textRequest,
-            prepared: prepared, controls: controls)
-        var messages = normalized.messages
-        let prefix = messages.count - request.messages.count
-        guard (0...1).contains(prefix) else {
-            throw EngineV2VisionPrefillError.unsupportedMedia("GLM prompt alignment")
-        }
-        for index in request.messages.indices {
-            let message = request.messages[index]
-            guard message.role == .user, case .parts(let parts) = message.content else { continue }
-            messages[index + prefix]["content"] = try parts.map { part -> [String: String] in
-                switch part {
-                case .text(let text): return ["type": "text", "text": text]
-                case .imageURL: return ["type": "image"]
-                case .videoURL: return ["type": "video"]
-                case .inputAudio, .unsupported:
-                    throw EngineV2VisionPrefillError.unsupportedMedia("GLM supports image/video parts only")
-                }
-            }
-        }
-        let decoded = try await MediaIngest.buildUserInput(from: request, templateControls: controls)
-        return UserInput(messages: messages, images: decoded.images, videos: decoded.videos,
-            tools: normalized.tools, additionalContext: normalized.additionalContext)
-    }
-
-    private static func prepareGLM5Next(container: ModelContainer,
-        request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls) async throws -> PreparedSubmission {
-        let input = try await glm5NextUserInput(request: request, controls: templateControls)
-        let limits = VisionTowerBudget.liveLimits
-        return try await container.perform(nonSendable: input) { context, input in
-            guard let root = context.model as? GLM5NextModel,
-                let processor = context.processor as? GLM5NextProcessor else {
-                throw EngineV2VisionPrefillError.unsupportedVLM("GLM managed processor identity")
-            }
-            do {
-                return try await MLX.withError { errors in
-                    let prepared = try await processor.prepareDetailed(input: input)
-                    try throwIfMLXFaulted(errors)
-                    return try buildGLM5NextSubmission(root: root, prepared: prepared,
-                        towerLimits: limits, mlxErrors: errors)
-                }
-            } catch let error as MLX.MLXError { throw visionPrefillError(for: error) }
         }
     }
 

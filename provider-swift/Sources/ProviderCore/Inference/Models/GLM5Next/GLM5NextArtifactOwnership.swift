@@ -6,31 +6,24 @@ import Foundation
 final class GLM5NextArtifactOwnership: @unchecked Sendable {
     private let lock = NSLock()
     private let weightDirectory: URL
-    private let tokenizerDirectory: URL
     private let weightIdentity: ModelRevisionIdentity
-    private let tokenizerIdentity: ModelRevisionIdentity
     private var leases: [ModelArtifactWriteLease]
     private var claimed = false
     private var quarantined = false
 
     private init(plan: GLM5NextArtifactPlan, leases: [ModelArtifactWriteLease]) {
         weightDirectory = plan.weights.directory
-        tokenizerDirectory = plan.tokenizer.directory
         weightIdentity = ModelRevisionIdentity(plan.weights.manifest)
-        tokenizerIdentity = ModelRevisionIdentity(plan.tokenizer.manifest)
         self.leases = leases
     }
 
     static func acquire(plan: GLM5NextArtifactPlan) throws -> GLM5NextArtifactOwnership {
         var leases: [ModelArtifactWriteLease] = []
         do {
-            for id in Set([plan.weights.catalog.id, plan.tokenizer.catalog.id]).sorted() {
-                leases.append(
-                    try ModelArtifactWriteLease.acquireIfAvailable(
-                        modelID: id, operation: "GLM load"))
-            }
+            leases.append(
+                try ModelArtifactWriteLease.acquireIfAvailable(
+                    modelID: plan.weights.catalog.id, operation: "GLM load"))
             try plan.weights.recheck()
-            try plan.tokenizer.recheck()
             return .init(plan: plan, leases: leases)
         } catch {
             for lease in leases { lease.release() }
@@ -42,9 +35,7 @@ final class GLM5NextArtifactOwnership: @unchecked Sendable {
         try lock.withLock {
             guard !leases.isEmpty, !claimed, !quarantined,
                 plan.weights.directory == weightDirectory,
-                plan.tokenizer.directory == tokenizerDirectory,
-                ModelRevisionIdentity(plan.weights.manifest) == weightIdentity,
-                ModelRevisionIdentity(plan.tokenizer.manifest) == tokenizerIdentity
+                ModelRevisionIdentity(plan.weights.manifest) == weightIdentity
             else {
                 throw GLM5NextManagedLoadError.lifecycle
             }

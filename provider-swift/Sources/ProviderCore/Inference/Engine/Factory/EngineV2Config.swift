@@ -244,6 +244,7 @@ public enum EngineV2Factory {
                 // heartbeat as `BackendSlotCapacity.kv_backend_fallback_reason`.
                 kvBackendFallbackReason: build.kvBackendFallbackReason,
                 advertisedContextTokens: advertisedContextTokens
+                    ?? build.glm5NextMaximumContextTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: modelId, environment: runtimePolicyEnvironment),
                 glm5NextNativeOwner: glmOwner,

@@ -22,13 +22,15 @@ struct EngineV2PreparedModel: @unchecked Sendable {
 
     var assistantBytes: UInt64 { mtpStatus.assistantBytes }
 
-    func fallingBack(_ reason: MTPFallbackReason) -> Self {
-        let target: any LanguageModel
-        if let protected = servingModel as? GLM5NextProtectedModel { target = protected.root }
-        else { target = servingModel }
+    /// GLM has no target-only serving fallback: its embedded-MTP engine carries
+    /// the only checked native completion receipt.
+    func fallingBack(_ reason: MTPFallbackReason) throws -> Self {
+        guard !(servingModel is GLM5NextProtectedModel) else {
+            throw GLM5NextManagedLoadError.nativeMTPRequired
+        }
         return Self(
             snapshot: snapshot,
-            servingModel: target,
+            servingModel: servingModel,
             assistant: nil,
             mtpStatus: mtpStatus.fallingBack(reason),
             mtpArtifact: nil)
@@ -238,11 +240,10 @@ extension EngineV2SlotFactory {
         let snapshot = await modelSnapshot(container: container)
 
         if snapshot.model is GLM5NextModel {
-            // A native profile is one-shot and bound to its original backend.
-            // Warm recovery must build a new target-only engine, never reuse a
-            // consumed assistant execution factory as a fresh native contract.
-            return .init(snapshot: snapshot, servingModel: snapshot.model, assistant: nil,
-                mtpStatus: previousStatus.fallingBack(.engineInactive), mtpArtifact: nil)
+            // A native profile is one-shot and bound to its original backend,
+            // and target-only GLM has no checked completion receipt. Recovery
+            // must unload through the native owner, never rebuild in place.
+            throw GLM5NextManagedLoadError.nativeMTPRequired
         }
 
         var fallbackStatus = previousStatus.active

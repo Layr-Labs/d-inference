@@ -11,6 +11,9 @@ enum GLM5NextManagedLoadError: Error, Equatable {
     case changed(String)
     case admission, lifecycle
     case managedLoadRequired, identityMismatch, retirementUnproven
+    /// Target-only GLM has no checked native completion receipt; only the
+    /// owned embedded-MTP engine may serve.
+    case nativeMTPRequired
 }
 
 /// Catalog-pinned local files, not a locally asserted verification receipt.
@@ -202,48 +205,26 @@ struct GLM5NextManifestSnapshot: Sendable {
     }
 }
 
-/// An explicit separately catalog-pinned tokenizer/processor snapshot. It uses
-/// ModelConfiguration.tokenizerSource; it never rewrites the weight snapshot.
-/// The caller must select this reviewed composition, not infer it from a failed
-/// raw template or the presence of official reference fixtures.
-struct GLM5NextTokenizerComposition: Sendable {
-    let snapshot: GLM5NextManifestSnapshot
-    let weightAggregateSHA256: String
-    init(
-        directory: URL, catalog: CatalogModel, manifest: ModelManifest,
-        weightAggregateSHA256: String
-    ) throws {
-        guard
-            manifest.files.allSatisfy({ !ModelScanner.isWeightFile($0.path) && $0.role != "weight" }
-            ),
-            weightAggregateSHA256.count == 64
-        else { throw GLM5NextManagedLoadError.invalidManifest }
-        snapshot = try .init(directory: directory, catalog: catalog, manifest: manifest)
-        self.weightAggregateSHA256 = weightAggregateSHA256
-    }
-}
-
 struct GLM5NextArtifactPlan: Sendable {
+    /// The pinned snapshot, including its shipped tokenizer and template.
     let weights: GLM5NextManifestSnapshot
-    let tokenizer: GLM5NextManifestSnapshot
     let configuration: GLM5NextConfiguration
     let descriptors: [GLM5NextWeightInventory.Tensor]
+    /// Declared by config.json and checked against the complete inventory.
+    let storage: GLM5NextWeightInventory.Storage
     let nativeIdentity: GLM5NextArtifactIdentity
     let processorConfiguration: GLM5NextProcessorConfiguration
     let quotation: GLM5NextLoadQuotation
     /// Expected identities from the pinned manifests. File bytes are verified
     /// only by the admitted on-demand load, never by metadata discovery.
-    let rawTemplateSHA256: String
-    let selectedTemplateSHA256: String
+    let templateSHA256: String
     let eosTokenIDs: Set<Int>
-    var usesSeparateTokenizer: Bool { tokenizer.directory != weights.directory }
-    var expectsOfficialReferenceTemplate: Bool {
-        selectedTemplateSHA256 == GLM5NextPromptPolicy.templateSHA256
+    var usesShippedPromptTemplate: Bool {
+        templateSHA256 == GLM5NextPromptPolicy.templateSHA256
     }
 
     static func inspect(
-        directory: URL, catalog: CatalogModel, manifest: ModelManifest,
-        tokenizerComposition: GLM5NextTokenizerComposition? = nil
+        directory: URL, catalog: CatalogModel, manifest: ModelManifest
     ) throws -> Self {
         let weights = try GLM5NextManifestSnapshot(
             directory: directory, catalog: catalog, manifest: manifest)
@@ -284,9 +265,10 @@ struct GLM5NextArtifactPlan: Sendable {
         let index = try JSONDecoder().decode(
             Index.self,
             from: weights.readMetadata("model.safetensors.index.json", maximumBytes: 32 << 20))
+        let storage = try Self.qualifiedStorage(config)
         let schema = try GLM5NextWeightInventory.expectedTensors(
             configuration: config,
-            storage: .vontraQ4, shard: "placeholder.safetensors")
+            storage: storage, shard: "placeholder.safetensors")
         guard Set(schema.map(\.name)) == Set(index.weightMap.keys) else {
             throw GLM5NextManagedLoadError.metadata("index tensor inventory")
         }
@@ -303,60 +285,21 @@ struct GLM5NextArtifactPlan: Sendable {
             return .init(name: entry.name, shape: entry.shape, dtype: entry.dtype, shard: shard)
         }
         let inventory = try GLM5NextWeightInventory.validate(
-            configuration: config, tensors: descriptors, storage: .vontraQ4)
+            configuration: config, tensors: descriptors, storage: storage)
         guard inventory.entries.values.reduce(0, { $0 + $1.bytes }) == index.metadata.totalSize
         else {
             throw GLM5NextManagedLoadError.metadata("index total_size")
         }
-        var tokenizer = weights
-        if let composition = tokenizerComposition {
-            guard composition.weightAggregateSHA256 == manifest.aggregateSHA256,
-                composition.snapshot.directory != weights.directory
-            else {
-                throw GLM5NextManagedLoadError.identityMismatch
-            }
-            tokenizer = composition.snapshot
-            // A reviewed template composition must not silently remap the
-            // original embedding vocabulary. Only the template value may differ
-            // in tokenizer_config; all lexical artifacts remain byte-identical.
-            for name in [
-                "tokenizer.json", "tokenizer.model", "vocab.json", "merges.txt",
-                "added_tokens.json", "special_tokens_map.json",
-            ] {
-                guard weights.files[name]?.sha256 == tokenizer.files[name]?.sha256,
-                    weights.files[name]?.sizeBytes == tokenizer.files[name]?.sizeBytes
-                else {
-                    throw GLM5NextManagedLoadError.metadata(
-                        "composition changes tokenizer vocabulary")
-                }
-            }
-            func tokenizerOptions(_ snapshot: GLM5NextManifestSnapshot) throws -> Data {
-                guard
-                    var object = try JSONSerialization.jsonObject(
-                        with:
-                            snapshot.readMetadata("tokenizer_config.json", maximumBytes: 4 << 20))
-                        as? [String: Any]
-                else {
-                    throw GLM5NextManagedLoadError.metadata("tokenizer configuration")
-                }
-                object.removeValue(forKey: "chat_template")
-                return try JSONSerialization.data(withJSONObject: object, options: .sortedKeys)
-            }
-            guard try tokenizerOptions(weights) == tokenizerOptions(tokenizer) else {
-                throw GLM5NextManagedLoadError.metadata(
-                    "composition changes non-template tokenizer options")
-            }
-        }
-        guard tokenizer.files["tokenizer.json"] != nil,
-            tokenizer.files["tokenizer_config.json"] != nil,
-            tokenizer.files["tokenizer.json"]!.sizeBytes <= 512 << 20
+        guard weights.files["tokenizer.json"] != nil,
+            weights.files["tokenizer_config.json"] != nil,
+            weights.files["tokenizer.json"]!.sizeBytes <= 512 << 20
         else {
             throw GLM5NextManagedLoadError.metadata("bounded local tokenizer required")
         }
-        _ = try tokenizer.readMetadata("tokenizer_config.json", maximumBytes: 4 << 20)
-        _ = try tokenizer.readMetadata("chat_template.jinja", maximumBytes: 2 << 20)
+        _ = try weights.readMetadata("tokenizer_config.json", maximumBytes: 4 << 20)
+        _ = try weights.readMetadata("chat_template.jinja", maximumBytes: 2 << 20)
         let processor = try processorConfiguration(
-            tokenizer.readMetadata("processor_config.json", maximumBytes: 1 << 20),
+            weights.readMetadata("processor_config.json", maximumBytes: 1 << 20),
             configuration: config)
         let coreFiles = Set(["config.json", "model.safetensors.index.json"]).union(shards)
         let identityFiles = Dictionary(
@@ -367,14 +310,10 @@ struct GLM5NextArtifactPlan: Sendable {
                 }
                 return (name, GLM5NextArtifactIdentity.File(bytes: bytes, sha256: file.sha256))
             })
-        guard let rawTemplate = weights.files["chat_template.jinja"]?.sha256,
-            let selectedTemplate = tokenizer.files["chat_template.jinja"]?.sha256
-        else {
+        guard let template = weights.files["chat_template.jinja"]?.sha256 else {
             throw GLM5NextManagedLoadError.metadata("template identity")
         }
-        let quotation = try GLM5NextLoadQuotation(
-            manifest: manifest, inventory: inventory,
-            tokenizerManifest: tokenizer.manifest)
+        let quotation = try GLM5NextLoadQuotation(manifest: manifest, inventory: inventory)
         var eos = Set(config.textConfig.eosTokenIds?.values ?? [])
         if weights.files["generation_config.json"] != nil {
             struct Generation: Decodable {
@@ -390,16 +329,28 @@ struct GLM5NextArtifactPlan: Sendable {
             throw GLM5NextManagedLoadError.metadata("generation EOS vocabulary")
         }
         try weights.recheck()
-        try tokenizer.recheck()
         return .init(
-            weights: weights, tokenizer: tokenizer, configuration: config,
-            descriptors: descriptors,
+            weights: weights, configuration: config,
+            descriptors: descriptors, storage: storage,
             nativeIdentity: .init(
                 repository: source.repoID,
                 revision: source.revision, files: identityFiles), processorConfiguration: processor,
-            quotation: quotation, rawTemplateSHA256: rawTemplate,
-            selectedTemplateSHA256: selectedTemplate,
-            eosTokenIDs: eos)
+            quotation: quotation, templateSHA256: template, eosTokenIDs: eos)
+    }
+
+    /// The affine-Q4 build and the NVFP4-expert hybrid are the serving layouts.
+    /// Other packed declarations (per-module affine overrides) stay refused.
+    static func qualifiedStorage(_ config: GLM5NextConfiguration) throws
+        -> GLM5NextWeightInventory.Storage
+    {
+        let storage: GLM5NextWeightInventory.Storage
+        do { storage = try GLM5NextWeightInventory.packedStorage(declaredBy: config) } catch {
+            throw GLM5NextManagedLoadError.metadata("packed quantization declaration")
+        }
+        guard storage == .vontraQ4 || storage == .nvfp4Hybrid else {
+            throw GLM5NextManagedLoadError.metadata("unqualified packed layout")
+        }
+        return storage
     }
 
     private static func processorConfiguration(_ data: Data, configuration: GLM5NextConfiguration)

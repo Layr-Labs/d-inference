@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -99,6 +99,14 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 
 ### Load gate (`ModelLoadAdmission`)
 
+GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage
+layer charges `(headDim + valueHeadDim) * kvHeads * 4` bytes per token, not the
+generic symmetric FP16 estimate. KDA remains a separate fixed request charge
+including the engine's three-generation reservation; it is neither a weight nor
+a marginal KV token charge
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFunnel.swift`,
+`GLM5NextLoadFunnel.kvBytesPerToken`).
+
 There is no qualified GLM5Next load profile or hardware tier. Its initial
 [native integration](../design/glm53-flash-native.md) retains the ordinary
 full-artifact load allowance and adds native construction/tokenizer transients
@@ -117,8 +125,9 @@ and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextArtifactLoader.swift`.
 
 The raw same-directory [discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
 now carries that complete allowance into scanner-based memory consumers.
-`ModelScanner.glm5NextLoadEstimate` refuses malformed or separate-tokenizer
-profiles instead of silently quoting only disk × 1.2. It remains a metadata
+`ModelScanner.glm5NextLoadEstimate` refuses malformed profiles instead of
+falling back to the generic disk × 1.2, and prices only the tokenizer shipped in
+the snapshot. It remains a metadata
 bound, not native validation, a hardware qualification or permission to bypass
 the actual managed-load reservation and post-load guards.
 

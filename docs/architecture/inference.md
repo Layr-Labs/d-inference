@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -77,6 +77,84 @@ full-artifact qualification. Source lives under
 [in-progress integration contract](../design/glm53-flash-native.md) for the
 required paged, complete-prefix and trained-MTP gates.
 
+An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
+can admit the exact pinned artifact into standalone discovery without changing
+`EngineV2SupportedModels` or coordinator advertisement. The local selection
+cannot bypass managed loading, native ownership, memory admission or backend
+requirements. Coordinator-connected mode refuses GLM in
+`ProviderLoop.ensureModelLoaded` before any catalog request, because no served
+context bound exists there. GLM MTP is on under the default `mtp_mode = "auto"`;
+local startup skips GLM only when `mtp_mode = "off"` or the `DARKBLOOM_CBV2_MTP`
+kill switch disables MTP (`GLM5NextLocalServing`).
+A GLM slot is published only when its bundle and engine report
+MTP active and the bridge carries the native operation owner; disabled MTP, the
+kill switch, the assistant re-slice floor, post-build headroom fallback and
+wedge recovery never rebuild GLM target-only, because target-only GLM has no
+checked completion receipt. `prepareProductionBackend` also refuses a
+target-only GLM engine for serving construction; only benchmarks build one.
+
+Every GLM load fixes `GLM5NextExecutionPolicy.serving` on the target and its
+embedded MTP layer (`GLM5NextManagedLoad.executionPolicy`); the reference
+per-token KDA and selection graphs exceed MLX's Metal resource limit at real
+prompt lengths. The policy is part of the encrypted checkpoint storage identity
+(`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
+engine prices one worst-case step at setup and stays inactive when it exceeds
+the post-load envelope; each sparse query token retains about 46 MB of
+selected-latent reads until the step fence. With four requests a 512-token step
+prices 33.6 GB and a 1,024-token step 62.9 GB at 8K context, against about
+56.8 GB of admission on a 256 GiB host after load, so the GLM scheduler caps
+prefill chunks and steps at 512 tokens and disables solo stripes
+(`EngineV2Factory.glm5NextMaximumStepTokens`, `glm5NextServingScheduler`). These
+limits rise after in-kernel paged reads remove the retained reads and re-pricing
+admits a larger step. A refused activation names the native reason (for example
+`capacityExhausted(needed:available:)`) and the step geometry in the load error
+(`EngineV2Factory.glm5NextActivationRefusal`).
+
+Automatic KV selection resolves paged for every GLM target; an explicit
+contiguous selection, the paged kill switch or the crash-loop guard refuses the
+GLM load rather than degrading (`EngineV2Factory.prepareProductionBackend`).
+Request concurrency follows `engine_v2_max_concurrent` (default 4, at most 8
+without a reviewed profile); GLM adds no width-1 pin, and native step pricing
+and per-request admission bound what runs together. The protected profile is
+serial-target MTP, whose native contract requires a speculative batch of 1
+(`GLM5NextProtectedModel.resolvedMTPConfiguration`); rectangular batched
+verification is not yet enabled for serving. Prefill interleave keeps the global
+one-partial-prefill default, which a 512-token step could not share anyway. The bridge advertises the enforced
+context, so an over-length request is refused with 400 before native admission,
+and an omitted `max_tokens` defaults to half the bound. Omitted sampling fields
+use the artifact's `generation_config.json` (`EngineV2SamplingDefaults`).
+
+GLM images use ordinary causal token positions: the text tower has no
+positional encoding, so a submission carries causal spans and no position
+state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
+The original request is normalized by the GLM prompt policy exactly as text is,
+with symbolic image parts, and the processor expands each `<|image|>` to its
+feature count (16 to 8000 per image). Every placement is validated before tower
+work; the tower then runs one image at a time with query-tiled attention, so no
+frame-square score tensor is allocated, and every evaluation checks the scoped
+MLX fault box. The scheduler's `VisionMemoryGate` reservation adds the
+processor's prepared-pixel cap, the tower working set of a full 32,000-patch
+frame and every image at its token cap (`GLM5NextVisionBudget.mediaReservation`).
+Processor refusals are deterministic 400s; tower and MLX faults keep the
+retriable refusal. Media requests are excluded from prefix lookup and capture
+(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images, and
+they decode without MTP speculation. A GLM slot serves images only when its
+engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the
+embedded-MTP native engine issues that permission, so image rows prefill and
+decode target-only next to speculating text rows. Video is refused with 400.
+
+An unproven retirement, including one during a post-build unwind, retains the
+bridge, newcomer, artifact ownership, pending-load lease, loading marker and
+device activity. It never refunds the lease, clears the cache or regrows
+survivors for that load. Retained GLM faults quarantine GLM work and grant
+growth, but do not quarantine MiMo or other families. Their unpublished weight
+and KV bytes are charged into every fleet KV budget, so other families' new and
+regrown grants cannot reuse that memory. Allocator-cache trimming only frees
+unowned cached allocations and is not native-retirement proof. Local `/metrics`
+reports the retained-fault state, retained owner-object count and charged bytes
+(`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`
+refuses a second close attempt, so a retained close is never re-driven.
+
 Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
 the selected local tokenizer using the provider's actual GLM defaults,
 reasoning controls and tool/history normalization. The generic template check
@@ -87,10 +165,13 @@ These boundaries are implemented in
 
 Raw same-directory GLM discovery uses a
 [complete header-derived LOAD quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation),
-including full expert-bank, vision, MTP and tokenizer accounting. This does not
-enable the native serving path. A separate tokenizer composition cannot reuse
-that raw quote; the resolved source must pass the scanner recheck and the
-managed native loader's independent validation before allocation.
+including full expert-bank, vision, MTP and tokenizer accounting plus a
+measured residual above raw source bytes instead of disk × 1.2. This does not
+enable the native serving path. The local selection refuses a separate
+tokenizer, which this raw quote does not cover, and the provider has no
+tokenizer-composition load path; the resolved source
+must pass the scanner recheck and the managed native loader's independent
+validation before allocation.
 
 The low-level `glm5` tool parser uses the official XML framing with
 schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
@@ -101,9 +182,12 @@ string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or enable GLM model advertisement.
 The request-local [GLM prompt contract](../reference/protocol-messages.md#unregistered-glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
-Its official-template renderer currently needs a locally tested Swift-Jinja
-numeric-attribute patch. That validation does not resolve the separate
-reviewed-dependency and clean-build gates; see the [build boundary](../developer/build.md).
+`GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
+`EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`, and local LOAD refuses any other
+template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
+unpatched. It is the official template with numeric attribute access written as
+`[0]` subscripts; the official hash remains the golden rendering authority and
+fails the load-time render check. See the [build boundary](../developer/build.md).
 
 ## Mechanism
 

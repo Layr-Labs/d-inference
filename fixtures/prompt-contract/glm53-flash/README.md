@@ -4,13 +4,27 @@ These are exact official-template rendering fixtures, not a model registration,
 raw-candidate repair, tokenizer comparison or native inference qualification.
 
 - `chat_template.jinja` is the unchanged 10,950-byte official source from
-  `zai-org/GLM-5.3-Flash@91b69215804f2d2036a8867f6ce44848e278dcda`.
-- `LICENSE` retains the upstream MIT notice.
-- `metadata.json` separates official template identity from the differing raw
-  Vontra 4-bit MTP template. Neither snapshot is rewritten automatically.
+  `zai-org/GLM-5.3-Flash@91b69215804f2d2036a8867f6ce44848e278dcda`. It remains
+  the rendering authority for `goldens.json`.
+- `eigenlabs-chat_template.jinja` is the 10,954-byte template shipped in the
+  `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp` artifact. It replaces the official
+  source's four numeric attribute accesses (`m.content.0.type`,
+  `tr.output.0.type`, `m.content.0.output`, `entry.output.0.type`) with `[0]`
+  subscripts. The pinned Swift-Jinja 2.3.6 renderer cannot parse the official
+  spelling, so the provider accepts only this artifact template.
+- `LICENSE` retains the upstream MIT notice for both templates.
+- `metadata.json` separates the official template, the shipped artifact
+  template and the differing raw Vontra 4-bit MTP template. None of these
+  snapshots is rewritten automatically.
 - `goldens.json` contains complete rendered UTF-8 strings and their SHA-256
   hashes. Reference generation used local Jinja2 3.1.6 with sorted object inputs
   and compact sorted-key `tojson`, matching the native renderer's conventions.
+
+The artifact template is equivalent, not merely similar: Jinja2 3.1.6 compiles
+both templates to byte-identical Python code, and both render every golden
+identically. The provider must render the artifact template with the unpatched
+pinned Swift-Jinja and match each golden byte for byte. The platform sidecar
+must render both templates identically to the same goldens.
 
 The fixtures distinguish effort (`low`, `high`, `max`, default `max`) from
 `clear_thinking` (default `false`). Clearing only suppresses earlier historical

@@ -187,7 +187,7 @@ extension ProviderLoop {
         } catch {
             if let replacement {
                 do { try await GLM5NextRetirement.beforeRelease(replacement.bridge) }
-                catch { GLM5NextLoadFaultState.retain([self, replacement]); throw error }
+                catch { await GLM5NextRetirement.retainUnpublished(replacement, with: [self]); throw error }
                 replacement.releaseAssistant()
             }
             prepared?.assistant?.release()
@@ -242,7 +242,7 @@ extension ProviderLoop {
         do { try await GLM5NextRetirement.beforeRelease(original.engineV2) }
         catch {
             retainActivity = true
-            GLM5NextLoadFaultState.retain([self, original.engineBundle, staged.replacement, deviceActivity])
+            await GLM5NextRetirement.retainUnpublished(original.engineBundle, with: [self, staged.replacement, deviceActivity])
             throw error
         }
         original.engineBundle.releaseAssistant()
@@ -266,7 +266,7 @@ extension ProviderLoop {
         do { try await GLM5NextRetirement.beforeRelease(staged.replacement.bridge) }
         catch {
             retainActivity = true
-            GLM5NextLoadFaultState.retain([self, staged.replacement, deviceActivity])
+            await GLM5NextRetirement.retainUnpublished(staged.replacement, with: [self, deviceActivity])
             return
         }
         staged.replacement.releaseAssistant()
@@ -276,7 +276,6 @@ extension ProviderLoop {
     }
 
     private func releaseMTPStagingAndRegrow(_ lease: PendingModelLoadLease) async {
-        guard !GLM5NextLoadFaultState.isRetained else { return }
         await acquireResliceGate()
         defer { releaseResliceGate() }
         mtpStagingReservations.release(lease)

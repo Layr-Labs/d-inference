@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -992,7 +992,13 @@ the choices that fit in free memory first and measures the fit again before
 the start, and never offers a model whose pair-serving grant refuses the pair.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
-(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`).
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). The stage memory
+gate's two fixed margins (the admissible floor, 6 GiB, and the loading
+headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
+below that they are the same share of the observed Mac's memory, never under
+2 and 1.5 GiB (`QwenDenseStageLoadPolicy.minimumAdmissibleBytes(physicalMemoryBytes:)`),
+so a smaller Mac takes the share it can hold instead of none. Every load and
+request is still checked against that Mac's memory at that moment.
 
 ## Invariants
 

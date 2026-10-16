@@ -143,7 +143,7 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
     /// counters) is thrown too, and noted.
     func admits(_ os: QwenDenseStageLoadOSObservation, bytes: Int,
                 now: UInt64 = DispatchTime.now().uptimeNanoseconds,
-                floor: Int = QwenDenseStageLoadPolicy.minimumAdmissibleBytes) throws -> Bool {
+                floor: Int? = nil) throws -> Bool {
         lock.lock()
         let register = !registered
         registered = true

@@ -65,6 +65,8 @@ final class OnboardingLive: @unchecked Sendable {
     /// Choices that only the other Mac has (by choice index): it sends them here first.
     private var peerChoices: [Int: ClusterSetupLocalModel] = [:]
     private var chosenTitle: String?
+    /// The list `planModels` last returned on this Mac (from the leader when forwarded), so a choice names its model.
+    private var listedChoices: [ClusterOnboardingModelChoice] = []
     /// Set while this (leader) Mac answers a command forwarded from another member: its lines name this Mac by its
     /// name instead of "this Mac", which would mean the Mac that shows them.
     private var answeringForward = false
@@ -214,7 +216,7 @@ final class OnboardingLive: @unchecked Sendable {
             case .success(let choices): return .init(lines: [], failed: false, leaderID: leaderID, choices: choices)
             case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
             }
-        case .adopt: return lines(localAdopt(request.index ?? -1))
+        case .adopt: return lines(localAdopt(request.index ?? -1, model: request.model))
         case .serve: return lines(localServe())
         case .stop: return lines(localStop())
         case .readiness:
@@ -513,7 +515,9 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
-        routed(.init(op: .planModels), seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
+        let result = routed(.init(op: .planModels), seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
+        if case .success(let listed) = result { lock.withLock { listedChoices = listed } }
+        return result
     }
 
     func localPlanModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
@@ -600,7 +604,9 @@ final class OnboardingLive: @unchecked Sendable {
             let mac = rank.local ? localName : peerName
             switch rank.fit {
             case "now": return nil
-            case "afterApplicationsRelease": return "Quit apps on \(mac) first."
+            // macOS would give it (files it keeps in memory), the gate does not count all of it yet: quitting an app
+            // frees memory the gate counts in full. A restart is said only when nothing else could free enough.
+            case "afterApplicationsRelease", "gateCountsLess": return "Quit apps on \(mac) first."
             case "never": return "\(mac) cannot hold its part at all."
             default: return "Restart \(mac) to free memory."
             }
@@ -614,8 +620,8 @@ final class OnboardingLive: @unchecked Sendable {
     static func remedy(_ fit: ClusterPlacementFit, mac: String) -> String? {
         switch fit {
         case .now: return nil
-        case .afterApplicationsRelease: return "Quit apps on \(mac) first."
-        case .gateCountsLess, .afterRestart: return "Restart \(mac) to free memory."
+        case .afterApplicationsRelease, .gateCountsLess: return "Quit apps on \(mac) first."
+        case .afterRestart: return "Restart \(mac) to free memory."
         case .never: return "\(mac) cannot hold its part at all."
         }
     }
@@ -680,14 +686,22 @@ final class OnboardingLive: @unchecked Sendable {
             quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.id)
     }
 
-    /// Darkbloom's catalog of text models, as single-Mac Darkbloom reads it; empty when it does not answer within a few seconds.
+    /// Darkbloom's catalog of text models, as single-Mac Darkbloom reads it. When it does not answer within a few
+    /// seconds (a Mac still busy after a restart, no network), the last list it gave is used, so models and their
+    /// names do not vanish from the screen; empty only before the first answer.
     func fetchCatalog() -> [CatalogModel] {
-        guard let config = try? ConfigManager.loadOrDefaults(from: settings.service.wizard.providerConfiguration) else { return [] }
+        let saved = store.paths.directory.appendingPathComponent("catalog.json")
+        func last() -> [CatalogModel] {
+            guard let data = ClusterModelStore.readSmall(saved) else { return [] }
+            return (try? JSONDecoder().decode([CatalogModel].self, from: data)) ?? []
+        }
+        guard let config = try? ConfigManager.loadOrDefaults(from: settings.service.wizard.providerConfiguration) else { return last() }
         let client = ModelCatalogClient(coordinatorURL: config.coordinator.url)
         let box = ClusterOnboardingMailbox<[CatalogModel]>()
         let done = DispatchSemaphore(value: 0)
         Task.detached { box.post((try? await client.fetchCatalog(typeFilter: "text")) ?? []); done.signal() }
-        guard done.wait(timeout: .now() + 6) == .success, let models = box.take().first else { return [] }
+        guard done.wait(timeout: .now() + 10) == .success, let models = box.take().first, !models.isEmpty else { return last() }
+        if let data = try? JSONEncoder().encode(models) { try? data.write(to: saved, options: [.atomic]) }
         return models
     }
 
@@ -851,12 +865,25 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .adopt, index: index), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
+        // The choice travels with its model's id: a leader that restarted since it made the list plans again and finds it.
+        let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
+        return routed(.init(op: .adopt, index: index, model: model), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
-    func localAdopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
+    /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
+    /// list is gone (its service restarted) or no longer shows that model there, it plans again and adopts it by id.
+    func localAdopt(_ index: Int, model: String? = nil) -> Result<[String], ClusterOnboardingFailure> {
+        var index = index
+        if let model, lock.withLock({ !choices.indices.contains(index) || choices[index].title != model }) {
+            if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
+            if case .failure(let failure) = localPlanModels() { return .failure(failure) }
+            guard let found = lock.withLock({ choices.firstIndex { $0.title == model } }) else {
+                return .failure(.init("\(model) is not offered on these Macs any more; run `darkbloom cluster` again to choose."))
+            }
+            index = found
+        }
         guard let peer = lock.withLock({ peerReport }), let choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
-            return .failure(.init("Nothing to adopt: plan again."))
+            return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
         if leadership?.serving == true {

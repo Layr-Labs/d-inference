@@ -636,10 +636,13 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     public var op: Operation
     /// `adopt`: the choice's index as `planModels` listed it on the leader.
     public var index: Int?
+    /// `adopt`: the id of the model at `index`, so a leader whose list is gone (it restarted) plans again and finds it.
+    /// Nil from an older build.
+    public var model: String?
     public var localOnly: Bool?
     public var bind: String?
-    public init(op: Operation, index: Int? = nil, scope: ClusterServingScope? = nil) {
-        self.op = op; self.index = index; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil) {
+        self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
     }
 
     /// `scope`'s value; nil when it names none or an address the local API does not take.

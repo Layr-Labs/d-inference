@@ -14,9 +14,9 @@ extension ClusterDeviceMemory {
                 countedFileCacheBytes: counted, admissibleNowBytes: free + counted, fileBackedBytes: fileBacked,
                 fileCacheReserveBytes: reserve, fileCacheAboveReserveBytes: above, anonymousBytes: anonymous, wiredBytes: wired, compressorBytes: compressor, pageableBytes: pageable,
                 pressureLevel: max(0, os.pressureLevel), swapUsedBytes: max(0, os.swapUsedBytes),
-                minimumAdmissibleBytes: QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
+                minimumAdmissibleBytes: QwenDenseStageLoadPolicy.minimumAdmissibleBytes(physicalMemoryBytes: physical),
                 minimumTrulyFreeBytes: QwenDenseStageLoadPolicy.minimumTrulyFreeBytes,
-                loadingHeadroomBytes: QwenDenseStageLoadPolicy.loadingHeadroomBytes,
+                loadingHeadroomBytes: QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: physical),
                 allocatorHeadroomBytes: QwenDenseStageLoadPolicy.allocatorHeadroomBytes,
                 loadScratchBytes: CheckpointAlignedReadPlan.maximumScratchAllocationBytes,
                 pageSizeBytes: min(1_048_576, max(1, os.pageSizeBytes)))

@@ -161,7 +161,9 @@ for one of two reasons, each said in one line:
   tensor parallel);
 - this build has no cluster stage adapter for it.
 
-Chips never decide. Each Mac's memory gate still decides every load.
+Chips never decide. Each Mac's memory gate still decides every load; its margins
+scale with the Mac's memory below 96 GB, so a smaller Mac takes the share it can
+hold (one layer is a share).
 
 Qualification records (cross-cable runs compared with single-Mac references
 under the near-tie rule) do two things only:

@@ -45,11 +45,29 @@ func checkGateAgreement(_ checks: PlacementChecks) {
     let memory = ClusterDeviceMemory.gate(SyntheticMac.idle(64).observation, now: SyntheticMac.now)
     checks.require("the record carries the gate's own constants",
         memory.gatePolicy == QwenDenseStageLoadPolicy.identifier
-            && memory.minimumAdmissibleBytes == QwenDenseStageLoadPolicy.minimumAdmissibleBytes
+            && memory.minimumAdmissibleBytes == QwenDenseStageLoadPolicy.minimumAdmissibleBytes(physicalMemoryBytes: memory.physicalMemoryBytes)
             && memory.minimumTrulyFreeBytes == QwenDenseStageLoadPolicy.minimumTrulyFreeBytes
-            && memory.loadingHeadroomBytes == QwenDenseStageLoadPolicy.loadingHeadroomBytes
+            && memory.loadingHeadroomBytes == QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: memory.physicalMemoryBytes)
             && memory.allocatorHeadroomBytes == QwenDenseStageLoadPolicy.allocatorHeadroomBytes
             && memory.loadScratchBytes == CheckpointAlignedReadPlan.maximumScratchAllocationBytes)
+    // The two margins scale with the Mac below 96 GiB, never under their least; at 96 GiB and more they are the measured
+    // 6 and 4 GiB (owner 2026-10-15: one Gemma layer on a 36 GB Mac was refused by a fixed 6 GiB floor).
+    typealias Policy = QwenDenseStageLoadPolicy
+    let gib = 1 << 30
+    checks.require("margins: 36 GiB Mac 2.25 / 1.5 GiB",
+        Policy.minimumAdmissibleBytes(physicalMemoryBytes: 36 * gib) == 9 * gib / 4
+            && Policy.loadingHeadroomBytes(physicalMemoryBytes: 36 * gib) == 3 * gib / 2)
+    checks.require("margins: 64 GiB Mac 4 GiB floor",
+        Policy.minimumAdmissibleBytes(physicalMemoryBytes: 64 * gib) == 4 * gib)
+    checks.require("margins: 96 and 256 GiB Macs keep the measured 6 / 4 GiB",
+        [96, 256].allSatisfy { Policy.minimumAdmissibleBytes(physicalMemoryBytes: $0 * gib) == 6 * gib
+            && Policy.loadingHeadroomBytes(physicalMemoryBytes: $0 * gib) == 4 * gib })
+    checks.require("margins: a small Mac never under 2 / 1.5 GiB",
+        Policy.minimumAdmissibleBytes(physicalMemoryBytes: 8 * gib) == 2 * gib
+            && Policy.loadingHeadroomBytes(physicalMemoryBytes: 8 * gib) == 3 * gib / 2)
+    let small = ClusterDeviceMemory.gate(SyntheticMac.idle(36).observation, now: SyntheticMac.now)
+    checks.require("margins: a 36 GiB Mac's record carries its own margins",
+        small.minimumAdmissibleBytes == 9 * gib / 4 && small.loadingHeadroomBytes == 3 * gib / 2)
     // A cache-heavy Mac: the gate's cap on counted cache is what the record shows.
     let heavy = ClusterDeviceMemory.gate(SyntheticMac(physicalGiB: 256, freeGiB: 0.3, inactiveCacheGiB: 180).observation, now: SyntheticMac.now)
     checks.require("a cache-heavy Mac counts at most the gate's cap",
@@ -275,10 +293,20 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
     do {
         let devices = [try SyntheticMac.idle(8).device("tiny"), try SyntheticMac.idle(512).device("huge")]
         let result = try checkRule("8 + 512, 27B", devices, big, checks)
-        checks.require("8 + 512: no division is possible, since the smallest share is more than the tiny Mac has unwired; the model is not refused, because the huge Mac holds it alone",
-            result.chosen == nil && result.refusal == nil && result.alone.first { $0.device == "huge" }?.fit == .now)
-        checks.require("8 + 512: the output says one Mac holds the model alone",
-            ClusterPlacementExplanation.describe(result, devices: devices, layout: big).joined(separator: "\n").contains("huge alone needs"))
+        // The margins scale with the Mac (owner 2026-10-15: shard whatever is possible), so the tiny Mac now takes the
+        // smallest share; the huge Mac could still hold the model alone.
+        let layers = { (c: ClusterPlacementCandidate, d: String) in c.ranks.first { $0.device == d }.map { $0.endLayer - $0.firstLayer } ?? 0 }
+        checks.require("8 + 512: divided, the tiny Mac holding the smaller share",
+            result.chosen.map { layers($0, "tiny") >= 1 && layers($0, "tiny") < layers($0, "huge") } ?? false)
+        checks.require("8 + 512: the huge Mac could still hold it alone", result.alone.first { $0.device == "huge" }?.fit == .now)
+        // A small Mac that is nearly full: no division, and the model is not refused, because the huge Mac holds it alone.
+        let full = [try SyntheticMac(physicalGiB: 8, freeGiB: 0.4, inactiveCacheGiB: 0.2, wiredGiB: 3).device("tiny"),
+                    try SyntheticMac.idle(512).device("huge")]
+        let crowded = try checkRule("8 (nearly full) + 512, 27B", full, big, checks)
+        checks.require("8 (nearly full) + 512: no division is possible, since the smallest share is more than the tiny Mac has; the model is not refused, because the huge Mac holds it alone",
+            crowded.chosen == nil && crowded.refusal == nil && crowded.alone.first { $0.device == "huge" }?.fit == .now)
+        checks.require("8 (nearly full) + 512: the output says one Mac holds the model alone",
+            ClusterPlacementExplanation.describe(crowded, devices: full, layout: big).joined(separator: "\n").contains("huge alone needs"))
     }
 
     // A model larger than the pair.

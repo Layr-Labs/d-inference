@@ -35,24 +35,21 @@ struct NemotronSuperLocalPrefixCacheTests {
     static let environment = [NemotronSuperLocalPrefill.chunkKey: String(chunk), memoryKey: "1"]
     static let grant: Int = 2 << 30
 
-    @Test func bankIsAnExplicitOptInOfThePlainOwnerOnly() throws {
+    @Test func bankIsAnExplicitOptIn() throws {
         let grant = Self.grant
-        #expect(Prefix.config(environment: [:], kvBytesCapacity: grant, speculates: false) == nil)
+        #expect(Prefix.config(environment: [:], kvBytesCapacity: grant) == nil)
         let config = try #require(Prefix.config(
-            environment: [Self.memoryKey: "1"], kvBytesCapacity: grant, speculates: false))
+            environment: [Self.memoryKey: "1"], kvBytesCapacity: grant))
         let eighth: Int = grant / 8
         #expect(config.maximumBytes == eighth)
         #expect(config.modelID == NemotronSuperLocalBinding.modelID)
         #expect(config.promptContractID.hasSuffix(NemotronSuperPromptContract.templateSHA256))
-        #expect(Prefix.config(environment: [Self.memoryKey: "1"], kvBytesCapacity: grant,
-            speculates: true) == nil)
         for disabled in [["DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE": "0"], ["DARKBLOOM_PREFIX_CACHE": "0"]] {
             let environment = disabled.merging([Self.memoryKey: "1"]) { $1 }
-            #expect(Prefix.config(environment: environment, kvBytesCapacity: grant, speculates: false) == nil)
+            #expect(Prefix.config(environment: environment, kvBytesCapacity: grant) == nil)
         }
         let sized = [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "67108864"]
-        #expect(Prefix.config(environment: sized, kvBytesCapacity: grant, speculates: false)?.maximumBytes
-            == 67_108_864)
+        #expect(Prefix.config(environment: sized, kvBytesCapacity: grant)?.maximumBytes == 67_108_864)
         let id = Prefix.bankReservationID()
         #expect(Prefix.isBankReservationID(id) && !NemotronSuperLocalPrefill.isLaneReservationID(id))
     }
@@ -62,21 +59,29 @@ struct NemotronSuperLocalPrefixCacheTests {
             memorySnapshot: { .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: .max) })
     }
 
+    /// `speculates` installs depth-3 exact rectangular speculation with the
+    /// fixture's embedded head.
     private static func owner(_ fixture: SuperMTPInstalledFixture.Installation,
                               environment: [String: String], budget: GlobalKVCacheBudget,
-                              lease: PendingModelLoadLease) async throws -> Builder.Owner {
+                              lease: PendingModelLoadLease, speculates: Bool = false)
+        async throws -> Builder.Owner {
         try await Builder.make(installed: fixture.installed,
             tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
             sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
                 fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 16),
             kvBytesCapacity: grant, kvBudget: budget, loadLease: lease,
-            construction: fixture.construction, environment: environment)
+            construction: fixture.construction,
+            mtp: speculates ? .init(module: fixture.head, setting: .init(depth: 3)) : nil,
+            environment: environment)
     }
 
     private static func lease(_ fixture: SuperMTPInstalledFixture.Installation, _ name: String,
-                              budget: GlobalKVCacheBudget) async throws -> PendingModelLoadLease {
-        try #require(await budget.claimPendingLoad(requestID: "super-prefix-\(name)",
-            weightBytes: UInt64(fixture.installed.receipt.payloadBytes), minimumKVBytes: UInt64(grant)))
+                              budget: GlobalKVCacheBudget, speculates: Bool = false)
+        async throws -> PendingModelLoadLease {
+        let head = speculates ? try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote) : 0
+        return try #require(await budget.claimPendingLoad(requestID: "super-prefix-\(name)",
+            weightBytes: UInt64(fixture.installed.receipt.payloadBytes + head),
+            minimumKVBytes: UInt64(grant)))
     }
 
     private static func run(_ owner: Builder.Owner, prompt: [Int]) async throws -> String {
@@ -109,20 +114,22 @@ struct NemotronSuperLocalPrefixCacheTests {
 
     /// The donor's checkpoints sit on the 4-token chunk grid; the next turn
     /// restores the deepest one below its last token and streams the same
-    /// text as a second owner serving it cold. That owner never sees the
-    /// first owner's entries. Each owner holds its lane and its bank from
-    /// build to retirement, and nothing stays charged after close.
-    @Test(.timeLimit(.minutes(3)))
-    func restoredTextEqualsColdTextAndEveryChargeRetires() async throws {
+    /// text as a second owner serving it cold, on the plain and on the
+    /// speculating owner. That owner never sees the first owner's entries.
+    /// Each owner holds its lane and its bank from build to retirement, and
+    /// nothing stays charged after close.
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func restoredTextEqualsColdTextAndEveryChargeRetires(speculates: Bool) async throws {
         let budget = Self.budget()
         let warmFixture = try SuperMTPInstalledFixture().make()
         let coldFixture = try SuperMTPInstalledFixture().make()
-        let leases = [try await Self.lease(warmFixture, "warm", budget: budget),
-                      try await Self.lease(coldFixture, "cold", budget: budget)]
+        let leases = [try await Self.lease(warmFixture, "warm", budget: budget, speculates: speculates),
+                      try await Self.lease(coldFixture, "cold", budget: budget, speculates: speculates)]
         let warm = try await Self.owner(warmFixture, environment: Self.environment, budget: budget,
-            lease: leases[0])
+            lease: leases[0], speculates: speculates)
         let cold = try await Self.owner(coldFixture, environment: Self.environment, budget: budget,
-            lease: leases[1])
+            lease: leases[1], speculates: speculates)
+        #expect(warm.speculates == speculates && cold.speculates == speculates)
         let eighth: Int = Self.grant / 8
         #expect(warm.prefixBankBytes == eighth && cold.prefixBankBytes == eighth)
         let held = await budget.reservationBytesSnapshot()

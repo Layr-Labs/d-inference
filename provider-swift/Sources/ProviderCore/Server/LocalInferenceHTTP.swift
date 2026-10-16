@@ -76,7 +76,8 @@ func makeLocalInferenceApplication(
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
     modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
     clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
-    distributedResponses: (any DistributedHTTPResponseProviding)? = nil
+    distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
+    defaultReasoningParser: ReasoningParserFormat? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -100,7 +101,7 @@ func makeLocalInferenceApplication(
             modelTypeProvider: modelTypeProvider
         )
         return MLXOpenAIService(
-            engine: engine, responseStore: responseStore, metrics: metrics)
+            engine: engine, responseStore: responseStore, metrics: metrics, defaultReasoningParser: defaultReasoningParser)
     }
     let service = serviceForTemplateControls(.init())
     let router = MLXServerApplication.buildRouter(service: service)

@@ -14,6 +14,10 @@ extension Start {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
         } ?? ConfigManager.defaultConfigPath()
         let factory = try DistributedStartSessionFactory(providerConfiguration: configPath)
+        // Before both Macs load anything: a port another program listens on would fail the bind only after the load.
+        guard ClusterLocalServing.portIsFree(Int(port)) else {
+            throw ValidationError("Port \(port) on this Mac is in use by another program; choose another with --port.")
+        }
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }

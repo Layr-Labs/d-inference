@@ -142,6 +142,23 @@ final class EndpointBox: @unchecked Sendable {
         try require(request.op == .scope && request.scope == .localOnly(bind:"::1"),"the forwarded scope request does not round-trip")
         let status=try JSONDecoder().decode(ClusterServiceStatus.self,from:Data(#"{"serving":true,"sessionLeader":false,"child":{"running":true,"starts":1}}"#.utf8))
         try require(status.localOnly==nil,"an older member's status read as a scope")
+
+        // The API's port (2026-10-15: oMLX held 8000 on the M5 Max; every start ended after its load). A real listener
+        // on a port makes it taken; the leading part takes the next free one.
+        let listener=socket(AF_INET,SOCK_STREAM,0)
+        defer{close(listener)}
+        var address=sockaddr_in(); address.sin_len=UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family=sa_family_t(AF_INET)
+        address.sin_port=0; address.sin_addr=in_addr(s_addr:INADDR_ANY.bigEndian)
+        _=withUnsafePointer(to:&address){$0.withMemoryRebound(to:sockaddr.self,capacity:1){bind(listener,$0,socklen_t(MemoryLayout<sockaddr_in>.size))}}
+        try require(listen(listener,1)==0,"test listener did not listen")
+        var length=socklen_t(MemoryLayout<sockaddr_in>.size)
+        _=withUnsafeMutablePointer(to:&address){$0.withMemoryRebound(to:sockaddr.self,capacity:1){getsockname(listener,$0,&length)}}
+        let taken=Int(UInt16(bigEndian:address.sin_port))
+        try require(!ClusterLocalServing.portIsFree(taken),"a port another program listens on read as free")
+        try require(!ClusterLocalServing.portIsFree(0) && !ClusterLocalServing.portIsFree(70_000),"an impossible port read as free")
+        try require(ClusterLocalServing.servingPort(isFree:{_ in true})==8000,"8000 not kept when free")
+        try require(ClusterLocalServing.servingPort(isFree:{$0 != 8000 && $0 != 8001})==8002,"the next free port not taken")
+        try require(ClusterLocalServing.servingPort(isFree:{_ in false})==8000,"no free port: 8000 (the start then says it is taken)")
     }
     static func main() async throws {
         signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}

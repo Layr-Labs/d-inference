@@ -54,8 +54,7 @@ extension ClusterPrefixCacheSettings {
                                          paths: ClusterUserPaths? = try? ClusterUserPaths()) -> ClusterPrefixCacheSettings {
         guard let paths else { return own }
         let setup = ClusterSetupPaths(paths: paths)
-        let leadership = try? ClusterSetupStore(paths: setup).readRecord().leadership
-        let followed = leadership?.role == ClusterOnboardingRole.member.rawValue ? leadership?.leaderPin : nil
+        let followed = ClusterService.followedLeaderPin(record: try? ClusterSetupStore(paths: setup).readRecord())
         return ClusterMemberCacheControl.effective(own: own, store: .init(directory: setup.directory), followedLeaderPin: followed)
     }
 

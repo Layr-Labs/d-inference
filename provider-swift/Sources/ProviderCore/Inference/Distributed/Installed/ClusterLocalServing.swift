@@ -75,6 +75,36 @@ public enum ClusterLocalServing {
 
     private static let localOnlyKeyMarker = ":local-only@"
 
+    /// The port the leading part's API listens on: `preferred` when no other program listens there, else the first
+    /// free one of the next `span` ports, else `preferred` (the start then says the port is taken). Another server on
+    /// 8000 (oMLX on the owner's M5 Max, 2026-10-15) made every start end after its workers loaded.
+    public static func servingPort(preferred: Int = 8000, span: Int = 20, isFree: (Int) -> Bool = portIsFree) -> Int {
+        (preferred...(preferred + span)).first(where: isFree) ?? preferred
+    }
+
+    /// No other program listens on `port` (IPv4, every address or loopback): a test bind as a server makes it, with
+    /// `SO_REUSEADDR` so this Mac's own closed connections on the port do not count.
+    public static func portIsFree(_ port: Int) -> Bool {
+        guard (1...65_535).contains(port) else { return false }
+        for address in [INADDR_ANY, INADDR_LOOPBACK] {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { return false }
+            defer { close(fd) }
+            var on: Int32 = 1
+            _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+            var socketAddress = sockaddr_in()
+            socketAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            socketAddress.sin_family = sa_family_t(AF_INET)
+            socketAddress.sin_port = in_port_t(UInt16(port).bigEndian)
+            socketAddress.sin_addr = in_addr(s_addr: address.bigEndian)
+            let bound = withUnsafePointer(to: &socketAddress) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+            guard bound == 0 else { return false }
+        }
+        return true
+    }
+
     /// Two part keys of the same saved setup that differ only by scope (the restart is the scope's, not a new setup).
     public static func scopeChangedOnly(from old: String?, to new: String?) -> Bool {
         guard let old, let new, old != new, old.hasPrefix("cluster:"), new.hasPrefix("cluster:") else { return false }

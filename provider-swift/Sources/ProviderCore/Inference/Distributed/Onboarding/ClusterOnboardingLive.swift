@@ -959,7 +959,7 @@ final class OnboardingLive: @unchecked Sendable {
         }
         guard current.serving else { return .success([saved]) }
         // The member records the scope from a start of the model it already runs (it needs it only if control moves).
-        _ = try? command(.init(op: .serve, model: current.modelName, deployment: current.deployment, scope: scope), seconds: 10)
+        _ = try? command(.init(op: .serve, model: current.modelName, deployment: savedDeployment() ?? current.deployment, scope: scope), seconds: 10)
         let later = "The leading Mac's part has not started again yet; its cluster service does so by itself."
         guard let before = startsBefore else { return .success([saved, later]) }
         let deadline = Date().addingTimeInterval(Self.scopeRestartSeconds)
@@ -982,7 +982,10 @@ final class OnboardingLive: @unchecked Sendable {
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
-            _ = try command(.init(op: .serve, model: title, deployment: leadership?.deployment, scope: leadership?.scope))
+            // The line of the setup that runs, so the member shows the same one when it leads.
+            let deployment = savedDeployment() ?? leadership?.deployment
+            try store.updateRecord { $0.leadership?.deployment = deployment }
+            _ = try command(.init(op: .serve, model: title, deployment: deployment, scope: leadership?.scope))
         } catch let failure as ClusterSetupFailure {
             return .failure(.init(["\(peerName) was not started yet: \(failure.text)", Self.startsWhenItAnswers(peerName)]))
         } catch {
@@ -1016,7 +1019,7 @@ final class OnboardingLive: @unchecked Sendable {
     func waitReady(_ progress: @escaping @Sendable (String) -> Void) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
         let deadline = Date().addingTimeInterval(900)
         var said: String?
-        var seen = [String: Int]()
+        var seen = [String: Int](), previous: String?
         while Date() < deadline {
             var once: (ready: ClusterOnboardingReady?, line: String)
             if forwards {
@@ -1029,12 +1032,14 @@ final class OnboardingLive: @unchecked Sendable {
             }
             if let ready = once.ready { return .success(ready) }
             // Each line once (a part that keeps restarting alternated two lines every 2 s); a part that ends the
-            // same way again and again is said and the wait ends: both Macs keep trying by themselves.
-            seen[once.line, default: 0] += 1
+            // same way again and again is said and the wait ends: both Macs keep trying by themselves. An end is
+            // counted when the line turns to it (a poll that sees the same end again is the same end).
+            if once.line != previous { seen[once.line, default: 0] += 1 }
+            previous = once.line
             if once.line.contains("part ended"), seen[once.line, default: 0] >= Self.sameEndsBeforeSaying {
                 return .failure(.init(["A part keeps ending the same way: \(once.line)."] + lastErrors(fallback: nil)))
             }
-            if seen[once.line] == 1 { progress(once.line); said = once.line }
+            if seen[once.line] == 1, once.line != said { progress(once.line); said = once.line }
             sleep(2)
         }
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
@@ -1098,13 +1103,36 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
+    /// The deployment line of the setup this Mac saved (what runs), from that setup's own Plan and the members' names:
+    /// never a line recorded for an earlier start. Control can move between the adopt (on one Mac) and the start (on
+    /// the rank 0 Mac), and the recorded line then named the earlier split (2x M4 Max / M5 Max, 2026-10-15).
+    func savedDeployment() -> String? {
+        guard case .success(let reference?) = context.savedConfiguration().reference,
+              let saved = try? ClusterConfigurationStore(paths: context.paths).load(reference: reference),
+              let stages = try? saved.capability.selection(planSHA256: saved.configuration.selectedPlanSHA256).stages
+                .sorted(by: { $0.rank < $1.rank }),
+              stages.allSatisfy({ saved.configuration.peers.indices.contains($0.rank) }) else { return nil }
+        let members = (try? store.readRecord())?.control?.members ?? []
+        let names = Dictionary(members.map { ($0.memberID, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let shares = stages.map { stage -> ClusterOnboardingDeployment.Share in
+            let id = saved.configuration.peers[stage.rank].id
+            return .init(name: names[id] ?? id, layers: stage.sourceLayerEnd - stage.sourceLayerStart)
+        }
+        let modelID = saved.configuration.publicModelID
+        let catalog = (ClusterModelStore.readSmall(store.paths.directory.appendingPathComponent("catalog.json"))
+            .flatMap { try? JSONDecoder().decode([CatalogModel].self, from: $0) }) ?? []
+        let title = ClusterOnboardingDeployment.title(modelID: modelID,
+            displayNames: Dictionary(catalog.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first }))
+        return ClusterOnboardingDeployment.line(model: title, mode: saved.configuration.selectedGenerationMode.rawValue, shares: shares)
+    }
+
     /// Where a ready cluster serves, as `session()` saw it. The API reaches the network only once the part that serves
     /// says it serves locally only by choice (its log line), so a part still running the earlier way is never named so.
     func ready(_ now: (local: Bool, session: ClusterServiceStatus.Session?, child: ClusterServiceStatus.Child?, error: String?),
                port: Int) -> ClusterOnboardingReady {
         let notice = now.local ? ClusterService.servingNotice() : now.child?.notice
         let byChoice = notice == ClusterLocalServing.localOnlyNotice
-        return .init(servedBy: now.local ? here : peerName, port: port, deployment: leadership?.deployment, notice: notice,
+        return .init(servedBy: now.local ? here : peerName, port: port, deployment: savedDeployment() ?? leadership?.deployment, notice: notice,
                      network: byChoice ? (leadership?.scope.reachableFromNetwork ?? false) : nil)
     }
 

@@ -89,6 +89,8 @@ public final class ClusterService: @unchecked Sendable {
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
+    /// The port the leading part's API listened on last; kept while no other program takes it.
+    private var leaderPort: Int?
     /// When each listener last looked for the cable on another port (`cableMove`).
     private var responderCableCheck = Date.distantPast
     var controlCableCheck = Date.distantPast
@@ -288,9 +290,22 @@ public final class ClusterService: @unchecked Sendable {
     func followsPeer(_ pairing: ClusterSetupLinkExchange.Pairing) -> Bool {
         if let claim = lock.withLock({ control?.claim }) { return claim.leaderID == pairing.peerMemberID }
         guard let record = try? store.readRecord() else { return false }
+        return Self.followsPeer(record: record, pairing: pairing)
+    }
+
+    /// The same from the saved record alone (no running service needed): the recorded control claim, else the
+    /// onboarding's roles. A Mac that drove the onboarding follows the other once control moved there.
+    static func followsPeer(record: ClusterSetupRecord, pairing: ClusterSetupLinkExchange.Pairing) -> Bool {
         if let claim = record.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) { return claim.leaderID == pairing.peerMemberID }
         guard let leadership = record.leadership else { return false }
         return leadership.role == ClusterOnboardingRole.member.rawValue && leadership.leaderPin == pairing.peerPin
+    }
+
+    /// The pin of the Mac whose cache settings this Mac applies: the paired Mac while this Mac follows it, else nil
+    /// (this Mac's own settings). Keyed by control, not by who drove the onboarding.
+    static func followedLeaderPin(record: ClusterSetupRecord?) -> String? {
+        guard let record, let pairing = try? ClusterSetupLinkExchange.pairing(), followsPeer(record: record, pairing: pairing) else { return nil }
+        return pairing.peerPin
     }
 
     /// On the leader: every `ClusterOnboardingSync.dueEverySeconds`, ask the member for its status and send
@@ -573,8 +588,10 @@ public final class ClusterService: @unchecked Sendable {
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : nil,
                     notice: child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice() : nil),
                 session: session,
-                cacheSync: record?.leadership.flatMap { $0.role == ClusterOnboardingRole.member.rawValue
-                    ? cacheStore.digest(leaderPin: $0.leaderPin) : nil },
+                // What this Mac applied from the Mac it follows (by control, not by who drove the onboarding):
+                // keyed by onboarding role, a Mac that drove it and then followed reported nothing, and the
+                // leader sent its settings again every 15 s.
+                cacheSync: Self.followedLeaderPin(record: record).flatMap { cacheStore.digest(leaderPin: $0) },
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
@@ -776,8 +793,16 @@ public final class ClusterService: @unchecked Sendable {
             what = "degraded: serving \(model) on this Mac alone"
         } else {
             guard let configuration = saved.configuration else { return }
-            arguments = configuration.role == .leader ? ClusterLocalServing.leaderArguments(settings.leaderArguments, scope: scope)
-                                                      : settings.followerArguments
+            if configuration.role == .leader {
+                // A port no other program listens on (another local server may hold 8000).
+                let port = lock.withLock { leaderPort }.flatMap { ClusterLocalServing.portIsFree($0) ? $0 : nil }
+                    ?? ClusterLocalServing.servingPort()
+                if port != lock.withLock({ leaderPort }), port != 8000 { say("port 8000 is taken by another program: the API listens on port \(port)") }
+                lock.withLock { leaderPort = port }
+                arguments = ClusterLocalServing.leaderArguments(settings.leaderArguments, scope: scope) + ["--port", String(port)]
+            } else {
+                arguments = settings.followerArguments
+            }
             what = "this Mac's part: " + (configuration.role == .leader
                 ? "rank 0 and the serving API" + (scope.isLocalOnly ? " (local only, no coordinator)" : "")
                 : "rank \(configuration.localRank)")

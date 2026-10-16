@@ -82,11 +82,13 @@ enum NemotronSuperServingPolicy {
 
     /// Speculation and concurrency come from provider policy and replace any
     /// value of those keys; the depth defaults to `defaultDraftDepth`.
-    /// Verification, prefill chunk and decode-step keys keep the operator's
-    /// value or the builder default. The plain owner turns exact text prefix
-    /// reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant holds every
-    /// request's fixed bytes beside the bank; an operator value, including
-    /// the global kill switch, wins. The speculating owner has no bank.
+    /// Verification, prefill chunk, decode-step and KV storage keys keep the
+    /// operator's value or the builder default. The plain owner turns exact
+    /// text prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant
+    /// holds every request's fixed bytes beside the bank and its KV stays
+    /// contiguous (the bank lives in the contiguous engine); an operator
+    /// value, including the global kill switch, wins. The speculating owner
+    /// has no bank.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
                          kvBytesCapacity: Int) -> LoadPlan {
         let speculates = Self.speculates(mode: mode, environment: base)
@@ -103,7 +105,8 @@ enum NemotronSuperServingPolicy {
             let flag = PrefixCachePolicy.memoryEnvironmentFlag
             var candidate = environment
             candidate[flag] = "1"
-            if environment[flag] == nil,
+            let paged = (try? NemotronSuperLocalKVBackend.resolve(environment: environment)) == .paged
+            if environment[flag] == nil, !paged,
                 let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
                     kvBytesCapacity: kvBytesCapacity, speculates: false, modelID: modelID)?.maximumBytes,
                 kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: false) + bank {

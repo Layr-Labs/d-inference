@@ -113,15 +113,18 @@ extension NemotronSuperLocalOwnerTests {
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
+        // Long enough that event callbacks observe the request still in flight.
         let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
-            messages: [], temperature: 0, max_tokens: 2)
-        let expected = try #require(await owner.bridge.requestReservationBytes(tokenCount: 5))
+            messages: [], temperature: 0, max_tokens: 12)
+        let expected = try #require(await owner.bridge.requestReservationBytes(tokenCount: 15))
         #expect(expected >= workspace)
         let observed = SuperOwnerCharges()
         try await owner.localTextBinding().run(request: request, promptTokens: [1, 2, 3]) { _ in
             await observed.record(await budget.reservationBytesSnapshot())
         }
-        #expect(await observed.rows == [[expected, prefill].sorted()])
+        let rows = await observed.rows
+        #expect(rows.contains([expected, prefill].sorted()), "\(rows)")
+        #expect(rows.allSatisfy { $0.contains(prefill) })
         #expect(await budget.reservationBytesSnapshot() == lane)
         try await owner.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)
@@ -247,7 +250,5 @@ extension NemotronSuperLocalOwnerTests {
 
 private actor SuperOwnerCharges {
     var rows: [[Int]] = []
-    func record(_ snapshot: [String: UInt64]) {
-        if rows.isEmpty { rows.append(snapshot.values.map { Int($0) }.sorted()) }
-    }
+    func record(_ snapshot: [String: UInt64]) { rows.append(snapshot.values.map { Int($0) }.sorted()) }
 }

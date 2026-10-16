@@ -11,6 +11,8 @@ enum RunnerCheckpointLoad {
     static func load(directory: URL, templateURL: URL?, settings: RunnerLoadSettings,
         budget: GlobalKVCacheBudget, log: RunnerEventLog, phases: RunnerLoadPhases
     ) async throws -> RunnerServing {
+        // Resolved before any shard read; the load transaction parses the same entries.
+        let speculation = try settings.speculation()
         let inputs = try RunnerCheckpointInputs(directory: directory, templateURL: templateURL)
         let configData = inputs.configData, indexSHA256 = inputs.indexSHA256
         let templateBytes = inputs.templateBytes, facts = inputs.facts
@@ -59,7 +61,7 @@ enum RunnerCheckpointLoad {
             "shards_verified": .count(shardCount), "load_quote_bytes": .bytes(quote),
             "checkpoint_tensor_bytes": .bytes(tensorBytes),
             "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": true,
-            "speculation": RunnerLoadSettings.speculationJSON(try settings.speculation()),
+            "speculation": RunnerLoadSettings.speculationJSON(speculation),
         ])
         return RunnerServing(bridge: bridge, tokenizer: tokenizer, imageHook: hook, identity: identity,
             retire: {

@@ -79,8 +79,8 @@ struct NemotronSuperLocalMTPTests {
     }
 
     /// The shared factory serves both speculative targets like the ordinary
-    /// adapter: same layer kinds, the serial target's capabilities plus MTP,
-    /// and the same hard calibrated prefill bound on every scheduler.
+    /// adapter: same layer kinds and capabilities plus MTP, and the same hard
+    /// calibrated prefill bound on every scheduler.
     @Test func sharedFactoryRecognizesTheSpeculativeTextTargets() throws {
         let fixture = try SuperMTPInstalledFixture().make()
         let model = try #require(fixture.installed.model)
@@ -88,17 +88,15 @@ struct NemotronSuperLocalMTPTests {
         let target = NemotronSuperMTPTextTarget(model)
         let capture = try NemotronSuperMTPCaptureTarget(capturing: model)
         let limit = try #require(adapter.calibratedPrefillTokenLimit)
+        var capabilities = adapter.cbv2Capabilities
+        #expect(!capabilities.supportsMTP)
+        capabilities.supportsMTP = true
         for speculative in [target, capture] {
             #expect(EngineV2Factory.calibratedPrefillTokenLimit(model: speculative) == limit)
             #expect(EngineV2Factory.cbv2LayerKinds(model: speculative) == adapter.cbv2LayerKinds)
             let resolved = try #require(EngineV2Factory.ProductionModelAdapter(model: speculative))
-            #expect(resolved.modelCapabilities.supportsMTP)
+            #expect(resolved.modelCapabilities == capabilities)
         }
-        let resolved = try #require(EngineV2Factory.ProductionModelAdapter(model: target))
-        var capabilities = adapter.cbv2Capabilities
-        #expect(!capabilities.supportsMTP)
-        capabilities.supportsMTP = true
-        #expect(resolved.modelCapabilities == capabilities)
         for served in [adapter, target, capture] as [any LanguageModel] {
             let config = EngineV2Factory.productionSchedulerConfig(
                 maxConcurrentRequests: 1, model: served, environment: [:])

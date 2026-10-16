@@ -81,14 +81,14 @@ Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
 ingress before JSON/base64/header inspection and media before decode. The media
 charge adds the SDK's shape-derived tower and projector working-memory bound for
 the largest image, which preparation evaluates one at a time; the global
-activation reserve is unchanged. It only
-accepts `data:image/png;base64,` and `data:image/jpeg;base64,` URIs, whose content
-selects the format, and uses the owned tokenizer. Native input
-arrays are constructed in a separate retained, fenced epoch before tower
-preparation. Synthetic RGB tests cover generation, cancellation, busy rejection
-and release after task completion; loopback HTTP tests serve PNG and JPEG
-variants through the tiny synthetic owner. Actual tokenizer parity, RADIO peak
-workspace and full-checkpoint image qualification remain required.
+activation reserve is unchanged. It only accepts `data:image/png;base64,` and
+`data:image/jpeg;base64,` URIs, whose content selects the format, and uses the
+owned tokenizer. Native input arrays are constructed in a separate retained,
+fenced epoch before tower preparation. Synthetic RGB tests cover generation,
+cancellation, busy rejection and release after task completion; loopback HTTP
+tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
+tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
+remain required.
 
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary

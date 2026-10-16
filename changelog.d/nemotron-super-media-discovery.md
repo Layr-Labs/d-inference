@@ -14,17 +14,19 @@ reference loader) and baseline/progressive JPEG (ImageIO samples within
 measured bounds), applies EXIF/XMP orientation as Pillow does, and bounds
 declared geometry before allocation; the SDK resize is bitwise equal to CPU
 PyTorch on the golden fixtures. Inline images use the `data:image/png;base64,`
-or `data:image/jpeg;base64,` label; content selects the format. Image media reservations include a derived
-tower and projector working-memory bound for the largest image. An opt-in image HTTP hook uses existing auth,
-JSON/SSE framing and cancellation; it is disabled by default. `DARKBLOOM_NEMOTRON_SUPER_MTP=1` opts the local owner into
-greedy text speculation with the embedded MTP head (default off; media is refused
-while it is on), verified by one exact captured target window per round
-(`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION=serial` keeps one target step per
-draft). Synthetic fixtures show token-exact output and exact rollback in both
-modes; full-model acceptance and speed are unmeasured. Full-checkpoint
-quality, image formats other than PNG and JPEG and shared-slot publication remain unqualified. Portable fixture
-harnesses preserve reproducible continuation and require measured admission
-and reservation calibration before enabling serving.
+or `data:image/jpeg;base64,` label; content selects the format. Image media
+reservations include a derived tower and projector working-memory bound for the
+largest image. An opt-in image HTTP hook uses existing auth, JSON/SSE framing
+and cancellation; it is disabled by default. `DARKBLOOM_NEMOTRON_SUPER_MTP=1`
+opts the local owner into greedy text speculation with the embedded MTP head
+(default off; media is refused while it is on), verified by one exact captured
+target window per round (`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION=serial`
+keeps one target step per draft). Synthetic fixtures show token-exact output and
+exact rollback in both modes; full-model acceptance and speed are unmeasured.
+Full-checkpoint quality, image formats other than PNG and JPEG and shared-slot
+publication remain unqualified. Portable fixture harnesses preserve reproducible
+continuation and require measured admission and reservation calibration before
+enabling serving.
 
 The opt-in Super owner hook now also serves text. Prompts match the reference
 chat template and tokenizer byte for byte on a 30-case golden corpus (tool

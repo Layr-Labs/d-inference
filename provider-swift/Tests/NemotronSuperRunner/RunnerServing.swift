@@ -20,10 +20,15 @@ struct RunnerLoadSettings: Sendable {
         try NemotronSuperLocalMTP.Setting.resolve(environment: engineEnvironment)
     }
 
+    /// The identity's `speculation`, spelled with the verification switch's
+    /// values; exhaustive so a new SDK mode cannot be recorded as another.
     static func speculationJSON(_ setting: NemotronSuperLocalMTP.Setting?) -> RunnerJSON {
         guard let setting else { return .null }
-        return ["depth": .count(setting.depth),
-                "verification": .string(setting.verification == .serial ? "serial" : "rectangular")]
+        let verification = switch setting.verification {
+        case .rectangularExact: "rectangular"
+        case .serial: "serial"
+        }
+        return ["depth": .count(setting.depth), "verification": .string(verification)]
     }
 
     /// The override may only raise the per-token reservation rate.

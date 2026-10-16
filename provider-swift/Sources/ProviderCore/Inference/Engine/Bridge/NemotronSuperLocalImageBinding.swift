@@ -59,8 +59,8 @@ actor NemotronSuperLocalImageBinding {
         try await settle(task, reservations: [mediaReservationID])
     }
 
-    /// Inline `data:image/png;base64,` or `data:image/jpeg;base64,` media,
-    /// rendered with this exact Owner's verified template/tokenizer.
+    /// Inline base64 media under one of `admittedDataURIPrefixes`, rendered
+    /// with this exact Owner's verified template/tokenizer.
     /// The body supplies media and request together; no separate media identity,
     /// caller-provided token counts, or URL fetching can be substituted.
     func runEncoded(body: Data, templateBytes: Data,
@@ -172,7 +172,7 @@ actor NemotronSuperLocalImageBinding {
     /// Data-URI labels of the formats `NemotronSuperImageDecode` admits. The
     /// decoder sniffs content as the reference loader does, so a label only
     /// gates the URI shape: PNG bytes under the JPEG label decode as PNG.
-    static let admittedDataURIPrefixes = ["data:image/png;base64,", "data:image/jpeg;base64,"]
+    private static let admittedDataURIPrefixes = ["data:image/png;base64,", "data:image/jpeg;base64,"]
 
     /// Only call after encoded-header admission. Reuses existing inline decoder;
     /// a strict MIME/header gate excludes percent encoding and remote URLs.
@@ -196,9 +196,7 @@ actor NemotronSuperLocalImageBinding {
                     switch part {
                     case .text: break
                     case .imageURL(let uri):
-                        guard images.count < 16,
-                              admittedDataURIPrefixes.contains(where: uri.hasPrefix)
-                        else {
+                        guard images.count < 16, admittedDataURIPrefixes.contains(where: uri.hasPrefix) else {
                             throw Failure.unsupportedCapability
                         }
                         images.append(try MediaIngest.dataFromDataURI(uri))

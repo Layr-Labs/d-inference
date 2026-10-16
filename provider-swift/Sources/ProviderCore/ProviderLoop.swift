@@ -492,6 +492,10 @@ public actor ProviderLoop {
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
+    /// Set when a Nemotron Super slot retires: macOS returns its ~80 GB of
+    /// physical pages up to about a second after Metal drops them, so any
+    /// load inside the window re-samples instead of refusing.
+    internal var nemotronSuperMemoryRetirement: NativeMemoryRetirementWindow?
 
     /// Serializes KV-GRANT mutations: the load-side re-slice
     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →

@@ -163,6 +163,8 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidInput:
                 return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline image request")
+            case .invalidFeatures:
+                return MultiModelBatchSchedulerEngineError.generationFailed("native image features were not finite")
             }
         }
         if let failure = error as? NemotronSuperLocalBinding.Failure {

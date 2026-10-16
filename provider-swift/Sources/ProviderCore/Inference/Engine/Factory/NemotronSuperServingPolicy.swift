@@ -15,7 +15,7 @@ import ProviderCoreFoundation
 /// policy. Every shard's SHA-256 is verified by the managed load itself.
 enum NemotronSuperServingPolicy {
     static let modelID = ModelMediaPolicy.nemotronSuperModelID
-    static let modelType = "nemotron_h_omni"
+    static let modelType = ModelMediaPolicy.nemotronSuperModelType
     /// SHA-256 of the pinned `config.json` (NVIDIA revision `7d4bc747`).
     static let configSHA256 = "35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea"
     static var indexSHA256: String { NemotronSuperCheckpointPin.index }
@@ -74,7 +74,7 @@ enum NemotronSuperServingPolicy {
         let environment: [String: String]
         let speculates: Bool
         let requests: Int
-        /// The owner's exact text prefix bank; zero when absent.
+        /// The owner's exact prefix checkpoint bank; zero when absent.
         let prefixBankBytes: Int
         /// KV headroom the LOAD claim requires, never above the grant.
         let admissionKVBytes: Int
@@ -83,7 +83,7 @@ enum NemotronSuperServingPolicy {
     /// Speculation and concurrency come from provider policy and replace any
     /// value of those keys; the depth defaults to `defaultDraftDepth`.
     /// Verification, prefill chunk and decode-step keys keep the operator's
-    /// value or the builder default. Either owner turns exact text prefix
+    /// value or the builder default. Either owner turns exact prefix
     /// reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant holds every
     /// request's fixed bytes beside the bank; an operator value, including
     /// the global kill switch, wins.

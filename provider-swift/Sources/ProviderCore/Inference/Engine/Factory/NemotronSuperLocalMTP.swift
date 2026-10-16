@@ -5,12 +5,11 @@ import MLXLLM
 import MLXLMCommon
 import MLXVLM
 
-/// Explicit opt-in text speculation for the unpublished Super local owner,
-/// using the checkpoint's embedded head through the SDK assistant with exact
-/// rectangular (default) or serial target verification. Off unless
-/// `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1`; the coordinator must measure
-/// it on the full model before any default changes. An owner with speculation
-/// installed is text-only: media is refused.
+/// Text speculation for the Super owner, using the checkpoint's embedded head
+/// through the SDK assistant with exact rectangular (default) or serial target
+/// verification. The qualification hook turns it on with
+/// `DARKBLOOM_NEMOTRON_SUPER_MTP=1`; the managed slot sets it from its serving
+/// policy. Image requests on a speculating owner run target-only.
 enum NemotronSuperLocalMTP {
     static let enabledKey = "DARKBLOOM_NEMOTRON_SUPER_MTP"
     /// Draft depth `1`…`3`; a value above one is the deep-draft opt-in.
@@ -86,7 +85,7 @@ enum NemotronSuperLocalMTP {
         let setting: Setting
     }
 
-    /// Engine inputs: the text-only target wrapper (the capture target for
+    /// Engine inputs: the speculation target wrapper (the capture target for
     /// rectangular verification), its bound assistant and the fixed-depth
     /// configuration with the assistant's verification mode.
     struct Engine {
@@ -105,7 +104,7 @@ enum NemotronSuperLocalMTP {
 
     /// `requests` above one verifies up to that many requests in one exact
     /// captured window, each committing its own accepted prefix.
-    /// `exactPrefixCheckpoints` gives the target chunk-aligned text prefix
+    /// `exactPrefixCheckpoints` gives the target chunk-aligned prefix
     /// checkpoints; the assistant checkpoints its prompt history beside them.
     static func engine(
         for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int, requests: Int = 1,

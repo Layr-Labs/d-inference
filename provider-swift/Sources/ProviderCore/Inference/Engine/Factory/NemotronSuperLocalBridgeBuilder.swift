@@ -43,7 +43,7 @@ enum NemotronSuperLocalBridgeBuilder {
         let prefillLaneBytes: Int
         private let prefillLaneID: String
         /// The engine's resident checkpoint bank budget, reserved in the shared
-        /// budget like the lane; zero without text prefix reuse.
+        /// budget like the lane; zero without prefix reuse.
         let prefixBankBytes: Int
         private let prefixBankID: String?
 
@@ -177,10 +177,16 @@ enum NemotronSuperLocalBridgeBuilder {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
                     throw Failure.retirementIncomplete
                 }
-                return NemotronSuperVisionSubmission.make(try NemotronSuperVisionPreparation.prepare(
+                let prepared = try NemotronSuperVisionPreparation.prepare(
                     installed: installed, prompt: input.promptTokens.map(Int32.init),
                     normalizedImages: input.normalizedImages, maximumFeatureBytes: maximumFeatureBytes,
-                    construction: construction))
+                    construction: construction)
+                // The features are evaluated; a non-finite value would decode
+                // as garbage, so the request fails instead of streaming it.
+                for feature in prepared.features where !all(isFinite(feature)).item(Bool.self) {
+                    throw NemotronSuperLocalImageBinding.Failure.invalidFeatures
+                }
+                return NemotronSuperVisionSubmission.make(prepared)
             }
         }
 
@@ -231,7 +237,7 @@ enum NemotronSuperLocalBridgeBuilder {
     /// until restart. `mtp` installs speculation for text requests; image
     /// requests on that owner stay target-only. nil keeps the target-only
     /// owner. Either owner may have `NemotronSuperLocalPrefixCache`'s exact
-    /// text prefix reuse.
+    /// prefix reuse.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,

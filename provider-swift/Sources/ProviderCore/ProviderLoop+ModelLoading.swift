@@ -1185,9 +1185,12 @@ extension ProviderLoop {
             if available >= requiredGb { return }
             // Metal can drop all allocation ownership before macOS returns
             // the physical pages (observed at full-model scale). Only a recent
-            // owned Qwen4 retirement enables this bounded retry. Never add
+            // owned Qwen4 retirement (for a Qwen4 load) or Nemotron Super
+            // retirement (for any load) enables this bounded retry. Never add
             // guessed reclaimable bytes to the OS sample or relax the gate.
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
+                try await retirement.pauseForRecheck() { continue }
+            if let retirement = nemotronSuperMemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
             let evictable = evictableModelSlots()
             // Feasibility BEFORE the first eviction: if even evicting every
@@ -1326,8 +1329,9 @@ extension ProviderLoop {
         // can be eviction credit; check the resulting headroom before rejecting.
         let evictable = evictableModelSlots()
         let hasEvictable = !evictable.isEmpty
-        let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-            && qwen4MemoryRetirement?.nextDelay() != nil
+        let mayStillReclaim = (Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+            && qwen4MemoryRetirement?.nextDelay() != nil)
+            || nemotronSuperMemoryRetirement?.nextDelay() != nil
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
         // the load path refuses without evicting (see evictUntilAvailable),
@@ -1359,8 +1363,7 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-                && qwen4MemoryRetirement?.nextDelay() != nil) {
+            if retried < requiredGb && !mayStillReclaim {
                 return true
             }
         }

@@ -37,7 +37,8 @@ return validated `tool_calls` and validated `response_format` JSON. Image
 requests still refuse tools and structured output; image prompts carry the
 reference `<img>`/`</img>` span around each image's placeholders. A request
 that arrives while the owner is busy gets 429 before any response starts, and
-with speculation installed the hook serves text and refuses images with 400.
+with speculation installed image requests run target-only beside speculating
+text.
 Each request's reservation now includes a decode row; a KV grant too small for
 the configured requests fails the load with the minimum grant it needs. `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT`
 (default 1) opts the plain owner into row-exact batched text decode of up to

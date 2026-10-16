@@ -26,6 +26,12 @@
   default speculating owner each image request runs target-only, with no
   draft state, while text keeps speculating; its media reservation, including
   the largest image's tower and projector bound, is taken before decoding and
-  a reservation that does not fit is refused with 503.
+  a reservation that does not fit is refused with 503. A second concurrent
+  image request gets 429. Activation overflow on the Super model saturates as
+  on deployment engines instead of becoming NaN, so images whose embeddings
+  exceed the text-calibrated scales are answered instead of decoding as
+  `<unk>`; non-finite image features fail the request.
+- A load right after a Super unload re-samples free memory for up to two
+  seconds while macOS returns the unloaded pages, instead of refusing.
 - Needs at least 192 GB of unified memory; only 256 GB is measured.
   Coordinator-side registration remains a separate step.

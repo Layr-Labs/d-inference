@@ -240,16 +240,17 @@ struct NemotronSuperServingPolicyTests {
                 previous = bank
             }
         }
-        // The production default (eight speculating requests at 4.25 GiB) on a
-        // 256 GiB machine: no bank until the grant holds the requests, the lane
-        // and an image with 2 GiB to spare, 4 GiB at 60 GiB, the 16 GiB cap
-        // from about 80 GiB.
+        // The production default (eight speculating requests at 576 MiB and
+        // the owner's 5.03 GB round, 11.19 GiB of admission) on a 256 GiB
+        // machine: half the grant beside the admission, the 12 GiB lane and an
+        // image, 3.5 GiB at 34 GiB and 9 GiB at 45, then a quarter of the grant
+        // (15 GiB at 60), the 16 GiB cap from 64 GiB.
         let sizes = [34, 45, 60, 100, 155].map { (grantGiB: Int) -> Int in
             let grant: Int = grantGiB * gib
             return Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [:], physicalBytes: Self.machine)
         }
-        let expected: [Int] = [0, 0, 4 << 30, 16 << 30, 16 << 30]
+        let expected: [Int] = [7 << 29, 9 << 30, 15 << 30, 16 << 30, 16 << 30]
         #expect(sizes == expected)
     }
 
@@ -259,13 +260,14 @@ struct NemotronSuperServingPolicyTests {
     @Test func defaultBankFollowsTheChunkAndYieldsToTheOperator() throws {
         typealias Policy = NemotronSuperServingPolicy
         let gib: Int = 1 << 30
-        let grant: Int = 70 * gib
+        // Below the cap, half of what the 12 GiB or 20 GiB lane leaves.
+        let grant: Int = 50 * gib
         let chunk = NemotronSuperLocalPrefill.chunkKey
         let narrowChunk = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [:], physicalBytes: Self.machine)
         let wide = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [chunk: "4096"], physicalBytes: Self.machine)
-        #expect(narrowChunk == 9 << 30 && wide == 5 << 30)
+        #expect(narrowChunk == 23 << 29 && wide == 15 << 29)
         for invalid in ["0", "-1", "abc", "262145"] {
             #expect(Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [chunk: invalid], physicalBytes: Self.machine) == 0, "\(invalid)")

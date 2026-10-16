@@ -67,11 +67,11 @@ Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalBinding.swift`.
 
-The dedicated `NemotronSuperLocalImageBinding` is minted by that exact unpublished
-load owner, uses separate real media and bridge KV reservations, and cancels/drains
+The dedicated `NemotronSuperLocalImageBinding` is minted by that exact load
+owner, uses separate real media and bridge KV reservations, and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
-and close. It does not manufacture a shared native lease or register a public
-media route. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
+and close. It does not manufacture a shared native lease; the managed slot's
+chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
 reproduces the reference loader's RGB8 conversion: PNG of every colour type and
 bit depth is decoded in-process and matches Pillow exactly, while JPEG samples
 come from ImageIO within test-enforced bounds. Container limits are checked
@@ -103,7 +103,7 @@ through the owner's `localTextBinding` and images through its image binding, adm
 the owner's configured number of requests and refuses another with `queueFull`
 (429) before any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
 it over the transaction's own owner. Only the qualification runner installs it as
-a hook; the managed slot serves the same route through `engine(body:hasMedia:servesMedia:cacheScope:)`.
+a hook; the managed slot serves the same route through `engine(body:hasMedia:cacheScope:)`.
 `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (default `1`) sets how many requests
 the owner serves: `1` to `64` plain, `1` to `8` with rectangular speculation, one
 with serial speculation. Above one the plain builder serves
@@ -181,9 +181,9 @@ shared production factory recognizes both targets like `NemotronSuperRecurrentAd
 The engine admits the assistant's bounded per-request charge (FP8 history, backlog,
 every draft step's dense FP8 output head, the rectangular verify window and an
 unmeasured 256 MiB backend scratch allowance) plus captured recurrent states before
-allocation and holds them until retirement. An owner with speculation refuses
-every media entry with `mediaWithSpeculation`; its HTTP hook is text-only and
-answers image requests with 400. Synthetic fixtures show
+allocation and holds them until retirement. On an owner with speculation each
+image request runs target-only (SDK `CBv2RecurrentMTPRequestScopedMediaFallback`):
+no draft, carry or assistant state, while text keeps speculating. Synthetic fixtures show
 token-exact greedy output against the ordinary owner in both modes, forced
 rejection rollback and cancellation; serial verification cannot beat plain
 decode, and no full-model acceptance or speed is measured. Sources:
@@ -250,7 +250,13 @@ keep speculating in the same steps. The image's media reservation (decode,
 normalization, features and the largest image's tower and projector bound) is
 taken from the shared budget before decoding and held until the request
 retires; one that does not fit is refused with 503 before anything is
-allocated. One image request runs at a time per owner, beside text requests.
+allocated. One image request runs at a time per owner, beside text requests; a
+second concurrent one gets 429 before any response starts. The Super model
+quantizes activations with deployment (SATFINITE) overflow semantics: an image
+embedding beyond a layer's text-calibrated activation scale saturates as on
+TensorRT-LLM and vLLM, where ModelOpt's eager cast rule would turn it into NaN
+(see the SDK's `docs/nemotron-super.md`). Non-finite tower or projector
+features still fail the request.
 The generic local engine refuses Super; only chat completions serve it.
 
 `retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner

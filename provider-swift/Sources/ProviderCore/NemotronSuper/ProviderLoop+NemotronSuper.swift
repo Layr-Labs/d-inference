@@ -196,7 +196,10 @@ extension ProviderLoop {
         }
         modelSlots.removeValue(forKey: modelID)
         modelsUnloading.remove(modelID)
-        if retired { clearCacheAfterConfirmedNativeOwnership() }
+        if retired {
+            clearCacheAfterConfirmedNativeOwnership()
+            nemotronSuperMemoryRetirement = NativeMemoryRetirementWindow()
+        }
         await refreshActivationReserve()
         await resliceGrowSurvivors()
         for waiter in unloadingWaiters.removeValue(forKey: modelID) ?? [] { waiter.resume() }

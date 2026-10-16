@@ -24,7 +24,13 @@
   default speculating owner each image request runs target-only, with no
   draft state, while text keeps speculating; its media reservation, including
   the largest image's tower and projector bound, is taken before decoding and
-  a reservation that does not fit is refused with 503.
+  a reservation that does not fit is refused with 503. A second concurrent
+  image request gets 429. Activation overflow on the Super model saturates as
+  on deployment engines instead of becoming NaN, so images whose embeddings
+  exceed the text-calibrated scales are answered instead of decoding as
+  `<unk>`; non-finite image features fail the request.
+- A load right after a Super unload re-samples free memory for up to two
+  seconds while macOS returns the unloaded pages, instead of refusing.
 - Opt-in paged attention KV (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged`): the
   segmented native paged backend, charged by the engine's process-memory owner,
   with the decode rows reserved for the owner's lifetime; it never falls back to

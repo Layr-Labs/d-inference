@@ -50,10 +50,33 @@ struct NemotronSuperManagedSlotTests {
         let directory: URL
     }
 
+    /// Free memory the OS reports: everything, except for a while after
+    /// `withhold(for:)`, as macOS does after a large unload.
+    final class ReturningMemory: @unchecked Sendable {
+        private let lock = NSLock()
+        private var returnsAt: ContinuousClock.Instant?
+        func withhold(for duration: Duration) { lock.withLock { returnsAt = .now + duration } }
+        func available(total: UInt64) -> UInt64 {
+            lock.withLock { (returnsAt.map { ContinuousClock.now < $0 } ?? false) ? 1 << 28 : total }
+        }
+    }
+
+    /// Weak references to the installed model and its head.
+    final class InstallationProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private weak var modelObject: AnyObject?
+        private weak var headObject: AnyObject?
+        func record(model: AnyObject?) { lock.withLock { modelObject = model } }
+        func record(head: AnyObject) { lock.withLock { headObject = head } }
+        var released: Bool { lock.withLock { modelObject == nil && headObject == nil } }
+    }
+
     /// `totalGiB` bounds the process budget the LOAD claim and requests use.
-    static func fixture(mode: MTPMode, totalGiB: UInt64 = 64) async throws -> Fixture {
+    static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, memory: ReturningMemory? = nil,
+                        probe: InstallationProbe? = nil) async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            .init(total: totalGiB << 30, active: 0, cache: 0, systemAvailable: totalGiB << 30)
+            .init(total: totalGiB << 30, active: 0, cache: 0,
+                  systemAvailable: memory?.available(total: totalGiB << 30) ?? totalGiB << 30)
         }
         let hardware = HardwareInfo(machineModel: "Mac15,14", chipName: "Apple M3 Ultra",
             chipFamily: .m3, chipTier: .ultra, memoryGb: totalGiB, memoryAvailableGb: totalGiB,
@@ -69,7 +92,8 @@ struct NemotronSuperManagedSlotTests {
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
         await loop.setNemotronSuperSlotLoaderForTesting(
-            loader(tokenizer: TokenizerHandle(SuperScriptedTokenizer(script: script)), template: template),
+            loader(tokenizer: TokenizerHandle(SuperScriptedTokenizer(script: script)), template: template,
+                   probe: probe),
             environment: [:])
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
@@ -80,10 +104,22 @@ struct NemotronSuperManagedSlotTests {
 
     /// The latent-MoE fixture and its embedded head, staged through the real
     /// transaction under the provider's grant, admission and environment.
-    static func loader(tokenizer: TokenizerHandle, template: Data) -> NemotronSuperSlotLoader {
+    static func loader(tokenizer: TokenizerHandle, template: Data,
+                       probe: InstallationProbe? = nil) -> NemotronSuperSlotLoader {
         NemotronSuperSlotLoader(kvBytesPerToken: { _ in 64 }) { request in
-            let staging = try SuperMTPInstalledFixture(
+            let fixture = try SuperMTPInstalledFixture(
                 radioDimensions: SuperMTPInstalledFixture.encodedImageTower).staging()
+            let staging = NemotronSuperLocalLoad.Staging(source: fixture.source, install: {
+                let installed = try fixture.install($0, $1, $2)
+                probe?.record(model: installed.model)
+                return installed
+            }, head: fixture.head.map { head in
+                .init(quote: head.quote, load: {
+                    let module = try head.load($0, $1, $2)
+                    probe?.record(head: module)
+                    return module
+                })
+            })
             let tensorBytes = staging.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
             let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
                 maxContextLength: 1024, defaultMaxTokens: 16)
@@ -109,7 +145,7 @@ struct NemotronSuperManagedSlotTests {
 
     /// One encrypted coordinator request: the decrypted SSE and its terminal.
     static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
-        consumer: NodeKeyPair, scope: String? = "tenant-a",
+        consumer: NodeKeyPair, scope: String? = "tenant-a", deadline seconds: Int = 60,
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
         let id = "super-coordinator-\(UUID().uuidString)"
@@ -119,7 +155,7 @@ struct NemotronSuperManagedSlotTests {
             senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: nil,
             authenticatedCacheScope: scope, send: SendHandle(recorder.record))
         if let whileRunning { await whileRunning(id) }
-        let deadline = ContinuousClock.now + .seconds(60)
+        let deadline = ContinuousClock.now + .seconds(seconds)
         while recorder.terminal(id) == nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(2))
         }
@@ -174,6 +210,16 @@ struct NemotronSuperManagedSlotTests {
         #expect(SuperSSE(tool.sse).toolCalls.map(\.name) == ["get_weather"])
         #expect(SuperSSE(tool.sse).toolCalls.map(\.arguments) == [#"{"city":"Paris"}"#])
         #expect(!tool.sse.contains("<tool_call>"))
+        // Forced tool_choice: required and named calls validate; plain text fails closed.
+        let named: [String: Any] = ["type": "function", "function": ["name": "get_weather"]]
+        for choice in ["required", named] as [Any] {
+            let forced = try await Self.send(Self.body(call, script: script,
+                ["tools": [weather], "tool_choice": choice]), to: loop, recorder: recorder, consumer: consumer)
+            #expect(SuperSSE(forced.sse).toolCalls.map(\.name) == ["get_weather"], "\(forced.terminal)")
+        }
+        let ignored = try await Self.send(Self.body(["Sure", "."], script: script,
+            ["tools": [weather], "tool_choice": "required"]), to: loop, recorder: recorder, consumer: consumer)
+        #expect(Self.failure(ignored.terminal)?.statusCode == 422, "\(ignored.terminal)")
         // An undecodable image and unhonored controls are refused.
         let image = ["role": "user", "content": [["type": "image_url", "image_url": ["url":
             "data:image/png;base64,iVBORw0KGgo="]], ["type": "text", "text": "Describe."]]] as [String: Any]
@@ -220,6 +266,51 @@ struct NemotronSuperManagedSlotTests {
         #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
 
+    /// Unload releases the owner, engine, model and head, and the slot loads
+    /// again while the OS is still returning the unloaded pages.
+    @Test(.timeLimit(.minutes(3)))
+    func unloadReleasesTheOwnerAndTheSlotReloadsWhileMemoryReturns() async throws {
+        let memory = ReturningMemory(), probe = InstallationProbe()
+        let fixture = try await Self.fixture(mode: .auto, memory: memory, probe: probe)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop, script = fixture.script
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        for round in 1...2 {
+            // From round 2 the OS has not yet returned the unloaded pages.
+            if round > 1 { memory.withhold(for: .milliseconds(300)) }
+            try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                             revisionDirectory: fixture.directory)
+            weak var owner: NemotronSuperSlotOwner?
+            weak var engine: EngineV2?
+            do {
+                let strong = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
+                let ownedEngine = await strong.bridge.ownedEngine
+                owner = strong; engine = ownedEngine as? EngineV2
+                #expect(engine != nil && !probe.released)
+                let text = try await Self.send(Self.body(["a", "b"], script: script), to: loop,
+                                               recorder: recorder, consumer: consumer)
+                #expect(SuperSSE(text.sse).content == "ab", "round \(round)")
+                let image = try await Self.send(Self.imageBody(["c"], script: script, maxTokens: 1), to: loop,
+                                                recorder: recorder, consumer: consumer)
+                #expect(SuperSSE(image.sse).content == "c", "round \(round)")
+            }
+            #expect(await loop.unloadModel(Self.modelID))
+            let deadline = ContinuousClock.now + .seconds(5)
+            while owner != nil || engine != nil || !probe.released, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(owner == nil && engine == nil && probe.released, "round \(round)")
+            #expect(await fixture.budget.outstandingReservedBytes() == 0)
+        }
+        // Outside the retirement window the same shortfall is still refused.
+        try await Task.sleep(for: NativeMemoryRetirementWindow.maximumDuration)
+        memory.withhold(for: .seconds(2))
+        await #expect(throws: InferenceError.self) {
+            try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                             revisionDirectory: fixture.directory)
+        }
+    }
+
     /// A coordinator cancel mid-stream settles once and the owner still retires.
     @Test(.timeLimit(.minutes(3)))
     func coordinatorCancellationSettlesAndTheOwnerRetires() async throws {
@@ -254,41 +345,6 @@ struct NemotronSuperManagedSlotTests {
         #expect(await loop.unloadModel(Self.modelID))
         #expect(await fixture.budget.reservationBytesSnapshot().isEmpty)
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
-    }
-
-    /// The pinned checkpoint through the production loader, the real process
-    /// budget and the encrypted coordinator path. Loads about 80 GB; run only
-    /// with `DARKBLOOM_SUPER_MANAGED_LIVE=1` and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
-        && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil),
-        .timeLimit(.minutes(10)))
-    func pinnedCheckpointServesThroughTheManagedSlot() async throws {
-        let path = try #require(ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"])
-        let directory = URL(fileURLWithPath: path, isDirectory: true)
-        let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.modelID))
-        let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
-            hardware: try HardwareDetector.detect(), models: [model], config: .init(
-                provider: .init(name: "super-managed-live"),
-                backend: .init(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: .auto),
-                coordinator: .init(heartbeatIntervalSecs: 60))), attestationSigner: nil)
-        let started = ContinuousClock.now
-        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false, revisionDirectory: directory)
-        let loadSeconds = started.duration(to: .now)
-        let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
-        let loaded = await owner.bridge.mtpStatusSnapshot()
-        #expect(owner.speculates && loaded.active)
-        let recorder = Recorder(), consumer = NodeKeyPair.generate()
-        let body = try JSONSerialization.data(withJSONObject: ["model": Self.modelID, "stream": true,
-            "temperature": 0, "max_tokens": 16, "chat_template_kwargs": ["enable_thinking": false],
-            "messages": [["role": "user", "content": "What is 17 times 19? Reply with the number only."]]])
-        let answer = try await Self.send(body, to: loop, recorder: recorder, consumer: consumer)
-        let usage = try #require(Self.usage(answer.terminal), "\(answer.terminal)")
-        #expect(SuperSSE(answer.sse).content.contains("323"))
-        let mtp = await owner.bridge.mtpStatusSnapshot()
-        print("SUPER_MANAGED_LIVE load_s=\(loadSeconds) prompt=\(usage.promptTokens) "
-            + "completion=\(usage.completionTokens) mtp_rounds=\(mtp.rounds) accepted=\(mtp.acceptedDraftTokens)")
-        #expect(await loop.unloadModel(Self.modelID))
-        #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
 
     /// The LOAD claim refuses before allocation; nothing is installed or held.

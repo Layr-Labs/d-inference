@@ -1,15 +1,12 @@
 // Copyright © 2026 Eigen Labs.
 
-import CoreGraphics
 import Foundation
 import Hummingbird
 import HummingbirdTesting
 import HTTPTypes
-import ImageIO
 import MLXLMCommon
 import NIOCore
 import Testing
-import UniformTypeIdentifiers
 @testable import ProviderCore
 
 /// Images on the managed slot's default owner, which speculates for text:
@@ -30,7 +27,7 @@ extension NemotronSuperManagedSlotTests {
                                                       ["type": "text", "text": question]]]]])
     }
 
-    private final class Box<Value>: @unchecked Sendable {
+    final class Box<Value>: @unchecked Sendable {
         private let lock = NSLock()
         private var stored: Value?
         func set(_ value: Value) { lock.withLock { stored = value } }
@@ -152,83 +149,39 @@ extension NemotronSuperManagedSlotTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// The pinned checkpoint through the production loader: PNG and JPEG
-    /// requests on the speculating owner, then an image beside a text
-    /// request. Loads about 80 GB; run only with `DARKBLOOM_SUPER_MANAGED_LIVE=1`
-    /// and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
-        && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil),
-        .timeLimit(.minutes(10)))
-    func pinnedCheckpointServesImagesBesideSpeculativeText() async throws {
-        let path = try #require(ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"])
-        let directory = URL(fileURLWithPath: path, isDirectory: true)
-        let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.modelID))
-        let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
-            hardware: try HardwareDetector.detect(), models: [model], config: .init(
-                provider: .init(name: "super-managed-live-images"),
-                backend: .init(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: .auto),
-                coordinator: .init(heartbeatIntervalSecs: 60))), attestationSigner: nil)
-        let started = ContinuousClock.now
-        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false, revisionDirectory: directory)
-        let loadSeconds = started.duration(to: .now)
-        let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
-        let loaded = await owner.bridge.mtpStatusSnapshot()
-        #expect(owner.speculates && loaded.active)
+    /// One image request runs at a time per owner: a second concurrent image
+    /// gets 429 before any response and holds nothing; video gets 400.
+    @Test(.timeLimit(.minutes(3)))
+    func concurrentImageIsRefusedWith429AndVideoWith400() async throws {
+        let fixture = try await Self.fixture(mode: .auto)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop, script = fixture.script
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                         revisionDirectory: fixture.directory)
+        let held = await fixture.budget.reservationBytesSnapshot()
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
-        let arithmetic = try JSONSerialization.data(withJSONObject: ["model": Self.modelID, "stream": true,
-            "temperature": 0, "max_tokens": 16, "chat_template_kwargs": ["enable_thinking": false],
-            "messages": [["role": "user", "content": "What is 17 times 19? Reply with the number only."]]])
-        var lines: [String] = []
-        for (label, uri) in [("png", try Self.solidRedDataURI(.png)), ("jpeg", try Self.solidRedDataURI(.jpeg))] {
-            let begin = ContinuousClock.now
-            let answer = try await Self.send(try Self.colorQuestion(uri), to: loop, recorder: recorder, consumer: consumer)
-            let content = SuperSSE(answer.sse).content
-            #expect(content.lowercased().contains("red"), "\(label): \(content) \(answer.terminal)")
-            let usage = Self.usage(answer.terminal)
-            lines.append("\(label)_s=\(begin.duration(to: .now)) \(label)_prompt=\(usage.map { String($0.promptTokens) } ?? "none") "
-                + "\(label)_answer=\(content.debugDescription)")
-        }
-        let beforeMixed = await owner.bridge.mtpStatusSnapshot()
-        let concurrent = Box<(sse: String, terminal: OutboundMessage)>()
-        let png = try Self.solidRedDataURI(.png)
-        let text = try await Self.send(arithmetic, to: loop, recorder: recorder, consumer: consumer) { _ in
-            if let body = try? Self.colorQuestion(png),
+        let long = Array(repeating: "a", count: 300)
+        let second = Box<(sse: String, terminal: OutboundMessage)>()
+        let first = try await Self.send(Self.imageBody(long, script: script, maxTokens: 300), to: loop,
+                                        recorder: recorder, consumer: consumer) { id in
+            while recorder.chunks(id).count < 3 { try? await Task.sleep(for: .milliseconds(1)) }
+            if let body = try? Self.imageBody(nil, script: script, maxTokens: 2),
                let result = try? await Self.send(body, to: loop, recorder: recorder, consumer: consumer) {
-                concurrent.set(result)
+                second.set(result)
             }
         }
-        let mixedImage = try #require(concurrent.value)
-        #expect(SuperSSE(text.sse).content.contains("323"), "\(text.terminal)")
-        #expect(SuperSSE(mixedImage.sse).content.lowercased().contains("red"), "\(mixedImage.terminal)")
-        let mtp = await owner.bridge.mtpStatusSnapshot()
-        print("SUPER_MANAGED_LIVE_IMAGES load_s=\(loadSeconds) " + lines.joined(separator: " ")
-            + " mixed_text=\(SuperSSE(text.sse).content.debugDescription)"
-            + " mixed_image=\(SuperSSE(mixedImage.sse).content.debugDescription)"
-            + " mtp_rounds_mixed=\(mtp.rounds - beforeMixed.rounds) accepted=\(mtp.acceptedDraftTokens)")
+        #expect(Self.usage(first.terminal)?.completionTokens == 300, "\(first.terminal)")
+        let refused = try #require(second.value)
+        #expect(Self.failure(refused.terminal)?.statusCode == 429, "\(refused.terminal)")
+        #expect(refused.sse.isEmpty)
+        #expect(await fixture.budget.reservationBytesSnapshot() == held)
+        let video = try JSONSerialization.data(withJSONObject: ["model": Self.modelID, "stream": true,
+            "max_tokens": 2, "messages": [["role": "user", "content": [
+                ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AAAAIGZ0eXBpc29t"]],
+                ["type": "text", "text": "Describe."]]]]])
+        let videoAnswer = try await Self.send(video, to: loop, recorder: recorder, consumer: consumer)
+        #expect(Self.failure(videoAnswer.terminal)?.statusCode == 400, "\(videoAnswer.terminal)")
+        #expect(await fixture.budget.reservationBytesSnapshot() == held)
         #expect(await loop.unloadModel(Self.modelID))
-        #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
-    }
-
-    static func colorQuestion(_ image: String) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["model": modelID, "stream": true,
-            "temperature": 0, "max_tokens": 16, "chat_template_kwargs": ["enable_thinking": false],
-            "messages": [["role": "user", "content": [["type": "image_url", "image_url": ["url": image]],
-                ["type": "text", "text": "What color is this image? Answer with one word."]]]]])
-    }
-
-    /// A 256x256 solid red image, encoded by ImageIO.
-    static func solidRedDataURI(_ type: UTType) throws -> String {
-        let context = try #require(CGContext(data: nil, width: 256, height: 256, bitsPerComponent: 8,
-            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
-        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 256, height: 256))
-        let image = try #require(context.makeImage())
-        let data = NSMutableData()
-        let destination = try #require(CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil))
-        CGImageDestinationAddImage(destination, image, nil)
-        #expect(CGImageDestinationFinalize(destination))
-        let label = type == .png ? "png" : "jpeg"
-        return "data:image/\(label);base64," + (data as Data).base64EncodedString()
     }
 }

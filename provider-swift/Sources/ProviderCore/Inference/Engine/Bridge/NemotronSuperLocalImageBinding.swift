@@ -4,12 +4,15 @@ import MLXLMCommon
 import MLXLMServer
 import MLXVLM
 
-/// Dedicated unpublished-owner image execution. No shared registry acquisition,
-/// native consumer lease, prefix identity, MTP, or public route is manufactured.
+/// Dedicated owner image execution. No shared registry acquisition, native
+/// consumer lease, prefix identity or MTP state is manufactured; on a
+/// speculating owner the engine runs the request target-only.
 /// The load owner retains this actor and drains it before retiring its bridge.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, unsupportedCapability, invalidInput, capacity, retainedFault
+        /// The tower and projector produced a non-finite feature.
+        case invalidFeatures
     }
 
     /// Internal qualification input. The caller must transfer immutable arrays

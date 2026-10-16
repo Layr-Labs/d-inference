@@ -210,9 +210,8 @@ struct NemotronSuperLocalHTTPAdmissionTests {
     }
 
     @Test(.timeLimit(.minutes(3))) func speculatingOwnerHookServesTextAndTargetOnlyImages() async throws {
-        let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
-            channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
-        let fixture = try SuperMTPInstalledFixture(radioDimensions: dimensions).make()
+        let fixture = try SuperMTPInstalledFixture(
+            radioDimensions: SuperMTPInstalledFixture.encodedImageTower).make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
         let bytes = fixture.installed.receipt.payloadBytes

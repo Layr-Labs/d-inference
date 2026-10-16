@@ -440,12 +440,6 @@ extension NemotronSuperImageDecodeTests {
         let png = try NemotronSuperImageDecode.prepare(Self.encoded(.png), orientation: .applyEXIF)
         let jpeg = try NemotronSuperImageDecode.prepare(Self.encoded(.jpeg), orientation: .applyEXIF)
         #expect(png.grid == jpeg.grid && png.normalizedCHW.count == jpeg.normalizedCHW.count)
-        let pngRaster = try NemotronSuperImageDecode.decode(Self.encoded(.png), orientation: .applyEXIF)
-        let jpegRaster = try NemotronSuperImageDecode.decode(Self.encoded(.jpeg), orientation: .applyEXIF)
-        print("SUPER_IMAGE_DIAG png first=\(Array(pngRaster.rgb.prefix(6))) jpeg first=\(Array(jpegRaster.rgb.prefix(6)))"
-            + " png range=\(png.normalizedCHW.min() ?? .nan)...\(png.normalizedCHW.max() ?? .nan)"
-            + " jpeg range=\(jpeg.normalizedCHW.min() ?? .nan)...\(jpeg.normalizedCHW.max() ?? .nan)"
-            + " png nonfinite=\(png.normalizedCHW.filter { !$0.isFinite }.count)")
         let difference = zip(png.normalizedCHW, jpeg.normalizedCHW).map { abs($0 - $1) }.max() ?? .infinity
         #expect(difference < 0.05, "max |png - jpeg| = \(difference)")
         // (x / 255 - mean) / std for x in 0...255, per channel.

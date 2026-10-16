@@ -145,6 +145,18 @@ struct NemotronSuperMemoryLiveTests {
             return next.item(Int32.self)
         }
 
+        /// Every attention row's storage: type, element dtype and bytes.
+        func storage() -> String {
+            let rows = rows.compactMap { $0 }
+            let bytes = rows.reduce(0) { $0 + (($1 as? CBv2FullSequenceKV)?.byteCount ?? 0) }
+            let kinds = Set(rows.map { row -> String in
+                let snapshot = row.snapshot()
+                return "\(type(of: row)) \(snapshot.keys.dtype) offset=\(snapshot.offset)"
+            })
+            return "rows=\(rows.count) contiguous_bytes=\(bytes) backend_reserved=\(backend.bytesReserved) "
+                + kinds.sorted().joined(separator: "; ")
+        }
+
         func release() throws {
             bank.releaseBoundRows()
             try state.release()
@@ -166,6 +178,7 @@ struct NemotronSuperMemoryLiveTests {
             largest = max(largest, phase.transient)
             report("\(label) chunk end=\(end)", phase,
                 "held=\(Memory.activeMemory - start) lane_bound=\(laneBound)")
+            if end == prompt.count || begin == 0 { print("SUPER_MEMORY \(label) kv \(lane.storage())") }
         }
         for step in 0 ..< decodeSteps {
             let (next, phase) = try measure(clearCache: false) { try lane.decode(token) }
@@ -175,6 +188,7 @@ struct NemotronSuperMemoryLiveTests {
                     "held=\(Memory.activeMemory - start)")
             }
         }
+        print("SUPER_MEMORY \(label) kv after decode \(lane.storage())")
         let (_, cleared) = measure { 0 }
         report("\(label) end tokens=\(prompt.count + decodeSteps)", cleared,
             "held=\(Memory.activeMemory - start) largest_chunk_transient=\(largest)")
@@ -239,6 +253,25 @@ struct NemotronSuperMemoryLiveTests {
             let (_, released) = Self.measure { 0 }
             Self.report("\(name) released", released)
         }
+
+        // Fenced experiment: the same first chunks with the residual stream
+        // evaluated every `fence` layers (results unchanged; bounds the
+        // intermediates queued command buffers retain), timed.
+        for fence in [nil, 8, 2] as [Int?] {
+            model.languageModel.setSuperPrefillFenceLayers(fence)
+            let fenced = try Lane(model, paged: false)
+            for begin in stride(from: 0, to: 3 * Self.chunk, by: Self.chunk) {
+                let started = DispatchTime.now().uptimeNanoseconds
+                let (_, phase) = try Self.measure(clearCache: false) {
+                    try fenced.prefill(prompt[begin ..< begin + Self.chunk])
+                }
+                let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+                Self.report("fence=\(fence.map(String.init) ?? "none") chunk end=\(begin + Self.chunk)", phase,
+                    String(format: "seconds=%.3f", seconds))
+            }
+            try fenced.release()
+        }
+        model.languageModel.setSuperPrefillFenceLayers(nil)
 
         // One chunk again under the stage profile with memory recording.
         let profiled = try Lane(model, paged: false)

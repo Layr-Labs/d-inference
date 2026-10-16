@@ -21,10 +21,10 @@ private actor SuperPrefixRun {
     }
 }
 
-/// Exact text prefix reuse of the plain Super owner: an explicit opt-in, a
-/// bank whose whole budget is reserved from before the first request until
-/// native retirement, restored text identical to cold text, and no entry
-/// shared between owners.
+/// Exact prefix reuse of the plain and the speculating Super owner: an
+/// explicit opt-in, a bank whose whole budget is reserved from before the
+/// first request until native retirement, restored text and image turns
+/// identical to cold ones, and no entry shared between owners.
 struct NemotronSuperLocalPrefixCacheTests {
     typealias Builder = NemotronSuperLocalBridgeBuilder
     typealias Prefix = NemotronSuperLocalPrefixCache
@@ -189,7 +189,8 @@ struct NemotronSuperLocalPrefixCacheTests {
             lease: leases[0], speculates: speculates)
         let cold = try await Self.owner(coldFixture, environment: Self.environment, budget: budget,
             lease: leases[1], speculates: speculates)
-        // One image feature (a 4 x 4 one-channel raster), then text: a grid end.
+        // The image placeholder 18 takes one feature (a 4 x 4 one-channel
+        // raster); twenty tokens end on the chunk grid.
         let turn: [Int] = [1, 18] + Array(Self.donor.prefix(18))
         let nextTurn: [Int] = turn + [5, 9, 1, 4, 22, 7, 3, 8, 30]
         let warmBank = try #require(await Self.bank(warm))

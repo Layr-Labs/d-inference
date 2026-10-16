@@ -3,15 +3,16 @@
 import Foundation
 import MLXLMCommon
 
-/// Opt-in exact text prefix reuse of the Super owner: the engine's
+/// Opt-in exact prefix reuse of either Super owner: the engine's
 /// process-local recurrent checkpoint bank on the contiguous backend. The
 /// shared resident-cache switch (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) enables it
 /// and `PrefixCachePolicy.hybridConfig` sizes it from the KV grant.
 /// Checkpoints sit only at multiples of the owner's fixed prefill chunk, where
 /// a restore continues a cold prefill bit for bit. On the speculating owner a
-/// checkpoint also holds the assistant's queued prompt history, from which a
-/// restored request builds the same draft history as a cold one. Image
-/// requests never use it; the bank holds no disk state.
+/// text checkpoint also holds the assistant's queued prompt history, from which
+/// a restored request builds the same draft history as a cold one. An image
+/// request reuses only checkpoints of its own image identity
+/// (`NemotronSuperLocalImageBinding`); the bank holds no disk state.
 enum NemotronSuperLocalPrefixCache {
     enum Failure: Error, Equatable {
         /// The bank was configured but the loaded engine did not construct it.
@@ -26,7 +27,8 @@ enum NemotronSuperLocalPrefixCache {
 
     /// nil leaves the owner without a bank. The same bank serves both owners:
     /// the speculating owner's `NemotronSuperMTPAssistant` checkpoints its
-    /// prompt history.
+    /// prompt history, so `hybridConfig`'s drafter gate stays off
+    /// (`hasMTPDrafter: false`) for both.
     static func config(environment: [String: String], kvBytesCapacity: Int,
                        modelID: String = NemotronSuperLocalBinding.modelID)
         -> CBv2HybridPrefixCacheConfig? {

@@ -173,22 +173,20 @@ enum NemotronSuperServingPolicy {
     ///
     ///     serving = grant - admissionKVBytes(requests, speculates)
     ///                     - prefill lane bound(chunk) - one image's media charge
-    ///     load    = memory cap - activation reserve - 2 x LOAD claim bytes
-    ///                     - admissionKVBytes(requests, speculates) - lane bound
+    ///     load    = memory cap - activation reserve - LOAD bytes (installation
+    ///                     and any head) - admissionKVBytes - lane bound
     ///     bank    = min(16 GiB, grant / 4, serving / 2, load / 2),
     ///               rounded down to 256 MiB; no bank below 1 GiB
     ///
     /// Serving: the lane and media charges come from the same ledger the grant
     /// describes, so half of what remains beside them stays free for KV, more
-    /// images and other owners. Load: the builder reserves the lane and then
-    /// the bank while the LOAD claim (installation, any head, and admission
-    /// KV including the bank) is still held and the installed weights already
-    /// count as MLX usage; the bound counts those weights twice (the claim's
-    /// bytes stand in for the resident ones) and the bank twice, so the
-    /// reservation fits under the machine's cap. The grant / 4 term is the
-    /// engine's own bank ceiling when a re-slice shrinks the grant. An
-    /// unparseable or out-of-range chunk key gives no bank (the load then
-    /// refuses the key itself).
+    /// images and other owners. Load: the single LOAD claim, taken before any
+    /// allocation, holds the installation, any head, the lane, the bank and the
+    /// requests' KV (`NemotronSuperLocalLoad`), so half of what the machine's
+    /// cap leaves beside the rest stays free for other memory and images. The
+    /// grant / 4 term is the engine's own bank ceiling when a re-slice shrinks
+    /// the grant. An unparseable or out-of-range chunk key gives no bank (the
+    /// load then refuses the key itself).
     static func defaultPrefixBankBytes(kvBytesCapacity: Int, requests: Int, speculates: Bool,
                                        environment: [String: String],
                                        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
@@ -204,7 +202,7 @@ enum NemotronSuperServingPolicy {
         let claim = Int(clamping: pinnedInstallationLoadBytes + (speculates ? pinnedHeadLoadBytes : 0))
         let usable = Int(clamping: UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes))
             - Int(clamping: UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [modelID]))
-        let load = usable - 2 * claim - admission - lane
+        let load = usable - claim - admission - lane
         guard serving > 0, load > 0 else { return 0 }
         let bank = min(maximumDefaultPrefixBankBytes, kvBytesCapacity / 4, serving / 2, load / 2)
         let rounded = bank - bank % prefixBankGranuleBytes

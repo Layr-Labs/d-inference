@@ -122,7 +122,8 @@ step, the prefill activation is one owner-wide lane in the shared budget,
 reserved before the first request and released only after native retirement:
 `NemotronHModel.prefillActivationBoundBytes(tokens:)` (the SDK's whole-chunk bound
 measured on the full checkpoint) for the pinned checkpoint, the ModelOpt
-workspace quote for synthetic fixtures. A lane that does not fit fails the load.
+workspace quote for synthetic fixtures. A lane that does not fit fails the load;
+the pinned checkpoint's LOAD claim already holds it (below).
 Each bridge request reservation carries, beyond the engine's recurrent
 generations and any speculation charge, `requestWorkspaceBytes`: one
 `NemotronSuperDecodeCharge` decode row. The builder refuses a KV grant that
@@ -134,17 +135,16 @@ the fixed bytes per request.
 `NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
 recurrent checkpoint bank from the KV grant and the machine:
 `serving = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
-`load = memory cap - activation reserve - 2 x LOAD claim bytes - admissionKVBytes - lane bound`,
+`load = memory cap - activation reserve - LOAD bytes (installation, any head) - admissionKVBytes - lane bound`,
 `bank = min(16 GiB, grant / 4, serving / 2, load / 2)` rounded down to 256 MiB,
 and no bank below 1 GiB. The lane and media charges come from the same ledger
-the grant describes, so half of what is left beside them stays free. The
-builder reserves the lane and the bank while the LOAD claim (installation, any
-head and admission KV including the bank) is still held and the installed
-weights already count as MLX usage, so the load bound counts the weights and
-the bank twice. `grant / 4` is the engine's own bank ceiling when a re-slice
-shrinks the grant. A lone slot (grant = fleet KV budget) on 192 GiB gets no
-default bank; on 256 GiB the speculating owner gets 8.5 GiB and the plain one
-16 GiB; on 512 GiB both get 16 GiB. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+the grant describes, so half of what is left beside them stays free; the single
+LOAD claim holds the installation, any head, the lane, the bank and the
+requests' KV, so half of what the machine's cap leaves beside it stays free.
+`grant / 4` is the engine's own bank ceiling when a re-slice shrinks the grant.
+A lone slot (grant = fleet KV budget) gets 16 GiB for either owner on 192, 256
+and 512 GiB; on 192 GiB the speculating owner's whole claim (159.7 GB) leaves
+20 GB of the cap for other memory. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
 keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
@@ -256,7 +256,15 @@ allowance, the head supplement with speculation, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (4.25 GiB with depth-3 speculation at
 the 65,536-token context, 0.5 GiB plain), plus 2 GiB and any prefix bank, never
-above the grant. The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
+above the grant. For the pinned checkpoint the same claim also holds the prefill
+lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
+so one admission before any allocation covers everything the loaded owner keeps
+and a load that cannot hold it is refused before a shard is read into memory.
+Once the installation and head are resident (MLX usage), their share of the claim
+is handed over to that live view, as the ordinary managed load does
+(`reducePendingLoad`), and the builder hands the lane and bank shares to their
+own reservations right before taking them, so no byte is counted twice.
+The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
 registered and the slot installed.
@@ -285,8 +293,9 @@ history, its FP32 trusted backlog and every draft step's scores by the
 configured context: about 30.2 KB per token per request (3.44 GB at 32,768,
 4.43 GB at 65,536 and 6.41 GB at 131,072, measured). Eight requests' LOAD claim
 is admitted at 65,536 (36 GiB of KV headroom and the 1 GiB prefix bank,
-130.7 GB in all) and refused at 131,072 on 256 GB, because the claim still
-counts the installed weights until the owner is built.
+130.7 GB in all) and was refused at 131,072 on 256 GB while the claim still
+counted the installed weights until the owner was built; the claim now hands
+that share to live usage once the weights are resident.
 The plain owner's fixed bytes stay 516,253,712 at any context.
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified

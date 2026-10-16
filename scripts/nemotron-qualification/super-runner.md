@@ -76,7 +76,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--max-context` | 65536 | the managed slot's context; the builder accepts at most 262144; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
 | `--kv-capacity-gib` | 4; with speculation 12 or the managed slot's admission, 2 + 3 x N, when larger (26 for N = 8); plain 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim unless `--managed-load-claim` (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
-| `--managed-load-claim` | off | the LOAD claim holds the managed slot's KV headroom instead of the whole grant: every configured request's fixed bytes, 2 GiB and the default prefix bank (`NemotronSuperServingPolicy.loadPlan`), recorded as `admission_kv_bytes` in `load.quote`. A large grant then loads as it would in the provider. The builder's recheck after installation counts the resident weights in both the claim and live MLX usage, as the provider's does |
+| `--managed-load-claim` | off | the LOAD claim holds the managed slot's KV headroom instead of the whole grant: every configured request's fixed bytes, 2 GiB and the default prefix bank (`NemotronSuperServingPolicy.loadPlan`), recorded as `admission_kv_bytes` in `load.quote`. A large grant then loads as it would in the provider; as there, the claim also holds the prefill lane and the bank once, and hands the installation's share to live usage once it is resident |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
 | `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |
@@ -165,9 +165,10 @@ recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized like the
 managed slot's: `NemotronSuperServingPolicy.defaultPrefixBankBytes` of
 `--kv-capacity-gib` and the machine for the pinned checkpoint (half of what the
 grant leaves beside every request's fixed bytes, the prefill lane and one
-image, and half of what the memory cap leaves while the LOAD claim is held, at
-most a quarter of the grant and 16 GiB, none below 1 GiB; for eight speculating
-requests on 256 GiB: 8.5 GiB from `--kv-capacity-gib 60`, none at 34),
+image, and half of what the memory cap leaves beside the rest of the LOAD
+claim, at most a quarter of the grant and 16 GiB, none below 1 GiB; for eight
+speculating requests on 256 GiB: 16 GiB at `--kv-capacity-gib 100`, none at
+50),
 `min(1 GiB, KV grant / 8)` for synthetic weights, or
 `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`. It is carved from the grant
 and charged as `prefix_bank` from load to retirement. One long entry holds two

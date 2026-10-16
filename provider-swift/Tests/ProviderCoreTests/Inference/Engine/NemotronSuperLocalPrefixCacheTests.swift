@@ -25,6 +25,14 @@ private actor SuperPrefixRun {
 /// explicit opt-in, a bank whose whole budget is reserved from before the
 /// first request until native retirement, restored text and image turns
 /// identical to cold ones, and no entry shared between owners.
+/// Counts installations a staging performed.
+final class SuperPrefixInstallCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
+}
+
 struct NemotronSuperLocalPrefixCacheTests {
     typealias Builder = NemotronSuperLocalBridgeBuilder
     typealias Prefix = NemotronSuperLocalPrefixCache
@@ -254,6 +262,88 @@ struct NemotronSuperLocalPrefixCacheTests {
         try await plain.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)
         for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
+    }
+
+    /// Free bytes of `budget`: the largest reservation it admits, by bisection.
+    private static func freeBytes(_ budget: GlobalKVCacheBudget) async -> UInt64 {
+        var low: UInt64 = 0
+        var high: UInt64 = 64 << 30
+        while low < high {
+            let middle = low + (high - low + 1) / 2
+            if await budget.reserveBytes(requestID: "probe", bytes: middle) {
+                await budget.release(requestID: "probe")
+                low = middle
+            } else {
+                high = middle - 1
+            }
+        }
+        return low
+    }
+
+    /// One LOAD claim, taken before any allocation, holds the whole pinned
+    /// owner: the installation, the lane share (the measured whole-chunk
+    /// bound), the bank and the requests' KV floor. With one byte less free
+    /// the load is refused before anything is installed. With exactly that
+    /// much free it loads: the installation's share passes to live usage once
+    /// resident and the lane and bank shares pass to their own reservations,
+    /// so neither the 12 GiB lane share nor the 16 GiB bank is ever counted
+    /// twice (counting the bank twice would need 4 GiB more than is free).
+    @Test(.timeLimit(.minutes(3)))
+    func oneLoadClaimHoldsThePinnedOwnerOnce() async throws {
+        let bank: Int = 16 << 30
+        let kvFloor: Int = 2 << 30
+        let grant: Int = 40 << 30
+        let environment = [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank)]
+        let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
+            speculates: false)
+        #expect(shares == .init(lane: 12 << 30, bank: bank))
+        for short in [true, false] {
+            let fixture = SuperMTPInstalledFixture()
+            let base = try fixture.staging()
+            let installs = SuperPrefixInstallCount()
+            let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
+                installs.increment()
+                return try base.install($0, $1, $2)
+            }, head: base.head, pinned: true)
+            let quote = try NemotronSuperInstallation.requiredLoadBytes(source: base.source,
+                backendAllowanceBytes: 1 << 20)
+            let claim = UInt64(quote + shares.lane + shares.bank + kvFloor)
+            let budget = Self.budget()
+            let free = await Self.freeBytes(budget)
+            #expect(free > claim)
+            let ballast: UInt64 = free - claim + (short ? 1 : 0)
+            #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
+            let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+            let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 1024, defaultMaxTokens: 16)
+            let transaction = NemotronSuperLocalLoad(budget: budget)
+            var failure: Error?
+            do {
+                _ = try await transaction.load(staging: { staging },
+                    tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
+                    kvBytesCapacity: grant, admissionKVBytes: kvFloor + bank, backendAllowanceBytes: 1 << 20,
+                    modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+            } catch {
+                failure = error
+            }
+            if short {
+                #expect((failure as? NemotronSuperLocalLoad.Failure) == .capacity)
+                #expect(installs.count == 0, "refused before allocation")
+            } else {
+                #expect(failure == nil)
+                #expect(installs.count == 1)
+                let held = await budget.reservationBytesSnapshot()
+                let laneHeld = held.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }
+                let bankHeld = held.filter { Prefix.isBankReservationID($0.key) }
+                #expect(laneHeld.count == 1 && bankHeld.values.first == UInt64(bank))
+                // The claim is gone; only the owner's own reservations and the ballast stay.
+                let owner: UInt64 = (laneHeld.values.first ?? 0) + UInt64(bank)
+                #expect(await budget.outstandingReservedBytes() == ballast + owner)
+                try await transaction.closeAfterDrain()
+            }
+            await budget.release(requestID: "ballast")
+            #expect(await budget.outstandingReservedBytes() == 0)
+        }
     }
 
     /// A bank that does not fit the shared budget fails the load after the

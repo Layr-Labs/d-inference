@@ -256,7 +256,8 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                     #expect(response.status == .ok)
                     let text = String(buffer: response.body)
                     #expect(text.contains(stream ? "[DONE]" : "chat.completion"))
-                    #expect(text.contains("\"content\":\"x") && !text.contains("\"error\"") && !text.contains("data:"))
+                    #expect(text.contains("\"content\":\"x") && !text.contains("\"error\""))
+                    #expect(!text.contains("base64"))
                 }
                 #expect(await speculation() == beforeImage)
             }

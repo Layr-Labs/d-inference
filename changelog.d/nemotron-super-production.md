@@ -4,14 +4,20 @@
   pinned NVIDIA NVFP4 checkpoint with its embedded MTP head. The registry id
   with an unpinned `config.json` or index is withheld; every other
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
-  the managed LOAD footprint plus one image request's media charge (122.3 GiB
-  for the default configuration), and it advertises image input; capacity
+  the resident checkpoint plus the larger of its load transient and the
+  serving room (prefill lane, requests' KV headroom and one image request's
+  media charge; 93.1 GiB for the default configuration), and it advertises image input; capacity
   quotes for image probes charge their images.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
-  re-slice, one LOAD claim covering the installation, the head and the
-  configured requests' KV headroom, every shard verified against its pin, an
-  owner-wide prefill lane, and a refusal naming the minimum when the grant
-  cannot serve every request. Defaults: exact rectangular speculation for up
+  re-slice, one LOAD claim covering the installation, the head, the
+  speculating owner's round work once and the configured requests' KV
+  headroom, each counted once (the load's transient only where it
+  exceeds that serving room, since freed load buffers are returned before
+  serving), every shard verified against its pin, an owner-wide prefill
+  lane of the measured chunk peak (8.5 GiB at 2,048 tokens), a measured
+  2 GiB activation reserve (its requests, lane and media
+  charges hold its activations), and a refusal naming the minimum when the
+  grant cannot serve every request. Defaults: exact rectangular speculation for up
   to eight requests, drafting three tokens for one decoding request, two for
   two to four and one beyond (the fastest depth measured at each width on the
   full checkpoint); `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves the
@@ -46,7 +52,8 @@
 - Serves 65,536 tokens of context, prompt plus output (was 16,384); the runner
   can select up to 262,144 tokens. The speculating owner charges each request
   its draft history per token of its own prompt and output instead of for the
-  whole window, so eight requests claim 22 GiB of KV headroom beside any
-  prefix bank (was 26 GiB).
+  whole window, and its round work once instead of per request, so eight
+  requests claim 11.2 GiB of KV headroom beside any prefix bank (was 26 GiB at
+  16,384 tokens).
 - Needs at least 192 GB of unified memory; only 256 GB is measured.
   Coordinator-side registration remains a separate step.

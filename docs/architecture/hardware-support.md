@@ -18,27 +18,41 @@ checkpoint does not waive that policy. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`.
 
 The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
-claims, before allocation, the pinned checkpoint's installation quote with a
-2 GiB backend allowance (82,100,665,864 bytes), the embedded head's supplement
-(8,848,271,480 bytes) and `NemotronSuperServingPolicy.admissionKVBytes` of KV
-headroom (22 GiB for eight speculative requests), then reserves a 12 GiB
-owner-wide prefill lane until native retirement. Its default discovery
-footprint, 122.3 GiB, is that claim plus the lane and the worst-case media
-reservation of one single-image request
-(`NemotronSuperServingPolicy.mediaChargeBytes`, 3.62 GiB: a 64 Mi-pixel decode
-workspace, the encoded body copies, a 13,312-patch image's tokens and its tower
-and projector bound), so a loaded slot can serve an image at once. With the
-unmeasured 5.5 GiB activation reserve and 1 GiB minimum KV the load gate needs
-128.8 GiB under the 90% cap: at least 143.1 GiB (153.7 GB) of physical memory
-before macOS and other processes take any. A 128 GB Mac (115.2 GiB cap) cannot
-admit the default load; 192 GB leaves 44.0 GiB under the cap, which also holds a
-16-image request (24.5 GiB of media). Only a 256 GB M3 Ultra is measured: load
-peak physical footprint 80.5 GB, MLX active 75.0 GB after load and 121.0 GB
-charged during a load at a 28 GiB grant. While the speculating owner still
-charged its draft history for the whole window, claims of 129.6 to 130.7 GB
-(36 to 37 GiB of KV headroom) were admitted at some times and refused at
-others, and 140.3 GB was refused; the per-token history charge brings the
-default claim to 115.6 GB. The registry floor derived from this is
+claims, before allocation, the pinned checkpoint's resident installation and
+head payloads (73,213,230,600 and 1,769,654,296 bytes), the owner's serving
+room and only the part of its load transient beyond that room
+(`NemotronSuperLoadClaim`). The serving room is the 8.5 GiB owner-wide prefill
+lane, any prefix bank and `NemotronSuperServingPolicy.admissionKVBytes` of KV
+headroom: 11.2 GiB for eight speculative requests at the 65,536-token context
+(576 MiB of fixed bytes per request, the speculating owner's 5.03 GB of round
+work once, and 2 GiB). The transient is the larger of the installation's
+staging with its 2 GiB backend allowance (8,887,435,264 bytes) and the head's
+construction allowance (7,078,617,184 bytes), never both, because each phase
+returns its freed buffers from MLX's cache before the next phase or serving
+uses that room; for the default configuration the room is larger, so the
+transient adds nothing. Its default discovery footprint, 93.1 GiB, is the
+resident payloads plus the serving room with the worst-case media reservation
+of one single-image request (`NemotronSuperServingPolicy.mediaChargeBytes`,
+3.62 GiB: a 64 Mi-pixel decode workspace, the encoded body copies, a
+13,312-patch image's tokens and its tower and projector bound), so a loaded
+slot can serve an image at once. With Super's measured 2 GiB activation floor
+(below) and 1 GiB minimum KV the load gate needs 96.1 GiB under the 90% cap: at
+least 106.8 GiB (114.7 GB) of physical memory before macOS and other processes
+take any. A 128 GB Mac (115.2 GiB cap) therefore admits the default load with
+19.1 GiB to spare, though not a 16-image request (24.5 GiB of media) beside it;
+at the runner's largest context, 262,144 tokens, the round work grows to
+9.2 GiB and the gate to 100.6 GiB, still under that cap. 192 GB leaves 76.7 GiB
+under the cap. A dedicated 128 GiB Mac was emulated on the 256 GB machine
+(cap, OS-available memory and MLX limits of the smaller Mac, before the
+speculating admission split): eight default requests (two 58K-token prompts,
+five short ones and an image) all completed, with a process footprint peak of
+91.4 GB against a 123.7 GB cap, and unload and reload passed. Only a 256 GB M3
+Ultra is measured on hardware: while the LOAD charge was held MLX active peaked
+at 76.7 GB and the process footprint at 79.3 GB, MLX active was 75.0 GB after
+load, and at the 65,536-token context claims of 129.6 to 130.7 GB (36 to 37 GiB
+of KV headroom, under the earlier claim that also counted the installed
+weights until the owner was built) were admitted at some times and refused at
+others. The registry floor stays 192 GB until a 128 GB Mac is measured; it is
 in the [registry reference](../reference/model-registry-format.md#nemotron-super).
 Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
@@ -77,7 +91,7 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |

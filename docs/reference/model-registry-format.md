@@ -162,7 +162,7 @@ and [inference](../architecture/inference.md#managed-nemotron-super-slot) archit
 | `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
 | `max_context_length` | `65536` (the builder accepts up to `262144`; see the [managed slot](../architecture/inference.md#managed-nemotron-super-slot)) | `NemotronSuperServingPolicy.contextTokens`, `NemotronSuperServingPolicy.maximumContextTokens` |
 | `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
-| `min_ram_gb` | `192`, derived from the default LOAD footprint ([hardware support](../architecture/hardware-support.md#context)); only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
+| `min_ram_gb` | `192`; the default LOAD footprint's gate would admit 128 GB ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not measured; only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
 | Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image; image requests refuse tools and `response_format`), served target-only on the speculating owner. No video | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody` |
 
 Providers without this policy drop the artifact at scan, advertisement and

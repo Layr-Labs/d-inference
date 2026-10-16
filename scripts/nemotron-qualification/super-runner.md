@@ -22,7 +22,7 @@ test runner, a release build) and it adds no file to `ProviderCore`. It uses
 
 | Mode | Load path | Admission |
 |---|---|---|
-| `--checkpoint DIR` | `NemotronSuperLocalLoad.load`: pinned config/index/shard identity, `NemotronSuperInstallation.requiredLoadBytes` quote, pending LOAD claim, fenced staging, `NemotronSuperLocalBridgeBuilder.make`, LOAD finish | the process `GlobalKVCacheBudget` with the provider's default cap and activation reserve |
+| `--checkpoint DIR` | `NemotronSuperLocalLoad.load`: pinned config/index/shard identity, `NemotronSuperInstallation.requiredLoadBytes` quote, pending LOAD claim, fenced staging, `NemotronSuperLocalBridgeBuilder.make`, LOAD finish | the process `GlobalKVCacheBudget` with the provider's default cap and the activation reserve the provider holds for a lone Super slot (its measured floor) |
 | `--synthetic` | the same steps in the same order on the tiny fixture (the transaction pins the real identity, so it cannot stage a fixture) | same |
 
 Isolation: the state directory must be new or empty; `HOME`, `TMPDIR`,
@@ -90,6 +90,13 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--drain-timeout-seconds` | 600 | bound on waiting for in-flight work after a shutdown signal |
 | `--verify-parallelism` | 4 | concurrent shard SHA-256 checks (whole-shard reads) |
 | `--engine-env KEY=VALUE` | none | runtime-policy entries, for plain/speculative A/B |
+| `--emulate-physical-gib N` | off | behave as a dedicated Mac with N GiB (at most this machine's): the process budget's total is N GiB and its OS-available memory N GiB minus the runner's footprint (never above what this machine has), `MLXMemoryGuard`'s limits are N GiB's, the managed load gate (scan-time footprint plus activation reserve and minimum KV against available-for-load memory) runs before loading and refuses as the provider would (`emulation.load_gate` event), and the default prefix bank is sized for N GiB; `load.quote` adds the KV grant the provider's re-slice would give (`emulated_production_grant_bytes`) |
+
+`load.quote` reports the installation's payload and staging, the head's
+payload and construction allowance and their sequential sum
+(`installation_head_bytes`); the transaction's actual LOAD charge, with the
+transient overlapping its serving room, is the `charge.opened` row of kind
+`load`.
 
 Shard verification streams all 88 shards before staging, which also fills the
 file cache; `load.phase.end` events time `verify_shards`, `tokenizer` and
@@ -148,9 +155,9 @@ Prompts prefill in chunks of `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens
 decode or verify row; `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`
 (`0`…`64`, default 0) adds decode-only steps between chunks while requests
 decode. Chunk geometry never depends on concurrency, so outputs match solo
-serving. The speculative grant default scales with N like the managed slot's
-admission (26 GiB for eight requests, above the 25.9 GB measured minimum at
-depth 3); otherwise pass `--kv-capacity-gib` from the ready file's `kv_grant`,
+serving. The speculative grant default is the managed slot's admission for N
+requests at `--max-context` (`NemotronSuperServingPolicy.admissionKVBytes`,
+11.2 GiB for eight at 65,536 tokens), at least 12 GiB; otherwise pass `--kv-capacity-gib` from the ready file's `kv_grant`,
 or from `suggested_kv_capacity_gib` after a `kv_grant_refused` load.
 
 KV storage is the same kind of switch: `--engine-env
@@ -168,6 +175,17 @@ third, contiguous arm prefilled in 1,024-token chunks calibrates the trunk's
 own sensitivity: paged decode must stay within the larger of 0.1 and twice
 that arm's largest relative deviation, with at most the larger of 2 and twice
 its greedy disagreements. Every position's deviation is printed.
+
+The gated `NemotronSuperMemoryLiveTests` (`DARKBLOOM_SUPER_MEMORY_LIVE=1` and
+`NEMOTRON_SUPER_CHECKPOINT_DIR`, exclusive GPU) is the native memory ledger:
+MLX active memory, its peak and the process footprint around the installation
+and head (against their quotes), every 2,048-token chunk of one prompt and
+plain decode steps on contiguous and paged storage (with each attention row's
+storage type, dtype and bytes), the first chunks again with the residual stream
+evaluated every 8 and 2 layers (timed; results unchanged), one chunk under the
+stage profile's memory recording, and the largest image grid's tower and
+projector (against the media activation bound). `DARKBLOOM_SUPER_MEMORY_PROMPT`,
+`DARKBLOOM_SUPER_MEMORY_DECODE` and `DARKBLOOM_SUPER_MEMORY_BACKENDS` size it.
 
 Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the owner the SDK's resident

@@ -54,6 +54,11 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var verifyParallelism = 4
     @Flag(help: "Check checkpoint identity and configuration only (no shard reads, no GPU), then exit.")
     var preflight = false
+    @Option(help: """
+        Emulate a Mac with this much physical memory, GiB (at most this machine's): the process \
+        budget, MLX limits and the managed slot's load gate use it (qualification only).
+        """)
+    var emulatePhysicalGib: Double?
     @Flag(help: """
         Claim the LOAD's KV headroom as the managed slot does (every configured request's fixed bytes, \
         2 GiB and the default prefix bank) instead of the whole --kv-capacity-gib; the grant is unchanged.
@@ -83,6 +88,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         if let capFraction, !(capFraction > 0 && capFraction <= UnifiedMemoryCap.defaultCapFraction) {
             throw ValidationError("--cap-fraction must be in (0, \(UnifiedMemoryCap.defaultCapFraction)]")
         }
+        if emulatePhysicalGib != nil, RunnerMemoryEmulation(gib: emulatePhysicalGib) == nil {
+            throw ValidationError("--emulate-physical-gib must be positive and at most this machine's memory")
+        }
         guard engineEnv.allSatisfy({ $0.contains("=") }) else {
             throw ValidationError("--engine-env entries must be KEY=VALUE")
         }
@@ -102,7 +110,10 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             return
         }
         // The managed Super load's MLX ceiling (memory limit and buffer-cache
-        // cap), set before any weights, so the ledger sees production's cache.
+        // cap), set before any weights, so the ledger sees production's cache;
+        // with `--emulate-physical-gib` the emulated Mac's.
+        let emulation = RunnerMemoryEmulation(gib: emulatePhysicalGib)
+        let emulatedMLX = emulation?.configureMLX() ?? .null
         MLXMemoryGuard.configureOnce()
         let mlxLimits: RunnerJSON = MLXMemoryGuard.configuredLimitsSnapshot().map {
             ["memory_limit_bytes": .bytes($0.memoryLimitBytes), "cache_limit_bytes": .bytes($0.cacheLimitBytes)]
@@ -110,9 +121,22 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         log.emit("runner.start", ["pid": .int(Int64(getpid())), "mode": synthetic ? "synthetic" : "checkpoint",
             "build_configuration": .string(Self.buildConfiguration), "settings": settings.json,
             "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs),
-            "mlx_limits": mlxLimits])
+            "mlx_limits": mlxLimits, "emulated_mlx_limits": emulatedMLX])
 
-        let budget = GlobalKVCacheBudget(capFraction: capFraction)
+        let budget = emulation?.budget(capFraction: capFraction) ?? GlobalKVCacheBudget(capFraction: capFraction)
+        // The provider's serving-set reserve for a lone Super slot (its
+        // measured activation floor), as the managed slot's budget holds it.
+        await budget.setActivationReserveBytes(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: [NemotronSuperServingPolicy.modelID]))
+        if let emulation {
+            let gate = emulation.loadGate(budget: budget)
+            log.emit("emulation.load_gate", gate.json.asFields)
+            guard gate.admits || synthetic else {
+                FileHandle.standardError.write(Data("NemotronSuperRunner: emulated load gate refused\n".utf8))
+                log.emit("load.failed", ["error": "emulated load gate refused", "gate": gate.json])
+                throw ExitCode(Exit.loadFailedRetired)
+            }
+        }
         let sampler = RunnerMemorySampler(budget: budget, log: log, interval: .milliseconds(sampleIntervalMs))
         RunnerProcessMemory.resetPeaks()
         await sampler.start()
@@ -246,7 +270,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         let kvGib = kvCapacityGib
             ?? Self.defaultKVCapacityGib(engineEnvironment: environment, contextTokens: maxContext)
         let grant = Int(kvGib * 1_073_741_824)
-        return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
+        let emulation = RunnerMemoryEmulation(gib: emulatePhysicalGib)
+        if let emulation { environment = emulation.engineEnvironment(environment, grantBytes: grant) }
+        var settings = RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
             kvCapacityBytes: grant,
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
             kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
@@ -254,6 +280,8 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             admissionKVBytes: managedLoadClaim
                 ? RunnerLoadSettings.managedAdmissionKVBytes(grantBytes: grant, environment: environment,
                     contextTokens: maxContext) : nil)
+        settings.emulation = emulation
+        return settings
     }
 
     /// Unmeasured runner defaults. The speculative grant leaves room for the

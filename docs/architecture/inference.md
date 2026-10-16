@@ -143,8 +143,8 @@ LOAD claim holds the installation, any head, the lane, the bank and the
 requests' KV, so half of what the machine's cap leaves beside it stays free.
 `grant / 4` is the engine's own bank ceiling when a re-slice shrinks the grant.
 A lone slot (grant = fleet KV budget) gets 16 GiB for either owner on 192, 256
-and 512 GiB; on 192 GiB the speculating owner's whole claim (159.7 GB) leaves
-20 GB of the cap for other memory. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+and 512 GiB; on 192 GiB the speculating owner's whole claim leaves more than
+19 GB of the cap for other memory. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
 keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
@@ -251,8 +251,8 @@ discovery footprint, then hands the load to `ProviderLoop.loadNemotronSuperSlot`
 Under the re-slice gate, held until installation, `resliceShrinkingForNewcomer`
 shrinks survivors and returns Super's grant; `NemotronSuperSlotLoader.pinnedCheckpoint`
 opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
-transaction. Its LOAD claim is the installation quote with a 2 GiB backend
-allowance, the head supplement with speculation, and
+transaction. Its LOAD claim holds the installation's and (with speculation) the
+head's resident payloads, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (576 MiB with speculation, 512 MiB
 plain, at any context), a speculating owner's round work once
@@ -261,6 +261,15 @@ above the grant. For the pinned checkpoint the same claim also holds the prefill
 lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
+The load's transient (`NemotronSuperLoadClaim`) is the larger of the
+installation's staging with its 2 GiB backend allowance and the head's
+construction allowance, and the claim adds only the part beyond that serving
+room: the transaction returns each phase's freed buffers from MLX's cache
+(synchronize, `clearCache`) before the head loads and before the builder
+reserves the lane and bank, under the same rule as the shared budget's
+reclaimer. When a retained or closing native owner forbids reclamation the
+claim holds both transients beside the room, and a load whose reclamation turns
+unsafe after installation fails.
 Once the installation and head are resident (MLX usage), their share of the claim
 is handed over to that live view, as the ordinary managed load does
 (`reducePendingLoad`), and the builder hands the lane, round and bank shares to
@@ -287,8 +296,12 @@ runner's `--max-context` selects. The checkpoint's attention has no positional
 encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
 reserved per request by its own length. Recurrent state, the decode row and the
 prefill lane do not grow with the context: on the full checkpoint each
-2,048-token chunk's transient stayed at 7.7 to 8.7 GB, inside the 12 GiB lane,
-through 131,056 tokens, with finite logits throughout. The speculating
+2,048-token chunk peaked 7.7 to 8.7 GB above the state held before it through
+131,056 tokens, with finite logits throughout; the larger figures are first
+chunks, which also allocate the whole prompt's KV slots (charged to the
+request). The chunk's own transient, peak minus what it retains, measured
+7.50 to 7.67 GB at every chunk of a 32,768-token prompt on contiguous and paged
+KV, inside the 8.5 GiB lane (`NemotronHModel.prefillActivationBoundBytes`). The speculating
 owner's assistant keeps state that grows with each request: its FP8 history
 and decoded mirror, allocated once for the request's prompt plus `max_tokens`
 and written in place. The SDK declares it as a per-token buffer

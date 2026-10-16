@@ -15,6 +15,8 @@ struct RunnerLoadSettings: Sendable {
     let verifyParallelism: Int
     /// KV headroom the LOAD claim holds; nil claims the whole grant.
     var admissionKVBytes: Int? = nil
+    /// `--emulate-physical-gib`; nil on this machine's own memory.
+    var emulation: RunnerMemoryEmulation? = nil
 
     /// The managed slot's LOAD KV headroom under this grant
     /// (`NemotronSuperServingPolicy.loadPlan`): every configured request's

@@ -284,24 +284,36 @@ enum NemotronSuperServingPolicy {
         return rounded >= minimumDefaultPrefixBankBytes ? rounded : 0
     }
 
-    /// LOAD charges of the pinned checkpoint, header-derived and recorded from
-    /// its full load: the installation quote including `backendAllowanceBytes`,
-    /// and the embedded head's payload and construction supplement. The
-    /// managed load recomputes and claims both from the verified shards.
-    static let pinnedInstallationLoadBytes: UInt64 = 82_100_665_864
-    static let pinnedHeadLoadBytes: UInt64 = 8_848_271_480
+    /// LOAD quotes of the pinned checkpoint, header-derived and recorded from
+    /// its verified shards: the installation's resident payload and staging
+    /// (including `backendAllowanceBytes`), and the embedded head's payload and
+    /// construction allowance. The managed load recomputes them and claims
+    /// `NemotronSuperLoadClaim.bytes`: both payloads and the larger transient.
+    static let pinnedInstallationPayloadBytes: UInt64 = 73_213_230_600
+    static let pinnedInstallationStagingBytes: UInt64 = 8_887_435_264
+    static let pinnedHeadPayloadBytes: UInt64 = 1_769_654_296
+    static let pinnedHeadConstructionBytes: UInt64 = 7_078_617_184
+    static var pinnedInstallationLoadBytes: UInt64 { pinnedInstallationPayloadBytes + pinnedInstallationStagingBytes }
+    static var pinnedHeadLoadBytes: UInt64 { pinnedHeadPayloadBytes + pinnedHeadConstructionBytes }
 
-    /// The pinned owner's LOAD bytes beside its KV and owner shares: the
-    /// installation and, with speculation, the head. The discovery footprint
-    /// and the default bank read it here.
-    static func pinnedLoadClaimBytes(speculates: Bool) -> UInt64 {
-        pinnedInstallationLoadBytes + (speculates ? pinnedHeadLoadBytes : 0)
+    /// The managed load's LOAD bytes for the installation and, when it
+    /// speculates, the head (transients sequential), beside `servingBytes`
+    /// of serving room claimed with them (`NemotronSuperLoadClaim`).
+    static func pinnedLoadClaimBytes(speculates: Bool, servingBytes: Int = 0) -> UInt64 {
+        let bytes = try? NemotronSuperLoadClaim.bytes(
+            installationPayload: Int(pinnedInstallationPayloadBytes),
+            staging: Int(pinnedInstallationStagingBytes),
+            headPayload: speculates ? Int(pinnedHeadPayloadBytes) : 0,
+            construction: speculates ? Int(pinnedHeadConstructionBytes) : 0, sequential: true,
+            servingBytes: servingBytes)
+        return UInt64(bytes ?? Int.max)
     }
 
     struct DiscoveryFootprint: Equatable {
-        /// The default configuration's LOAD claim (installation and head),
-        /// owner-wide prefill lane, admission KV and the media charge of one
-        /// single-image request, in GiB.
+        /// The default configuration's resident installation and head, and
+        /// the larger of their load transient and the serving room (owner-wide
+        /// prefill lane, admission KV and the media charge of one single-image
+        /// request), in GiB.
         let estimatedMemoryGb: Double
         /// LOAD bytes above the shard bytes: staging, backend allowance and
         /// head construction. Not activation, KV or media.
@@ -314,16 +326,19 @@ enum NemotronSuperServingPolicy {
     /// and the load leaves room for an image. The prefix bank is not part of
     /// it: `loadPlan` enables the bank only when the grant also holds it.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
-        let load = pinnedLoadClaimBytes(speculates: true)
         let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(
             chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens))
         let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))
         // Unreachable unless the binding refuses its own largest image; the
         // footprint then fails closed instead of advertising room it lacks.
         let media = mediaChargeBytes(imageCount: 1) ?? UInt64(Int.max)
+        let serving = lane + kv + media
+        // The load transient runs in the serving room before anything serves.
+        let load = pinnedLoadClaimBytes(speculates: true, servingBytes: Int(clamping: serving))
+        let transient = pinnedLoadClaimBytes(speculates: true)
         return DiscoveryFootprint(
-            estimatedMemoryGb: Double(load + lane + kv + media) / 1_073_741_824,
-            nativeLoadTransientBytes: load > sizeBytes ? load - sizeBytes : 0)
+            estimatedMemoryGb: Double(load + serving) / 1_073_741_824,
+            nativeLoadTransientBytes: transient > sizeBytes ? transient - sizeBytes : 0)
     }
 
     // MARK: - Image media charge

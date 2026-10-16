@@ -94,8 +94,9 @@ actor NemotronSuperLocalLoad {
         do {
             let staging = try makeStaging()
             let source = staging.source
-            let quote = try NemotronSuperInstallation.requiredLoadBytes(
+            let installation = try NemotronSuperInstallation.loadQuote(
                 source: source, backendAllowanceBytes: backendAllowanceBytes)
+            let quote = installation.totalBytes
             // Speculation adds the embedded head's payload and loader
             // construction allowance to the same LOAD claim, before allocation.
             let speculation = try NemotronSuperLocalMTP.Setting.resolve(environment: environment)
@@ -103,20 +104,25 @@ actor NemotronSuperLocalLoad {
                 guard let head = staging.head else { throw Failure.identity }
                 return try head.quote()
             }
-            let (installBytes, overflow) = quote.addingReportingOverflow(
-                try headQuote.map(NemotronSuperLocalMTP.loadSupplementBytes) ?? 0)
+            if let headQuote { _ = try NemotronSuperLocalMTP.loadSupplementBytes(headQuote) }
             let shares = staging.pinned
                 ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: environment,
                     kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil,
                     contextTokens: sizing.maxContextLength, physicalBytes: physicalBytes)
                 : nil
             guard let ownerBytes = shares.map({ $0.total }) ?? 0 else { throw Failure.capacity }
-            let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
             // The bank and the round are part of the admission; the claim holds
             // each once, as a share.
             let admission = admissionKVBytes ?? kvBytesCapacity
             let kvFloor = admission - (shares?.bank ?? 0) - (shares?.round ?? 0)
-            guard !overflow, !ownerOverflow, kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
+            // With reclamation the load transients are sequential and run in
+            // the serving room (owner shares, the round's included, and the KV
+            // floor) before any of it is allocated.
+            let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
+            let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+                sequential: sequential, servingBytes: max(0, ownerBytes + kvFloor))
+            let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
+            guard !ownerOverflow, kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
                     weightBytes: UInt64(claimBytes), minimumKVBytes: UInt64(kvFloor))
@@ -128,9 +134,16 @@ actor NemotronSuperLocalLoad {
             let candidate = try staging.install(ledger, backendAllowanceBytes, construction)
             installed = candidate
             try Task.checkCancellation()
+            // The claim holds one transient, in the serving room: each phase's
+            // freed buffers must leave MLX's cache before the next phase or
+            // serving uses that room.
+            guard !sequential || NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget)
+            else { throw Failure.capacity }
             var head: NemotronSuperLocalMTP.Head?
             if let speculation, let headQuote, let loader = staging.head {
                 head = .init(module: try loader.load(candidate, headQuote, construction), setting: speculation)
+                guard !sequential || NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget)
+                else { throw Failure.capacity }
             }
             try Task.checkCancellation()
             // The installation and any head are resident and counted as MLX

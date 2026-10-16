@@ -27,11 +27,29 @@ enum RunnerCheckpointLoad {
         let shardCount = files.count
         let source = try ModelOptCheckpointSource(indexData: checkpoint.indexData,
             indexSHA256: checkpoint.indexSHA256, files: files)
-        let quote = try NemotronSuperInstallation.requiredLoadBytes(
+        let installation = try NemotronSuperInstallation.loadQuote(
             source: source, backendAllowanceBytes: settings.backendAllowanceBytes)
+        let quote = installation.totalBytes
+        let headQuote = try speculation.map { _ in
+            try NemotronSuperMTPServing.loadQuote(
+                configuration: try NemotronSuperImageConfiguration(data: configData), source: source)
+        }
+        // Installation and any head with sequential transients, before the
+        // transaction overlaps the transient with its serving room (the
+        // charge.opened event records the claim it takes).
+        let claim = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+            sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers())
         let tensorBytes = source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
         log.emit("load.quote", ["load_quote_bytes": .bytes(quote), "checkpoint_tensor_bytes": .bytes(tensorBytes),
-            "pending_load_claim_bytes": .bytes(quote + (settings.admissionKVBytes ?? settings.kvCapacityBytes)),
+            "installation_payload_bytes": .bytes(installation.payloadBytes),
+            "installation_staging_bytes": .bytes(installation.stagingBytes),
+            "head_payload_bytes": headQuote.map { .bytes($0.payloadBytes) } ?? .null,
+            "head_construction_bytes": headQuote.map { .bytes($0.constructionBytes) } ?? .null,
+            "installation_head_bytes": .bytes(claim),
+            "emulated_production_grant_bytes": settings.emulation.map {
+                .bytes($0.productionGrantBytes(checkpointBytes: UInt64(tensorBytes)))
+            } ?? .null,
+            "pending_load_claim_bytes": .bytes(claim + (settings.admissionKVBytes ?? settings.kvCapacityBytes)),
             "admission_kv_bytes": .bytes(settings.admissionKVBytes ?? settings.kvCapacityBytes)])
         let tokenizer = try await phases.run("tokenizer") {
             TokenizerHandle(try await LocalTokenizerLoader().load(from: directory))

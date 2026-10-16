@@ -213,7 +213,7 @@ struct NemotronSuperServingPolicyTests {
         typealias Policy = NemotronSuperServingPolicy
         let media = Int(try #require(Policy.mediaChargeBytes(imageCount: 1)))
         let lane: Int = NemotronHModel.prefillActivationBoundBytes(tokens: 2048)
-        #expect(lane == 12 << 30)
+        #expect(lane == 17 << 29)
         let gib: Int = 1 << 30
         let usable = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: Self.machine))
             - Int(UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [Policy.modelID]))
@@ -221,7 +221,7 @@ struct NemotronSuperServingPolicyTests {
         for (requests, speculates) in owners {
             let admission = Policy.admissionKVBytes(requests: requests, speculates: speculates)
             let held: Int = admission + lane + media
-            let claim = Int(Policy.pinnedInstallationLoadBytes + (speculates ? Policy.pinnedHeadLoadBytes : 0))
+            let claim = Int(Policy.pinnedLoadClaimBytes(speculates: speculates))
             let loadSlack: Int = usable - claim - admission - lane
             var previous = 0
             for grantGiB in 1 ... 256 {
@@ -242,16 +242,16 @@ struct NemotronSuperServingPolicyTests {
         }
         // The production default (eight speculating requests at 576 MiB and
         // the owner's 5.03 GB round, 11.19 GiB of admission) on a 256 GiB
-        // machine: half the grant beside the admission, the 12 GiB lane and an
-        // image, 3.5 GiB at 34 GiB and 9 GiB at 45, then a quarter of the grant
-        // (15 GiB at 60), the 16 GiB cap from 64 GiB.
+        // machine: half of what the grant leaves beside the admission, the
+        // 8.5 GiB lane and an image (5.25 GiB at 34 GiB, 10.75 GiB at 45), then
+        // a quarter of the grant (15 GiB at 60), the 16 GiB cap from 64 GiB.
         let sizes = [34, 45, 60, 100, 155].map { (grantGiB: Int) -> Int in
             let grant: Int = grantGiB * gib
             return Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [:], physicalBytes: Self.machine)
         }
-        let expected: [Int] = [7 << 29, 9 << 30, 15 << 30, 16 << 30, 16 << 30]
-        #expect(sizes == expected)
+        let expected: [Int] = [21 << 28, 43 << 28, 15 << 30, 16 << 30, 16 << 30]
+        #expect(sizes == expected, "\(sizes)")
     }
 
     /// A larger prefill chunk charges a larger lane; a chunk key the builder
@@ -260,14 +260,15 @@ struct NemotronSuperServingPolicyTests {
     @Test func defaultBankFollowsTheChunkAndYieldsToTheOperator() throws {
         typealias Policy = NemotronSuperServingPolicy
         let gib: Int = 1 << 30
-        // Below the cap, half of what the 12 GiB or 20 GiB lane leaves.
+        // Below the cap: a quarter of the grant with the 8.5 GiB lane, half of
+        // what the larger 4,096-token lane leaves.
         let grant: Int = 50 * gib
         let chunk = NemotronSuperLocalPrefill.chunkKey
         let narrowChunk = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [:], physicalBytes: Self.machine)
         let wide = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [chunk: "4096"], physicalBytes: Self.machine)
-        #expect(narrowChunk == 23 << 29 && wide == 15 << 29)
+        #expect(narrowChunk == 25 << 29 && wide == 19 << 29, "\(narrowChunk) \(wide)")
         for invalid in ["0", "-1", "abc", "262145"] {
             #expect(Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [chunk: invalid], physicalBytes: Self.machine) == 0, "\(invalid)")
@@ -384,12 +385,66 @@ struct NemotronSuperServingPolicyTests {
         #expect(auto.admissionKVBytes == admission && admission < grant)
         let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: auto.environment,
             kvBytesCapacity: grant, speculates: true, physicalBytes: physical)
-        #expect(shares.lane == 12 << 30 && shares.bank == auto.prefixBankBytes)
+        #expect(shares.lane == NemotronSuperLocalPrefill.pinnedLaneBytes(
+            chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens) && shares.bank == auto.prefixBankBytes)
         #expect(shares.round == Policy.speculativeOwnerBoundBytes(requests: 8, environment: auto.environment))
-        let installation = Int(Policy.pinnedInstallationLoadBytes + Policy.pinnedHeadLoadBytes)
+        // The transient runs in the serving room (lane and admission, with
+        // the round and the bank inside the admission once).
+        let installation = Int(Policy.pinnedLoadClaimBytes(speculates: true,
+            servingBytes: shares.lane + admission))
         let claim: Int = installation + shares.lane + admission
         let room: Int = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical)) - Int(activation) - claim
         #expect(room > 19_000_000_000, "\(physicalGiB) GiB leaves \(room) bytes")
+    }
+
+    /// On a 128 GiB Mac the default speculating owner's LOAD claim holds its
+    /// round work as one share inside the admission, not beside it, at the
+    /// served 65,536 tokens and at the largest accepted 262,144: the claim is
+    /// the payloads, the load transient beyond the serving room, and the
+    /// serving room (lane, round, bank and KV floor) once. With the activation
+    /// floor beside it the claim fits under the cap, and so does the load gate
+    /// (the scan-time footprint at that context, the floor and the minimum KV).
+    @Test(arguments: [NemotronSuperServingPolicy.contextTokens, NemotronSuperServingPolicy.maximumContextTokens])
+    func roundIsOneShareOfTheClaimOnA128GiBMac(context: Int) throws {
+        typealias Policy = NemotronSuperServingPolicy
+        let physical: UInt64 = 128 << 30
+        let activation = UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [Policy.modelID])
+        let grant = Int(UnifiedMemoryCap.kvBudgetBytes(physicalBytes: physical,
+            residentWeightBytes: 75_010_188_240, activationReserveBytes: activation,
+            configReserveBytes: 4 << 30))
+        let plan = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: physical)
+        #expect(plan.speculates && plan.requests == 8)
+        let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: plan.environment,
+            kvBytesCapacity: grant, speculates: true, contextTokens: context, physicalBytes: physical)
+        let round = Policy.speculativeOwnerBoundBytes(requests: 8, environment: plan.environment,
+            contextTokens: context)
+        #expect(shares.round == round && round > 1 << 30)
+        #expect(shares.bank == plan.prefixBankBytes)
+        let admission = Policy.admissionKVBytes(requests: 8, speculates: true, environment: plan.environment,
+            contextTokens: context) + shares.bank
+        // The KV floor the load claims beside its shares: the admission less
+        // the round and the bank it already contains.
+        let kvFloor = admission - shares.bank - shares.round
+        let serving = try #require(shares.total) + kvFloor
+        #expect(serving == shares.lane + admission, "the round and the bank are counted once")
+        let install = Int(Policy.pinnedLoadClaimBytes(speculates: true, servingBytes: serving))
+        #expect(install == Int(Policy.pinnedInstallationPayloadBytes + Policy.pinnedHeadPayloadBytes))
+        let claim = install + serving
+        let cap = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical))
+        #expect(claim + Int(activation) <= cap, "\(context): claim \(claim) + floor \(activation) > cap \(cap)")
+        // The load gate at this context: payloads, the larger of the transient
+        // and the serving room with one image, the floor and the minimum KV.
+        let media = try #require(Policy.mediaChargeBytes(imageCount: 1))
+        let footprint = Int(Policy.pinnedLoadClaimBytes(speculates: true,
+            servingBytes: shares.lane + admission - shares.bank + Int(media)))
+            + shares.lane + admission - shares.bank + Int(media)
+        let gate = footprint + Int(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [Policy.modelID]))
+        #expect(gate <= cap, "\(context): gate \(gate) > cap \(cap)")
+        let gib = { (bytes: Int) in String(format: "%.2f", Double(bytes) / 1_073_741_824) }
+        print("SUPER_128_GATE context=\(context) grant=\(gib(grant)) admission=\(gib(admission)) "
+            + "round=\(gib(round)) bank=\(gib(shares.bank)) lane=\(gib(shares.lane)) claim=\(gib(claim)) "
+            + "activation=\(gib(Int(activation))) footprint=\(gib(footprint)) gate=\(gib(gate)) cap=\(gib(cap))")
     }
 
     @Test func discoveryFootprintCoversTheLargestDefaultLoadAndOneImage() throws {
@@ -397,17 +452,85 @@ struct NemotronSuperServingPolicyTests {
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
             + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_013_708_416)
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
-        // Media is a serving reservation, not LOAD transient.
-        #expect(footprint.nativeLoadTransientBytes == 15_938_749_104)
+        // Media is a serving reservation, not LOAD transient. The LOAD claim
+        // holds both payloads and the larger of the two sequential transients
+        // (the installation's 8,887,435,264-byte staging, not the head's
+        // 7,078,617,184-byte construction), which runs in the serving room
+        // (lane, admission KV, one image) before anything is served.
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_870_320_160)
+        #expect(footprint.nativeLoadTransientBytes == 8_860_131_920)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
+        let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: 2048))
         let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
-        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + admission + media) / 1_073_741_824
+        let serving = lane + admission + media
+        #expect(serving > 8_887_435_264)
+        let expected = Double(73_213_230_600 + 1_769_654_296 + serving) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        #expect(abs(footprint.estimatedMemoryGb - 111.511_639_233_678_58) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 93.142_094_161_361_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
-        let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes
+        // The plain owner's scan-time equivalent (no head, no bank) is smaller.
+        let plainServing = lane + UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: plain.requests,
+            speculates: false)) + media
+        let plainBytes = NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false,
+            servingBytes: Int(plainServing)) + plainServing
         #expect(Double(plainBytes) / 1_073_741_824 < footprint.estimatedMemoryGb)
+    }
+
+    /// Super's requests, prefill lane and media charges carry its decode,
+    /// prefill and tower activations; its measured floor is the uncharged
+    /// residue plus slack, and a serving set with an unmeasured model keeps
+    /// the default (mirrored by the platform's servability table). The floor
+    /// relies on the request charges holding the decode rows, recurrent
+    /// generations and verify/draft workspace: re-measure it whenever those
+    /// per-request charges are trimmed toward their measured use.
+    @Test func activationFloorCoversOnlyWhatTheChargesDoNot() {
+        let gib: UInt64 = 1 << 30
+        let id = NemotronSuperServingPolicy.modelID
+        #expect(id == "nvidia-nemotron-3.5-super")
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [id]) == 2 * gib)
+        #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(env: [:], modelIDs: [id]) == 2 * gib)
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [id, "gemma-4-26b"])
+            == UnifiedMemoryCap.defaultActivationReserveBytes)
+        // The operator's raise-only override still wins above the floor.
+        #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"], modelIDs: [id]) == 4 * gib)
+    }
+
+    @Test func loadClaimHoldsThePayloadsAndTheLargerSequentialTransient() throws {
+        typealias Claim = NemotronSuperLoadClaim
+        // Plain: the installation alone, sequential or not.
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 0, construction: 0,
+            sequential: true) == 130)
+        // A head: both payloads and the larger transient; summed only when the
+        // staging buffers cannot be returned before the head's construction.
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: true) == 135)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 40,
+            sequential: true) == 145)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: false) == 155)
+        // The transient runs in the serving room claimed beside it: only what
+        // exceeds that room is added; never when the transients are summed.
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: true, servingBytes: 12) == 123)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: true, servingBytes: 64) == 105)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: false, servingBytes: 64) == 155)
+        #expect(throws: Claim.Failure.invalidQuote) {
+            try Claim.bytes(installationPayload: .max, staging: 1, headPayload: 0, construction: 0,
+                sequential: true)
+        }
+        #expect(throws: Claim.Failure.invalidQuote) {
+            try Claim.bytes(installationPayload: 1, staging: -1, headPayload: 0, construction: 0,
+                sequential: true)
+        }
+        // The pinned checkpoint: the plain claim is unchanged; speculation adds
+        // the head's payload, not its construction (below the staging).
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false) == 82_100_665_864)
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true)
+            == 82_100_665_864 + 1_769_654_296)
     }
 
     private static let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
@@ -567,14 +690,23 @@ struct NemotronSuperServingPolicyTests {
         #expect(EngineV2SupportedModels.isSupported(model: info))
         // The recorded constants equal the SDK quotes over the verified shards.
         let opened = try await NemotronSuperCheckpoint.open(directory: directory)
+        let installation = try NemotronSuperInstallation.loadQuote(source: opened.source,
+            backendAllowanceBytes: NemotronSuperServingPolicy.backendAllowanceBytes)
+        #expect(installation.payloadBytes == Int(NemotronSuperServingPolicy.pinnedInstallationPayloadBytes))
+        #expect(installation.stagingBytes == Int(NemotronSuperServingPolicy.pinnedInstallationStagingBytes))
         #expect(try NemotronSuperInstallation.requiredLoadBytes(source: opened.source,
             backendAllowanceBytes: NemotronSuperServingPolicy.backendAllowanceBytes)
             == Int(NemotronSuperServingPolicy.pinnedInstallationLoadBytes))
         let staging = try NemotronSuperLocalLoad.Staging.pinned(configData: opened.inputs.configData,
             source: opened.source)
         let head = try #require(staging.head)
-        #expect(try NemotronSuperLocalMTP.loadSupplementBytes(head.quote())
+        let headQuote = try head.quote()
+        #expect(headQuote.payloadBytes == Int(NemotronSuperServingPolicy.pinnedHeadPayloadBytes))
+        #expect(headQuote.constructionBytes == Int(NemotronSuperServingPolicy.pinnedHeadConstructionBytes))
+        #expect(try NemotronSuperLocalMTP.loadSupplementBytes(headQuote)
             == Int(NemotronSuperServingPolicy.pinnedHeadLoadBytes))
+        #expect(try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote, sequential: true)
+            == Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true)))
         #expect(opened.inputs.fp16KVBytesPerToken == 8192 && opened.inputs.eosTokenIDs == [2, 11])
     }
 

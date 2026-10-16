@@ -281,15 +281,16 @@ struct NemotronSuperLocalPrefixCacheTests {
     }
 
     /// One LOAD claim, taken before any allocation, holds the whole pinned
-    /// owner: the installation, the lane share (the measured whole-chunk
-    /// bound), the bank and the requests' KV floor. With one byte less free
-    /// the load is refused before anything is installed. With exactly that
-    /// much free it loads: the installation's share passes to live usage once
-    /// resident and the lane and bank shares pass to their own reservations,
-    /// so neither the 12 GiB lane share nor the 16 GiB bank is ever counted
-    /// twice (counting the bank twice would need 4 GiB more than is free).
-    /// A speculating owner's claim also holds the policy's round share and the
-    /// head; that share passes to the engine's exact round reservation.
+    /// owner: the installation and any head (their transients only beyond
+    /// the serving room), the lane share (the measured whole-chunk bound), a
+    /// speculating owner's round share, the bank and the requests' KV floor.
+    /// With one byte less free the load is refused before anything is
+    /// installed. With exactly that much free it loads: the installation's
+    /// share passes to live usage once resident, and the lane, round and bank
+    /// shares pass to their own reservations, so neither the 8.5 GiB lane
+    /// share nor the 16 GiB bank is ever counted twice (counting the bank
+    /// twice would need 4 GiB more than is free). The round share passes to
+    /// the engine's exact round reservation.
     @Test(.timeLimit(.minutes(5)))
     func oneLoadClaimHoldsThePinnedOwnerOnce() async throws {
         for speculates in [false, true] {
@@ -307,14 +308,14 @@ struct NemotronSuperLocalPrefixCacheTests {
                 ? NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 1, environment: environment,
                     contextTokens: context)
                 : 0
-            #expect(shares == .init(lane: 12 << 30, round: round, bank: bank))
+            let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(
+                chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens)
+            #expect(lane == 17 << 29)
+            #expect(shares == .init(lane: lane, round: round, bank: bank))
             #expect(!speculates || round > 1 << 30, "the pinned round units, not the fixture's")
-            // The head's LOAD supplement, quoted from a separate staging of the same fixture.
-            let supplement = speculates
-                ? try SuperMTPInstalledFixture().staging().head
-                    .map { try NemotronSuperLocalMTP.loadSupplementBytes($0.quote()) } ?? -1
-                : 0
-            #expect(supplement >= 0)
+            // The head's LOAD quote, from a separate staging of the same fixture.
+            let headQuote = speculates ? try SuperMTPInstalledFixture().staging().head?.quote() : nil
+            #expect(!speculates || headQuote != nil)
             for short in [true, false] {
                 let fixture = SuperMTPInstalledFixture()
                 let base = try fixture.staging()
@@ -323,9 +324,19 @@ struct NemotronSuperLocalPrefixCacheTests {
                     installs.increment()
                     return try base.install($0, $1, $2)
                 }, head: base.head, pinned: true)
-                let quote = try NemotronSuperInstallation.requiredLoadBytes(source: base.source,
-                    backendAllowanceBytes: 1 << 20) + supplement
-                let claim = UInt64(quote + shares.lane + shares.round + shares.bank + kvFloor)
+                // The installation's staging and the head's construction run
+                // in the serving room the claim also holds (lane, round, bank,
+                // KV floor), so they add only what exceeds it.
+                let quote = try NemotronSuperInstallation.loadQuote(source: base.source,
+                    backendAllowanceBytes: 1 << 20)
+                let serving = shares.lane + shares.round + shares.bank + kvFloor
+                let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
+                let install = try NemotronSuperLoadClaim.bytes(installation: quote, head: headQuote,
+                    sequential: sequential, servingBytes: serving)
+                let transient = max(quote.stagingBytes, headQuote?.constructionBytes ?? 0)
+                #expect(!sequential || install
+                    == quote.payloadBytes + (headQuote?.payloadBytes ?? 0) + max(0, transient - serving))
+                let claim = UInt64(install + serving)
                 let budget = Self.budget()
                 let free = await Self.freeBytes(budget)
                 #expect(free > claim)

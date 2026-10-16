@@ -12,6 +12,10 @@ enum RunnerSyntheticLoad {
     static func load(stateDirectory: URL, templateURL: URL, settings: RunnerLoadSettings,
         budget: GlobalKVCacheBudget, log: RunnerEventLog, phases: RunnerLoadPhases
     ) async throws -> RunnerServing {
+        // The tiny fixture has no embedded MTP head: refuse rather than serve plain.
+        guard try settings.speculation() == nil else {
+            throw RunnerFailure.checkpoint("speculation needs --checkpoint; the synthetic fixture has no MTP head")
+        }
         let templateBytes = try Data(contentsOf: templateURL)
         _ = try NemotronSuperPromptContract.verifiedTemplate(templateBytes)
         let kvRate = try settings.kvBytesPerToken(configured: RunnerSyntheticFixture.fp16KVBytesPerToken)
@@ -65,7 +69,7 @@ enum RunnerSyntheticLoad {
                 "payload_bytes": .bytes(installed?.receipt.payloadBytes ?? 0),
                 "load_quote_bytes": .bytes(quote), "fp16_kv_bytes_per_token": .bytes(kvRate),
                 "eos_token_ids": .array(RunnerSyntheticFixture.eosTokenIDs.sorted().map { .count($0) }),
-                "image_hook": true,
+                "image_hook": true, "speculation": .null,
                 "claim_scope": "synthetic weights and tokenizer; not a full-checkpoint result",
             ]
             return RunnerServing(bridge: built.bridge, tokenizer: tokenizer, imageHook: hook,

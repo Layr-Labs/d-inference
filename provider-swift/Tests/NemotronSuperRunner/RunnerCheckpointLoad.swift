@@ -59,6 +59,7 @@ enum RunnerCheckpointLoad {
             "shards_verified": .count(shardCount), "load_quote_bytes": .bytes(quote),
             "checkpoint_tensor_bytes": .bytes(tensorBytes),
             "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": true,
+            "speculation": RunnerLoadSettings.speculationJSON(try settings.speculation()),
         ])
         return RunnerServing(bridge: bridge, tokenizer: tokenizer, imageHook: hook, identity: identity,
             retire: {

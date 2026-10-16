@@ -14,6 +14,18 @@ struct RunnerLoadSettings: Sendable {
     let engineEnvironment: [String: String]
     let verifyParallelism: Int
 
+    /// The opt-in speculation the engine environment selects; the load
+    /// transaction reads the same entries. nil is the plain arm.
+    func speculation() throws -> NemotronSuperLocalMTP.Setting? {
+        try NemotronSuperLocalMTP.Setting.resolve(environment: engineEnvironment)
+    }
+
+    static func speculationJSON(_ setting: NemotronSuperLocalMTP.Setting?) -> RunnerJSON {
+        guard let setting else { return .null }
+        return ["depth": .count(setting.depth),
+                "verification": .string(setting.verification == .serial ? "serial" : "rectangular")]
+    }
+
     /// The override may only raise the per-token reservation rate.
     func kvBytesPerToken(configured: Int) throws -> Int {
         guard let override = kvBytesPerTokenOverride else { return configured }

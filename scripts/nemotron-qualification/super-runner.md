@@ -107,8 +107,16 @@ Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
 the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
 (`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one
 request at a time: a concurrent request gets 429 before any response starts.
-With `DARKBLOOM_NEMOTRON_SUPER_MTP=1` in `--engine-env` the hook is text-only
-and image requests get 400.
+
+Speculation is an engine-environment A/B: with `--checkpoint`, pass
+`--engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1` and optionally
+`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` (`1`…`3`) and
+`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION` (`rectangular` or `serial`). The load
+transaction reads exactly these entries (not the inherited process
+environment), adds the head's LOAD supplement and records the resolved setting
+as `speculation` in the ready file's identity (`null` for the plain arm). The
+speculating hook is text-only: image requests get 400. `--synthetic` has no MTP
+head and refuses the opt-in.
 
 ## Shutdown
 

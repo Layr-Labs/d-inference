@@ -253,6 +253,41 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
 
+    /// The pinned checkpoint through the production loader, the real process
+    /// budget and the encrypted coordinator path. Loads about 80 GB; run only
+    /// with `DARKBLOOM_SUPER_MANAGED_LIVE=1` and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
+        && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil),
+        .timeLimit(.minutes(10)))
+    func pinnedCheckpointServesThroughTheManagedSlot() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"])
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.modelID))
+        let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
+            hardware: try HardwareDetector.detect(), models: [model], config: .init(
+                provider: .init(name: "super-managed-live"),
+                backend: .init(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: .auto),
+                coordinator: .init(heartbeatIntervalSecs: 60))), attestationSigner: nil)
+        let started = ContinuousClock.now
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false, revisionDirectory: directory)
+        let loadSeconds = started.duration(to: .now)
+        let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
+        let loaded = await owner.bridge.mtpStatusSnapshot()
+        #expect(owner.speculates && loaded.active)
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        let body = try JSONSerialization.data(withJSONObject: ["model": Self.modelID, "stream": true,
+            "temperature": 0, "max_tokens": 16, "chat_template_kwargs": ["enable_thinking": false],
+            "messages": [["role": "user", "content": "What is 17 times 19? Reply with the number only."]]])
+        let answer = try await Self.send(body, to: loop, recorder: recorder, consumer: consumer)
+        let usage = try #require(Self.usage(answer.terminal), "\(answer.terminal)")
+        #expect(SuperSSE(answer.sse).content.contains("323"))
+        let mtp = await owner.bridge.mtpStatusSnapshot()
+        print("SUPER_MANAGED_LIVE load_s=\(loadSeconds) prompt=\(usage.promptTokens) "
+            + "completion=\(usage.completionTokens) mtp_rounds=\(mtp.rounds) accepted=\(mtp.acceptedDraftTokens)")
+        #expect(await loop.unloadModel(Self.modelID))
+        #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
+    }
+
     /// The LOAD claim refuses before allocation; nothing is installed or held.
     @Test(.timeLimit(.minutes(1)))
     func loadAdmissionRefusalInstallsNothing() async throws {

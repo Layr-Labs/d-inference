@@ -124,7 +124,7 @@ only) and
 transaction reads exactly these entries (not the inherited process
 environment), adds the head's LOAD supplement and records the resolved setting
 as `speculation` in the ready file's identity (`null` for the plain arm). The
-speculating hook is text-only: image requests get 400. `--synthetic` has no MTP
+speculating hook serves image requests target-only, without speculation. `--synthetic` has no MTP
 head and refuses the opt-in. Concurrency is the same kind of switch:
 `--engine-env DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` serves N requests with
 row-exact batched decode (`1`…`64`) or, with rectangular speculation, verifies up

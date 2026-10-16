@@ -335,24 +335,26 @@ enum NemotronSuperLocalBridgeBuilder {
             try await retireUnpublished(bridge, budget: kvBudget, releasing: [])
             throw NemotronSuperLocalPrefill.Failure.laneRefused
         }
-        // The bank keeps checkpoints between requests, beyond any request's
-        // charge: its whole budget is reserved before the first request and
-        // held until native retirement, like the lane.
         // Paged storage is charged by the engine's process-memory owner and
         // the bridge reserves no request bytes; reserve the decode rows here.
         let built = await bridge.kvBackendKind
-        let rowsBytes = try NemotronSuperLocalKVBackend.decodeRowsBytes(
+        let rowsBytes = try? NemotronSuperLocalKVBackend.decodeRowsBytes(
             selection: built == .paged ? .paged : .contiguous, requests: requests,
             rowBytes: workspace)
         var rows: (id: String, bytes: Int)?
-        if rowsBytes > 0 {
+        if rowsBytes != 0 {
             let id = NemotronSuperLocalKVBackend.decodeRowsReservationID()
-            guard await kvBudget.reserveBytes(requestID: id, bytes: UInt64(rowsBytes)) else {
+            guard let rowsBytes,
+                await kvBudget.reserveBytes(requestID: id, bytes: UInt64(rowsBytes))
+            else {
                 try await retireUnpublished(bridge, budget: kvBudget, releasing: [laneID])
                 throw NemotronSuperLocalKVBackend.Failure.decodeRowsRefused
             }
             rows = (id, rowsBytes)
         }
+        // The bank keeps checkpoints between requests, beyond any request's
+        // charge: its whole budget is reserved before the first request and
+        // held until native retirement, like the lane.
         var bank: (id: String, bytes: Int)?
         if let prefixCache {
             let bytes = await bridge.superPrefixBankBytes

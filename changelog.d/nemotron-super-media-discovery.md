@@ -13,7 +13,8 @@ decoder accepts PNG of every colour type and bit depth (byte-exact with the
 reference loader) and baseline/progressive JPEG (ImageIO samples within
 measured bounds), applies EXIF/XMP orientation as Pillow does, and bounds
 declared geometry before allocation; the SDK resize is bitwise equal to CPU
-PyTorch on the golden fixtures. Image media reservations include a derived
+PyTorch on the golden fixtures. Inline images use the `data:image/png;base64,`
+or `data:image/jpeg;base64,` label; content selects the format. Image media reservations include a derived
 tower and projector working-memory bound for the largest image. An opt-in image HTTP hook uses existing auth,
 JSON/SSE framing and cancellation; it is disabled by default. `DARKBLOOM_NEMOTRON_SUPER_MTP=1` opts the local owner into
 greedy text speculation with the embedded MTP head (default off; media is refused

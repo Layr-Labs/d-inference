@@ -34,12 +34,14 @@ struct NemotronSuperImageFormatHTTPTests {
                                         options: .ignoreUnknownCharacters))
         let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
         let model = NemotronSuperLocalBinding.modelID
-        // The hook's route currently admits the PNG data-URI label only; JPEG
-        // bytes under that label exercise content sniffing end to end.
-        @Sendable func uri(_ data: Data) -> String { "data:image/png;base64," + data.base64EncodedString() }
-        @Sendable func body(_ images: [Data]) throws -> ByteBuffer {
+        // The decoder sniffs content, so every accepted fixture is sent under
+        // both admitted labels: each format also arrives under the other's.
+        @Sendable func uri(_ data: Data, _ label: String) -> String {
+            "data:image/\(label);base64," + data.base64EncodedString()
+        }
+        @Sendable func body(_ images: [Data], label: String = "png") throws -> ByteBuffer {
             let parts: [[String: Any]] = [["type": "text", "text": "fixture"]]
-                + images.map { ["type": "image_url", "image_url": ["url": uri($0)]] }
+                + images.map { ["type": "image_url", "image_url": ["url": uri($0, label)]] }
             let value: [String: Any] = ["model": model, "stream": false, "temperature": 0, "max_tokens": 2,
                                         "enable_thinking": false,
                                         "messages": [["role": "user", "content": parts]]]
@@ -67,19 +69,26 @@ struct NemotronSuperImageFormatHTTPTests {
         try await app.test(.live) { client in
             // The synthetic tokenizer renders one image placeholder, so each
             // request carries one image; mixed plans are covered below.
-            for (index, image) in accepted.enumerated() {
-                try await client.execute(uri: "/v1/chat/completions", method: .post,
-                    headers: headers, body: try body([image])) { response in
-                    let output = String(buffer: response.body)
-                    #expect(response.status == .ok, "request \(index): \(output)")
-                    #expect(output.contains("chat.completion") && !output.contains("\"error\""), "request \(index)")
+            for label in ["png", "jpeg"] {
+                for (index, image) in accepted.enumerated() {
+                    try await client.execute(uri: "/v1/chat/completions", method: .post,
+                        headers: headers, body: try body([image], label: label)) { response in
+                        let output = String(buffer: response.body)
+                        #expect(response.status == .ok, "\(label) request \(index): \(output)")
+                        #expect(output.contains("chat.completion") && !output.contains("\"error\""),
+                                "\(label) request \(index)")
+                    }
+                    #expect(await budget.outstandingReservedBytes() == baseline)
                 }
-                #expect(await budget.outstandingReservedBytes() == baseline)
             }
-            for image in rejected {
+            // Content decides the format; a label outside the decoder's formats
+            // is refused even when the content would decode.
+            let refusals = rejected.flatMap { image in ["png", "jpeg"].map { (image, $0) } }
+                + [(accepted[0], "gif"), (accepted[0], "jpg")]
+            for (image, label) in refusals {
                 try await client.execute(uri: "/v1/chat/completions", method: .post,
-                    headers: headers, body: try body([image])) { response in
-                    #expect(response.status == .badRequest)
+                    headers: headers, body: try body([image], label: label)) { response in
+                    #expect(response.status == .badRequest, "label \(label)")
                     #expect(String(buffer: response.body).contains("error"))
                 }
                 #expect(await budget.outstandingReservedBytes() == baseline)

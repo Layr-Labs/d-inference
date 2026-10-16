@@ -182,7 +182,8 @@ request-cancellation scope. Its default is absent; no production callsite
 installs it and it does not advertise a new model. When installed it serves
 every chat request for the Super model ID: text on the owner's text binding with
 its own tokenizer, and bounded inline images on the owner's image binding:
-`data:image/png;base64,` URIs whose content may be PNG or JPEG (see the
+`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
+label, selects PNG or JPEG (see the
 [image format reference](../reference/nemotron-super-image-formats.md)).
 Image prompts carry the reference `<img>`, one `<image>` per visual feature,
 `</img>` span for each image.

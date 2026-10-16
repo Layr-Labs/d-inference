@@ -15,7 +15,7 @@ at model revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`.
 
 | Step | Reference behaviour | Provider behaviour | Source |
 |---|---|---|---|
-| Format | `PIL.Image.open` sniffs content; the data-URI media type is not used | Content is sniffed. PNG and JPEG, the model card's input formats, are decoded; every other signature fails with `unsupportedEncoding` | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageDecode.swift` (`NemotronSuperImageDecode`) |
+| Format | `PIL.Image.open` sniffs content; the data-URI media type is not used | Content is sniffed. PNG and JPEG, the model card's input formats, are decoded; every other signature fails with `unsupportedEncoding`. The route admits only the `data:image/png;base64,` and `data:image/jpeg;base64,` labels, and either label carries either format | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageDecode.swift` (`NemotronSuperImageDecode`) |
 | Orientation | `ImageOps.exif_transpose`: IFD0 Orientation; only when that tag is absent, the first XMP `tiff:Orientation` match. Values 2–8 transpose; other values are ignored | Same rules for `.applyEXIF`, which the image owner uses; `.preserveRaster` ignores both | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageOrientation.swift` (`NemotronSuperImageOrientation`) |
 | Mode conversion | `Image.convert("RGB")` | The PNG and JPEG tables below | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGRaster.swift` (`NemotronSuperPNGRaster`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`NemotronSuperJPEGRaster`) |
 | Colour management | None: ICC profiles, `gAMA`, `cHRM` and `sRGB` do not change samples | None. ImageIO samples are read without drawing | as above |
@@ -91,7 +91,7 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 | Largest grid | 13312 patches (3328 tokens) per image, for example a 2048x1664 target; a 5751x5751 source resizes to 1856x1824 | `NemotronSuperImagePreprocessing.grid` |
 | Decoder quote | `data.count * 2 + pixels * 14` (PNG) or `* 16` (JPEG) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB | `NemotronSuperImageDecode.swift` (`Quote`) |
 | Tower working memory | The media reservation adds the pinned composition's derived bound for the request's largest image, 2,095,272,960 bytes at 13312 patches. The global activation reserve is unchanged | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`towerActivationBytes`); `libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperImageActivation.swift` (`pinnedActivationBytes`) |
-| Route | The binding admits only `data:image/png;base64,` URIs; the decoder sniffs their content | `NemotronSuperLocalImageBinding.swift` (`parseEncodedBody`) |
+| Route | The binding admits only `data:image/png;base64,` and `data:image/jpeg;base64,` URIs (`admittedDataURIPrefixes`); the decoder sniffs their content | `NemotronSuperLocalImageBinding.swift` (`parseEncodedBody`) |
 
 ## Related
 

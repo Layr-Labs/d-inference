@@ -358,6 +358,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
@@ -374,7 +375,11 @@ Release tests cover provider-only version/tag/binary parity even when backend
 source is absent, signed tags and trusted `master` before secrets, exact artifact
 registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
-These CPU-only checks do not prove Apple runtime behavior.
+`scripts/test-release-dev-branch.py` pins the experimental dev-branch lane
+(`.github/workflows/release-dev-branch.yml`) to dev scope: dispatch-only with a
+`ref` input, no tag path, no production environment, signing identity or secret,
+and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
+Apple runtime behavior.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical
@@ -425,6 +430,22 @@ without a server. DOM tests do not replace browser checks for pointer capture,
 touch scrolling or responsive carousel layout. Search/discovery after an
 authorized deployment needs separate read-only inspection; local success is
 not live verification.
+
+## Model publication workflow checks
+
+Run `python3 scripts/test_model_registry_workflow.py` to exercise the actual
+workflow shell steps against a loopback HTTP server with fixture credentials.
+It checks that an uploaded revision sends only revision identity, needs no R2
+credentials, preserves normal registration payloads, and propagates failures.
+It also rejects unconfirmed revision promotion while retaining staged-only
+normal registration.
+CI runs this suite without contacting production. The test host needs Bash,
+Python, jq and curl, matching the workflow runner.
+
+`python3 scripts/test_publish_model_revision.py` covers the immutable upload
+reservation. `actionlint .github/workflows/register-model.yml` checks workflow
+syntax. These checks do not establish native model quality or serving capacity;
+use the [publication runbook](../operations/model-revisions.md) for those checks.
 
 ## Reporting Results
 

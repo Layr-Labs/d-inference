@@ -21,8 +21,9 @@ SPEC = importlib.util.spec_from_file_location("signing_validation", ROOT / "scri
 VALIDATION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VALIDATION)
 PRODUCTS = release_identity.PRODUCTS
-PROD, DEV = "0.9.20", "0.9.20" + release_identity.DOCUMENT["releaseVersionMarker"] + "3"
-PROD_NAMES, DEV_NAMES = release_identity.identity(PROD), release_identity.identity(DEV)
+MARKERS = release_identity.DOCUMENT["releaseVersionMarkers"]
+PROD, DEV, STAGING = "0.9.20", "0.9.20" + MARKERS["dev"] + "3", "0.9.20" + MARKERS["staging"] + "3"
+PROD_NAMES, DEV_NAMES, STAGING_NAMES = (release_identity.identity(v) for v in (PROD, DEV, STAGING))
 
 
 class SigningValidationTests(unittest.TestCase):
@@ -112,11 +113,14 @@ class SigningValidationTests(unittest.TestCase):
     def test_dev_version_requires_the_dev_app_identity(self):
         layouts = {version: {"app": names["appBundleName"], "executable": names["cliName"],
                              "name": names["appDisplayName"]}
-                   for version, names in [(PROD, PROD_NAMES), (DEV, DEV_NAMES)]}
+                   for version, names in [(PROD, PROD_NAMES), (DEV, DEV_NAMES), (STAGING, STAGING_NAMES)]}
         for scenario, layout, version, valid in [
                 ("dev", layouts[DEV], DEV, True), ("prod", layouts[PROD], PROD, True),
+                ("staging", layouts[STAGING], STAGING, True),
                 ("prod-layout-dev-version", layouts[PROD], DEV, False),
-                ("dev-layout-prod-version", layouts[DEV], PROD, False)]:
+                ("dev-layout-prod-version", layouts[DEV], PROD, False),
+                ("staging-layout-dev-version", layouts[STAGING], DEV, False),
+                ("prod-layout-staging-version", layouts[PROD], STAGING, False)]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 archive = self.make_archive(root, version=version, **layout)

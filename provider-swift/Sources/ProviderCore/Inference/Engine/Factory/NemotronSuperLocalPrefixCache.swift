@@ -24,10 +24,11 @@ enum NemotronSuperLocalPrefixCache {
 
     /// nil leaves the owner without a bank. Text speculation stays without
     /// one: its assistant has no prompt-history checkpoint.
-    static func config(environment: [String: String], kvBytesCapacity: Int, speculates: Bool)
+    static func config(environment: [String: String], kvBytesCapacity: Int, speculates: Bool,
+                       modelID: String = NemotronSuperLocalBinding.modelID)
         -> CBv2HybridPrefixCacheConfig? {
         guard !speculates else { return nil }
-        return PrefixCachePolicy.hybridConfig(modelId: NemotronSuperLocalBinding.modelID,
+        return PrefixCachePolicy.hybridConfig(modelId: modelID,
             promptContractID: promptContractID, kvBytesCapacity: kvBytesCapacity,
             hasMTPDrafter: false, environment: environment)
     }

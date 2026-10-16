@@ -39,7 +39,7 @@ actor NemotronSuperLocalImageBinding {
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !closing else { throw Failure.closed }
         guard active == nil else { throw Failure.busy }
-        guard request.model == NemotronSuperLocalBinding.modelID else { throw Failure.wrongModel }
+        guard request.model == owner.modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.tool_choice == nil, request.response_format == nil,
             request.logprobs != true, request.top_logprobs == nil, request.prompt_cache_key == nil
         else { throw Failure.unsupportedCapability }
@@ -76,7 +76,7 @@ actor NemotronSuperLocalImageBinding {
             // Before JSON/base64/header expansion, using the real shared ledger.
             guard await gate.reserve(requestId: ingressID, mediaDecodeBytes: headerBytes, kvTokens: 0)
             else { throw Failure.capacity }
-            let parsed = try Self.parseEncodedBody(body)
+            let parsed = try Self.parseEncodedBody(body, modelID: owner.modelID)
             let plan = try Self.encodedPlan(parsed.images, contextLength: gate.contextLength)
             let tokens = try owner.localImagePrompt(body: body, templateBytes: templateBytes,
                                                    featureCounts: plan.grids.map(\.tokens))
@@ -176,7 +176,8 @@ actor NemotronSuperLocalImageBinding {
 
     /// Only call after encoded-header admission. Reuses existing inline decoder;
     /// a strict MIME/header gate excludes percent encoding and remote URLs.
-    static func parseEncodedBody(_ body: Data) throws -> EncodedBody {
+    static func parseEncodedBody(_ body: Data,
+                                 modelID: String = NemotronSuperLocalBinding.modelID) throws -> EncodedBody {
         struct Unsupported: Decodable {
             let logprobs: Bool?
             let top_logprobs: Int?
@@ -184,7 +185,7 @@ actor NemotronSuperLocalImageBinding {
         }
         let flags = try JSONDecoder().decode(Unsupported.self, from: body)
         let request = try ProviderLoop.decodeOpenAIRequest(body)
-        guard request.model == NemotronSuperLocalBinding.modelID else { throw Failure.wrongModel }
+        guard request.model == modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
               request.parallelToolCalls == nil, request.toolCallParser == nil, request.minP == nil,
               flags.logprobs != true, flags.top_logprobs == nil, flags.prompt_cache_key == nil

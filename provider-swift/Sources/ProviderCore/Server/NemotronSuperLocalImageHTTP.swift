@@ -4,14 +4,15 @@ import MLXLMCommon
 import MLXLMServer
 import MLXVLM
 
-/// Opt-in, unpublished-owner HTTP hook for Super chat requests. Text renders
-/// with the owner's own tokenizer and runs on its text binding; inline images
-/// run on the owner's image binding. Both stream through the reference
-/// reasoning, tool and structured-output parsers. An owner with text
-/// speculation installed has no image binding, so media requests get 400. No
-/// production caller installs this hook; model discovery and registry/native
-/// lease policy remain unchanged. The type name predates text support;
-/// `LocalInferenceHTTP` plumbs it.
+/// The Super chat route over one loaded owner. Text renders with the owner's
+/// own tokenizer and runs on its text binding; inline images run on the
+/// owner's image binding. Both stream through the reference reasoning, tool
+/// and structured-output parsers. An owner with text speculation installed has
+/// no image binding, so media requests get 400. The qualification runner
+/// installs `service` on the local HTTP stack (`LocalInferenceHTTP` plumbs
+/// it); a managed provider slot serves coordinator and local-endpoint
+/// requests through `engine(body:servesMedia:)`. The type name predates text
+/// support.
 struct NemotronSuperLocalImageHTTP: Sendable {
     private let images: NemotronSuperLocalImageBinding?
     private let text: NemotronSuperLocalBinding
@@ -30,24 +31,49 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         self.owner = owner
     }
 
+    /// The model id every request must name.
+    var modelID: String { owner.modelID }
+    /// The owner speculates and therefore refuses media.
+    var speculates: Bool { owner.speculates }
+
+    /// Reference prompt length of a text request, the usage floor when a
+    /// stream ends before its terminal usage; 0 for media or a refused body.
+    func promptTokenCount(body: Data) -> Int {
+        guard let plan = try? NemotronSuperRequestPlan(body: body, modelID: owner.modelID), !plan.hasMedia,
+            let tokens = try? plan.textPromptTokens(body: body, templateBytes: template,
+                                                    tokenizer: tokenizer.inner)
+        else { return 0 }
+        return tokens.count
+    }
+
     /// Rejects new text work and joins it. `Owner.closeAfterDrain()` drains
     /// this text binding again, then the image binding, before retirement.
     func drain() async { await text.drain() }
 
     func service(body: Data, request: OpenAIChatCompletionRequest,
                  responseStore: InMemoryResponseStore, metrics: ServerMetrics) -> MLXOpenAIService? {
-        guard request.model == NemotronSuperLocalBinding.modelID else { return nil }
+        guard request.model == owner.modelID else { return nil }
+        return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request)),
+            responseStore: responseStore, metrics: metrics)
+    }
+
+    /// The engine for one immutable raw request body. With `servesMedia`
+    /// false a media request is refused even when the owner has an image
+    /// binding: a slot that advertises no media serves none. `cacheScope`
+    /// partitions text prefix reuse (nil: none); the hook's single local
+    /// operator shares one partition.
+    func engine(body: Data, hasMedia: Bool, servesMedia: Bool = true,
+                cacheScope: String? = "") -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route
-        if !MediaIngest.hasMedia(request) {
+        if !hasMedia {
             route = .text(text, tokenizer)
-        } else if let images {
+        } else if servesMedia, let images {
             route = .image(images)
         } else {
             route = .mediaRefused
         }
-        return MLXOpenAIService(
-            engine: SuperHTTPEngine(route: route, body: body, template: template, owner: owner),
-            responseStore: responseStore, metrics: metrics)
+        return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
+                               cacheScope: cacheScope)
     }
 }
 
@@ -65,29 +91,29 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let body: Data
     let template: Data
     let owner: NemotronSuperLocalBridgeBuilder.Owner
+    let cacheScope: String?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
     func detokenize(_ request: DetokenizeRequest) async throws -> DetokenizeResponse { throw unsupported() }
     func applyTemplate(_ request: ApplyTemplateRequest) async throws -> TokenizeResponse { throw unsupported() }
     private func unsupported() -> MultiModelBatchSchedulerEngineError {
-        .requestRejected("unpublished Super owner exposes only its bound chat request")
+        .requestRejected("the Super owner exposes only its bound chat request")
     }
 
     /// `request` already carries the service's response-format instruction.
     func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
-        guard request.model == NemotronSuperLocalBinding.modelID else { throw unsupported() }
+        guard request.model == owner.modelID else { throw unsupported() }
         let media = if case .text = route { false } else { true }
         let output: NemotronSuperLocalOutput
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
         do {
-            let plan = try NemotronSuperRequestPlan(body: body, formatted: request)
+            let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID)
             output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
             switch route {
             case .mediaRefused:
-                throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(
-                    NemotronSuperLocalBinding.modelID)
+                throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(owner.modelID)
             case .image(let images):
                 let body = self.body, template = self.template
                 execute = { onEvent in try await images.runEncoded(body: body, templateBytes: template, onEvent: onEvent) }
@@ -98,15 +124,17 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 // translate keeps the request's max_tokens (nil: the bridge default).
                 let translated = MultiModelBatchSchedulerEngine.translate(
                     openAIRequest: plan.request, defaultMaxTokens: 1)
+                let cacheScope = self.cacheScope
                 execute = { onEvent in
-                    try await binding.run(request: translated, promptTokens: tokens, onEvent: onEvent)
+                    try await binding.run(request: translated, promptTokens: tokens,
+                                          cacheScope: cacheScope, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
         // The owner admits its configured concurrency; an image would otherwise
         // reserve and prepare media only for the bridge to refuse it.
         guard owner.admitLocalRequest() else {
-            throw MultiModelBatchSchedulerEngineError.queueFull("unpublished Super owner is busy")
+            throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output)
@@ -142,9 +170,9 @@ enum SuperHTTPErrors {
         if let failure = error as? NemotronSuperLocalImageBinding.Failure {
             switch failure {
             case .capacity: return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
-            case .busy: return MultiModelBatchSchedulerEngineError.queueFull("unpublished image owner is busy")
+            case .busy: return MultiModelBatchSchedulerEngineError.queueFull("the Super image owner is busy")
             case .closed, .retainedFault:
-                return MultiModelBatchSchedulerEngineError.requestRejected("unpublished image owner is unavailable")
+                return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidInput:
                 return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline image request")
             }
@@ -152,13 +180,13 @@ enum SuperHTTPErrors {
         if let failure = error as? NemotronSuperLocalBinding.Failure {
             switch failure {
             case .drained, .missingBridge:
-                return MultiModelBatchSchedulerEngineError.requestRejected("unpublished Super owner is unavailable")
+                return MultiModelBatchSchedulerEngineError.requestRejected("the Super owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidTokens:
                 return invalidRequest(media: media)
             }
         }
         if error is NemotronSuperLocalBridgeBuilder.Failure {
-            return MultiModelBatchSchedulerEngineError.requestRejected("unpublished Super owner is unavailable")
+            return MultiModelBatchSchedulerEngineError.requestRejected("the Super owner is unavailable")
         }
         if let failure = error as? NemotronSuperLocalOutput.Failure {
             switch failure {

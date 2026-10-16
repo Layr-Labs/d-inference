@@ -6,6 +6,7 @@ import Testing
 @testable import MLXLLM
 @testable import MLXLMCommon
 @testable import MLXVLM
+@testable import ProviderCore
 
 /// Seeded MTP-capable Super installation with a calibrated FP8 output head,
 /// NVFP4 target experts and an embedded NVFP4 prediction head, staged through
@@ -170,6 +171,24 @@ struct SuperMTPInstalledFixture {
         let index = try JSONSerialization.data(withJSONObject: ["weight_map": map], options: [.sortedKeys])
         let hash = SHA256.hash(data: index).map { String(format: "%02x", $0) }.joined()
         return try body(ModelOptCheckpointSource(indexData: index, indexSHA256: hash, files: files))
+    }
+
+    /// The fixture and its head as a `NemotronSuperLocalLoad` staging: the
+    /// transaction quotes, claims and loads the head as it does the pinned one.
+    func staging() throws -> NemotronSuperLocalLoad.Staging {
+        let makeModel = model
+        return try withSource(tensors()) { source in
+            let head = NemotronSuperLocalLoad.Staging.Head(quote: {
+                try NemotronSuperMTPModule.loadQuote(configuration: Self.configuration(), source: source)
+            }, load: { installed, quote, construction in
+                try NemotronSuperMTPModule.load(for: try #require(installed.model).languageModel,
+                    source: source, quote: quote, construction: construction, dtype: .float32)
+            })
+            return NemotronSuperLocalLoad.Staging(source: source, install: { residency, allowance, construction in
+                try NemotronSuperInstallation.stage(source: source, residency: residency, dtype: .float32,
+                    backendAllowanceBytes: allowance, construction: construction, makeModel: makeModel)
+            }, head: head)
+        }
     }
 
     struct Installation {

@@ -23,6 +23,8 @@ enum NemotronSuperLocalBridgeBuilder {
     /// the installation independently. An abandoned owner never refunds residency.
     final class Owner: @unchecked Sendable {
         let bridge: EngineV2Bridge
+        /// The one model id every route of this owner serves.
+        let modelID: String
         private let lock = NSLock()
         private var installed: NemotronSuperInstallation.Installed?
         private var closing: Task<Void, Error>?
@@ -47,12 +49,13 @@ enum NemotronSuperLocalBridgeBuilder {
         let prefixBankBytes: Int
         private let prefixBankID: String?
 
-        fileprivate init(bridge: EngineV2Bridge, installed: NemotronSuperInstallation.Installed,
+        fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
                          speculates: Bool, maximumLocalRequests: Int,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int) {
             self.bridge = bridge
+            self.modelID = modelID
             self.installed = installed
             self.tokenizer = tokenizer; self.budget = budget; self.contextLength = contextLength
             self.speculates = speculates
@@ -91,7 +94,7 @@ enum NemotronSuperLocalBridgeBuilder {
                 }
                 if let textBinding { return textBinding }
                 let bridge = self.bridge, tokenizer = self.tokenizer
-                let binding = NemotronSuperLocalBinding(acquire: { [weak self] model in
+                let binding = NemotronSuperLocalBinding(modelID: modelID, acquire: { [weak self] model in
                     guard let self, self.acceptsLocalWork else { throw Failure.retirementIncomplete }
                     return .init(tokenizer: tokenizer,
                         releaseToken: OneShotRelease(release: { _ in }, modelId: model),
@@ -129,7 +132,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     throw Failure.retirementIncomplete
                 }
                 let request = try ProviderLoop.decodeOpenAIRequest(body)
-                guard request.model == NemotronSuperLocalBinding.modelID,
+                guard request.model == modelID,
                     request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
                     !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
                 else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
@@ -226,25 +229,28 @@ enum NemotronSuperLocalBridgeBuilder {
         }
     }
 
-    /// `loadLease` is the real existing pending LOAD claim, never a new permit.
-    /// KV grant/sizing must come from the existing slot re-slice and loaded sizing
-    /// path. Native setup/probes run inside the SDK construction scope. Caller
-    /// must retain a faulted scope and its charged installation until restart.
-    /// `mtp` installs opt-in text speculation; nil keeps the target-only owner,
-    /// which `NemotronSuperLocalPrefixCache` may give exact text prefix reuse.
+    /// `loadLease` is the real existing pending LOAD claim, never a new permit;
+    /// it must hold at least `admissionKVBytes` (nil: the whole grant) of KV
+    /// headroom. KV grant/sizing must come from the existing slot re-slice and
+    /// loaded sizing path. Native setup/probes run inside the SDK construction
+    /// scope. Caller must retain a faulted scope and its charged installation
+    /// until restart. `mtp` installs text speculation; nil keeps the
+    /// target-only owner, which `NemotronSuperLocalPrefixCache` may give exact
+    /// text prefix reuse.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
-        sizing: SlotSizingSnapshot, kvBytesCapacity: Int,
+        sizing: SlotSizingSnapshot, kvBytesCapacity: Int, admissionKVBytes: Int? = nil,
         kvBudget: GlobalKVCacheBudget, loadLease: PendingModelLoadLease,
         construction: NativeConstructionScope, mtp: NemotronSuperLocalMTP.Head? = nil,
+        modelID: String = NemotronSuperLocalBinding.modelID,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
         guard installed.receipt.payloadBytes > 0,
             await kvBudget.recheckPendingLoad(loadLease,
                 minimumWeightBytes: UInt64(installed.receipt.payloadBytes),
-                minimumKVBytes: UInt64(max(0, kvBytesCapacity)))
+                minimumKVBytes: UInt64(max(0, admissionKVBytes ?? kvBytesCapacity)))
         else { throw Failure.loadAdmissionLost }
         guard sizing.weightsBytes >= installed.receipt.payloadBytes,
               sizing.fp16KVBytesPerToken > 0, kvBytesCapacity > 0,
@@ -254,7 +260,7 @@ enum NemotronSuperLocalBridgeBuilder {
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
-            kvBytesCapacity: kvBytesCapacity, speculates: mtp != nil)
+            kvBytesCapacity: kvBytesCapacity, speculates: mtp != nil, modelID: modelID)
         try Task.checkCancellation()
         let (bridge, prefill, laneBytes) = try installed.withNativeSetup(
             construction: construction
@@ -282,7 +288,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     exactPrefixCheckpoints: prefixCache != nil)
             let draftTokens = mtp?.setting.depth ?? 0
             let bridge = try EngineV2Factory.makeBridge(
-                modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
+                modelId: modelID, tokenizer: tokenizer,
                 eosTokenIds: eosTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
                 maxConcurrentRequests: requests,
                 // The operator's explicit width; not the posture-gated M5 paged default.
@@ -292,7 +298,7 @@ enum NemotronSuperLocalBridgeBuilder {
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
                 makeEngine: {
                     try EngineV2Factory.makeProductionBuild(
-                        model: target, modelID: NemotronSuperLocalBinding.modelID,
+                        model: target, modelID: modelID,
                         tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
                         maxConcurrentRequests: requests, kvBudget: kvBudget,
                         hybridPrefixCache: prefixCache, mtpDrafter: speculation?.assistant,
@@ -341,7 +347,7 @@ enum NemotronSuperLocalBridgeBuilder {
         }
         // Without speculation the dedicated image binding uses causal
         // embeddings and no checkpoint identity; execution stays contiguous.
-        return Owner(bridge: bridge, installed: installed, tokenizer: tokenizer,
+        return Owner(bridge: bridge, modelID: modelID, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,

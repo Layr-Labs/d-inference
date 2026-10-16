@@ -63,14 +63,17 @@ struct NemotronSuperLocalPrefillTests {
         #expect(Prefill.laneBytes(language, chunkTokens: 2048, measuredBound: true)
             == max(workspace, NemotronHModel.prefillActivationBoundBytes(tokens: 2048)))
         #expect(NemotronHModel.prefillActivationBoundBytes(tokens: 2048) == (4 << 30) + 2048 * (4 << 20))
-        #expect(Prefill.laneReservationID().hasSuffix("-prefill"))
+        let id = Prefill.laneReservationID()
+        #expect(Prefill.isLaneReservationID(id) && !Prefill.isLaneReservationID("decode-contended-prefill"))
+        // A synthetic installation is never the pinned checkpoint.
+        #expect(!fixture.installed.isPinnedCheckpoint)
         fixture.installed.closeAfterRetirement()
     }
 
     private static func owner(_ fixture: SuperMTPInstalledFixture.Installation,
                               setting: NemotronSuperLocalMTP.Setting?, environment: [String: String],
-                              budget: GlobalKVCacheBudget, lease: PendingModelLoadLease,
-                              measuredBound: Bool = false) async throws -> Builder.Owner {
+                              budget: GlobalKVCacheBudget, lease: PendingModelLoadLease)
+        async throws -> Builder.Owner {
         try await Builder.make(installed: fixture.installed,
             tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
             sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
@@ -78,7 +81,7 @@ struct NemotronSuperLocalPrefillTests {
             kvBytesCapacity: 4 << 30, kvBudget: budget, loadLease: lease,
             construction: fixture.construction,
             mtp: setting.map { .init(module: fixture.head, setting: $0) },
-            measuredPrefillBound: measuredBound, environment: environment)
+            environment: environment)
     }
 
     private static func run(_ owner: Builder.Owner, prompt: [Int], maxTokens: Int)
@@ -132,7 +135,7 @@ struct NemotronSuperLocalPrefillTests {
         let owner = try await Self.owner(fixture, setting: speculative ? .init(depth: 2) : nil,
             environment: environment, budget: budget, lease: leases[1])
         #expect(owner.prefill == .init(chunkTokens: 4, decodeStepsBetweenChunks: decodeSteps))
-        let lanes = await budget.reservationBytesSnapshot().filter { $0.key.hasSuffix("-prefill") }
+        let lanes = await budget.reservationBytesSnapshot().filter { Prefill.isLaneReservationID($0.key) }
         #expect(lanes.count == 1 && lanes.first?.value == UInt64(owner.prefillLaneBytes))
         let actual = try await withThrowingTaskGroup(of: (Int, (text: String, errors: [String])).self) {
             group in
@@ -157,24 +160,42 @@ struct NemotronSuperLocalPrefillTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// The measured lane does not fit a small budget: the load fails before
-    /// any request is admitted, and nothing stays charged.
+    /// A lane that does not fit the shared budget fails the load before any
+    /// request is admitted, and nothing stays charged.
     @Test(.timeLimit(.minutes(2))) func laneThatDoesNotFitFailsTheLoad() async throws {
-        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
-            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
         let fixture = try SuperMTPInstalledFixture().make()
+        let language = try #require(fixture.installed.model?.languageModel)
+        let lane = Prefill.laneBytes(language,
+            chunkTokens: min(Prefill.defaultChunkTokens, try #require(language.calibratedPrefillTokenLimit)),
+            measuredBound: false)
+        let budget = Self.budget()
         let lease = try #require(await budget.claimPendingLoad(requestID: "super-prefill-small",
             weightBytes: UInt64(fixture.installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        // Ballast leaves about half the lane free: the largest reservation that
+        // still fits, found by bisection, minus half the lane.
+        var low: UInt64 = 0
+        var high: UInt64 = 64 << 30
+        while low < high {
+            let middle = low + (high - low + 1) / 2
+            if await budget.reserveBytes(requestID: "probe", bytes: middle) {
+                await budget.release(requestID: "probe")
+                low = middle
+            } else {
+                high = middle - 1
+            }
+        }
+        #expect(low > UInt64(lane))
+        #expect(await budget.reserveBytes(requestID: "ballast", bytes: low - UInt64(lane / 2)))
         await #expect(throws: Prefill.Failure.laneRefused) {
             _ = try await Builder.make(installed: fixture.installed,
                 tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
                 sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
                     fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 16),
                 kvBytesCapacity: 2 << 30, kvBudget: budget,
-                loadLease: lease, construction: fixture.construction, measuredPrefillBound: true,
-                environment: [:])
+                loadLease: lease, construction: fixture.construction, environment: [:])
         }
-        #expect(await budget.reservationBytesSnapshot().isEmpty)
+        #expect(await budget.reservationBytesSnapshot().keys.sorted() == ["ballast"])
+        await budget.release(requestID: "ballast")
         fixture.installed.closeAfterRetirement()
         #expect(await budget.finishPendingLoad(lease))
     }

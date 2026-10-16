@@ -102,27 +102,39 @@ through the owner's `localTextBinding` and images through its image binding, adm
 the owner's configured number of requests and refuses another with `queueFull`
 (429) before any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
 it over the transaction's own owner. No production caller installs it.
-`DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (`1` to `64`, default `1`; one with
-speculation) sets how many requests the plain owner serves; above one the
-builder serves `NemotronSuperRecurrentAdapter(_:maximumDecodeRows:decodeProducts:)`
-with `.rowExact`, so concurrent requests decode in one `[B, 1]` step bit-identical
-to their one-token decode while prompts and media prefill one request per
-forward. The hook admits that many requests and refuses the next with 429.
+`DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (default `1`) sets how many requests
+the owner serves: `1` to `64` plain, `1` to `8` with rectangular speculation, one
+with serial speculation. Above one the plain builder serves
+`NemotronSuperRecurrentAdapter(_:maximumDecodeRows:decodeProducts:)` with
+`.rowExact`, so concurrent requests decode in one `[B, 1]` step bit-identical to
+their one-token decode. The hook admits that many requests and refuses the next
+with 429.
+`NemotronSuperLocalPrefill` fixes prompt scheduling: chunks of
+`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens (default 2,048, at most the
+calibrated prefill limit), at most one prompt chunk per step beside every decode
+or verify row, a step budget that holds a whole chunk plus those rows, and
+optional decode-only steps between chunks
+(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`). A request's chunks are
+therefore the same whether or not it is served alone. Because one chunk runs per
+step, the prefill activation is one owner-wide lane in the shared budget,
+reserved before the first request and released only after native retirement:
+`NemotronHModel.prefillActivationBoundBytes(tokens:)` (the SDK's whole-chunk bound
+measured on the full checkpoint) for the pinned checkpoint, the ModelOpt
+workspace quote for synthetic fixtures. A lane that does not fit fails the load.
 Each bridge request reservation carries, beyond the engine's recurrent
-generations and any speculation charge, `requestWorkspaceBytes`:
-`NemotronHModel.modelOptGraphPrefillWorkspaceBytes(tokens:)` at the calibrated
-prefill limit (the graph path's explicit ModelOpt arrays for the largest chunk,
-at most 2,048 tokens and 2 GiB) plus one `NemotronSuperDecodeCharge` decode row.
-The builder refuses a KV grant that cannot hold every configured request's
-fixed bytes plus the minimum KV with `UnserviceableGrant`, which names the grant,
-the smallest serviceable grant and the fixed bytes per request.
+generations and any speculation charge, `requestWorkspaceBytes`: one
+`NemotronSuperDecodeCharge` decode row. The builder refuses a KV grant that
+cannot hold every configured request's fixed bytes plus the minimum KV with
+`UnserviceableGrant`, which names the grant, the smallest serviceable grant and
+the fixed bytes per request.
 
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction
 adds the embedded head's header-derived payload and loader construction allowance
 to its single LOAD claim, loads the head in its own fenced construction epoch, and
-the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, one request,
-fixed depth (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `1` to `3`). Verification
+the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, up to the
+configured requests per round, fixed depth (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`,
+`1` to `3`) or `auto` (the engine's marginal policy picks each step's depth). Verification
 (`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION`) defaults to `rectangular`:
 `NemotronSuperMTPCaptureTarget` verifies the seed and drafts in one captured
 target window, bit-identical per position to plain decode, and the engine commits

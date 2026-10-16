@@ -175,7 +175,7 @@ workload settings, model identity or runner build configuration.
 | prefill tok/s | prompt tokens / TTFT (end-to-end lower bound) |
 | decode tok/s | (completion tokens - 1) / (last delta - first delta) |
 | e2e tok/s | completion tokens / request time |
-| concurrency | p50/p90/p99 latency and TTFT of successful requests, aggregate completion tokens / wall time, statuses (the owner admits one request at a time, so 429 rejections are reported, not hidden) |
+| concurrency | p50/p90/p99 latency and TTFT of successful requests, aggregate completion tokens / wall time, statuses (the owner admits its configured requests, one by default, so 429 rejections are reported, not hidden) |
 
 The receipt records hardware, OS, thermal and memory pressure, git HEAD plus a
 hash of each checkout's diff and untracked files, the runner executable SHA-256

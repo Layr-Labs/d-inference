@@ -77,7 +77,11 @@ enum NemotronSuperLocalPrefill {
         return max(workspace, bound)
     }
 
-    /// Budget reservation ID of an owner's lane; the suffix lets ledger
-    /// readers tell it from request reservations.
-    static func laneReservationID() -> String { "nemotron-super-\(UUID().uuidString)-prefill" }
+    private static let laneSuffix = "-nemotron-super-prefill-lane"
+
+    /// Budget reservation ID of an owner's lane, distinct from request IDs.
+    static func laneReservationID() -> String { UUID().uuidString + laneSuffix }
+
+    /// True for a reservation ID made by `laneReservationID()`.
+    static func isLaneReservationID(_ id: String) -> Bool { id.hasSuffix(laneSuffix) }
 }

@@ -108,7 +108,7 @@ extension NemotronSuperLocalOwnerTests {
         let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
         #expect(prefill > 0 && row > 0 && workspace == row && owner.prefillLaneBytes == prefill)
         let lane = await budget.reservationBytesSnapshot()
-        #expect(lane.count == 1 && lane.first?.key.hasSuffix("-prefill") == true
+        #expect(lane.count == 1 && lane.first.map { NemotronSuperLocalPrefill.isLaneReservationID($0.key) } == true
             && lane.first?.value == UInt64(prefill))
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)

@@ -36,7 +36,7 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
             ],
             path: "source-mlx-swift-lm/Libraries/MLXVLM",
-            sources: ["Models/NemotronSuperVisionProjector.swift", "Models/NemotronRadio.swift", "Models/NemotronRadioWeights.swift", "NemotronSuperImagePreprocessing.swift", "Models/NemotronSuperImageComposition.swift", "Models/NemotronSuperImageActivation.swift", "Models/NemotronSuperModel.swift", "Models/NemotronSuperInstallation.swift", "Models/NemotronSuperCheckpointPin.swift", "Models/NemotronSuperVisionPreparation.swift", "Models/NemotronSuperRecurrentAdapter.swift", "Models/NemotronSuperMTPTextTarget.swift", "Models/NemotronSuperMTPServing.swift"]),
+            sources: ["Models/NemotronSuperVisionProjector.swift", "Models/NemotronRadio.swift", "Models/NemotronRadioWeights.swift", "NemotronSuperImagePreprocessing.swift", "Models/NemotronSuperImageComposition.swift", "Models/NemotronSuperImageActivation.swift", "Models/NemotronSuperModel.swift", "Models/NemotronSuperInstallation.swift", "Models/NemotronSuperCheckpointPin.swift", "Models/NemotronSuperPinnedInstallation.swift", "Models/NemotronSuperVisionPreparation.swift", "Models/NemotronSuperRecurrentAdapter.swift", "Models/NemotronSuperMTPTextTarget.swift", "Models/NemotronSuperMTPServing.swift"]),
         .testTarget(
             name: "ProjectorTests",
             dependencies: ["MLXVLM", "MLXLLM", "MLXLMCommon"],

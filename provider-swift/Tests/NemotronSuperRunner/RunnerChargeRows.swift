@@ -29,7 +29,7 @@ extension GlobalKVCacheBudget {
                 id == ballastID ? .ballast
                 : id.hasSuffix("-ingress") ? .mediaIngress
                 : id.hasSuffix("-media") ? .media
-                : id.hasSuffix("-prefill") ? .prefillLane : .kv
+                : NemotronSuperLocalPrefill.isLaneReservationID(id) ? .prefillLane : .kv
             rows.append(RunnerChargeRow(id: id, kind: kind, bytes: bytes))
         }
         return rows.sorted { $0.id < $1.id }

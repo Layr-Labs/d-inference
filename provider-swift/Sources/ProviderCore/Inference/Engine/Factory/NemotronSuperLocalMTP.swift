@@ -95,16 +95,21 @@ enum NemotronSuperLocalMTP {
         let config: CBv2MTPConfig
     }
 
+    /// Serial verification serves one request; rectangular verification
+    /// verifies up to `requests` in one captured window.
+    static func validate(_ setting: Setting, requests: Int) throws {
+        guard requests == 1 || setting.verification == .rectangularExact else {
+            throw NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency
+        }
+    }
+
     /// `requests` above one verifies up to that many requests in one exact
-    /// captured window, each committing its own accepted prefix; serial
-    /// verification refuses it.
+    /// captured window, each committing its own accepted prefix.
     static func engine(
         for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int, requests: Int = 1
     ) throws -> Engine {
+        try validate(head.setting, requests: requests)
         let verification = head.setting.verification
-        guard requests == 1 || verification == .rectangularExact else {
-            throw NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency
-        }
         let target =
             verification == .rectangularExact
             ? try NemotronSuperMTPCaptureTarget(capturing: model, maximumRequests: requests)

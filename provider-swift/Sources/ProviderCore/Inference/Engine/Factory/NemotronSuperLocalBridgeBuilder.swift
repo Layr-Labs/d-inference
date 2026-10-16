@@ -225,15 +225,12 @@ enum NemotronSuperLocalBridgeBuilder {
     /// path. Native setup/probes run inside the SDK construction scope. Caller
     /// must retain a faulted scope and its charged installation until restart.
     /// `mtp` installs opt-in text speculation; nil keeps the target-only owner.
-    /// `measuredPrefillBound` charges the SDK's full-checkpoint prefill bound
-    /// in the prefill lane; the pinned load transaction sets it.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
         sizing: SlotSizingSnapshot, kvBytesCapacity: Int,
         kvBudget: GlobalKVCacheBudget, loadLease: PendingModelLoadLease,
         construction: NativeConstructionScope, mtp: NemotronSuperLocalMTP.Head? = nil,
-        measuredPrefillBound: Bool = false,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
@@ -248,6 +245,7 @@ enum NemotronSuperLocalBridgeBuilder {
               sizing.defaultMaxTokens > 0, sizing.defaultMaxTokens <= sizing.maxContextLength
         else { throw Failure.unsupportedSizing }
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
+        if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
         try Task.checkCancellation()
         let (bridge, prefill, laneBytes) = try installed.withNativeSetup(
             construction: construction
@@ -258,8 +256,9 @@ enum NemotronSuperLocalBridgeBuilder {
             }
             let prefill = try NemotronSuperLocalPrefill.Policy.resolve(
                 environment: environment, prefillLimit: limit)
+            // The full-model bound is a measurement of the pinned checkpoint.
             let laneBytes = NemotronSuperLocalPrefill.laneBytes(language,
-                chunkTokens: prefill.chunkTokens, measuredBound: measuredPrefillBound)
+                chunkTokens: prefill.chunkTokens, measuredBound: installed.isPinnedCheckpoint)
             let workspace = try requestWorkspaceBytes(language)
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(

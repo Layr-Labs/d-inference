@@ -137,14 +137,16 @@ struct NemotronSuperLocalHTTPAdmissionTests {
     /// A batched owner holds its configured requests in flight at once and
     /// refuses the next with 429 before headers, reserving nothing for it.
     @Test(.timeLimit(.minutes(2))) func batchedOwnerAdmitsItsRequestsAndRefusesTheNextWith429() async throws {
-        let (installed, construction, residency) = try SuperInstalledFixture().make()
+        // Row-exact batched decode needs the latent-MoE layout of the MTP fixture.
+        let fixture = try SuperMTPInstalledFixture().make()
+        let (installed, construction, residency) = (fixture.installed, fixture.construction, fixture.residency)
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
         let lease = try #require(await budget.claimPendingLoad(requestID: "super-http-batched",
             weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 4 << 30))
         let tokenizer = TokenizerHandle(SuperRouteTokenizer())
         let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
-            tokenizer: tokenizer, eosTokenIDs: [31],
+            tokenizer: tokenizer, eosTokenIDs: [63],
             sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
                 maxContextLength: 64, defaultMaxTokens: 2), kvBytesCapacity: 4 << 30,
             kvBudget: budget, loadLease: lease, construction: construction,
@@ -156,8 +158,16 @@ struct NemotronSuperLocalHTTPAdmissionTests {
         let tracker = LocalResponseTracker()
         let held = SuperHTTPHeldTerminals()
         let baseline = await budget.outstandingReservedBytes()
-        await owner.bridge._testInstallCancelledSettlementHooks(
-            beforeNativeTerminal: { _ in await held.hold() }, onSettlementWait: {})
+        // The bridge's terminal seam is one-shot: each held pump re-arms it
+        // for the next request before waiting.
+        let bridge = owner.bridge
+        @Sendable func holdEveryTerminal(_ usage: CBv2Usage) async {
+            await bridge._testInstallCancelledSettlementHooks(
+                beforeNativeTerminal: holdEveryTerminal, onSettlementWait: {})
+            await held.hold()
+        }
+        await bridge._testInstallCancelledSettlementHooks(
+            beforeNativeTerminal: holdEveryTerminal, onSettlementWait: {})
         let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
         do {
             try await superAdmissionApplication(hook: hook, token: token, tokenizer: tokenizer,

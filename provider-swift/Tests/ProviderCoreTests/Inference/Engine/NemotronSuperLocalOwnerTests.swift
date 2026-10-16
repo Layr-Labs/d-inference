@@ -69,12 +69,16 @@ struct NemotronSuperLocalOwnerTests {
 }
 
 extension NemotronSuperLocalOwnerTests {
+    /// `latentMoE` stages the MTP fixture's latent-MoE target, the layout the
+    /// row-exact batched decode supports, without loading its head.
     private static func owner(kvBytesCapacity: Int = 2 << 30,
         tokenizer: any MLXLMCommon.Tokenizer = SuperTokenTextTokenizer(),
-        environment: [String: String] = [:]) async throws
+        environment: [String: String] = [:], latentMoE: Bool = false) async throws
         -> (NemotronSuperLocalBridgeBuilder.Owner, NemotronSuperInstallation.Installed,
             NemotronSuperResidency, GlobalKVCacheBudget, PendingModelLoadLease) {
-        let (installed, construction, residency) = try SuperInstalledFixture().make()
+        let (installed, construction, residency) = try latentMoE
+            ? { let f = try SuperMTPInstalledFixture().make(); return (f.installed, f.construction, f.residency) }()
+            : SuperInstalledFixture().make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
         let lease = try #require(await budget.claimPendingLoad(requestID: "super-owner-admission",
@@ -170,12 +174,13 @@ extension NemotronSuperLocalOwnerTests {
         let environment = [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "2"]
         let grant = Int(UnifiedMemoryCap.minimumLoadKVBytes)
         var refusal: NemotronSuperLocalBridgeBuilder.UnserviceableGrant?
-        do { _ = try await Self.owner(kvBytesCapacity: grant, environment: environment) } catch let error as
+        do { _ = try await Self.owner(kvBytesCapacity: grant, environment: environment, latentMoE: true) }
+        catch let error as
             NemotronSuperLocalBridgeBuilder.UnserviceableGrant { refusal = error }
         let refused = try #require(refusal)
         #expect(refused.requests == 2 && refused.minimumGrantBytes >= grant + 2 * refused.fixedRequestBytes)
         let (owner, installed, residency, budget, lease) = try await Self.owner(
-            kvBytesCapacity: refused.minimumGrantBytes, environment: environment)
+            kvBytesCapacity: refused.minimumGrantBytes, environment: environment, latentMoE: true)
         #expect(owner.maximumLocalRequests == 2)
         #expect(await owner.bridge.maxConcurrentRequests == 2)
         #expect(await owner.bridge.effectiveServingConcurrency == 2)
@@ -198,7 +203,7 @@ extension NemotronSuperLocalOwnerTests {
         // A width above the M5 paged default is the operator's explicit
         // choice, not a power- or thermal-gated expansion.
         let wide = try await Self.owner(kvBytesCapacity: 4 << 30,
-            environment: [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "12"])
+            environment: [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "12"], latentMoE: true)
         #expect(await !wide.0.bridge.hasPostureGatedWidth)
         #expect(await wide.0.bridge.effectiveServingConcurrency == 12)
         try await wide.0.closeAfterDrain()

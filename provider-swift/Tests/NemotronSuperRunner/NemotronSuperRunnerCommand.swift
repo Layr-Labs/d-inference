@@ -258,13 +258,17 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         }
         let kvGib = kvCapacityGib ?? Self.defaultKVCapacityGib(engineEnvironment: environment)
         let grant = Int(kvGib * 1_073_741_824)
-        return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
+        let emulation = RunnerMemoryEmulation(gib: emulatePhysicalGib)
+        if let emulation { environment = emulation.engineEnvironment(environment, grantBytes: grant) }
+        var settings = RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
             kvCapacityBytes: grant,
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
             kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
             verifyParallelism: verifyParallelism,
             admissionKVBytes: managedLoadClaim
                 ? RunnerLoadSettings.managedAdmissionKVBytes(grantBytes: grant, environment: environment) : nil)
+        settings.emulation = emulation
+        return settings
     }
 
     /// Unmeasured runner defaults. The speculative grant leaves room for the

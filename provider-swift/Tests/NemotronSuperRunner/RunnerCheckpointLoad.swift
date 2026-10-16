@@ -44,6 +44,9 @@ enum RunnerCheckpointLoad {
             "head_payload_bytes": headQuote.map { .bytes($0.payloadBytes) } ?? .null,
             "head_construction_bytes": headQuote.map { .bytes($0.constructionBytes) } ?? .null,
             "load_claim_bytes": .bytes(claim),
+            "emulated_production_grant_bytes": settings.emulation.map {
+                .bytes($0.productionGrantBytes(checkpointBytes: UInt64(tensorBytes)))
+            } ?? .null,
             "pending_load_claim_bytes": .bytes(claim + (settings.admissionKVBytes ?? settings.kvCapacityBytes)),
             "admission_kv_bytes": .bytes(settings.admissionKVBytes ?? settings.kvCapacityBytes)])
         let tokenizer = try await phases.run("tokenizer") {

@@ -281,8 +281,9 @@ struct NemotronSuperLocalPrefixCacheTests {
     }
 
     /// One LOAD claim, taken before any allocation, holds the whole pinned
-    /// owner: the installation, the lane share (the measured whole-chunk
-    /// bound), the bank and the requests' KV floor. With one byte less free
+    /// owner: the installation (its staging only beyond the serving room),
+    /// the lane share (the measured whole-chunk bound), the bank and the
+    /// requests' KV floor. With one byte less free
     /// the load is refused before anything is installed. With exactly that
     /// much free it loads: the installation's share passes to live usage once
     /// resident and the lane and bank shares pass to their own reservations,
@@ -305,9 +306,15 @@ struct NemotronSuperLocalPrefixCacheTests {
                 installs.increment()
                 return try base.install($0, $1, $2)
             }, head: base.head, pinned: true)
-            let quote = try NemotronSuperInstallation.requiredLoadBytes(source: base.source,
+            // The installation's staging runs in the serving room the claim
+            // also holds (lane, bank, KV floor), so it adds only what exceeds it.
+            let quote = try NemotronSuperInstallation.loadQuote(source: base.source,
                 backendAllowanceBytes: 1 << 20)
-            let claim = UInt64(quote + shares.lane + shares.bank + kvFloor)
+            let serving = shares.lane + shares.bank + kvFloor
+            let install = try NemotronSuperLoadClaim.bytes(installation: quote, head: nil,
+                sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers(), servingBytes: serving)
+            #expect(install == quote.payloadBytes + max(0, quote.stagingBytes - serving))
+            let claim = UInt64(install + serving)
             let budget = Self.budget()
             let free = await Self.freeBytes(budget)
             #expect(free > claim)

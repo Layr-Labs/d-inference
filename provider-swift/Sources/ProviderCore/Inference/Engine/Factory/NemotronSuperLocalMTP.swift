@@ -81,13 +81,19 @@ enum NemotronSuperLocalMTP {
         let config: CBv2MTPConfig
     }
 
+    /// `requests` above one verifies up to that many requests in one exact
+    /// captured window, each committing its own accepted prefix; serial
+    /// verification refuses it.
     static func engine(
-        for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int
+        for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int, requests: Int = 1
     ) throws -> Engine {
         let verification = head.setting.verification
+        guard requests == 1 || verification == .rectangularExact else {
+            throw NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency
+        }
         let target =
             verification == .rectangularExact
-            ? try NemotronSuperMTPCaptureTarget(capturing: model)
+            ? try NemotronSuperMTPCaptureTarget(capturing: model, maximumRequests: requests)
             : NemotronSuperMTPTextTarget(model)
         let depth = head.setting.depth
         let assistant = try target.makeAssistant(
@@ -95,14 +101,15 @@ enum NemotronSuperLocalMTP {
             settings: .init(
                 maximumDraftTokens: depth, allowsDeepDrafts: depth > 1,
                 maximumSequenceLength: maximumSequenceLength,
-                backendScratchBytes: backendScratchBytes, verification: verification))
+                backendScratchBytes: backendScratchBytes, verification: verification,
+                maximumSpeculativeRows: requests))
         guard let mode = assistant.requiredVerificationMode else {
             throw Failure.invalidVerification
         }
         return Engine(
             model: target, assistant: assistant,
             config: CBv2MTPConfig(
-                enabled: true, maxDraftTokens: depth, maxSpeculativeBatch: 1,
+                enabled: true, maxDraftTokens: depth, maxSpeculativeBatch: requests,
                 fixedDraftTokens: depth, verificationMode: mode))
     }
 }

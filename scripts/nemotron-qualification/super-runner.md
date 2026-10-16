@@ -118,8 +118,12 @@ environment), adds the head's LOAD supplement and records the resolved setting
 as `speculation` in the ready file's identity (`null` for the plain arm). The
 speculating hook is text-only: image requests get 400. `--synthetic` has no MTP
 head and refuses the opt-in. Concurrency is the same kind of switch:
-`--engine-env DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` (`1`…`64`, plain owner
-only) serves N requests with row-exact batched decode; request N + 1 gets 429.
+`--engine-env DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` serves N requests with
+row-exact batched decode (`1`…`64`) or, with rectangular speculation, verifies up
+to N requests in one captured window per round (`1`…`8`); request N + 1 gets 429.
+The speculative grant default does not scale with N: pass `--kv-capacity-gib`
+from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
+`kv_grant_refused` load.
 
 ## Shutdown
 

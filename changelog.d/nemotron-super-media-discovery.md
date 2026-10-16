@@ -42,4 +42,7 @@ Each request's reservation now includes the calibrated prefill workspace and a
 decode row; a KV grant too small for the configured requests fails the load
 with the minimum grant it needs. `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT`
 (default 1) opts the plain owner into row-exact batched text decode of up to
-that many requests.
+that many requests, and the speculative owner (rectangular verification) into
+up to eight concurrent requests verified in one exact captured window per
+round, each committing its own accepted prefix; serial verification stays one
+request. Synthetic fixtures show token-exact output against solo plain decode.

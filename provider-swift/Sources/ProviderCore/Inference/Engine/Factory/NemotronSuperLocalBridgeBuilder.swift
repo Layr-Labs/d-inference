@@ -14,7 +14,7 @@ enum NemotronSuperLocalBridgeBuilder {
         case unloaded, loadAdmissionLost, unsupportedSizing, retirementIncomplete
         /// Text speculation is installed; its target refuses media embeddings.
         case mediaWithSpeculation
-        /// `maxConcurrentKey` is malformed, or above one with speculation.
+        /// `maxConcurrentKey` is malformed or above the owner's limit.
         case invalidConcurrency
     }
 
@@ -242,11 +242,12 @@ enum NemotronSuperLocalBridgeBuilder {
             let workspace = try requestWorkspaceBytes(language, prefillLimit: limit)
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(
-                    for: model, head: $0, maximumSequenceLength: sizing.maxContextLength)
+                    for: model, head: $0, maximumSequenceLength: sizing.maxContextLength,
+                    requests: requests)
             }
-            // Several requests share one row-exact [B, 1] decode step; prompts
-            // and media still prefill one request per forward. One row is the
-            // serial adapter.
+            // Several requests share one row-exact [B, 1] decode step (with
+            // speculation, one captured [B, 1 + k] verify window); prompts and
+            // media still prefill one request per forward. One row is serial.
             let target: any LanguageModel = try speculation?.model
                 ?? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests, decodeProducts: .rowExact)
             return try EngineV2Factory.makeBridge(

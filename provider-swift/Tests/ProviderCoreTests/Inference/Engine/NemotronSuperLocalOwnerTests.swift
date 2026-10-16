@@ -148,8 +148,8 @@ extension NemotronSuperLocalOwnerTests {
         #expect(await budget.finishPendingLoad(lease))
     }
 
-    /// Concurrency is the plain owner's explicit opt-in, bounded by the
-    /// adapter's decode rows; speculation keeps one request.
+    /// Concurrency is an explicit opt-in, bounded by the adapter's decode rows
+    /// and, with speculation, by the requests of one captured verify window.
     @Test func concurrencyIsAnExplicitBoundedOptIn() throws {
         typealias Builder = NemotronSuperLocalBridgeBuilder
         let key = Builder.maxConcurrentKey
@@ -162,8 +162,12 @@ extension NemotronSuperLocalOwnerTests {
                 try Builder.concurrentRequests(environment: [key: value], speculates: false)
             }
         }
-        #expect(throws: Builder.Failure.invalidConcurrency) {
-            try Builder.concurrentRequests(environment: [key: "2"], speculates: true)
+        #expect(try Builder.concurrentRequests(environment: [key: "2"], speculates: true) == 2)
+        #expect(try Builder.concurrentRequests(environment: [key: "8"], speculates: true) == 8)
+        for value in ["0", "9", "64"] {
+            #expect(throws: Builder.Failure.invalidConcurrency) {
+                try Builder.concurrentRequests(environment: [key: value], speculates: true)
+            }
         }
     }
 

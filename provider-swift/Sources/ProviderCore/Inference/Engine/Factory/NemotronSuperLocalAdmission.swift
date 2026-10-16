@@ -7,20 +7,21 @@ import MLXVLM
 
 /// Concurrency and per-request admission of the unpublished Super owner.
 extension NemotronSuperLocalBridgeBuilder {
-    /// Runtime-policy key: requests the plain owner serves at once, `1`…`64`
-    /// (the rows of one batched text decode step). Default one. The
-    /// speculative owner serves one request.
+    /// Runtime-policy key: requests the owner serves at once. The plain owner
+    /// takes `1`…`64` (the rows of one batched text decode step); the
+    /// speculative owner takes `1`…`8` (the requests of one captured verify
+    /// window). Default one.
     static let maxConcurrentKey = "DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT"
 
-    /// A malformed value, or more than one request with speculation, fails the
-    /// load rather than silently changing the measured configuration.
+    /// A malformed or out-of-range value fails the load rather than silently
+    /// changing the measured configuration.
     static func concurrentRequests(environment: [String: String], speculates: Bool) throws -> Int {
         guard let raw = environment[maxConcurrentKey]?.trimmingCharacters(in: .whitespaces) else {
             return 1
         }
-        guard let value = Int(raw), (1 ... NemotronSuperRecurrentAdapter.decodeRowLimit).contains(value),
-            value == 1 || !speculates
-        else { throw Failure.invalidConcurrency }
+        let limit = speculates
+            ? NemotronHModel.superMTPMaximumWindowRequests : NemotronSuperRecurrentAdapter.decodeRowLimit
+        guard let value = Int(raw), (1 ... limit).contains(value) else { throw Failure.invalidConcurrency }
         return value
     }
 

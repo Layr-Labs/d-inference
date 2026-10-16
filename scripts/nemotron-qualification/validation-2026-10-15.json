@@ -1,7 +1,7 @@
 {
   "date": "2026-10-15",
-  "sdk_source_commit": "1ce44e9acb07be8d4b3d2acd8fdc7c9033d09c85",
-  "provider_source_commit": "27a3e6d9ac4f24400f7c2468f1954e3369736bcc",
+  "sdk_source_commit": "8f09647605a3",
+  "provider_source_commit": "1594767c8",
   "hardware": {
     "chip": "Apple M3 Ultra",
     "cpu_cores": 28,
@@ -10,54 +10,6 @@
     "os": "macOS 27.2",
     "swift": "6.4"
   },
-  "sdk_last_executed_tests": {
-    "harness": "templates/SDK.Package.swift, all test targets, no filter",
-    "swift_testing_tests": 111,
-    "swift_testing_suites": 32,
-    "xctest_tests": 2,
-    "passed": true,
-    "duration_seconds": 0.873,
-    "final_head_rerun": true,
-    "previous_selection": "18 declarations / 6 suites passed on 3fc3a103 before suite nesting and upstream refresh"
-  },
-  "provider_last_executed_tests": {
-    "harness": "templates/Provider.Package.swift, all test targets, no filter",
-    "swift_testing_tests": 25,
-    "swift_testing_suites": 6,
-    "xctest_tests": 12,
-    "passed": true,
-    "final_head_rerun": true,
-    "previous_failure": "imageHTTPResetRetainsChargeUntilTerminalRetires: invalid tracker-release expectation while native terminal held",
-    "fixed_test_executed": true,
-    "fixed_test_result": "passed (3.733 s)"
-  },
-  "final_focused_builds": {
-    "sdk": {
-      "passed": true,
-      "seconds": 15.66,
-      "incremental": true
-    },
-    "provider": {
-      "passed": true,
-      "seconds": 35.15,
-      "incremental": true
-    }
-  },
-  "cpu_checks": {
-    "bundle_tests_with_pinned_index": 5,
-    "portable_setup_and_manifests": "passed",
-    "unit_test_file_conventions": "passed",
-    "docs_lint": "185 files OK",
-    "docs_impact": "46 changed files coverage OK",
-    "changelog": "15 fragments valid",
-    "diff_whitespace": "passed"
-  },
-  "final_gpu_rerun": "passed at SDK 1ce44e9a / provider sources 27a3e6d9; one test process at a time; AGX device utilization 22% before each run from desktop compositing and video, with no other test or inference process; synthetic fixtures only",
-  "full_checkpoint_loaded": false,
-  "admission_reservation_calibrated": false,
-  "full_model_benchmarks": null,
-  "speculative_assistant_enabled": false,
-  "full_image_compatibility": false,
   "public_source_model": {
     "repository": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
     "revision": "7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c",
@@ -66,20 +18,114 @@
     "mtp_tensors": 4120,
     "identity_check": "Public source headers and Hub metadata; payload not hashed locally"
   },
-  "original_machine_log_sha256": {
-    "pause-sdk-tests.log": "fe4e07a986bc7954e79f4fc4b811ba4dbdca544bcd661e7e53c54f50ed14eb29",
-    "pause-provider-tests.log": "30160e3f1e9bf373591e5f771a19ba158edf32fa56dc8cd416e27adccc19d3e0",
-    "handoff-sdk-final-build.log": "9e02f99b92195203c1b4aef9b910237734d30e4298424babf9a112144bfb4901",
-    "handoff-provider-final-build.log": "7a644ece40806d7eb9948c69af8c251e4f79e6cadf02e7bd037f6a97dbc55694",
-    "handoff-docs-check.log": "8f82170faa6d967da49a9033417fe9f947b6826ef04dd869af3a9b8e695e469b",
-    "handoff-docs-impact.log": "7124a04d4d62a056fb588eee2aa939f806b7d3be0150a5cbf9464f496b33330e",
-    "handoff-changelog.log": "f170a0e68c5745a7969b3cb61ce7bdfc3827c7ab608a615d025b48596446f760"
+  "fixture_tests_at_integration_heads": {
+    "sdk": {
+      "swift_testing_passed": 174,
+      "failed": 0,
+      "skipped_opt_in_benchmarks": 6,
+      "suites": 49,
+      "xctest_passed": 2
+    },
+    "provider": {
+      "swift_testing_passed": 53,
+      "failed": 0,
+      "suites": 11,
+      "xctest_passed": 23,
+      "includes_real_tokenizer_golden": true
+    },
+    "note": "synthetic fixtures; provider suite rerun after merging master 0813f1e50"
   },
-  "final_head_log_sha256": {
-    "sdk-final-head-build.log": "097049872fd27b456d27880a033253cf694576e156c7cb760ea7176e4833440a",
-    "provider-final-head-build.log": "cecc1d290e10a7ee818ab0fe782253f9830ba29e2b119216b5c8d38e9867a96b",
-    "sdk-final-head-tests.log": "7a431633d1a8b6183bb54852a8b5beabf1298d8b0348b93c41a3e48aef6c905a",
-    "provider-final-head-tests.log": "220ae5ab24b2798b516d32d4fc67974f86bd380b5db7733ac9432cb61d9886b1"
+  "full_checkpoint": {
+    "payload_verified": {
+      "shards": 88,
+      "weight_bytes": 75010188240,
+      "mtp_tensors": 4120,
+      "index_sha256": "c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741",
+      "seconds": 28.4
+    },
+    "load_bugs_fixed": [
+      "config.json is 8,668,620 bytes; 4 MiB bound raised to 16 MiB",
+      "autoreleased read buffers held 76 GB after shard hashing and leaked a second copy during staging",
+      "checkpoint A_log is BF16; widened exactly to the model's float32"
+    ],
+    "sdk_level_greedy_27_token_prompt": {
+      "eager_reference": {
+        "prefill_tok_s": 0.99,
+        "decode_ms_per_token_p50": 8862,
+        "output": "correct, stops at <|im_end|>"
+      },
+      "graph_release": {
+        "decode_ms_per_token_p50": 31.86,
+        "decode_tok_s": 31.4,
+        "stage_seconds": 20.4,
+        "tokens_identical_to_eager": "60/60",
+        "mlx_active_GB_after_load": 73.41
+      }
+    },
+    "sdk_level_prefill_1826_tokens_release": {
+      "exact_rowwise_tok_s": 227,
+      "tiled_tok_s": 441,
+      "chunk_limit": 1531,
+      "mlx_peak_GB": 81.05
+    },
+    "local_endpoint_release_runner": {
+      "cold_start_to_ready_s": 41.6,
+      "load_peak_phys_footprint_GB": 78.7,
+      "load_charge_GB": 86.4,
+      "plain": {
+        "decode_tok_s": {
+          "128": 27.1,
+          "2048": 27.1,
+          "15360": 26.4
+        },
+        "ttft_s": {
+          "128": 0.72,
+          "2048": 9.73,
+          "15360": 72.1
+        },
+        "image_ttft_s": {
+          "512x512": 1.8,
+          "1024x1024": 6.1,
+          "2048x1536": 17.7
+        }
+      },
+      "mtp_depth1_decode_tok_s": {
+        "128": 44.1,
+        "2048": 37.9,
+        "15360": 35.8
+      },
+      "mtp_depth3_decode_tok_s": {
+        "128": 62.5,
+        "2048": 51.3,
+        "15360": 48.1
+      },
+      "mtp_greedy_exactness": "6/6 natural prompts byte-identical plain vs depth 1 vs depth 3; depth 3 50.5-60.9 tok/s on them",
+      "batched_max_concurrent_8_short_prompt_aggregate_tok_s": {
+        "1": 23.0,
+        "2": 36.1,
+        "4": 48.6,
+        "8": 58.1
+      },
+      "batched_max_concurrent_8_2048_prompt_aggregate_tok_s": {
+        "1": 10.2,
+        "2": 11.9,
+        "4": 12.3,
+        "8": 12.8
+      }
+    },
+    "measured_gemm_ceiling_TFLOPS": {
+      "bf16": "13.9-19.0",
+      "nvfp4_qmm": "13.9-17.1",
+      "prefill_ceiling_tok_s_at_23.4_GFLOP_per_token": 810
+    }
   },
-  "log_note": "Hashes identify logs kept on the original machine, not bundled files. The final-head logs are from synthetic fixture runs, not a full-checkpoint run."
+  "not_yet_qualified": [
+    "prefill target 700-800 tok/s not reached",
+    "MTP with batching",
+    "prefill/decode co-scheduling",
+    "long-context quality",
+    "signed shared-slot/catalog/coordinator integration",
+    "production discovery or routing"
+  ],
+  "log_note": "Numbers come from receipts kept on the original machine; synthetic fixture results are not model evidence."
 }

@@ -11,10 +11,7 @@ extension DistributedLocalServer {
             onServerRunning: { await self.didBind($0) },
             modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
-            distributedResponses: responseRouter,
-            // The cluster serves one model: its reasoning markers are parsed as the coordinator path parses them
-            // (`ProviderLoop.inferReasoningParser`), so Gemma's thought channel never reaches `content`.
-            defaultReasoningParser: ProviderLoop.inferReasoningParser(for: binding.modelType))
+            distributedResponses: responseRouter)
     }
 
     func clusterStatus(nonce: String) throws -> ClusterLiveStatus {

@@ -96,12 +96,19 @@ public final class ClusterService: @unchecked Sendable {
     private var memoryRefusals: (key: String, count: Int)?
     private var nextMemoryReplan = Date.distantPast
     private var memoryReplanInFlight = false
+    /// Re-plans in a row that came back with the same split: after `memoryReplansWithSameSplit` the service stops
+    /// re-planning (the memory is short for every split) until a re-plan finds another one or the service restarts.
+    private var sameSplitReplans = 0
+    static let memoryReplansWithSameSplit = 3
     /// Local only, on the Mac that is not rank 0: its own port passed to rank 0's API (`ClusterLocalRelay`).
     private var relay: ClusterLocalRelay?
     /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
     private var relayTargetPort: Int?
     private var relayAsked = Date.distantPast
     private var relayAsking = false
+    /// Seconds before the next ask: 10 while the other Mac answers, longer (to 120) while it does not, so the link's
+    /// one-at-a-time request lock is not held for the other commands.
+    private var relayAskInterval: Double = 10
     /// When each listener last looked for the cable on another port (`cableMove`).
     private var responderCableCheck = Date.distantPast
     var controlCableCheck = Date.distantPast
@@ -337,7 +344,7 @@ public final class ClusterService: @unchecked Sendable {
             let count = (memoryRefusals?.key == key ? memoryRefusals!.count : 0) + 1
             memoryRefusals = (key, count)
             guard count >= Self.memoryRefusalsBeforeReplan, !memoryReplanInFlight, !stopping, Date() >= nextMemoryReplan,
-                  control?.leads == true else { return false }
+                  sameSplitReplans < Self.memoryReplansWithSameSplit, control?.leads == true else { return false }
             memoryReplanInFlight = true
             nextMemoryReplan = Date().addingTimeInterval(Self.memoryReplanSeconds)
             return true
@@ -364,6 +371,7 @@ public final class ClusterService: @unchecked Sendable {
             if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
             if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
             let after = try? self.context.savedConfiguration().reference.get()?.sha256
+            self.lock.withLock { self.sameSplitReplans = before == after ? self.sameSplitReplans + 1 : 0 }
             say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
                                 : "planned \(model) again on the memory now: \(choices[index].lines.first ?? "a new split") is starting on both Macs")
         }
@@ -378,7 +386,9 @@ public final class ClusterService: @unchecked Sendable {
         let saved = context.savedConfiguration().configuration
         let runsMember = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("solo:") != true }
         var wanted: ClusterLocalRelay.Target?
-        if let record, record.leadership?.serving == true, record.leadership?.scope.isLocalOnly == true,
+        // Only when the API listens on every address (local only's default): with a loopback or one-address bind,
+        // rank 0's API is not reachable over the cable, and this Mac must not open what the person kept closed.
+        if let record, record.leadership?.serving == true, record.leadership?.scope.bind == "0.0.0.0",
            let saved, saved.role != .leader, saved.peers.indices.contains(0), runsMember {
             askRankZeroPort()
             if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: saved.peers[0].host, port: port) }
@@ -395,15 +405,18 @@ public final class ClusterService: @unchecked Sendable {
         let port = ClusterLocalServing.servingPort()
         guard let started = ClusterLocalRelay(port: port, target: wanted) else { return }
         lock.withLock { relay = started }
-        try? LocalEndpoint.writeInfo(.init(host: "0.0.0.0", port: UInt16(port), apiKey: token,
-            version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date())))
+        // The discovery file only when no other live server on this Mac owns it (`darkbloom start --local`).
+        if LocalEndpoint.readLiveInfo().map({ $0.pid == getpid() }) ?? true {
+            try? LocalEndpoint.writeInfo(.init(host: "0.0.0.0", port: UInt16(port), apiKey: token,
+                version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date())))
+        }
         say("the API answers on this Mac's port \(port) too (passed over the cable to the other Mac, rank 0)")
     }
 
     /// Asks the other Mac (every 10 s, never on this loop's thread) where its rank 0 API listens.
     private func askRankZeroPort() {
         let begin = lock.withLock { () -> Bool in
-            guard !relayAsking, Date().timeIntervalSince(relayAsked) >= 10 else { return false }
+            guard !relayAsking, Date().timeIntervalSince(relayAsked) >= relayAskInterval else { return false }
             relayAsking = true; relayAsked = Date(); return true
         }
         guard begin else { return }
@@ -414,9 +427,12 @@ public final class ClusterService: @unchecked Sendable {
                   let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
                   let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                       body: body, seconds: 5).reply,
-                  let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else { return }
+                  let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else {
+                self?.lock.withLock { if let self { self.relayAskInterval = min(self.relayAskInterval * 2, 120) } }
+                return
+            }
             let port = status.sessionLeader && status.session?.ready == true ? status.session?.port : nil
-            self?.lock.withLock { self?.relayTargetPort = port }
+            self?.lock.withLock { self?.relayTargetPort = port; self?.relayAskInterval = 10 }
         }
     }
 

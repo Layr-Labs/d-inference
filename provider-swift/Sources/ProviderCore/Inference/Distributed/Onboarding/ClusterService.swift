@@ -91,6 +91,11 @@ public final class ClusterService: @unchecked Sendable {
     var controlResponder: ClusterSetupLinkExchange.Responder?
     /// The port the leading part's API listened on last; kept while no other program takes it.
     private var leaderPort: Int?
+    /// Starts of this setup that ended on a memory-gate refusal (a Mac's memory moved after the plan was made), and
+    /// when the plan may next be made again (`memoryReplan`).
+    private var memoryRefusals: (key: String, count: Int)?
+    private var nextMemoryReplan = Date.distantPast
+    private var memoryReplanInFlight = false
     /// Local only, on the Mac that is not rank 0: its own port passed to rank 0's API (`ClusterLocalRelay`).
     private var relay: ClusterLocalRelay?
     /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
@@ -314,6 +319,54 @@ public final class ClusterService: @unchecked Sendable {
     static func followedLeaderPin(record: ClusterSetupRecord?) -> String? {
         guard let record, let pairing = try? ClusterSetupLinkExchange.pairing(), followsPeer(record: record, pairing: pairing) else { return nil }
         return pairing.peerPin
+    }
+
+    /// A start that ended because a Mac's load gate refused its share (`memory_gate_refused` in the incidents since it
+    /// began). The plan is made on the memory each Mac had then; when it has moved since (apps opened, the file cache
+    /// refilled), the same split is refused again and again: a 36 GB M4 Max given 17 of Nemotron's layers kept
+    /// retrying (2026-10-16). After `memoryRefusalsBeforeReplan` such ends the control leader plans the same model
+    /// again on the memory now and adopts that split (at most once per `memoryReplanSeconds`).
+    static let memoryRefusalsBeforeReplan = 2
+    static let memoryReplanSeconds: Double = 600
+
+    private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
+        let log = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser))
+        let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
+        let due = lock.withLock { () -> Bool in
+            guard refused else { memoryRefusals = nil; return false }
+            let count = (memoryRefusals?.key == key ? memoryRefusals!.count : 0) + 1
+            memoryRefusals = (key, count)
+            guard count >= Self.memoryRefusalsBeforeReplan, !memoryReplanInFlight, !stopping, Date() >= nextMemoryReplan,
+                  control?.leads == true else { return false }
+            memoryReplanInFlight = true
+            nextMemoryReplan = Date().addingTimeInterval(Self.memoryReplanSeconds)
+            return true
+        }
+        guard due else { return }
+        Thread.detachNewThread { [weak self] in
+            guard let self else { return }
+            defer { self.lock.withLock { self.memoryReplanInFlight = false; self.memoryRefusals = nil } }
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
+            defer { held.release() }
+            say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
+            let before = try? self.context.savedConfiguration().reference.get()?.sha256
+            let live = self.controlLive
+            func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
+            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
+            let choices: [ClusterOnboardingModelChoice]
+            switch live.localPlanModels() {
+            case .success(let value): choices = value
+            case .failure(let failure): return failed(failure.lines)
+            }
+            guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
+                return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
+            }
+            if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
+            if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
+            let after = try? self.context.savedConfiguration().reference.get()?.sha256
+            say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
+                                : "planned \(model) again on the memory now: \(choices[index].lines.first ?? "a new split") is starting on both Macs")
+        }
     }
 
     /// Local only, on the Mac whose part is not rank 0: its own API port (8000, else the next free one) passes each
@@ -760,7 +813,7 @@ public final class ClusterService: @unchecked Sendable {
 
     // MARK: - This Mac's part
 
-    private func supervise(say: @Sendable (String) -> Void) {
+    private func supervise(say: @escaping @Sendable (String) -> Void) {
         // A record that cannot be read is not "the leader stopped serving" (F17: a service out of descriptors stopped its
         // part on the failed read): this Mac's part is kept as it is, and the failure is said once, until a read works.
         let record: ClusterSetupRecord
@@ -824,6 +877,9 @@ public final class ClusterService: @unchecked Sendable {
             }
             say("this Mac's \(setup?.hasPrefix("solo:") == true ? "solo server" : "part") ended (\(end)) after \(Int(ran)) s; "
                 + (key != nil ? "starting it again" : "not serving"))
+            if let setup, setup.hasPrefix("cluster:"), leadsSession, let model = record.leadership?.modelName {
+                noteMemoryRefusal(key: setup, since: Date().addingTimeInterval(-ran - 5), model: model, say: say)
+            }
             return
         }
         if let running, key == nil || setup != key {

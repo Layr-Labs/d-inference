@@ -15,6 +15,9 @@ enum NemotronSuperLocalMTP {
     /// Draft depth `1`…`3`; a value above one is the deep-draft opt-in.
     /// `auto` lets the engine's marginal policy pick 0…3 each step from
     /// measured acceptance and round cost (rectangular verification only).
+    /// A comma list (`3,2,2,2,1`) fixes the depth by the number of requests
+    /// decoding in the step: entry N for N requests, the last for more
+    /// (rectangular verification only).
     static let depthKey = "DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH"
     /// `rectangular` (default): one exact captured target window per round;
     /// `serial`: one ordinary target step per column.
@@ -44,6 +47,9 @@ enum NemotronSuperLocalMTP {
         /// The engine selects each step's depth up to `depth`; every emitted
         /// token is still target-verified, so greedy output is unchanged.
         var adaptive = false
+        /// Fixed depth by requests decoding at once (entry N - 1 for N, the
+        /// last for more); `depth` is its largest entry. nil: one depth.
+        var depthByRequests: [Int]? = nil
 
         /// nil keeps the ordinary target-only owner. A malformed depth or
         /// verification fails the load rather than silently changing the
@@ -54,13 +60,22 @@ enum NemotronSuperLocalMTP {
             }
             var depth = 1
             var adaptive = false
+            var depthByRequests: [Int]?
+            let depths = 1 ... NemotronSuperMTPAssistant.Settings.maximumDepth
             if let raw = environment[depthKey]?.trimmingCharacters(in: .whitespaces) {
                 if raw == "auto" {
                     depth = NemotronSuperMTPAssistant.Settings.maximumDepth
                     adaptive = true
+                } else if raw.contains(",") {
+                    let entries = raw.split(separator: ",", omittingEmptySubsequences: false)
+                        .map { Int($0.trimmingCharacters(in: .whitespaces)) }
+                    guard entries.count <= NemotronHModel.superMTPMaximumWindowRequests,
+                        entries.allSatisfy({ $0.map(depths.contains) == true })
+                    else { throw Failure.invalidDepth }
+                    depthByRequests = entries.compactMap { $0 }
+                    depth = depthByRequests?.max() ?? 1
                 } else {
-                    guard let value = Int(raw),
-                        (1 ... NemotronSuperMTPAssistant.Settings.maximumDepth).contains(value)
+                    guard let value = Int(raw), depths.contains(value)
                     else { throw Failure.invalidDepth }
                     depth = value
                 }
@@ -71,9 +86,12 @@ enum NemotronSuperLocalMTP {
             case "serial"?: verification = .serial
             default: throw Failure.invalidVerification
             }
-            // Adaptive serial rounds can never beat plain decode.
-            guard !adaptive || verification == .rectangularExact else { throw Failure.invalidDepth }
-            return Setting(depth: depth, verification: verification, adaptive: adaptive)
+            // Adaptive serial rounds can never beat plain decode; a width
+            // table only matters for rectangular windows of several requests.
+            guard (!adaptive && depthByRequests == nil) || verification == .rectangularExact
+            else { throw Failure.invalidDepth }
+            return Setting(depth: depth, verification: verification, adaptive: adaptive,
+                           depthByRequests: depthByRequests)
         }
     }
 
@@ -133,6 +151,7 @@ enum NemotronSuperLocalMTP {
             model: target, assistant: assistant,
             config: CBv2MTPConfig(
                 enabled: true, maxDraftTokens: depth, maxSpeculativeBatch: requests,
-                fixedDraftTokens: head.setting.adaptive ? nil : depth, verificationMode: mode))
+                fixedDraftTokens: head.setting.adaptive ? nil : depth,
+                fixedDraftTokensByDecodeRows: head.setting.depthByRequests, verificationMode: mode))
     }
 }

@@ -117,6 +117,15 @@ import CryptoKit
         expect(!ClusterCatalogArtifact.sameFiles(files, Array(files.dropLast())), "a missing file does not match")
         var changed = files; changed[0].sha256 = String(repeating: "0", count: 64)
         expect(!ClusterCatalogArtifact.sameFiles(files, changed), "a different digest does not match")
+        // Dropping a folder's cached pages: every regular file, nothing else, the bytes unchanged (2026-10-16).
+        let cacheFolder = temporary("drop-cache")
+        try! FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true)
+        try! Data(repeating: 7, count: 1 << 20).write(to: cacheFolder.appendingPathComponent("weights.safetensors"))
+        try! Data("{}".utf8).write(to: cacheFolder.appendingPathComponent("config.json"))
+        try! FileManager.default.createDirectory(at: cacheFolder.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        expect(ClusterModelStore.dropCachedPages(folder: cacheFolder) == Int64((1 << 20) + 2), "every regular file's pages dropped")
+        expect((try? Data(contentsOf: cacheFolder.appendingPathComponent("weights.safetensors")))?.count == 1 << 20, "the bytes unchanged")
+        expect(ClusterModelStore.dropCachedPages(folder: cacheFolder.appendingPathComponent("missing")) == 0, "a missing folder drops nothing")
         func mutated(_ change: (inout [String: Any]) -> Void) -> Data {
             var object = try! JSONSerialization.jsonObject(with: model.manifest) as! [String: Any]
             change(&object)

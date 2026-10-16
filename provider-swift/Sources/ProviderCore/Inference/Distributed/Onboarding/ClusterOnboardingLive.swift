@@ -82,6 +82,14 @@ final class OnboardingLive: @unchecked Sendable {
     var leadership: ClusterOnboardingLeadership? { (try? store.readRecord())?.leadership }
     var peerName: String { leadership?.peerName ?? "the other Mac" }
 
+    /// The active cable port when Darkbloom has not set it up (its own network service with the fixed address).
+    static func unsetCablePort(_ report: ClusterLinkReadinessReport) -> String? {
+        let active = report.devices.filter(\.portActive)
+        guard active.count == 1, let device = active.first, let interface = device.interface,
+              let isolation = device.isolation, !isolation.clusterServicePresent else { return nil }
+        return isolation.hardwarePort.map { "\($0) (\(interface))" } ?? interface
+    }
+
     func resume() -> ClusterOnboardingResume {
         guard let leadership, let role = ClusterOnboardingRole(rawValue: leadership.role),
               let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin else { return .init() }
@@ -95,6 +103,7 @@ final class OnboardingLive: @unchecked Sendable {
         let leads = claim.leaderID == pairing.localMemberID
         var resume = ClusterOnboardingResume(role: leads ? .leader : .member, peerName: leadership.peerName, serving: leadership.serving,
                                              modelName: leadership.modelName)
+        resume.unsetCablePort = Self.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink())
         resume.scope = leadership.scope
         resume.leaderName = leads ? nil : leaderName
         resume.leaderReason = claim.reason

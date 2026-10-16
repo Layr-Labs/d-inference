@@ -271,6 +271,10 @@ public final class ClusterService: @unchecked Sendable {
             lock.withLock { responder }?.stop()
             lock.withLock { responder = nil }
             say("the cable is on \(moved.interface) now: answering the paired Mac there")
+            // A port that was never set up has no fixed address: the other Mac cannot find this one there.
+            if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
+                say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
+            }
         }
         guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
               let selection = try? context.linkSelection() else { return }

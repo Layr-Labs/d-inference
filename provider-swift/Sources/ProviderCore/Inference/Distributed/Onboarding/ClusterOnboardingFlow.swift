@@ -117,6 +117,9 @@ public struct ClusterOnboardingResume: Sendable, Equatable {
     public var term: UInt64?
     /// What this Mac's own service runs now, in words (`ClusterControlWords`).
     public var localLine: String?
+    /// The cable is on a port Darkbloom has not set up ("Thunderbolt 1 (en1)"): the Macs cannot reach each other
+    /// there until it is. Nil when the active port is set up, or nothing could be read.
+    public var unsetCablePort: String?
 
     public init(role: ClusterOnboardingRole? = nil, peerName: String? = nil, serving: Bool = false, modelName: String? = nil) {
         self.role = role; self.peerName = peerName; self.serving = serving; self.modelName = modelName
@@ -740,6 +743,11 @@ public enum ClusterOnboardingDriver {
             if wanted != resume.scope { return changeScope(to: wanted, resume, operations, console) }
         }
         for line in operations.status() { console.say("  " + line) }
+        // A cable moved to a port that was never set up: the one thing to do first (2026-10-16, Thunderbolt 1).
+        if let port = resume.unsetCablePort {
+            console.say("The cable is on \(port), which is not set up for the cluster, so the Macs cannot reach each other.")
+            console.say("Press f to set it up (macOS asks for your password once).")
+        }
         if resume.serving {
             console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to check both Macs released their memory.")
         } else {
@@ -779,6 +787,11 @@ public enum ClusterOnboardingDriver {
                     return 1
                 }
             case "m", "M": return chooseAndServe(operations, console, scope: resume.scope)
+            case "f" where resume.unsetCablePort != nil, "F" where resume.unsetCablePort != nil:
+                let result = checkLink(operations, console)
+                console.say(result.ready ? "The cable's port is set up; the cluster re-forms by itself in a moment."
+                                         : "The port is not set up yet; run `darkbloom cluster` again to try once more.")
+                return result.ready ? 0 : 1
             default: continue
             }
         }

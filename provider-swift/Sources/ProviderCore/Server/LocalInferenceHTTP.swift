@@ -97,7 +97,8 @@ func makeLocalInferenceApplication(
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
-            modelTypeProvider: modelTypeProvider
+            modelTypeProvider: modelTypeProvider,
+            seedsContentForUnknownPromptTail: true
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
@@ -126,13 +127,12 @@ func makeLocalInferenceApplication(
     // upstream router unchanged.
     var reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
     if let modelTypeProvider {
-        // Only the channel formats (Gemma 4's thought channel, GPT-OSS's Harmony): their markers are never meant to
-        // be shown and their streaming parsers pass text on as it comes. A think-tag model keeps the local API's raw
-        // stream: with no `<think>` in the prompt's tail its parser would hold the whole answer until it ends.
+        // Every model's reasoning in its own field, as the coordinator path resolves it. A think-tag stream whose
+        // prompt opens no think block starts in content mode (the local engine's `seedsContentForUnknownPromptTail`),
+        // so the answer streams as it comes instead of waiting for a close marker.
         reasoningParserFor = { (model: String) async -> ReasoningParserFormat? in
             guard let type = await modelTypeProvider(model) else { return nil }
-            let format = ProviderLoop.inferReasoningParser(for: type)
-            return format == .gemma4 || format == .harmony ? format : nil
+            return ProviderLoop.inferReasoningParser(for: type)
         }
     }
     let uploadResponder = LocalChatUploadResponder(

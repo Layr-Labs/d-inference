@@ -44,21 +44,8 @@ extension Cluster {
         var worker: String?
         @Flag(help: ArgumentHelp("Developer: open the earlier six-step setup wizard instead of the onboarding.", visibility: .hidden))
         var wizard = false
-        @Flag(help: "Serve on the leading Mac's local API only and never contact Darkbloom's coordinator (the same as `darkbloom cluster local`).")
-        var local = false
-        @Option(help: ArgumentHelp("With --local: the address the API listens on (default 0.0.0.0: every network of the leading Mac; 127.0.0.1: that Mac only). The API key is always required.",
-                                   valueName: "address"))
-        var bind: String?
 
-        func validate() throws {
-            try validateWizardOptions()
-            if local || bind != nil {
-                guard !(json || yes || temporary || dryRun || linkOnly || plain || wizard) else {
-                    throw ValidationError("--local and --bind belong to the onboarding (`darkbloom cluster local`), not the link setup or the wizard.")
-                }
-            }
-            try Cluster.Local.validateBind(bind, local: local)
-        }
+        func validate() throws { try validateWizardOptions() }
 
         mutating func run() async throws {
             if plain { return try await printWizardPlain() }
@@ -66,8 +53,7 @@ extension Cluster {
                 inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
                 terminalType: ProcessInfo.processInfo.environment["TERM"]) {
             case .onboarding:
-                return try await Self.runOnboarding(config: configOptions.config, modelDir: modelDir, worker: worker,
-                    request: local ? Cluster.Local.request(bind: bind, model: nil) : .init())
+                return try await Self.runOnboarding(config: configOptions.config, modelDir: modelDir, worker: worker, request: .init())
             case .wizard: return try await runWizard()
             case .needsTerminal:
                 print(Self.needsTerminalLine)

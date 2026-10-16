@@ -433,7 +433,6 @@ Mac's Bonjour (`.local`) URL (`Local.networkURL`).
 
 ```bash
 darkbloom cluster local [<model>] [--bind <address>]
-darkbloom cluster --local [--bind <address>]
 ```
 
 | Argument / flag | Type | Default | Effect |

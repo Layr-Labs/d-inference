@@ -40,7 +40,9 @@ extension Cluster {
                     throw ValidationError("Name the model by its id or name as `darkbloom cluster` lists it.")
                 }
             }
-            try Self.validateBind(bind, local: true)
+            if let bind, !ClusterServingScope.isValidBind(bind) {
+                throw ValidationError("--bind takes localhost or a numeric IPv4 or IPv6 address (0.0.0.0 = every network of the leading Mac).")
+            }
         }
 
         mutating func run() async throws {
@@ -49,21 +51,7 @@ extension Cluster {
                 throw ExitCode.failure
             }
             try await Cluster.Setup.runOnboarding(config: configOptions.config, modelDir: modelDir, worker: worker,
-                                                  request: Self.request(bind: bind, model: model))
-        }
-
-        /// What `darkbloom cluster local` (and `darkbloom cluster --local`) asks the onboarding for.
-        static func request(bind: String?, model: String?) -> ClusterOnboardingRequest {
-            .init(scope: .localOnly(bind: bind ?? ClusterServingScope.localOnlyDefaultBind), model: model)
-        }
-
-        /// `--bind` goes with local-only serving and takes an address the API can listen on.
-        static func validateBind(_ bind: String?, local: Bool) throws {
-            guard let bind else { return }
-            guard local else { throw ValidationError("--bind applies to local-only serving: `darkbloom cluster local --bind <address>`.") }
-            guard ClusterServingScope.isValidBind(bind) else {
-                throw ValidationError("--bind takes localhost or a numeric IPv4 or IPv6 address (0.0.0.0 = every network of the leading Mac).")
-            }
+                request: .init(scope: .localOnly(bind: bind ?? ClusterServingScope.localOnlyDefaultBind), model: model))
         }
     }
 }

@@ -180,9 +180,10 @@ The optional `NemotronSuperLocalImageHTTP` owner hook in
 uses the existing local authentication, body limits, JSON/SSE framing and
 request-cancellation scope. Its default is absent; no production callsite
 installs it and it does not advertise a new model. The fixture path accepts
-bounded inline RGB8 PNG input and requires explicit `enable_thinking:false`.
-JPEG and other unqualified formats are refused. This is not full image support
-or full-checkpoint serving qualification.
+bounded inline `data:image/png;base64,` URIs whose content may be PNG or JPEG
+(see the [image format reference](../reference/nemotron-super-image-formats.md))
+and requires explicit `enable_thinking:false`. This is not full-checkpoint
+serving qualification.
 
 The [portable component harness](../../scripts/nemotron-qualification/README.md)
 exercises this hook on isolated loopback endpoints. Admission/reservation

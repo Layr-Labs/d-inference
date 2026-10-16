@@ -60,16 +60,24 @@ The dedicated `NemotronSuperLocalImageBinding` is minted by that exact unpublish
 load owner, uses separate real media and bridge KV reservations, and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
 and close. It does not manufacture a shared native lease or register a public
-media route. The CPU `NemotronSuperImageDecode` accepts a deliberately narrow
-RGB8 PNG subset with explicit orientation, size/CRC checks and float SDK resize;
-JPEG, alpha, palette, grayscale and color-conversion formats remain rejected.
+media route. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
+reproduces the reference loader's RGB8 conversion: PNG of every colour type and
+bit depth is decoded in-process and matches Pillow exactly, while JPEG samples
+come from ImageIO within test-enforced bounds. Container limits are checked
+before any raster buffer exists, and the SDK resize is bitwise equal to CPU
+PyTorch on the golden fixtures; see the
+[image format reference](../reference/nemotron-super-image-formats.md).
 Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
-ingress before JSON/base64/header inspection and media before decode; it only
-accepts inline PNG data and uses the owned tokenizer. Native input arrays are
-constructed in a separate retained, fenced epoch before tower preparation.
-Synthetic RGB tests cover generation, cancellation, busy rejection and release
-after task completion. Actual tokenizer parity, RADIO peak workspace and
-decoded-image HTTP qualification remain required.
+ingress before JSON/base64/header inspection and media before decode. The media
+charge adds the SDK's shape-derived tower and projector working-memory bound for
+the largest image, which preparation evaluates one at a time; the global
+activation reserve is unchanged. It only
+accepts `data:image/png;base64,` URIs and uses the owned tokenizer. Native input
+arrays are constructed in a separate retained, fenced epoch before tower
+preparation. Synthetic RGB tests cover generation, cancellation, busy rejection
+and release after task completion; loopback HTTP tests serve PNG and JPEG
+variants through the tiny synthetic owner. Actual tokenizer parity, RADIO peak
+workspace and full-checkpoint image qualification remain required.
 
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary
@@ -82,7 +90,7 @@ accept/reject replay and performance evidence are not established; it is not an
 activated assistant. Bundling the upstream MTP tensors does not qualify execution.
 The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
 application and standard JSON/SSE framing, defaults to absent, and requires
-explicit thinking-off for inline PNG media. No production caller installs it.
+explicit thinking-off for inline image media. No production caller installs it.
 Super FP8 codec/cache and text-hidden wrappers are separate opt-in components;
 synthetic tests now also exercise the eager FP8 head with unit-scale attention
 and replay. Lazy expert/output projection helpers expose explicit workspace and

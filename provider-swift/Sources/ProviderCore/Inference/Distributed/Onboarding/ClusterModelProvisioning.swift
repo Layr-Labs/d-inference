@@ -210,11 +210,12 @@ public enum ClusterModelStore {
         var dropped: Int64 = 0
         for name in names where !name.hasPrefix(".") {
             let path = folder.appendingPathComponent(name).path
-            var information = stat()
-            guard lstat(path, &information) == 0, information.st_mode & S_IFMT == S_IFREG, information.st_size > 0 else { continue }
-            let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            // Non-blocking (a FIFO swapped in must not hang the caller), then judged by what was opened.
+            let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
             guard fd >= 0 else { continue }
             defer { close(fd) }
+            var information = stat()
+            guard fstat(fd, &information) == 0, information.st_mode & S_IFMT == S_IFREG, information.st_size > 0 else { continue }
             let length = Int(information.st_size)
             guard let mapping = mmap(nil, length, PROT_READ, MAP_SHARED, fd, 0), mapping != MAP_FAILED else { continue }
             if msync(mapping, length, MS_INVALIDATE) == 0 { dropped += Int64(length) }

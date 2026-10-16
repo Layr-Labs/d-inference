@@ -168,7 +168,9 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 from: error, phase: .generation)
             // The closed vocabulary only (the error's case name and bounded reason, never its text), so a failing
             // local request leaves a line in this Mac's log (a cluster's 500 left nothing to read, 2026-10-16).
-            let kind = String(String(describing: error).prefix { $0 != "(" }.prefix(64))
+            // The engine's own error enum names its case; anything else only its type (no description text).
+            let kind = error is MultiModelBatchSchedulerEngineError
+                ? String(String(describing: error).prefix { $0 != "(" }.prefix(64)) : String(describing: type(of: error))
             FileHandle.standardError.write(Data(("local API: request failed: \(failure.code.rawValue) (\(kind)"
                 + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
             if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {

@@ -268,7 +268,9 @@ public final class QwenResidentRuntime {
         let sum = QwenLongPrefillCheckedBytes.sum
         // A charge is the same for a context on this loaded stage every time; it is derived from the plan and costs
         // tens of milliseconds (Bonsai's Prism configuration more), and the idle refresh searches it often: kept.
-        let memoKey = "\(admission.plan.fingerprint)|\(rank)|\(mode)|\(speculativeTerms != nil)"
+        let memoKey = "\(admission.plan.fingerprint)|\(rank)|\(mode)|\(speculativeTerms.map { "mtp\($0.depth)" } ?? "none")"
+            + "|\(admission.profile.maximumContextTokens)|\(admission.profile.maximumPromptTokens)"
+            + "|\(admission.profile.maximumChunkTokens)|\(admission.configuration.prefillSchedule)"
         func charge(_ context: Int) throws -> QwenResidentAdmittedContext {
             try QwenResidentChargeMemo.shared.value(key: memoKey, context: context) { try uncachedCharge(context) }
         }

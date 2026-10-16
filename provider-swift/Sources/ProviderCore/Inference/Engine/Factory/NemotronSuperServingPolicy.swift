@@ -222,20 +222,23 @@ enum NemotronSuperServingPolicy {
     static var pinnedHeadLoadBytes: UInt64 { pinnedHeadPayloadBytes + pinnedHeadConstructionBytes }
 
     /// The managed load's LOAD bytes for the installation and, when it
-    /// speculates, the head (transients sequential).
-    static func pinnedLoadClaimBytes(speculates: Bool) -> UInt64 {
+    /// speculates, the head (transients sequential), beside `servingBytes`
+    /// of serving room claimed with them (`NemotronSuperLoadClaim`).
+    static func pinnedLoadClaimBytes(speculates: Bool, servingBytes: Int = 0) -> UInt64 {
         let bytes = try? NemotronSuperLoadClaim.bytes(
             installationPayload: Int(pinnedInstallationPayloadBytes),
             staging: Int(pinnedInstallationStagingBytes),
             headPayload: speculates ? Int(pinnedHeadPayloadBytes) : 0,
-            construction: speculates ? Int(pinnedHeadConstructionBytes) : 0, sequential: true)
+            construction: speculates ? Int(pinnedHeadConstructionBytes) : 0, sequential: true,
+            servingBytes: servingBytes)
         return UInt64(bytes ?? Int.max)
     }
 
     struct DiscoveryFootprint: Equatable {
-        /// The default configuration's LOAD claim (installation and head),
-        /// owner-wide prefill lane, admission KV and the media charge of one
-        /// single-image request, in GiB.
+        /// The default configuration's resident installation and head, and
+        /// the larger of their load transient and the serving room (owner-wide
+        /// prefill lane, admission KV and the media charge of one single-image
+        /// request), in GiB.
         let estimatedMemoryGb: Double
         /// LOAD bytes above the shard bytes: staging, backend allowance and
         /// head construction. Not activation, KV or media.
@@ -248,16 +251,19 @@ enum NemotronSuperServingPolicy {
     /// and the load leaves room for an image. The prefix bank is not part of
     /// it: `loadPlan` enables the bank only when the grant also holds it.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
-        let load = pinnedLoadClaimBytes(speculates: true)
         let lane = UInt64(NemotronHModel.prefillActivationBoundBytes(
             tokens: NemotronSuperLocalPrefill.defaultChunkTokens))
         let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))
         // Unreachable unless the binding refuses its own largest image; the
         // footprint then fails closed instead of advertising room it lacks.
         let media = mediaChargeBytes(imageCount: 1) ?? UInt64(Int.max)
+        let serving = lane + kv + media
+        // The load transient runs in the serving room before anything serves.
+        let load = pinnedLoadClaimBytes(speculates: true, servingBytes: Int(clamping: serving))
+        let transient = pinnedLoadClaimBytes(speculates: true)
         return DiscoveryFootprint(
-            estimatedMemoryGb: Double(load + lane + kv + media) / 1_073_741_824,
-            nativeLoadTransientBytes: load > sizeBytes ? load - sizeBytes : 0)
+            estimatedMemoryGb: Double(load + serving) / 1_073_741_824,
+            nativeLoadTransientBytes: transient > sizeBytes ? transient - sizeBytes : 0)
     }
 
     // MARK: - Image media charge

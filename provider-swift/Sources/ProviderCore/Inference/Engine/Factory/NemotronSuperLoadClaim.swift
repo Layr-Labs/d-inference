@@ -9,27 +9,34 @@ import MLXVLM
 /// allocation. Both payloads stay resident. The installation's staging
 /// (source copies, image mapping, backend allowance) is released when
 /// `NemotronSuperInstallation.stage` returns, and the head's construction
-/// arrays only exist after that, so the two transients never coexist once
-/// the staging buffers have left MLX's cache: the claim then holds the larger
-/// transient, not both.
+/// arrays only exist after that, so once each phase's freed buffers have left
+/// MLX's cache the two transients never coexist: the claim holds the larger,
+/// not both. Nor does either coexist with serving: the room the same claim
+/// reserves for the owner's lane, bank and KV floor stays unallocated until
+/// the load has returned its transient buffers, so the transient only adds
+/// what exceeds that room. Without reclamation (`sequential` false) both
+/// transients are claimed in full, beside the serving room.
 enum NemotronSuperLoadClaim {
     enum Failure: Error, Equatable { case invalidQuote }
 
-    /// Payloads plus the larger transient when `sequential`, else both
-    /// transients.
     static func bytes(installation: NemotronSuperInstallation.LoadQuote,
-                      head: NemotronSuperMTPModule.LoadQuote?, sequential: Bool) throws -> Int {
+                      head: NemotronSuperMTPModule.LoadQuote?, sequential: Bool,
+                      servingBytes: Int = 0) throws -> Int {
         try bytes(installationPayload: installation.payloadBytes, staging: installation.stagingBytes,
             headPayload: head?.payloadBytes ?? 0, construction: head?.constructionBytes ?? 0,
-            sequential: sequential)
+            sequential: sequential, servingBytes: servingBytes)
     }
 
+    /// Both payloads plus the transient beyond `servingBytes` (the serving
+    /// room claimed beside it) when `sequential`; else both payloads and both
+    /// transients.
     static func bytes(installationPayload: Int, staging: Int, headPayload: Int, construction: Int,
-                      sequential: Bool) throws -> Int {
-        guard [installationPayload, staging, headPayload, construction].allSatisfy({ $0 >= 0 }) else {
-            throw Failure.invalidQuote
-        }
-        let transient = sequential ? max(staging, construction) : try sum(staging, construction)
+                      sequential: Bool, servingBytes: Int = 0) throws -> Int {
+        guard [installationPayload, staging, headPayload, construction, servingBytes]
+            .allSatisfy({ $0 >= 0 })
+        else { throw Failure.invalidQuote }
+        let transient = sequential
+            ? max(0, max(staging, construction) - servingBytes) : try sum(staging, construction)
         return try sum(installationPayload, headPayload, transient)
     }
 

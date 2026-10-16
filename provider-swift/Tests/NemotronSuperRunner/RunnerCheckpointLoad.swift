@@ -34,16 +34,18 @@ enum RunnerCheckpointLoad {
             try NemotronSuperMTPServing.loadQuote(
                 configuration: try NemotronSuperImageConfiguration(data: configData), source: source)
         }
-        // The transaction's own claim arithmetic (installation, any head).
+        // Installation and any head with sequential transients, before the
+        // transaction overlaps the transient with its serving room (the
+        // charge.opened event records the claim it takes).
         let claim = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
-            sequential: headQuote != nil && NemotronSuperLoadClaim.mayReturnStagingBuffers())
+            sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers())
         let tensorBytes = source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
         log.emit("load.quote", ["load_quote_bytes": .bytes(quote), "checkpoint_tensor_bytes": .bytes(tensorBytes),
             "installation_payload_bytes": .bytes(installation.payloadBytes),
             "installation_staging_bytes": .bytes(installation.stagingBytes),
             "head_payload_bytes": headQuote.map { .bytes($0.payloadBytes) } ?? .null,
             "head_construction_bytes": headQuote.map { .bytes($0.constructionBytes) } ?? .null,
-            "load_claim_bytes": .bytes(claim),
+            "installation_head_bytes": .bytes(claim),
             "emulated_production_grant_bytes": settings.emulation.map {
                 .bytes($0.productionGrantBytes(checkpointBytes: UInt64(tensorBytes)))
             } ?? .null,

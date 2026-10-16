@@ -323,13 +323,16 @@ struct NemotronSuperServingPolicyTests {
         // Media is a serving reservation, not LOAD transient. The LOAD claim
         // holds both payloads and the larger of the two sequential transients
         // (the installation's 8,887,435,264-byte staging, not the head's
-        // 7,078,617,184-byte construction).
+        // 7,078,617,184-byte construction), which runs in the serving room
+        // (lane, admission KV, one image) before anything is served.
         #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_870_320_160)
         #expect(footprint.nativeLoadTransientBytes == 8_860_131_920)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let expected = Double(83_870_320_160 + (12 << 30) + (36 << 30) + media) / 1_073_741_824
+        let serving = (12 << 30) + (36 << 30) + media
+        #expect(serving > 8_887_435_264)
+        let expected = Double(73_213_230_600 + 1_769_654_296 + serving) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        #expect(abs(footprint.estimatedMemoryGb - 129.731_663_253_158_33) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 121.454_594_161_361_46) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes
@@ -349,6 +352,14 @@ struct NemotronSuperServingPolicyTests {
             sequential: true) == 145)
         #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
             sequential: false) == 155)
+        // The transient runs in the serving room claimed beside it: only what
+        // exceeds that room is added; never when the transients are summed.
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: true, servingBytes: 12) == 123)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: true, servingBytes: 64) == 105)
+        #expect(try Claim.bytes(installationPayload: 100, staging: 30, headPayload: 5, construction: 20,
+            sequential: false, servingBytes: 64) == 155)
         #expect(throws: Claim.Failure.invalidQuote) {
             try Claim.bytes(installationPayload: .max, staging: 1, headPayload: 0, construction: 0,
                 sequential: true)

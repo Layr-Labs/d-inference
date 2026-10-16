@@ -102,18 +102,20 @@ actor NemotronSuperLocalLoad {
                 return try head.quote()
             }
             if let headQuote { _ = try NemotronSuperLocalMTP.loadSupplementBytes(headQuote) }
-            let sequential = headQuote != nil && NemotronSuperLoadClaim.mayReturnStagingBuffers()
-            let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
-                sequential: sequential)
             let shares = staging.pinned
                 ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: environment,
                     kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil)
                 : nil
             let ownerBytes = (shares?.lane ?? 0) + (shares?.bank ?? 0)
-            let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
             // The bank is part of the admission; the claim holds it once, as a share.
             let admission = admissionKVBytes ?? kvBytesCapacity
             let kvFloor = admission - (shares?.bank ?? 0)
+            // With reclamation the load transients are sequential and run in
+            // the serving room (owner shares and KV floor) before it is used.
+            let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
+            let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+                sequential: sequential, servingBytes: max(0, ownerBytes + kvFloor))
+            let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
             guard !ownerOverflow, kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
@@ -126,16 +128,16 @@ actor NemotronSuperLocalLoad {
             let candidate = try staging.install(ledger, backendAllowanceBytes, construction)
             installed = candidate
             try Task.checkCancellation()
+            // The claim holds one transient, in the serving room: each phase's
+            // freed buffers must leave MLX's cache before the next phase or
+            // serving uses that room.
+            guard !sequential || NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget)
+            else { throw Failure.capacity }
             var head: NemotronSuperLocalMTP.Head?
             if let speculation, let headQuote, let loader = staging.head {
-                // The claim holds one transient: the installation's staging
-                // must leave MLX's cache before the head's construction.
+                head = .init(module: try loader.load(candidate, headQuote, construction), setting: speculation)
                 guard !sequential || NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget)
                 else { throw Failure.capacity }
-                head = .init(module: try loader.load(candidate, headQuote, construction), setting: speculation)
-                // Live usage takes over the payloads below; leave it no cached
-                // construction buffers to count.
-                if sequential { _ = NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget) }
             }
             try Task.checkCancellation()
             // The installation and any head are resident and counted as MLX

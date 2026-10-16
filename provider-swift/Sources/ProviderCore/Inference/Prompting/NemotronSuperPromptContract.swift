@@ -18,7 +18,7 @@ enum NemotronSuperPromptContract {
 
     enum Failure: Error {
         case templateMismatch, unsupportedControl, conflictingControls, unsupportedMedia
-        case invalidToolArguments, toolDeclarationMismatch, invalidTokens
+        case invalidToolArguments, toolDeclarationMismatch, invalidTokens, contextExceeded
     }
 
     /// Effective template and parser controls. Absent values take the pinned
@@ -204,6 +204,17 @@ enum NemotronSuperPromptContract {
         return .array(selected)
     }
 
+    /// Reference image prompt: the pinned template over the request's messages
+    /// and controls, then each `<image>` slot expanded with its image's feature
+    /// count. The image owner refuses tools and structured output beforehand.
+    static func imagePrompt(messages: [OpenAIChatMessage], body: Data, templateBytes: Data,
+        tokenizer: any MLXLMCommon.Tokenizer, featureCounts: [Int], contextLength: Int) throws -> [Int] {
+        let tokens = try render(messages: messages, body: body, declared: nil,
+            controls: controls(body: body), templateBytes: templateBytes, tokenizer: tokenizer)
+        return try expandImagePlaceholders(tokens, featureCounts: featureCounts,
+                                           contextLength: contextLength)
+    }
+
     /// processing_nemotron_h_omni.py replaces each `<image>` with `<img>`, one
     /// `<image>` per visual feature, and `</img>`; feature counts are in order.
     static func expandImagePlaceholders(_ tokens: [Int], featureCounts: [Int],
@@ -214,7 +225,7 @@ enum NemotronSuperPromptContract {
         var image = 0
         for token in tokens {
             let span = token == imageTokenID ? featureCounts[image] + 2 : 1
-            guard span <= contextLength - expanded.count else { throw Failure.invalidTokens }
+            guard span <= contextLength - expanded.count else { throw Failure.contextExceeded }
             if token == imageTokenID {
                 expanded.append(imageStartTokenID)
                 expanded.append(contentsOf: repeatElement(imageTokenID, count: featureCounts[image]))

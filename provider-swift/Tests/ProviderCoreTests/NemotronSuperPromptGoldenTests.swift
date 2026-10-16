@@ -144,7 +144,15 @@ final class NemotronSuperPromptGoldenTests: XCTestCase {
             XCTAssertEqual(tokenizer.encode(text: fixture.prompt, addSpecialTokens: false), fixture.tokens,
                            "tokenizer: \(fixture.name)")
             XCTAssertEqual(try Self.render(fixture, tokenizer: tokenizer), fixture.tokens, "render: \(fixture.name)")
-            guard fixture.isText else { continue }
+            guard fixture.isText else {
+                // The image owner's path: request messages, template, then expansion.
+                let request = try ProviderLoop.decodeOpenAIRequest(fixture.body)
+                XCTAssertEqual(try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
+                    body: fixture.body, templateBytes: Self.templateBytes(), tokenizer: tokenizer,
+                    featureCounts: fixture.images.map { $0.tokens }, contextLength: 16384),
+                    fixture.expanded, "image prompt: \(fixture.name)")
+                continue
+            }
             let plan = try NemotronSuperRequestPlan(body: fixture.body)
             XCTAssertEqual(try plan.textPromptTokens(body: fixture.body, templateBytes: Self.templateBytes(),
                 tokenizer: tokenizer, addGenerationPrompt: fixture.addGenerationPrompt), fixture.tokens, fixture.name)

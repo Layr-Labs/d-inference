@@ -110,27 +110,16 @@ enum NemotronSuperLocalBridgeBuilder {
                 guard imageCount == featureCounts.count else {
                     throw NemotronSuperLocalImageBinding.Failure.invalidInput
                 }
-                let template = try NemotronSuperPromptContract.verifiedTemplate(templateBytes)
-                let raw = try tokenizer.inner.applyChatTemplate(
-                    messages: NemotronSuperPromptContract.messages(request.messages),
-                    chatTemplate: template, tools: nil,
-                    additionalContext: NemotronSuperPromptContract.additionalContext(body: body))
-                // Integration: expand through the prompt track's
-                // NemotronSuperPromptContract.expandImagePlaceholders so each span
-                // carries the reference <img>/</img> (19/20) wrapper.
-                guard raw.filter({ $0 == 18 }).count == featureCounts.count else {
+                // Context overflow keeps the image path's capacity status.
+                do {
+                    return try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
+                        body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
+                        featureCounts: featureCounts, contextLength: contextLength)
+                } catch NemotronSuperPromptContract.Failure.contextExceeded {
+                    throw NemotronSuperLocalImageBinding.Failure.capacity
+                } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
                     throw NemotronSuperLocalImageBinding.Failure.invalidInput
                 }
-                var result: [Int] = [], index = 0
-                for token in raw {
-                    let count = token == 18 ? featureCounts[index] : 1
-                    guard count <= contextLength - result.count else {
-                        throw NemotronSuperLocalImageBinding.Failure.capacity
-                    }
-                    result.append(contentsOf: repeatElement(token, count: count))
-                    if token == 18 { index += 1 }
-                }
-                return result
             }
         }
 

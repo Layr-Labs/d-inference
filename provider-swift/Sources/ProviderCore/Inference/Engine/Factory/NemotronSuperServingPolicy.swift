@@ -15,7 +15,7 @@ import ProviderCoreFoundation
 /// policy. Every shard's SHA-256 is verified by the managed load itself.
 enum NemotronSuperServingPolicy {
     static let modelID = ModelMediaPolicy.nemotronSuperModelID
-    static let modelType = "nemotron_h_omni"
+    static let modelType = ModelMediaPolicy.nemotronSuperModelType
     /// SHA-256 of the pinned `config.json` (NVIDIA revision `7d4bc747`).
     static let configSHA256 = "35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea"
     static var indexSHA256: String { NemotronSuperCheckpointPin.index }

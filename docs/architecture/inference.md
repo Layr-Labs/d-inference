@@ -167,6 +167,22 @@ grant below it. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
+`NemotronSuperLocalKVBackend` selects the attention KV storage:
+contiguous by default, or the segmented native paged backend with
+`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` (the adapter declares
+`supportsPagedKV` and `requiresNativePagedKV`; the pool takes the eight
+attention layers' observed BF16 types). An explicit paged selection never
+degrades: a paged construction failure fails the load. On paged storage the
+engine's process-memory owner charges pages and recurrent rows to the shared
+budget as they materialize and the bridge reserves no request bytes, so the
+owner reserves `requestWorkspaceBytes` for every configured request (the
+decode rows) from before the first request until native retirement, like the
+lane. The text prefix bank lives in the contiguous engine: the managed plan
+keeps it off on paged storage and an explicit
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1` with paged fails the load. Paged and
+contiguous attention reduce differently, so their logits agree within a
+stated tolerance rather than bit for bit; within paged storage, batched rows,
+captured speculation windows and rollback stay exact.
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (the hook's default is off; the
 managed slot's policy sets it). The load transaction

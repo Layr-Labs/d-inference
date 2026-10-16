@@ -116,6 +116,12 @@ struct NemotronSuperServingPolicyTests {
         let tight = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 6 << 30)
         #expect(tight.prefixBankBytes == 0 && tight.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
+        // Paged KV keeps the default bank off; the operator's choice passes through.
+        let paged = NemotronSuperServingPolicy.loadPlan(
+            base: [NemotronSuperLocalKVBackend.key: "paged"], mode: .off,
+            configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
+        #expect(paged.prefixBankBytes == 0 && paged.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
+        #expect(paged.environment[NemotronSuperLocalKVBackend.key] == "paged")
     }
 
     /// The default bank is half of what the grant leaves beside every

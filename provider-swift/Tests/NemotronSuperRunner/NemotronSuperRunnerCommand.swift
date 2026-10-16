@@ -30,9 +30,10 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var defaultMaxTokens = 512
     @Option(help: """
         KV capacity granted to the bridge, GiB (at least 1). Each request's fixed bytes (recurrent \
-        state, request workspace, any speculation charge) are carved from it. Default 4; 12 when \
-        --engine-env enables DARKBLOOM_NEMOTRON_SUPER_MTP; 1 + 3 x N for \
-        DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N > 1. The ready file reports the minimum.
+        state, request workspace, any speculation charge) are carved from it. Default 4; with \
+        --engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1, 12 or the managed slot's speculative \
+        admission (2 + 3 x N for DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N) when larger; \
+        1 + 3 x N for a plain N > 1. The ready file reports the minimum.
         """)
     var kvCapacityGib: Double?
     @Option(help: "Explicit backend/allocator allowance added to the LOAD quote, GiB (unmeasured default).")
@@ -240,9 +241,15 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
 
     /// The grant when `--kv-capacity-gib` is omitted. Malformed engine values
     /// fail at load with the builder's own error; here they keep the plain grant.
+    /// Speculating owners take at least the managed slot's admission for their
+    /// width (`NemotronSuperServingPolicy.admissionKVBytes`, 26 GiB for eight),
+    /// which covers the measured minimum grant at depth 3.
     static func defaultKVCapacityGib(engineEnvironment environment: [String: String]) -> Double {
         if environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1" {
-            return speculativeKVCapacityGib
+            let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
+                environment: environment, speculates: true)) ?? 1
+            let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: true)
+            return max(speculativeKVCapacityGib, Double(admission) / 1_073_741_824)
         }
         let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: environment, speculates: false)) ?? 1

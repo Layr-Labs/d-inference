@@ -75,7 +75,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 16384 | builder maximum; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
-| `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
+| `--kv-capacity-gib` | 4; with speculation 12 or the managed slot's admission, 2 + 3 x N, when larger (26 for N = 8); plain 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
 | `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |
@@ -99,6 +99,8 @@ file cache, and the receipt cannot tell which you had.
 | `POST /runner/peaks/reset` | returns the closing window, then resets the kernel interval footprint, MLX peak and sampled maxima |
 | `POST /runner/ballast` | `{"bytes": N}` holds a real ledger reservation that shrinks the remainder (near-limit probes); released at drain |
 | `GET /runner/status` | ready-file content plus live activity |
+| `GET /runner/engine` | cumulative speculation counters (rounds, seed steps, drafted, accepted and emitted tokens, per-position acceptance, depth selections, skips; `null` on the plain owner) and, with `CBV2_STEP_PROFILE=1` in the runner's environment, every step-profiler phase's count, total, p50 and p90 milliseconds |
+| `POST /runner/engine/profile/reset` | clears the step profiler's samples (speculation counters stay cumulative) |
 
 Charge kinds: `load` (pending LOAD claim), `media_ingress` and `media` (the
 image binding's `-ingress`/`-media` reservations), `kv` (bridge request
@@ -117,9 +119,10 @@ request beyond that gets 429 before any response starts.
 
 Speculation is an engine-environment A/B: with `--checkpoint`, pass
 `--engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1` and optionally
-`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` (`1`…`3`, or `auto`: the engine's marginal
-policy picks 0…3 each step from measured acceptance and round cost; rectangular
-only) and
+`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` (`1`…`3`; `auto`: the engine's marginal
+policy picks 0…3 each step from measured acceptance and round cost; or a comma
+list such as the managed default `3,2,2,2,1`: the depth for N requests decoding
+in the step, the last entry for more; both rectangular only) and
 `DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION` (`rectangular` or `serial`). The load
 transaction reads exactly these entries (not the inherited process
 environment), adds the head's LOAD supplement and records the resolved setting
@@ -134,9 +137,10 @@ Prompts prefill in chunks of `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens
 decode or verify row; `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`
 (`0`…`64`, default 0) adds decode-only steps between chunks while requests
 decode. Chunk geometry never depends on concurrency, so outputs match solo
-serving. The speculative grant default does not scale with N: pass `--kv-capacity-gib`
-from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
-`kv_grant_refused` load.
+serving. The speculative grant default scales with N like the managed slot's
+admission (26 GiB for eight requests, above the 25.9 GB measured minimum at
+depth 3); otherwise pass `--kv-capacity-gib` from the ready file's `kv_grant`,
+or from `suggested_kv_capacity_gib` after a `kv_grant_refused` load.
 
 Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the plain owner the SDK's resident
@@ -157,6 +161,31 @@ publishes too, so a one-entry bank evicts the warm body before its repeat: give
 long-context warm runs two entries, for example `--engine-env
 DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES=1073741824` at the default grant. Each sample
 records the bank counters as `prefix_cache_after`.
+
+## Serving policy benchmark
+
+`bench_serving.py` serves the 16 natural prompts of `serving_prompts.json`
+(code, chat, math and long-form, four each) greedy at each client count, every
+client sending `--requests-per-client` requests back to back, and records per
+request TTFT, decode tok/s and the full text, per level the aggregate
+completion tok/s and the `GET /runner/engine` speculation delta (acceptance,
+emitted tokens per round, depth selections). `--pad-words 1500,6000` repeats
+the levels with a nonce-led filler document of that many words before every
+prompt (TTFT under load). `compare` checks that every prompt's output is
+byte-identical across receipts and levels (a run cut at a smaller `max_tokens`
+must be a prefix).
+
+```sh
+python3 -I bench_serving.py run --out plain.json --arm plain --launch-runner "$RUNNER" \
+  --runner-arg=--checkpoint --runner-arg="$MODEL" \
+  --runner-arg=--engine-env --runner-arg=DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=8 --warmup
+python3 -I bench_serving.py run --out d3.json --arm d3 --launch-runner "$RUNNER" \
+  --runner-arg=--checkpoint --runner-arg="$MODEL" \
+  --runner-arg=--engine-env --runner-arg=DARKBLOOM_NEMOTRON_SUPER_MTP=1 \
+  --runner-arg=--engine-env --runner-arg=DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH=3 \
+  --runner-arg=--engine-env --runner-arg=DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=8 --warmup
+python3 -I bench_serving.py compare plain.json d3.json
+```
 
 ## Shutdown
 

@@ -214,9 +214,14 @@ enum NemotronSuperLocalBridgeBuilder {
         else { throw Failure.unsupportedSizing }
         try Task.checkCancellation()
         let bridge = try installed.withNativeSetup(construction: construction) { model in
-            guard let limit = model.languageModel.calibratedPrefillTokenLimit, limit > 0 else {
+            let language = model.languageModel
+            guard let limit = language.calibratedPrefillTokenLimit, limit > 0 else {
                 throw Failure.unsupportedSizing
             }
+            // The graph path's explicit ModelOpt arrays for the largest chunk the
+            // engine may run (prefill, decode and verify rows are all at most
+            // `limit`). The eager reference keeps its own bounded tiles.
+            let prefillWorkspace = language.modelOptGraphPrefillWorkspaceBytes(tokens: limit) ?? 0
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(
                     for: model, head: $0, maximumSequenceLength: sizing.maxContextLength)
@@ -236,8 +241,16 @@ enum NemotronSuperLocalBridgeBuilder {
                         mtpDrafter: speculation?.assistant,
                         mtpConfig: speculation?.config ?? CBv2MTPConfig(),
                         kvBackend: .contiguous, maxContextLength: sizing.maxContextLength,
-                        environment: environment)
+                        environment: environment
+                    ).addingFixedRequestBytes(prefillWorkspace)
                 })
+        }
+        // The prefill workspace is carved from the KV grant with each request's
+        // charge; a grant that cannot serve one request fails the load.
+        do { try await bridge.requireServiceableOrdinaryGrant() } catch {
+            await bridge.shutdown()
+            guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
+            throw Failure.unsupportedSizing
         }
         // Prefix stores remain absent. Without speculation the dedicated image
         // binding uses causal embeddings; recurrent execution stays serial/contiguous.
@@ -249,4 +262,24 @@ enum NemotronSuperLocalBridgeBuilder {
 
 private extension EngineV2Bridge {
     var superLocalEngineRetired: Bool { ownedEngine == nil }
+}
+
+private extension EngineV2Factory.ProductionBuild {
+    /// The same build with `bytes` more fixed workspace in every request's
+    /// shared-budget reservation, admitted before submission and held until
+    /// the request retires.
+    func addingFixedRequestBytes(_ bytes: Int) throws -> Self {
+        let (total, overflow) = fixedRequestBytes.addingReportingOverflow(bytes)
+        guard bytes >= 0, !overflow, total < Int.max else {
+            throw NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing
+        }
+        return .init(engine: engine, fixedRequestBytes: total, kvBackendKind: kvBackendKind,
+            kvBackendFallbackReason: kvBackendFallbackReason, pagedPoolDType: pagedPoolDType,
+            usesProcessMemoryOwner: usesProcessMemoryOwner,
+            mtpAdmissionResolution: mtpAdmissionResolution,
+            legacyMTPBytesPerToken: legacyMTPBytesPerToken,
+            effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests,
+            kvQuantization: kvQuantization, kvCheckpointQuantization: kvCheckpointQuantization,
+            admissionWatermarkFraction: admissionWatermarkFraction)
+    }
 }

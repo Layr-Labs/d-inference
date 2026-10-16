@@ -88,6 +88,43 @@ extension NemotronSuperLocalOwnerTests {
         return (owner, installed, residency, budget, lease)
     }
 
+    /// Each request's shared-budget charge carries the graph path's explicit
+    /// ModelOpt workspace for the largest chunk the engine may run, from
+    /// admission until the request retires.
+    @Test(.timeLimit(.minutes(1)))
+    func everyRequestChargeIncludesTheGraphPrefillWorkspace() async throws {
+        let (owner, installed, residency, budget, lease) = try await Self.owner()
+        let language = try #require(installed.model?.languageModel)
+        let limit = try #require(language.calibratedPrefillTokenLimit)
+        let workspace = try #require(language.modelOptGraphPrefillWorkspaceBytes(tokens: limit))
+        #expect(workspace > 0)
+        let ownedEngine = await owner.bridge.ownedEngine
+        let engine = try #require(ownedEngine as? EngineV2)
+        #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
+        let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: 2)
+        let expected = try #require(await owner.bridge.requestReservationBytes(tokenCount: 5))
+        #expect(expected >= workspace)
+        let observed = SuperOwnerCharges()
+        try await owner.localTextBinding().run(request: request, promptTokens: [1, 2, 3]) { _ in
+            await observed.record(await budget.reservationBytesSnapshot())
+        }
+        #expect(await observed.rows == [[expected]])
+        #expect(await budget.reservationBytesSnapshot().isEmpty)
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// A grant that cannot hold one request's fixed workspace plus the minimum
+    /// KV fails the build instead of publishing a zero-width owner.
+    @Test(.timeLimit(.minutes(1))) func unserviceableGrantFailsTheBuild() async throws {
+        await #expect(throws: NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing) {
+            _ = try await Self.owner(kvBytesCapacity: Int(UnifiedMemoryCap.minimumLoadKVBytes))
+        }
+    }
+
     /// The owner's image prompt carries the reference `<img>` (19), one
     /// `<image>` (18) per feature and `</img>` (20) for each image slot.
     @Test(.timeLimit(.minutes(1))) func imagePromptUsesTheReferenceImageFraming() async throws {
@@ -112,5 +149,12 @@ extension NemotronSuperLocalOwnerTests {
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
+    }
+}
+
+private actor SuperOwnerCharges {
+    var rows: [[Int]] = []
+    func record(_ snapshot: [String: UInt64]) {
+        if rows.isEmpty { rows.append(snapshot.values.map { Int($0) }) }
     }
 }

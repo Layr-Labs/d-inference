@@ -25,14 +25,15 @@ struct QwenResidentReservation {
                 prefillAllowance?.extraHostBytes ?? 0, recordingCharge?.capture.extraHostBytes ?? 0]))
     }
 
+    /// A reservation runs on a loaded stage: it asks for its own needs plus headroom (`requireLive(onLoadedStage:)`).
     func requireLive() throws {
         if let prefillAllowance {
             try allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
                 prefillAllowance.extraNativeBytes, recordingCharge?.capture.extraNativeBytes ?? 0, prefixCaptureBytes]),
                 additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
-                    prefillAllowance.extraHostBytes, recordingCharge?.capture.extraHostBytes ?? 0]))
+                    prefillAllowance.extraHostBytes, recordingCharge?.capture.extraHostBytes ?? 0]), onLoadedStage: true)
         } else if prefixCaptureBytes > 0 {
-            try allowance.requireLive(additionalNativeBytes: prefixCaptureBytes, additionalHostBytes: 0)
-        } else { try allowance.requireLive() }
+            try allowance.requireLive(additionalNativeBytes: prefixCaptureBytes, additionalHostBytes: 0, onLoadedStage: true)
+        } else { try allowance.requireLive(onLoadedStage: true) }
     }
 }

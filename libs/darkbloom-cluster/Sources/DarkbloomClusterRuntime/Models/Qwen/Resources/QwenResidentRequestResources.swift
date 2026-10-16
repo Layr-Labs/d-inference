@@ -95,19 +95,24 @@ struct QwenResidentRequestAllowance {
             transientBytes: transient, contextTokens: maximumTokens)
     }
 
-    func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
+    /// `onLoadedStage`: a request's reservation on a stage that is already loaded. It asks for what the request
+    /// needs plus the loading headroom, not for the entry floor a load asks for: on a 36 GB M4 Max in use, 1.6 GiB
+    /// was admissible against a 2.25 GiB floor and every request was refused with 503 while the rank stayed loaded,
+    /// though a short request needs a few MiB of it (2026-10-16). Pressure and swap still refuse it (`decide`).
+    func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0, onLoadedStage: Bool = false) throws {
         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else {
             throw ProbeError("Invalid additional resident allowance")
         }
-        try QwenResidentResourceEnvironment.require()
+        if onLoadedStage { try QwenResidentResourceEnvironment.requirePower() } else { try QwenResidentResourceEnvironment.require() }
         let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
-                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+        let needed = try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
+            QwenDenseStageLoadPolicy.loadingHeadroomBytes])
+        let free = onLoadedStage ? needed : max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes, needed)
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         do {
-            guard try watch.admits(os, bytes: free), Memory.memoryLimit >= allocator else {
+            guard try watch.admits(os, bytes: free, floor: onLoadedStage ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : nil),
+                  Memory.memoryLimit >= allocator else {
                 throw ProbeError("Resident request exceeds the allocator limit")
             }
         } catch {

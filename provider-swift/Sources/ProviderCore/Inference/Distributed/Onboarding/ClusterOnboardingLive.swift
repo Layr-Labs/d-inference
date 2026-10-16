@@ -821,7 +821,15 @@ final class OnboardingLive: @unchecked Sendable {
     /// Downloads a catalog model exactly as single-Mac Darkbloom does (verified manifest, resumable, into the
     /// product's model store), then clones it into the cluster's store. Returns its folder there.
     func downloadOnThisMac(_ model: CatalogModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
-        let capabilities = (try? HardwareDetector.detect()).map { ProviderRuntimeCapabilityDetector.detectPrepared(hardware: $0, boundMetallibHash: nil) } ?? []
+        var capabilities = (try? HardwareDetector.detect()).map { ProviderRuntimeCapabilityDetector.detectPrepared(hardware: $0, boundMetallibHash: nil) } ?? []
+        // The catalog's runtime requirements are single-Mac serving's (Qwen 3.8 27B needs an M5's neural accelerators
+        // when one Mac serves it alone). A model this build's cluster runtime serves (its records pin the digest) is
+        // the cluster's own: its adapters, grants and memory gates decide, so the leader downloads it whatever its
+        // chip (owner: chips never gate what is offered). The single-Mac provider keeps its own check when it loads.
+        if let digest = model.aggregateSHA256, ClusterModelCopyTrust.servableArtifacts.contains(digest) {
+            capabilities.formUnion(ModelRuntimeRequirements.evaluate(modelID: model.id,
+                catalogRequirements: model.requiredProviderCapabilities, available: []).required)
+        }
         let catalog = (try? ConfigManager.loadOrDefaults(from: settings.service.wizard.providerConfiguration)).map { ModelCatalogClient(coordinatorURL: $0.coordinator.url) }
         var downloader = ModelDownloader(catalogClient: catalog, runtimeCapabilities: capabilities)
         // Written and verified uncached, like the copy over the cable: a download does not take memory from a model load.

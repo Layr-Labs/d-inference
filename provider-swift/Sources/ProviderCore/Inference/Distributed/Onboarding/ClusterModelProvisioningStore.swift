@@ -71,13 +71,38 @@ enum ClusterProductModelStore {
     /// `providerConfiguration` names the catalog whose exact manifest bytes are written beside the files.
     static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil) throws -> String? {
         var artifact = installed.artifact
-        if case .complete = ClusterModelStore.holding(store: store, artifact: artifact) { return nil }
+        if case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: artifact) {
+            if let providerConfiguration { repairManifest(store.appendingPathComponent(folder), installed: installed, providerConfiguration: providerConfiguration) }
+            return nil
+        }
         guard !FileManager.default.fileExists(atPath: store.appendingPathComponent(artifact.folderName).path) else { return nil }
         if let providerConfiguration, let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact) {
             artifact.manifest = exact
         }
         // Own staging per call, exclusive rename: concurrent clones (onboarding and service) never mix files.
         return try ClusterModelStore.cloneFolder(artifact: artifact, from: installed.directory, into: store)
+    }
+
+    private static let repairLock = NSLock()
+    nonisolated(unsafe) private static var repairChecked = Set<String>()
+
+    /// A model cloned in while the catalog did not answer kept the product store's re-encoded receipt as its
+    /// manifest; the worker pins the catalog's exact bytes, so the cluster said "not supported" for a verified model
+    /// forever (Qwen 3.5 9B, 2026-10-15: the two differed only in `created_at`). When the folder's manifest names
+    /// the same artifact and files but is not the catalog's bytes, the catalog's bytes replace it, once they name exactly the same files (`fetchManifest`).
+    static func repairManifest(_ folder: URL, installed: Installed, providerConfiguration: URL) {
+        let manifest = folder.appendingPathComponent("manifest.json")
+        // Asked once per folder per process: the catalog is read only for a model it has not been checked against.
+        guard repairLock.withLock({ repairChecked.insert(folder.path).inserted }),
+              let current = ClusterModelStore.readSmall(manifest),
+              let parsed = try? ClusterCatalogArtifact.parse(manifest: current),
+              parsed.aggregateSHA256 == installed.artifact.aggregateSHA256, parsed.files == installed.artifact.files,
+              let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: installed.artifact),
+              exact != current else { return }
+        var information = stat()
+        guard lstat(folder.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR, information.st_uid == geteuid() else { return }
+        try? exact.write(to: manifest, options: [.atomic])
+        _ = chmod(manifest.path, 0o600)
     }
 }
 

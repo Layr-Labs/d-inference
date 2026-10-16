@@ -88,20 +88,31 @@ projection/expert-bank/image staging bounds and explicit backend allowance must
 still be checked against full-model measured peak memory. Bundling the upstream
 MTP tensors does not qualify execution.
 The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
-application and standard JSON/SSE framing, defaults to absent, and requires
-explicit thinking-off for inline PNG media. No production caller installs it.
+application and standard JSON/SSE framing and defaults to absent. It serves text
+through the owner's `localTextBinding` and images through its image binding, admits
+one request at a time and refuses a concurrent one with `queueFull` (429) before
+any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
+it over the transaction's own owner. No production caller installs it.
+Each bridge request reservation also carries
+`NemotronHModel.modelOptGraphPrefillWorkspaceBytes(tokens:)` at the calibrated
+prefill limit as fixed request bytes: the graph path's explicit ModelOpt arrays
+for the largest chunk the engine may run (at most 2,048 tokens and 2 GiB). The
+builder refuses a KV grant that cannot hold that charge plus the minimum KV.
 
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction
 adds the embedded head's header-derived payload and loader construction allowance
 to its single LOAD claim, loads the head in its own fenced construction epoch, and
-the builder serves `NemotronSuperMTPTextTarget` with the SDK
+the builder serves `NemotronSuperMTPTextTarget`, which the shared production
+factory recognizes like `NemotronSuperRecurrentAdapter` (layer kinds, caches and the
+calibrated prefill bound), with the SDK
 `NemotronSuperMTPAssistant`: greedy, one request, fixed depth
 (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `1` to `3`) and serial target verification.
 The engine admits the assistant's bounded per-request charge (FP8 history, backlog,
 every draft step's dense FP8 output head and an unmeasured 256 MiB backend scratch
 allowance) before allocation and holds it until retirement. An owner with
-speculation refuses every media entry with `mediaWithSpeculation`. Synthetic
+speculation refuses every media entry with `mediaWithSpeculation`; its HTTP hook
+is text-only and answers image requests with 400. Synthetic
 fixtures show token-exact greedy output against the ordinary owner, forced
 rejection rollback and cancellation; serial verification cannot beat plain
 decode, and no full-model acceptance or speed is measured. Sources:

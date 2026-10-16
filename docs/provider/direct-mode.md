@@ -180,8 +180,10 @@ The optional `NemotronSuperLocalImageHTTP` owner hook in
 uses the existing local authentication, body limits, JSON/SSE framing and
 request-cancellation scope. Its default is absent; no production callsite
 installs it and it does not advertise a new model. When installed it serves
-every chat request for the Super model ID: text on the owner's bridge with its
-own tokenizer, and bounded inline RGB8 PNG input on the owner's image binding.
+every chat request for the Super model ID: text on the owner's text binding with
+its own tokenizer, and bounded inline RGB8 PNG input on the owner's image binding.
+Image prompts carry the reference `<img>`, one `<image>` per visual feature,
+`</img>` span for each image.
 
 | Request control | Hook behavior |
 |---|---|
@@ -191,6 +193,8 @@ own tokenizer, and bounded inline RGB8 PNG input on the owner's image binding.
 | `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422 |
 | `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422 |
 | Contradictory controls, `logprobs`, `min_p`, `n > 1` | 400 before generation |
+| A second request while one is in flight (text or image) | 429 before any response starts; the owner serves one request at a time |
+| Image input while `DARKBLOOM_NEMOTRON_SUPER_MTP=1` speculation is installed | 400 (`unsupported_media`); text is served |
 
 Image requests still refuse `tools` and `response_format`; JPEG and other
 unqualified formats are refused. The host calls the hook's `drain()` before the

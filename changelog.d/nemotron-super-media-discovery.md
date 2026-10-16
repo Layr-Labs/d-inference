@@ -24,4 +24,8 @@ schemas in request order, tool-call history, images with `<img>` placeholder
 spans, reasoning on/off). Reasoning follows the reference `ultra_v3` parser:
 `enable_thinking` defaults on and streams `reasoning_content`. Text requests
 return validated `tool_calls` and validated `response_format` JSON. Image
-requests still refuse tools and structured output.
+requests still refuse tools and structured output; image prompts carry the
+reference `<img>`/`</img>` span around each image's placeholders. A request
+that arrives while the owner is busy gets 429 before any response starts, and
+with speculation installed the hook serves text and refuses images with 400.
+Each request's reservation now includes the calibrated prefill workspace.

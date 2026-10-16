@@ -526,7 +526,8 @@ final class OnboardingLive: @unchecked Sendable {
         // pair may serve them with this build (as for models copied from the other Mac or downloaded).
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
         for installed in ClusterProductModelStore.installed() where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
-            _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration)
+            _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
+                                                                    accepts: context.workerAcceptsManifest)
         }
         switch context.plan(peer: peer) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
@@ -714,6 +715,20 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func provision(_ index: Int, download: Bool, _ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure> {
+        var index = index
+        // A list made on the control leader (this Mac forwarded `planModels`) holds no choices here. Getting the files
+        // onto both Macs needs no leadership: this Mac plans the same models itself and fetches the one the list showed
+        // (by id); the adopt then runs on the leader, which finds it on both Macs. ("Nothing to copy: plan again." on
+        // an M4 Max member, 2026-10-16.)
+        let listed = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
+        if let listed, lock.withLock({ !choices.indices.contains(index) || choices[index].title != listed }) {
+            if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
+            if case .failure(let failure) = localPlanModels() { return .failure(failure) }
+            guard let found = lock.withLock({ choices.firstIndex { $0.title == listed } }) else {
+                return .failure(.init("\(listed) is not offered on these Macs any more; run `darkbloom cluster` again to choose."))
+            }
+            index = found
+        }
         guard let choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
             return .failure(.init("Nothing to copy: plan again."))
         }
@@ -864,7 +879,8 @@ final class OnboardingLive: @unchecked Sendable {
         }) else {
             throw ClusterSetupFailure("\(model.id) downloaded, but the product's model store does not list it")
         }
-        _ = try ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration)
+        _ = try ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
+                                                               accepts: context.workerAcceptsManifest)
         guard case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: installed.artifact) else {
             throw ClusterSetupFailure("\(model.id) could not be placed in the cluster's model store")
         }
@@ -936,6 +952,7 @@ final class OnboardingLive: @unchecked Sendable {
         guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterOnboardingFailure("This Mac is not paired.") }
         var command = command
         if command.claim == nil { command.claim = currentClaim(try? store.readRecord()) }
+        if command.op == .serve, command.scope?.isLocalOnly == true { command.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
         return try ClusterSetupLinkExchange.command(pairing: pairing, selection: try context.linkSelection(), peerAddress: nil,
             body: try JSONEncoder().encode(command), seconds: seconds).reply
     }

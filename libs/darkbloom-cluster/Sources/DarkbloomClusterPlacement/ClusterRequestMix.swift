@@ -36,16 +36,22 @@ extension ClusterPlacementExplanation {
                 + "\(seconds(a.firstTokenSeconds)) vs \(seconds(b.firstTokenSeconds))"
         }
         let assessment = result.tensorParallel
+        // Figures from the device index alone are a lower bound, far from what the pair serves (0.7 vs 1.6 tok/s
+        // shown for a 27B that decoded 47 tok/s, 2026-10-16): the choice is said, the figures are not.
+        let estimated = result.basis.source.isEstimate
+        let note = " (an estimate: this model is not measured on these Macs yet)"
         if chosen.mode.usesTensorParallelDecode {
             // The best placement in another mode: among the alternatives, else the shard table's best pipeline.
             let pipelines = (result.shards?.options ?? []).filter { $0.kind == .pipeline || $0.kind == .pipelineCompactDecode }
                 .compactMap(\.prediction).filter { $0.regime == regime }
             if let theirs = result.alternatives.first(where: { !$0.mode.usesTensorParallelDecode })?.prediction(regime)
                 ?? pipelines.min(by: { $0.requestSeconds < $1.requestSeconds }) {
+                if estimated { return "Tensor parallel: predicted faster than a pipeline for \(request)\(note)." }
                 let gain = max(0, (theirs.requestSeconds / mine.requestSeconds - 1) * 100)
                 return "Tensor parallel: predicted \(Int(gain.rounded()))% faster than a pipeline for \(request) (\(against(mine, theirs)))."
             }
             if let other = assessment?.bestOtherSeconds {
+                if estimated { return "Tensor parallel: predicted faster than a pipeline for \(request)\(note)." }
                 let gain = max(0, (other / mine.requestSeconds - 1) * 100)
                 return "Tensor parallel: predicted \(Int(gain.rounded()))% faster than a pipeline for \(request) "
                     + "(\(seconds(mine.requestSeconds)) against \(seconds(other)))."
@@ -62,7 +68,9 @@ extension ClusterPlacementExplanation {
                 ? "\(name): the link between the Macs has not been measured yet, so tensor parallel is not predicted; the first load measures it."
                 : "\(name): the link was measured only without encryption, so tensor parallel is not predicted; the next load measures it encrypted."
         case .predictedSlower:
-            guard let tp = assessment.tensorParallel else { return "\(name): tensor parallel is predicted slower for \(request)." }
+            guard let tp = assessment.tensorParallel, !estimated else {
+                return "\(name): tensor parallel is predicted slower for \(request)\(estimated ? note : "")."
+            }
             let theirs = tp.prediction(regime)
             return "\(name): tensor parallel is predicted slower for \(request) (\(seconds(theirs.requestSeconds)) against "
                 + "\(seconds(mine.requestSeconds)); \(against(theirs, mine)))."

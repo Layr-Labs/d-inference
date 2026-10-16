@@ -1064,7 +1064,7 @@ import Darwin
         let here = ClusterOnboardingReady(servedBy: "this Mac", port: 8000, network: true)
         expect(here.apiLine == "API at http://localhost:8000 on this Mac, and at port 8000 of its LAN or tailnet address", "ready: network, this Mac")
         let there = ClusterOnboardingReady(servedBy: "Apple M4 Max, 128 GB", port: 8000, network: true)
-        expect(there.apiLine == "API at http://localhost:8000 on Apple M4 Max, 128 GB, and at port 8000 of that Mac's LAN or tailnet address", "ready: network, that Mac")
+        expect(there.apiLine == "API at http://localhost:8000 on Apple M4 Max, 128 GB, and at port 8000 of that Mac's LAN or tailnet address; this Mac answers too (`darkbloom local` shows its address)", "ready: network, that Mac (this Mac's port passes to it)")
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).apiLine == "API at http://localhost:8000 on this Mac", "ready: loopback unchanged")
         let older = try? JSONDecoder().decode(ClusterOnboardingReady.self, from: Data(#"{"servedBy":"this Mac","port":8000}"#.utf8))
         expect(older?.network == nil, "ready: an older Mac's answer decodes without the network field")

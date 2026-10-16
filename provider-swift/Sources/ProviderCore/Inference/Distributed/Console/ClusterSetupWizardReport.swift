@@ -41,6 +41,11 @@ public struct ClusterSetupReport: Codable, Sendable, Equatable {
     public var linkPairings: ClusterSetupLinkPairings?
     /// Free bytes on the disk of this Mac's model store (a copy of a model checks it before it starts); nil when unknown.
     public var modelStoreFreeBytes: Int64?
+    /// The newest speed records of requests this Mac served as rank 0 (at most `servedShared`; nil from an older
+    /// build). Only the Mac where requests enter keeps them, and the plan is made on the control leader, which is
+    /// often the other Mac: without them a model measured on the pair was planned from the device index's estimate.
+    public var served: [ClusterServedSpeedRecords.Entry]?
+    public static let servedShared = 96
 
     public init(observedAt: String, version: String, mac: ClusterSetupMac, link: ClusterSetupLink, saved: ClusterSetupSaved,
                 inbox: ClusterSetupSetupSummary?, inboxError: String? = nil, journal: ClusterDeviceJournalObservation, memoryGuard: ClusterSetupMemoryGuard,

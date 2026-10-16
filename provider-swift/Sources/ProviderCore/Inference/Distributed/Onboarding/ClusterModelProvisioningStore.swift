@@ -37,9 +37,12 @@ enum ClusterProductModelStore {
 
     /// The catalog's exact manifest bytes for a model (the cluster worker pins the registered manifest's own bytes; the
     /// product store keeps a re-encoded receipt), checked to name the same artifact; nil when the catalog does not answer.
-    static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5) -> Data? {
-        // The published manifest.json on the model CDN is the registered file itself (the coordinator's manifest
-        // endpoint serves the same content re-encoded); the coordinator is asked only when the CDN does not answer.
+    /// `accepts`: whether this Mac's cluster worker takes a manifest (its runtime description, no model load). The
+    /// catalog publishes two encodings of one manifest (the CDN's file and the coordinator's re-encoding) and the
+    /// worker pins one of them per model: Qwen 3.8 27B the CDN's, GPT-OSS 20B the coordinator's (2026-10-16). The
+    /// first one the worker takes is used; without `accepts` (or when it takes neither), the first that answers.
+    static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5,
+                                accepts: ((Data) -> Bool)? = nil) -> Data? {
         var urls = [URL]()
         if let prefix = artifact.r2Prefix {
             let cdn = (ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"].flatMap { $0.isEmpty ? nil : $0 } ?? ModelDownloader.defaultR2CDNURL)
@@ -48,8 +51,13 @@ enum ClusterProductModelStore {
         }
         if let config = try? ConfigManager.loadOrDefaults(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
            let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") { urls.append(url) }
-        for url in urls { if let data = fetchManifest(url, artifact: artifact, seconds: seconds) { return data } }
-        return nil
+        var candidates = [Data]()
+        for url in urls {
+            guard let data = fetchManifest(url, artifact: artifact, seconds: seconds), !candidates.contains(data) else { continue }
+            if accepts == nil || accepts?(data) == true { return data }
+            candidates.append(data)
+        }
+        return candidates.first
     }
 
     private static func fetchManifest(_ url: URL, artifact: ClusterCatalogArtifact, seconds: Double) -> Data? {
@@ -70,14 +78,20 @@ enum ClusterProductModelStore {
 
     /// Clones a product-store model into the cluster's store under its folder name; nil when it is there already.
     /// `providerConfiguration` names the catalog whose exact manifest bytes are written beside the files.
-    static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil) throws -> String? {
+    static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil,
+                                      accepts: ((_ manifest: Data, _ folder: URL) -> Bool)? = nil) throws -> String? {
         var artifact = installed.artifact
         if case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: artifact) {
-            if let providerConfiguration { repairManifest(store.appendingPathComponent(folder), installed: installed, providerConfiguration: providerConfiguration) }
+            if let providerConfiguration {
+                let directory = store.appendingPathComponent(folder)
+                repairManifest(directory, installed: installed, providerConfiguration: providerConfiguration,
+                               accepts: accepts.map { check in { check($0, directory) } })
+            }
             return nil
         }
         guard !FileManager.default.fileExists(atPath: store.appendingPathComponent(artifact.folderName).path) else { return nil }
-        if let providerConfiguration, let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact) {
+        if let providerConfiguration, let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact,
+                accepts: accepts.map { check in { check($0, installed.directory) } }) {
             artifact.manifest = exact
         }
         // Own staging per call, exclusive rename: concurrent clones (onboarding and service) never mix files.
@@ -91,15 +105,17 @@ enum ClusterProductModelStore {
     /// manifest; the worker pins the catalog's exact bytes, so the cluster said "not supported" for a verified model
     /// forever (Qwen 3.5 9B, 2026-10-15: the two differed only in `created_at`). When the folder's manifest names
     /// the same artifact and files but is not the catalog's bytes, the catalog's bytes replace it, once they name exactly the same files (`fetchManifest`).
-    static func repairManifest(_ folder: URL, installed: Installed, providerConfiguration: URL) {
+    static func repairManifest(_ folder: URL, installed: Installed, providerConfiguration: URL, accepts: ((Data) -> Bool)? = nil) {
         let manifest = folder.appendingPathComponent("manifest.json")
-        // Asked once per folder per process: the catalog is read only for a model it has not been checked against.
-        guard repairLock.withLock({ repairChecked.insert(folder.path).inserted }),
-              let current = ClusterModelStore.readSmall(manifest),
+        // Asked once per folder per process: the catalog is read only for a model it has not been checked against;
+        // a manifest this Mac's worker already takes is left as it is.
+        // Only with the worker's own answer: without it the catalog's two encodings could replace one the worker takes.
+        guard let accepts, repairLock.withLock({ repairChecked.insert(folder.path).inserted }),
+              let current = ClusterModelStore.readSmall(manifest), !accepts(current),
               let parsed = try? ClusterCatalogArtifact.parse(manifest: current),
               parsed.aggregateSHA256 == installed.artifact.aggregateSHA256, ClusterCatalogArtifact.sameFiles(parsed.files, installed.artifact.files),
-              let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: installed.artifact),
-              exact != current else { return }
+              let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: installed.artifact, accepts: accepts),
+              exact != current, accepts(exact) else { return }
         var information = stat()
         guard lstat(folder.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR, information.st_uid == geteuid() else { return }
         try? exact.write(to: manifest, options: [.atomic])

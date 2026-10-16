@@ -32,7 +32,13 @@ struct Local: AsyncParsableCommand {
                 print("{}")
             } else {
                 printError("No local server running.")
-                printError("Start one with:  darkbloom start --local")
+                if let key = LocalEndpoint.existingClusterToken() {
+                    // `darkbloom cluster local` with the API on the other Mac: the key is the same on both.
+                    printError("The cluster's API key (the same on both Macs; `darkbloom cluster` shows where the API is):")
+                    printError("  \(key)")
+                } else {
+                    printError("Start one with:  darkbloom start --local")
+                }
             }
             throw ExitCode.failure
         }

@@ -361,7 +361,9 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     public var apiLine: String {
         let base = "API at http://localhost:\(port) on \(servedBy)"
         guard network == true else { return base }
+        // Local only, the API on the other Mac: this Mac's own port passes to it (`ClusterLocalRelay`).
         return base + ", and at port \(port) of \(servedBy == "this Mac" ? "its" : "that Mac's") LAN or tailnet address"
+            + (servedBy == "this Mac" ? "" : "; this Mac answers too (`darkbloom local` shows its address)")
     }
 
     /// The local-serving line as this screen shows it. The part that serves words it for its own Mac ("this Mac's

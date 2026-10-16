@@ -98,6 +98,8 @@ enum ClusterSetupChild {
 enum ClusterSetupStream {
     struct Chunk: Equatable, Sendable {
         var content: String?
+        /// The delta carried reasoning (a thinking model's first tokens).
+        var reasoning = false
         var finishReason: String?
         var completionTokens: Int?
         var done: Bool
@@ -117,7 +119,9 @@ enum ClusterSetupStream {
             chunk.error = ClusterConsoleText.bounded((error["message"] as? String) ?? "the server sent an error", maximum: 200)
         }
         if let choice = (object["choices"] as? [[String: Any]])?.first {
-            chunk.content = (choice["delta"] as? [String: Any])?["content"] as? String
+            let delta = choice["delta"] as? [String: Any]
+            chunk.content = delta?["content"] as? String
+            chunk.reasoning = ["reasoning_content", "reasoning"].contains { (delta?[$0] as? String)?.isEmpty == false }
             chunk.finishReason = choice["finish_reason"] as? String
         }
         if let usage = object["usage"] as? [String: Any] { chunk.completionTokens = (usage["completion_tokens"] as? NSNumber)?.intValue }

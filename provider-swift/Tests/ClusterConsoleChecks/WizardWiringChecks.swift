@@ -155,6 +155,8 @@ extension ClusterConsoleCheck {
         // The stream reader.
         expectEqual(ClusterSetupStream.parse(#"data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#)?.content, "Hi", "content")
         expectEqual(ClusterSetupStream.parse(#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#)?.finishReason, "length", "finish")
+        expectEqual(ClusterSetupStream.parse(#"data: {"choices":[{"delta":{"reasoning":"We need"},"finish_reason":null}]}"#)?.reasoning, true, "reasoning delta")
+        expectEqual(ClusterSetupStream.parse(#"data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#)?.reasoning, false, "content delta is not reasoning")
         expectEqual(ClusterSetupStream.parse(#"data: {"choices":[],"usage":{"completion_tokens":8}}"#)?.completionTokens, 8, "usage")
         expectEqual(ClusterSetupStream.parse("data: [DONE]")?.done, true, "done")
         expect(ClusterSetupStream.parse(#"data: {"error":{"message":"Distributed generation did not complete"}}"#)?.error?.contains("did not complete") == true, "error")

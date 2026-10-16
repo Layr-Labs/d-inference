@@ -110,6 +110,9 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// moves to it: true for local only, with the API's address in `bind`. Nil from an older build (nothing recorded).
     public var localOnly: Bool?
     public var bind: String?
+    /// `serve`, local only: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
+    /// so the key stays the same whichever Mac runs the API. Only inside the keyed link control session; never logged.
+    public var localToken: String?
     public init(op: Operation, model: String? = nil, text: String? = nil, cache: ClusterCacheSettingsSync? = nil,
                 clusterID: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
                 facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil,

@@ -39,7 +39,8 @@ extension Start {
         // is still inside a collective when its peer went away needs its
         // progress limit to do so; nothing signals it sooner.
         let stopAllowance = session.cooperativeStopAllowanceNanoseconds
-        let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
+        // `darkbloom cluster local`: the pair's one key, whichever Mac the plan makes rank 0.
+        let token = try noAuth ? nil : noCoordinator ? LocalEndpoint.loadOrCreateClusterToken() : LocalEndpoint.loadOrCreateToken()
         // From the selected registered model's row, like the stop allowance.
         let budget = try session.firstTokenBudgetPolicy()
         let server = DistributedLocalServer(

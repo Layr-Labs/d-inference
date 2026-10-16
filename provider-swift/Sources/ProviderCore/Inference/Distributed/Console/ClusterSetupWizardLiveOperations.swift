@@ -270,6 +270,20 @@ final class LiveContext: @unchecked Sendable {
             jacclDevice: device, linkSecretFile: pairing.secretFile)
     }
 
+    /// Whether this Mac's cluster worker describes the model in `folder` with `manifest` (its runtime description:
+    /// configuration and manifest only, no model load, a second at most).
+    func workerAcceptsManifest(_ manifest: Data, folder: URL) -> Bool {
+        let worker = settings.workerExecutable
+            ?? ClusterBundledHelpers.defaultWorker(darkbloomExecutable: settings.darkbloomExecutable).path
+        guard let digest = try? workerSHA256(worker), let directory = try? ClusterConsoleInstanceLock.userTemporaryDirectory() else { return false }
+        let file = directory.appendingPathComponent("manifest-check-\(getpid())-\(UInt32.random(in: 0 ... .max)).json")
+        guard (try? manifest.write(to: file, options: [.atomic])) != nil else { return false }
+        defer { try? FileManager.default.removeItem(at: file) }
+        return (try? DistributedCapabilityProbe.run(executable: URL(fileURLWithPath: worker), arguments: ["--describe-runtime",
+            "--config", folder.appendingPathComponent("config.json").path, "--manifest", file.path,
+            "--expected-executable-sha256", digest], deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)) != nil
+    }
+
     /// The worker's digest, read again only when its size or change time moved (each refresh asks).
     func workerSHA256(_ path: String) throws -> String {
         var info = stat()
@@ -412,7 +426,8 @@ final class LiveContext: @unchecked Sendable {
             // `darkbloom cluster` needs no model folder: the models single-Mac Darkbloom installed are cloned into the
             // cluster's store (no new blocks), so both the leader and its members list them by digest.
             for installed in ClusterProductModelStore.installed() {
-                _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store), providerConfiguration: configuration)
+                _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store), providerConfiguration: configuration,
+                                                                        accepts: workerAcceptsManifest)
             }
         }
         let doctor = blockingWizard { await ClusterDiagnostics.doctor(providerConfiguration: self.configuration, localLink: link) }
@@ -547,7 +562,7 @@ final class LiveContext: @unchecked Sendable {
         }
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,
             localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements(),
-            leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home),
+            leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             peerMayReceive: settings.derivedPlacement)
@@ -680,7 +695,7 @@ final class LiveContext: @unchecked Sendable {
         request.httpMethod = "POST"
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let token = LocalEndpoint.token(forPort: port) { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // Greedy and without a thinking phase, so the few tokens asked for are the answer itself.
         let body: [String: Any] = ["model": model, "messages": [["role": "user", "content": text]], "max_tokens": maxTokens,
                                    "stream": true, "temperature": 0, "stream_options": ["include_usage": true], "enable_thinking": false]
@@ -688,7 +703,7 @@ final class LiveContext: @unchecked Sendable {
         let prepared = request
         blockingWizard {
             let started = DispatchTime.now().uptimeNanoseconds
-            var first: UInt64?, chunks = 0, usage: Int?, finish: String?
+            var first: UInt64?, chunks = 0, usage: Int?, finish: String?, answered = false
             do {
                 let (bytes, response) = try await URLSession.shared.bytes(for: prepared)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -700,15 +715,19 @@ final class LiveContext: @unchecked Sendable {
                 for try await line in bytes.lines {
                     guard let chunk = ClusterSetupStream.parse(line) else { continue }
                     if let error = chunk.error { events(.failed(error)); return }
+                    // A thinking model's first tokens are its reasoning: they count for the first token.
+                    if chunk.reasoning, first == nil { first = DispatchTime.now().uptimeNanoseconds }
                     if let content = chunk.content, !content.isEmpty {
                         if first == nil { first = DispatchTime.now().uptimeNanoseconds }
-                        chunks += 1
+                        chunks += 1; answered = true
                         events(.text(content))
                     }
                     if let reason = chunk.finishReason { finish = reason }
                     if let tokens = chunk.completionTokens { usage = tokens }
                     if chunk.done { break }
                 }
+                // GPT-OSS reasons first and `enable_thinking` does not stop it: the test's few tokens may all be thinking.
+                if !answered, first != nil { events(.text("(still thinking when the test's \(maxTokens) tokens ran out)")) }
                 let end = DispatchTime.now().uptimeNanoseconds
                 let tokens = usage ?? chunks
                 let rate: Double? = first.flatMap { f in tokens > 1 && end > f ? Double(tokens - 1) / (Double(end - f) / 1e9) : nil }

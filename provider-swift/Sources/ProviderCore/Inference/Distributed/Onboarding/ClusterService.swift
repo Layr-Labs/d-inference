@@ -91,6 +91,12 @@ public final class ClusterService: @unchecked Sendable {
     var controlResponder: ClusterSetupLinkExchange.Responder?
     /// The port the leading part's API listened on last; kept while no other program takes it.
     private var leaderPort: Int?
+    /// Local only, on the Mac that is not rank 0: its own port passed to rank 0's API (`ClusterLocalRelay`).
+    private var relay: ClusterLocalRelay?
+    /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
+    private var relayTargetPort: Int?
+    private var relayAsked = Date.distantPast
+    private var relayAsking = false
     /// When each listener last looked for the cable on another port (`cableMove`).
     private var responderCableCheck = Date.distantPast
     var controlCableCheck = Date.distantPast
@@ -211,6 +217,7 @@ public final class ClusterService: @unchecked Sendable {
             autoreleasepool {
                 ensureResponder(say: say)
                 supervise(say: say)
+                relayTick(say: say)
                 syncMembers(say: say)
                 checkForUpdate(say: say)
                 publish()
@@ -220,6 +227,7 @@ public final class ClusterService: @unchecked Sendable {
         lock.withLock { stopping = true }
         _ = controlDone.wait(timeout: .now() + 5)
         say("stopping")
+        lock.withLock { () -> ClusterLocalRelay? in defer { relay = nil }; return relay }?.stop()
         lock.withLock { responder }?.stop()
         lock.withLock { controlResponder }?.stop()
         let clean = stopChild(say: say, seconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds))
@@ -308,6 +316,57 @@ public final class ClusterService: @unchecked Sendable {
         return pairing.peerPin
     }
 
+    /// Local only, on the Mac whose part is not rank 0: its own API port (8000, else the next free one) passes each
+    /// connection over the cable to rank 0's API, so the cluster answers at the same address whichever Mac the plan
+    /// made rank 0, with the same key (`LocalEndpoint.loadOrCreateClusterToken`). Stopped whenever this Mac's part
+    /// is not running or is rank 0, before rank 0 here takes the port.
+    private func relayTick(say: @escaping @Sendable (String) -> Void) {
+        let record = try? store.readRecord()
+        let saved = context.savedConfiguration().configuration
+        let runsMember = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("solo:") != true }
+        var wanted: ClusterLocalRelay.Target?
+        if let record, record.leadership?.serving == true, record.leadership?.scope.isLocalOnly == true,
+           let saved, saved.role != .leader, saved.peers.indices.contains(0), runsMember {
+            askRankZeroPort()
+            if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: saved.peers[0].host, port: port) }
+        }
+        let current = lock.withLock { relay }
+        if let current, current.target == wanted, !current.isStopped { return }
+        if let current {
+            current.stop()
+            lock.withLock { relay = nil }
+            LocalEndpoint.removeInfo(ifPID: getpid())
+            say("stopped passing this Mac's port \(current.port) to the API on the other Mac")
+        }
+        guard let wanted, let token = try? LocalEndpoint.loadOrCreateClusterToken() else { return }
+        let port = ClusterLocalServing.servingPort()
+        guard let started = ClusterLocalRelay(port: port, target: wanted) else { return }
+        lock.withLock { relay = started }
+        try? LocalEndpoint.writeInfo(.init(host: "0.0.0.0", port: UInt16(port), apiKey: token,
+            version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date())))
+        say("the API answers on this Mac's port \(port) too (passed over the cable to the other Mac, rank 0)")
+    }
+
+    /// Asks the other Mac (every 10 s, never on this loop's thread) where its rank 0 API listens.
+    private func askRankZeroPort() {
+        let begin = lock.withLock { () -> Bool in
+            guard !relayAsking, Date().timeIntervalSince(relayAsked) >= 10 else { return false }
+            relayAsking = true; relayAsked = Date(); return true
+        }
+        guard begin else { return }
+        let context = self.context
+        Thread.detachNewThread { [weak self] in
+            defer { self?.lock.withLock { self?.relayAsking = false } }
+            guard let pairing = try? ClusterSetupLinkExchange.pairing(), let selection = try? context.linkSelection(),
+                  let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
+                  let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
+                      body: body, seconds: 5).reply,
+                  let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else { return }
+            let port = status.sessionLeader && status.session?.ready == true ? status.session?.port : nil
+            self?.lock.withLock { self?.relayTargetPort = port }
+        }
+    }
+
     /// On the leader: every `ClusterOnboardingSync.dueEverySeconds`, ask the member for its status and send
     /// what differs from this Mac's record (serve with the model, or stop), on a thread of its own so this
     /// Mac's own supervision never waits on the cable. A member that missed a start or a stop follows once it
@@ -349,7 +408,9 @@ public final class ClusterService: @unchecked Sendable {
             case .none: return
             case .serve(let model):
                 let runsIt = member?.serving == true && member?.modelName == model
-                if send(.init(op: .serve, model: model, deployment: leadership.deployment, scope: leadership.scope), seconds: 10) != nil {
+                var serve = ClusterServiceCommand(op: .serve, model: model, deployment: leadership.deployment, scope: leadership.scope)
+                if leadership.scope.isLocalOnly { serve.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
+                if send(serve, seconds: 10) != nil {
                     say(runsIt ? "synced how the cluster serves to the member" : "the member had missed the start: started its part")
                 }
             case .stop:
@@ -397,6 +458,8 @@ public final class ClusterService: @unchecked Sendable {
                                                                                      recorded: recorded)
                     // The leader's serving scope, so it holds when control moves here (an older leader sends none).
                     if let scope = command.scope { $0.leadership?.scope = scope }
+                    // The pair's one local API key, before this Mac starts a part that may be rank 0.
+                    if let token = command.localToken { LocalEndpoint.saveClusterToken(token) }
                 }
             }
             say(command.op == .serve ? "the leader started the cluster" : "the leader stopped the cluster")
@@ -794,6 +857,10 @@ public final class ClusterService: @unchecked Sendable {
         } else {
             guard let configuration = saved.configuration else { return }
             if configuration.role == .leader {
+                // This Mac is rank 0 now: the relay gives its port back first.
+                if let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) {
+                    passing.stop(); LocalEndpoint.removeInfo(ifPID: getpid())
+                }
                 // A port no other program listens on (another local server may hold 8000).
                 let port = lock.withLock { leaderPort }.flatMap { ClusterLocalServing.portIsFree($0) ? $0 : nil }
                     ?? ClusterLocalServing.servingPort()
@@ -852,5 +919,14 @@ public final class ClusterService: @unchecked Sendable {
         if clean { lock.withLock { child = nil; childSetup = nil; lastEnd = "stopped" } }
         say(clean ? "this Mac's part stopped" : "this Mac's part is still releasing after \(Int(seconds)) s")
         return clean
+    }
+}
+
+extension DistributedInstalledOwner {
+    /// The workers' own diagnostics, kept beside the cluster service's logs (`worker.log`, bounded, owner-only), so
+    /// a healthy session's prefix-cache and context lines can be read (`ClusterWorkerDiagnosticsLog`).
+    public static func installWorkerDiagnosticsLog() {
+        guard let paths = try? ClusterUserPaths() else { return }
+        ClusterWorkerDiagnosticsLog.shared = .init(url: ClusterSetupPaths(paths: paths).directory.appendingPathComponent("worker.log"))
     }
 }

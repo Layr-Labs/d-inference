@@ -159,6 +159,35 @@ final class EndpointBox: @unchecked Sendable {
         try require(ClusterLocalServing.servingPort(isFree:{_ in true})==8000,"8000 not kept when free")
         try require(ClusterLocalServing.servingPort(isFree:{$0 != 8000 && $0 != 8001})==8002,"the next free port not taken")
         try require(ClusterLocalServing.servingPort(isFree:{_ in false})==8000,"no free port: 8000 (the start then says it is taken)")
+
+        // The relay on the Mac that is not rank 0 (2026-10-16): bytes pass both ways, the reply ends when the API
+        // closes, and a stopped relay gives its port back.
+        let api=socket(AF_INET,SOCK_STREAM,0)
+        defer{close(api)}
+        var apiAddress=sockaddr_in(); apiAddress.sin_len=UInt8(MemoryLayout<sockaddr_in>.size); apiAddress.sin_family=sa_family_t(AF_INET)
+        apiAddress.sin_port=0; apiAddress.sin_addr=in_addr(s_addr:INADDR_LOOPBACK.bigEndian)
+        _=withUnsafePointer(to:&apiAddress){$0.withMemoryRebound(to:sockaddr.self,capacity:1){bind(api,$0,socklen_t(MemoryLayout<sockaddr_in>.size))}}
+        try require(listen(api,4)==0,"stand-in API did not listen")
+        var apiLength=socklen_t(MemoryLayout<sockaddr_in>.size)
+        _=withUnsafeMutablePointer(to:&apiAddress){$0.withMemoryRebound(to:sockaddr.self,capacity:1){getsockname(api,$0,&apiLength)}}
+        let apiPort=Int(UInt16(bigEndian:apiAddress.sin_port))
+        Thread.detachNewThread {
+            let connection=accept(api,nil,nil); guard connection>=0 else{return}
+            var buffer=[UInt8](repeating:0,count:64); let count=read(connection,&buffer,64)
+            if count>0 { let reply=Array("echo:".utf8)+buffer[0..<count]; _=reply.withUnsafeBytes{write(connection,$0.baseAddress,$0.count)} }
+            close(connection)
+        }
+        let relayPort=ClusterLocalServing.servingPort(preferred:47_000+Int(getpid()%1_000),span:200)
+        guard let relay=ClusterLocalRelay(port:relayPort,bind:"127.0.0.1",target:.init(host:"127.0.0.1",port:apiPort)) else{throw CheckFailure(message:"relay did not listen on \(relayPort)")}
+        try require(!ClusterLocalServing.portIsFree(relayPort),"the relay's port read as free")
+        guard let client=ClusterLocalRelay.connect(.init(host:"127.0.0.1",port:relayPort)) else{throw CheckFailure(message:"could not reach the relay")}
+        defer{close(client)}
+        _=Array("hello".utf8).withUnsafeBytes{write(client,$0.baseAddress,$0.count)}
+        var received=[UInt8](); var chunk=[UInt8](repeating:0,count:64)
+        while true { let count=read(client,&chunk,64); if count<=0{break}; received+=chunk[0..<count] }
+        try require(String(decoding:received,as:UTF8.self)=="echo:hello","relay passed \(String(decoding:received,as:UTF8.self))")
+        relay.stop()
+        try require(relay.isStopped && ClusterLocalServing.portIsFree(relayPort),"a stopped relay kept its port")
     }
     static func main() async throws {
         signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}

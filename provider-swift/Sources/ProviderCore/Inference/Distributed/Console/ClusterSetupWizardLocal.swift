@@ -55,6 +55,8 @@ enum ClusterSetupLocalReader {
             modelsError: modelsError, pairingCode: pairingCode(installation), checks: doctor,
             linkPairings: linkPairings(ClusterPairingStore.default()))
         report.modelStoreFreeBytes = store.flatMap(freeBytes)
+        report.served = Array(ClusterServedSpeedHistory.entries(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+            .sorted { $0.sample.finishedAt > $1.sample.finishedAt }.prefix(ClusterSetupReport.servedShared))
         return report
     }
 

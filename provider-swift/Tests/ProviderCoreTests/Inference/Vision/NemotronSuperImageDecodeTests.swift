@@ -240,11 +240,83 @@ extension NemotronSuperImageDecodeTests {
 
     @Test func cancellationStopsInspectionAndDecode() async throws {
         let data = try NemotronSuperImageFixtures.data("png-rgb8-2560x1440.png")
-        let task = Task { () throws -> NemotronSuperImageDecode.Raster in
+        let decode = Task { () throws -> NemotronSuperImageDecode.Raster in
             withUnsafeCurrentTask { $0?.cancel() }
             return try NemotronSuperImageDecode.decode(data, orientation: .applyEXIF)
         }
-        await #expect(throws: CancellationError.self) { try await task.value }
+        await #expect(throws: CancellationError.self) { try await decode.value }
+        let inspect = Task { () throws -> NemotronSuperImageDecode.Quote in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try NemotronSuperImageDecode.inspect(data, orientation: .applyEXIF)
+        }
+        await #expect(throws: CancellationError.self) { try await inspect.value }
+    }
+
+    /// Verdicts checked against Pillow 12.2.0 on the same constructions: a
+    /// compressed chunk may inflate to exactly 1 MiB, text may total exactly
+    /// 64 MiB, and corrupt, truncated or malformed non-XMP chunks are ignored.
+    /// A second iCCP is refused as hardening; Pillow reads every copy.
+    @Test func compressedChunkLimitsMatchPillow() throws {
+        let mebibyte = 1024 * 1024
+        func spaces(_ count: Int) -> [UInt8] { SuperImageTestPNG.deflate([UInt8](repeating: 32, count: count)) }
+        func image(_ chunks: [Data]) -> Data {
+            SuperImageTestPNG.image(width: 2, height: 1, colorType: 0, depth: 8, rows: [[0, 7, 9]], before: chunks)
+        }
+        let corrupt: [UInt8] = [0x78, 0x9c, 0xff, 0xff, 0xff]
+        let keyed = { (keyword: String, body: [UInt8]) in Array(keyword.utf8) + [0, 0] + body }
+        let accepted: [(String, [Data])] = [
+            ("zTXt of exactly 1 MiB", [SuperImageTestPNG.chunk("zTXt", keyed("Title", spaces(mebibyte)))]),
+            ("corrupt zTXt", [SuperImageTestPNG.chunk("zTXt", keyed("Title", corrupt))]),
+            ("truncated zTXt", [SuperImageTestPNG.chunk("zTXt", keyed("Title", Array(spaces(1000).dropLast(6))))]),
+            ("corrupt compressed iTXt", [SuperImageTestPNG.chunk("iTXt", Array("Desc".utf8) + [0, 1, 0]
+                + Array("en".utf8) + [0, 0] + corrupt)]),
+            ("malformed iTXt", [SuperImageTestPNG.chunk("iTXt", Array("Desc".utf8) + [0, 1])]),
+            ("iTXt that is not UTF-8", [SuperImageTestPNG.chunk("iTXt", Array("Desc".utf8) + [0, 0, 0]
+                + Array("en".utf8) + [0, 0, 0xff, 0xfe])]),
+            ("iCCP of exactly 1 MiB", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(mebibyte)))]),
+            ("corrupt iCCP", [SuperImageTestPNG.chunk("iCCP", keyed("icc", corrupt))]),
+            ("text totalling exactly 64 MiB", (0..<64).map {
+                SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte - 1)))
+            } + [SuperImageTestPNG.chunk("tEXt", Array("x".utf8) + [0] + [UInt8](repeating: 32, count: 64))]),
+        ]
+        for (name, chunks) in accepted {
+            #expect(try NemotronSuperImageDecode.decode(image(chunks), orientation: .applyEXIF).rgb
+                    == [7, 7, 7, 9, 9, 9], "\(name)")
+        }
+        typealias Failure = NemotronSuperImageDecode.Failure
+        let refused: [(String, [Data], Failure)] = [
+            ("zTXt over 1 MiB", [SuperImageTestPNG.chunk("zTXt", keyed("Title", spaces(mebibyte + 1)))], .sizeLimit),
+            ("unkeyed zTXt over 1 MiB", [SuperImageTestPNG.chunk("zTXt", [0, 0] + spaces(mebibyte + 1))], .sizeLimit),
+            ("compressed iTXt over 1 MiB", [SuperImageTestPNG.chunk("iTXt", Array("Desc".utf8) + [0, 1, 0]
+                + Array("en".utf8) + [0, 0] + spaces(mebibyte + 1))], .sizeLimit),
+            ("iCCP over 1 MiB", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(mebibyte + 1)))], .sizeLimit),
+            ("text over 64 MiB", (0..<64).map {
+                SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte - 1)))
+            } + [SuperImageTestPNG.chunk("tEXt", Array("x".utf8) + [0] + [UInt8](repeating: 32, count: 65))],
+             .sizeLimit),
+            ("second iCCP", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(10))),
+                             SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(10)))], .invalidHeader),
+        ]
+        for (name, chunks, failure) in refused {
+            #expect(throws: failure, "\(name)") {
+                try NemotronSuperImageDecode.inspect(image(chunks), orientation: .applyEXIF)
+            }
+        }
+    }
+
+    @Test func progressiveScanCountIsCapped() throws {
+        // Container-level check only: ImageIO never sees these headers.
+        let frame: [UInt8] = [0xff, 0xc2, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]
+        let scan: [UInt8] = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 0]
+        func jpeg(scans: Int) -> Data {
+            Data([0xff, 0xd8] + frame + Array([[UInt8]](repeating: scan, count: scans).joined()) + [0xff, 0xd9])
+        }
+        let limit = NemotronSuperJPEGContainer.maximumScans
+        #expect(limit == 500)
+        #expect(try NemotronSuperImageDecode.inspect(jpeg(scans: limit), orientation: .applyEXIF).format == .jpeg)
+        #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
+            try NemotronSuperImageDecode.inspect(jpeg(scans: limit + 1), orientation: .applyEXIF)
+        }
     }
 }
 

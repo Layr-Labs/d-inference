@@ -50,9 +50,8 @@ final class NemotronSuperInflater {
             try withUnsafeMutablePointer(to: &scratch) { pointer in
                 stream.pointee.next_out = pointer
                 stream.pointee.avail_out = 1
-                let reachedEnd = try step()
+                _ = try step()
                 guard stream.pointee.avail_out == 1 else { throw NemotronSuperImageDecode.Failure.invalidRaster }
-                ended = reachedEnd
             }
         }
         guard stream.pointee.avail_in == 0, segments.allSatisfy(\.isEmpty) else {
@@ -81,22 +80,45 @@ final class NemotronSuperInflater {
         return false
     }
 
-    /// A complete zlib stream whose output must not exceed `limit` bytes.
-    static func inflateAll(_ input: UnsafeRawBufferPointer, limit: Int) throws -> Data {
-        let inflater = try NemotronSuperInflater(segments: [input])
+    enum PillowDecompression { case output(Data, complete: Bool), tooLarge, corrupt }
+
+    /// Python `zlib.decompressobj().decompress(data, limit)` as Pillow's
+    /// `_safe_zlib_decompress` uses it: output stops at `limit`, and input still
+    /// unconsumed there is Pillow's "too large" refusal. Truncated input yields
+    /// its partial output; a zlib error is `corrupt`. Empty input is empty output.
+    static func pillowDecompress(_ input: UnsafeRawBufferPointer, limit: Int) -> PillowDecompression {
+        guard let base = input.baseAddress, !input.isEmpty, input.count <= Int(UInt32.max) else {
+            return .output(Data(), complete: false)
+        }
+        let stream = UnsafeMutablePointer<z_stream>.allocate(capacity: 1)
+        stream.initialize(to: z_stream())
+        defer {
+            inflateEnd(stream)
+            stream.deinitialize(count: 1)
+            stream.deallocate()
+        }
+        guard inflateInit_(stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return .corrupt }
+        stream.pointee.next_in = UnsafeMutablePointer(mutating: base.assumingMemoryBound(to: Bytef.self))
+        stream.pointee.avail_in = UInt32(input.count)
         var output = Data()
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
-        while !inflater.ended {
-            let produced = try chunk.withUnsafeMutableBufferPointer { buffer -> Int in
-                inflater.stream.pointee.next_out = buffer.baseAddress
-                inflater.stream.pointee.avail_out = UInt32(buffer.count)
-                while inflater.stream.pointee.avail_out > 0, !(try inflater.step()) {}
-                return buffer.count - Int(inflater.stream.pointee.avail_out)
+        while true {
+            let room = min(chunk.count, limit - output.count)
+            guard room > 0 else { return stream.pointee.avail_in > 0 ? .tooLarge : .output(output, complete: false) }
+            let (status, produced) = chunk.withUnsafeMutableBufferPointer { buffer -> (Int32, Int) in
+                stream.pointee.next_out = buffer.baseAddress
+                stream.pointee.avail_out = UInt32(room)
+                let status = inflate(stream, Z_NO_FLUSH)
+                return (status, room - Int(stream.pointee.avail_out))
             }
-            guard produced <= limit - output.count else { throw NemotronSuperImageDecode.Failure.sizeLimit }
             output.append(contentsOf: chunk[0..<produced])
+            switch status {
+            case Z_STREAM_END: return .output(output, complete: true)
+            case Z_OK: continue
+            // With output room left, no progress means the input ran out.
+            case Z_BUF_ERROR: return .output(output, complete: false)
+            default: return .corrupt
+            }
         }
-        try inflater.finish()
-        return output
     }
 }

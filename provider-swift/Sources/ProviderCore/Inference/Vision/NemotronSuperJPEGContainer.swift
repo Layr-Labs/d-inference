@@ -19,6 +19,10 @@ struct NemotronSuperJPEGContainer {
 
     private struct Component { let id: UInt8, horizontal: Int, vertical: Int }
 
+    /// Hardening beyond the reference: libjpeg-turbo advises a scan limit for
+    /// untrusted progressive files, and ImageIO's decode cannot be cancelled.
+    static let maximumScans = 500
+
     static func parse(_ bytes: UnsafeRawBufferPointer) throws -> Self {
         typealias Failure = NemotronSuperImageDecode.Failure
         guard bytes.count >= 4, bytes[0] == 0xff, bytes[1] == 0xd8, bytes[2] == 0xff else {
@@ -60,6 +64,7 @@ struct NemotronSuperJPEGContainer {
                 guard let frame else { throw Failure.invalidHeader }
                 try validateScan(payload, frame.components)
                 scans += 1
+                guard scans <= maximumScans else { throw Failure.unsupportedEncoding }
                 position = try entropyEnd(bytes, from: position)
             case 0xe0 where scans == 0:
                 // libjpeg's saw_JFIF_marker test (APP0_DATA_LEN = 14).
@@ -68,7 +73,11 @@ struct NemotronSuperJPEGContainer {
                 let exifMarker = Array("Exif".utf8) + [0, 0]
                 let xmpMarker = Array("http://ns.adobe.com/xap/1.0/".utf8) + [0]
                 if payload.starts(with: exifMarker) {
-                    if exif == nil { exif = Data(payload) } else { exif!.append(Data(payload.dropFirst(6))) }
+                    if exif == nil {
+                        exif = Data(payload)
+                    } else {
+                        exif?.append(contentsOf: payload.dropFirst(exifMarker.count))
+                    }
                 } else if payload.starts(with: xmpMarker) {
                     xmp = Data(payload.dropFirst(xmpMarker.count))
                 }
@@ -149,9 +158,8 @@ struct NemotronSuperJPEGContainer {
         case 3:
             let rgbIDs = components.map(\.id) == [82, 71, 66]
             switch (jfif, adobeTransform) {
-            case (true, nil), (true, 1), (false, 1): model = .yCbCr
+            case (_, nil), (_, 1): model = .yCbCr
             case (false, 0): model = .rgb
-            case (false, nil) where !rgbIDs: model = .yCbCr
             default: throw Failure.unsupportedEncoding
             }
             if rgbIDs, model != .rgb { throw Failure.unsupportedEncoding }

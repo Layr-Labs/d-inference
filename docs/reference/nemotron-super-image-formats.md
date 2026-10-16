@@ -39,7 +39,10 @@ each sample:
 | 6 RGBA | 8, 16 | `RGBA` | RGB (most significant byte); alpha dropped, not composited |
 
 Every chunk CRC is checked. Ancillary chunks other than `eXIf`, XMP text and
-the APNG frame chunks are ignored, as in Pillow.
+the APNG frame chunks do not affect pixels, as in Pillow; compressed text and
+ICC chunks are inflated only to apply Pillow's size limits. Text and ICC rules
+are in `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGText.swift`
+(`NemotronSuperPNGText`).
 
 ## JPEG
 
@@ -72,11 +75,11 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 |---|---|
 | GIF, WebP, BMP, TIFF, HEIF or any other signature | `unsupportedEncoding` |
 | PNG with an unknown critical chunk (for example `CgBI`), a raw-profile EXIF text chunk without `eXIf`, a text chunk keyed `exif` or `xmp`, two XMP packets, a non-SHORT/LONG Orientation, a non-TIFF or BigTIFF EXIF header, or an APNG whose first frame is smaller than the canvas | `unsupportedEncoding` |
-| PNG with a CRC mismatch, invalid IHDR, misplaced PLTE/tRNS, non-consecutive IDAT, data after IEND, an APNG sequence error or a non-zlib `zTXt`/`iCCP` method | `invalidHeader` |
+| PNG with a CRC mismatch, invalid IHDR, misplaced PLTE/tRNS, non-consecutive IDAT, data after IEND, an APNG sequence error, a non-zlib `zTXt`/`iCCP` method, or a second `iCCP` (hardening: Pillow reads every copy) | `invalidHeader` |
 | PNG whose zlib stream is truncated, longer than the raster or has an Adler-32 mismatch, or with an invalid filter type or palette index | `invalidRaster` |
-| JPEG with 12-bit precision, a lossless, hierarchical or arithmetic process, DNL, 2 components, YCCK, JFIF combined with Adobe transform 0, `R`,`G`,`B` component IDs without Adobe transform 0, or other sampling | `unsupportedEncoding` |
+| JPEG with 12-bit precision, a lossless, hierarchical or arithmetic process, DNL, 2 components, YCCK, JFIF combined with Adobe transform 0, `R`,`G`,`B` component IDs without Adobe transform 0, other sampling, or more than 500 scans (hardening beyond the reference: ImageIO's decode cannot be cancelled) | `unsupportedEncoding` |
 | JPEG without a frame or EOI, or with a reserved marker | `invalidHeader` |
-| Compressed XMP above 1 MiB, Pillow's `MAX_TEXT_CHUNK` | `sizeLimit` |
+| Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`) | `sizeLimit` |
 
 ## Limits and admission
 

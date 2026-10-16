@@ -19,10 +19,36 @@ struct NemotronSuperPNGContainer {
     let exif: Data?
     let xmp: Data?
 
-    var channels: Int { [0: 1, 2: 3, 3: 1, 4: 2, 6: 4][colorType] ?? 0 }
+    var channels: Int {
+        switch colorType {
+        case 2: return 3
+        case 4: return 2
+        case 6: return 4
+        default: return 1
+        }
+    }
 
-    /// Pillow `MAX_TEXT_CHUNK`: a larger compressed text chunk fails to open.
-    static let maximumTextBytes = 1024 * 1024
+    /// Chunk types with specific handling; any other ancillary chunk is ignored.
+    enum ChunkType: Int {
+        case header = 0x4948_4452  // IHDR
+        case palette = 0x504c_5445  // PLTE
+        case transparency = 0x7452_4e53  // tRNS
+        case imageData = 0x4944_4154  // IDAT
+        case end = 0x4945_4e44  // IEND
+        case exif = 0x6558_4966  // eXIf
+        case text = 0x7445_5874  // tEXt
+        case compressedText = 0x7a54_5874  // zTXt
+        case internationalText = 0x6954_5874  // iTXt
+        case animationControl = 0x6163_544c  // acTL
+        case frameControl = 0x6663_544c  // fcTL
+        case frameData = 0x6664_4154  // fdAT
+        case gamma = 0x6741_4d41  // gAMA
+        case standardRGB = 0x7352_4742  // sRGB
+        case physicalDimensions = 0x7048_5973  // pHYs
+        case chromaticities = 0x6348_524d  // cHRM
+        case iccProfile = 0x6943_4350  // iCCP
+    }
+
     private static let maximumChunks = 65536
 
     private static let validDepths: [Int: Set<Int>] = [
@@ -41,7 +67,8 @@ struct NemotronSuperPNGContainer {
         var header: (width: Int, height: Int, depth: Int, type: Int, interlaced: Bool)?
         var palette: [UInt8]?, transparency = false
         var imageData: [Range<Int>] = [], dataEnded = false
-        var exif: Data?, xmp: Data?, rawProfile = false
+        var exif: Data?, xmp: Data?, rawProfile = false, profile = false
+        var text = NemotronSuperPNGText()
         var animation = false, frameSequence = 0, framePassedData = false
         var offset = 8, chunks = 0, ended = false
         while !ended {
@@ -49,19 +76,25 @@ struct NemotronSuperPNGContainer {
             if chunks.isMultiple(of: 1024) { try Task.checkCancellation() }
             guard chunks <= maximumChunks else { throw Failure.sizeLimit }
             guard offset <= bytes.count - 12 else { throw Failure.invalidHeader }
-            let length = word(offset), type = word(offset + 4)
+            let length = word(offset), type = ChunkType(rawValue: word(offset + 4))
             guard length <= 0x7fff_ffff, length <= bytes.count - offset - 12,
                   (0..<4).allSatisfy({ isLetter(bytes[offset + 4 + $0]) }) else { throw Failure.invalidHeader }
             let body = (offset + 8)..<(offset + 8 + length)
             let crc = crc32(0, bytes.baseAddress!.advanced(by: offset + 4)
                 .assumingMemoryBound(to: Bytef.self), UInt32(length + 4))
             guard UInt(crc) == UInt(word(body.upperBound)) else { throw Failure.invalidHeader }
-            guard header != nil || type == 0x4948_4452 else { throw Failure.invalidHeader }
-            if !imageData.isEmpty, type != 0x4944_4154 { dataEnded = true }
+            guard header != nil || type == .header else { throw Failure.invalidHeader }
+            if !imageData.isEmpty, type != .imageData { dataEnded = true }
+            guard let type else {
+                // Unknown ancillary chunks never change Pillow's pixel values.
+                guard bytes[offset + 4] & 0x20 != 0 else { throw Failure.unsupportedEncoding }
+                offset = body.upperBound + 4
+                continue
+            }
             // Pillow stops reading frame-0 metadata at the next APNG frame.
             let metadataVisible = !framePassedData
             switch type {
-            case 0x4948_4452:  // IHDR
+            case .header:
                 guard header == nil, length == 13 else { throw Failure.invalidHeader }
                 let width = word(body.lowerBound), height = word(body.lowerBound + 4)
                 let depth = Int(bytes[body.lowerBound + 8]), colour = Int(bytes[body.lowerBound + 9])
@@ -70,13 +103,13 @@ struct NemotronSuperPNGContainer {
                       bytes[body.lowerBound + 10] == 0, bytes[body.lowerBound + 11] == 0,
                       bytes[body.lowerBound + 12] <= 1 else { throw Failure.invalidHeader }
                 header = (width, height, depth, colour, bytes[body.lowerBound + 12] == 1)
-            case 0x504c_5445:  // PLTE
+            case .palette:
                 let entries = length / 3
                 guard let header, palette == nil, imageData.isEmpty, length % 3 == 0,
                       (1...256).contains(entries), header.type != 0, header.type != 4,
                       header.type != 3 || entries <= 1 << header.depth else { throw Failure.invalidHeader }
                 palette = header.type == 3 ? Array(bytes[body]) : []
-            case 0x7452_4e53:  // tRNS: Pillow's RGB conversion ignores transparency.
+            case .transparency:  // Pillow's RGB conversion ignores transparency.
                 guard let header, !transparency, imageData.isEmpty else { throw Failure.invalidHeader }
                 switch header.type {
                 case 0: guard length == 2 else { throw Failure.invalidHeader }
@@ -88,20 +121,20 @@ struct NemotronSuperPNGContainer {
                 default: throw Failure.invalidHeader
                 }
                 transparency = true
-            case 0x4944_4154:  // IDAT
+            case .imageData:
                 guard let header, !dataEnded, header.type != 3 || palette?.isEmpty == false else {
                     throw Failure.invalidHeader
                 }
                 imageData.append(body)
-            case 0x4945_4e44:  // IEND
+            case .end:
                 guard !imageData.isEmpty, length == 0 else { throw Failure.invalidHeader }
                 ended = true
-            case 0x6558_4966:  // eXIf
+            case .exif:
                 guard exif == nil else { throw Failure.invalidHeader }
                 guard metadataVisible else { throw Failure.unsupportedEncoding }
                 exif = Data(bytes[body])
-            case 0x7445_5874, 0x7a54_5874, 0x6954_5874:  // tEXt, zTXt, iTXt
-                switch try text(type: type, bytes: UnsafeRawBufferPointer(rebasing: bytes[body])) {
+            case .text, .compressedText, .internationalText:
+                switch try text.read(type, UnsafeRawBufferPointer(rebasing: bytes[body])) {
                 case .ignored: break
                 case .rawProfile:
                     guard metadataVisible else { throw Failure.unsupportedEncoding }
@@ -110,15 +143,15 @@ struct NemotronSuperPNGContainer {
                     guard xmp == nil, metadataVisible else { throw Failure.unsupportedEncoding }
                     xmp = packet
                 }
-            case 0x6163_544c:  // acTL
+            case .animationControl:
                 guard !animation, imageData.isEmpty, length == 8 else { throw Failure.invalidHeader }
                 animation = true
-            case 0x6663_544c, 0x6664_4154:  // fcTL, fdAT: frame 0 is the IDAT image.
+            case .frameControl, .frameData:  // Frame 0 is the IDAT image.
                 guard animation, length >= 4, word(body.lowerBound) == frameSequence else {
                     throw Failure.invalidHeader
                 }
                 frameSequence += 1
-                if type == 0x6664_4154 {
+                if type == .frameData {
                     guard dataEnded else { throw Failure.invalidHeader }
                 } else if imageData.isEmpty {
                     // An fcTL before IDAT makes IDAT the first frame; it must
@@ -131,17 +164,16 @@ struct NemotronSuperPNGContainer {
                     guard length == 26 else { throw Failure.invalidHeader }
                     framePassedData = true
                 }
-            case 0x6741_4d41: guard length == 4 else { throw Failure.invalidHeader }  // gAMA
-            case 0x7352_4742: guard length == 1 else { throw Failure.invalidHeader }  // sRGB
-            case 0x7048_5973: guard length == 9 else { throw Failure.invalidHeader }  // pHYs
-            case 0x6348_524d: guard length == 32 else { throw Failure.invalidHeader }  // cHRM
-            case 0x6943_4350:  // iCCP: Pillow rejects any non-zlib method.
-                let name = bytes[body].prefix(81).firstIndex(of: 0)
-                guard let name, name > body.lowerBound, name + 1 < body.upperBound,
-                      bytes[name + 1] == 0 else { throw Failure.invalidHeader }
-            default:
-                // Ancillary chunks never change Pillow's pixel values.
-                guard bytes[offset + 4] & 0x20 != 0 else { throw Failure.unsupportedEncoding }
+            case .gamma: guard length == 4 else { throw Failure.invalidHeader }
+            case .standardRGB: guard length == 1 else { throw Failure.invalidHeader }
+            case .physicalDimensions: guard length == 9 else { throw Failure.invalidHeader }
+            case .chromaticities: guard length == 32 else { throw Failure.invalidHeader }
+            case .iccProfile:
+                // At most one profile, as the PNG specification requires, bounds
+                // inflate work; Pillow would read every copy.
+                guard !profile else { throw Failure.invalidHeader }
+                profile = true
+                try NemotronSuperPNGText.checkProfile(UnsafeRawBufferPointer(rebasing: bytes[body]))
             }
             offset = body.upperBound + 4
         }
@@ -155,45 +187,5 @@ struct NemotronSuperPNGContainer {
 
     private static func isLetter(_ byte: UInt8) -> Bool {
         (65...90).contains(byte) || (97...122).contains(byte)
-    }
-
-    private enum Text { case ignored, rawProfile, xmp(Data) }
-
-    /// Only keywords that Pillow's EXIF/XMP lookup reads can change pixels.
-    /// Text it would store with a different type under those keys is refused.
-    private static func text(type: Int, bytes: UnsafeRawBufferPointer) throws -> Text {
-        typealias Failure = NemotronSuperImageDecode.Failure
-        let separator = bytes.firstIndex(of: 0)
-        let keyword = String(decoding: bytes[..<(separator ?? bytes.count)], as: UTF8.self)
-        let value = separator.map { bytes.index(after: $0) } ?? bytes.count
-        if type == 0x7a54_5874, value < bytes.count, bytes[value] != 0 {
-            // Pillow raises for any zTXt with a non-zlib compression method.
-            throw Failure.invalidHeader
-        }
-        switch keyword {
-        case "XML:com.adobe.xmp": break
-        case "Raw profile type exif": return .rawProfile
-        case "exif", "xmp": throw Failure.unsupportedEncoding
-        default: return .ignored
-        }
-        switch type {
-        case 0x7445_5874:  // tEXt
-            return .xmp(Data(bytes[value...]))
-        case 0x7a54_5874:  // zTXt
-            guard value < bytes.count else { return .xmp(Data()) }
-            return .xmp(try NemotronSuperInflater.inflateAll(
-                UnsafeRawBufferPointer(rebasing: bytes[(value + 1)...]), limit: maximumTextBytes))
-        default:  // iTXt; Pillow ignores the malformed or non-zlib forms refused here.
-            guard value + 2 <= bytes.count else { throw Failure.unsupportedEncoding }
-            let compressed = bytes[value] != 0
-            guard !compressed || bytes[value + 1] == 0,
-                  let language = bytes[(value + 2)...].firstIndex(of: 0),
-                  let translated = bytes[(language + 1)...].firstIndex(of: 0) else {
-                throw Failure.unsupportedEncoding
-            }
-            let text = UnsafeRawBufferPointer(rebasing: bytes[(translated + 1)...])
-            guard compressed else { return .xmp(Data(text)) }
-            return .xmp(try NemotronSuperInflater.inflateAll(text, limit: maximumTextBytes))
-        }
     }
 }

@@ -163,6 +163,38 @@ extension NemotronSuperManagedSlotTests {
         try await Self.awaitMemoryReturn(loop)
     }
 
+    /// A fact retrieval question at the end of a long synthetic document
+    /// (about 32,000 tokens by default; `DARKBLOOM_SUPER_NEEDLE_FACTS` sets the
+    /// fact count) through the managed slot's served context.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
+        && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil
+        && ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_NEEDLE"] == "1"),
+        .timeLimit(.minutes(20)))
+    func pinnedCheckpointFindsAFactInALongContext() async throws {
+        let count = Int(ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_NEEDLE_FACTS"] ?? "") ?? 1_530
+        let colors = ["red", "green", "blue", "amber", "violet", "teal", "ochre", "silver"]
+        let facts = (1...count).map { item in
+            "Fact \(item): item \(item) is \(colors[(item * 7) % colors.count]) and weighs \(item % 97) kg."
+        }
+        let target = count * 2 / 3
+        let body = try JSONSerialization.data(withJSONObject: ["model": Self.modelID, "stream": true,
+            "temperature": 0, "max_tokens": 32, "chat_template_kwargs": ["enable_thinking": false],
+            "messages": [["role": "user", "content": facts.joined(separator: " ")
+                + "\n\nWhat color is item \(target), and how much does it weigh?"]]])
+        let (loop, _) = try await Self.liveLoop(name: "super-needle")
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        let begin = ContinuousClock.now
+        let answer = try await Self.send(body, to: loop, recorder: recorder, consumer: consumer, deadline: 900)
+        let content = SuperSSE(answer.sse).content
+        let usage = Self.usage(answer.terminal)
+        print("SUPER_NEEDLE facts=\(count) prompt=\(usage.map { String($0.promptTokens) } ?? "none") "
+            + "s=\(begin.duration(to: .now)) answer=\(content.debugDescription)")
+        let color = colors[(target * 7) % colors.count]
+        #expect(content.lowercased().contains(color) && content.contains("\(target % 97)"), "\(answer.terminal)")
+        #expect(await loop.unloadModel(Self.modelID))
+        try await Self.awaitMemoryReturn(loop)
+    }
+
     /// Load, serve, unload, and load again: in the same loop and in a new
     /// loop of the same process, as the managed slot is reloaded in service.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"

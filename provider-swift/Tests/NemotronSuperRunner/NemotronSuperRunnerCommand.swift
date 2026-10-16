@@ -24,15 +24,20 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var port = 0
     @Option(help: "Diagnostics port on 127.0.0.1 (0 = ephemeral).")
     var diagnosticsPort = 0
-    @Option(help: "Maximum context tokens (the Super builder accepts at most 16384).")
-    var maxContext = 16384
+    @Option(help: """
+        Maximum context tokens. Default: the managed slot's context \
+        (NemotronSuperServingPolicy.contextTokens); the builder accepts at most \
+        NemotronSuperServingPolicy.maximumContextTokens.
+        """)
+    var maxContext = NemotronSuperServingPolicy.contextTokens
     @Option(help: "max_tokens applied when a request omits it.")
     var defaultMaxTokens = 512
     @Option(help: """
         KV capacity granted to the bridge, GiB (at least 1). Each request's fixed bytes (recurrent \
-        state, request workspace, any speculation charge) are carved from it. Default 4; 12 when \
-        --engine-env enables DARKBLOOM_NEMOTRON_SUPER_MTP; 1 + 3 x N for \
-        DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N > 1. The ready file reports the minimum.
+        state, request workspace, any speculation charge) are carved from it. Default 4; with \
+        --engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1, 12 or the managed slot's speculative \
+        admission (2 + 3 x N for DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N) when larger; \
+        1 + 3 x N for a plain N > 1. The ready file reports the minimum.
         """)
     var kvCapacityGib: Double?
     @Option(help: "Explicit backend/allocator allowance added to the LOAD quote, GiB (unmeasured default).")
@@ -67,8 +72,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         guard !managedLoadClaim || checkpoint != nil else {
             throw ValidationError("--managed-load-claim requires --checkpoint")
         }
-        guard (1...16384).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
-            throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= 16384")
+        let ceiling = NemotronSuperServingPolicy.maximumContextTokens
+        guard (1...ceiling).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
+            throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= \(ceiling)")
         }
         guard kvCapacityGib.map({ $0 >= 1 }) ?? true, backendAllowanceGib > 0, sampleIntervalMs >= 5,
             verifyParallelism >= 1,
@@ -251,9 +257,15 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
 
     /// The grant when `--kv-capacity-gib` is omitted. Malformed engine values
     /// fail at load with the builder's own error; here they keep the plain grant.
+    /// Speculating owners take at least the managed slot's admission for their
+    /// width (`NemotronSuperServingPolicy.admissionKVBytes`, 26 GiB for eight),
+    /// which covers the measured minimum grant at depth 3.
     static func defaultKVCapacityGib(engineEnvironment environment: [String: String]) -> Double {
         if environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1" {
-            return speculativeKVCapacityGib
+            let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
+                environment: environment, speculates: true)) ?? 1
+            let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: true)
+            return max(speculativeKVCapacityGib, Double(admission) / 1_073_741_824)
         }
         let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: environment, speculates: false)) ?? 1

@@ -20,15 +20,31 @@ enum NemotronSuperServingPolicy {
     static let configSHA256 = "35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea"
     static var indexSHA256: String { NemotronSuperCheckpointPin.index }
 
-    /// Context window served; the bridge builder admits at most this.
-    static let contextTokens = 16_384
+    /// Context window the managed slot serves and advertises (prompt plus
+    /// output). The default speculating owner charges every request the
+    /// assistant's history for this whole window (about 30 KB per token), so
+    /// eight requests' LOAD claim grows with it: at 65,536 it is admitted on
+    /// 256 GB, at 131,072 it is refused (measured; see the managed slot in
+    /// `docs/architecture/inference.md`).
+    static let contextTokens = 65_536
+    /// Largest context the bridge builder and the image binding accept,
+    /// verified on the pinned checkpoint. The checkpoint's attention has no
+    /// positional encoding (`max_position_embeddings` 1,048,576); the bound
+    /// is what was measured correct and admitted on 256 GB.
+    static let maximumContextTokens = 262_144
     /// Explicit backend/allocator allowance added to the installation's LOAD
     /// quote. Unmeasured; the full-checkpoint load peaked 1.6 GB below the
     /// quote that includes it.
     static let backendAllowanceBytes = 2 << 30
-    /// Measured full-checkpoint default (M3 Ultra, 256 GB): depth-3 exact
-    /// rectangular speculation serving up to eight requests.
+    /// Measured full-checkpoint default (M3 Ultra, 256 GB, natural chat, code,
+    /// math and long-form prompts, greedy): exact rectangular speculation for
+    /// up to eight requests, the draft depth set by the requests decoding in
+    /// the step (`defaultDepthByRequests`, at most `defaultDraftDepth`).
+    /// Aggregate tok/s, plain owner against the best fixed depth: 32.5 / 57.0
+    /// (depth 3) alone, 50.7 / 65.0 (2) at two, 67.2 / 78.4 (2) at four and
+    /// 82.8 / 86.9 (1) at eight clients.
     static let defaultDraftDepth = 3
+    static let defaultDepthByRequests = [3, 2, 2, 2, 1]
     static let defaultConcurrentRequests = 8
 
     /// Exact registry id and canonical `model_type`; no alias or substring.
@@ -81,7 +97,7 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Speculation and concurrency come from provider policy and replace any
-    /// value of those keys; the depth defaults to `defaultDraftDepth`.
+    /// value of those keys; the depth defaults to `defaultDepthByRequests`.
     /// Verification, prefill chunk, decode-step and KV storage keys keep the
     /// operator's value or the builder default. Either owner turns exact
     /// prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant has
@@ -100,7 +116,8 @@ enum NemotronSuperServingPolicy {
         if speculates {
             environment[NemotronSuperLocalMTP.enabledKey] = "1"
             if environment[NemotronSuperLocalMTP.depthKey] == nil {
-                environment[NemotronSuperLocalMTP.depthKey] = String(defaultDraftDepth)
+                environment[NemotronSuperLocalMTP.depthKey] =
+                    defaultDepthByRequests.map(String.init).joined(separator: ",")
             }
         } else {
             environment.removeValue(forKey: NemotronSuperLocalMTP.enabledKey)
@@ -126,10 +143,11 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Fixed bytes one request reserves (recurrent state, request workspace,
-    /// any speculation charge), measured on the pinned checkpoint at 16,384
-    /// context and 2,048-token chunks and rounded up: 2,944,562,564 at depth 3,
-    /// 516,253,712 plain.
-    static let speculativeRequestBoundBytes = 3 << 30
+    /// any speculation charge), measured on the pinned checkpoint at the
+    /// 65,536-token `contextTokens` and 2,048-token chunks and rounded up:
+    /// 4,429,739,396 at depth 3, 516,253,712 plain. Only the speculation
+    /// charge grows with the context.
+    static let speculativeRequestBoundBytes = 17 << 28
     static let plainRequestBoundBytes = 1 << 29
 
     /// KV headroom the LOAD claim requires: every configured request's fixed

@@ -199,7 +199,9 @@ adds the embedded head's header-derived payload and loader construction allowanc
 to its single LOAD claim, loads the head in its own fenced construction epoch, and
 the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, up to the
 configured requests per round, fixed depth (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`,
-`1` to `3`) or `auto` (the engine's marginal policy picks each step's depth). Verification
+`1` to `3`), a depth by the requests decoding in the step (a comma list; SDK
+`CBv2MTPConfig.fixedDraftTokensByDecodeRows`) or `auto` (the engine's marginal
+policy picks each step's depth). Verification
 (`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION`) defaults to `rectangular`:
 `NemotronSuperMTPCaptureTarget` verifies the seed and drafts in one captured
 target window, bit-identical per position to plain decode, and the engine commits
@@ -215,7 +217,12 @@ image request runs target-only (SDK `CBv2RecurrentMTPRequestScopedMediaFallback`
 no draft, carry or assistant state, while text keeps speculating. Synthetic fixtures show
 token-exact greedy output against the ordinary owner in both modes, forced
 rejection rollback and cancellation; serial verification cannot beat plain
-decode, and no full-model acceptance or speed is measured. Sources:
+decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py`,
+16 natural prompts, greedy, every output byte-identical to the plain owner's)
+71–91% of drafts were accepted; aggregate tok/s against the plain owner was
+57.0 / 32.5 at one client (depth 3), 65.0 / 50.7 at two and 78.4 / 67.2 at four
+(depth 2) and 86.9 / 82.8 at eight (depth 1), hence the managed default
+`3,2,2,2,1`. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
 
 ### Managed Nemotron Super slot
@@ -247,21 +254,40 @@ opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
 transaction. Its LOAD claim is the installation quote with a 2 GiB backend
 allowance, the head supplement with speculation, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
-request's measured fixed bytes, rounded up (3 GiB with depth-3 speculation,
-0.5 GiB plain), plus 2 GiB and any prefix bank, never above the grant. The grant
-itself stays the engine's admission ceiling, re-sliced like every slot's; the
+request's measured fixed bytes, rounded up (4.25 GiB with depth-3 speculation at
+the 65,536-token context, 0.5 GiB plain), plus 2 GiB and any prefix bank, never
+above the grant. The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
 registered and the slot installed.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
-or `on` installs depth-3 rectangular speculation (`off` or `DARKBLOOM_CBV2_MTP=0`
+or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
+requests (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above
 keep an operator's value. The plain owner turns exact text prefix reuse on when
 the grant holds every request's fixed bytes beside the bank, unless the
 operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
+
+The slot serves and advertises 65,536 tokens of context, prompt plus output
+(`NemotronSuperServingPolicy.contextTokens`); the builder and the image binding
+accept up to `maximumContextTokens` (262,144), which only the qualification
+runner's `--max-context` selects. The checkpoint's attention has no positional
+encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
+reserved per request by its own length. Recurrent state, the decode row and the
+prefill lane do not grow with the context: on the full checkpoint each
+2,048-token chunk's transient stayed at 7.7 to 8.7 GB, inside the 12 GiB lane,
+through 131,056 tokens, with finite logits throughout. What grows is the
+speculating owner's fixed per-request charge, which bounds the assistant's FP8
+history, its FP32 trusted backlog and every draft step's scores by the
+configured context: about 30.2 KB per token per request (3.44 GB at 32,768,
+4.43 GB at 65,536 and 6.41 GB at 131,072, measured). Eight requests' LOAD claim
+is admitted at 65,536 (36 GiB of KV headroom and the 1 GiB prefix bank,
+130.7 GB in all) and refused at 131,072 on 256 GB, because the claim still
+counts the installed weights until the owner is built.
+The plain owner's fixed bytes stay 516,253,712 at any context.
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
 local-endpoint chat completions (`NemotronSuperLocalEndpointEngine`) run on the

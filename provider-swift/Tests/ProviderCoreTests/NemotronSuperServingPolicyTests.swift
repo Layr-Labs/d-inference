@@ -55,18 +55,60 @@ struct NemotronSuperServingPolicyTests {
             mode: .auto, configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
         #expect(plan.speculates && plan.requests == 8 && plan.prefixBankBytes == 17 << 29)
         #expect(plan.environment[NemotronSuperLocalMTP.enabledKey] == "1")
-        #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3")
+        #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
         #expect(plan.environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey] == "8")
         #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1")
         // The builder resolves exactly this configuration from the plan.
         #expect(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment)
-            == .init(depth: 3, verification: .rectangularExact, adaptive: false))
+            == .init(depth: 3, verification: .rectangularExact, adaptive: false,
+                     depthByRequests: [3, 2, 2, 2, 1]))
         #expect(try NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: plan.environment, speculates: true) == 8)
-        // Above the 25,926,570,879-byte minimum grant measured for depth 3 x 8,
-        // beside the prefix bank: 8.5 GiB, the LOAD bound of a 256 GiB machine.
-        #expect(plan.admissionKVBytes == (26 << 30) + (17 << 29))
-        #expect(plan.admissionKVBytes - plan.prefixBankBytes > 25_926_570_879)
+        // Every request's fixed bytes at the served 65,536-token context and the
+        // prefix bank this 100 GiB grant sizes on a 256 GiB machine (16 GiB):
+        // above the 38,433,323,149-byte minimum grant measured for depth 3 x 8
+        // without a bank.
+        #expect(plan.admissionKVBytes == (36 << 30) + (16 << 30))
+        #expect(plan.admissionKVBytes - plan.prefixBankBytes > 38_433_323_149)
+    }
+
+    /// The managed slot sizes itself: alone on the measured 256 GB M3 Ultra its
+    /// re-slice grant is the whole fleet KV budget (the 90% cap less the
+    /// checkpoint and the 5.5 GiB activation reserve the runner's ledger
+    /// recorded), which holds both default admissions uncapped, including the
+    /// 25,926,570,879-byte minimum grant measured for depth 3 x 8.
+    @Test func soleSlotGrantOnTheMeasuredMacHoldsEveryDefaultAdmission() {
+        let budget = UnifiedMemoryCap.kvBudgetBytes(physicalBytes: 256 << 30,
+            residentWeightBytes: 75_010_188_240, activationReserveBytes: 5_905_580_032, capFraction: 0.9)
+        let grant = EngineV2KVSizing.resliceGrants(existing: [],
+            newcomer: .init(modelId: Self.superID, fp16KVBytesPerToken: 8_192,
+                            maxContextLength: NemotronSuperServingPolicy.contextTokens),
+            fleetKVBudgetBytes: budget)[Self.superID] ?? 0
+        #expect(grant == Int(budget) && grant > 150 << 30)
+        for mode in [MTPMode.auto, .off] {
+            let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: mode, configuredConcurrency: nil,
+                kvBytesCapacity: grant)
+            #expect(plan.requests == 8 && plan.speculates == (mode == .auto), "\(mode)")
+            #expect(plan.admissionKVBytes == NemotronSuperServingPolicy.admissionKVBytes(
+                requests: 8, speculates: plan.speculates) + plan.prefixBankBytes, "\(mode)")
+        }
+        #expect(grant > 25_926_570_879)
+    }
+
+    /// The depth key takes one depth, `auto` or a width table; malformed or
+    /// out-of-range tables fail the load.
+    @Test func depthTablesResolveOrRefuse() throws {
+        func resolve(_ depth: String, _ verification: String? = nil) throws -> NemotronSuperLocalMTP.Setting? {
+            var environment = [NemotronSuperLocalMTP.enabledKey: "1", NemotronSuperLocalMTP.depthKey: depth]
+            environment[NemotronSuperLocalMTP.verificationKey] = verification
+            return try NemotronSuperLocalMTP.Setting.resolve(environment: environment)
+        }
+        #expect(try resolve(" 3, 2 ,1") == .init(depth: 3, depthByRequests: [3, 2, 1]))
+        #expect(try resolve("1,2") == .init(depth: 2, depthByRequests: [1, 2]))
+        for bad in ["3,0", "3,,1", "4,1", "3,x", "1,1,1,1,1,1,1,1,1"] {
+            #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve(bad) }
+        }
+        #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve("2,1", "serial") }
     }
 
     @Test func slotPolicyBoundsConcurrencyAndOperatorKeysStay() throws {
@@ -74,7 +116,7 @@ struct NemotronSuperServingPolicyTests {
             base: [NemotronSuperLocalMTP.depthKey: "1", NemotronSuperLocalMTP.verificationKey: "rectangular"],
             mode: .on, configuredConcurrency: 2, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
         #expect(narrow.requests == 2 && narrow.environment[NemotronSuperLocalMTP.depthKey] == "1")
-        #expect(narrow.admissionKVBytes == 2 * (3 << 30) + (2 << 30) + (16 << 30))
+        #expect(narrow.admissionKVBytes == 2 * (17 << 28) + (2 << 30) + (16 << 30))
         let wide = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(wide.requests == 8, "one captured verify window bounds speculation")
@@ -273,9 +315,9 @@ struct NemotronSuperServingPolicyTests {
         // Media is a serving reservation, not LOAD transient.
         #expect(footprint.nativeLoadTransientBytes == 15_938_749_104)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (26 << 30) + media) / 1_073_741_824
+        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (36 << 30) + media) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        #expect(abs(footprint.estimatedMemoryGb - 126.324_139_233_678_58) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 136.324_139_233_678_58) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes

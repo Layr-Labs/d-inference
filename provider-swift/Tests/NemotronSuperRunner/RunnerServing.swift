@@ -44,7 +44,8 @@ struct RunnerLoadSettings: Sendable {
         case .serial: "serial"
         }
         return ["depth": .count(setting.depth), "verification": .string(verification),
-                "adaptive": .bool(setting.adaptive)]
+                "adaptive": .bool(setting.adaptive),
+                "depth_by_requests": setting.depthByRequests.map { .array($0.map { .count($0) }) } ?? .null]
     }
 
     /// The override may only raise the per-token reservation rate.

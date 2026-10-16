@@ -220,20 +220,30 @@ extension ProviderLoop {
             recordModelLoadError(model: modelID, message: message)
             return error
         }
-        let reason: String
-        switch error {
-        case let refusal as NemotronSuperLocalBridgeBuilder.UnserviceableGrant: reason = "\(refusal)"
-        case let failure as NemotronSuperCheckpoint.Failure: reason = "\(failure)"
-        case NemotronSuperLocalLoad.Failure.capacity: reason = "insufficient memory at LOAD admission"
-        case NemotronSuperLocalLoad.Failure.identity: reason = "checkpoint identity is not pinned"
-        case NemotronSuperLocalPrefill.Failure.laneRefused: reason = "insufficient memory for the prefill lane"
-        case NemotronSuperLocalPrefixCache.Failure.bankRefused: reason = "insufficient memory for the prefix bank"
-        case NemotronSuperSlotError.retainedFault: reason = "native work did not retire; restart required"
-        default: reason = "native construction was refused"
-        }
+        let reason = Self.nemotronSuperLoadRefusalReason(error)
         let message = "Nemotron Super load of '\(modelID)': \(reason)"
         recordModelLoadError(model: modelID, message: message)
         return InferenceError.modelLoadFailed(message)
+    }
+
+    /// The recorded reason of a refused Super load: a named refusal for every
+    /// failure the load can raise itself, never paths or payload data.
+    static func nemotronSuperLoadRefusalReason(_ error: Error) -> String {
+        switch error {
+        case let refusal as NemotronSuperLocalBridgeBuilder.UnserviceableGrant: return "\(refusal)"
+        case let failure as NemotronSuperCheckpoint.Failure: return "\(failure)"
+        case NemotronSuperLocalLoad.Failure.capacity: return "insufficient memory at LOAD admission"
+        case NemotronSuperLocalLoad.Failure.identity: return "checkpoint identity is not pinned"
+        case NemotronSuperLocalBridgeBuilder.Failure.loadAdmissionLost:
+            return "the LOAD claim no longer fit after installation"
+        case NemotronSuperLocalPrefill.Failure.laneRefused: return "insufficient memory for the prefill lane"
+        case NemotronSuperLocalKVBackend.Failure.decodeRowsRefused:
+            return "insufficient memory for the decode rows"
+        case NemotronSuperLocalPrefixCache.Failure.bankRefused: return "insufficient memory for the prefix bank"
+        case NemotronSuperLocalPrefixCache.Failure.unavailable: return "the engine did not construct the prefix bank"
+        case NemotronSuperSlotError.retainedFault: return "native work did not retire; restart required"
+        default: return "native construction was refused"
+        }
     }
 
     private static func milliseconds(_ duration: Duration) -> Int64 {

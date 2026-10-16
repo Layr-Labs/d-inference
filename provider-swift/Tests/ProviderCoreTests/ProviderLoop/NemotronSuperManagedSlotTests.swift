@@ -365,4 +365,23 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
         #expect(await fixture.loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
+
+    /// Every refusal the managed load raises itself is recorded by name; only
+    /// an error from outside the load keeps the generic reason.
+    @Test func loadRefusalsAreRecordedByName() {
+        let generic = "native construction was refused"
+        let named: [(any Error, String)] = [
+            (NemotronSuperLocalBridgeBuilder.Failure.loadAdmissionLost,
+             "the LOAD claim no longer fit after installation"),
+            (NemotronSuperLocalKVBackend.Failure.decodeRowsRefused, "insufficient memory for the decode rows"),
+            (NemotronSuperLocalPrefixCache.Failure.unavailable, "the engine did not construct the prefix bank"),
+            (NemotronSuperLocalPrefixCache.Failure.bankRefused, "insufficient memory for the prefix bank"),
+            (NemotronSuperLocalPrefill.Failure.laneRefused, "insufficient memory for the prefill lane"),
+            (NemotronSuperLocalLoad.Failure.capacity, "insufficient memory at LOAD admission"),
+        ]
+        for (error, reason) in named {
+            #expect(ProviderLoop.nemotronSuperLoadRefusalReason(error) == reason, "\(error)")
+        }
+        #expect(ProviderLoop.nemotronSuperLoadRefusalReason(URLError(.unknown)) == generic)
+    }
 }

@@ -84,6 +84,13 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--drain-timeout-seconds` | 600 | bound on waiting for in-flight work after a shutdown signal |
 | `--verify-parallelism` | 4 | concurrent shard SHA-256 checks (whole-shard reads) |
 | `--engine-env KEY=VALUE` | none | runtime-policy entries, for plain/speculative A/B |
+| `--emulate-physical-gib N` | off | behave as a dedicated Mac with N GiB (at most this machine's): the process budget's total is N GiB and its OS-available memory N GiB minus the runner's footprint (never above what this machine has), `MLXMemoryGuard`'s limits are N GiB's, the managed load gate (scan-time footprint plus activation reserve and minimum KV against available-for-load memory) runs before loading and refuses as the provider would (`emulation.load_gate` event), and the default prefix bank is sized for N GiB; `load.quote` adds the KV grant the provider's re-slice would give (`emulated_production_grant_bytes`) |
+
+`load.quote` reports the installation's payload and staging, the head's
+payload and construction allowance and their sequential sum
+(`installation_head_bytes`); the transaction's actual LOAD charge, with the
+transient overlapping its serving room, is the `charge.opened` row of kind
+`load`.
 
 Shard verification streams all 88 shards before staging, which also fills the
 file cache; `load.phase.end` events time `verify_shards`, `tokenizer` and
@@ -158,6 +165,17 @@ third, contiguous arm prefilled in 1,024-token chunks calibrates the trunk's
 own sensitivity: paged decode must stay within the larger of 0.1 and twice
 that arm's largest relative deviation, with at most the larger of 2 and twice
 its greedy disagreements. Every position's deviation is printed.
+
+The gated `NemotronSuperMemoryLiveTests` (`DARKBLOOM_SUPER_MEMORY_LIVE=1` and
+`NEMOTRON_SUPER_CHECKPOINT_DIR`, exclusive GPU) is the native memory ledger:
+MLX active memory, its peak and the process footprint around the installation
+and head (against their quotes), every 2,048-token chunk of one prompt and
+plain decode steps on contiguous and paged storage (with each attention row's
+storage type, dtype and bytes), the first chunks again with the residual stream
+evaluated every 8 and 2 layers (timed; results unchanged), one chunk under the
+stage profile's memory recording, and the largest image grid's tower and
+projector (against the media activation bound). `DARKBLOOM_SUPER_MEMORY_PROMPT`,
+`DARKBLOOM_SUPER_MEMORY_DECODE` and `DARKBLOOM_SUPER_MEMORY_BACKENDS` size it.
 
 Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the owner the SDK's resident

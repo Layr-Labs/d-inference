@@ -251,8 +251,8 @@ discovery footprint, then hands the load to `ProviderLoop.loadNemotronSuperSlot`
 Under the re-slice gate, held until installation, `resliceShrinkingForNewcomer`
 shrinks survivors and returns Super's grant; `NemotronSuperSlotLoader.pinnedCheckpoint`
 opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
-transaction. Its LOAD claim is the installation quote with a 2 GiB backend
-allowance, the head supplement with speculation, and
+transaction. Its LOAD claim holds the installation's and (with speculation) the
+head's resident payloads, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (4.25 GiB with depth-3 speculation at
 the 65,536-token context, 0.5 GiB plain), plus 2 GiB and any prefix bank, never
@@ -260,6 +260,15 @@ above the grant. For the pinned checkpoint the same claim also holds the prefill
 lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
+The load's transient (`NemotronSuperLoadClaim`) is the larger of the
+installation's staging with its 2 GiB backend allowance and the head's
+construction allowance, and the claim adds only the part beyond that serving
+room: the transaction returns each phase's freed buffers from MLX's cache
+(synchronize, `clearCache`) before the head loads and before the builder
+reserves the lane and bank, under the same rule as the shared budget's
+reclaimer. When a retained or closing native owner forbids reclamation the
+claim holds both transients beside the room, and a load whose reclamation turns
+unsafe after installation fails.
 Once the installation and head are resident (MLX usage), their share of the claim
 is handed over to that live view, as the ordinary managed load does
 (`reducePendingLoad`), and the builder hands the lane and bank shares to their

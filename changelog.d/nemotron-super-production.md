@@ -4,14 +4,18 @@
   pinned NVIDIA NVFP4 checkpoint with its embedded MTP head. The registry id
   with an unpinned `config.json` or index is withheld; every other
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
-  the managed LOAD footprint plus one image request's media charge (136.3 GiB
-  for the default configuration), and it advertises image input; capacity
+  the resident checkpoint plus the larger of its load transient and the
+  serving room (prefill lane, requests' KV headroom and one image request's
+  media charge; 121.5 GiB for the default configuration), and it advertises image input; capacity
   quotes for image probes charge their images.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
   re-slice, one LOAD claim covering the installation, the head and the
-  configured requests' KV headroom, every shard verified against its pin, an
-  owner-wide prefill lane, and a refusal naming the minimum when the grant
-  cannot serve every request. Defaults: exact rectangular speculation for up
+  configured requests' KV headroom (the load's transient only where it
+  exceeds that serving room, since freed load buffers are returned before
+  serving), every shard verified against its pin, an owner-wide prefill
+  lane, a measured 2 GiB activation reserve (its requests, lane and media
+  charges hold its activations), and a refusal naming the minimum when the
+  grant cannot serve every request. Defaults: exact rectangular speculation for up
   to eight requests, drafting three tokens for one decoding request, two for
   two to four and one beyond (the fastest depth measured at each width on the
   full checkpoint); `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves the

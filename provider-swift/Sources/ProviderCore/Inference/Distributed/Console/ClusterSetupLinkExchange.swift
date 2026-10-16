@@ -144,6 +144,8 @@ public enum ClusterSetupLinkExchange {
         private let listener: ClusterLinkControlListener
         private let discovery: ClusterLinkPairingDiscovery.Responder
         private let edgeID: UUID
+        /// The cable port and address it listens on (it never follows the cable to another port by itself).
+        public let selection: ClusterLinkInterfaceSelection
 
         public init(pairing: Pairing, selection: ClusterLinkInterfaceSelection,
                     port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
@@ -154,6 +156,7 @@ public enum ClusterSetupLinkExchange {
                     provision: (@Sendable (UInt16, Data) -> (UInt16, Data)?)? = nil) throws {
             let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil, label: epochLabel)
             edgeID = edge.edgeID
+            self.selection = selection
             let work = DispatchQueue(label: "darkbloom.cluster-setup.exchange")
             listener = try ClusterLinkControlListener(configuration: .init(interface: selection.interface,
                 localAddress: selection.local.address, port: port, policy: policy, edges: [edge])) { event, peer in
@@ -205,6 +208,14 @@ public enum ClusterSetupLinkExchange {
             discovery.stop()
             listener.stop()
         }
+    }
+
+    /// A listener bound to `bound` no longer reaches the other Mac once the cable moved: the active cable port, or that
+    /// port's address, is another one now. It is then started again on `current`. A reading that finds no cable
+    /// (`current` nil, e.g. while the cable is out) keeps it: the cable may come back on the same port.
+    public static func cableMoved(bound: ClusterLinkInterfaceSelection?, current: ClusterLinkInterfaceSelection?) -> Bool {
+        guard let bound, let current else { return false }
+        return current.interface != bound.interface || current.local != bound.local
     }
 
     // MARK: - Asking (the Mac that plans)

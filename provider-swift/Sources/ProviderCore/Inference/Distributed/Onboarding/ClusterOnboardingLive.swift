@@ -426,7 +426,8 @@ final class OnboardingLive: @unchecked Sendable {
     private func sessionService(executable: URL, arguments: [String], reason: String) -> Result<String, ClusterOnboardingFailure> {
         do {
             let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
-            Self.logLoginAgentReason(reason)
+            // Once per service start, not on every `darkbloom cluster`.
+            if started { Self.logLoginAgentReason(reason) }
             return .success((started ? "Started this Mac's cluster service" : "This Mac's cluster service is running")
                 + " (after a restart of this Mac, run `darkbloom cluster` again).")
         } catch let failure as ClusterOnboardingFailure {

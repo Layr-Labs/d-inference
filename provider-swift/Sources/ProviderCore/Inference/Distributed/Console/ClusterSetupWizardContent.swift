@@ -626,9 +626,9 @@ enum ClusterSetupContent {
 
     /// The reason a model cannot be chosen, short enough for its row; the full one shows when it is selected.
     static func shortBlocker(_ blocker: String) -> String {
-        if blocker.hasPrefix("the planner cannot read") { return "planner cannot read it yet" }
+        if blocker == ClusterSetupPlanning.notClusterModel { return blocker }
+        if blocker == ClusterSetupPlanning.differentBuilds { return "different Darkbloom builds" }
         if blocker.hasPrefix("not on ") { return "not on the other Mac" }
-        if blocker.hasPrefix("this build's cluster runtime") { return "runtime does not run it" }
         if blocker.hasPrefix("too large") { return "too large for this pair" }
         if blocker.contains("holds it alone") { return "one Mac holds it alone" }
         return String(blocker.prefix(30))

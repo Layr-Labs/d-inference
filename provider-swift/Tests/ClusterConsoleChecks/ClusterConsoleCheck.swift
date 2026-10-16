@@ -60,6 +60,7 @@ import Darwin
             ("onboarding diagnostics file", onboardingDiagnostics),
             ("saved setup, trust and candidate", savedSetup),
             ("serving scope kept in the setup record", servingScopeInTheRecord),
+            ("the cable moved to another port: listeners follow it", cableMovesToAnotherPort),
             ("what each Mac holds", holdings),
             ("link fix results and the guided setup's reading", linkFixResults),
             ("recovery results", recoveryResults),

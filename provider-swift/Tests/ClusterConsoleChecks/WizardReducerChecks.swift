@@ -187,7 +187,7 @@ extension ClusterConsoleCheck {
         expect(d.state.selectedModel == 2, "down moves the choice")
         for _ in 0..<F.models.count { d.key(.down) }
         expect(d.state.selectedModel == F.models.count, "down stops at the last folder, the constructed unread one")
-        expect(d.text.contains("cannot read"), "a blocked model says why: \(d.text)")
+        expect(d.text.contains(ClusterSetupPlanning.notClusterModel), "a blocked model says why: \(d.text)")
         d.key(.enter)
         expect(d.state.asking == nil && d.state.notice?.contains("cannot be chosen") == true, "a blocked model cannot be adopted: \(d.state.notice ?? "")")
         for _ in 0..<F.models.count { d.key(.up) }

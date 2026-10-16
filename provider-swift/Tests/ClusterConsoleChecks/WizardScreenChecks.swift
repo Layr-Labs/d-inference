@@ -205,8 +205,8 @@ extension ClusterConsoleCheck {
         expect(plans.contains("speed not measured") && plans.contains("the split follows memory"), "without measurements no time is shown: \(plans)")
         expect(plans.contains("mac-a (this Mac)") && plans.contains("layers 0-"), "which Mac holds which layers")
         expect(plans.contains("Each alone"), "each Mac alone shows")
-        expect(plans.contains("planner cannot read it yet"), "blocked models say why, next to them: \(plans)")
-        expect(text("4 blocked model").contains("cannot read"), "a selected blocked model says why")
+        expect(plans.contains(ClusterSetupPlanning.notClusterModel), "blocked models say why, next to them: \(plans)")
+        expect(text("4 blocked model").contains(ClusterSetupPlanning.notClusterModel), "a selected blocked model says why")
         expect(text("4 inbox").contains("Approve this setup"), "the inbox offers approval")
         expect(text("4 waiting for peer").contains("has not saved its setup yet"), "waiting for the other Mac says what to do there")
         expect(text("5 ranks").contains("1 of 2 ranks ready"), "the check counts ranks")
@@ -270,8 +270,8 @@ extension ClusterConsoleCheck {
             expect(mode?.isSharded == true && (option?.plan?.ranks.allSatisfy { $0.endLayer > $0.firstLayer } ?? false),
                 "\(reading.model.modelID) is offered sharded with layers on both Macs, never a hand-off mode: \(option?.plan?.mode ?? "-")")
         }
-        expect(options.last?.model.folder == F.unreadModel.folder && options.last?.blocker?.contains("planner cannot read") == true,
-            "a folder no family reads is blocked with the planner's reason")
+        expect(options.last?.model.folder == F.unreadModel.folder && options.last?.blocker == ClusterSetupPlanning.notClusterModel,
+            "a folder no family reads is blocked in plain words")
         // With the 9B's recorded solo runs on each Mac, its figures are measured and shown, as on the pair.
         let measurements = ["speed-qwen35-9b-mac-a.json", "speed-qwen35-9b-mac-b.json"].compactMap {
             try? JSONDecoder().decode(ClusterSpeedMeasurement.self, from: F.data($0))

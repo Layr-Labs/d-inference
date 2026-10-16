@@ -98,6 +98,11 @@ extension ClusterService {
     // MARK: - The control listener
 
     func ensureControlResponder(say: @escaping @Sendable (String) -> Void) {
+        // The lease listener follows the cable to another port too (`cableMove`), or leases never reach this Mac there.
+        if cableMove(of: lock.withLock({ controlResponder }), checked: \.controlCableCheck) != nil {
+            lock.withLock { controlResponder }?.stop()
+            lock.withLock { controlResponder = nil }
+        }
         guard lock.withLock({ controlResponder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
               let selection = try? context.linkSelection() else { return }
         do {

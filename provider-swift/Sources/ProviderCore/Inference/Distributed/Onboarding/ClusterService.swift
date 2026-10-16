@@ -89,6 +89,9 @@ public final class ClusterService: @unchecked Sendable {
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
+    /// When each listener last looked for the cable on another port (`cableMove`).
+    private var responderCableCheck = Date.distantPast
+    var controlCableCheck = Date.distantPast
     var leaseInFlight = false
     var nextLease: Double = 0
     var lastModeLine: String?
@@ -222,7 +225,31 @@ public final class ClusterService: @unchecked Sendable {
         return clean
     }
 
+    /// How often a listener looks for the cable on another port: a cable moved to another Thunderbolt port (or a port
+    /// whose address changed) leaves the listener on the old one, where the other Mac never reaches it.
+    static let cableCheckSeconds: Double = 5
+
+    /// The cable's port now when it is not the one `listener` was started on (checked at most every
+    /// `cableCheckSeconds` per listener, `checked`); nil when it has not moved, or there is no listener or cable.
+    func cableMove(of listener: ClusterSetupLinkExchange.Responder?,
+                   checked: ReferenceWritableKeyPath<ClusterService, Date>) -> ClusterLinkInterfaceSelection? {
+        guard let bound = listener?.selection else { return nil }
+        let due = lock.withLock { () -> Bool in
+            guard Date().timeIntervalSince(self[keyPath: checked]) >= Self.cableCheckSeconds else { return false }
+            self[keyPath: checked] = Date()
+            return true
+        }
+        guard due, let current = try? context.linkSelection(),
+              ClusterSetupLinkExchange.cableMoved(bound: bound, current: current) else { return nil }
+        return current
+    }
+
     private func ensureResponder(say: @escaping @Sendable (String) -> Void) {
+        if let moved = cableMove(of: lock.withLock({ responder }), checked: \.responderCableCheck) {
+            lock.withLock { responder }?.stop()
+            lock.withLock { responder = nil }
+            say("the cable is on \(moved.interface) now: answering the paired Mac there")
+        }
         guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
               let selection = try? context.linkSelection() else { return }
         let context = self.context, store = self.store

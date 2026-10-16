@@ -63,9 +63,10 @@ enum ClusterProductModelStore {
         }.resume()
         guard done.wait(timeout: .now() + seconds + 1) == .success, let data = box.take().first,
               let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.aggregateSHA256 == artifact.aggregateSHA256,
-              parsed.files == artifact.files else { return nil }
+              ClusterCatalogArtifact.sameFiles(parsed.files, artifact.files) else { return nil }
         return data
     }
+
 
     /// Clones a product-store model into the cluster's store under its folder name; nil when it is there already.
     /// `providerConfiguration` names the catalog whose exact manifest bytes are written beside the files.
@@ -96,7 +97,7 @@ enum ClusterProductModelStore {
         guard repairLock.withLock({ repairChecked.insert(folder.path).inserted }),
               let current = ClusterModelStore.readSmall(manifest),
               let parsed = try? ClusterCatalogArtifact.parse(manifest: current),
-              parsed.aggregateSHA256 == installed.artifact.aggregateSHA256, parsed.files == installed.artifact.files,
+              parsed.aggregateSHA256 == installed.artifact.aggregateSHA256, ClusterCatalogArtifact.sameFiles(parsed.files, installed.artifact.files),
               let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: installed.artifact),
               exact != current else { return }
         var information = stat()

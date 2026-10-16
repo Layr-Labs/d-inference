@@ -88,6 +88,7 @@ let package = Package(
                 "Kernel/Quantization/ModelOptGraphParityTests.swift",
                 "Kernel/Quantization/ModelOptGraphBenchmarkTests.swift",
                 "Integration/Nemotron/NemotronSuperGraphExecutionTests.swift",
+                "Integration/Nemotron/NemotronSuperSSDTests.swift",
                 "Integration/Nemotron/NemotronSuperBatchFixture.swift",
                 "Integration/Nemotron/NemotronSuperBatchedDecodeTests.swift",
                 "Integration/Nemotron/NemotronSuperBatchedEngineTests.swift",

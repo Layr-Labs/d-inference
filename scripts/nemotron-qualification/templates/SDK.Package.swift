@@ -79,6 +79,7 @@ let package = Package(
                 "Integration/Nemotron/NemotronSuperMTPWindowTimingTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPBatchedWindowTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPBatchedEngineTests.swift",
+                "Integration/Nemotron/NemotronSuperMTPMediaFallbackTests.swift",
                 "Integration/Nemotron/NemotronSuperCoScheduledServingTests.swift",
                 "Integration/Nemotron/NemotronSuperPrefixReuseFixture.swift",
                 "Integration/Nemotron/NemotronSuperPrefixReuseTests.swift",

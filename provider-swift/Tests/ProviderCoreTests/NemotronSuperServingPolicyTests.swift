@@ -54,16 +54,56 @@ struct NemotronSuperServingPolicyTests {
             mode: .auto, configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         #expect(plan.speculates && plan.requests == 8 && plan.prefixBankBytes == 0)
         #expect(plan.environment[NemotronSuperLocalMTP.enabledKey] == "1")
-        #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3")
+        #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
         #expect(plan.environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey] == "8")
         #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
         // The builder resolves exactly this configuration from the plan.
         #expect(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment)
-            == .init(depth: 3, verification: .rectangularExact, adaptive: false))
+            == .init(depth: 3, verification: .rectangularExact, adaptive: false,
+                     depthByRequests: [3, 2, 2, 2, 1]))
         #expect(try NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: plan.environment, speculates: true) == 8)
         // Above the 25,926,570,879-byte minimum grant measured for depth 3 x 8.
         #expect(plan.admissionKVBytes == 26 << 30 && plan.admissionKVBytes > 25_926_570_879)
+    }
+
+    /// The managed slot sizes itself: alone on the measured 256 GB M3 Ultra its
+    /// re-slice grant is the whole fleet KV budget (the 90% cap less the
+    /// checkpoint and the 5.5 GiB activation reserve the runner's ledger
+    /// recorded), which holds both default admissions uncapped, including the
+    /// 25,926,570,879-byte minimum grant measured for depth 3 x 8.
+    @Test func soleSlotGrantOnTheMeasuredMacHoldsEveryDefaultAdmission() {
+        let budget = UnifiedMemoryCap.kvBudgetBytes(physicalBytes: 256 << 30,
+            residentWeightBytes: 75_010_188_240, activationReserveBytes: 5_905_580_032, capFraction: 0.9)
+        let grant = EngineV2KVSizing.resliceGrants(existing: [],
+            newcomer: .init(modelId: Self.superID, fp16KVBytesPerToken: 8_192,
+                            maxContextLength: NemotronSuperServingPolicy.contextTokens),
+            fleetKVBudgetBytes: budget)[Self.superID] ?? 0
+        #expect(grant == Int(budget) && grant > 150 << 30)
+        for mode in [MTPMode.auto, .off] {
+            let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: mode, configuredConcurrency: nil,
+                kvBytesCapacity: grant)
+            #expect(plan.requests == 8 && plan.speculates == (mode == .auto), "\(mode)")
+            #expect(plan.admissionKVBytes == NemotronSuperServingPolicy.admissionKVBytes(
+                requests: 8, speculates: plan.speculates) + plan.prefixBankBytes, "\(mode)")
+        }
+        #expect(grant > 25_926_570_879)
+    }
+
+    /// The depth key takes one depth, `auto` or a width table; malformed or
+    /// out-of-range tables fail the load.
+    @Test func depthTablesResolveOrRefuse() throws {
+        func resolve(_ depth: String, _ verification: String? = nil) throws -> NemotronSuperLocalMTP.Setting? {
+            var environment = [NemotronSuperLocalMTP.enabledKey: "1", NemotronSuperLocalMTP.depthKey: depth]
+            environment[NemotronSuperLocalMTP.verificationKey] = verification
+            return try NemotronSuperLocalMTP.Setting.resolve(environment: environment)
+        }
+        #expect(try resolve(" 3, 2 ,1") == .init(depth: 3, depthByRequests: [3, 2, 1]))
+        #expect(try resolve("1,2") == .init(depth: 2, depthByRequests: [1, 2]))
+        for bad in ["3,0", "3,,1", "4,1", "3,x", "1,1,1,1,1,1,1,1,1"] {
+            #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve(bad) }
+        }
+        #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve("2,1", "serial") }
     }
 
     @Test func slotPolicyBoundsConcurrencyAndOperatorKeysStay() throws {

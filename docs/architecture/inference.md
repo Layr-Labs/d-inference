@@ -154,7 +154,9 @@ adds the embedded head's header-derived payload and loader construction allowanc
 to its single LOAD claim, loads the head in its own fenced construction epoch, and
 the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, up to the
 configured requests per round, fixed depth (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`,
-`1` to `3`) or `auto` (the engine's marginal policy picks each step's depth). Verification
+`1` to `3`), a depth by the requests decoding in the step (a comma list; SDK
+`CBv2MTPConfig.fixedDraftTokensByDecodeRows`) or `auto` (the engine's marginal
+policy picks each step's depth). Verification
 (`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION`) defaults to `rectangular`:
 `NemotronSuperMTPCaptureTarget` verifies the seed and drafts in one captured
 target window, bit-identical per position to plain decode, and the engine commits
@@ -170,7 +172,12 @@ image request runs target-only (SDK `CBv2RecurrentMTPRequestScopedMediaFallback`
 no draft, carry or assistant state, while text keeps speculating. Synthetic fixtures show
 token-exact greedy output against the ordinary owner in both modes, forced
 rejection rollback and cancellation; serial verification cannot beat plain
-decode, and no full-model acceptance or speed is measured. Sources:
+decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py`,
+16 natural prompts, greedy, every output byte-identical to the plain owner's)
+71–91% of drafts were accepted; aggregate tok/s against the plain owner was
+57.0 / 32.5 at one client (depth 3), 65.0 / 50.7 at two and 78.4 / 67.2 at four
+(depth 2) and 86.9 / 82.8 at eight (depth 1), hence the managed default
+`3,2,2,2,1`. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
 
 ### Managed Nemotron Super slot
@@ -210,7 +217,8 @@ builder still refuses a grant that cannot serve every configured request with
 registered and the slot installed.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
-or `on` installs depth-3 rectangular speculation (`off` or `DARKBLOOM_CBV2_MTP=0`
+or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
+requests (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above

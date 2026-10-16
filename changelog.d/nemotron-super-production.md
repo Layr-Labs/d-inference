@@ -11,8 +11,10 @@
   re-slice, one LOAD claim covering the installation, the head and the
   configured requests' KV headroom, every shard verified against its pin, an
   owner-wide prefill lane, and a refusal naming the minimum when the grant
-  cannot serve every request. Defaults: depth-3 exact rectangular speculation
-  for up to eight requests; `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves
+  cannot serve every request. Defaults: exact rectangular speculation for up
+  to eight requests, drafting three tokens for one decoding request, two for
+  two to four and one beyond (the fastest depth measured at each width on the
+  full checkpoint); `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves
   the plain owner, which also reuses exact text prefixes when the grant holds
   its bank, and an explicit `engine_v2_max_concurrent` bounds the width.
 - Coordinator and local-endpoint chat completions use the reference prompt

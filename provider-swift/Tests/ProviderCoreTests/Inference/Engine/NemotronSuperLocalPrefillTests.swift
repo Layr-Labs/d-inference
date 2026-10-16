@@ -95,7 +95,7 @@ struct NemotronSuperLocalPrefillTests {
     }
 
     private static let requests: [(prompt: [Int], maxTokens: Int)] = [
-        ((0 ..< 21).map { ($0 * 7 + 3) % 61 + 1 }.filter { $0 != 18 }, 12), ([5, 9, 1, 4, 22, 7, 3, 8, 30], 10),
+        ((0 ..< 21).map { (i: Int) -> Int in (i * 7 + 3) % 61 + 1 }.filter { $0 != 18 }, 12), ([5, 9, 1, 4, 22, 7, 3, 8, 30], 10),
         ([40, 2, 9], 14),
     ]
 

@@ -59,7 +59,7 @@ struct NemotronSuperLocalMTPBatchedTests {
 
     private static let requests: [(prompt: [Int], maxTokens: Int)] = [
         ([5, 9, 1, 4, 22, 7, 3, 8, 30], 14), ([1, 2, 3], 9), ([40], 12),
-        ((0 ..< 20).map { ($0 * 7 + 3) % 61 + 1 }.filter { $0 != 18 }, 16),
+        ((0 ..< 20).map { (i: Int) -> Int in (i * 7 + 3) % 61 + 1 }.filter { $0 != 18 }, 16),
     ]
 
     @Test(.timeLimit(.minutes(3)), arguments: [(1, 3, false), (3, 3, false), (2, 4, false), (3, 4, true)])

@@ -339,6 +339,26 @@ struct NemotronSuperServingPolicyTests {
         #expect(Double(plainBytes) / 1_073_741_824 < footprint.estimatedMemoryGb)
     }
 
+    /// Super's requests, prefill lane and media charges carry its decode,
+    /// prefill and tower activations; its measured floor is the uncharged
+    /// residue plus slack, and a serving set with an unmeasured model keeps
+    /// the default (mirrored by the platform's servability table). The floor
+    /// relies on the request charges holding the decode rows, recurrent
+    /// generations and verify/draft workspace: re-measure it whenever those
+    /// per-request charges are trimmed toward their measured use.
+    @Test func activationFloorCoversOnlyWhatTheChargesDoNot() {
+        let gib: UInt64 = 1 << 30
+        let id = NemotronSuperServingPolicy.modelID
+        #expect(id == "nvidia-nemotron-3.5-super")
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [id]) == 2 * gib)
+        #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(env: [:], modelIDs: [id]) == 2 * gib)
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [id, "gemma-4-26b"])
+            == UnifiedMemoryCap.defaultActivationReserveBytes)
+        // The operator's raise-only override still wins above the floor.
+        #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"], modelIDs: [id]) == 4 * gib)
+    }
+
     @Test func loadClaimHoldsThePayloadsAndTheLargerSequentialTransient() throws {
         typealias Claim = NemotronSuperLoadClaim
         // Plain: the installation alone, sequential or not.

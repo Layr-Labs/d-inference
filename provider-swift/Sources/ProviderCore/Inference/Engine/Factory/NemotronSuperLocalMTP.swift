@@ -14,6 +14,8 @@ import MLXVLM
 enum NemotronSuperLocalMTP {
     static let enabledKey = "DARKBLOOM_NEMOTRON_SUPER_MTP"
     /// Draft depth `1`…`3`; a value above one is the deep-draft opt-in.
+    /// `auto` lets the engine's marginal policy pick 0…3 each step from
+    /// measured acceptance and round cost (rectangular verification only).
     static let depthKey = "DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH"
     /// `rectangular` (default): one exact captured target window per round;
     /// `serial`: one ordinary target step per column.
@@ -37,8 +39,12 @@ enum NemotronSuperLocalMTP {
 
     struct Setting: Equatable, Sendable {
         typealias Verification = NemotronSuperMTPAssistant.Settings.Verification
+        /// The fixed depth, or the largest depth the adaptive policy may pick.
         let depth: Int
         var verification: Verification = .rectangularExact
+        /// The engine selects each step's depth up to `depth`; every emitted
+        /// token is still target-verified, so greedy output is unchanged.
+        var adaptive = false
 
         /// nil keeps the ordinary target-only owner. A malformed depth or
         /// verification fails the load rather than silently changing the
@@ -48,11 +54,17 @@ enum NemotronSuperLocalMTP {
                 return nil
             }
             var depth = 1
+            var adaptive = false
             if let raw = environment[depthKey]?.trimmingCharacters(in: .whitespaces) {
-                guard let value = Int(raw),
-                    (1 ... NemotronSuperMTPAssistant.Settings.maximumDepth).contains(value)
-                else { throw Failure.invalidDepth }
-                depth = value
+                if raw == "auto" {
+                    depth = NemotronSuperMTPAssistant.Settings.maximumDepth
+                    adaptive = true
+                } else {
+                    guard let value = Int(raw),
+                        (1 ... NemotronSuperMTPAssistant.Settings.maximumDepth).contains(value)
+                    else { throw Failure.invalidDepth }
+                    depth = value
+                }
             }
             let verification: Verification
             switch environment[verificationKey]?.trimmingCharacters(in: .whitespaces) {
@@ -60,7 +72,9 @@ enum NemotronSuperLocalMTP {
             case "serial"?: verification = .serial
             default: throw Failure.invalidVerification
             }
-            return Setting(depth: depth, verification: verification)
+            // Adaptive serial rounds can never beat plain decode.
+            guard !adaptive || verification == .rectangularExact else { throw Failure.invalidDepth }
+            return Setting(depth: depth, verification: verification, adaptive: adaptive)
         }
     }
 
@@ -110,6 +124,6 @@ enum NemotronSuperLocalMTP {
             model: target, assistant: assistant,
             config: CBv2MTPConfig(
                 enabled: true, maxDraftTokens: depth, maxSpeculativeBatch: requests,
-                fixedDraftTokens: depth, verificationMode: mode))
+                fixedDraftTokens: head.setting.adaptive ? nil : depth, verificationMode: mode))
     }
 }

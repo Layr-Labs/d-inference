@@ -28,7 +28,8 @@ struct RunnerLoadSettings: Sendable {
         case .rectangularExact: "rectangular"
         case .serial: "serial"
         }
-        return ["depth": .count(setting.depth), "verification": .string(verification)]
+        return ["depth": .count(setting.depth), "verification": .string(verification),
+                "adaptive": .bool(setting.adaptive)]
     }
 
     /// The override may only raise the per-token reservation rate.

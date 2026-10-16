@@ -115,7 +115,9 @@ request beyond that gets 429 before any response starts.
 
 Speculation is an engine-environment A/B: with `--checkpoint`, pass
 `--engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1` and optionally
-`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` (`1`…`3`) and
+`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` (`1`…`3`, or `auto`: the engine's marginal
+policy picks 0…3 each step from measured acceptance and round cost; rectangular
+only) and
 `DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION` (`rectangular` or `serial`). The load
 transaction reads exactly these entries (not the inherited process
 environment), adds the head's LOAD supplement and records the resolved setting

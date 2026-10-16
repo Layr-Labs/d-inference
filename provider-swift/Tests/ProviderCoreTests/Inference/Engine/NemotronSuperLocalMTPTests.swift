@@ -66,6 +66,13 @@ struct NemotronSuperLocalMTPTests {
             MTP.verificationKey: "rectangular", MTP.depthKey: "2"])
             == .init(depth: 2, verification: .rectangularExact))
         #expect(try MTP.Setting.resolve(environment: [MTP.verificationKey: "serial"]) == nil)
+        // "auto" lets the engine pick each step's depth up to the maximum.
+        #expect(try MTP.Setting.resolve(environment: [MTP.enabledKey: "1", MTP.depthKey: "auto"])
+            == .init(depth: 3, verification: .rectangularExact, adaptive: true))
+        #expect(throws: MTP.Failure.invalidDepth) {
+            try MTP.Setting.resolve(environment: [MTP.enabledKey: "1", MTP.depthKey: "auto",
+                MTP.verificationKey: "serial"])
+        }
         for value in ["", "Serial", "rectangularExact", "automatic", "rectangular_exact"] {
             #expect(throws: MTP.Failure.invalidVerification) {
                 try MTP.Setting.resolve(

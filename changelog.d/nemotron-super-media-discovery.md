@@ -45,8 +45,9 @@ with the minimum grant it needs. `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT`
 that many requests, and the speculative owner (rectangular verification) into
 up to eight concurrent requests verified in one exact captured window per
 round, each committing its own accepted prefix; serial verification stays one
-request. Synthetic fixtures show token-exact output against solo plain decode.
-Prompts prefill in fixed chunks (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`,
+request. `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH=auto` lets the engine pick each
+step's depth up to three. Synthetic fixtures show token-exact output against
+solo plain decode. Prompts prefill in fixed chunks (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`,
 default 2048 tokens), at most one chunk per step beside every decode or verify
 row, optionally with decode-only steps between chunks
 (`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`); a request's chunks are

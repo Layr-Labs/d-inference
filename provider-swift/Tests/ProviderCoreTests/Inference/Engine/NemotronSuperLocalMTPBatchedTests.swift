@@ -62,8 +62,9 @@ struct NemotronSuperLocalMTPBatchedTests {
         ((0 ..< 20).map { ($0 * 7 + 3) % 61 + 1 }.filter { $0 != 18 }, 16),
     ]
 
-    @Test(.timeLimit(.minutes(3)), arguments: [(1, 3), (3, 3), (2, 4)])
-    func speculativeOwnerServesConcurrentRequestsExactly(depth: Int, rows: Int) async throws {
+    @Test(.timeLimit(.minutes(3)), arguments: [(1, 3, false), (3, 3, false), (2, 4, false), (3, 4, true)])
+    func speculativeOwnerServesConcurrentRequestsExactly(depth: Int, rows: Int, adaptive: Bool)
+        async throws {
         let plainFixture = try SuperMTPInstalledFixture().make()
         let speculativeFixture = try SuperMTPInstalledFixture().make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
@@ -78,8 +79,9 @@ struct NemotronSuperLocalMTPBatchedTests {
         }
         let plain = try await Self.owner(plainFixture, setting: nil, requests: 1, budget: budget,
             lease: leases[0])
-        let speculative = try await Self.owner(speculativeFixture, setting: .init(depth: depth),
-            requests: rows, budget: budget, lease: leases[1])
+        let speculative = try await Self.owner(speculativeFixture,
+            setting: .init(depth: depth, adaptive: adaptive), requests: rows, budget: budget,
+            lease: leases[1])
         #expect(speculative.speculates && speculative.maximumLocalRequests == rows)
         #expect(await speculative.bridge.effectiveServingConcurrency == rows)
         var expected: [(text: String, completions: [Int], errors: [String])] = []
@@ -107,14 +109,16 @@ struct NemotronSuperLocalMTPBatchedTests {
         for index in Self.requests.indices {
             let result = try #require(actual[index])
             #expect(expected[index].errors.isEmpty && result.errors.isEmpty, "\(result.errors)")
-            #expect(result.text == expected[index].text, "request \(index) depth \(depth) rows \(rows)")
+            #expect(result.text == expected[index].text,
+                "request \(index) depth \(depth) rows \(rows) adaptive \(adaptive)")
             #expect(result.completions == expected[index].completions)
         }
         let ownedEngine = await speculative.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
         let metrics = try #require(engine.mtpMetricsSnapshot())
-        #expect(metrics.rounds > 0 && metrics.serialVerificationRounds == 0)
-        #expect(metrics.rectangularVerificationRounds > 0)
+        #expect(metrics.serialVerificationRounds == 0)
+        // The adaptive policy may settle on target-only steps for this fixture.
+        if !adaptive { #expect(metrics.rounds > 0 && metrics.rectangularVerificationRounds > 0) }
         print("SYNTHETIC provider super-mtp-batched depth=\(depth) rows=\(rows) "
             + "verifySteps=\(metrics.rectangularVerificationRounds) rounds=\(metrics.rounds) "
             + "drafted=\(metrics.draftedTokens) accepted=\(metrics.acceptedTokens)")

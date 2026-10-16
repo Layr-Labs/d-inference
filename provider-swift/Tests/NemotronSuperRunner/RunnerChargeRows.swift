@@ -9,6 +9,8 @@ enum RunnerChargeKind: String, Sendable {
     case prefixBank = "prefix_bank"
     /// The paged owner's decode-row workspace (NemotronSuperLocalKVBackend).
     case decodeRows = "decode_rows"
+    /// The speculating engine's once-per-engine round work and captured windows.
+    case mtpRound = "mtp_round"
 }
 
 struct RunnerChargeRow: Sendable {
@@ -37,7 +39,8 @@ extension GlobalKVCacheBudget {
                 : id.hasSuffix("-media") ? .media
                 : NemotronSuperLocalPrefill.isLaneReservationID(id) ? .prefillLane
                 : NemotronSuperLocalPrefixCache.isBankReservationID(id) ? .prefixBank
-                : NemotronSuperLocalKVBackend.isDecodeRowsReservationID(id) ? .decodeRows : .kv
+                : NemotronSuperLocalKVBackend.isDecodeRowsReservationID(id) ? .decodeRows
+                : NemotronSuperLocalMTP.isRoundReservationID(id) ? .mtpRound : .kv
             rows.append(RunnerChargeRow(id: id, kind: kind, bytes: bytes))
         }
         return rows.sorted { $0.id < $1.id }

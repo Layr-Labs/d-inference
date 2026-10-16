@@ -21,24 +21,24 @@ The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
 claims, before allocation, the pinned checkpoint's installation quote with a
 2 GiB backend allowance (82,100,665,864 bytes), the embedded head's supplement
 (8,848,271,480 bytes) and `NemotronSuperServingPolicy.admissionKVBytes` of KV
-headroom (36 GiB for eight speculative requests at the 65,536-token context),
-then reserves a 12 GiB owner-wide prefill lane until native retirement. Its
-default discovery
-footprint, 136.3 GiB, is that claim plus the lane and the worst-case media
+headroom (22 GiB for eight speculative requests), then reserves a 12 GiB
+owner-wide prefill lane until native retirement. Its default discovery
+footprint, 122.3 GiB, is that claim plus the lane and the worst-case media
 reservation of one single-image request
 (`NemotronSuperServingPolicy.mediaChargeBytes`, 3.62 GiB: a 64 Mi-pixel decode
 workspace, the encoded body copies, a 13,312-patch image's tokens and its tower
 and projector bound), so a loaded slot can serve an image at once. With the
 unmeasured 5.5 GiB activation reserve and 1 GiB minimum KV the load gate needs
-142.8 GiB under the 90% cap: at least 158.7 GiB (170.4 GB) of physical memory
+128.8 GiB under the 90% cap: at least 143.1 GiB (153.7 GB) of physical memory
 before macOS and other processes take any. A 128 GB Mac (115.2 GiB cap) cannot
-admit the default load; 192 GB leaves 30.0 GiB under the cap, which also holds a
+admit the default load; 192 GB leaves 44.0 GiB under the cap, which also holds a
 16-image request (24.5 GiB of media). Only a 256 GB M3 Ultra is measured: load
 peak physical footprint 80.5 GB, MLX active 75.0 GB after load and 121.0 GB
-charged during a load at a 28 GiB grant; at the 65,536-token context loads
-claiming 129.6 GB (36 GiB of KV headroom) and 130.7 GB (with the 1 GiB prefix
-bank) were admitted and one claiming 140.3 GB (46 GiB, below what eight
-speculative requests at 131,072 tokens need) was refused. The registry floor derived from this is
+charged during a load at a 28 GiB grant. While the speculating owner still
+charged its draft history for the whole window, claims of 129.6 to 130.7 GB
+(36 to 37 GiB of KV headroom) were admitted at some times and refused at
+others, and 140.3 GB was refused; the per-token history charge brings the
+default claim to 115.6 GB. The registry floor derived from this is
 in the [registry reference](../reference/model-registry-format.md#nemotron-super).
 Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,

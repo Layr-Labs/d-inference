@@ -101,9 +101,16 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             try isolation.writePreflight(inputs.json)
             return
         }
+        // The managed Super load's MLX ceiling (memory limit and buffer-cache
+        // cap), set before any weights, so the ledger sees production's cache.
+        MLXMemoryGuard.configureOnce()
+        let mlxLimits: RunnerJSON = MLXMemoryGuard.configuredLimitsSnapshot().map {
+            ["memory_limit_bytes": .bytes($0.memoryLimitBytes), "cache_limit_bytes": .bytes($0.cacheLimitBytes)]
+        } ?? .null
         log.emit("runner.start", ["pid": .int(Int64(getpid())), "mode": synthetic ? "synthetic" : "checkpoint",
             "build_configuration": .string(Self.buildConfiguration), "settings": settings.json,
-            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs)])
+            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs),
+            "mlx_limits": mlxLimits])
 
         let budget = GlobalKVCacheBudget(capFraction: capFraction)
         let sampler = RunnerMemorySampler(budget: budget, log: log, interval: .milliseconds(sampleIntervalMs))
@@ -149,7 +156,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             "auth_token_file": .string(isolation.authTokenFile.path),
             "events_file": .string(isolation.eventsFile.path), "identity": serving.identity,
             "settings": settings.json, "sample_interval_ms": .count(sampleIntervalMs),
-            "load_seconds": loadSeconds, "load_phases": phases.json,
+            "load_seconds": loadSeconds, "load_phases": phases.json, "mlx_limits": mlxLimits,
         ]
         var servedCleanly = true
         if await shutdown.requested {
@@ -236,7 +243,8 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             let parts = entry.split(separator: "=", maxSplits: 1)
             environment[String(parts[0])] = parts.count > 1 ? String(parts[1]) : ""
         }
-        let kvGib = kvCapacityGib ?? Self.defaultKVCapacityGib(engineEnvironment: environment)
+        let kvGib = kvCapacityGib
+            ?? Self.defaultKVCapacityGib(engineEnvironment: environment, contextTokens: maxContext)
         let grant = Int(kvGib * 1_073_741_824)
         return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
             kvCapacityBytes: grant,
@@ -244,7 +252,8 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
             verifyParallelism: verifyParallelism,
             admissionKVBytes: managedLoadClaim
-                ? RunnerLoadSettings.managedAdmissionKVBytes(grantBytes: grant, environment: environment) : nil)
+                ? RunnerLoadSettings.managedAdmissionKVBytes(grantBytes: grant, environment: environment,
+                    contextTokens: maxContext) : nil)
     }
 
     /// Unmeasured runner defaults. The speculative grant leaves room for the
@@ -258,13 +267,16 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     /// The grant when `--kv-capacity-gib` is omitted. Malformed engine values
     /// fail at load with the builder's own error; here they keep the plain grant.
     /// Speculating owners take at least the managed slot's admission for their
-    /// width (`NemotronSuperServingPolicy.admissionKVBytes`, 26 GiB for eight),
-    /// which covers the measured minimum grant at depth 3.
-    static func defaultKVCapacityGib(engineEnvironment environment: [String: String]) -> Double {
+    /// width and depth table at the context (`NemotronSuperServingPolicy.admissionKVBytes`,
+    /// about 11.1 GiB for eight at 65,536 tokens), which covers the measured
+    /// minimum grant at depth 3.
+    static func defaultKVCapacityGib(engineEnvironment environment: [String: String],
+                                     contextTokens: Int) -> Double {
         if environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1" {
             let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
                 environment: environment, speculates: true)) ?? 1
-            let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: true)
+            let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: true,
+                environment: environment, contextTokens: contextTokens)
             return max(speculativeKVCapacityGib, Double(admission) / 1_073_741_824)
         }
         let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(

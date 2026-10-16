@@ -71,6 +71,7 @@ let package = Package(
                 "Integration/Nemotron/NemotronSuperMTPFixture.swift",
                 "Integration/Nemotron/NemotronSuperMTPGraphTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPAssistantTests.swift",
+                "Integration/Nemotron/NemotronSuperMTPSequenceChargeTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPEngineTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPRoundTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPRowExactnessTests.swift",

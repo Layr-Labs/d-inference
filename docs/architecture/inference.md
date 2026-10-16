@@ -254,16 +254,17 @@ opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
 transaction. Its LOAD claim is the installation quote with a 2 GiB backend
 allowance, the head supplement with speculation, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
-request's measured fixed bytes, rounded up (4.25 GiB with depth-3 speculation at
-the 65,536-token context, 0.5 GiB plain), plus 2 GiB and any prefix bank, never
+request's measured fixed bytes, rounded up (576 MiB with speculation, 512 MiB
+plain, at any context), a speculating owner's round work once
+(`speculativeOwnerBoundBytes`, below), plus 2 GiB and any prefix bank, never
 above the grant. For the pinned checkpoint the same claim also holds the prefill
 lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
 Once the installation and head are resident (MLX usage), their share of the claim
 is handed over to that live view, as the ordinary managed load does
-(`reducePendingLoad`), and the builder hands the lane and bank shares to their
-own reservations right before taking them, so no byte is counted twice.
+(`reducePendingLoad`), and the builder hands the lane, round and bank shares to
+their own reservations right before taking them, so no byte is counted twice.
 The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
@@ -287,16 +288,35 @@ encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
 reserved per request by its own length. Recurrent state, the decode row and the
 prefill lane do not grow with the context: on the full checkpoint each
 2,048-token chunk's transient stayed at 7.7 to 8.7 GB, inside the 12 GiB lane,
-through 131,056 tokens, with finite logits throughout. What grows is the
-speculating owner's fixed per-request charge, which bounds the assistant's FP8
-history, its FP32 trusted backlog and every draft step's scores by the
-configured context: about 30.2 KB per token per request (3.44 GB at 32,768,
-4.43 GB at 65,536 and 6.41 GB at 131,072, measured). Eight requests' LOAD claim
-is admitted at 65,536 (36 GiB of KV headroom and the 1 GiB prefix bank,
-130.7 GB in all) and was refused at 131,072 on 256 GB while the claim still
-counted the installed weights until the owner was built; the claim now hands
-that share to live usage once the weights are resident.
-The plain owner's fixed bytes stay 516,253,712 at any context.
+through 131,056 tokens, with finite logits throughout. The speculating
+owner's assistant keeps state that grows with each request: its FP8 history
+and decoded mirror, allocated once for the request's prompt plus `max_tokens`
+and written in place. The SDK declares it as a per-token buffer
+(`CBv2MTPSequenceScaledAllocationProviding`): EngineV2 prices it for each
+request's reserved tokens through its auxiliary ledger, and each bridge
+reservation adds 1,536 bytes per token beside the 8,192 of KV, with the
+projection's rounding slack in its fixed bytes. The fixed per-request bytes are
+533,401,365 whatever the configured context (measured; 2,450,016,143 while the
+round work was charged to every request, 4.43 GB at 65,536 while the window
+was charged up front); the plain owner's stay 516,253,712. Work of one round
+exists once per owner, whatever the number of requests, and the builder
+reserves it once as `mtp_round` before the first request: the draft steps the
+depth table allows at its widest round, one prompt-history chunk, the backend
+scratch, the verify window, the captured windows' recurrent generations and
+the whole-history copies MLX may hold at once when a write cannot donate its
+buffer (each speculating row once per draft step plus once, every other
+request once, each at the configured sequence bound). For the default table,
+eight requests and 65,536 tokens that is 4,935,449,637 bytes (measured);
+`speculativeOwnerBoundBytes` estimates it for the LOAD claim from the engine's
+own counts for the depth table in effect (5.03 GB here; less when the table
+drafts less at a width) and the builder refuses the build when the exact
+reservation does not fit. Eight speculating requests then need a 6.7 GB
+minimum grant with a 1 GiB bank (22.8 GB before), and the full checkpoint's
+decode-window peak above idle at 131,041 prompt tokens fell from 3.80 to
+2.36 GB. The served
+context stays at 65,536 for prefill time (a 130,058-token prompt takes 5.4
+minutes to its first token) and whole-document recall, which degrades beyond
+about 32K tokens.
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
 local-endpoint chat completions (`NemotronSuperLocalEndpointEngine`) run on the

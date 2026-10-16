@@ -288,61 +288,86 @@ struct NemotronSuperLocalPrefixCacheTests {
     /// resident and the lane and bank shares pass to their own reservations,
     /// so neither the 12 GiB lane share nor the 16 GiB bank is ever counted
     /// twice (counting the bank twice would need 4 GiB more than is free).
-    @Test(.timeLimit(.minutes(3)))
+    /// A speculating owner's claim also holds the policy's round share and the
+    /// head; that share passes to the engine's exact round reservation.
+    @Test(.timeLimit(.minutes(5)))
     func oneLoadClaimHoldsThePinnedOwnerOnce() async throws {
-        let bank: Int = 16 << 30
-        let kvFloor: Int = 2 << 30
-        let grant: Int = 40 << 30
-        let environment = [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank)]
-        let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
-            speculates: false)
-        #expect(shares == .init(lane: 12 << 30, bank: bank))
-        for short in [true, false] {
-            let fixture = SuperMTPInstalledFixture()
-            let base = try fixture.staging()
-            let installs = SuperPrefixInstallCount()
-            let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
-                installs.increment()
-                return try base.install($0, $1, $2)
-            }, head: base.head, pinned: true)
-            let quote = try NemotronSuperInstallation.requiredLoadBytes(source: base.source,
-                backendAllowanceBytes: 1 << 20)
-            let claim = UInt64(quote + shares.lane + shares.bank + kvFloor)
-            let budget = Self.budget()
-            let free = await Self.freeBytes(budget)
-            #expect(free > claim)
-            let ballast: UInt64 = free - claim + (short ? 1 : 0)
-            #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
-            let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
-            let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
-                maxContextLength: 1024, defaultMaxTokens: 16)
-            let transaction = NemotronSuperLocalLoad(budget: budget)
-            var failure: Error?
-            do {
-                _ = try await transaction.load(staging: { staging },
-                    tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
-                    kvBytesCapacity: grant, admissionKVBytes: kvFloor + bank, backendAllowanceBytes: 1 << 20,
-                    modelID: NemotronSuperLocalBinding.modelID, environment: environment)
-            } catch {
-                failure = error
+        for speculates in [false, true] {
+            let bank: Int = 16 << 30
+            let kvFloor: Int = 2 << 30
+            let grant: Int = 40 << 30
+            let speculation = speculates
+                ? [NemotronSuperLocalMTP.enabledKey: "1", NemotronSuperLocalMTP.depthKey: "3"] : [:]
+            let environment = speculation.merging(
+                [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank)]) { $1 }
+            let context = 1024
+            let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
+                speculates: speculates, contextTokens: context)
+            let round = speculates
+                ? NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 1, environment: environment,
+                    contextTokens: context)
+                : 0
+            #expect(shares == .init(lane: 12 << 30, round: round, bank: bank))
+            #expect(!speculates || round > 1 << 30, "the pinned round units, not the fixture's")
+            // The head's LOAD supplement, quoted from a separate staging of the same fixture.
+            let supplement = speculates
+                ? try SuperMTPInstalledFixture().staging().head
+                    .map { try NemotronSuperLocalMTP.loadSupplementBytes($0.quote()) } ?? -1
+                : 0
+            #expect(supplement >= 0)
+            for short in [true, false] {
+                let fixture = SuperMTPInstalledFixture()
+                let base = try fixture.staging()
+                let installs = SuperPrefixInstallCount()
+                let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
+                    installs.increment()
+                    return try base.install($0, $1, $2)
+                }, head: base.head, pinned: true)
+                let quote = try NemotronSuperInstallation.requiredLoadBytes(source: base.source,
+                    backendAllowanceBytes: 1 << 20) + supplement
+                let claim = UInt64(quote + shares.lane + shares.round + shares.bank + kvFloor)
+                let budget = Self.budget()
+                let free = await Self.freeBytes(budget)
+                #expect(free > claim)
+                let ballast: UInt64 = free - claim + (short ? 1 : 0)
+                #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
+                let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+                let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+                    maxContextLength: context, defaultMaxTokens: 16)
+                let transaction = NemotronSuperLocalLoad(budget: budget)
+                var failure: Error?
+                do {
+                    _ = try await transaction.load(staging: { staging },
+                        tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
+                        kvBytesCapacity: grant, admissionKVBytes: kvFloor + bank + round,
+                        backendAllowanceBytes: 1 << 20,
+                        modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+                } catch {
+                    failure = error
+                }
+                if short {
+                    #expect((failure as? NemotronSuperLocalLoad.Failure) == .capacity)
+                    #expect(installs.count == 0, "refused before allocation")
+                } else {
+                    #expect(failure == nil)
+                    #expect(installs.count == 1)
+                    let held = await budget.reservationBytesSnapshot()
+                    let laneHeld = held.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }
+                    let bankHeld = held.filter { Prefix.isBankReservationID($0.key) }
+                    #expect(laneHeld.count == 1 && bankHeld.values.first == UInt64(bank))
+                    // The fixture engine's exact round, far below the pinned share.
+                    let roundHeld = held.filter { NemotronSuperLocalMTP.isRoundReservationID($0.key) }
+                    #expect(roundHeld.count == (speculates ? 1 : 0))
+                    #expect(roundHeld.values.allSatisfy { $0 > 0 && $0 < UInt64(round) })
+                    // The claim is gone; only the owner's own reservations and the ballast stay.
+                    let owner: UInt64 = (laneHeld.values.first ?? 0) + UInt64(bank)
+                        + roundHeld.values.reduce(0, +)
+                    #expect(await budget.outstandingReservedBytes() == ballast + owner)
+                    try await transaction.closeAfterDrain()
+                }
+                await budget.release(requestID: "ballast")
+                #expect(await budget.outstandingReservedBytes() == 0)
             }
-            if short {
-                #expect((failure as? NemotronSuperLocalLoad.Failure) == .capacity)
-                #expect(installs.count == 0, "refused before allocation")
-            } else {
-                #expect(failure == nil)
-                #expect(installs.count == 1)
-                let held = await budget.reservationBytesSnapshot()
-                let laneHeld = held.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }
-                let bankHeld = held.filter { Prefix.isBankReservationID($0.key) }
-                #expect(laneHeld.count == 1 && bankHeld.values.first == UInt64(bank))
-                // The claim is gone; only the owner's own reservations and the ballast stay.
-                let owner: UInt64 = (laneHeld.values.first ?? 0) + UInt64(bank)
-                #expect(await budget.outstandingReservedBytes() == ballast + owner)
-                try await transaction.closeAfterDrain()
-            }
-            await budget.release(requestID: "ballast")
-            #expect(await budget.outstandingReservedBytes() == 0)
         }
     }
 

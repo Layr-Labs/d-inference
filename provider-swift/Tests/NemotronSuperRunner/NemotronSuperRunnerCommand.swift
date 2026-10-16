@@ -49,6 +49,11 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var verifyParallelism = 4
     @Flag(help: "Check checkpoint identity and configuration only (no shard reads, no GPU), then exit.")
     var preflight = false
+    @Flag(help: """
+        Claim the LOAD's KV headroom as the managed slot does (every configured request's fixed bytes, \
+        2 GiB and the default prefix bank) instead of the whole --kv-capacity-gib; the grant is unchanged.
+        """)
+    var managedLoadClaim = false
     @Option(name: .customLong("engine-env"),
         help: "KEY=VALUE runtime-policy entry passed to the engine (repeatable; used for A/B switches).")
     var engineEnv: [String] = []
@@ -59,6 +64,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         }
         guard !synthetic || template != nil else { throw ValidationError("--synthetic requires --template") }
         guard !preflight || checkpoint != nil else { throw ValidationError("--preflight requires --checkpoint") }
+        guard !managedLoadClaim || checkpoint != nil else {
+            throw ValidationError("--managed-load-claim requires --checkpoint")
+        }
         guard (1...16384).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
             throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= 16384")
         }
@@ -223,11 +231,14 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             environment[String(parts[0])] = parts.count > 1 ? String(parts[1]) : ""
         }
         let kvGib = kvCapacityGib ?? Self.defaultKVCapacityGib(engineEnvironment: environment)
+        let grant = Int(kvGib * 1_073_741_824)
         return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
-            kvCapacityBytes: Int(kvGib * 1_073_741_824),
+            kvCapacityBytes: grant,
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
             kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
-            verifyParallelism: verifyParallelism)
+            verifyParallelism: verifyParallelism,
+            admissionKVBytes: managedLoadClaim
+                ? RunnerLoadSettings.managedAdmissionKVBytes(grantBytes: grant, environment: environment) : nil)
     }
 
     /// Unmeasured runner defaults. The speculative grant leaves room for the

@@ -219,6 +219,43 @@ struct NemotronSuperLocalPrefixCacheTests {
         for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
     }
 
+    /// The bank is part of the slot's floor. An owner with a bank needs
+    /// exactly the bank's budget more grant than the same owner without one,
+    /// both as its re-slice floor (`minimumServiceableGrantBytes`) and as the
+    /// minimum grant for its requests (`superMinimumGrantBytes`): a re-slice
+    /// never shrinks the grant below a bank whose whole budget stays reserved
+    /// in the shared ledger until native retirement.
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func theBankIsPartOfTheSlotFloor(speculates: Bool) async throws {
+        let budget = Self.budget()
+        let bankedFixture = try SuperMTPInstalledFixture().make()
+        let plainFixture = try SuperMTPInstalledFixture().make()
+        let leases = [try await Self.lease(bankedFixture, "floor-bank", budget: budget, speculates: speculates),
+                      try await Self.lease(plainFixture, "floor-plain", budget: budget, speculates: speculates)]
+        let banked = try await Self.owner(bankedFixture, environment: Self.environment, budget: budget,
+            lease: leases[0], speculates: speculates)
+        let plain = try await Self.owner(plainFixture,
+            environment: [NemotronSuperLocalPrefill.chunkKey: String(Self.chunk)], budget: budget,
+            lease: leases[1], speculates: speculates)
+        let bank: Int = Self.grant / 8
+        #expect(banked.prefixBankBytes == bank && plain.prefixBankBytes == 0)
+        let bankedFloor = await banked.bridge.minimumServiceableGrantBytes()
+        let plainFloor = await plain.bridge.minimumServiceableGrantBytes()
+        #expect(plainFloor > 0 && plainFloor < Int.max)
+        let floorDifference: Int = bankedFloor - plainFloor
+        #expect(floorDifference == bank)
+        let requests = banked.maximumLocalRequests
+        let bankedMinimum = await banked.bridge.superMinimumGrantBytes(requests: requests)
+        let plainMinimum = await plain.bridge.superMinimumGrantBytes(requests: requests)
+        #expect(plainMinimum > 0 && plainMinimum < Int.max)
+        let minimumDifference: Int = bankedMinimum - plainMinimum
+        #expect(minimumDifference == bank)
+        try await banked.closeAfterDrain()
+        try await plain.closeAfterDrain()
+        #expect(await budget.reservationBytesSnapshot().isEmpty)
+        for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
+    }
+
     /// A bank that does not fit the shared budget fails the load after the
     /// engine retired, refunding the lane already reserved.
     @Test(.timeLimit(.minutes(2))) func bankThatDoesNotFitFailsTheLoadAndRefundsTheLane() async throws {

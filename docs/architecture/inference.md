@@ -163,7 +163,11 @@ holds the assistant's queued prompt history, so a restored request drafts from
 the same history as a cold one.
 `UnserviceableGrant.minimumGrantBytes` and the slot's re-slice floor include
 the bank, so a larger bank also keeps a co-resident load from shrinking the
-grant below it. Sources:
+grant below it. A re-slice does not give the bank up: the engine only lowers
+the bank's own limit to a quarter of the new grant and keeps entries pinned by
+in-flight restores and captures, and the shared ledger holds the bank's whole
+reservation until native retirement, so a floor without the bank would hand a
+newcomer memory the bank still holds. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 

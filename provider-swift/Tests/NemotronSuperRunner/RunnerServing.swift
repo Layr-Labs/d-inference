@@ -65,6 +65,10 @@ enum RunnerKVGrant {
             "fixed_request_bytes": (await bridge.maximumRequestOverheadBytes()).map { .bytes($0) } ?? .null,
             "requests": .count(requests),
             "serving_concurrency": .count(await bridge.effectiveServingConcurrency),
+            // Each request's shared reservation adds these per token of its
+            // prompt plus max_tokens (auxiliary: the assistant's history).
+            "kv_bytes_per_token": .bytes(await bridge.kvBytesPerToken),
+            "auxiliary_bytes_per_token": .bytes(await bridge.auxiliaryBytesPerToken),
         ]
     }
 

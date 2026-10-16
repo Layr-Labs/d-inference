@@ -92,9 +92,16 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             try isolation.writePreflight(inputs.json)
             return
         }
+        // The managed Super load's MLX ceiling (memory limit and buffer-cache
+        // cap), set before any weights, so the ledger sees production's cache.
+        MLXMemoryGuard.configureOnce()
+        let mlxLimits: RunnerJSON = MLXMemoryGuard.configuredLimitsSnapshot().map {
+            ["memory_limit_bytes": .bytes($0.memoryLimitBytes), "cache_limit_bytes": .bytes($0.cacheLimitBytes)]
+        } ?? .null
         log.emit("runner.start", ["pid": .int(Int64(getpid())), "mode": synthetic ? "synthetic" : "checkpoint",
             "build_configuration": .string(Self.buildConfiguration), "settings": settings.json,
-            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs)])
+            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs),
+            "mlx_limits": mlxLimits])
 
         let budget = GlobalKVCacheBudget(capFraction: capFraction)
         let sampler = RunnerMemorySampler(budget: budget, log: log, interval: .milliseconds(sampleIntervalMs))
@@ -140,7 +147,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             "auth_token_file": .string(isolation.authTokenFile.path),
             "events_file": .string(isolation.eventsFile.path), "identity": serving.identity,
             "settings": settings.json, "sample_interval_ms": .count(sampleIntervalMs),
-            "load_seconds": loadSeconds, "load_phases": phases.json,
+            "load_seconds": loadSeconds, "load_phases": phases.json, "mlx_limits": mlxLimits,
         ]
         var servedCleanly = true
         if await shutdown.requested {

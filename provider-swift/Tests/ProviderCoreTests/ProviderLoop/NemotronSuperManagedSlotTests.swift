@@ -350,7 +350,7 @@ struct NemotronSuperManagedSlotTests {
     /// The LOAD claim refuses before allocation; nothing is installed or held.
     @Test(.timeLimit(.minutes(1)))
     func loadAdmissionRefusalInstallsNothing() async throws {
-        // The ordinary load gate passes; the managed claim's 36 GiB KV headroom does not.
+        // The ordinary load gate passes; the managed claim's 22 GiB KV headroom does not.
         let fixture = try await Self.fixture(mode: .auto, totalGiB: 16)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         var refusal: Error?

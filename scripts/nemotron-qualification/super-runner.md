@@ -54,7 +54,13 @@ cp "$METALLIB" "$HARNESS/.build/out/Products/Release/mlx.metallib"
 ```
 
 `$METALLIB` is the source-matched library built from the pinned nested MLX. MLX
-loads `mlx.metallib` from the executable's directory.
+loads `mlx.metallib` from the executable's directory. Like the managed load, the runner pins MLX's memory limit and buffer-cache cap
+with `MLXMemoryGuard` before loading (physical memory less 6 GB, and 8 GiB of
+cache unless `DARKBLOOM_MLX_MEMORY_RESERVE_GB` or `DARKBLOOM_MLX_CACHE_LIMIT_GB`
+says otherwise); `runner.start` and the ready file report them as
+`mlx_limits`. Without the cap, MLX keeps freed buffers up to its default
+limit, and the shared budget, which counts cached buffers as used, refuses
+requests the provider would admit.
 
 ## Run
 
@@ -75,7 +81,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 65536 | the managed slot's context; the builder accepts at most 262144; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
-| `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
+| `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes`, `serving_concurrency`, and the per-token rates each request's reservation adds for its prompt plus `max_tokens` (`kv_bytes_per_token`, of which `auxiliary_bytes_per_token` is the speculating assistant's history), and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
 | `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |

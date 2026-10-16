@@ -21,11 +21,8 @@ enum NemotronSuperServingPolicy {
     static var indexSHA256: String { NemotronSuperCheckpointPin.index }
 
     /// Context window the managed slot serves and advertises (prompt plus
-    /// output). The default speculating owner charges every request the
-    /// assistant's history for this whole window (about 30 KB per token), so
-    /// eight requests' LOAD claim grows with it: at 65,536 it is admitted on
-    /// 256 GB, at 131,072 it is refused (measured; see the managed slot in
-    /// `docs/architecture/inference.md`).
+    /// output); see the managed slot in `docs/architecture/inference.md` for
+    /// why it stays below `maximumContextTokens`.
     static let contextTokens = 65_536
     /// Largest context the bridge builder and the image binding accept,
     /// verified on the pinned checkpoint. The checkpoint's attention has no
@@ -131,11 +128,12 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Fixed bytes one request reserves (recurrent state, request workspace,
-    /// any speculation charge), measured on the pinned checkpoint at the
-    /// 65,536-token `contextTokens` and 2,048-token chunks and rounded up:
-    /// 4,429,739,396 at depth 3, 516,253,712 plain. Only the speculation
-    /// charge grows with the context.
-    static let speculativeRequestBoundBytes = 17 << 28
+    /// the speculation charge that does not grow with the sequence), measured
+    /// on the pinned checkpoint with 2,048-token chunks and rounded up:
+    /// 2,450,016,143 at depth 3, 516,253,712 plain, at any configured context.
+    /// The assistant's history is charged per token of each request (30,216
+    /// bytes beside 8,192 of KV), like the KV, not by the configured window.
+    static let speculativeRequestBoundBytes = 5 << 29
     static let plainRequestBoundBytes = 1 << 29
 
     /// KV headroom the LOAD claim requires: every configured request's fixed

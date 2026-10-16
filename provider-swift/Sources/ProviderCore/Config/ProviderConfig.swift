@@ -56,7 +56,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "darkbloom"
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? BuildEnvironment.current.cliName
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
@@ -66,7 +66,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 /// Operator policy for multi-token prediction.
 ///
 /// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
-/// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
+/// assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B targets. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
@@ -87,9 +87,10 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
     ]
 
-    private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
-        modelID == "gemma-4-26b-qat-4bit"
-            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+    static func isAutomaticExternalTarget(modelType: String?, modelID: String?) -> Bool {
+        (modelID == "gemma-4-26b-qat-4bit"
+            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType))
+            || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
     }
 
     func enablesMTP(
@@ -103,7 +104,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID) {
+            if Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID) {
                 return true
             }
             guard embeddedArtifactDeclared,
@@ -122,9 +123,10 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            return Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
+            return Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
         case .on:
-            return SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+            return Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
+                || SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
                 || SpecDecArtifactFunnel.isInlineTarget(modelType: modelType)
         }
     }
@@ -156,7 +158,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// decode is aggregate/B (`docs/reports/2026-07-25-paged-gate-results.md`).
     ///
     /// Missing configuration selects the exact reviewed model/runtime/hardware
-    /// profile when one exists; unknown profiles retain default 4 and ceiling 8.
+    /// profile when one exists; unknown profiles retain default 4 and ceiling 8,
+    /// except that models on the native `auto` paged allowlist start at 8 on
+    /// M5 Pro, Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`).
     /// Explicit values remain upper bounds. Widths up to 16 require a reviewed
     /// profile after backend resolution, physical fit and shared-Mac admission.
     /// Heartbeats report the final effective cap, never the requested ceiling.
@@ -242,7 +246,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
     /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
-    /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
+    /// catalog-declared assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B identities.
     /// Native `mimo_v2` also requests its inspected embedded heads automatically.
     /// The retired boolean `mtp` key is ignored (and warned about, see
     /// ``retiredKeysPresent``); only `mtp_mode` is read or written.
@@ -548,7 +552,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: BuildEnvironment.current.cliName)
         self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
@@ -565,7 +569,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// The provider name is derived from the machine model identifier
     /// (e.g. "Mac16,1" -> "darkbloom-mac16-1").
     public static func defaultForHardware(_ hw: HardwareInfo) -> ProviderConfig {
-        let name = "darkbloom-" + hw.machineModel
+        let name = BuildEnvironment.current.cliName + "-" + hw.machineModel
             .replacingOccurrences(of: ",", with: "-")
             .lowercased()
 
@@ -623,9 +627,7 @@ public enum ConfigManager: Sendable {
     /// The same path for another account's home, such as the invoking user
     /// of `sudo darkbloom report`.
     public static func defaultConfigPath(home: URL) -> URL {
-        home
-            .appendingPathComponent(".config")
-            .appendingPathComponent("darkbloom")
+        BuildEnvironment.current.configDirectory(home: home)
             .appendingPathComponent("provider.toml")
     }
 
@@ -655,7 +657,7 @@ public enum ConfigManager: Sendable {
         else {
             // Return a minimal default if we can't load
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )
@@ -720,7 +722,7 @@ public enum ConfigManager: Sendable {
         } catch {
             // Fall back to defaults on malformed TOML (matches previous behavior)
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )

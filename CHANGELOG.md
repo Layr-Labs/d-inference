@@ -3,12 +3,34 @@
 Unreleased changes live in [`changelog.d/`](changelog.d/README.md). Ordinary
 pull requests add one fragment; release preparation alone updates this file.
 
-## v0.9.20 — candidate (unpublished)
+## v0.9.21 — candidate (unpublished)
+
+Prepared on 2026-10-14; tagging and publication are separate steps.
+
+### Fixed
+
+- Keep one-token startup health-check timings out of serving throughput estimates, and bootstrap supported loaded models, including ordinary dense and MoE Qwens, with bounded, preemptible measurements so slow first-use samples do not leave warm providers waiting for their first jobs.
+
+### Dev provider builds have their own identity
+
+- A dev build is now `darkbloom-dev` in `Darkbloom Dev.app`, installed in `~/.darkbloom-dev` with its configuration in `~/.config/darkbloom-dev`. It uses the LaunchAgent labels `io.darkbloom.provider.dev` and `io.darkbloom.watchdog.dev`, the default direct-mode port `8001`, its own encrypted KV cache directory (`darkbloom-dev/kv3`, also under a configured cache directory), its own log subsystems and its own keychain items. Downloaded model weights stay shared, but each install selects its own active revision. A dev provider and a production provider can run on the same Mac.
+- The installer selects the dev identity when the release version contains `-dev.`. Production names, paths, ports, labels and keychain items are unchanged.
+- An earlier dev install in `~/.darkbloom` cannot update to a dev build with the new names. Install the dev provider again with the dev `install.sh`.
+- With both installs on one Mac: each install accepts only its own coordinator's MDM profile and names the other's; crash and jetsam reports match the exact process name; the fan helper keeps fans under control while either provider holds a lease, and `fan disable` / `fan uninstall` warn that they affect both; `doctor` warns when the other provider is running. The shared APNs app identity and `DARKBLOOM_*` shell overrides are documented limitations.
+- Production change: provider OOM detection now matches only the exact process name `darkbloom`. Jetsam and memory-crash reports for `darkbloom-enclave`, the fan helper or any other process whose name contains `darkbloom` no longer count as provider OOM events. A crash report matches when its `app_name`, `name` or `procName` equals the process name.
+- The fan helper is now version 2. It keeps one lease for each provider session. `fan status` and `doctor` report an older installed helper with the command that updates it (`sudo <cli> fan enable`), and `fan enable` refuses to replace a newer running helper with an older one.
+
+### Automatic dev provider releases
+
+- A push to `master` that changes the provider or its release tooling now builds, signs, notarizes and publishes a dev provider release. Tags still publish production releases unchanged.
+- Every dev build has the version `X.Y.Z-dev.<run number>`. `darkbloom --version` shows it, and dev providers update to each newer dev build. Dev runs never receive `PROD_*` secret values.
+
+## v0.9.20 - 2026-10-12
 
 - Raise the default SSD cache write budget from 750 GB to 4 TB (4,000 decimal GB)
   per rolling day. Saved limits and environment overrides continue to take precedence.
-- Prepare the provider release identity for 0.9.20. Publication remains pending;
-  the unreleased entries and fragments below have not been marked as shipped.
+- Prepare the provider release identity for 0.9.20. The unrelated unreleased
+  entries and fragments below remain separate.
 
 ## Unreleased — responsive provider App Attest handling
 

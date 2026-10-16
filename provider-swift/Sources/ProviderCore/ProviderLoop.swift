@@ -796,7 +796,7 @@ public actor ProviderLoop {
     /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
     internal var memoryPressureMonitor: MemoryPressureMonitor?
 
-    internal let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+    internal let logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
@@ -1102,7 +1102,7 @@ public actor ProviderLoop {
     }
 
     private static func createAttestationSigner() -> (any AttestationSigner)? {
-        let log = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+        let log = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
         #if DEBUG
         if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
            SecureEnclaveIdentity.isAvailable {

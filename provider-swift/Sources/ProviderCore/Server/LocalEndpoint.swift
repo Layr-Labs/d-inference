@@ -25,8 +25,7 @@ public enum LocalEndpoint {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom", isDirectory: true)
+        return BuildEnvironment.current.installDirectory()
     }
 
     static func tokenPath() -> URL { directory().appendingPathComponent("local_token") }

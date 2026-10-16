@@ -3,14 +3,19 @@
 import PackageDescription
 import Foundation
 
-// Release builds select the default coordinator and model CDN. The release
-// workflow sets DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
+// Release builds select the default coordinator, model CDN and install
+// identity (BuildEnvironment). The release workflow sets
+// DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
 let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
     .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
-precondition(["prod", "dev"].contains(releaseEnvironment),
-             "DARKBLOOM_RELEASE_ENVIRONMENT must be prod or dev")
-let providerCoreSwiftSettings: [SwiftSetting] =
-    releaseEnvironment == "dev" ? [.define("DARKBLOOM_ENV_DEV")] : []
+precondition(["prod", "dev", "staging"].contains(releaseEnvironment),
+             "DARKBLOOM_RELEASE_ENVIRONMENT must be prod, dev or staging")
+let buildEnvironmentSwiftSettings: [SwiftSetting]
+switch releaseEnvironment {
+case "dev": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_DEV")]
+case "staging": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_STAGING")]
+default: buildEnvironmentSwiftSettings = []
+}
 
 let package = Package(
     name: "DarkbloomProvider",
@@ -71,9 +76,19 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", exact: "2.6.0"),
     ],
     targets: [
+        // BuildEnvironment only. ProviderAppAttest and ProviderCore both need
+        // the install identity, and ProviderCore re-exports this module.
+        .target(
+            name: "ProviderBuildEnvironment",
+            path: "Sources/ProviderBuildEnvironment",
+            swiftSettings: buildEnvironmentSwiftSettings
+        ),
         .target(
             name: "ProviderAppAttest",
-            dependencies: [.product(name: "Sodium", package: "swift-sodium")],
+            dependencies: [
+                "ProviderBuildEnvironment",
+                .product(name: "Sodium", package: "swift-sodium"),
+            ],
             path: "Sources/ProviderAppAttest",
             linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security"), .linkedLibrary("bsm")]
         ),
@@ -117,6 +132,7 @@ let package = Package(
         .target(
             name: "ProviderCoreFoundation",
             dependencies: [
+                "ProviderBuildEnvironment",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Jinja", package: "swift-jinja"),
@@ -141,6 +157,7 @@ let package = Package(
             name: "ProviderCore",
             dependencies: [
                 "ProviderAppAttest",
+                "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
                 .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
@@ -162,8 +179,7 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "NIOCore", package: "swift-nio"),
             ],
-            path: "Sources/ProviderCore",
-            swiftSettings: providerCoreSwiftSettings
+            path: "Sources/ProviderCore"
         ),
 
         // ----------------------------------------------------------------
@@ -315,7 +331,7 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "ProviderCoreFoundationTests",
-            dependencies: ["ProviderCoreFoundation"],
+            dependencies: ["ProviderBuildEnvironment", "ProviderCoreFoundation"],
             path: "Tests/ProviderCoreFoundationTests"
         ),
 

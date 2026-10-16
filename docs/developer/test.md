@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-16
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -41,6 +41,64 @@ process uses `--asymmetric` for K64/V128 and 1,024-context geometry. Audio gates
 exercise PCM8 and AAC-video with a small target, not full-model quality or peak
 memory. Release-only builds do not provision test fixtures or opt into native
 qualification.
+
+The MiMo FP32 preflight-refusal fixtures convert both ordinary and router
+weights, so they update `dtype` and `moe_router_dtype` together. This keeps the
+inventory valid until the strict BF16-only load-profile gate rejects it;
+an earlier inventory error does not exercise that gate. The four `testFP32`
+cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` require
+`MIMO_V26_SERIAL_NATIVE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to
+the symmetric synthetic fixture directory.
+
+## Startup Performance Recovery
+
+`StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and
+bridge with deterministic engine receipts: a one-token startup warmup must not
+seed a slow deadline/heartbeat rate, and overlapping customer work must remain
+measurable. `ModelCalibrationTests` exercises bounded native bootstrap, customer
+preemption and actual retirement without customer traffic or model weights.
+Its partial-bootstrap regression holds the second measured request in engine
+work, interrupts it with a real foreground request, and checks rejection just
+before the retry deadline plus acceptance at the deadline despite fresh rates.
+`ProviderLoopCalibrationTests` runs registration against loopback and exercises
+normal and timed-out startup preloads. It checks eager scheduling after the
+self-test, before the first capacity tick, while retaining a blocked-posture
+case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
+cannot suppress the unfinished bootstrap.
+The loop suite also checks serial calibration across three resident engines
+without another capacity tick, stops that chain for foreground work or draining
+(`IdleCalibrationCoordinatorTests` checks that a preempting request waits only
+for the session's retirement, never for cross-actor successor scheduling),
+and runs the production load-completion epilogue
+with a real activity receipt and parked inference waiter to verify scheduling
+prioritizes the newly loaded slot before waiter resumption even when another
+resident engine is eligible. A blocked handoff checks that both load-transition
+state and parked waiters remain held across the bridge actor hop. These epilogue
+checks also cancel the load owner during that hop and require committed slot
+publication to complete successfully, releasing both classes of waiters.
+These epilogue tests do not load model weights. The native MiMo lifetime suite separately loads
+its real tiny transaction-backed model and verifies publication releases the
+construction activity before calibration can acquire ownership, then retires
+the real owner. This is ownership coverage, not full-model calibration quality.
+`finalCellPostureChangeDiscardsOnlyCalibration` holds the final measured cell,
+changes its injected posture, and checks that only that cell's staged evidence
+is discarded, independently published serving observations survive, and the
+bootstrap succeeds on a later retry.
+`lateCancelledPrefillRetainsProvenance` captures the production receipt of a
+blocked warmup or measured probe, cancels and joins the real engine request,
+then delivers an unconsumed prefill sample after cell cleanup. Neither serving
+counters nor rate evidence may change.
+`ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
+through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
+catalog IDs with both automatic paged selection and explicit contiguous KV.
+It verifies fresh prefill/decode heartbeat evidence and zero customer-work
+counters across repeated engine construction, without a customer request.
+The dependency's `OrdinaryRequestRetirementTests` covers ordinary completion,
+early watchdog terminal, waiter cancellation, zero work and closed admission.
+`ModelCalibrationPolicyTests` keeps the native MiMo sweep and smaller ordinary
+startup bounds explicit. Run these together with `EngineV2PrefillSamplingTests`
+and `PrefillEvidenceRecoveryTests` using the provider test runner. Synthetic
+timings prove state transitions, not real GPU throughput or fleet recovery.
 
 ## Native Inference Checkpoint Storage Qualification
 
@@ -326,6 +384,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
@@ -342,7 +401,11 @@ Release tests cover provider-only version/tag/binary parity even when backend
 source is absent, signed tags and trusted `master` before secrets, exact artifact
 registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
-These CPU-only checks do not prove Apple runtime behavior.
+`scripts/test-release-dev-branch.py` pins the experimental dev-branch lane
+(`.github/workflows/release-dev-branch.yml`) to dev scope: dispatch-only with a
+`ref` input, no tag path, no production environment, signing identity or secret,
+and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
+Apple runtime behavior.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical
@@ -393,6 +456,22 @@ without a server. DOM tests do not replace browser checks for pointer capture,
 touch scrolling or responsive carousel layout. Search/discovery after an
 authorized deployment needs separate read-only inspection; local success is
 not live verification.
+
+## Model publication workflow checks
+
+Run `python3 scripts/test_model_registry_workflow.py` to exercise the actual
+workflow shell steps against a loopback HTTP server with fixture credentials.
+It checks that an uploaded revision sends only revision identity, needs no R2
+credentials, preserves normal registration payloads, and propagates failures.
+It also rejects unconfirmed revision promotion while retaining staged-only
+normal registration.
+CI runs this suite without contacting production. The test host needs Bash,
+Python, jq and curl, matching the workflow runner.
+
+`python3 scripts/test_publish_model_revision.py` covers the immutable upload
+reservation. `actionlint .github/workflows/register-model.yml` checks workflow
+syntax. These checks do not establish native model quality or serving capacity;
+use the [publication runbook](../operations/model-revisions.md) for those checks.
 
 ## Reporting Results
 

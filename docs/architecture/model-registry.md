@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-16
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -35,9 +35,21 @@ because the cluster worker pins those bytes; see
 ## Publication
 
 The local manifest builder and publication scripts may call approved external
-model registration/revision APIs. Hash and upload complete immutable artifacts,
-publish the manifest last, then verify the registered identity. Publication,
-alias promotion and rollback require specific approval. See [model publication](../operations/model-migration.md)
+model registration/revision APIs. Upload and registry publication are separate
+operations: a valid canonical manifest and its existing files can be registered
+without uploading again or obtaining R2 write credentials. When bytes or the
+serving inventory change, hash and upload a new complete immutable revision,
+publish its manifest last, then verify the registered identity.
+
+The default `.github/workflows/register-model.yml` mode sends model metadata
+and prices to the registration endpoint. Its `publish_revision_only=true` mode
+requires explicit `promote=true` because that action always promotes, and
+sends only the version and optional pinned HF source to the existing model's
+`publish-revision` action, preserving metadata and prices while promoting the
+revision. Both modes need only the coordinator publishing key; upload tooling
+separately needs model-bucket access. The exact request contracts and input rules
+are in the [registry reference](../reference/model-registry-format.md#publish-tooling).
+Publication, alias promotion and rollback require specific approval. See [model publication](../operations/model-migration.md)
 and [revisions](../operations/model-revisions.md).
 
 Backend validation, database ownership and alias routing are documented in

@@ -434,7 +434,7 @@ extension ProviderLoop {
             if let nativeLoad {
                 try await loadNativeMiMoSlot(modelID: modelId, directory: modelPath,
                                              load: nativeLoad, preparation: mtpPreparation)
-                try await finishNativeMiMoSlotPublication(modelID: modelId)
+                try await finishNativeMiMoSlotPublication(modelID: modelId, deviceActivity: deviceActivity)
                 return
             }
             do {
@@ -827,19 +827,9 @@ extension ProviderLoop {
             // the default startup preload plan (ProviderLoop+StartupPreload).
             persistLoadedModelSet()
             recordAutopilotLoadTime(model: modelId, milliseconds: Int64(max(0, loadMs.rounded())))
-            await updateAggregateCapacity()
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
-            modelsLoading.remove(modelId)
-            isLoadingAny = false
-            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume()
-            }
-            releaseLoadGateWaiters()
-            // The load is installed: desired builds deferred behind it
-            // (advertise-raises are serialized behind in-flight loads) are
-            // re-offered now rather than on their backoff.
-            await retryReserveDeferredPrefetches()
+            try await finishModelLoad(modelID: modelId, deviceActivity: deviceActivity)
         } catch {
             // Keep the load gate through cleanup and survivor-grant restoration.
             if let nativeLoad {
@@ -873,6 +863,39 @@ extension ProviderLoop {
             // re-offered now — the box's arithmetic is back to pre-load.
             await retryReserveDeferredPrefetches()
             throw error
+        }
+    }
+
+    /// Hand a completed load to calibration while retaining the transition gate.
+    func finishModelLoad(modelID: String, deviceActivity: WholeMacUnboundedActivity) async throws {
+        // Publication already committed the resident slot. Caller cancellation
+        // must not report a failed load while leaving that usable slot installed.
+        // Lifecycle/owner invalidation still prevents releasing success waiters.
+        if isShuttingDown { throw CancellationError() }
+        guard let expectedBridge = modelSlots[modelID]?.engineV2,
+            !modelsUnloading.contains(modelID) else { throw CancellationError() }
+        try requireResidentNativeMiMoOwner(modelID)
+        // Construction is over, but another prepared load must not enter until
+        // the target bridge has had its atomic calibration-start opportunity.
+        deviceActivity.finish()
+        if startupPreloadTask == nil { await scheduleLoadedModelCalibration(modelID: modelID) }
+        if isShuttingDown { throw CancellationError() }
+        guard modelSlots[modelID]?.engineV2 === expectedBridge,
+            !modelsUnloading.contains(modelID) else { throw CancellationError() }
+        try requireResidentNativeMiMoOwner(modelID)
+        modelsLoading.remove(modelID)
+        isLoadingAny = false
+        for waiter in loadingWaiters.removeValue(forKey: modelID) ?? [] {
+            waiter.resume()
+        }
+        releaseLoadGateWaiters()
+        // A fast target may have retired while the load gate still prevented
+        // its callback from scheduling another resident engine.
+        if startupPreloadTask == nil { await refreshModelCalibration() }
+        // Re-offer desired builds deferred behind this completed load.
+        await retryReserveDeferredPrefetches()
+        if !Task.isCancelled, !isShuttingDown, !servingDrain.refusing {
+            await updateAggregateCapacity()
         }
     }
 

@@ -27,7 +27,7 @@ public struct LocalInferenceHTTPConfig: Sendable {
     /// Bearer token required on every inference route (nil = open / `--no-auth`).
     public let authToken: String?
 
-    public init(host: String = "127.0.0.1", port: UInt16 = 8000, authToken: String? = nil) {
+    public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil) {
         self.host = host
         self.port = port
         self.authToken = authToken

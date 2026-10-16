@@ -25,7 +25,7 @@ public actor CoordinatorClient {
     internal let stats: AtomicProviderStats
     internal let state: ProviderState
 
-    internal let logger = CoordinatorWSLogger(subsystem: "dev.darkbloom.provider", category: "coordinator")
+    internal let logger = CoordinatorWSLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "coordinator")
 
     /// Tracks whether the box currently has a usable network path, so reconnect
     /// logs/telemetry can attribute flap to local connectivity vs the coordinator.
@@ -177,7 +177,7 @@ public actor CoordinatorClient {
         // which isn't available while initializing stored properties) to avoid a
         // retain cycle through the actor.
         let chunkLogger = CoordinatorWSLogger(
-            subsystem: "dev.darkbloom.provider", category: "coordinator.chunks")
+            subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "coordinator.chunks")
         let batcher = ChunkBatcher()
         self.chunkBatcher = batcher
         self.chunkSender = ChunkSender(batcher: batcher, encode: { message in

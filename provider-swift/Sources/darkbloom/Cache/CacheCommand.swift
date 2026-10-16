@@ -39,7 +39,7 @@ struct Cache: ParsableCommand {
                 print("Restart the provider to apply these settings.")
                 print("Use --config with this path when restarting: \(result.path.path)")
             } else {
-                print("Restart the provider to apply: darkbloom restart")
+                print("Restart the provider to apply: \(BuildEnvironment.current.cliName) restart")
             }
             if directory != nil {
                 print("Existing cache files stay in their old directory and are not migrated.")

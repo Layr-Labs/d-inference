@@ -12,7 +12,7 @@ struct Local: AsyncParsableCommand {
         commandName: "local",
         abstract: "Show the local (direct-mode) OpenAI endpoint and API key.",
         discussion: """
-        Reads ~/.darkbloom/local.json, written by `darkbloom start --local`.
+        Reads ~/\(BuildEnvironment.current.installDirectoryName)/local.json, written by `\(BuildEnvironment.current.cliName) start --local`.
         Point any OpenAI client at the base URL with the API key to run
         inference on this Mac directly — free, and without the coordinator.
         """
@@ -34,10 +34,10 @@ struct Local: AsyncParsableCommand {
                 printError("No local server running.")
                 if let key = LocalEndpoint.existingClusterToken() {
                     // `darkbloom cluster local` with the API on the other Mac: the key is the same on both.
-                    printError("The cluster's API key (the same on both Macs; `darkbloom cluster` shows where the API is):")
+                    printError("The cluster's API key (the same on both Macs; `\(BuildEnvironment.current.cliName) cluster` shows where the API is):")
                     printError("  \(key)")
                 } else {
-                    printError("Start one with:  darkbloom start --local")
+                    printError("Start one with:  \(BuildEnvironment.current.cliName) start --local")
                 }
             }
             throw ExitCode.failure

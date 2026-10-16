@@ -44,7 +44,7 @@ a separate disk. These commands affect cache payloads; use
    darkbloom cache set --daily-write-gb 100 --directory "/Volumes/Cache SSD/provider-cache"
    ```
 
-   The CLI records the volume UUID. Cache files use its `darkbloom/kv3` child;
+   The CLI records the volume UUID. Cache files use its `darkbloom/kv3` child (a dev build uses its own namespace instead of `darkbloom`);
    existing files are not copied or removed. A missing or different volume
    disables SSD caching while inference can continue without it.
    Normal expiration prevents reuse but cannot delete files on detached or

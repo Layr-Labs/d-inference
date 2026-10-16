@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-16
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -14,8 +14,34 @@ publication, or a signed validation bundle. Build, SDK qualification, signing,
 R2 staging and publication are separate jobs. Staging/publication failures retry
 the retained artifact rather than rebuilding or re-signing it.
 
-`ProviderCore.version` is prepared as `0.9.20`; preparation does not publish a tag
-or release. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
+A push to `master` that changes the provider or its release tooling publishes a
+dev release automatically, and a staging release too once the `STAGING_ENABLED`
+repository variable is set (DBLM-771: staging tracks main). A `vX.Y.Z` tag
+publishes production. `.github/workflows/release-swift.yml` is the
+thin caller that routes each trigger to one or more environment lanes; the
+reusable `.github/workflows/release-provider.yml` runs the resolve, build,
+qualification, signing, R2 staging and publication chain for one environment. To
+find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
+
+`ProviderCore.version` is prepared as `0.9.22` for native Bonsai 9B request,
+vision and explicit MTP sidecar support. The previous `v0.9.21` was
+[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21).
+The release candidate uses exact acceptance and drafter-required rectangular verification
+when its validated sidecar and runtime eligibility permit it. Serial verification
+is an explicit comparison override; target-only generation remains available
+without a sidecar or when speculation is ineligible.
+See the [native Bonsai contract](../architecture/inference.md) for the exact model
+identity, checkpoint constraints and defaults.
+
+This source preparation does not establish release qualification. Confirm final
+publisher artifacts and their explicit sidecar metadata, final distribution IDs,
+sampled-MTP correctness, model quality, physical-memory/media admission and hosted
+platform compatibility before promotion. Bounded local greedy parity and speed
+results do not close those gates. No tag, registration, upload or deployment is
+performed by this change.
+
+`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
+Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
 from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
 [published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
 from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish
@@ -148,7 +174,22 @@ Never move an existing release tag to repair a failed run.
 
 ### 5. Select Dev Or Validation Mode When Needed
 
-For an authorized dev publication:
+A push to `master` starts a dev release — and a staging release when the
+`STAGING_ENABLED` repository variable is `'true'` — when it changes a path in the
+caller's `on.push.paths` list: `provider-swift/**`, `libs/**`, the release
+caller, the reusable workflow, the build action, or a script that the release
+runs. The trigger, not an input, selects the lanes: the caller's `dev` and
+`staging` jobs each call `release-provider.yml` and run in parallel in one GitHub
+run (the `staging` job is skipped while `STAGING_ENABLED` is unset). They are different binaries — identity is compile-time, so a master
+push runs two full build, sign, notarize and publish lanes. A plain matrix
+cannot carry each lane's artifact id and digest across the dependent jobs, which
+is why each lane is a separate call of the reusable workflow. Path filters do not
+apply to tags, so tags publish production as before. One dev release and one
+staging release run at a time (the caller's `release-dev` and `release-staging`
+groups); a running release always completes, and when more merges arrive only
+the newest waiting run of each lane continues.
+
+To publish a dev release by hand:
 
 ```bash
 gh workflow run release-swift.yml --ref master -f environment=dev
@@ -156,23 +197,175 @@ gh workflow run release-swift.yml --ref master -f environment=dev
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
-path below. Dev uses `DEV_*` secrets and creates no GitHub Release.
+path below. Dev uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
+are empty in every job unless the resolved environment is `prod`. Dev creates no
+GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
+the `DEV_R2_PUBLIC_URL` origin.
 
 The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
-`provider-swift/Package.swift` compiles `ProviderCore` with `DARKBLOOM_ENV_DEV`;
-defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
+`provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
+`DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
-(`provider-swift/Sources/ProviderCore/Config/BuildEnvironment.swift`). Local
+(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`). Local
 builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
-Dev and prod retain the same version string. The dev installer at
-`https://api.dev.darkbloom.dev/install.sh` binds `[coordinator] url` in
-`provider.toml` (`scripts/install.sh`, `bind_provider_coordinator`), so future
-updates come from dev. The
+Every dev build has the version `X.Y.Z-dev.N`. `X.Y.Z` is the source
+`ProviderCore.version` and `N` is the workflow run number. The release lane
+writes this version into `ProviderCore.version` before it compiles, so
+`darkbloom --version`, the app `Info.plist`, the registration and the R2 path all
+show the `-dev.N` marker. SemVer puts `X.Y.Z-dev.N` below `X.Y.Z` and orders dev
+builds by `N`, so a dev provider updates to each newer dev build. Production
+versions never have a suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
+use the dev form, for example `0.9.20-dev.0`, because `0.9.20` excludes every
+`0.9.20-dev.N` build.
+
+Install a dev provider only with `https://api.dev.darkbloom.dev/install.sh`. A
+dev build uses the dev coordinator by default, and this installer binds
+`[coordinator] url` in `provider.toml` (`scripts/install.sh`,
+`bind_provider_coordinator`), so the provider and its updates use only the dev
+coordinator. The
 [pinned dev operations reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md)
 is historical; verify current endpoints with the platform owner.
+
+#### Dev Build Identity
+
+A dev build installs and runs beside a production provider on the same Mac.
+The two installs do not share a path, a port, a launchd label or a keychain
+item, and each command prints its own name in its help text. The table is a
+generated copy of `provider-swift/identity/provider-identity.json`, the only
+declaration of these values:
+
+<!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
+
+| Field | Production | Dev | Staging |
+|---|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` | `https://api.staging.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` | `wss://api.staging.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` | `darkbloom-enclave-staging` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` | `Darkbloom Staging.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` | `Darkbloom Staging` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` | `.darkbloom-staging` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` | `.config/darkbloom-staging` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` | `io.darkbloom.provider.staging` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` | `io.darkbloom.watchdog.staging` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` | `com.darkbloom.provider.staging` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` | `dev.darkbloom.provider.staging` |
+| `defaultLocalPort` | `8000` | `8001` | `8002` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` | `io.darkbloom.staging` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` | `darkbloom-staging` |
+| `releaseVersionMarker` | versions without it | `-dev.` | `-staging.` |
+
+<!-- END provider identity -->
+
+`scripts/generate-provider-identity.py` generates
+`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift` (the
+`BuildEnvironment` properties) and this table from the JSON.
+`scripts/test-provider-identity.py` fails when a generated file, the Python
+release tooling or the installer differs from the JSON. The release lane reads
+the packaged names from the JSON through `scripts/provider_release_identity.py`.
+It renames the SwiftPM products (`swiftProducts` in the JSON) when it packages a
+dev app. The installer
+selects the same names from the version that `/v1/releases/latest` returns
+(`scripts/install.sh`, `select_provider_identity`). The installer must work as
+`curl | bash`, so it keeps its own copy of the names; the test compares that copy
+with the JSON.
+
+These values are the same for both builds:
+
+- The bundle identifier and code-signing identifier `io.darkbloom.provider`,
+  and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
+  Developer ID signature, the provisioning profile, notarization and App Attest
+  check them. A different dev value does not match the signed bundle.
+- The MDM profile identifiers. Each install accepts as its own only the profile
+  from its own coordinator host (or its configured coordinator). It names the
+  other install's profile and does not claim or remove it.
+- The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
+  keeps one lease for each provider session and returns the fans to Auto only
+  when no lease is live. `fan disable` and `fan uninstall` affect both installs
+  and say so before they act. This is helper version 2 (`FanIPC.helperVersion`).
+  A version 1 helper keeps one lease for the Mac, so the last provider to renew
+  owns it. `fan status` and `doctor` report an older helper with the command
+  that updates it, and `fan enable` does not replace a newer running helper
+  with an older one. A provider built before this change does not have that
+  check.
+- The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
+  bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
+  registration requires these names. Dev uploads go to the dev bucket under the
+  `-dev.N` version.
+
+These surfaces are shared, and an operator must know about them:
+
+- Downloaded model weights (the Hugging Face hub cache) are shared on purpose.
+  Each install selects its active revision with its own ref (`modelRevisionRef`):
+  production uses `refs/main`, and a dev install without its own ref uses
+  production's selection. `models remove` deletes the shared weights, so the
+  other install loses them too. The encrypted KV cache is not shared
+  (`encryptedCacheNamespace`).
+- `DARKBLOOM_*` shell overrides. `start` copies the allowlisted variables
+  (`LaunchAgent.passthroughEnvKeys`) from the shell that runs it into that
+  install's LaunchAgent. Both installs read the same shell exports, so an export
+  that is meant for one install also reaches the other the next time it is
+  started from that shell.
+- APNs (known limitation, pending a test with two installs on one Mac). Both
+  installs have the bundle identifier `io.darkbloom.provider`, so they register
+  the same push topic and receive the same device token
+  (`provider-swift/Sources/darkbloom/ProviderAppKitHost.swift`,
+  `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift`). apsd delivers each push to
+  one process. A production code-identity challenge can therefore reach the dev
+  process on the legacy path without App Attest. A separate dev bundle
+  identifier and provisioning profile are necessary to remove this limitation.
+- Unified memory. `doctor` warns when the other install's provider process is
+  running, from that install's daemon state file. Model-fit estimates do not
+  include the other install's models, so two serving providers can cause jetsam.
+
+An install of an earlier dev build in `~/.darkbloom` does not move to the new
+names. Its updater expects `Darkbloom.app`, so it cannot install a
+`Darkbloom Dev.app` release. Install the dev provider again with the dev
+`install.sh`.
+
+#### Staging Build Identity
+
+`staging` is a third build environment, listed in the identity table above
+beside production and dev. It is the staging analog of dev: the same source,
+its own install identity (`darkbloom-staging`, port `8002`, keychain prefix
+`io.darkbloom.staging`, cache namespace `darkbloom-staging`), and its own
+coordinator `wss://api.staging.darkbloom.dev/ws/provider`. It reads the shared
+production model CDN like dev. A `X.Y.Z-staging.N` version selects the staging
+identity (`scripts/install.sh`, `select_provider_identity`;
+`scripts/provider_release_identity.py`). For `staging`,
+`provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
+`DARKBLOOM_ENV_STAGING`.
+
+Staging **tracks main**, gated by the `STAGING_ENABLED` repository variable:
+when it is `'true'`, a master push publishes a staging release in parallel with
+the dev release (DBLM-771), signed with the same Developer ID as dev and prod —
+staging is a normal Developer-ID dev-family release, not the self-signed build of
+`release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
+number, like the dev lane's `X.Y.Z-dev.N`. Publish a staging build by hand with
+the same version form (the flag gates the manual lane too):
+
+```bash
+gh workflow run release-swift.yml --ref master -f environment=staging
+```
+
+A staging run uses only `STAGING_*` secrets (`STAGING_R2_*`,
+`STAGING_COORDINATOR_URL`, `STAGING_RELEASE_KEY`). These secrets and the staging
+coordinator infra do not exist yet (a separate `darkbloom-devnet-infra` effort,
+DBLM-771 infra PR 18). Until they do, leave `STAGING_ENABLED` unset (the default):
+the caller's `staging` job is skipped, so a master push builds and publishes dev
+only and never burns a second macOS build + notarization that would hard-fail at
+staging publication for want of credentials. Turn staging publishing on by
+setting the `STAGING_ENABLED` repository variable to `true` once that infra PR is
+applied and the `STAGING_*` secrets exist. The dev lane is never gated — it
+publishes on every qualifying master push. A push never selects prod:
+`scripts/resolve-provider-release.sh` refuses prod on any non-tag trigger, so the
+production signing identity stays tag-gated.
 
 For a signed, notarized validation bundle without registration/publication:
 
@@ -191,6 +384,42 @@ asserts the host is below macOS 27, verifies hashes/notarization and requires
 the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
+
+#### Experimental Dev-Branch Lane (Dev Only, Self-Signed)
+
+`.github/workflows/release-dev-branch.yml` builds a provider from any branch or
+commit and publishes it to the dev coordinator without merging to master. It is
+dispatch-only on `master`, so the credentialed publication logic runs the
+reviewed master copy of every script; it checks out the chosen `ref` only to
+compile and ad-hoc sign (`codesign -s -`), never reading a production secret or
+the production Apple signing identity. The branch binary is compiled and signed
+in a job that holds no secret, and is never run in a step that holds a
+credential. The version is `X.Y.Z-dev.branch.<run>`, which
+`scripts/check-release-version.sh` accepts and which stays distinct from the
+master dev lane's `X.Y.Z-dev.<run>`.
+
+```bash
+gh workflow run release-dev-branch.yml --ref master -f ref=<branch>
+```
+
+The installer accepts an ad-hoc signature for pre-release versions: for a
+version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
+relaxed designated requirement that keeps the bundle identifier
+`io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
+(`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
+the full Apple-team requirement unchanged, and a prod coordinator is never
+served a pre-release version. The dev coordinator also hashes the bundle rather
+than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
+device-attestation tier, not a code-signature tier.
+
+The installer is a pinned provider-contract snapshot, so the dev coordinator
+serves the relaxed installer only after the `darkbloom-platform` served copy is
+re-snapshotted from the merged commit in a separate platform PR. Until that
+re-snapshot lands, a fresh `darkbloom-dev` install still runs the old installer
+and rejects the self-signed build. Because `/v1/releases/latest` orders by
+`created_at`, publishing makes the branch build the latest dev release; an
+existing install's self-updater may not downgrade to a lower run number, while a
+fresh install takes the newest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

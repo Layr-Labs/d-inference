@@ -30,7 +30,7 @@ struct Login: AsyncParsableCommand {
             print("  Your provider will now be connected to your account.")
             print("  Earnings will be credited to your account wallet.")
             print()
-            print("  Start serving with: darkbloom start")
+            print("  Start serving with: \(BuildEnvironment.current.cliName) start")
         } catch let error as DeviceAuthError {
             printError("\(error)")
             throw ExitCode.failure

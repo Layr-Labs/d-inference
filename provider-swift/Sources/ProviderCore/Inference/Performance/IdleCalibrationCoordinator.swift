@@ -9,6 +9,7 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
     private var session: (id: UUID, task: Task<Void, Never>)?
 
     func startIfIdle(isIdle: () -> Bool,
+        onRetired: (@Sendable () async -> Void)? = nil,
         operation: @escaping @Sendable () async -> Void) -> Task<Void, Never>? {
         lock.withLock {
             guard foreground.isEmpty, session == nil, isIdle() else { return nil }
@@ -18,6 +19,17 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
                 self.finish(id)
             }
             session = (id, task)
+            // Foreground admission awaits only the session's retirement. Successor
+            // scheduling crosses actors, so it runs after the global owner is
+            // released without extending a customer request's deadline wait. A
+            // preempted session leaves successors to the next idle opportunity.
+            if let onRetired {
+                Task(priority: .background) {
+                    await task.value
+                    guard !task.isCancelled else { return }
+                    await onRetired()
+                }
+            }
             return task
         }
     }

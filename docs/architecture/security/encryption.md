@@ -105,7 +105,9 @@ This table is the privacy statement. [../../consumer/privacy-expectations.md](ht
 The provider encrypts attention blocks and complete checkpoints before disk I/O
 using the existing DBK3 authenticated-encryption format. Keys remain in the
 Mac's Secure Enclave/Keychain hierarchy; selecting a different payload volume
-does not copy keys there. Lookup names remain keyed HMACs. Some operational
+does not copy keys there. A dev build has its own installation KEK and Secure
+Enclave key (keychain prefix `io.darkbloom.dev`), so it cannot read a production
+provider's cache, and the reverse. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
 are unchanged. TTL checks on reuse, tenant binding and authentication remain in

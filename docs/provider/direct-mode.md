@@ -35,7 +35,9 @@ Requests never leave the machine and are never billed.
    darkbloom start --local --port 8080 --bind 0.0.0.0  # other port / all interfaces
    ```
 
-   `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
+   `--port` defaults to `8000` (`defaultLocalPort`; a dev build uses its own
+   port, see [Dev build identity](../operations/provider-release.md#dev-build-identity)),
+   `--bind` to `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
@@ -97,7 +99,7 @@ Requests never leave the machine and are never billed.
 |---|---|---|
 | API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
 | Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
-| Directory override | `DARKBLOOM_LOCAL_DIR` replaces `~/.darkbloom` for both files | `LocalEndpoint.directory` |
+| Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
 | `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |
 | `--no-auth` | No token check; `api_key` is empty in the discovery record | `LocalInferenceHTTPConfig.authToken == nil` |
 
@@ -178,3 +180,11 @@ the process prints its listening address and the daemon-state file is not used.
 - [CLI reference](./cli-reference.md) — `start`, `local` flags and paths.
 - [Beta features](./beta-features.md) — MTP and paged KV apply to local serving too.
 - [`reference/configuration.md`](../reference/configuration.md) — media limits and engine variables.
+
+## Graceful drain
+
+After local admission closes for shutdown, a new POST receives HTTP `503`
+with a structured capacity response (`invalid_request_error`) from `LocalDisconnectResponder`.
+CORS headers remain present. Health checks and preflight requests still work,
+and already admitted responses retain their existing owner. Retry a rejected
+request after the provider is serving again.

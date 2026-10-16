@@ -193,7 +193,7 @@ extension ModelDownloader {
         let refsDir = modelDir.appendingPathComponent("refs")
         try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
         try "local".write(
-            to: refsDir.appendingPathComponent("main"),
+            to: refsDir.appendingPathComponent(BuildEnvironment.current.modelRevisionRef),
             atomically: true,
             encoding: .utf8
         )

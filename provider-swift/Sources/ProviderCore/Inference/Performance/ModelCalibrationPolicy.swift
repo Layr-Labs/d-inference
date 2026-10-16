@@ -2,7 +2,7 @@ import Foundation
 
 /// Work bounds, never a throughput/concurrency qualification. The production
 /// engine, KV gate, actual context and existing concurrency cap remain final.
-enum MimoCalibrationPolicy {
+enum ModelCalibrationPolicy {
     static let refreshAge: Duration = .seconds(90)
     static let failureBackoff: Duration = .seconds(120)
     static let interruptionBackoff: Duration = .seconds(30)
@@ -14,6 +14,13 @@ enum MimoCalibrationPolicy {
         let width: Int
         var warmup = false
     }
+
+    /// One bounded solo bootstrap for native models. The tiny first-use run is
+    /// excluded, then two cold requests measure both prefill and decode. MiMo
+    /// keeps its existing wider bootstrap and periodic maintenance below.
+    static let startup = [Cell(promptTokens: 128, outputTokens: 8, width: 1, warmup: true),
+        Cell(promptTokens: 512, outputTokens: 32, width: 1),
+        Cell(promptTokens: 512, outputTokens: 32, width: 1)]
 
     static func bootstrap(maximumConcurrency: Int) -> [Cell] {
         var cells = [Cell(promptTokens: 128, outputTokens: 8, width: 1, warmup: true),
@@ -45,9 +52,10 @@ enum MimoCalibrationPolicy {
     }
 }
 
-struct MimoCalibrationState {
+struct ModelCalibrationState {
     var task: Task<Void, Never>?
-    var requests: [String: MimoCalibrationPolicy.Cell] = [:]
+    var requests: [String: ModelCalibrationPolicy.Cell] = [:]
+    var pendingObservations: [String: [EngineRateObservation]] = [:]
     var bootstrapCompleted = false
     var nextAttempt: ContinuousClock.Instant?
     var interrupted = false

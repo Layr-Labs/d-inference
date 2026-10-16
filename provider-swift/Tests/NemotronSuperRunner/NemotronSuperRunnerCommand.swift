@@ -109,10 +109,10 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
                 "shutdown_requested": .bool(await shutdown.requested),
                 "outstanding_charged_bytes": .bytes(outstanding), "memory": RunnerProcessMemory.snapshot()]
             if let refusal = error as? NemotronSuperLocalBridgeBuilder.UnserviceableGrant {
-                let gib = RunnerKVGrant.suggestedGib(refusal.minimumGrantBytes)
                 fields["kv_grant_refused"] = RunnerKVGrant.json(refusal)
-                FileHandle.standardError.write(Data(
-                    "NemotronSuperRunner: \(refusal); rerun with --kv-capacity-gib \(gib)\n".utf8))
+                let hint = RunnerKVGrant.suggestedGib(refusal.minimumGrantBytes)
+                    .map { "rerun with --kv-capacity-gib \($0)" } ?? "no serviceable grant is provable"
+                FileHandle.standardError.write(Data("NemotronSuperRunner: \(refusal); \(hint)\n".utf8))
             }
             log.emit("load.failed", fields)
             await sampler.stop()
@@ -222,15 +222,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             let parts = entry.split(separator: "=", maxSplits: 1)
             environment[String(parts[0])] = parts.count > 1 ? String(parts[1]) : ""
         }
-        let speculative = environment[NemotronSuperLocalMTP.enabledKey]?
-            .trimmingCharacters(in: .whitespaces) == "1"
-        // Malformed values fail at load; only the default grant reads them here.
-        let requests = environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey]
-            .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 1
-        let kvGib = kvCapacityGib
-            ?? (speculative ? Self.speculativeKVCapacityGib
-                : requests > 1 ? 1 + Self.batchedKVCapacityGibPerRequest * Double(requests)
-                : Self.plainKVCapacityGib)
+        let kvGib = kvCapacityGib ?? Self.defaultKVCapacityGib(engineEnvironment: environment)
         return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
             kvCapacityBytes: Int(kvGib * 1_073_741_824),
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
@@ -245,6 +237,17 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     static let plainKVCapacityGib = 4.0
     static let speculativeKVCapacityGib = 12.0
     static let batchedKVCapacityGibPerRequest = 3.0
+
+    /// The grant when `--kv-capacity-gib` is omitted. Malformed engine values
+    /// fail at load with the builder's own error; here they keep the plain grant.
+    static func defaultKVCapacityGib(engineEnvironment environment: [String: String]) -> Double {
+        if environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1" {
+            return speculativeKVCapacityGib
+        }
+        let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
+            environment: environment, speculates: false)) ?? 1
+        return requests > 1 ? 1 + batchedKVCapacityGibPerRequest * Double(requests) : plainKVCapacityGib
+    }
 
     #if DEBUG
         static let buildConfiguration = "debug"

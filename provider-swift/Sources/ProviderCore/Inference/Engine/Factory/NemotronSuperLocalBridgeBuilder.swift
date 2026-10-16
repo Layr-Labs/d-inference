@@ -245,16 +245,17 @@ enum NemotronSuperLocalBridgeBuilder {
                     for: model, head: $0, maximumSequenceLength: sizing.maxContextLength)
             }
             // Several requests share one row-exact [B, 1] decode step; prompts
-            // and media still prefill one request per forward.
+            // and media still prefill one request per forward. One row is the
+            // serial adapter.
             let target: any LanguageModel = try speculation?.model
-                ?? (requests > 1
-                    ? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests,
-                        decodeProducts: .rowExact)
-                    : NemotronSuperRecurrentAdapter(model))
+                ?? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests, decodeProducts: .rowExact)
             return try EngineV2Factory.makeBridge(
                 modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
                 eosTokenIds: eosTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
-                maxConcurrentRequests: requests, advertisedContextTokens: sizing.maxContextLength,
+                maxConcurrentRequests: requests,
+                // The operator's explicit width; not the posture-gated M5 paged default.
+                unqualifiedMaxConcurrentRequests: requests,
+                advertisedContextTokens: sizing.maxContextLength,
                 runtimePolicyEnvironment: environment,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
                 makeEngine: {
@@ -271,11 +272,7 @@ enum NemotronSuperLocalBridgeBuilder {
         }
         // Fixed request bytes are carved from the KV grant with each request's
         // charge; a grant that cannot serve every configured request fails the load.
-        if await bridge.effectiveServingConcurrency < requests {
-            let refusal = UnserviceableGrant(grantBytes: kvBytesCapacity,
-                minimumGrantBytes: await bridge.superMinimumGrantBytes(requests: requests),
-                fixedRequestBytes: await bridge.maximumRequestOverheadBytes() ?? Int.max,
-                requests: requests)
+        if let refusal = await bridge.superGrantRefusal(grantBytes: kvBytesCapacity, requests: requests) {
             await bridge.shutdown()
             guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
             throw refusal

@@ -53,13 +53,16 @@ struct RunnerLoadSettings: Sendable {
     }
 }
 
-/// The bridge's KV grant against the smallest grant that serves one request.
+/// The bridge's KV grant against the smallest grant that serves its configured
+/// requests at once: the same minimum a refused grant reports.
 enum RunnerKVGrant {
     static func json(bridge: EngineV2Bridge, grantBytes: Int) async -> RunnerJSON {
-        [
+        let requests = await bridge.maxConcurrentRequests
+        return [
             "grant_bytes": .bytes(grantBytes),
-            "minimum_grant_bytes": .bytes(await bridge.minimumServiceableGrantBytes()),
+            "minimum_grant_bytes": .bytes(await bridge.superMinimumGrantBytes(requests: requests)),
             "fixed_request_bytes": (await bridge.maximumRequestOverheadBytes()).map { .bytes($0) } ?? .null,
+            "requests": .count(requests),
             "serving_concurrency": .count(await bridge.effectiveServingConcurrency),
         ]
     }
@@ -67,13 +70,17 @@ enum RunnerKVGrant {
     static func json(_ refusal: NemotronSuperLocalBridgeBuilder.UnserviceableGrant) -> RunnerJSON {
         [
             "grant_bytes": .bytes(refusal.grantBytes), "minimum_grant_bytes": .bytes(refusal.minimumGrantBytes),
-            "fixed_request_bytes": .bytes(refusal.fixedRequestBytes),
-            "suggested_kv_capacity_gib": .count(suggestedGib(refusal.minimumGrantBytes)),
+            "fixed_request_bytes": .bytes(refusal.fixedRequestBytes), "requests": .count(refusal.requests),
+            "suggested_kv_capacity_gib": suggestedGib(refusal.minimumGrantBytes).map { .count($0) } ?? .null,
         ]
     }
 
-    /// Whole GiB at or above `bytes`.
-    static func suggestedGib(_ bytes: Int) -> Int { (bytes + (1 << 30) - 1) >> 30 }
+    /// Whole GiB at or above `bytes`; nil for the unprovable `Int.max` minimum.
+    static func suggestedGib(_ bytes: Int) -> Int? {
+        guard bytes < Int.max else { return nil }
+        let (gib, remainder) = bytes.quotientAndRemainder(dividingBy: 1 << 30)
+        return remainder > 0 ? gib + 1 : gib
+    }
 }
 
 /// One loaded, unpublished Super owner and the only way to retire it.

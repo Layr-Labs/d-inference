@@ -151,6 +151,7 @@ extension NemotronSuperLocalOwnerTests {
         let key = Builder.maxConcurrentKey
         #expect(try Builder.concurrentRequests(environment: [:], speculates: false) == 1)
         #expect(try Builder.concurrentRequests(environment: [key: " 8 "], speculates: false) == 8)
+        #expect(try Builder.concurrentRequests(environment: [key: "64"], speculates: false) == 64)
         #expect(try Builder.concurrentRequests(environment: [key: "1"], speculates: true) == 1)
         for value in ["0", "65", "-1", "two", "", "2.5"] {
             #expect(throws: Builder.Failure.invalidConcurrency) {
@@ -194,6 +195,14 @@ extension NemotronSuperLocalOwnerTests {
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
+        // A width above the M5 paged default is the operator's explicit
+        // choice, not a power- or thermal-gated expansion.
+        let wide = try await Self.owner(kvBytesCapacity: 4 << 30,
+            environment: [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "12"])
+        #expect(await !wide.0.bridge.hasPostureGatedWidth)
+        #expect(await wide.0.bridge.effectiveServingConcurrency == 12)
+        try await wide.0.closeAfterDrain()
+        #expect(await wide.3.finishPendingLoad(wide.4))
     }
 
     /// The owner's image prompt carries the reference `<img>` (19), one

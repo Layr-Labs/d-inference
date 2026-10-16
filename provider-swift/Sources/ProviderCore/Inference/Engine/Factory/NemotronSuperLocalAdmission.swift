@@ -82,6 +82,17 @@ extension EngineV2Factory.ProductionBuild {
 }
 
 extension EngineV2Bridge {
+    /// The refusal of `grantBytes` when this bridge serves fewer than
+    /// `requests` at once; nil when it serves them all. Read in one isolated
+    /// pass so the report matches the decision.
+    func superGrantRefusal(grantBytes: Int, requests: Int)
+        -> NemotronSuperLocalBridgeBuilder.UnserviceableGrant? {
+        guard effectiveServingConcurrency < requests else { return nil }
+        return .init(grantBytes: grantBytes,
+            minimumGrantBytes: superMinimumGrantBytes(requests: requests),
+            fixedRequestBytes: maximumRequestOverheadBytes() ?? Int.max, requests: requests)
+    }
+
     /// Smallest grant whose admission ceiling holds `requests` requests' fixed
     /// bytes plus the minimum KV: the count `fixedWorkspaceConcurrencyLimit`
     /// admits on this ordinary contiguous bridge. Int.max when unprovable.

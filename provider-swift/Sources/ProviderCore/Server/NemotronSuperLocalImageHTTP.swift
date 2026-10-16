@@ -103,7 +103,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
-        // The owner's bridge serves one request; an image would otherwise
+        // The owner admits its configured concurrency; an image would otherwise
         // reserve and prepare media only for the bridge to refuse it.
         guard owner.admitLocalRequest() else {
             throw MultiModelBatchSchedulerEngineError.queueFull("unpublished Super owner is busy")

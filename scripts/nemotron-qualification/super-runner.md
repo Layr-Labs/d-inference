@@ -75,7 +75,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 16384 | builder maximum; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
-| `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `minimum_grant_bytes`, `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (including `suggested_kv_capacity_gib`) in `load.failed` and on stderr |
+| `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
 | `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |

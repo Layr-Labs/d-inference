@@ -134,8 +134,8 @@ struct NemotronSuperLocalHTTPAdmissionTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// A batched owner admits its configured requests at once (both decode
-    /// in one row-exact step) and refuses the next with 429 before headers.
+    /// A batched owner holds its configured requests in flight at once and
+    /// refuses the next with 429 before headers, reserving nothing for it.
     @Test(.timeLimit(.minutes(2))) func batchedOwnerAdmitsItsRequestsAndRefusesTheNextWith429() async throws {
         let (installed, construction, residency) = try SuperInstalledFixture().make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
@@ -266,13 +266,14 @@ private actor SuperHTTPHeldTerminals {
     private(set) var released = false
     private(set) var timedOut = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var failsafe: Task<Void, Never>?
 
     func hold() async {
         count += 1
         guard !released else { return }
-        if waiters.isEmpty {
-            Task {
-                try? await Task.sleep(for: .seconds(20))
+        if failsafe == nil {
+            failsafe = Task {
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
                 self.release(timedOut: true)
             }
         }
@@ -283,6 +284,8 @@ private actor SuperHTTPHeldTerminals {
         guard !released else { return }
         released = true
         self.timedOut = timedOut
+        failsafe?.cancel()
+        failsafe = nil
         for waiter in waiters { waiter.resume() }
         waiters = []
     }

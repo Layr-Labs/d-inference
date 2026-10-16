@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -339,7 +339,7 @@ the qualification hook's keys, for speculation and width
 | `backend.mtp_mode` | `auto` | `auto` and `on` install depth-3 exact rectangular speculation with the embedded head; `off`, or `DARKBLOOM_CBV2_MTP` negative, serves the plain owner |
 | `backend.engine_v2_max_concurrent`, `engine_v2_max_concurrent_by_model` | absent: 8 requests | An explicit value bounds the owner's width (at most 8 with speculation, 64 plain) |
 | `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `_MTP_VERIFICATION`, `_PREFILL_CHUNK`, `_DECODE_STEPS_BETWEEN_CHUNKS` | depth `3`; the [builder defaults](../architecture/inference.md#context) otherwise | Kept when set in the provider process |
-| `DARKBLOOM_PREFIX_CACHE_MEMORY` | on for the plain owner when the grant holds the bank | An explicit value, `DARKBLOOM_PREFIX_CACHE` negative or `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE=0` keeps the bank off |
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | on for either owner when the grant holds every request's fixed bytes and the bank | An explicit value, `DARKBLOOM_PREFIX_CACHE` negative or `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE=0` keeps the bank off |
 
 ### Native MiMo V2.6 candidate
 

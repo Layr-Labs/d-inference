@@ -105,15 +105,20 @@ enum NemotronSuperLocalMTP {
 
     /// `requests` above one verifies up to that many requests in one exact
     /// captured window, each committing its own accepted prefix.
+    /// `exactPrefixCheckpoints` gives the target chunk-aligned text prefix
+    /// checkpoints; the assistant checkpoints its prompt history beside them.
     static func engine(
-        for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int, requests: Int = 1
+        for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int, requests: Int = 1,
+        exactPrefixCheckpoints: Bool = false
     ) throws -> Engine {
         try validate(head.setting, requests: requests)
         let verification = head.setting.verification
         let target =
             verification == .rectangularExact
-            ? try NemotronSuperMTPCaptureTarget(capturing: model, maximumRequests: requests)
-            : NemotronSuperMTPTextTarget(model)
+            ? try NemotronSuperMTPCaptureTarget(capturing: model, maximumRequests: requests,
+                exactPrefixCheckpoints: exactPrefixCheckpoints)
+            : try NemotronSuperMTPTextTarget(model, maximumRequests: 1,
+                exactPrefixCheckpoints: exactPrefixCheckpoints)
         let depth = head.setting.depth
         let assistant = try target.makeAssistant(
             head: head.module,

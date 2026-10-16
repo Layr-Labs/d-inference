@@ -230,8 +230,8 @@ enum NemotronSuperLocalBridgeBuilder {
     /// scope. Caller must retain a faulted scope and its charged installation
     /// until restart. `mtp` installs speculation for text requests; image
     /// requests on that owner stay target-only. nil keeps the target-only
-    /// owner, which `NemotronSuperLocalPrefixCache` may give exact text
-    /// prefix reuse.
+    /// owner. Either owner may have `NemotronSuperLocalPrefixCache`'s exact
+    /// text prefix reuse.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -255,7 +255,7 @@ enum NemotronSuperLocalBridgeBuilder {
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
-            kvBytesCapacity: kvBytesCapacity, speculates: mtp != nil, modelID: modelID)
+            kvBytesCapacity: kvBytesCapacity, modelID: modelID)
         try Task.checkCancellation()
         let (bridge, prefill, laneBytes) = try installed.withNativeSetup(
             construction: construction
@@ -273,7 +273,7 @@ enum NemotronSuperLocalBridgeBuilder {
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(
                     for: model, head: $0, maximumSequenceLength: sizing.maxContextLength,
-                    requests: requests)
+                    requests: requests, exactPrefixCheckpoints: prefixCache != nil)
             }
             // Several requests share one row-exact [B, 1] decode step (with
             // speculation, one captured [B, 1 + k] verify window); prompts and

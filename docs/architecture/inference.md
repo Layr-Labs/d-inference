@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -129,7 +129,7 @@ generations and any speculation charge, `requestWorkspaceBytes`: one
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
-`NemotronSuperLocalPrefixCache` gives the plain owner exact text prefix reuse when
+`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`: `PrefixCachePolicy.hybridConfig` sizes the SDK's
 resident recurrent checkpoint bank (`min(1 GiB, KV grant / 8)` unless
 `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` sets it), the backend carves it from the KV
@@ -141,8 +141,10 @@ only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
 then submitted with prefix caching on, partitioned by the request's cache scope
 (the hook's single local scope, or the managed slot's authenticated tenant
-scope); image requests stay cold and never publish, and a speculating owner has
-no bank.
+scope); image requests stay cold and never publish. On the speculating owner
+the target is built with `exactPrefixCheckpoints` too and each checkpoint also
+holds the assistant's queued prompt history, so a restored request drafts from
+the same history as a cold one.
 `UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.

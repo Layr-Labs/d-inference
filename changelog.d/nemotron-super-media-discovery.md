@@ -54,11 +54,12 @@ the same as when it is served alone. The prefill activation charge is one
 owner-wide lane, reserved before the first request and held until retirement
 (the pinned checkpoint charges the SDK's measured whole-chunk bound), instead
 of a prefill workspace in every request's reservation.
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1` opts the plain (non-speculating) owner into
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1` opts the owner into
 exact text prefix reuse: a resident recurrent checkpoint bank sized from the KV
 grant (`min(1 GiB, grant / 8)`, or `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`) whose
 budget is reserved from load until retirement. Checkpoints sit only at multiples
 of the prefill chunk, where a restored request continues a cold prefill bit for
-bit on synthetic fixtures; prompts shorter than one chunk restore nothing. Image
-requests, the speculating owner and paged KV never use it, and its full-checkpoint
-speedup is unmeasured.
+bit on synthetic fixtures; prompts shorter than one chunk restore nothing. On
+the speculating owner a checkpoint also holds the assistant's prompt history, so
+a restored request speculates exactly as a cold one. Image requests and paged
+KV never use it.

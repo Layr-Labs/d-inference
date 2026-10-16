@@ -139,7 +139,7 @@ from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
 `kv_grant_refused` load.
 
 Text prefix caching is the same kind of switch: `--engine-env
-DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the plain owner the SDK's resident
+DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the owner the SDK's resident
 recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized `min(1 GiB,
 KV grant / 8)` (512 MiB at the default 4 GiB grant: one entry of two 162.3 MiB
 checkpoints plus up to 16,384 tokens of KV) or by
@@ -147,8 +147,10 @@ checkpoints plus up to 16,384 tokens of KV) or by
 as `prefix_bank` from load to retirement. Checkpoints sit only at multiples of
 the prefill chunk, so a request restores the deepest chunk boundary below its
 last prompt token that a previous text request published, and prompts shorter
-than one chunk restore nothing. The speculating owner and image requests never
-use it. `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
+than one chunk restore nothing. On the speculating owner each checkpoint also
+holds the assistant's queued prompt history (8 KiB per token), so a restored
+request drafts from the same history as a cold one. Image requests never use
+it. `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
 reports the bank's `adoptions`, `tokens_saved`, `lookup_matches`, `misses`,
 `entries`, `evictions` and bytes (`null` without a bank); the HTTP usage's
 `cached_tokens` stays 0 on this route. `kv_grant.minimum_grant_bytes` includes

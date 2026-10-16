@@ -3,13 +3,15 @@
 import Foundation
 import MLXLMCommon
 
-/// Opt-in exact text prefix reuse of the plain (non-speculating) Super owner:
-/// the engine's process-local recurrent checkpoint bank on the contiguous
-/// backend. The shared resident-cache switch (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`)
-/// enables it and `PrefixCachePolicy.hybridConfig` sizes it from the KV grant.
+/// Opt-in exact text prefix reuse of the Super owner: the engine's
+/// process-local recurrent checkpoint bank on the contiguous backend. The
+/// shared resident-cache switch (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) enables it
+/// and `PrefixCachePolicy.hybridConfig` sizes it from the KV grant.
 /// Checkpoints sit only at multiples of the owner's fixed prefill chunk, where
-/// a restore continues a cold prefill bit for bit. Speculating owners and
-/// image requests never use it; the bank holds no disk state.
+/// a restore continues a cold prefill bit for bit. On the speculating owner a
+/// checkpoint also holds the assistant's queued prompt history, from which a
+/// restored request builds the same draft history as a cold one. Image
+/// requests never use it; the bank holds no disk state.
 enum NemotronSuperLocalPrefixCache {
     enum Failure: Error, Equatable {
         /// The bank was configured but the loaded engine did not construct it.
@@ -22,13 +24,13 @@ enum NemotronSuperLocalPrefixCache {
     /// HTTP hook verifies. A bank belongs to one loaded owner and tokenizer.
     static let promptContractID = "nemotron-super-template-" + NemotronSuperPromptContract.templateSHA256
 
-    /// nil leaves the owner without a bank. Text speculation stays without
-    /// one: its assistant has no prompt-history checkpoint.
-    static func config(environment: [String: String], kvBytesCapacity: Int, speculates: Bool,
+    /// nil leaves the owner without a bank. The same bank serves both owners:
+    /// the speculating owner's `NemotronSuperMTPAssistant` checkpoints its
+    /// prompt history.
+    static func config(environment: [String: String], kvBytesCapacity: Int,
                        modelID: String = NemotronSuperLocalBinding.modelID)
         -> CBv2HybridPrefixCacheConfig? {
-        guard !speculates else { return nil }
-        return PrefixCachePolicy.hybridConfig(modelId: modelID,
+        PrefixCachePolicy.hybridConfig(modelId: modelID,
             promptContractID: promptContractID, kvBytesCapacity: kvBytesCapacity,
             hasMTPDrafter: false, environment: environment)
     }

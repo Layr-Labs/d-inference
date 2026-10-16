@@ -23,11 +23,16 @@ claims, before allocation, the pinned checkpoint's installation quote with a
 (8,848,271,480 bytes) and `NemotronSuperServingPolicy.admissionKVBytes` of KV
 headroom (26 GiB for eight speculative requests), then reserves a 12 GiB
 owner-wide prefill lane until native retirement. Its default discovery
-footprint, 122.7 GiB, is that claim plus the lane. With the unmeasured 5.5 GiB
-activation reserve and 1 GiB minimum KV the load gate needs 129.2 GiB under the
-90% cap: at least 143.6 GiB (154 GB) of physical memory before macOS and other
-processes take any. A 128 GB Mac (115.2 GiB cap) cannot admit the default load;
-192 GB leaves 43.6 GiB under the cap. Only a 256 GB M3 Ultra is measured: load
+footprint, 126.3 GiB, is that claim plus the lane and the worst-case media
+reservation of one single-image request
+(`NemotronSuperServingPolicy.mediaChargeBytes`, 3.62 GiB: a 64 Mi-pixel decode
+workspace, the encoded body copies, a 13,312-patch image's tokens and its tower
+and projector bound), so a loaded slot can serve an image at once. With the
+unmeasured 5.5 GiB activation reserve and 1 GiB minimum KV the load gate needs
+132.8 GiB under the 90% cap: at least 147.6 GiB (158.5 GB) of physical memory
+before macOS and other processes take any. A 128 GB Mac (115.2 GiB cap) cannot
+admit the default load; 192 GB leaves 40.0 GiB under the cap, which also holds a
+16-image request (23.1 GiB of media). Only a 256 GB M3 Ultra is measured: load
 peak physical footprint 80.5 GB, MLX active 75.0 GB after load and 121.0 GB
 charged during a load at a 28 GiB grant. The registry floor derived from this is
 in the [registry reference](../reference/model-registry-format.md#nemotron-super).

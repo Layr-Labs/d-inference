@@ -225,9 +225,17 @@ channel, tool and structured-output validation, cancellation and usage are the
 hook's. Coordinator text prefix reuse is partitioned by the authenticated cache
 scope and off without one; the slot emits no cache receipts, cached-token usage
 or prefix-cache capability. A cancelled stream bills delivered output and the
-reference prompt length. The slot advertises no media and refuses it, because
-the speculating owner cannot serve images and the default speculates. The
-generic local engine refuses Super; only chat completions serve it.
+reference prompt length. Inline JPEG and PNG images (`data:` URIs, within the
+[image format reference](../reference/nemotron-super-image-formats.md) limits)
+run on the owner's image binding. On the default speculating owner every image
+request is target-only for its whole lifetime: the engine prefills and decodes
+it on the target with no draft, carry or assistant state, while text requests
+keep speculating in the same steps. The image's media reservation (decode,
+normalization, features and the largest image's tower and projector bound) is
+taken from the shared budget before decoding and held until the request
+retires; one that does not fit is refused with 503 before anything is
+allocated. One image request runs at a time per owner, beside text requests.
+The generic local engine refuses Super; only chat completions serve it.
 
 `retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner
 (bindings, bridge, prefill lane, any bank, installation), then regrows

@@ -179,7 +179,8 @@ In unified mode, chat completions for `nvidia-nemotron-3.5-super` load the
 managed slot through the ordinary local acquisition and run on its owner
 (`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`):
 the controls in the table below apply, text prefix reuse uses one partition per
-local endpoint, and the slot serves no images (400). Other routes for that id
+local endpoint, and inline images are served as described below, target-only on
+the default speculating owner. Other routes for that id
 (`/v1/completions`, `/v1/responses`) are refused; the generic engine never
 serves Super. Standalone mode (`darkbloom start --local`) does not list it.
 
@@ -207,7 +208,8 @@ Image prompts carry the reference `<img>`, one `<image>` per visual feature,
 | `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422 |
 | Contradictory controls, `logprobs`, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
-| Image input while `DARKBLOOM_NEMOTRON_SUPER_MTP=1` speculation is installed | 400 (`unsupported_media`); text is served |
+| Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
+| Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
 
 Image requests still refuse `tools` and `response_format`; formats outside the
 image format reference are refused. The host calls the hook's `drain()` before the

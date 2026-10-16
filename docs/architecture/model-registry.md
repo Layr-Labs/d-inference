@@ -31,11 +31,14 @@ at scan, advertisement and prefetch publication. `ModelScanner.parseModelInfo`
 withholds that id unless `config.json` and `model.safetensors.index.json` are the
 pinned bytes (`NemotronSuperServingPolicy.hasPinnedMetadata`); the managed load
 verifies every shard. A discovered Super artifact reports `quantization`
-`nvfp4`, no media, the ordinary template render check, and its managed LOAD
-footprint (`NemotronSuperServingPolicy.discoveryFootprint`): `estimated_memory_gb`
-covers the installation and head claim, prefill lane and admission KV of the
-largest default configuration, and `native_load_transient_bytes` the LOAD bytes
-above the shard bytes. Registration identity and RAM floor are in the
+`nvfp4`, image input (`ModelMediaPolicy.advertisesMedia`, for that exact id
+only), the ordinary template render check, and its managed LOAD footprint
+(`NemotronSuperServingPolicy.discoveryFootprint`): `estimated_memory_gb` covers
+the installation and head claim, prefill lane and admission KV of the largest
+default configuration plus one single-image request's media charge, and
+`native_load_transient_bytes` the LOAD bytes above the shard bytes. Capacity
+quotes for its image probes also charge the probe's images
+(`CapacityQuoteEngine.nemotronSuperMediaCharge`). Registration identity and RAM floor are in the
 [registry reference](../reference/model-registry-format.md#nemotron-super).
 Discovery does not register or publish the model.
 

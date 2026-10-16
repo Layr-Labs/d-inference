@@ -163,7 +163,7 @@ and [inference](../architecture/inference.md#managed-nemotron-super-slot) archit
 | `max_context_length` | `16384` | `NemotronSuperServingPolicy.contextTokens` |
 | `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
 | `min_ram_gb` | `192`, derived from the default LOAD footprint ([hardware support](../architecture/hardware-support.md#context)); only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
-| Input | text; tools, reasoning and `response_format`; no image input (the speculating owner refuses media) | `NemotronSuperSlotOwner.chatEngine` |
+| Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image; image requests refuse tools and `response_format`), served target-only on the speculating owner. No video | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody` |
 
 Providers without this policy drop the artifact at scan, advertisement and
 prefetch publication, but the downloader has no architecture gate: a provider

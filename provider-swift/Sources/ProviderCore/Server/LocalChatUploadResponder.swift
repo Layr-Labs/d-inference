@@ -93,10 +93,16 @@ where Inner.Context == BasicRequestContext {
         }
 
         if isResponses {
-            let item: LocalResponseRequest
+            var item: LocalResponseRequest
             switch decodeBody(LocalResponseRequest.self, from: buffer) {
             case .success(let decoded): item = decoded
             case .failure(let badRequest): return badRequest
+            }
+            if item.request.reasoning?.parser == nil, let reasoningParserFor,
+               let parser = await reasoningParserFor(item.request.model) {
+                var reasoning = item.request.reasoning ?? OpenAIResponseReasoningOptions()
+                reasoning.parser = parser
+                item.request.reasoning = reasoning
             }
             let responseService = serviceForTemplateControls(item.templateControls)
             if item.request.stream == true {

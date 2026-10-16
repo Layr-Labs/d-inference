@@ -54,6 +54,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// infers architecture from the caller's requested name. The acquired
     /// model and its actual native audio binding are revalidated afterward.
     private let modelTypeProvider: (@Sendable (String) async -> String?)?
+    /// The local API's engine: a streamed think-tag request whose prompt tail opens no think block starts in content
+    /// mode (a model that writes `<think>` itself still switches to reasoning), instead of the parser's undecided state,
+    /// which holds the whole answer until a marker or the end. The coordinator path keeps its own rule.
+    private var seedsContentForUnknownPromptTail = false
     /// Listing closure used by `availableModels()` when the engine was
     /// constructed via the atomic-`acquire` init. Returns the set of
     /// model IDs that should appear in `/v1/models`.
@@ -227,12 +231,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         defaultMaxTokens: Int = 4096,
         templateControls: ChatTemplateControls = .init(),
         nativeLocalCacheScope: String? = nil,
-        modelTypeProvider: (@Sendable (String) async -> String?)? = nil
+        modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
+        seedsContentForUnknownPromptTail: Bool = false
     ) {
         self.measurementPurpose = .serving
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
         self.modelTypeProvider = modelTypeProvider
+        self.seedsContentForUnknownPromptTail = seedsContentForUnknownPromptTail
         self.availableModelsOverride = availableModels
         self.registryProvider = nil
         self.ensureLoaded = { _ in }
@@ -287,6 +293,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: id, modelType: entry?.modelType))
         }
+    }
+
+    /// `seedsContentForUnknownPromptTail`'s seed: an empty closed think block (content mode) for a streamed
+    /// think-tag request; nil otherwise.
+    private func contentSeed(parser: ReasoningParserFormat?, stream: Bool?) -> String? {
+        guard seedsContentForUnknownPromptTail, stream == true, parser == .qwen3 || parser == .deepseekR1 else { return nil }
+        return ReasoningPromptProbe.thinkOpen + ReasoningPromptProbe.thinkClose
     }
 
     public func streamChatCompletion(
@@ -717,7 +730,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-                    )
+                    ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
                     try checkFirstContentDeadline()
                     return try await makeDeadlineCheckedEventStream(
                         upstream: upstream,
@@ -837,7 +850,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             stream: request.stream,
             promptTokens: promptTokens,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-        )
+        ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
         do {
             try checkFirstContentDeadline()
         } catch {

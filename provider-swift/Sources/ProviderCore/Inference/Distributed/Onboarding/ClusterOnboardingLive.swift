@@ -292,13 +292,23 @@ final class OnboardingLive: @unchecked Sendable {
 
     // MARK: - Discovery and pairing
 
+    /// How long pairing waits for the cable port's address before it says to try again.
+    static let cableAddressWaitSeconds: Double = 20
+
     func pair(_ events: @escaping @Sendable (ClusterOnboardingPairEvent) -> Void) -> ClusterOnboardingPairResult {
         let pairingStore = ClusterPairingStore.default()
         let identity: any ClusterPairingIdentity
         do { identity = try ClusterPairingProvider.identity() } catch { return .failed(["\(error)"]) }
-        let interface: String
-        do { interface = try ClusterPairCommandLine.resolveInterface(ClusterPairCommandRequest(), peer: nil) } catch {
-            return .failed(["The cable carries no address on this Mac yet: \(error)"])
+        // The port's address arrives a moment after the link setup applied it (or after the cable moved): wait for it.
+        var interface: String?
+        let deadline = Date().addingTimeInterval(Self.cableAddressWaitSeconds)
+        repeat {
+            interface = try? ClusterPairCommandLine.resolveInterface(ClusterPairCommandRequest(), peer: nil)
+            if interface == nil { sleep(1) }
+        } while interface == nil && Date() < deadline
+        guard let interface else {
+            return .failed(["The cable has no address on this Mac yet. Run `darkbloom cluster` again in a moment;"
+                + " if this repeats, run `darkbloom cluster doctor` and check the cable on both Macs."])
         }
         let chipName = (try? HardwareDetector.detect().chipName) ?? "Mac"
         let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface,
@@ -544,10 +554,10 @@ final class OnboardingLive: @unchecked Sendable {
                              deployment, plan))
                 // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here.
                 let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, localName: localName, peerName: peerName)
-                // Served for the owner either way. Under the choice: the planner's one-line reason for tensor
-                // parallel or a pipeline, then one line saying whether public traffic may reach it yet.
-                return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []) + (plan.publicTraffic.map { [$0] } ?? []),
-                             blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID)
+                // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
+                // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet.
+                return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []),
+                             blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID, publicTraffic: plan.publicTraffic)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?))]()
@@ -564,11 +574,11 @@ final class OnboardingLive: @unchecked Sendable {
                 offered.append(model)
                 fromPeer[ordered.count] = model
                 let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
-                    leader: .init(name: "\(localName) (this Mac)", holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
+                    leader: .init(name: leaderLabel(localName), holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
                     members: [.init(name: peerName, holding: .complete(folder: model.folder), freeBytes: nil)],
                     linkBytesPerSecond: measuredCopyRate, catalogHasIt: false)
                 ordered.append((.init(title: ClusterOnboardingDeployment.title(modelID: model.modelID, displayNames: names),
-                    lines: ["on \(peerName) only: planned once it is on this Mac too"], blocker: nil,
+                    lines: ["\(ClusterModelProvisioning.gigabytes(model.totalBytes)) · only on \(peerName): copied over the cable first"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
                         quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.modelID),
                     (model.folder, "", model.modelID, [], nil, nil)))
@@ -642,9 +652,15 @@ final class OnboardingLive: @unchecked Sendable {
         report.models.first { $0.sameEntry(model) }.map { .complete(folder: $0.folder) } ?? .missing
     }
 
+    /// The leading Mac as a copy or download line names it: "(this Mac)" only on its own screen, never in an answer a
+    /// member shows (that screen is the other Mac).
+    func leaderLabel(_ localName: String) -> String {
+        here == "this Mac" ? "\(localName) (this Mac)" : localName
+    }
+
     func copyOffer(model: ClusterSetupLocalModel, peer: ClusterSetupReport, localName: String) -> ClusterOnboardingProvisionOffer {
         let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
-            leader: .init(name: "\(localName) (this Mac)", holding: .complete(folder: model.folder), freeBytes: nil),
+            leader: .init(name: leaderLabel(localName), holding: .complete(folder: model.folder), freeBytes: nil),
             members: [.init(name: peerName, holding: holding(model, in: peer), freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: false, blocker: plan.blocker,
@@ -655,11 +671,11 @@ final class OnboardingLive: @unchecked Sendable {
         let bytes = model.totalSizeBytes ?? Int64(model.sizeGb * 1e9)
         let local = ClusterModelStoreLocation.defaultDirectory()
         let plan = ClusterModelProvisioning.plan(totalBytes: bytes,
-            leader: .init(name: "\(localName) (this Mac)", holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: local)),
+            leader: .init(name: leaderLabel(localName), holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: local)),
             members: [.init(name: peerName, holding: .missing, freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(title: ClusterOnboardingDeployment.title(modelID: model.id, displayNames: [model.id: model.displayName]),
-            lines: ["not on these Macs yet: \(ClusterModelProvisioning.gigabytes(bytes)) from Darkbloom's catalog; planned once it is on this Mac"],
+            lines: ["\(ClusterModelProvisioning.gigabytes(bytes)) · not on these Macs: downloaded from Darkbloom's catalog first"],
             blocker: nil, provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
             quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.id)
     }
@@ -973,6 +989,7 @@ final class OnboardingLive: @unchecked Sendable {
     func waitReady(_ progress: @escaping @Sendable (String) -> Void) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
         let deadline = Date().addingTimeInterval(900)
         var said: String?
+        var seen = [String: Int]()
         while Date() < deadline {
             var once: (ready: ClusterOnboardingReady?, line: String)
             if forwards {
@@ -984,11 +1001,20 @@ final class OnboardingLive: @unchecked Sendable {
                 once = readinessOnce()
             }
             if let ready = once.ready { return .success(ready) }
-            if once.line != said { progress(once.line); said = once.line }
+            // Each line once (a part that keeps restarting alternated two lines every 2 s); a part that ends the
+            // same way again and again is said and the wait ends: both Macs keep trying by themselves.
+            seen[once.line, default: 0] += 1
+            if once.line.contains("part ended"), seen[once.line, default: 0] >= Self.sameEndsBeforeSaying {
+                return .failure(.init(["A part keeps ending the same way: \(once.line)."] + lastErrors(fallback: nil)))
+            }
+            if seen[once.line] == 1 { progress(once.line); said = once.line }
             sleep(2)
         }
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
     }
+
+    /// The same part end seen this many times stops the wait on screen (the service keeps restarting it).
+    static let sameEndsBeforeSaying = 3
 
     /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
     /// start that did not finish, instead of a log path).

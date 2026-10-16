@@ -161,11 +161,21 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     public var fitRemedy: String?
     /// The model's id (`title` is its catalog display name when the catalog gave one); nil from an older build.
     public var modelID: String?
+    /// Whether public traffic may reach it yet, in one line; said once it is chosen, and only when the cluster serves
+    /// through Darkbloom. Nil from an older build (which put the line in `lines`).
+    public var publicTraffic: String?
 
     public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil,
-                modelID: String? = nil) {
+                modelID: String? = nil, publicTraffic: String? = nil) {
         self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision; self.fitRemedy = fitRemedy
-        self.modelID = modelID
+        self.modelID = modelID; self.publicTraffic = publicTraffic
+    }
+
+    /// The list's one line: the title (with the model's id when another choice shows the same title) and the first of
+    /// its lines (size and how it is split, or how it gets onto the Macs). The rest is said once it is chosen.
+    public func listLine(sameTitleElsewhere: Bool) -> String {
+        let name = sameTitleElsewhere ? "\(title) (\(modelID ?? title))" : title
+        return lines.first.map { "\(name) — \($0)" } ?? name
     }
 }
 
@@ -669,10 +679,9 @@ public enum ClusterOnboardingDriver {
                 return 1
             }
             console.say(localNetworkLine)
-            // The leader chooses how the cluster serves; a member that was asked for local serving says where to ask.
-            if request.scope?.isLocalOnly == true {
-                console.say("To serve locally only (no coordinator), run `darkbloom cluster local` on \(peerName).")
-            }
+            // `darkbloom cluster local` on the Mac that joined carries on here: the choice and the start run on the
+            // leader over the cable, as every command typed on a member does.
+            if request.scope != nil { return menu(operations.resume(), operations, console, request: request) }
             console.say("Nothing else to do on this Mac: \(peerName) chooses the model and starts this Mac's part.")
             return 0
         case .leader:
@@ -834,13 +843,13 @@ public enum ClusterOnboardingDriver {
         // The choices that fit now come first, so enter (= 1) is one that fits.
         let offered = choices.indices.filter { choices[$0].blocker == nil }
         let open = offered.filter { choices[$0].fitRemedy == nil } + offered.filter { choices[$0].fitRemedy != nil }
+        // One line per model (owner, 2026-10-15: shorter screens); a second only when it does not fit now. What moves
+        // and the planner's reasons are said once a model is chosen.
+        let titles = choices.map(\.title)
         for (number, index) in open.enumerated() {
-            console.say("  \(number + 1). \(choices[index].title)")
-            for line in choices[index].lines { console.say("       " + line) }
+            let shared = titles.filter { $0 == choices[index].title }.count > 1
+            console.say("  \(number + 1). " + choices[index].listLine(sameTitleElsewhere: shared))
             if let remedy = choices[index].fitRemedy { console.say("       does not fit now: " + remedy) }
-            if let offer = choices[index].provision {
-                for line in offer.lines { console.say("       needs: " + line) }
-            }
         }
         let blocked = choices.indices.filter { choices[$0].blocker != nil }
         if !blocked.isEmpty {
@@ -879,6 +888,10 @@ public enum ClusterOnboardingDriver {
             console.say("Type a number from 1 to \(open.count), or press enter for 1.")
         }
         var choice = choices[chosen!]
+        // The chosen model's other lines: the planner's reason, and whether public traffic may reach it (not when the
+        // cluster serves locally only).
+        for line in choice.lines.dropFirst() { console.say("  " + line) }
+        if !scope.isLocalOnly, let line = choice.publicTraffic { console.say("  " + line) }
         if let offer = choice.provision {
             switch provision(offer, title: choice.title, index: chosen!, operations, console) {
             case .stopped: return 0

@@ -643,7 +643,7 @@ public final class ClusterService: @unchecked Sendable {
         try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
-        return ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240)
+        return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
     }
 
     /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.

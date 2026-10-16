@@ -65,6 +65,7 @@ import Darwin
         memberJoinsWithLocal()
         servingScopeValues()
         notOfferedGroupedByReason()
+        sameTitleShowsTheID()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -287,7 +288,8 @@ import Darwin
         expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "leader: the model choice (two offered, one not)")
         expect(run.text.contains("  Apple M5 Ultra, 256 GB · 256 GB · 80-core GPU · 2 models · leads (this Mac)"), "leader: its own hardware")
         expect(run.text.contains("  Apple M3 Ultra, 256 GB · 256 GB · 80-core GPU · 2 models · member"), "leader: the member's hardware")
-        expect(run.text.contains("       rank 1 (decodes): Apple M5 Ultra, 256 GB (this Mac), layers 16-31"), "leader: the planner's placement")
+        expect(run.text.contains("  1. Qwen3.5-9B — rank 0: Apple M3 Ultra, 256 GB, layers 0-15\n"), "leader: one line per model: \(run.text)")
+        expect(!run.text.contains("rank 1 (decodes)"), "leader: the rest of a model's lines waits until it is chosen")
         expect(run.text.contains("     gpt-oss-20b: not granted for this pair of chips"), "leader: a blocked model with its reason")
         run.type("\r")
         // The choice is the start: one stated line with a moment to stop, no second question.
@@ -541,9 +543,10 @@ import Darwin
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
             choices: copyChoices))
         expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "copy: the choice")
-        expect(run.text.contains("       needs: Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (6.1 GB, about 3 s)"),
-            "copy: the list says what the model needs, with size and time")
+        expect(!run.text.contains("needs: "), "copy: the list stays one line per model")
         run.type("\r")
+        expect(run.waitFor("  Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (6.1 GB, about 3 s)"),
+            "copy: once chosen, what the model needs, with size and time")
         expect(run.waitFor("Qwen3.5-9B is not on every Mac yet. No download by hand is needed:"), "copy: what is missing, said")
         expect(run.waitFor("Press enter to copy it over the Thunderbolt cable (recommended), d to download it from Darkbloom's catalog instead, n to stop here."),
             "copy: the cable is the default")
@@ -724,7 +727,7 @@ import Darwin
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
             choices: choices))
         expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "fit: the choice")
-        expect(run.text.contains("  1. Qwen3.5-9B\n") && run.text.contains("  2. Qwen3.8-27B-4bit-mtp\n"), "fit: the one that fits is 1")
+        expect(run.text.contains("  1. Qwen3.5-9B — 6.1 GB · pipeline") && run.text.contains("  2. Qwen3.8-27B-4bit-mtp — 16.3 GB · pipeline"), "fit: the one that fits is 1")
         expect(run.text.contains("       does not fit now: Quit apps on Apple M3 Ultra, 256 GB first.\n"), "fit: the remedy in plain words")
         run.type("\r")
         expect(run.finish() == 0, "fit: served")
@@ -998,9 +1001,33 @@ import Darwin
             pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB")), request: localRequest)
         expect(run.waitFor("Press y if it does"), "member local: the code question")
         run.type("y")
+        // It carries on on this Mac: the choice and the start run on the leader (forwarded, as every member command).
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "member local: the choice, right after pairing")
+        run.type("\r")
         expect(run.finish() == 0, "member local: exit 0")
-        expect(run.text.contains("To serve locally only (no coordinator), run `darkbloom cluster local` on Apple M5 Ultra, 256 GB.\n"), "member local: where to ask")
-        expect(!recorder.all.contains { $0.hasPrefix("setScope") }, "member local: nothing saved while pairing: \(recorder.all)")
+        expect(!run.text.contains("Nothing else to do on this Mac"), "member local: not sent away to the other Mac")
+        expect(recorder.all.suffix(6) == ["recheckFit 0", "adopt 0", "setScope local 0.0.0.0", "serve", "waitReady", "testRequest"],
+               "member local: local only saved after the adopt, then the start: \(recorder.all)")
+    }
+
+    /// Two models with the same display name (the catalog's Gemma and the QAT build on the Macs): each line names its id.
+    static func sameTitleShowsTheID() {
+        let recorder = Recorder()
+        let twins = [
+            ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["15.6 GB · pipeline · M4 Max 3 layers / M5 Max 27 layers",
+                "Pipeline: this model has no tensor-parallel plan."], blocker: nil, modelID: "gemma-4-26b-qat-4bit",
+                publicTraffic: "qualified for public traffic in pipeline mode"),
+            ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["28.0 GB · not on these Macs: downloaded from Darkbloom's catalog first"],
+                blocker: nil, modelID: "gemma-4-26b")]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: twins), request: localRequest)
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "twins: the list")
+        expect(run.text.contains("  1. Gemma 4 26B (gemma-4-26b-qat-4bit) — 15.6 GB · pipeline") && run.text.contains("  2. Gemma 4 26B (gemma-4-26b) — 28.0 GB"),
+               "twins: each names its id: \(run.text)")
+        run.type("\r")
+        expect(run.waitFor("  Pipeline: this model has no tensor-parallel plan.\n"), "twins: the reason once chosen")
+        expect(run.finish() == 0, "twins: served")
+        expect(!run.text.contains("qualified for public traffic"), "twins: no public-traffic line when serving locally only")
     }
 
     /// The scope's values: from the record, the bind addresses it takes, what reaches the network, and its line.

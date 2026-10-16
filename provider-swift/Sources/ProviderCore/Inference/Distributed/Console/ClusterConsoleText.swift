@@ -19,6 +19,17 @@ enum ClusterConsoleText {
 
     /// The first twelve characters of a digest: enough to tell two apart.
     static func short(_ digest: String) -> String { String(digest.prefix(12)) }
+
+    /// An error's words without the Swift case around them: `invalid("Installed local owner …")` reads
+    /// `Installed local owner …`. Anything else is kept as it is.
+    static func plain(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let open = trimmed.firstIndex(of: "("), trimmed.hasSuffix("\")"),
+              trimmed[..<open].allSatisfy({ $0.isLetter || $0.isNumber }), !trimmed[..<open].isEmpty,
+              trimmed[trimmed.index(after: open)...].first == "\"" else { return text }
+        let inner = trimmed[trimmed.index(open, offsetBy: 2)..<trimmed.index(trimmed.endIndex, offsetBy: -2)]
+        return inner.contains("\"") ? text : String(inner)
+    }
 }
 
 /// Free text that reaches the snapshot: an error's description, a check's

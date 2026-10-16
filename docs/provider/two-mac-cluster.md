@@ -244,6 +244,10 @@ cluster setup after a Darkbloom update.").
   stops before any prompt. Turn the cluster port off under System Settings →
   General → Sharing → Internet Sharing → “To devices using”, then run
   `darkbloom cluster` again.
+- **The cable moved to another Thunderbolt port**: nothing to do. Each Mac's
+  cluster service notices the new port within a few seconds and answers there.
+- **A part keeps ending the same way**: after three identical ends the screen
+  says it and offers `d`; both Macs keep trying by themselves.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and
   logged in; it rejoins by itself. If you denied the Local Network prompt there,
   allow Darkbloom in System Settings → Privacy & Security → Local Network, then

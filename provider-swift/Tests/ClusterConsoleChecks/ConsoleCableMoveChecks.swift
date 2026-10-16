@@ -53,5 +53,13 @@ extension ClusterConsoleCheck {
         expect(URL(fileURLWithPath: named).lastPathComponent == "darkbloom" && named.hasSuffix("Darkbloom.app/Contents/MacOS/darkbloom"),
                "the file the link points at: \(named)")
         expect(ClusterSetupMemberFacts.installedOwnerPath(file) == file.resolvingSymlinksInPath().path, "a path that is the file stays the file")
+
+        // The part's last error as the screen shows it: the words, not the Swift case around them.
+        typealias T = ClusterConsoleText
+        expect(T.plain(#"invalid("Installed local owner is unsafe or not executable")"#) == "Installed local owner is unsafe or not executable",
+               "an error case's words")
+        expect(T.plain("The cable is not ready") == "The cable is not ready", "plain words stay")
+        expect(T.plain(#"invalid("a "quoted" word")"#) == #"invalid("a "quoted" word")"#, "a quote inside is left as it is")
+        expect(T.plain(#"x.y("z")"#) == #"x.y("z")"#, "only a bare case name is taken off")
     }
 }

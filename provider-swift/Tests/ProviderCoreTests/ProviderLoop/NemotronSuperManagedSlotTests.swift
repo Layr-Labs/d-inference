@@ -72,7 +72,10 @@ struct NemotronSuperManagedSlotTests {
     }
 
     /// `totalGiB` bounds the process budget the LOAD claim and requests use.
-    static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, memory: ReturningMemory? = nil,
+    /// `physicalGiB` (default `totalGiB`) is the machine memory the slot
+    /// loader sizes its prefix bank for, so no result depends on the host.
+    static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
+                        memory: ReturningMemory? = nil,
                         probe: InstallationProbe? = nil) async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
@@ -93,7 +96,7 @@ struct NemotronSuperManagedSlotTests {
                                         options: .ignoreUnknownCharacters))
         await loop.setNemotronSuperSlotLoaderForTesting(
             loader(tokenizer: TokenizerHandle(SuperScriptedTokenizer(script: script)), template: template,
-                   probe: probe),
+                   physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe),
             environment: [:])
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
@@ -104,9 +107,10 @@ struct NemotronSuperManagedSlotTests {
 
     /// The latent-MoE fixture and its embedded head, staged through the real
     /// transaction under the provider's grant, admission and environment.
-    static func loader(tokenizer: TokenizerHandle, template: Data,
+    static func loader(tokenizer: TokenizerHandle, template: Data, physicalBytes: UInt64,
                        probe: InstallationProbe? = nil) -> NemotronSuperSlotLoader {
-        NemotronSuperSlotLoader(kvBytesPerToken: { _ in 64 }) { request in
+        NemotronSuperSlotLoader(pinned: false, physicalBytes: physicalBytes,
+                                kvBytesPerToken: { _ in 64 }) { request in
             let fixture = try SuperMTPInstalledFixture(
                 radioDimensions: SuperMTPInstalledFixture.encodedImageTower).staging()
             let staging = NemotronSuperLocalLoad.Staging(source: fixture.source, install: {
@@ -127,7 +131,8 @@ struct NemotronSuperManagedSlotTests {
             let bridge = try await transaction.load(staging: { staging }, tokenizer: tokenizer,
                 eosTokenIDs: [], sizing: sizing, kvBytesCapacity: request.kvBytesCapacity,
                 admissionKVBytes: request.admissionKVBytes, backendAllowanceBytes: 1 << 20,
-                modelID: request.modelID, environment: request.environment)
+                modelID: request.modelID, environment: request.environment,
+                physicalBytes: request.physicalBytes)
             return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
                 tokenizer: tokenizer, sizing: sizing, templateBytes: template)
         }
@@ -364,5 +369,40 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.loop.nemotronSuperOwnerForTesting(modelId: Self.modelID) == nil)
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
         #expect(await fixture.loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
+    }
+
+    /// The slot's planned bank is the bank its builder builds and holds,
+    /// whatever machine memory the loader sizes it for: the fixture owner's
+    /// generic 1 GiB bank on a 64 GiB and a 256 GiB machine.
+    @Test(.timeLimit(.minutes(2)), arguments: [64, 256] as [UInt64])
+    func plannedBankIsHeldWhateverTheMachine(physicalGiB: UInt64) async throws {
+        let fixture = try await Self.fixture(mode: .auto, physicalGiB: physicalGiB)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                                 revisionDirectory: fixture.directory)
+        let banks = await fixture.budget.reservationBytesSnapshot()
+            .filter { NemotronSuperLocalPrefixCache.isBankReservationID($0.key) }
+        #expect(banks.count == 1 && banks.values.first == 1 << 30, "\(banks)")
+        #expect(await fixture.loop.unloadModel(Self.modelID))
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+    }
+
+    /// Every refusal the managed load raises itself is recorded by name; only
+    /// an error from outside the load keeps the generic reason.
+    @Test func loadRefusalsAreRecordedByName() {
+        let generic = "native construction was refused"
+        let named: [(any Error, String)] = [
+            (NemotronSuperLocalBridgeBuilder.Failure.loadAdmissionLost,
+             "the LOAD claim no longer fit after installation"),
+            (NemotronSuperLocalKVBackend.Failure.decodeRowsRefused, "insufficient memory for the decode rows"),
+            (NemotronSuperLocalPrefixCache.Failure.unavailable, "the engine did not construct the prefix bank"),
+            (NemotronSuperLocalPrefixCache.Failure.bankRefused, "insufficient memory for the prefix bank"),
+            (NemotronSuperLocalPrefill.Failure.laneRefused, "insufficient memory for the prefill lane"),
+            (NemotronSuperLocalLoad.Failure.capacity, "insufficient memory at LOAD admission"),
+        ]
+        for (error, reason) in named {
+            #expect(ProviderLoop.nemotronSuperLoadRefusalReason(error) == reason, "\(error)")
+        }
+        #expect(ProviderLoop.nemotronSuperLoadRefusalReason(URLError(.unknown)) == generic)
     }
 }

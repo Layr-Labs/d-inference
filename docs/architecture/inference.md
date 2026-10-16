@@ -122,7 +122,8 @@ step, the prefill activation is one owner-wide lane in the shared budget,
 reserved before the first request and released only after native retirement:
 `NemotronHModel.prefillActivationBoundBytes(tokens:)` (the SDK's whole-chunk bound
 measured on the full checkpoint) for the pinned checkpoint, the ModelOpt
-workspace quote for synthetic fixtures. A lane that does not fit fails the load.
+workspace quote for synthetic fixtures. A lane that does not fit fails the load;
+the pinned checkpoint's LOAD claim already holds it (below).
 Each bridge request reservation carries, beyond the engine's recurrent
 generations and any speculation charge, `requestWorkspaceBytes`: one
 `NemotronSuperDecodeCharge` decode row. The builder refuses a KV grant that
@@ -130,9 +131,25 @@ cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
 `NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1`: `PrefixCachePolicy.hybridConfig` sizes the SDK's
-resident recurrent checkpoint bank (`min(1 GiB, KV grant / 8)` unless
-`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` sets it), the backend carves it from the KV
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`. For the pinned checkpoint
+`NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
+recurrent checkpoint bank from the KV grant and the machine:
+`serving = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
+`load = memory cap - activation reserve - LOAD bytes (installation, any head) - admissionKVBytes - lane bound`,
+`bank = min(16 GiB, grant / 4, serving / 2, load / 2)` rounded down to 256 MiB,
+and no bank below 1 GiB. The lane and media charges come from the same ledger
+the grant describes, so half of what is left beside them stays free; the single
+LOAD claim holds the installation, any head, the lane, the bank and the
+requests' KV, so half of what the machine's cap leaves beside it stays free.
+`grant / 4` is the engine's own bank ceiling when a re-slice shrinks the grant.
+A lone slot (grant = fleet KV budget) gets 16 GiB for either owner on 192, 256
+and 512 GiB; on 192 GiB the speculating owner's whole claim (159.7 GB) leaves
+20 GB of the cap for other memory. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
+holds up to one entry per 256 MiB (at least 32). The managed slot's
+`loadPlan` sizes the same bank from the same grant, requests and keys, turns
+the switch on only when it is non-zero and adds it to the LOAD claim's KV
+headroom. The backend carves the bank from the KV
 grant before the grant check, and its whole budget is reserved in the shared
 budget from before the first request until native retirement, like the lane; a
 bank that does not fit fails the load and a retained native fault keeps it
@@ -149,7 +166,13 @@ a scope it stays cold and never publishes. On the speculating owner
 the target is built with `exactPrefixCheckpoints` too and each checkpoint also
 holds the assistant's queued prompt history, so a restored request drafts from
 the same history as a cold one.
-`UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
+`UnserviceableGrant.minimumGrantBytes` and the slot's re-slice floor include
+the bank, so a larger bank also keeps a co-resident load from shrinking the
+grant below it. A re-slice does not give the bank up: the engine only lowers
+the bank's own limit to a quarter of the new grant and keeps entries pinned by
+in-flight restores and captures, and the shared ledger holds the bank's whole
+reservation until native retirement, so a floor without the bank would hand a
+newcomer memory the bank still holds. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
@@ -233,7 +256,15 @@ allowance, the head supplement with speculation, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (2.5 GiB with depth-3 speculation,
 0.5 GiB plain, at any context), plus 2 GiB and any prefix bank, never above the
-grant. The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
+grant. For the pinned checkpoint the same claim also holds the prefill
+lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
+so one admission before any allocation covers everything the loaded owner keeps
+and a load that cannot hold it is refused before a shard is read into memory.
+Once the installation and head are resident (MLX usage), their share of the claim
+is handed over to that live view, as the ordinary managed load does
+(`reducePendingLoad`), and the builder hands the lane and bank shares to their
+own reservations right before taking them, so no byte is counted twice.
+The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
 registered and the slot installed.

@@ -544,10 +544,11 @@ default of `off`; consult the platform's latest default branch for current polic
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` | exact `0` disables | unset (eligible only after memory opt-in) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Disables recurrent checkpoint retention without changing paged/SSD policy or MTP mode. |
-| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. |
+| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))`; the pinned Nemotron Super checkpoint uses `NemotronSuperServingPolicy.defaultPrefixBankBytes` instead | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`), `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift` | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. The Super default is `min(16 GiB, grant / 4, serving / 2, load / 2)` rounded down to 256 MiB, where `serving` is the grant minus every request's fixed bytes plus 2 GiB, the prefill lane bound and one image's media charge, and `load` is the memory cap minus the activation reserve, the LOAD claim's installation and head bytes (counted once), the same fixed bytes and the lane bound; below 1 GiB there is no default bank. |
 
 `CBv2HybridPrefixCacheConfig` defaults to `maximumEntries = 32` and
-`maximumCheckpointsPerRequest = 2`; these have no CLI environment overrides
+`maximumCheckpointsPerRequest = 2`; the Super owner raises the entry limit to
+one per 256 MiB of bank. These have no CLI environment overrides
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCacheContract.swift`).
 
 ### Benchmark, harness and tests

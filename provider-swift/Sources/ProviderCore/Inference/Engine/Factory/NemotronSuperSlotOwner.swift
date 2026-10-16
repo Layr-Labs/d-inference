@@ -72,12 +72,29 @@ struct NemotronSuperSlotLoader: Sendable {
         let defaultMaxTokens: Int
         let environment: [String: String]
         let budget: GlobalKVCacheBudget
+        /// The loader's `physicalBytes`, which sized the plan's prefix bank.
+        let physicalBytes: UInt64
     }
+
+    /// Whether this loader stages the pinned checkpoint, and the machine
+    /// memory its bank is sized for. The load plan and the builder size the
+    /// prefix bank from these same two values.
+    let pinned: Bool
+    let physicalBytes: UInt64
 
     /// The per-token KV rate from metadata alone, before any re-slice; it
     /// also refuses an unpinned index, template or shard set early.
     let kvBytesPerToken: @Sendable (URL) throws -> Int
     let load: @Sendable (Request) async throws -> NemotronSuperSlotOwner
+
+    init(pinned: Bool = true, physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+         kvBytesPerToken: @escaping @Sendable (URL) throws -> Int,
+         load: @escaping @Sendable (Request) async throws -> NemotronSuperSlotOwner) {
+        self.pinned = pinned
+        self.physicalBytes = physicalBytes
+        self.kvBytesPerToken = kvBytesPerToken
+        self.load = load
+    }
 
     /// Opens every shard against its pin, loads the pinned tokenizer and
     /// template, then claims, stages and builds through the transaction. A
@@ -102,7 +119,8 @@ struct NemotronSuperSlotLoader: Sendable {
                 sizing: sizing, kvBytesCapacity: request.kvBytesCapacity,
                 admissionKVBytes: request.admissionKVBytes,
                 backendAllowanceBytes: NemotronSuperServingPolicy.backendAllowanceBytes,
-                modelID: request.modelID, environment: request.environment)
+                modelID: request.modelID, environment: request.environment,
+                physicalBytes: request.physicalBytes)
             return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
                 tokenizer: tokenizer, sizing: sizing, templateBytes: templateBytes)
         } catch {

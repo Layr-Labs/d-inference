@@ -87,14 +87,19 @@ explicit thinking-off for inline PNG media. No production caller installs it.
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction
 adds the embedded head's header-derived payload and loader construction allowance
 to its single LOAD claim, loads the head in its own fenced construction epoch, and
-the builder serves `NemotronSuperMTPTextTarget` with the SDK
-`NemotronSuperMTPAssistant`: greedy, one request, fixed depth
-(`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `1` to `3`) and serial target verification.
+the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, one request,
+fixed depth (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `1` to `3`). Verification
+(`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION`) defaults to `rectangular`:
+`NemotronSuperMTPCaptureTarget` verifies the seed and drafts in one captured
+target window, bit-identical per position to plain decode, and the engine commits
+the Mamba state after the last accepted token and trims attention KV. `serial`
+serves `NemotronSuperMTPTextTarget` with one ordinary target step per draft.
 The engine admits the assistant's bounded per-request charge (FP8 history, backlog,
-every draft step's dense FP8 output head and an unmeasured 256 MiB backend scratch
-allowance) before allocation and holds it until retirement. An owner with
-speculation refuses every media entry with `mediaWithSpeculation`. Synthetic
-fixtures show token-exact greedy output against the ordinary owner, forced
+every draft step's dense FP8 output head, the rectangular verify window and an
+unmeasured 256 MiB backend scratch allowance) plus captured recurrent states before
+allocation and holds them until retirement. An owner with speculation refuses
+every media entry with `mediaWithSpeculation`. Synthetic fixtures show
+token-exact greedy output against the ordinary owner in both modes, forced
 rejection rollback and cancellation; serial verification cannot beat plain
 decode, and no full-model acceptance or speed is measured. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.

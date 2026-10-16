@@ -5,6 +5,7 @@ import Hummingbird
 import HummingbirdTesting
 import HTTPTypes
 import MLXLMCommon
+import MLXVLM
 import NIOCore
 import Testing
 @testable import ProviderCore
@@ -12,14 +13,15 @@ import Testing
 /// The managed Super slot through `ProviderLoop`: exact-identity load into a
 /// shared slot with the real LOAD claim and re-slice grant, the encrypted
 /// coordinator request path and the unified local endpoint on the same owner,
-/// cancellation, admission refusal and retirement. Tiny synthetic weights run
+/// cancellation, admission refusal and retirement. Image requests are in
+/// `NemotronSuperManagedSlotTests+Images.swift`. Tiny synthetic weights run
 /// through the real `NemotronSuperLocalLoad` transaction; the pinned
 /// checkpoint itself is not loaded here.
 @Suite(.serialized)
 struct NemotronSuperManagedSlotTests {
-    private static let modelID = NemotronSuperServingPolicy.modelID
+    static let modelID = NemotronSuperServingPolicy.modelID
 
-    private final class Recorder: @unchecked Sendable {
+    final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
         private var messages: [OutboundMessage] = []
         func record(_ message: OutboundMessage) { lock.withLock { messages.append(message) } }
@@ -41,7 +43,7 @@ struct NemotronSuperManagedSlotTests {
         }
     }
 
-    private struct Fixture {
+    struct Fixture {
         let loop: ProviderLoop
         let budget: GlobalKVCacheBudget
         let script: SuperOutputScript
@@ -49,7 +51,7 @@ struct NemotronSuperManagedSlotTests {
     }
 
     /// `totalGiB` bounds the process budget the LOAD claim and requests use.
-    private static func fixture(mode: MTPMode, totalGiB: UInt64 = 64) async throws -> Fixture {
+    static func fixture(mode: MTPMode, totalGiB: UInt64 = 64) async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0, systemAvailable: totalGiB << 30)
         }
@@ -78,9 +80,10 @@ struct NemotronSuperManagedSlotTests {
 
     /// The latent-MoE fixture and its embedded head, staged through the real
     /// transaction under the provider's grant, admission and environment.
-    private static func loader(tokenizer: TokenizerHandle, template: Data) -> NemotronSuperSlotLoader {
+    static func loader(tokenizer: TokenizerHandle, template: Data) -> NemotronSuperSlotLoader {
         NemotronSuperSlotLoader(kvBytesPerToken: { _ in 64 }) { request in
-            let staging = try SuperMTPInstalledFixture().staging()
+            let staging = try SuperMTPInstalledFixture(
+                radioDimensions: SuperMTPInstalledFixture.encodedImageTower).staging()
             let tensorBytes = staging.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
             let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
                 maxContextLength: 1024, defaultMaxTokens: 16)
@@ -94,7 +97,7 @@ struct NemotronSuperManagedSlotTests {
         }
     }
 
-    private static func body(_ pieces: [String], script: SuperOutputScript,
+    static func body(_ pieces: [String], script: SuperOutputScript,
                              _ extra: [String: Any] = [:]) throws -> Data {
         script.set(pieces)
         var value: [String: Any] = ["model": modelID, "stream": true, "temperature": 0,
@@ -105,7 +108,7 @@ struct NemotronSuperManagedSlotTests {
     }
 
     /// One encrypted coordinator request: the decrypted SSE and its terminal.
-    private static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
+    static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
         consumer: NodeKeyPair, scope: String? = "tenant-a",
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
@@ -125,12 +128,12 @@ struct NemotronSuperManagedSlotTests {
         return (frames.joined(), terminal)
     }
 
-    private static func usage(_ terminal: OutboundMessage) -> UsageInfo? {
+    static func usage(_ terminal: OutboundMessage) -> UsageInfo? {
         if case .inferenceComplete(_, let usage, _, _, _, _) = terminal { return usage }
         return nil
     }
 
-    private static func failure(_ terminal: OutboundMessage) -> InferenceFailure? {
+    static func failure(_ terminal: OutboundMessage) -> InferenceFailure? {
         if case .inferenceError(_, let failure, _) = terminal { return failure }
         return nil
     }
@@ -171,7 +174,7 @@ struct NemotronSuperManagedSlotTests {
         #expect(SuperSSE(tool.sse).toolCalls.map(\.name) == ["get_weather"])
         #expect(SuperSSE(tool.sse).toolCalls.map(\.arguments) == [#"{"city":"Paris"}"#])
         #expect(!tool.sse.contains("<tool_call>"))
-        // The slot advertises no media, and unhonored controls are refused.
+        // An undecodable image and unhonored controls are refused.
         let image = ["role": "user", "content": [["type": "image_url", "image_url": ["url":
             "data:image/png;base64,iVBORw0KGgo="]], ["type": "text", "text": "Describe."]]] as [String: Any]
         for extra in [["messages": [image]], ["logit_bias": ["5": 2]], ["logprobs": true]] as [[String: Any]] {

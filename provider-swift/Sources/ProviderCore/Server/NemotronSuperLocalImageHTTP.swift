@@ -6,15 +6,14 @@ import MLXVLM
 
 /// The Super chat route over one loaded owner. Text renders with the owner's
 /// own tokenizer and runs on its text binding; inline images run on the
-/// owner's image binding. Both stream through the reference reasoning, tool
-/// and structured-output parsers. An owner with text speculation installed has
-/// no image binding, so media requests get 400. The qualification runner
-/// installs `service` on the local HTTP stack (`LocalInferenceHTTP` plumbs
-/// it); a managed provider slot serves coordinator and local-endpoint
-/// requests through `engine(body:hasMedia:servesMedia:cacheScope:)`. The type
-/// name predates text support.
+/// owner's image binding, target-only when the owner speculates for text.
+/// Both stream through the reference reasoning, tool and structured-output
+/// parsers. The qualification runner installs `service` on the local HTTP
+/// stack (`LocalInferenceHTTP` plumbs it); a managed provider slot serves
+/// coordinator and local-endpoint requests through
+/// `engine(body:hasMedia:cacheScope:)`. The type name predates text support.
 struct NemotronSuperLocalImageHTTP: Sendable {
-    private let images: NemotronSuperLocalImageBinding?
+    private let images: NemotronSuperLocalImageBinding
     private let text: NemotronSuperLocalBinding
     private let tokenizer: TokenizerHandle
     private let template: Data
@@ -25,7 +24,7 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         // The owner's own bindings: no lease or slot is manufactured, and both
         // refuse once the owner closes or retains a fault.
         text = try owner.localTextBinding()
-        images = owner.speculates ? nil : try owner.localImageBinding()
+        images = try owner.localImageBinding()
         tokenizer = owner.bridge.tokenizer
         template = templateBytes
         self.owner = owner
@@ -33,7 +32,7 @@ struct NemotronSuperLocalImageHTTP: Sendable {
 
     /// The model id every request must name.
     var modelID: String { owner.modelID }
-    /// The owner speculates and therefore refuses media.
+    /// The owner speculates for text requests.
     var speculates: Bool { owner.speculates }
 
     /// Reference prompt length of a text request, the usage floor when a
@@ -57,21 +56,11 @@ struct NemotronSuperLocalImageHTTP: Sendable {
             responseStore: responseStore, metrics: metrics)
     }
 
-    /// The engine for one immutable raw request body. With `servesMedia`
-    /// false a media request is refused even when the owner has an image
-    /// binding: a slot that advertises no media serves none. `cacheScope`
-    /// partitions text prefix reuse (nil: none); the hook's single local
-    /// operator shares one partition.
-    func engine(body: Data, hasMedia: Bool, servesMedia: Bool = true,
-                cacheScope: String? = "") -> any MLXServerEngine {
-        let route: SuperHTTPEngine.Route
-        if !hasMedia {
-            route = .text(text, tokenizer)
-        } else if servesMedia, let images {
-            route = .image(images)
-        } else {
-            route = .mediaRefused
-        }
+    /// The engine for one immutable raw request body. `cacheScope` partitions
+    /// text prefix reuse (nil: none); the hook's single local operator shares
+    /// one partition. Image requests never reuse prefixes.
+    func engine(body: Data, hasMedia: Bool, cacheScope: String? = "") -> any MLXServerEngine {
+        let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope)
     }
@@ -84,8 +73,6 @@ private struct SuperHTTPEngine: MLXServerEngine {
     enum Route: Sendable {
         case text(NemotronSuperLocalBinding, TokenizerHandle)
         case image(NemotronSuperLocalImageBinding)
-        /// Text speculation is installed; its target refuses media embeddings.
-        case mediaRefused
     }
     let route: Route
     let body: Data
@@ -112,8 +99,6 @@ private struct SuperHTTPEngine: MLXServerEngine {
             let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID)
             output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
             switch route {
-            case .mediaRefused:
-                throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(owner.modelID)
             case .image(let images):
                 let body = self.body, template = self.template
                 execute = { onEvent in try await images.runEncoded(body: body, templateBytes: template, onEvent: onEvent) }

@@ -16,6 +16,13 @@ import Testing
 /// always accepted.
 struct SuperMTPInstalledFixture {
     var seed: UInt64 = 3
+    /// nil keeps the one-channel tower that takes direct normalized input;
+    /// encoded PNG/JPEG requests need the reference three-channel 16-pixel patch.
+    var radioDimensions: NemotronRadioDimensions? = nil
+    /// The reference preprocessing's three-channel, 16-pixel-patch layout on a
+    /// two-wide tower: what an encoded PNG or JPEG request needs.
+    static let encodedImageTower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+        channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
     static let hidden = 32
     static let vocabulary = 64
     private struct Tensor { let dtype: String; let shape: [Int]; let data: Data }
@@ -30,9 +37,9 @@ struct SuperMTPInstalledFixture {
     }
 
     private func model() throws -> NemotronSuperModel {
-        let images = NemotronSuperImageComposition(tower: NemotronRadio(NemotronRadioDimensions(
-            width: 2, layers: 1, heads: 1, channels: 1, patch: 2, positionSide: 2, prefix: 1,
-            mlpWidth: 3)),
+        let images = NemotronSuperImageComposition(tower: NemotronRadio(radioDimensions
+            ?? NemotronRadioDimensions(width: 2, layers: 1, heads: 1, channels: 1, patch: 2,
+                positionSide: 2, prefix: 1, mlpWidth: 3)),
             projector: NemotronSuperVisionProjector(visionWidth: 2, hiddenWidth: 3,
                 outputWidth: Self.hidden),
             width: Self.hidden, imageTokenID: 18)

@@ -12,8 +12,6 @@ import MLXVLM
 enum NemotronSuperLocalBridgeBuilder {
     enum Failure: Error {
         case unloaded, loadAdmissionLost, unsupportedSizing, retirementIncomplete
-        /// Text speculation is installed; its target refuses media embeddings.
-        case mediaWithSpeculation
         /// `maxConcurrentKey` is malformed or above the owner's limit.
         case invalidConcurrency
     }
@@ -71,7 +69,6 @@ enum NemotronSuperLocalBridgeBuilder {
         /// Dedicated local owner only; no external acquisition closure can bind
         /// another slot's installation, tokenizer, lease or bridge by model name.
         func localImageBinding() throws -> NemotronSuperLocalImageBinding {
-            guard !speculates else { throw Failure.mediaWithSpeculation }
             return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, installed != nil else {
                     throw Failure.retirementIncomplete
@@ -126,7 +123,6 @@ enum NemotronSuperLocalBridgeBuilder {
         /// Uses this loaded owner's tokenizer and the pinned literal template.
         /// Input counts come from the admitted image processor, in message order.
         func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
-            guard !speculates else { throw Failure.mediaWithSpeculation }
             return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, installed != nil else {
                     throw Failure.retirementIncomplete
@@ -163,7 +159,6 @@ enum NemotronSuperLocalBridgeBuilder {
         func makeLocalImageInput(promptTokens: [Int], pixels: [[Float]], widths: [Int], heights: [Int],
             construction: NativeConstructionScope
         ) throws -> NemotronSuperLocalImageBinding.Input {
-            guard !speculates else { throw Failure.mediaWithSpeculation }
             return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
                     throw Failure.retirementIncomplete
@@ -178,7 +173,6 @@ enum NemotronSuperLocalBridgeBuilder {
         func prepareLocalImage(_ input: NemotronSuperLocalImageBinding.Input,
             maximumFeatureBytes: Int, construction: NativeConstructionScope
         ) throws -> EngineV2VisionPrefill.PreparedSubmission {
-            guard !speculates else { throw Failure.mediaWithSpeculation }
             return try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
                     throw Failure.retirementIncomplete
@@ -234,9 +228,10 @@ enum NemotronSuperLocalBridgeBuilder {
     /// headroom. KV grant/sizing must come from the existing slot re-slice and
     /// loaded sizing path. Native setup/probes run inside the SDK construction
     /// scope. Caller must retain a faulted scope and its charged installation
-    /// until restart. `mtp` installs text speculation; nil keeps the
-    /// target-only owner, which `NemotronSuperLocalPrefixCache` may give exact
-    /// text prefix reuse.
+    /// until restart. `mtp` installs speculation for text requests; image
+    /// requests on that owner stay target-only. nil keeps the target-only
+    /// owner, which `NemotronSuperLocalPrefixCache` may give exact text
+    /// prefix reuse.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -345,8 +340,9 @@ enum NemotronSuperLocalBridgeBuilder {
             }
             bank = (id, bytes)
         }
-        // Without speculation the dedicated image binding uses causal
-        // embeddings and no checkpoint identity; execution stays contiguous.
+        // The dedicated image binding uses causal embeddings and no checkpoint
+        // identity; with speculation installed the engine runs each image
+        // request target-only, with no draft state. Execution stays contiguous.
         return Owner(bridge: bridge, modelID: modelID, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,

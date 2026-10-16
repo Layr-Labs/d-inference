@@ -135,7 +135,9 @@ extension ProviderLoop {
                 mtpArtifact: nil, mtpStatus: status),
             modelContainer: .nemotronSuper(owner), tokenizer: owner.tokenizer, sizing: owner.sizing,
             modelArtifactSHA256: artifactHash, cacheEligibleWeightHash: nil,
-            isVLM: false, modelType: modelType, lastInferenceAt: .now)
+            // The owner's image binding serves inline images; generic VLM
+            // routes never see this container.
+            isVLM: true, modelType: modelType, lastInferenceAt: .now)
         await completeNewcomerReslice(reslice)
     }
 

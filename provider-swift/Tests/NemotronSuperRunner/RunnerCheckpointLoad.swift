@@ -14,14 +14,19 @@ enum RunnerCheckpointLoad {
         // Resolved before any shard read; the load transaction parses the same entries.
         let speculation = try settings.speculation()
         let inputs = try RunnerCheckpointInputs(directory: directory, templateURL: templateURL)
-        let configData = inputs.configData, indexSHA256 = inputs.indexSHA256
-        let templateBytes = inputs.templateBytes, facts = inputs.facts
+        let checkpoint = inputs.checkpoint
+        let configData = checkpoint.configData, templateBytes = checkpoint.templateBytes
         let files = try await phases.run("verify_shards") {
-            try await verifiedShards(directory: directory, names: inputs.inventory.shards,
-                parallelism: settings.verifyParallelism, log: log)
+            try await NemotronSuperCheckpoint.openShards(directory: directory, names: checkpoint.inventory.shards,
+                parallelism: settings.verifyParallelism) { done, total in
+                if done % 8 == 0 || done == total {
+                    log.emit("load.verify_progress", ["verified": .count(done), "total": .count(total)])
+                }
+            }
         }
         let shardCount = files.count
-        let source = try ModelOptCheckpointSource(indexData: inputs.indexData, indexSHA256: indexSHA256, files: files)
+        let source = try ModelOptCheckpointSource(indexData: checkpoint.indexData,
+            indexSHA256: checkpoint.indexSHA256, files: files)
         let quote = try NemotronSuperInstallation.requiredLoadBytes(
             source: source, backendAllowanceBytes: settings.backendAllowanceBytes)
         let tensorBytes = source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
@@ -33,14 +38,14 @@ enum RunnerCheckpointLoad {
         // weightsBytes is an upper bound (all checkpoint tensors, MTP included);
         // the builder only requires it to cover the installed resident payload.
         let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes,
-            fp16KVBytesPerToken: try settings.kvBytesPerToken(configured: facts.fp16KVBytesPerToken),
+            fp16KVBytesPerToken: try settings.kvBytesPerToken(configured: checkpoint.fp16KVBytesPerToken),
             maxContextLength: settings.maxContextLength, defaultMaxTokens: settings.defaultMaxTokens)
         let transaction = NemotronSuperLocalLoad(budget: budget)
         let bridge: EngineV2Bridge
         let started = phases.begin("native_load")
         do {
             bridge = try await transaction.load(configData: configData, source: source, tokenizer: tokenizer,
-                eosTokenIDs: facts.eosTokenIDs, sizing: sizing, kvBytesCapacity: settings.kvCapacityBytes,
+                eosTokenIDs: checkpoint.eosTokenIDs, sizing: sizing, kvBytesCapacity: settings.kvCapacityBytes,
                 backendAllowanceBytes: settings.backendAllowanceBytes, environment: settings.engineEnvironment)
             phases.finish("native_load", start: started, outcome: "ok")
         } catch {
@@ -71,42 +76,5 @@ enum RunnerCheckpointLoad {
                 return ["transaction_phase": .string(String(describing: await transaction.phase)),
                         "installation_residency_used_bytes": residency.map { .bytes($0.usedBytes) } ?? .null]
             })
-    }
-
-    /// ModelOptTensorFile streams each whole shard against its pinned SHA-256
-    /// before parsing; bounded parallelism only overlaps that I/O and hashing.
-    private static func verifiedShards(directory: URL, names: [String], parallelism: Int,
-        log: RunnerEventLog) async throws -> [String: ModelOptTensorFile] {
-        final class Collected: @unchecked Sendable {
-            let lock = NSLock()
-            var files: [String: ModelOptTensorFile] = [:]
-        }
-        let collected = Collected()
-        var pending = names[...]
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            func submit(_ name: String) throws {
-                guard let sha256 = NemotronSuperCheckpointPin.shards[name] else {
-                    throw RunnerFailure.checkpoint("shard \(name) is not pinned")
-                }
-                let url = directory.appendingPathComponent(name)
-                group.addTask {
-                    let file = try ModelOptTensorFile(url: url, sha256: sha256)
-                    collected.lock.withLock { collected.files[name] = file }
-                }
-            }
-            for _ in 0..<max(1, parallelism) {
-                guard let name = pending.popFirst() else { break }
-                try submit(name)
-            }
-            var done = 0
-            while try await group.next() != nil {
-                done += 1
-                if done % 8 == 0 || done == names.count {
-                    log.emit("load.verify_progress", ["verified": .count(done), "total": .count(names.count)])
-                }
-                if let name = pending.popFirst() { try submit(name) }
-            }
-        }
-        return collected.lock.withLock { collected.files }
     }
 }

@@ -84,6 +84,7 @@ final class RunnerServer: @unchecked Sendable {
                 "text_acquired": .count(await admission.active),
                 "bridge_active_requests": .count(await serving.bridge.activeRequestCount()),
                 "ballast_bytes": .bytes(await ballast.bytes),
+                "prefix_cache": await RunnerPrefixCache.json(serving.bridge),
             ]
         }
     }

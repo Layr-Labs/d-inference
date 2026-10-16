@@ -106,7 +106,9 @@ reservations: recurrent state, any speculation charge, one decode row and KV),
 `prefill_lane` (the owner's one prompt-chunk activation allowance, held from
 before the first request until retirement; the checkpoint path charges the
 SDK's full-model `prefillActivationBoundBytes` for the configured chunk),
-`ballast`. `sampled_max_request_charges_held` includes the lane.
+`prefix_bank` (the owner's resident checkpoint bank budget, held like the lane
+when prefix caching is on), `ballast`. `sampled_max_request_charges_held`
+includes the lane, not the bank.
 Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
 the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
 (`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one
@@ -132,7 +134,27 @@ Prompts prefill in chunks of `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens
 decode or verify row; `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`
 (`0`…`64`, default 0) adds decode-only steps between chunks while requests
 decode. Chunk geometry never depends on concurrency, so outputs match solo
-serving. The speculative grant default does not scale with N: pass `--kv-capacity-gib`
+serving.
+
+Text prefix caching is the same kind of switch: `--engine-env
+DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the plain owner the SDK's resident
+recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized `min(1 GiB,
+KV grant / 8)` (512 MiB at the default 4 GiB grant: one entry of two 162.3 MiB
+checkpoints plus up to 16,384 tokens of KV) or by
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`, carved from `--kv-capacity-gib` and charged
+as `prefix_bank` from load to retirement. Checkpoints sit only at multiples of
+the prefill chunk, so a request restores the deepest chunk boundary below its
+last prompt token that a previous text request published, and prompts shorter
+than one chunk restore nothing. The speculating owner and image requests never
+use it. `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
+reports the bank's `adoptions`, `tokens_saved`, `lookup_matches`, `misses`,
+`entries`, `evictions` and bytes (`null` without a bank); the HTTP usage's
+`cached_tokens` stays 0 on this route. `kv_grant.minimum_grant_bytes` includes
+the bank. `bench_super.py` alternates cold and warm requests and each cold one
+publishes too, so a one-entry bank evicts the warm body before its repeat: give
+long-context warm runs two entries, for example `--engine-env
+DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES=1073741824` at the default grant. Each sample
+records the bank counters as `prefix_cache_after`. The speculative grant default does not scale with N: pass `--kv-capacity-gib`
 from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
 `kv_grant_refused` load.
 
@@ -171,7 +193,7 @@ workload settings, model identity or runner build configuration.
 | cold load | runner `load.end` seconds and phases; process start to ready file |
 | first TTFT | first request of each context at its uncalibrated initial length (first-use cost for that shape); only the first workload runs directly after load |
 | cold TTFT | new leading nonce on a warmed process; no prompt prefix shared |
-| warm TTFT | byte-identical repeat; `cached_prompt_tokens` shows any reuse (none expected: this owner has no prefix store) |
+| warm TTFT | byte-identical repeat; without the prefix bank it prefills cold. With `DARKBLOOM_PREFIX_CACHE_MEMORY=1` it restores the deepest published chunk boundary below its last token; `cached_prompt_tokens` stays 0 on this route, so read `context.prefix_cache.tokens_saved` |
 | prefill tok/s | prompt tokens / TTFT (end-to-end lower bound) |
 | decode tok/s | (completion tokens - 1) / (last delta - first delta) |
 | e2e tok/s | completion tokens / request time |

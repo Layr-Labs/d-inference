@@ -57,6 +57,9 @@ class Bench:
             snapshot = self.runner.memory()
             sample["memory_window"] = snapshot["window"]
             sample["charges_after"] = snapshot["charges"]["by_kind"]
+            # Cumulative bank counters (null without a bank); successive samples
+            # differ by this request's restored tokens.
+            sample["prefix_cache_after"] = (snapshot.get("context") or {}).get("prefix_cache")
         return sample
 
     def text_context(self, name, target):
@@ -248,8 +251,9 @@ DEFINITIONS = {
     "first": "first request of each context, at its uncalibrated initial length (first-use kernel and "
              "allocator cost for that shape); only the first workload runs directly after load",
     "cold": "new leading nonce on a warmed process; no prompt prefix is shared",
-    "warm": "byte-identical repeat of one body; cached_prompt_tokens reports any reuse "
-            "(prefix stores are absent on this owner, so reuse is expected to be 0)",
+    "warm": "byte-identical repeat of one body; without DARKBLOOM_PREFIX_CACHE_MEMORY=1 the owner "
+            "has no prefix store and prefills it cold; with it, prefix_cache_after.tokens_saved rises by "
+            "the restored tokens (cached_prompt_tokens stays 0 on this route)",
     "prefill_tokens_per_s": "prompt_tokens / ttft_s (an end-to-end lower bound on prefill rate)",
     "decode_tokens_per_s": "(completion_tokens - 1) / (last delta - first delta)",
     "e2e_output_tokens_per_s": "completion_tokens / total request time",

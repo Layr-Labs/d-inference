@@ -76,8 +76,7 @@ func makeLocalInferenceApplication(
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
     modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
     clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
-    distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
-    defaultReasoningParser: ReasoningParserFormat? = nil
+    distributedResponses: (any DistributedHTTPResponseProviding)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -98,11 +97,10 @@ func makeLocalInferenceApplication(
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
-            modelTypeProvider: modelTypeProvider,
-            defaultReasoningParser: defaultReasoningParser
+            modelTypeProvider: modelTypeProvider
         )
         return MLXOpenAIService(
-            engine: engine, responseStore: responseStore, metrics: metrics, defaultReasoningParser: defaultReasoningParser)
+            engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let service = serviceForTemplateControls(.init())
     let router = MLXServerApplication.buildRouter(service: service)
@@ -126,10 +124,24 @@ func makeLocalInferenceApplication(
     // pins the Hummingbird 2 MiB default, which 413s inline media — see
     // LocalChatUploadResponder); everything else falls through to the
     // upstream router unchanged.
+    var reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
+    if let modelTypeProvider {
+        // Only the channel formats (Gemma 4's thought channel, GPT-OSS's Harmony): their markers are never meant to
+        // be shown and their streaming parsers pass text on as it comes. A think-tag model keeps the local API's raw
+        // stream: with no `<think>` in the prompt's tail its parser would hold the whole answer until it ends.
+        reasoningParserFor = { (model: String) async -> ReasoningParserFormat? in
+            guard let type = await modelTypeProvider(model) else { return nil }
+            let format = ProviderLoop.inferReasoningParser(for: type)
+            return format == .gemma4 || format == .harmony ? format : nil
+        }
+    }
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
         serviceForTemplateControls: serviceForTemplateControls,
-        distributedResponses: distributedResponses)
+        distributedResponses: distributedResponses,
+        // Both the single-Mac and the cluster API: a request naming no parser gets its model's, as the coordinator
+        // path resolves it; a model of unknown type keeps the request's own.
+        reasoningParserFor: reasoningParserFor)
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).

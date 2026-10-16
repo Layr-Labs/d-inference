@@ -28,14 +28,20 @@ where Inner.Context == BasicRequestContext {
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
     let distributedResponses: (any DistributedHTTPResponseProviding)?
+    /// The reasoning parser a request that names none is served with, by its model's type (see
+    /// `makeLocalInferenceApplication`); nil: the request's own. Without it the local API returned Gemma's thought
+    /// channel and GPT-OSS's Harmony markers in `content`, on a single Mac and on a cluster alike.
+    let reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
 
     init(
         inner: Inner,
         service: MLXOpenAIService,
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
-        distributedResponses: (any DistributedHTTPResponseProviding)? = nil
+        distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
+        reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil
     ) {
+        self.reasoningParserFor = reasoningParserFor
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
@@ -53,6 +59,11 @@ where Inner.Context == BasicRequestContext {
 
     static func isResponsesCreationPath(_ path: String) -> Bool {
         path == "/v1/responses" || path == "/responses"
+    }
+
+    func resolveReasoningParser(_ item: inout LocalChatRequest) async {
+        guard item.request.reasoningParser == nil, let reasoningParserFor else { return }
+        item.request.reasoningParser = await reasoningParserFor(item.request.model)
     }
 
     public func respond(to request: Request, context: Context) async throws -> Response {
@@ -104,7 +115,8 @@ where Inner.Context == BasicRequestContext {
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
             responses.reserveCapacity(requests.count)
-            for item in requests {
+            for var item in requests {
+                await resolveReasoningParser(&item)
                 responses.append(
                     try await serviceForTemplateControls(item.templateControls)
                         .createChatCompletion(request: item.request))
@@ -112,11 +124,12 @@ where Inner.Context == BasicRequestContext {
             return try Self.jsonResponse(responses)
         }
 
-        let item: LocalChatRequest
+        var item: LocalChatRequest
         switch decodeBody(LocalChatRequest.self, from: buffer) {
         case .success(let decoded): item = decoded
         case .failure(let badRequest): return badRequest
         }
+        await resolveReasoningParser(&item)
         let requestService = serviceForTemplateControls(item.templateControls)
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to

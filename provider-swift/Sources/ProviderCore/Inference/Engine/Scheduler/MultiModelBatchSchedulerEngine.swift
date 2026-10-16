@@ -54,10 +54,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// infers architecture from the caller's requested name. The acquired
     /// model and its actual native audio binding are revalidated afterward.
     private let modelTypeProvider: (@Sendable (String) async -> String?)?
-    /// The parser a request that names none is served with (the cluster's API: by its one model's type), so the
-    /// prompt's open think block seeds the streaming parser as the coordinator path's resolved parser does. Nil:
-    /// the request's own, as before.
-    private var defaultReasoningParser: ReasoningParserFormat? = nil
     /// Listing closure used by `availableModels()` when the engine was
     /// constructed via the atomic-`acquire` init. Returns the set of
     /// model IDs that should appear in `/v1/models`.
@@ -231,14 +227,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         defaultMaxTokens: Int = 4096,
         templateControls: ChatTemplateControls = .init(),
         nativeLocalCacheScope: String? = nil,
-        modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
-        defaultReasoningParser: ReasoningParserFormat? = nil
+        modelTypeProvider: (@Sendable (String) async -> String?)? = nil
     ) {
         self.measurementPurpose = .serving
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
         self.modelTypeProvider = modelTypeProvider
-        self.defaultReasoningParser = defaultReasoningParser
         self.availableModelsOverride = availableModels
         self.registryProvider = nil
         self.ensureLoaded = { _ in }
@@ -298,10 +292,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
-        // Without the resolved parser the prompt's open think block was not seeded, and a cluster's Qwen streamed
-        // its whole reasoning in one frame when it closed (1.7 s of keep-alives, 2026-10-16).
-        var request = request
-        if request.reasoningParser == nil { request.reasoningParser = defaultReasoningParser }
         // Capture before acquisition and tokenization consume the budget.
         // Preparation can run on another task, so the value is passed
         // explicitly instead of being read from the task-local again.

@@ -57,6 +57,21 @@ struct NemotronSuperLocalMTPTests {
                 try MTP.Setting.resolve(environment: [MTP.enabledKey: "1", MTP.depthKey: depth])
             }
         }
+        // Rectangular verification is the opt-in default; serial is explicit.
+        #expect(try MTP.Setting.resolve(environment: [MTP.enabledKey: "1"])?.verification
+            == .rectangularExact)
+        #expect(try MTP.Setting.resolve(environment: [MTP.enabledKey: "1",
+            MTP.verificationKey: " serial "]) == .init(depth: 1, verification: .serial))
+        #expect(try MTP.Setting.resolve(environment: [MTP.enabledKey: "1",
+            MTP.verificationKey: "rectangular", MTP.depthKey: "2"])
+            == .init(depth: 2, verification: .rectangularExact))
+        #expect(try MTP.Setting.resolve(environment: [MTP.verificationKey: "serial"]) == nil)
+        for value in ["", "Serial", "rectangularExact", "automatic", "rectangular_exact"] {
+            #expect(throws: MTP.Failure.invalidVerification) {
+                try MTP.Setting.resolve(
+                    environment: [MTP.enabledKey: "1", MTP.verificationKey: value])
+            }
+        }
         #expect(throws: MTP.Failure.loadQuote) {
             try MTP.loadSupplementBytes(.init(payloadBytes: 0, constructionBytes: 1))
         }
@@ -87,7 +102,8 @@ struct NemotronSuperLocalMTPTests {
         fixture.installed.closeAfterRetirement()
     }
 
-    private func owner(_ fixture: SuperMTPInstalledFixture.Installation, depth: Int?,
+    private func owner(_ fixture: SuperMTPInstalledFixture.Installation,
+                       setting: NemotronSuperLocalMTP.Setting?,
                        budget: GlobalKVCacheBudget, lease: PendingModelLoadLease)
         async throws -> NemotronSuperLocalBridgeBuilder.Owner {
         try await NemotronSuperLocalBridgeBuilder.make(installed: fixture.installed,
@@ -96,7 +112,7 @@ struct NemotronSuperLocalMTPTests {
                 fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 16),
             kvBytesCapacity: 2 << 30, kvBudget: budget, loadLease: lease,
             construction: fixture.construction,
-            mtp: depth.map { .init(module: fixture.head, setting: .init(depth: $0)) },
+            mtp: setting.map { .init(module: fixture.head, setting: $0) },
             environment: [:])
     }
 
@@ -116,8 +132,13 @@ struct NemotronSuperLocalMTPTests {
         return (await events.text, await events.completions, await events.errors)
     }
 
-    @Test(.timeLimit(.minutes(3)), arguments: [1, 3])
-    func speculativeOwnerServesExactTextRefusesMediaAndRetires(depth: Int) async throws {
+    @Test(.timeLimit(.minutes(3)), arguments: [
+        (1, NemotronSuperLocalMTP.Setting.Verification.rectangularExact), (3, .rectangularExact),
+        (1, .serial), (3, .serial),
+    ])
+    func speculativeOwnerServesExactTextRefusesMediaAndRetires(
+        depth: Int, verification: NemotronSuperLocalMTP.Setting.Verification
+    ) async throws {
         let plainFixture = try SuperMTPInstalledFixture().make()
         let speculativeFixture = try SuperMTPInstalledFixture().make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
@@ -129,27 +150,32 @@ struct NemotronSuperLocalMTPTests {
             leases.append(try #require(await budget.claimPendingLoad(
                 requestID: "super-mtp-\(name)", weightBytes: UInt64(bytes), minimumKVBytes: 2 << 30)))
         }
-        let plain = try await owner(plainFixture, depth: nil, budget: budget, lease: leases[0])
-        let speculative = try await owner(speculativeFixture, depth: depth, budget: budget,
+        let plain = try await owner(plainFixture, setting: nil, budget: budget, lease: leases[0])
+        let speculative = try await owner(speculativeFixture,
+            setting: .init(depth: depth, verification: verification), budget: budget,
             lease: leases[1])
         #expect(!plain.speculates && speculative.speculates)
         for (prompt, maxTokens) in [([1, 2, 3], 9), ([5, 9, 1, 4, 22, 7, 3, 8, 30], 14), ([40], 1)] {
             let expected = try await run(plain, prompt: prompt, maxTokens: maxTokens)
             let actual = try await run(speculative, prompt: prompt, maxTokens: maxTokens)
             #expect(expected.errors.isEmpty && actual.errors.isEmpty, "\(actual.errors)")
-            #expect(actual.text == expected.text, "prompt \(prompt) depth \(depth)")
+            #expect(actual.text == expected.text,
+                "prompt \(prompt) depth \(depth) \(verification)")
             #expect(actual.completions == expected.completions)
         }
         let ownedEngine = await speculative.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
         let metrics = try #require(engine.mtpMetricsSnapshot())
-        #expect(metrics.rounds > 0 && metrics.serialVerificationRounds == metrics.rounds)
+        let rectangular = verification == .rectangularExact
+        #expect(metrics.rounds > 0)
+        #expect(metrics.serialVerificationRounds == (rectangular ? 0 : metrics.rounds))
+        #expect(metrics.rectangularVerificationRounds == (rectangular ? metrics.rounds : 0))
         // The engine shortens the final rounds near the length bound.
         #expect(metrics.draftedTokens <= metrics.rounds * depth)
         #expect(metrics.draftedTokens >= metrics.rounds && metrics.acceptedTokens > 0)
         let plainEngine = await plain.bridge.ownedEngine
         #expect((plainEngine as? EngineV2)?.mtpMetricsSnapshot() == nil)
-        print("SYNTHETIC provider super-mtp depth=\(depth) rounds=\(metrics.rounds) "
+        print("SYNTHETIC provider super-mtp depth=\(depth) \(verification) rounds=\(metrics.rounds) "
             + "drafted=\(metrics.draftedTokens) accepted=\(metrics.acceptedTokens) "
             + "emitted=\(metrics.emittedTokens)")
         #expect(throws: NemotronSuperLocalBridgeBuilder.Failure.self) {

@@ -6,19 +6,23 @@ import MLXLMCommon
 import MLXVLM
 
 /// Explicit opt-in text speculation for the unpublished Super local owner,
-/// using the checkpoint's embedded head through the SDK's serial-verified
-/// assistant. Off unless `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1`; the
-/// coordinator must measure it on the full model before any default changes.
-/// An owner with speculation installed is text-only: media is refused.
+/// using the checkpoint's embedded head through the SDK assistant with exact
+/// rectangular (default) or serial target verification. Off unless
+/// `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1`; the coordinator must measure
+/// it on the full model before any default changes. An owner with speculation
+/// installed is text-only: media is refused.
 enum NemotronSuperLocalMTP {
     static let enabledKey = "DARKBLOOM_NEMOTRON_SUPER_MTP"
     /// Draft depth `1`…`3`; a value above one is the deep-draft opt-in.
     static let depthKey = "DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH"
+    /// `rectangular` (default): one exact captured target window per round;
+    /// `serial`: one ordinary target step per column.
+    static let verificationKey = "DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION"
     /// Unmeasured allocator/backend scratch admitted with every request's
     /// bounded assistant charge, on top of the SDK's explicit array quotes.
     static let backendScratchBytes = 256 << 20
 
-    enum Failure: Error, Equatable { case invalidDepth, loadQuote }
+    enum Failure: Error, Equatable { case invalidDepth, invalidVerification, loadQuote }
 
     /// Header-derived head payload plus loader construction allowance; not a
     /// measured peak. Charged inside the owner's single pending LOAD claim.
@@ -32,21 +36,31 @@ enum NemotronSuperLocalMTP {
     }
 
     struct Setting: Equatable, Sendable {
+        typealias Verification = NemotronSuperMTPAssistant.Settings.Verification
         let depth: Int
+        var verification: Verification = .rectangularExact
 
-        /// nil keeps the ordinary target-only owner. A malformed depth fails
-        /// the load rather than silently changing the measured configuration.
+        /// nil keeps the ordinary target-only owner. A malformed depth or
+        /// verification fails the load rather than silently changing the
+        /// measured configuration.
         static func resolve(environment: [String: String]) throws -> Setting? {
             guard environment[enabledKey]?.trimmingCharacters(in: .whitespaces) == "1" else {
                 return nil
             }
-            guard let raw = environment[depthKey]?.trimmingCharacters(in: .whitespaces) else {
-                return Setting(depth: 1)
+            var depth = 1
+            if let raw = environment[depthKey]?.trimmingCharacters(in: .whitespaces) {
+                guard let value = Int(raw),
+                    (1 ... NemotronSuperMTPAssistant.Settings.maximumDepth).contains(value)
+                else { throw Failure.invalidDepth }
+                depth = value
             }
-            guard let depth = Int(raw),
-                (1 ... NemotronSuperMTPAssistant.Settings.maximumDepth).contains(depth)
-            else { throw Failure.invalidDepth }
-            return Setting(depth: depth)
+            let verification: Verification
+            switch environment[verificationKey]?.trimmingCharacters(in: .whitespaces) {
+            case nil, "rectangular"?: verification = .rectangularExact
+            case "serial"?: verification = .serial
+            default: throw Failure.invalidVerification
+            }
+            return Setting(depth: depth, verification: verification)
         }
     }
 
@@ -58,8 +72,9 @@ enum NemotronSuperLocalMTP {
         let setting: Setting
     }
 
-    /// Engine inputs: the text-only target wrapper, its bound assistant and
-    /// the fixed-depth serial verification configuration.
+    /// Engine inputs: the text-only target wrapper (the capture target for
+    /// rectangular verification), its bound assistant and the fixed-depth
+    /// configuration with the assistant's verification mode.
     struct Engine {
         let model: NemotronSuperMTPTextTarget
         let assistant: NemotronSuperMTPAssistant
@@ -69,18 +84,25 @@ enum NemotronSuperLocalMTP {
     static func engine(
         for model: NemotronSuperModel, head: Head, maximumSequenceLength: Int
     ) throws -> Engine {
-        let target = NemotronSuperMTPTextTarget(model)
+        let verification = head.setting.verification
+        let target =
+            verification == .rectangularExact
+            ? try NemotronSuperMTPCaptureTarget(capturing: model)
+            : NemotronSuperMTPTextTarget(model)
         let depth = head.setting.depth
         let assistant = try target.makeAssistant(
             head: head.module,
             settings: .init(
                 maximumDraftTokens: depth, allowsDeepDrafts: depth > 1,
                 maximumSequenceLength: maximumSequenceLength,
-                backendScratchBytes: backendScratchBytes))
+                backendScratchBytes: backendScratchBytes, verification: verification))
+        guard let mode = assistant.requiredVerificationMode else {
+            throw Failure.invalidVerification
+        }
         return Engine(
             model: target, assistant: assistant,
             config: CBv2MTPConfig(
                 enabled: true, maxDraftTokens: depth, maxSpeculativeBatch: 1,
-                fixedDraftTokens: depth, verificationMode: .serialTarget))
+                fixedDraftTokens: depth, verificationMode: mode))
     }
 }

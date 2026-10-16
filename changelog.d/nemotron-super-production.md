@@ -35,6 +35,10 @@
   `<unk>`; non-finite image features fail the request.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
+- Plain decode steps of the Super owner commit larger Metal command buffers
+  (thread-scoped limits in the pinned MLX), and full SSD prefill windows run
+  batched, with tokens unchanged: one plain request decodes at 42.9 tok/s
+  instead of 34.6 on the full checkpoint. Speculative rounds are unchanged.
 - Opt-in paged attention KV (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged`): the
   segmented native paged backend, charged by the engine's process-memory owner,
   with the decode rows reserved for the owner's lifetime; it never falls back to

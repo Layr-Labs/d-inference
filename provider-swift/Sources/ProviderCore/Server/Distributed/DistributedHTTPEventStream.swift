@@ -99,9 +99,11 @@ enum DistributedHTTPEventStream {
             body: .init { writer in
                 defer { lifetime.completed() }
                 do {
-                    try await withTaskCancellationHandler {
+                    // The caller's isolation, named: SDKs with the `nonisolated(nonsending)` overload would otherwise
+                    // pick it and send the non-Sendable writer into this helper.
+                    try await withTaskCancellationHandler(operation: {
                         try await write(frames, control: control, writer: &writer)
-                    } onCancel: { control.disconnect() }
+                    }, onCancel: { control.disconnect() }, isolation: #isolation)
                 } catch {
                     control.disconnect(); throw error
                 }
@@ -112,9 +114,9 @@ enum DistributedHTTPEventStream {
                               writer: inout any ResponseBodyWriter) async throws {
         let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: maximumFrameBytes)
         do {
-            try await withTaskCancellationHandler {
+            try await withTaskCancellationHandler(operation: {
                 try await consume(pump, control: control, writer: &writer)
-            } onCancel: { _ = pump.cancel() }
+            }, onCancel: { _ = pump.cancel() }, isolation: #isolation)
         } catch {
             let producer = pump.cancel(); await producer?.value
             throw error

@@ -201,6 +201,11 @@ class SigningValidationTests(unittest.TestCase):
         # Never optional again: no silent skip when the artifact lacks them.
         self.assertNotIn('[ -f "$APP/Contents/Helpers/$helper" ] || continue', release)
         self.assertNotIn("mlx-cluster-worker.metallib", release)
+        # Every workflow that stages an unsigned app hands it the cluster helpers (stage requires them).
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = path.read_text()
+            for call in text.split("provider-signing-validation.py stage")[1:]:
+                self.assertIn("--cluster-helpers", call.split("--version", 1)[0], path.name)
         signer = (ROOT / "scripts/sign-cluster-helpers.sh").read_text()
         self.assertIn('--identifier "io.darkbloom.$name"', signer)
         self.assertIn("entitlements", signer)

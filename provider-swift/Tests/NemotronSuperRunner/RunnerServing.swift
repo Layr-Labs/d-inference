@@ -53,6 +53,29 @@ struct RunnerLoadSettings: Sendable {
     }
 }
 
+/// The bridge's KV grant against the smallest grant that serves one request.
+enum RunnerKVGrant {
+    static func json(bridge: EngineV2Bridge, grantBytes: Int) async -> RunnerJSON {
+        [
+            "grant_bytes": .bytes(grantBytes),
+            "minimum_grant_bytes": .bytes(await bridge.minimumServiceableGrantBytes()),
+            "fixed_request_bytes": (await bridge.maximumRequestOverheadBytes()).map { .bytes($0) } ?? .null,
+            "serving_concurrency": .count(await bridge.effectiveServingConcurrency),
+        ]
+    }
+
+    static func json(_ refusal: NemotronSuperLocalBridgeBuilder.UnserviceableGrant) -> RunnerJSON {
+        [
+            "grant_bytes": .bytes(refusal.grantBytes), "minimum_grant_bytes": .bytes(refusal.minimumGrantBytes),
+            "fixed_request_bytes": .bytes(refusal.fixedRequestBytes),
+            "suggested_kv_capacity_gib": .count(suggestedGib(refusal.minimumGrantBytes)),
+        ]
+    }
+
+    /// Whole GiB at or above `bytes`.
+    static func suggestedGib(_ bytes: Int) -> Int { (bytes + (1 << 30) - 1) >> 30 }
+}
+
 /// One loaded, unpublished Super owner and the only way to retire it.
 struct RunnerServing: Sendable {
     let bridge: EngineV2Bridge

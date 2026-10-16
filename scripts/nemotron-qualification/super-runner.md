@@ -75,7 +75,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 16384 | builder maximum; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
-| `--kv-capacity-gib` | 4 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1) |
+| `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `minimum_grant_bytes`, `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (including `suggested_kv_capacity_gib`) in `load.failed` and on stderr |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
 | `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |
@@ -106,7 +106,8 @@ reservations, which include each request's fixed prefill workspace), `ballast`.
 Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
 the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
 (`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one
-request at a time: a concurrent request gets 429 before any response starts.
+request at a time unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it: a
+request beyond that gets 429 before any response starts.
 
 Speculation is an engine-environment A/B: with `--checkpoint`, pass
 `--engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1` and optionally
@@ -116,7 +117,9 @@ transaction reads exactly these entries (not the inherited process
 environment), adds the head's LOAD supplement and records the resolved setting
 as `speculation` in the ready file's identity (`null` for the plain arm). The
 speculating hook is text-only: image requests get 400. `--synthetic` has no MTP
-head and refuses the opt-in.
+head and refuses the opt-in. Concurrency is the same kind of switch:
+`--engine-env DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` (`1`…`64`, plain owner
+only) serves N requests with row-exact batched decode; request N + 1 gets 429.
 
 ## Shutdown
 

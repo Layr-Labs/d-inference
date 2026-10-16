@@ -28,8 +28,13 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var maxContext = 16384
     @Option(help: "max_tokens applied when a request omits it.")
     var defaultMaxTokens = 512
-    @Option(help: "KV capacity granted to the bridge, GiB (at least 1).")
-    var kvCapacityGib = 4.0
+    @Option(help: """
+        KV capacity granted to the bridge, GiB (at least 1). Each request's fixed bytes (recurrent \
+        state, request workspace, any speculation charge) are carved from it. Default 4; 12 when \
+        --engine-env enables DARKBLOOM_NEMOTRON_SUPER_MTP; 1 + 3 x N for \
+        DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N > 1. The ready file reports the minimum.
+        """)
+    var kvCapacityGib: Double?
     @Option(help: "Explicit backend/allocator allowance added to the LOAD quote, GiB (unmeasured default).")
     var backendAllowanceGib = 2.0
     @Option(help: "Override the per-token fp16 KV rate used for request reservations.")
@@ -57,7 +62,8 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         guard (1...16384).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
             throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= 16384")
         }
-        guard kvCapacityGib >= 1, backendAllowanceGib > 0, sampleIntervalMs >= 5, verifyParallelism >= 1,
+        guard kvCapacityGib.map({ $0 >= 1 }) ?? true, backendAllowanceGib > 0, sampleIntervalMs >= 5,
+            verifyParallelism >= 1,
             (0...65535).contains(port), (0...65535).contains(diagnosticsPort)
         else { throw ValidationError("invalid capacity, allowance, sampling or port value") }
         if let capFraction, !(capFraction > 0 && capFraction <= UnifiedMemoryCap.defaultCapFraction) {
@@ -99,9 +105,16 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
                 log: log, phases: phases, shutdown: shutdown)
         } catch {
             let outstanding = await budget.outstandingReservedBytes()
-            log.emit("load.failed", ["error": .string(String(describing: error)),
+            var fields: [String: RunnerJSON] = ["error": .string(String(describing: error)),
                 "shutdown_requested": .bool(await shutdown.requested),
-                "outstanding_charged_bytes": .bytes(outstanding), "memory": RunnerProcessMemory.snapshot()])
+                "outstanding_charged_bytes": .bytes(outstanding), "memory": RunnerProcessMemory.snapshot()]
+            if let refusal = error as? NemotronSuperLocalBridgeBuilder.UnserviceableGrant {
+                let gib = RunnerKVGrant.suggestedGib(refusal.minimumGrantBytes)
+                fields["kv_grant_refused"] = RunnerKVGrant.json(refusal)
+                FileHandle.standardError.write(Data(
+                    "NemotronSuperRunner: \(refusal); rerun with --kv-capacity-gib \(gib)\n".utf8))
+            }
+            log.emit("load.failed", fields)
             await sampler.stop()
             throw ExitCode(outstanding == 0 ? Exit.loadFailedRetired : Exit.retainedOwnership)
         }
@@ -209,12 +222,29 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             let parts = entry.split(separator: "=", maxSplits: 1)
             environment[String(parts[0])] = parts.count > 1 ? String(parts[1]) : ""
         }
+        let speculative = environment[NemotronSuperLocalMTP.enabledKey]?
+            .trimmingCharacters(in: .whitespaces) == "1"
+        // Malformed values fail at load; only the default grant reads them here.
+        let requests = environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey]
+            .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 1
+        let kvGib = kvCapacityGib
+            ?? (speculative ? Self.speculativeKVCapacityGib
+                : requests > 1 ? 1 + Self.batchedKVCapacityGibPerRequest * Double(requests)
+                : Self.plainKVCapacityGib)
         return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
-            kvCapacityBytes: Int(kvCapacityGib * 1_073_741_824),
+            kvCapacityBytes: Int(kvGib * 1_073_741_824),
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
             kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
             verifyParallelism: verifyParallelism)
     }
+
+    /// Unmeasured runner defaults. The speculative grant leaves room for the
+    /// assistant's per-request charge on top of the plain owner's fixed bytes;
+    /// a batched owner carves every request's fixed bytes (up to 2 GiB of
+    /// workspace plus recurrent state) from one grant.
+    static let plainKVCapacityGib = 4.0
+    static let speculativeKVCapacityGib = 12.0
+    static let batchedKVCapacityGibPerRequest = 3.0
 
     #if DEBUG
         static let buildConfiguration = "debug"

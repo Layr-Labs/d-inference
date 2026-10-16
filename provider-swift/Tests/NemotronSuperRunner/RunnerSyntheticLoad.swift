@@ -62,6 +62,7 @@ enum RunnerSyntheticLoad {
             }
             let hook = try NemotronSuperLocalImageHTTP(owner: built, templateBytes: templateBytes)
             let scope = RunnerQuarantine.Held(construction)
+            let grant = await RunnerKVGrant.json(bridge: built.bridge, grantBytes: settings.kvCapacityBytes)
             let identity: RunnerJSON = [
                 "mode": "synthetic", "checkpoint_dir": .string(checkpoint.path),
                 "index_sha256": .string(source.indexSHA256), "index_pinned": false,
@@ -69,7 +70,7 @@ enum RunnerSyntheticLoad {
                 "payload_bytes": .bytes(installed?.receipt.payloadBytes ?? 0),
                 "load_quote_bytes": .bytes(quote), "fp16_kv_bytes_per_token": .bytes(kvRate),
                 "eos_token_ids": .array(RunnerSyntheticFixture.eosTokenIDs.sorted().map { .count($0) }),
-                "image_hook": true, "speculation": .null,
+                "image_hook": true, "speculation": .null, "kv_grant": grant,
                 "claim_scope": "synthetic weights and tokenizer; not a full-checkpoint result",
             ]
             return RunnerServing(bridge: built.bridge, tokenizer: tokenizer, imageHook: hook,

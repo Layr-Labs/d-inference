@@ -54,6 +54,11 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var verifyParallelism = 4
     @Flag(help: "Check checkpoint identity and configuration only (no shard reads, no GPU), then exit.")
     var preflight = false
+    @Option(help: """
+        Emulate a Mac with this much physical memory, GiB (at most this machine's): the process \
+        budget, MLX limits and the managed slot's load gate use it (qualification only).
+        """)
+    var emulatePhysicalGib: Double?
     @Option(name: .customLong("engine-env"),
         help: "KEY=VALUE runtime-policy entry passed to the engine (repeatable; used for A/B switches).")
     var engineEnv: [String] = []
@@ -75,6 +80,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         if let capFraction, !(capFraction > 0 && capFraction <= UnifiedMemoryCap.defaultCapFraction) {
             throw ValidationError("--cap-fraction must be in (0, \(UnifiedMemoryCap.defaultCapFraction)]")
         }
+        if emulatePhysicalGib != nil, RunnerMemoryEmulation(gib: emulatePhysicalGib) == nil {
+            throw ValidationError("--emulate-physical-gib must be positive and at most this machine's memory")
+        }
         guard engineEnv.allSatisfy({ $0.contains("=") }) else {
             throw ValidationError("--engine-env entries must be KEY=VALUE")
         }
@@ -93,11 +101,23 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             try isolation.writePreflight(inputs.json)
             return
         }
+        let emulation = RunnerMemoryEmulation(gib: emulatePhysicalGib)
+        let emulatedMLX = emulation?.configureMLX() ?? .null
         log.emit("runner.start", ["pid": .int(Int64(getpid())), "mode": synthetic ? "synthetic" : "checkpoint",
             "build_configuration": .string(Self.buildConfiguration), "settings": settings.json,
-            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs)])
+            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs),
+            "emulated_mlx_limits": emulatedMLX])
 
-        let budget = GlobalKVCacheBudget(capFraction: capFraction)
+        let budget = emulation?.budget(capFraction: capFraction) ?? GlobalKVCacheBudget(capFraction: capFraction)
+        if let emulation {
+            let gate = emulation.loadGate(budget: budget)
+            log.emit("emulation.load_gate", gate.json.asFields)
+            guard gate.admits || synthetic else {
+                FileHandle.standardError.write(Data("NemotronSuperRunner: emulated load gate refused\n".utf8))
+                log.emit("load.failed", ["error": "emulated load gate refused", "gate": gate.json])
+                throw ExitCode(Exit.loadFailedRetired)
+            }
+        }
         let sampler = RunnerMemorySampler(budget: budget, log: log, interval: .milliseconds(sampleIntervalMs))
         RunnerProcessMemory.resetPeaks()
         await sampler.start()

@@ -181,7 +181,9 @@ uses the existing local authentication, body limits, JSON/SSE framing and
 request-cancellation scope. Its default is absent; no production callsite
 installs it and it does not advertise a new model. When installed it serves
 every chat request for the Super model ID: text on the owner's text binding with
-its own tokenizer, and bounded inline RGB8 PNG input on the owner's image binding.
+its own tokenizer, and bounded inline images on the owner's image binding:
+`data:image/png;base64,` URIs whose content may be PNG or JPEG (see the
+[image format reference](../reference/nemotron-super-image-formats.md)).
 Image prompts carry the reference `<img>`, one `<image>` per visual feature,
 `</img>` span for each image.
 
@@ -196,8 +198,8 @@ Image prompts carry the reference `<img>`, one `<image>` per visual feature,
 | A second request while one is in flight (text or image) | 429 before any response starts; the owner serves one request at a time |
 | Image input while `DARKBLOOM_NEMOTRON_SUPER_MTP=1` speculation is installed | 400 (`unsupported_media`); text is served |
 
-Image requests still refuse `tools` and `response_format`; JPEG and other
-unqualified formats are refused. The host calls the hook's `drain()` before the
+Image requests still refuse `tools` and `response_format`; formats outside the
+image format reference are refused. The host calls the hook's `drain()` before the
 owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
 serving qualification.
 

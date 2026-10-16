@@ -63,6 +63,27 @@ work; setup does neither. No production credentials, routing or live accounts
 belong in these runs. Synthetic tests cannot establish full-weight quality,
 throughput, memory sufficiency, MTP acceptance or production readiness.
 
+## Image goldens
+
+`image-goldens/` regenerates the Nemotron Super image fixtures under
+`provider-swift/Tests/ProviderCoreTests/Fixtures/NemotronSuperImages`. Stage 1
+needs an isolated venv with pinned Pillow 12.2.0 and numpy 2.3.5; stage 2 needs
+CPU PyTorch 2.12.0 and the pinned `image_processing_nemotron_h_omni.py`, whose
+grid rule it executes from the source AST without importing model code.
+
+```sh
+python3 -m venv /path/to/venv
+/path/to/venv/bin/python -I -m pip install pillow==12.2.0 numpy==2.3.5
+/path/to/venv/bin/python -I scripts/nemotron-qualification/image-goldens/generate_fixtures.py \
+  --out provider-swift/Tests/ProviderCoreTests/Fixtures/NemotronSuperImages --rasters /tmp/nemotron-rasters
+python3 -I scripts/nemotron-qualification/image-goldens/generate_tensors.py \
+  --fixtures provider-swift/Tests/ProviderCoreTests/Fixtures/NemotronSuperImages \
+  --rasters /tmp/nemotron-rasters --processor /path/to/image_processing_nemotron_h_omni.py
+```
+
+The processor's directory must also contain `preprocessor_config.json`.
+Output is deterministic; a regenerated set must be byte-identical.
+
 ## Offline official checkpoint verification
 
 The unchanged manifest describes all 88 shards of

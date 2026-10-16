@@ -59,7 +59,8 @@ actor NemotronSuperLocalImageBinding {
         try await settle(task, reservations: [mediaReservationID])
     }
 
-    /// Inline PNG only, rendered with this exact Owner's verified template/tokenizer.
+    /// Inline `data:image/png;base64,` media (PNG or JPEG content), rendered with
+    /// this exact Owner's verified template/tokenizer.
     /// The body supplies media and request together; no separate media identity,
     /// caller-provided token counts, or URL fetching can be substituted.
     func runEncoded(body: Data, templateBytes: Data,
@@ -221,20 +222,17 @@ actor NemotronSuperLocalImageBinding {
             // Full SDK workspace plus BOTH retained CPU Float32 and MLX copies.
             let charge = UInt64(quote.normalizationWorkspaceBytes) + UInt64(grid.width * grid.height) * 24
                 + UInt64(featureBytes)
-            let (next, overflow) = total.addingReportingOverflow(charge)
-            guard !overflow else { throw Failure.capacity }
-            total = next; features += featureBytes; grids.append(grid)
+            total = try sum(total, charge); features += featureBytes; grids.append(grid)
         }
         let activation = try towerActivationBytes(grids.map { ($0.heightPatches, $0.widthPatches) })
-        let (charged, overflow) = total.addingReportingOverflow(activation)
-        guard !overflow else { throw Failure.capacity }
-        return EncodedPlan(grids: grids, totalBytes: charged, featureBytes: features)
+        return EncodedPlan(grids: grids, totalBytes: try sum(total, activation), featureBytes: features)
     }
 
     /// Tower and projector working memory of the largest image: preparation
     /// evaluates images one at a time. Owners install only the pinned Super VL
     /// composition, so its derived bound applies; it is added to, not taken
-    /// from, the global activation reserve.
+    /// from, the global activation reserve. The SDK marks a grid it would
+    /// refuse with `Int.max`, which is refused here as capacity.
     static func towerActivationBytes(_ grids: [(rows: Int, columns: Int)]) throws -> UInt64 {
         let largest = grids.map {
             NemotronSuperImageComposition.pinnedActivationBytes(patchRows: $0.rows, patchColumns: $0.columns)
@@ -283,9 +281,13 @@ actor NemotronSuperLocalImageBinding {
         let activation = try towerActivationBytes(input.normalizedImages.map {
             (($0.dim(2) + patch - 1) / patch, ($0.dim(3) + patch - 1) / patch)
         })
-        let (charged, chargeOverflow) = total.addingReportingOverflow(activation)
-        guard !chargeOverflow else { throw Failure.capacity }
-        return Quote(totalBytes: charged, featureBytes: features)
+        return Quote(totalBytes: try sum(total, activation), featureBytes: features)
+    }
+
+    private static func sum(_ total: UInt64, _ charge: UInt64) throws -> UInt64 {
+        let (next, overflow) = total.addingReportingOverflow(charge)
+        guard !overflow else { throw Failure.capacity }
+        return next
     }
 
     private static func execute(bridge: EngineV2Bridge,

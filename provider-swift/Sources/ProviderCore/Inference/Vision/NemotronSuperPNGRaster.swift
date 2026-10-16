@@ -14,6 +14,7 @@ enum NemotronSuperPNGRaster {
         (0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2),
     ]
 
+    /// `bytes` must be the buffer `png` was parsed from: its IDAT ranges index it.
     static func decode(_ bytes: UnsafeRawBufferPointer, _ png: NemotronSuperPNGContainer,
                        orientation: Int) throws -> NemotronSuperOrientedRGBWriter {
         let segments = png.imageData.map { UnsafeRawBufferPointer(rebasing: bytes[$0]) }
@@ -21,7 +22,9 @@ enum NemotronSuperPNGRaster {
         var writer = NemotronSuperOrientedRGBWriter(
             sourceWidth: png.width, sourceHeight: png.height, orientation: orientation)
         let bitsPerPixel = png.channels * png.bitDepth
-        let filterStride = max(1, bitsPerPixel / 8)
+        let bytesPerPixel = max(1, bitsPerPixel / 8)
+        // 8-bit RGB rows are already packed RGB8.
+        let packed = png.colorType == 2 && png.bitDepth == 8
         let maximumRowBytes = (png.width * bitsPerPixel + 7) / 8
         // Two filtered rows (with filter byte) plus one RGB8 output row.
         let scratch = UnsafeMutablePointer<UInt8>.allocate(capacity: 2 * (maximumRowBytes + 1) + png.width * 3)
@@ -39,9 +42,7 @@ enum NemotronSuperPNGRaster {
                 if row.isMultiple(of: 64) { try Task.checkCancellation() }
                 try inflater.read(into: current, count: rowBytes + 1)
                 try unfilter(current[0], row: current + 1, previous: previous + 1,
-                             count: rowBytes, stride: filterStride)
-                // 8-bit RGB rows are already packed RGB8.
-                let packed = png.colorType == 2 && png.bitDepth == 8
+                             count: rowBytes, bytesPerPixel: bytesPerPixel)
                 if !packed { try expand(current + 1, columns: columns, png: png, into: rgb) }
                 try writer.store(packed ? current + 1 : rgb, count: columns, row: pass.y + row * pass.dy,
                                  firstColumn: pass.x, columnStep: pass.dx)
@@ -53,8 +54,9 @@ enum NemotronSuperPNGRaster {
     }
 
     private static func unfilter(_ type: UInt8, row: UnsafeMutablePointer<UInt8>,
-                                 previous: UnsafePointer<UInt8>, count: Int, stride: Int) throws {
+                                 previous: UnsafePointer<UInt8>, count: Int, bytesPerPixel: Int) throws {
         // The first pixel has no left neighbour (a = c = 0); later bytes do.
+        let stride = bytesPerPixel
         let lead = min(stride, count)
         switch type {
         case 0: return

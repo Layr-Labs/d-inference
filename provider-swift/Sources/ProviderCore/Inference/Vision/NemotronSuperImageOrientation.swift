@@ -13,6 +13,10 @@ enum NemotronSuperImageOrientation {
         return tag
     }
 
+    /// Field type -> unit size, as Pillow's TIFF `_load_dispatch` table.
+    private static let unitSizes: [Int: Int] = [1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2,
+                                                9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8]
+
     /// Mirrors `Image.Exif.load` plus `ImageFileDirectory_v2.load` for IFD0:
     /// a truncated directory keeps the entries read before the truncation, an
     /// unknown field type is skipped, and the last duplicate entry wins.
@@ -38,9 +42,6 @@ enum NemotronSuperImageOrientation {
                 (value << 8) | Int(tiff[base + (little ? width - 1 - index : index)])
             }
         }
-        // Field type -> unit size, as Pillow's TIFF `_load_dispatch` table.
-        let unitSizes: [Int: Int] = [1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2,
-                                     9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8]
         guard let directory = integer(4, 4), let count = integer(directory, 2) else { return nil }
         var orientation: Int?
         for entry in 0..<count {

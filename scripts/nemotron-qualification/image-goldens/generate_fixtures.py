@@ -249,8 +249,9 @@ def segments(data: bytes):
 
 
 def without_marker(data: bytes, marker: int) -> bytes:
-    kept = b"".join(data[s:e] for m, s, e in segments(data) if m != marker)
-    return data[:2] + kept + data[segments(data)[-1][2]:]
+    found = segments(data)
+    kept = b"".join(data[s:e] for m, s, e in found if m != marker)
+    return data[:2] + kept + data[found[-1][2]:]
 
 
 def with_segment(data: bytes, segment: bytes) -> bytes:
@@ -330,7 +331,7 @@ def build(builder: Builder):
         "eXIf after IDAT is read at load")
     add("png-exif5-prefixed", encode_png(base, 2, 8, before=[(b"eXIf", b"Exif\0\0" + orientation_exif(5))]),
         "png", "Exif header inside eXIf is stripped")
-    truncated = orientation_exif(7, extra=False) + b""
+    truncated = orientation_exif(7, extra=False)
     truncated = truncated[:8] + struct.pack("<H", 4) + truncated[10:22]
     add("png-exif7-truncated-ifd", encode_png(base, 2, 8, before=[(b"eXIf", truncated)]), "png",
         "truncated IFD keeps entries read before truncation")

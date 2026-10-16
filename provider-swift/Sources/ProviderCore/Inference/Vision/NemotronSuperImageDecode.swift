@@ -39,6 +39,10 @@ enum NemotronSuperImageDecode {
         case png(NemotronSuperPNGContainer)
         case jpeg(NemotronSuperJPEGContainer)
     }
+    private struct Parsed {
+        let container: Container
+        let quote: Quote
+    }
 
     /// Local safety ceilings, not model-intrinsic limits. No URL or file access.
     /// Reads container metadata only; no buffer proportional to the declared
@@ -53,7 +57,7 @@ enum NemotronSuperImageDecode {
 
     static func decode(_ data: Data, orientation: Orientation,
                        maxPixels: Int = MediaIngest.maxImagePixels) throws -> Raster {
-        try decode(data, parse(data, orientation: orientation, maxPixels: maxPixels))
+        try rasterize(data, parse(data, orientation: orientation, maxPixels: maxPixels))
     }
 
     /// Call inspect first and obtain existing provider media admission for its
@@ -62,7 +66,7 @@ enum NemotronSuperImageDecode {
         let parsed = try parse(data, orientation: orientation)
         let grid = try NemotronSuperImagePreprocessing.grid(
             width: parsed.quote.width, height: parsed.quote.height, imageCount: imageCount)
-        let raster = try decode(data, parsed)
+        let raster = try rasterize(data, parsed)
         return Prepared(grid: grid, normalizedCHW: try NemotronSuperImagePreprocessing.normalizeRGB(
             raster.rgb, width: raster.width, height: raster.height, targetWidth: grid.width, targetHeight: grid.height))
     }
@@ -70,7 +74,7 @@ enum NemotronSuperImageDecode {
     private static func parse(_ data: Data, orientation policy: Orientation,
                               maxPixels: Int = MediaIngest.maxImagePixels,
                               maxEncodedBytes: Int = MediaIngest.maxMediaDecodedBytes)
-        throws -> (container: Container, quote: Quote) {
+        throws -> Parsed {
         guard maxPixels > 0, maxEncodedBytes > 0, !data.isEmpty,
               data.count <= min(maxEncodedBytes, 64 * 1024 * 1024) else { throw Failure.sizeLimit }
         try Task.checkCancellation()
@@ -88,20 +92,20 @@ enum NemotronSuperImageDecode {
         guard width <= 131072, height <= 131072, !overflow,
               pixels <= min(maxPixels, 64 * 1024 * 1024) else { throw Failure.sizeLimit }
         let orientation = policy == .applyEXIF ? try NemotronSuperImageOrientation.resolve(exif: exif, xmp: xmp) : 1
-        // RGB8 output plus the decoder's own buffers, with row-padding allowance:
-        // PNG inflates rows into two row buffers; ImageIO holds a 4-byte raster
-        // and, for progressive JPEG, up to 8 bytes of coefficients per pixel.
-        // Codec internals are not exact usage.
+        // A conservative charge, not exact usage. PNG needs the 3-byte RGB8
+        // output and row scratch; 14 bytes per pixel keeps the margin quoted
+        // for the earlier ImageIO PNG path. JPEG adds ImageIO's 4-byte raster
+        // and up to 8 bytes of progressive coefficients per pixel.
         let bytesPerPixel = format == .png ? 14 : 16
         let decoderBytes = data.count * 2 + pixels * bytesPerPixel + height * 128 + 8 * 1024 * 1024
         let quote = Quote(format: format, sourceWidth: width, sourceHeight: height,
             width: orientation >= 5 ? height : width, height: orientation >= 5 ? width : height,
             orientation: orientation, decoderWorkspaceBytes: decoderBytes,
             normalizationWorkspaceBytes: decoderBytes + 256 * 1024 * 1024)
-        return (container, quote)
+        return Parsed(container: container, quote: quote)
     }
 
-    private static func decode(_ data: Data, _ parsed: (container: Container, quote: Quote)) throws -> Raster {
+    private static func rasterize(_ data: Data, _ parsed: Parsed) throws -> Raster {
         try Task.checkCancellation()
         let orientation = parsed.quote.orientation
         let writer: NemotronSuperOrientedRGBWriter

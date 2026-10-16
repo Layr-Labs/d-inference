@@ -81,6 +81,8 @@ let package = Package(
                 "Integration/Nemotron/NemotronSuperMTPBatchedEngineTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPMediaFallbackTests.swift",
                 "Integration/Nemotron/NemotronSuperActivationOverflowTests.swift",
+                "Integration/Nemotron/NemotronSuperNonFiniteLogitsTests.swift",
+                "Integration/Engine/CBv2NonFiniteLogitsTests.swift",
                 "Integration/Nemotron/NemotronSuperCoScheduledServingTests.swift",
                 "Integration/Nemotron/NemotronSuperPrefixReuseFixture.swift",
                 "Integration/Nemotron/NemotronSuperPrefixReuseTests.swift",

@@ -343,7 +343,7 @@ extension NemotronSuperLocalHTTPTests {
     }
 }
 
-private actor SuperHTTPTerminalGate {
+actor SuperHTTPTerminalGate {
     private(set) var entered = false
     private(set) var released = false
     private(set) var timedOut = false
@@ -368,7 +368,7 @@ private actor SuperHTTPTerminalGate {
     }
 }
 
-private func superHTTPEventually(_ description: String,
+func superHTTPEventually(_ description: String,
     _ predicate: @escaping @Sendable () async -> Bool) async throws {
     let deadline = ContinuousClock.now.advanced(by: .seconds(10))
     while !(await predicate()), ContinuousClock.now < deadline {
@@ -380,7 +380,7 @@ private func superHTTPEventually(_ description: String,
 /// Adapted from DiffusionGemmaConcurrencyLiveTests.ResetSocket. A new private
 /// loopback connection is the only descriptor reset; no shared client connection
 /// pool or process-global socket state is changed.
-private final class SuperHTTPResetSocket {
+final class SuperHTTPResetSocket {
     private var descriptor: Int32 = -1
     init(port: Int, token: String, body: Data) throws {
         descriptor = try Self.connect(port: port)

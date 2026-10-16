@@ -138,6 +138,13 @@ serving. The speculative grant default does not scale with N: pass `--kv-capacit
 from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
 `kv_grant_refused` load.
 
+KV storage is the same kind of switch: `--engine-env
+DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` stores the attention KV in the
+segmented native paged backend. Its pages and recurrent rows are charged by the
+engine's process-memory owner (reported in `unattributed_bytes`, not as `kv`
+rows) and the owner holds the decode rows as `decode_rows` from load to
+retirement. It refuses the prefix bank.
+
 Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the plain owner the SDK's resident
 recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized `min(1 GiB,

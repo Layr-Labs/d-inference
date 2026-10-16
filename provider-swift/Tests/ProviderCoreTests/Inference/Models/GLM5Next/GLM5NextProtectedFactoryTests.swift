@@ -245,17 +245,34 @@ struct GLM5NextProtectedFactoryTests {
             #expect(
                 storage.fingerprintFields["storage.nativeProfile"]
                     == "glm5_next_native_paged_full_state_serial_mtp_v1")
+            // The default issued profile is rectangular adaptive up to depth 3.
+            #expect(model.execution.verification == .rectangular(depth: 3))
             let resolved = try model.resolvedMTPConfiguration(
                 .init(
                     enabled: true,
                     maxDraftTokens: 3, maxSpeculativeBatch: 4, fixedDraftTokens: 2,
-                    verificationMode: .serialTarget), drafter: model.assistant)
+                    verificationMode: .rectangular), drafter: model.assistant)
             #expect(
-                resolved.maxDraftTokens == 1 && resolved.fixedDraftTokens == 1
-                    && resolved.maxSpeculativeBatch == 1)
+                resolved.maxDraftTokens == 3 && resolved.fixedDraftTokens == 2
+                    && resolved.maxSpeculativeBatch == 1 && resolved.verificationMode == .rectangular)
             let baseline = try model.resolvedMTPConfiguration(
                 .init(enabled: true, verificationMode: .serialTarget), drafter: model.assistant)
-            #expect(baseline.maxDraftTokens == 1 && baseline.fixedDraftTokens == 1)
+            #expect(
+                baseline.maxDraftTokens == 3 && baseline.fixedDraftTokens == nil
+                    && baseline.verificationMode == .rectangular)
+            // The rollback issues the serial single-proposal profile.
+            let serial = try GLM5NextProtectedModel(
+                root: model.root, maximumContextLength: model.maximumContextLength,
+                environment: [GLM5NextProtectedModel.rectangularVerifyEnvironmentKey: " Off "])
+            #expect(serial.execution.verification == .serialTarget)
+            let serialResolved = try serial.resolvedMTPConfiguration(
+                .init(
+                    enabled: true, maxDraftTokens: 3, maxSpeculativeBatch: 4, fixedDraftTokens: 2,
+                    verificationMode: .rectangular), drafter: serial.assistant)
+            #expect(
+                serialResolved.maxDraftTokens == 1 && serialResolved.fixedDraftTokens == 1
+                    && serialResolved.maxSpeculativeBatch == 1
+                    && serialResolved.verificationMode == .serialTarget)
             let cache = try #require(
                 await EngineV2SlotFactory.prepareCompletePrefixCache(
                     modelId: fixture.plan.weights.catalog.id, model: model,
@@ -303,7 +320,7 @@ struct GLM5NextProtectedFactoryTests {
             #expect(native.resources.processMemoryOwner === native.processOwner)
             #expect(
                 native.resources.contract.profile
-                    == "glm5_next_native_paged_full_state_serial_mtp_v1")
+                    == "glm5_next_native_paged_full_state_rectangular_mtp_v1")
             #expect(native.resources.contract.supportsNativeCompletePrefix)
             #expect(await bridge.canSubmitWithNativeOwner())
             let foreignStore = try #require(
@@ -332,8 +349,14 @@ struct GLM5NextProtectedFactoryTests {
             try await fixture.run(bridge, tokens: [3, 3], id: "valid-after-refusals")
             let engine = try #require(await bridge.ownedEngine as? EngineV2)
             let metrics = try #require(engine.mtpMetricsSnapshot())
-            #expect(metrics.rounds > 0 && metrics.serialVerificationRounds > 0)
+            #expect(metrics.rounds > 0 && metrics.rectangularVerificationRounds > 0)
         }
+    }
+
+    @Test func rectangularVerifyRollbackReachesTheProviderJob() {
+        #expect(
+            LaunchAgent.inferencePassthroughEnvKeys.contains("DARKBLOOM_GLM_RECTANGULAR_VERIFY"))
+        #expect(GLM5NextProtectedModel.rectangularVerifyEnvironmentKey == "DARKBLOOM_GLM_RECTANGULAR_VERIFY")
     }
 
     @Test func disabledSSDStillUsesOriginalProtectedProfile() async throws {
@@ -375,7 +398,8 @@ struct GLM5NextProtectedFactoryTests {
             fixture.bridges.append(bridge)
             let native = try #require(backend.glm5NextNative)
             #expect(native.resources.completePrefixCache == nil)
-            #expect(native.resources.contract.profile == "glm5_next_native_paged_serial_mtp_v1")
+            #expect(
+                native.resources.contract.profile == "glm5_next_native_paged_rectangular_mtp_v1")
             #expect(!native.resources.contract.supportsNativeCompletePrefix)
             #expect(await bridge.canSubmitWithNativeOwner())
         }
@@ -411,9 +435,10 @@ private final class GLM5NextProtectedFactoryFixture: @unchecked Sendable {
         ]
     }
     var mtpConfig: CBv2MTPConfig {
+        // The provider's GLM default: rectangular, adaptive depth up to 3.
         .init(
-            enabled: true, maxDraftTokens: 1,
-            maxSpeculativeBatch: 1, fixedDraftTokens: 1, verificationMode: .serialTarget)
+            enabled: true, maxDraftTokens: 3,
+            maxSpeculativeBatch: 1, fixedDraftTokens: nil, verificationMode: .rectangular)
     }
     var mtpPreparation: SpecDecPreparation {
         .init(
@@ -601,7 +626,8 @@ private final class GLM5NextProtectedFactoryFixture: @unchecked Sendable {
         #expect(
             currentMTP.proposedTokens > previousMTP.proposedTokens,
             "request \(id) must propose draft tokens")
-        #expect(currentMTP.serialVerificationRounds > previousMTP.serialVerificationRounds)
+        #expect(
+            currentMTP.rectangularVerificationRounds > previousMTP.rectangularVerificationRounds)
         return usage
     }
 

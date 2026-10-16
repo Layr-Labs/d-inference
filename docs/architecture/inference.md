@@ -128,9 +128,19 @@ GLM load rather than degrading (`EngineV2Factory.prepareProductionBackend`).
 Request concurrency follows `engine_v2_max_concurrent` (default 4, at most 8
 without a reviewed profile); GLM adds no width-1 pin, and native step pricing
 and per-request admission bound what runs together. The protected profile is
-serial-target MTP, whose native contract requires a speculative batch of 1
-(`GLM5NextProtectedModel.resolvedMTPConfiguration`); rectangular batched
-verification is not yet enabled for serving. Prefill interleave keeps the global
+rectangular MTP verification: each round drafts up to three proposals with the
+trained MTP layer (proposals after the first reuse step 0's sparse selection) and
+verifies them in one captured target forward over the window, whose KDA layers
+stage every position's recurrent state so any accepted prefix commits without a
+repair forward. An adaptive controller picks the depth (0 to 3) from measured
+cost and acceptance; sampled requests speculate through exact target-prefix
+acceptance. The window runs the batched multi-token kernels, so greedy output is
+not token-identical to target-only decode (near-ties can flip). The speculative
+batch is 1, and the profile composes with the complete-prefix store
+(`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
+`DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
+serial-target single-proposal profile
+(`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
 one-partial-prefill default, which a 512-token step could not share anyway. The bridge advertises the enforced
 context, so an over-length request is refused with 400 before native admission,
 and an omitted `max_tokens` defaults to half the bound. Omitted sampling fields

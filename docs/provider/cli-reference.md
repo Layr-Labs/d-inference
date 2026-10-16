@@ -39,6 +39,10 @@ Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
 recurrence, fused hyper-connections and routed-expert combine), recorded in the
 encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
 `EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
+GLM MTP verifies up to three drafted tokens per round in one target forward with
+an adaptive depth; its greedy output is not token-identical to target-only
+decode. `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` selects serial single-proposal
+verification instead.
 Prefill chunks and steps are each at most 512 tokens, and solo prefill stripes are off, including
 `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. Requests that omit sampling fields use the
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input

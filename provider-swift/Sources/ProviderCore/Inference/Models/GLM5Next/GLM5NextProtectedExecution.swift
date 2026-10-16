@@ -71,27 +71,58 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
 
     var cbv2CompleteCheckpointKVDTypes: [DType]? { root.textTower.cbv2CompleteCheckpointKVDTypes }
 
+    /// Rectangular MTP verification is the GLM default: one captured target
+    /// forward verifies up to three index-shared proposals, with an adaptive
+    /// depth. Its greedy output is not token-identical to target-only decode
+    /// (multi-token verify arithmetic can flip near-ties). Exact `0` / `false`
+    /// / `no` / `off` selects the serial single-proposal profile instead.
+    static let rectangularVerifyEnvironmentKey = "DARKBLOOM_GLM_RECTANGULAR_VERIFY"
+    static let rectangularDepth = 3
+
+    static func verification(
+        configuration: GLM5NextTextConfiguration, environment: [String: String]
+    ) -> GLM5NextMTPVerification {
+        guard MiMoV26DecodeDefaults.isEnabled(rectangularVerifyEnvironmentKey, environment: environment)
+        else { return .serialTarget }
+        // Proposals beyond the first reuse step 0's sparse selection, which the
+        // checkpoint must declare; otherwise one rectangular proposal.
+        return .rectangular(
+            depth: configuration.indexShareForMTPIteration ? rectangularDepth : 1)
+    }
+
     /// Resolve before fingerprinting the SSD namespace as well as before engine
-    /// assembly. The identity must describe the actual one-proposal policy.
+    /// assembly. The identity must describe the actual issued profile: serial
+    /// depth one, or rectangular up to its depth with an adaptive controller.
     func resolvedMTPConfiguration(_ config: CBv2MTPConfig, drafter: (any CBv2MTPDrafter)?) throws
         -> CBv2MTPConfig
     {
-        guard (drafter as? GLM5NextMTPAdapter) === assistant,
-            config.effectiveEnabled, config.verificationMode == .serialTarget
+        guard (drafter as? GLM5NextMTPAdapter) === assistant, config.effectiveEnabled,
+            [.serialTarget, .rectangular].contains(config.verificationMode)
         else {
             throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
         }
         var config = config
-        config.maxDraftTokens = min(1, config.maxDraftTokens)
-        // The baseline native GLM model has no adaptive top-two policy
-        // capability. Use its genuine single-proposal serial profile rather
-        // than passing nil into the recurrent adaptive-driver eligibility gate.
-        config.fixedDraftTokens = min(1, config.fixedDraftTokens ?? 1)
         config.maxSpeculativeBatch = 1
+        config.verificationMode = execution.verification.engineMode
+        switch execution.verification {
+        case .serialTarget:
+            config.maxDraftTokens = min(1, config.maxDraftTokens)
+            // The serial profile has no adaptive top-two policy capability. Use
+            // its genuine single-proposal profile rather than passing nil into
+            // the recurrent adaptive-driver eligibility gate.
+            config.fixedDraftTokens = min(1, config.fixedDraftTokens ?? 1)
+        case .rectangular(let depth):
+            config.maxDraftTokens = depth
+            // nil keeps the engine's measured marginal-cost depth controller.
+            config.fixedDraftTokens = config.fixedDraftTokens.map { min(max($0, 1), depth) }
+        }
         return config
     }
 
-    init(root: GLM5NextModel, maximumContextLength: Int) throws {
+    init(
+        root: GLM5NextModel, maximumContextLength: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws {
         guard let predictor = root.mtp else {
             throw GLM5NextManagedLoadError.metadata("trained MTP is not loaded")
         }
@@ -102,8 +133,9 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
         self.maximumContextLength = bound
         execution = try GLM5NextMTPExecution(
             target: root.textTower, predictor: predictor,
-            maximumInputs: bound, storage: .contiguous
-        )
+            maximumInputs: bound, storage: .contiguous,
+            verification: Self.verification(
+                configuration: root.configuration.textConfig, environment: environment))
         assistant = try GLM5NextMTPAdapter(
             target: root.textTower, predictor: predictor, factory: execution)
         super.init()
@@ -183,10 +215,11 @@ final class GLM5NextProtectedResources {
     /// identical durable identity. The SDK tuple owns this exact object.
     func validateBinding(completePrefixCache: (any CBv2CompletePrefixCache)?) throws {
         let store = try Self.checkedStore(completePrefixCache, budget: budget)
+        let strategy = resources.assistant.verification == .serialTarget ? "serial" : "rectangular"
         let profile =
             store == nil
-            ? "glm5_next_native_paged_serial_mtp_v1"
-            : "glm5_next_native_paged_full_state_serial_mtp_v1"
+            ? "glm5_next_native_paged_\(strategy)_mtp_v1"
+            : "glm5_next_native_paged_full_state_\(strategy)_mtp_v1"
         guard resources.completePrefixCache === store,
             resources.processMemoryOwner === processOwner,
             resources.contract.profile == profile,

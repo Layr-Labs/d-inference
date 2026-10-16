@@ -178,6 +178,8 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         max(0, min(maximumBudgetBytes, roomBytes / 2) / budgetGranuleBytes * budgetGranuleBytes)
     }
     static let budgetGranuleBytes = 256 << 20
+    /// The room a memory-bound serving context leaves for the cache: one granule of budget (half the room).
+    static let contextReserveBytes = 2 * budgetGranuleBytes
 
     /// Sets the budget and evicts least recently used entries beyond it.
     public func setBudget(_ bytes: Int) {

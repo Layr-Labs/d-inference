@@ -45,6 +45,43 @@ final class WorkerCompletion: @unchecked Sendable {
 /// SIGKILL follows SIGTERM only for a process that ignored both its own
 /// deadline and SIGTERM; nothing else could return the device, and by then the
 /// child's contract says it no longer runs.
+/// The owner's file of its workers' diagnostics (their standard error, as written): the worker's own words for
+/// what it admitted and reused (`darkbloom-prefix-v1`, `darkbloom-resident-context-v1`) were kept only as a tail for
+/// a worker that failed, so a healthy session's prefix cache could not be read at all. Owner-only, bounded: past
+/// `maximumBytes` the file is moved to `.1` and started again. Best effort; never fails a worker.
+public final class ClusterWorkerDiagnosticsLog: @unchecked Sendable {
+    public static let maximumBytes = 4 << 20
+    private let url: URL
+    private let lock = NSLock()
+    private var descriptor: Int32 = -1
+    private var size = 0
+
+    public init(url: URL) { self.url = url }
+
+    /// The log every worker this process owns writes to; nil: none.
+    nonisolated(unsafe) public static var shared: ClusterWorkerDiagnosticsLog?
+
+    public func append(_ data: Data) {
+        lock.withLock {
+            if descriptor < 0 || size + data.count > Self.maximumBytes {
+                if descriptor >= 0 {
+                    close(descriptor); descriptor = -1
+                    _ = rename(url.path, url.path + ".1")
+                }
+                descriptor = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                guard descriptor >= 0 else { return }
+                var information = stat()
+                guard fstat(descriptor, &information) == 0, information.st_mode & S_IFMT == S_IFREG,
+                      information.st_uid == geteuid() else { close(descriptor); descriptor = -1; return }
+                _ = fchmod(descriptor, 0o600)
+                size = Int(information.st_size)
+            }
+            let written = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+            if written > 0 { size += written }
+        }
+    }
+}
+
 public struct ClusterWorkerSignalPolicy: Sendable, Equatable {
     /// The child was given its startup deadline and exits there by itself.
     public let childEndsItselfAtStartupDeadline: Bool
@@ -421,6 +458,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
                                 stderrBytes = stderrBytes &+ count; stderrTail.append(data)
                                 if stderrTail.count > 65_536 { stderrTail.removeFirst(stderrTail.count - 65_536) }
                             }
+                            ClusterWorkerDiagnosticsLog.shared?.append(data)
                         }
                     } catch {
                         fail(.invalid("Invalid or excessive worker output"))

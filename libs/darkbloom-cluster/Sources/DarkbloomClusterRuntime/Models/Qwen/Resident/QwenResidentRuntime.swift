@@ -299,8 +299,17 @@ public final class QwenResidentRuntime {
         func admits(_ context: Int) throws -> Bool { try judge(context).admitted }
         // One prefill frame and one output token: the least a loaded stage serves.
         let minimum = min(maximumContext, admission.profile.maximumChunkTokens + 1)
-        guard let largest = try QwenResidentContextAdmission.largest(minimum: minimum,
-                maximum: maximumContext, admits: admits) else {
+        let plain = try QwenResidentContextAdmission.largest(minimum: minimum, maximum: maximumContext, admits: admits)
+        // A Mac whose memory bounds the context keeps room for the prompt-prefix cache when that costs at most a
+        // quarter of the context: the largest context left the cache no budget at all (0.4 MB beside 29,072 tokens
+        // on a 36 GB M4 Max, 2026-10-16), and one rank without a cache turns reuse off for both.
+        let keepingCache = try plain.flatMap { found -> Int? in
+            guard try judge(found).roomBytes < QwenStagePrefixCache.contextReserveBytes else { return nil }
+            return try QwenResidentContextAdmission.largest(minimum: minimum, maximum: found, admits: { context in
+                let value = try judge(context); return value.admitted && value.roomBytes >= QwenStagePrefixCache.contextReserveBytes
+            }).flatMap { $0 * 4 >= found * 3 ? $0 : nil }
+        }
+        guard let largest = keepingCache ?? plain else {
             // The live gate's own sentence for the smallest useful request.
             let smallest = try charge(minimum)
             try smallest.allowance.requireLive(additionalNativeBytes: smallest.extraNativeBytes,

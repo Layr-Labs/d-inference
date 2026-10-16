@@ -9,6 +9,13 @@ import DarkbloomClusterSecurity
 /// command. Both leader-local and follower owners load their own saved setup.
 /// The parent does not hold this owner's native-device exclusion.
 public enum DistributedInstalledOwner {
+    /// The workers' own diagnostics, kept beside the cluster service's logs (`worker.log`, bounded, owner-only), so
+    /// a healthy session's prefix-cache and context lines can be read (`ClusterWorkerDiagnosticsLog`).
+    public static func installWorkerDiagnosticsLog() {
+        guard let paths = try? ClusterUserPaths() else { return }
+        ClusterWorkerDiagnosticsLog.shared = .init(url: ClusterSetupPaths(paths: paths).directory.appendingPathComponent("worker.log"))
+    }
+
     /// Whether `cluster worker-owner --stdio` can honour a start the
     /// coordinator committed for one member (S10). It can: on a setup saved
     /// for coordinator pairing the owner admits the committed start that its

@@ -22,6 +22,7 @@ extension Cluster {
             // when this build holds it (records then survive every restart),
             // and the product's cache settings (the same saved settings and
             // switches the single-Mac tier reads) for the rank's root and budgets.
+            DistributedInstalledOwner.installWorkerDiagnosticsLog()
             ClusterPrefixSSDKeyMaterial.installAsOwnerKeySource()
             ClusterPrefixCacheSettings.installProduct(
                 providerConfiguration: try ConfigManager.defaultConfigPath())

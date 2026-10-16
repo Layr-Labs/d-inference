@@ -98,7 +98,8 @@ func makeLocalInferenceApplication(
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
-            modelTypeProvider: modelTypeProvider
+            modelTypeProvider: modelTypeProvider,
+            defaultReasoningParser: defaultReasoningParser
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics, defaultReasoningParser: defaultReasoningParser)

@@ -80,6 +80,8 @@ let package = Package(
                 "Integration/Nemotron/NemotronSuperMTPBatchedWindowTests.swift",
                 "Integration/Nemotron/NemotronSuperMTPBatchedEngineTests.swift",
                 "Integration/Nemotron/NemotronSuperCoScheduledServingTests.swift",
+                "Integration/Nemotron/NemotronSuperDecodePipelineTests.swift",
+                "Integration/Nemotron/NemotronSuperMTPServingBenchmark.swift",
                 "Kernel/Quantization/NemotronSuperFP8KVHistoryTests.swift",
                 "Kernel/Quantization/NemotronSuperFP8KVCodecTests.swift",
                 "Kernel/Quantization/NemotronSuperFP8KVCacheTests.swift",

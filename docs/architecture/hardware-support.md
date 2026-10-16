@@ -20,24 +20,24 @@ checkpoint does not waive that policy. Sources:
 The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
 claims, before allocation, the pinned checkpoint's resident installation and
 head payloads (73,213,230,600 and 1,769,654,296 bytes), the owner's serving
-room (the 12 GiB owner-wide prefill lane, any prefix bank and
+room (the 8.5 GiB owner-wide prefill lane, any prefix bank and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom, 36 GiB for eight
 speculative requests at the 65,536-token context) and only the part of its
 load transient beyond that room (`NemotronSuperLoadClaim`): the larger of the
 installation's staging with its 2 GiB backend allowance (8,887,435,264 bytes)
 and the head's construction allowance (7,078,617,184 bytes), never both,
 because each phase returns its freed buffers from MLX's cache before the next
-phase or serving uses that room. Its default discovery footprint, 121.5 GiB, is
+phase or serving uses that room. Its default discovery footprint, 118.0 GiB, is
 the resident payloads plus the larger of that transient and the serving room
 with the worst-case media reservation of one single-image request
 (`NemotronSuperServingPolicy.mediaChargeBytes`, 3.62 GiB: a 64 Mi-pixel decode
 workspace, the encoded body copies, a 13,312-patch image's tokens and its tower
 and projector bound), so a loaded slot can serve an image at once. With Super's
 measured 2 GiB activation floor (below) and 1 GiB minimum KV the load gate needs
-124.5 GiB under the 90% cap: at least 138.3 GiB (148.5 GB) of physical memory
+121.0 GiB under the 90% cap: at least 134.4 GiB (144.3 GB) of physical memory
 before macOS and other processes take any, so a 128 GB Mac (115.2 GiB cap)
 cannot admit the default load until the lane and the speculating requests'
-fixed bytes shrink; 192 GB leaves 48.3 GiB under the cap. Only a 256 GB M3
+fixed bytes shrink; 192 GB leaves 51.8 GiB under the cap. Only a 256 GB M3
 Ultra is measured: while the LOAD charge was held MLX active peaked at
 76.7 GB and the process footprint at 79.3 GB, MLX active was 75.0 GB after
 load; at the 65,536-token context loads claiming 129.6 GB (36 GiB of KV

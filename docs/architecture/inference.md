@@ -295,8 +295,12 @@ runner's `--max-context` selects. The checkpoint's attention has no positional
 encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
 reserved per request by its own length. Recurrent state, the decode row and the
 prefill lane do not grow with the context: on the full checkpoint each
-2,048-token chunk's transient stayed at 7.7 to 8.7 GB, inside the 12 GiB lane,
-through 131,056 tokens, with finite logits throughout. What grows is the
+2,048-token chunk peaked 7.7 to 8.7 GB above the state held before it through
+131,056 tokens, with finite logits throughout; the larger figures are first
+chunks, which also allocate the whole prompt's KV slots (charged to the
+request). The chunk's own transient, peak minus what it retains, measured
+7.50 to 7.67 GB at every chunk of a 32,768-token prompt on contiguous and paged
+KV, inside the 8.5 GiB lane (`NemotronHModel.prefillActivationBoundBytes`). What grows is the
 speculating owner's fixed per-request charge, which bounds the assistant's FP8
 history, its FP32 trusted backlog and every draft step's scores by the
 configured context: about 30.2 KB per token per request (3.44 GB at 32,768,

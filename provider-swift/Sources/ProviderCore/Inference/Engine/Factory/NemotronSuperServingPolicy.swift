@@ -4,6 +4,7 @@ import CryptoKit
 import Foundation
 import MLXLLM
 import MLXVLM
+import ProviderCoreFoundation
 
 /// Production identity and defaults of native Nemotron 3.5 Super VL NVFP4.
 ///
@@ -13,7 +14,7 @@ import MLXVLM
 /// architecture stays out of discovery, as it does on providers without this
 /// policy. Every shard's SHA-256 is verified by the managed load itself.
 enum NemotronSuperServingPolicy {
-    static let modelID = "nvidia-nemotron-3.5-super"
+    static let modelID = ModelMediaPolicy.nemotronSuperModelID
     static let modelType = "nemotron_h_omni"
     /// SHA-256 of the pinned `config.json` (NVIDIA revision `7d4bc747`).
     static let configSHA256 = "35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea"
@@ -141,24 +142,76 @@ enum NemotronSuperServingPolicy {
 
     struct DiscoveryFootprint: Equatable {
         /// The default configuration's LOAD claim (installation and head),
-        /// owner-wide prefill lane and admission KV, in GiB.
+        /// owner-wide prefill lane, admission KV and the media charge of one
+        /// single-image request, in GiB.
         let estimatedMemoryGb: Double
         /// LOAD bytes above the shard bytes: staging, backend allowance and
-        /// head construction. Not activation or KV.
+        /// head construction. Not activation, KV or media.
         let nativeLoadTransientBytes: UInt64
     }
 
     /// Scan-time requirement of the largest default configuration (eight
     /// speculative requests; the plain owner with its prefix bank needs
     /// less), so a cold quote or pre-accept check never admits a load the
-    /// managed claim then refuses.
+    /// managed claim then refuses, and the load leaves room for an image.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
         let load = pinnedInstallationLoadBytes + pinnedHeadLoadBytes
         let lane = UInt64(NemotronHModel.prefillActivationBoundBytes(
             tokens: NemotronSuperLocalPrefill.defaultChunkTokens))
         let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))
+        // Unreachable unless the binding refuses its own largest image; the
+        // footprint then fails closed instead of advertising room it lacks.
+        let media = mediaChargeBytes(imageCount: 1) ?? UInt64(Int.max)
         return DiscoveryFootprint(
-            estimatedMemoryGb: Double(load + lane + kv) / 1_073_741_824,
+            estimatedMemoryGb: Double(load + lane + kv + media) / 1_073_741_824,
             nativeLoadTransientBytes: load > sizeBytes ? load - sizeBytes : 0)
+    }
+
+    // MARK: - Image media charge
+
+    /// Request limits of `NemotronSuperLocalImageBinding`: the encoded body
+    /// its ingress quote admits, the images one body may carry, and the size
+    /// of the only template the owner renders (`NemotronSuperPromptContract`).
+    static let maximumEncodedBodyBytes = 8 << 20
+    static let maximumImages = 16
+    static let pinnedTemplateBytes = 12_927
+
+    /// Decoder workspace `NemotronSuperImageDecode` quotes for its largest
+    /// admitted raster (64 Mi pixels; JPEG at 16 bytes per pixel and axes to
+    /// 65,500, PNG at 14 and axes to 131,072; 128 bytes per row) with its
+    /// 8 MiB scratch and the SDK's 256 MiB normalization budget. Each
+    /// image's two encoded copies are charged per request, below.
+    static let maximumImageDecodeBytes: UInt64 =
+        max(16 * (64 << 20) + 128 * 65_500, 14 * (64 << 20) + 128 * 131_072) + (8 << 20) + (256 << 20)
+
+    /// Per visual token: both retained Float32 copies of its 32 x 32 RGB
+    /// grid pixels and its 4,096-wide Float32 feature row.
+    static let mediaBytesPerVisualToken: UInt64 = 32 * 32 * 3 * 4 * 2 + 4_096 * 4
+
+    /// The largest grid preprocessing admits: 104 x 128 patches (13,312),
+    /// 3,328 visual tokens.
+    static var largestImageGrid: NemotronSuperImagePreprocessing.Grid? {
+        try? NemotronSuperImagePreprocessing.grid(width: 2_048, height: 1_664)
+    }
+
+    /// Upper bound of what the image binding reserves from the shared ledger
+    /// for one encoded request with `imageCount` images, charged until the
+    /// owner retires it: the ingress quote at the largest body, each image's
+    /// decoder workspace, two copies of every decoded byte the body can
+    /// carry, visual tokens up to the context, and one largest-grid tower
+    /// and projector activation (images are prepared one at a time). The
+    /// binding refuses contexts above `contextTokens`. nil outside
+    /// 1...`maximumImages`.
+    static func mediaChargeBytes(imageCount: Int) -> UInt64? {
+        guard (1...maximumImages).contains(imageCount), let grid = largestImageGrid,
+            let ingress = try? NemotronSuperLocalImageBinding.encodedHeaderQuote(
+                bodyBytes: maximumEncodedBodyBytes, templateBytes: pinnedTemplateBytes),
+            let activation = try? NemotronSuperLocalImageBinding.towerActivationBytes(
+                [(grid.heightPatches, grid.widthPatches)])
+        else { return nil }
+        let encodedCopies = UInt64(maximumEncodedBodyBytes / 4 * 3) * 2
+        let tokens = UInt64(min(imageCount * grid.tokens, contextTokens))
+        return ingress + UInt64(imageCount) * maximumImageDecodeBytes + encodedCopies
+            + tokens * mediaBytesPerVisualToken + activation
     }
 }

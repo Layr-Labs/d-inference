@@ -2,8 +2,8 @@
 
 import Foundation
 import MLXVLM
-import ProviderCoreFoundation
 import Testing
+@testable import ProviderCoreFoundation
 @testable import ProviderCore
 
 /// CPU-only production identity, discovery and load-plan policy of the
@@ -32,6 +32,19 @@ struct NemotronSuperServingPolicyTests {
         let (supported, unsupported) = EngineV2SupportedModels.partition(
             [Self.info(Self.hfID, "nemotron_h_omni"), Self.info(Self.superID, "nemotron_h_omni")])
         #expect(supported.map(\.id) == [Self.superID] && unsupported.map(\.id) == [Self.hfID])
+    }
+
+    @Test func servingIdentityIsTheMediaPolicyIdentity() throws {
+        #expect(NemotronSuperServingPolicy.modelID == ModelMediaPolicy.nemotronSuperModelID)
+        let directory = try Self.syntheticSnapshot()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = directory.appendingPathComponent("config.json")
+        #expect(ModelScanner.configDeclaresVision(at: config, modelID: Self.superID))
+        #expect(ProviderLoop.modelIsVLM(at: directory, modelID: Self.superID))
+        for id in [Self.hfID, Self.superID.uppercased(), Self.superID + "-r2", nil] as [String?] {
+            #expect(!ModelScanner.configDeclaresVision(at: config, modelID: id), "\(id ?? "nil")")
+            #expect(!ProviderLoop.modelIsVLM(at: directory, modelID: id), "\(id ?? "nil")")
+        }
     }
 
     @Test func defaultsSpeculateAtDepthThreeForEightRequests() throws {
@@ -99,43 +112,111 @@ struct NemotronSuperServingPolicyTests {
         #expect(tight.prefixBankBytes == 0 && tight.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
     }
 
-    @Test func discoveryFootprintCoversTheLargestDefaultLoad() {
+    @Test func discoveryFootprintCoversTheLargestDefaultLoadAndOneImage() throws {
         // The ship-check claim at a 28 GiB grant: installation, head and grant.
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
             + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_013_708_416)
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
+        // Media is a serving reservation, not LOAD transient.
         #expect(footprint.nativeLoadTransientBytes == 15_938_749_104)
-        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (26 << 30)) / 1_073_741_824
+        let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
+        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (26 << 30) + media) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 126.324_139_233_678_58) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes
         #expect(Double(plainBytes) / 1_073_741_824 < footprint.estimatedMemoryGb)
     }
 
+    private static let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
+    private static let model = ModelInfo(id: superID, modelType: "nemotron_h_omni", sizeBytes: 75_010_188_240,
+        estimatedMemoryGb: footprint.estimatedMemoryGb, isVision: true, templateRenderOK: true,
+        nativeLoadTransientBytes: footprint.nativeLoadTransientBytes)
+
+    private static func quote(_ model: ModelInfo = Self.model, freeForLoadGb: Double = 0,
+                              loadUsableGb: Double? = nil, loadHeadroomGb: Double? = 6.5,
+                              resident: Bool = false, vision: Bool = false,
+                              images: Int = 0) -> ProviderMessage.CapacityQuote {
+        let slot = BackendSlotCapacity(model: model.id, state: "idle", numRunning: 0, numWaiting: 0,
+            activeTokens: 0, maxTokensPotential: 0, maxConcurrency: 8, activeTokenBudgetUsed: 0,
+            activeTokenBudgetMax: 1 << 20, queuedTokenBudget: 0)
+        return CapacityQuoteEngine.quote(.init(
+            probe: .init(quoteId: "q", model: model.id, promptTokensBucket: 512, maxOutputTokens: 512,
+                requiresVision: vision, visionImageCount: images, deadlineRemainingMs: 9000),
+            capacity: BackendCapacity(slots: resident ? [slot] : [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
+                gpuMemoryCacheGb: 0, totalMemoryGb: 256, freeForLoadGb: freeForLoadGb,
+                loadUsableGb: loadUsableGb, loadHeadroomGb: loadHeadroomGb, capacitySeq: 3),
+            model: model, ttft: nil,
+            visionLimits: .init(maxBufferBytes: 38 << 30, attentionElementBytes: 2, headFactor: 1),
+            refusingNewWork: false))
+    }
+
+    private static func gib(_ bytes: UInt64?) -> Double { Double(bytes ?? .max) / 1_073_741_824 }
+
     /// Cold quotes compare the published load room with the discovery
-    /// footprint (LOAD claim, prefill lane and admission KV), and the slot
-    /// advertises no media.
-    @Test func capacityQuotesUseTheManagedLoadFootprint() {
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
-        let model = ModelInfo(id: Self.superID, modelType: "nemotron_h_omni", sizeBytes: 75_010_188_240,
-            estimatedMemoryGb: footprint.estimatedMemoryGb, templateRenderOK: true,
-            nativeLoadTransientBytes: footprint.nativeLoadTransientBytes)
-        func quote(freeForLoadGb: Double, vision: Bool = false) -> ProviderMessage.CapacityQuote {
-            CapacityQuoteEngine.quote(.init(
-                probe: .init(quoteId: "q", model: Self.superID, promptTokensBucket: 512, maxOutputTokens: 512,
-                    requiresVision: vision, visionImageCount: 0, deadlineRemainingMs: 9000),
-                capacity: BackendCapacity(slots: [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
-                    gpuMemoryCacheGb: 0, totalMemoryGb: 256, freeForLoadGb: freeForLoadGb, capacitySeq: 3),
-                model: model, ttft: nil,
-                visionLimits: .init(maxBufferBytes: 38 << 30, attentionElementBytes: 2, headFactor: 1),
-                refusingNewWork: false))
-        }
-        #expect(quote(freeForLoadGb: footprint.estimatedMemoryGb).admissibleNow)
+    /// footprint (LOAD claim, prefill lane, admission KV and one image).
+    @Test func coldQuotesUseTheManagedLoadFootprint() {
+        let footprintGb = Self.footprint.estimatedMemoryGb
+        #expect(Self.quote(freeForLoadGb: footprintGb).admissibleNow)
+        #expect(Self.quote(freeForLoadGb: footprintGb, vision: true, images: 1).admissibleNow)
         // The shard bytes alone would fit; the full managed LOAD does not.
-        let shardsOnly = quote(freeForLoadGb: 75_010_188_240 * 1.2 / 1_073_741_824)
+        let shardsOnly = Self.quote(freeForLoadGb: 75_010_188_240 * 1.2 / 1_073_741_824)
         #expect(!shardsOnly.admissibleNow && shardsOnly.rejectionReason == .memoryCap)
-        #expect(quote(freeForLoadGb: 200, vision: true).rejectionReason == .capability)
+        for (vision, images) in [(false, 0), (true, 0), (true, 1), (false, 3)] {
+            #expect(Self.quote(freeForLoadGb: footprintGb - 0.01, vision: vision, images: images)
+                .rejectionReason == .memoryCap)
+        }
+        // Further images need their charge beyond the footprint's single image.
+        let single = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1)
+        for images in [2, 4, 16] {
+            let extraGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images)) - Self.gib(single)
+            #expect(extraGb > 0)
+            #expect(Self.quote(freeForLoadGb: footprintGb + extraGb, vision: true, images: images).admissibleNow)
+            #expect(Self.quote(freeForLoadGb: footprintGb + extraGb - 0.01, vision: true, images: images)
+                .rejectionReason == .memoryCap)
+        }
+        // A probe without an image count is charged the binding's maximum.
+        let maximumGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 16)) - Self.gib(single)
+        #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb - 0.01, vision: true).rejectionReason == .memoryCap)
+        #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb, vision: true).admissibleNow)
+    }
+
+    /// A resident slot charges a vision probe against the published room no
+    /// resident model is credited as reclaimable, net of load headroom.
+    @Test func residentVisionProbesNeedTheirMediaCharge() {
+        let headroom = 6.5
+        for images in [1, 5, 16] {
+            let chargeGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
+            #expect(Self.quote(loadUsableGb: headroom + chargeGb, resident: true, vision: true, images: images)
+                .admissibleNow)
+            // Room to load elsewhere does not substitute for live room here.
+            let short = Self.quote(freeForLoadGb: 200, loadUsableGb: headroom + chargeGb - 0.01,
+                                   resident: true, vision: true, images: images)
+            #expect(!short.admissibleNow && short.rejectionReason == .memoryCap)
+        }
+        #expect(Self.quote(freeForLoadGb: 200, loadUsableGb: nil, resident: true, vision: true, images: 1)
+            .rejectionReason == .memoryCap)
+        #expect(Self.quote(loadUsableGb: 200, loadHeadroomGb: nil, resident: true, vision: true, images: 1)
+            .rejectionReason == .memoryCap)
+        // Text probes on the resident slot do not consult media room.
+        #expect(Self.quote(loadUsableGb: 0, resident: true).admissibleNow)
+        #expect(Self.quote(loadUsableGb: nil, loadHeadroomGb: nil, resident: true).admissibleNow)
+    }
+
+    @Test func visionProbesOutsideTheImageBindingAreCapabilityRejects() {
+        #expect(Self.quote(freeForLoadGb: 1_000, loadUsableGb: 1_000, vision: true, images: 17)
+            .rejectionReason == .capability)
+        #expect(Self.quote(loadUsableGb: 1_000, resident: true, images: 17).rejectionReason == .capability)
+        // An unpinned or text-only Super entry never advertises media.
+        var textOnly = Self.model
+        textOnly.isVision = nil
+        #expect(Self.quote(textOnly, freeForLoadGb: 200, vision: true).rejectionReason == .capability)
+        // Other vision models keep the generic quote: no Super media charge.
+        let other = ModelInfo(id: "org/vision", modelType: "qwen3_vl", sizeBytes: 1, estimatedMemoryGb: 8,
+                              isVision: true, templateRenderOK: true)
+        #expect(Self.quote(other, freeForLoadGb: 8, vision: true, images: 16).admissibleNow)
+        #expect(Self.quote(other, loadUsableGb: 0, resident: true, vision: true, images: 17).admissibleNow)
     }
 
     @Test func scannerWithholdsTheRegistryIDWithoutThePinnedMetadata() throws {
@@ -147,10 +228,38 @@ struct NemotronSuperServingPolicyTests {
         #expect(other.nativeLoadTransientBytes == nil && !EngineV2SupportedModels.isSupported(model: other))
     }
 
-    @Test func pinnedTemplatePassesTheScanRenderCheck() throws {
+    @Test func pinnedTemplatePassesTheScanRenderCheckWithMedia() throws {
         let directory = try Self.syntheticSnapshot()
         defer { try? FileManager.default.removeItem(at: directory) }
+        // The registry id renders the image and video part fixtures too.
+        #expect(TemplateRenderCheck.configDeclaresVision(at: directory, modelID: Self.superID))
         #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.superID) == true)
+        #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.hfID) == true)
+    }
+
+    /// The scanner's Super branch with the pinned `config.json` and index and
+    /// a stand-in shard. Gated on the directory holding those reference files.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["NEMOTRON_SUPER_REFERENCE_DIR"] != nil))
+    func pinnedMetadataIsDiscoveredAsAnImageModel() throws {
+        let path = try #require(ProcessInfo.processInfo.environment["NEMOTRON_SUPER_REFERENCE_DIR"])
+        let reference = URL(fileURLWithPath: path, isDirectory: true)
+        let directory = try Self.syntheticSnapshot()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for name in ["config.json", "model.safetensors.index.json"] {
+            try FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+            try FileManager.default.copyItem(at: reference.appendingPathComponent(name),
+                                             to: directory.appendingPathComponent(name))
+        }
+        #expect(NemotronSuperServingPolicy.hasPinnedMetadata(snapshotDir: directory))
+        let info = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.superID))
+        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: info.sizeBytes)
+        #expect(info.modelType == "nemotron_h_omni" && info.quantization == "nvfp4")
+        #expect(info.isVision == true && info.templateRenderOK == true && info.nativeMediaTools == nil)
+        #expect(info.estimatedMemoryGb == footprint.estimatedMemoryGb)
+        #expect(EngineV2SupportedModels.isSupported(model: info))
+        // Any other id of the same bytes keeps the ordinary text-only scan.
+        let other = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.hfID))
+        #expect(other.isVision == nil && !EngineV2SupportedModels.isSupported(model: other))
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil))
@@ -160,7 +269,7 @@ struct NemotronSuperServingPolicyTests {
         let info = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.superID))
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: info.sizeBytes)
         #expect(info.modelType == "nemotron_h_omni" && info.quantization == "nvfp4")
-        #expect(info.sizeBytes == 75_010_188_240 && info.isVision == nil && info.templateRenderOK == true)
+        #expect(info.sizeBytes == 75_010_188_240 && info.isVision == true && info.templateRenderOK == true)
         #expect(info.estimatedMemoryGb == footprint.estimatedMemoryGb)
         #expect(info.nativeLoadTransientBytes == footprint.nativeLoadTransientBytes)
         #expect(EngineV2SupportedModels.isSupported(model: info))

@@ -23,7 +23,9 @@
 //     model's padded weight footprint;
 //   * template/capability — the advertised `ModelInfo`'s
 //     `templateRenderOK`/`isVision` self-check results;
-//   * vision-tower admission — `VisionTowerBudget.maxAdmissiblePatches`.
+//   * vision-tower admission — `VisionTowerBudget.maxAdmissiblePatches`;
+//   * Nemotron Super image media — the policy's media charge against the
+//     cold-load room or the resident no-eviction room.
 
 import Foundation
 
@@ -104,6 +106,10 @@ enum CapacityQuoteEngine {
         {
             return reject(.memoryCap)
         }
+        let superMedia = nemotronSuperMediaCharge(probe: probe, model: model)
+        if case .refused = superMedia {
+            return reject(.capability)
+        }
         guard let capacity = inputs.capacity, seq != 0 else {
             // No published snapshot yet on this connection: the coordinator
             // cannot order a quote it cannot sequence, and we cannot consult
@@ -126,6 +132,11 @@ enum CapacityQuoteEngine {
             // models the real load gate (weights + headroom ≤ raw free
             // memory) would admit.
             guard capacity.freeForLoadGb >= max(0, model.estimatedMemoryGb) else {
+                return reject(.memoryCap)
+            }
+            // The footprint already holds one single-image request.
+            if case .charged(let bytes, let footprintBytes) = superMedia,
+                capacity.freeForLoadGb - max(0, model.estimatedMemoryGb) < gib(bytes - footprintBytes) {
                 return reject(.memoryCap)
             }
             if probe.deadlineRemainingMs <= 0 {
@@ -169,11 +180,47 @@ enum CapacityQuoteEngine {
                 deadlineRemainingMs: probe.deadlineRemainingMs)
         }
 
+        // A resident slot's media must fit the published room that credits no
+        // resident model as reclaimable, net of the load headroom. Its 1 GiB
+        // minimum-KV part is margin: the slot's KV is already granted.
+        if case .charged(let bytes, _) = superMedia {
+            guard let usable = capacity.loadUsableGb, let headroom = capacity.loadHeadroomGb,
+                usable - headroom >= gib(bytes)
+            else { return reject(.memoryCap) }
+        }
+
         if probe.deadlineRemainingMs <= 0 {
             return reject(.deadline)
         }
         return admissible(inputs, seq: seq, slot: slot, availableTokens: availableTokens)
     }
+
+    enum NemotronSuperMediaCharge: Equatable {
+        /// Not a Super image probe: a text probe or another model.
+        case notApplicable
+        /// More images than the Super image binding admits.
+        case refused
+        /// The binding's worst-case reservation for the probe, and the
+        /// single-image charge the discovery footprint already includes.
+        case charged(bytes: UInt64, footprintBytes: UInt64)
+    }
+
+    /// Pure and Super-specific. A probe without an image count is charged
+    /// for the most images the binding admits.
+    static func nemotronSuperMediaCharge(
+        probe: CoordinatorMessage.CapacityProbe, model: ModelInfo
+    ) -> NemotronSuperMediaCharge {
+        guard probe.requiresVision || probe.visionImageCount > 0,
+            NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
+        else { return .notApplicable }
+        let images = probe.visionImageCount > 0 ? probe.visionImageCount : NemotronSuperServingPolicy.maximumImages
+        guard let bytes = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images),
+            let single = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1)
+        else { return .refused }
+        return .charged(bytes: bytes, footprintBytes: single)
+    }
+
+    private static func gib(_ bytes: UInt64) -> Double { Double(bytes) / 1_073_741_824 }
 
     private static func admissible(
         _ inputs: Inputs,

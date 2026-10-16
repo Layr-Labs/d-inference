@@ -28,7 +28,8 @@ language tower through the native CBv2 factory after rechecking a pending LOAD
 lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement and
 drains its own requests; the owner mints one `localTextBinding` and drains it in
 `closeAfterDrain` before the image binding and bridge. It accepts pretokenized text only; media, tools, schemas
-and prefix reuse are rejected. The builder uses serial contiguous KV, bounded
+and client prompt-cache keys are rejected, and text prefix reuse runs only when the owner has a
+checkpoint bank (below). The builder uses serial contiguous KV, bounded
 calibrated prefill, and no MTP unless the explicit opt-in below installs text
 speculation. These internal paths do not register a model or
 expose an HTTP route. `NemotronSuperLocalLoad` owns an unpublished load transaction,
@@ -127,6 +128,21 @@ generations and any speculation charge, `requestWorkspaceBytes`: one
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
+`NemotronSuperLocalPrefixCache` gives the plain owner exact text prefix reuse when
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`: `PrefixCachePolicy.hybridConfig` sizes the SDK's
+resident recurrent checkpoint bank (`min(1 GiB, KV grant / 8)` unless
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` sets it), the backend carves it from the KV
+grant before the grant check, and its whole budget is reserved in the shared
+budget from before the first request until native retirement, like the lane; a
+bank that does not fit fails the load and a retained native fault keeps it
+charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
+only at multiples of the prefill chunk, where a restore continues a cold prefill
+bit for bit; prompts shorter than one chunk restore nothing. Text requests are
+then submitted with prefix caching on and the local unscoped cache scope; image
+requests stay cold and never publish, and a speculating owner has no bank.
+`UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction

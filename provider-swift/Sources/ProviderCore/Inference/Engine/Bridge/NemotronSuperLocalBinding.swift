@@ -21,9 +21,14 @@ actor NemotronSuperLocalBinding {
     private var draining = false
     private var active: [UUID: Task<Void, Error>] = [:]
 
-    init(acquire: @escaping Acquire) {
+    /// `reusesTextPrefixes` submits text with prefix caching on; only an owner
+    /// whose engine has an exact checkpoint bank sets it. Otherwise text is cold.
+    init(acquire: @escaping Acquire, reusesTextPrefixes: Bool = false) {
         self.acquire = acquire
-        self.execute = Self.executeBridge
+        self.execute = { bridge, tokens, request, requestID, onEvent in
+            try await Self.executeBridge(bridge: bridge, tokens: tokens, request: request,
+                requestID: requestID, cacheEnabled: reusesTextPrefixes, onEvent: onEvent)
+        }
     }
 
     init(acquire: @escaping Acquire, fixtureExecution: @escaping Execute) {
@@ -32,7 +37,8 @@ actor NemotronSuperLocalBinding {
     }
 
     /// Tokens must already be rendered by the qualified pinned tokenizer/chat template.
-    /// No media, MTP, prefix reuse, structured output, or tool capability is claimed here.
+    /// No media, MTP, structured output, or tool capability is claimed here; prefix
+    /// reuse only as the owner configured it at construction.
     func run(request: ChatCompletionRequest, promptTokens: [Int],
              hasMedia: Bool = false,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
@@ -135,13 +141,13 @@ actor NemotronSuperLocalBinding {
 
     private static func executeBridge(
         bridge: EngineV2Bridge, tokens: [Int], request: ChatCompletionRequest, requestID: String,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        cacheEnabled: Bool, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(
                 promptTokens: tokens, request: request, requestId: requestID,
-                cacheScope: "", cacheEnabled: false, usageSignal: usage)
+                cacheScope: "", cacheEnabled: cacheEnabled, usageSignal: usage)
             for await event in stream {
                 if Task.isCancelled { break }
                 await onEvent(event)

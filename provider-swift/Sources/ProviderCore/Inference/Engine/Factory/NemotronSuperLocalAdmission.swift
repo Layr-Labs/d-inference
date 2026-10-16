@@ -90,16 +90,20 @@ extension EngineV2Bridge {
 
     /// Smallest grant whose admission ceiling holds `requests` requests' fixed
     /// bytes plus the minimum KV: the count `fixedWorkspaceConcurrencyLimit`
-    /// admits on this ordinary contiguous bridge. Int.max when unprovable.
+    /// admits on this ordinary contiguous bridge, plus the engine's checkpoint
+    /// bank budget carved from the same grant. Int.max when unprovable.
     func superMinimumGrantBytes(requests: Int) -> Int {
         guard requests > 0, let overhead = maximumRequestOverheadBytes(),
             let engine = ownedEngine as? EngineV2, let admissionWatermarkFraction
         else { return Int.max }
         let (fixed, overflow) = overhead.multipliedReportingOverflow(by: requests)
         guard !overflow else { return Int.max }
-        return Self.minimumOrdinaryGrantBytes(fixedRequestBytes: fixed,
+        let floor = Self.minimumOrdinaryGrantBytes(fixedRequestBytes: fixed,
             capacityBytes: engine.capacity().kvBytesCapacity,
             admissibleCapacityBytes: engine.admissibleKVBytesCapacity,
             watermarkFraction: admissionWatermarkFraction)
+        let bank = engine.hybridPrefixCache?.config.maximumBytes ?? 0
+        let (total, bankOverflow) = floor.addingReportingOverflow(bank)
+        return floor == Int.max || bankOverflow ? Int.max : total
     }
 }

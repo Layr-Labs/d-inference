@@ -42,12 +42,16 @@ enum NemotronSuperLocalBridgeBuilder {
         /// held from before the first request until native retirement.
         let prefillLaneBytes: Int
         private let prefillLaneID: String
+        /// The engine's resident checkpoint bank budget, reserved in the shared
+        /// budget like the lane; zero without text prefix reuse.
+        let prefixBankBytes: Int
+        private let prefixBankID: String?
 
         fileprivate init(bridge: EngineV2Bridge, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
                          speculates: Bool, maximumLocalRequests: Int,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
-                         prefillLaneBytes: Int) {
+                         prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int) {
             self.bridge = bridge
             self.installed = installed
             self.tokenizer = tokenizer; self.budget = budget; self.contextLength = contextLength
@@ -55,6 +59,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.maximumLocalRequests = maximumLocalRequests
             self.prefill = prefill
             self.prefillLaneID = prefillLaneID; self.prefillLaneBytes = prefillLaneBytes
+            self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -91,7 +96,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     return .init(tokenizer: tokenizer,
                         releaseToken: OneShotRelease(release: { _ in }, modelId: model),
                         modelType: "nemotron_h_omni", engineV2Bridge: bridge)
-                })
+                }, reusesTextPrefixes: prefixBankBytes > 0)
                 textBinding = binding
                 return binding
             }
@@ -203,9 +208,10 @@ enum NemotronSuperLocalBridgeBuilder {
                     guard !hasRetainedImageFault else { throw Failure.retirementIncomplete }
                     await bridge.shutdown()
                     guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
-                    // Every prefill has retired with the engine; a retained
-                    // engine above keeps the lane charged.
+                    // Every prefill and checkpoint copy has retired with the
+                    // engine; a retained engine above keeps both charged.
                     await budget.release(requestID: prefillLaneID)
+                    if let prefixBankID { await budget.release(requestID: prefixBankID) }
                     lock.withLock {
                         installed?.closeAfterRetirement()
                         installed = nil
@@ -224,7 +230,8 @@ enum NemotronSuperLocalBridgeBuilder {
     /// KV grant/sizing must come from the existing slot re-slice and loaded sizing
     /// path. Native setup/probes run inside the SDK construction scope. Caller
     /// must retain a faulted scope and its charged installation until restart.
-    /// `mtp` installs opt-in text speculation; nil keeps the target-only owner.
+    /// `mtp` installs opt-in text speculation; nil keeps the target-only owner,
+    /// which `NemotronSuperLocalPrefixCache` may give exact text prefix reuse.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -246,6 +253,8 @@ enum NemotronSuperLocalBridgeBuilder {
         else { throw Failure.unsupportedSizing }
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
+        let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
+            kvBytesCapacity: kvBytesCapacity, speculates: mtp != nil)
         try Task.checkCancellation()
         let (bridge, prefill, laneBytes) = try installed.withNativeSetup(
             construction: construction
@@ -269,7 +278,8 @@ enum NemotronSuperLocalBridgeBuilder {
             // speculation, one captured [B, 1 + k] verify window); prompts and
             // media still prefill one request per forward. One row is serial.
             let target: any LanguageModel = try speculation?.model
-                ?? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests, decodeProducts: .rowExact)
+                ?? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests, decodeProducts: .rowExact,
+                    exactPrefixCheckpoints: prefixCache != nil)
             let draftTokens = mtp?.setting.depth ?? 0
             let bridge = try EngineV2Factory.makeBridge(
                 modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
@@ -285,7 +295,7 @@ enum NemotronSuperLocalBridgeBuilder {
                         model: target, modelID: NemotronSuperLocalBinding.modelID,
                         tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
                         maxConcurrentRequests: requests, kvBudget: kvBudget,
-                        mtpDrafter: speculation?.assistant,
+                        hybridPrefixCache: prefixCache, mtpDrafter: speculation?.assistant,
                         mtpConfig: speculation?.config ?? CBv2MTPConfig(),
                         kvBackend: .contiguous, maxContextLength: sizing.maxContextLength,
                         environment: environment,
@@ -296,11 +306,11 @@ enum NemotronSuperLocalBridgeBuilder {
                 })
             return (bridge, prefill, laneBytes)
         }
-        // Fixed request bytes are carved from the KV grant with each request's
-        // charge; a grant that cannot serve every configured request fails the load.
+        // Fixed request bytes and any checkpoint bank are carved from the KV
+        // grant before this check; a grant that cannot serve every configured
+        // request beside them fails the load.
         if let refusal = await bridge.superGrantRefusal(grantBytes: kvBytesCapacity, requests: requests) {
-            await bridge.shutdown()
-            guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
+            try await retireUnpublished(bridge, budget: kvBudget, releasing: [])
             throw refusal
         }
         // One prompt chunk runs per step, so one lane covers every request's
@@ -309,19 +319,49 @@ enum NemotronSuperLocalBridgeBuilder {
         let laneReserved =
             laneBytes == 0 ? true : await kvBudget.reserveBytes(requestID: laneID, bytes: UInt64(laneBytes))
         guard laneReserved else {
-            await bridge.shutdown()
-            guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
+            try await retireUnpublished(bridge, budget: kvBudget, releasing: [])
             throw NemotronSuperLocalPrefill.Failure.laneRefused
         }
-        // Prefix stores remain absent. Without speculation the dedicated image
-        // binding uses causal embeddings; recurrent execution stays contiguous.
+        // The bank keeps checkpoints between requests, beyond any request's
+        // charge: its whole budget is reserved before the first request and
+        // held until native retirement, like the lane.
+        let bankBytes = await bridge.superPrefixBankBytes
+        var bankID: String?
+        if let prefixCache {
+            guard bankBytes == prefixCache.maximumBytes else {
+                try await retireUnpublished(bridge, budget: kvBudget, releasing: [laneID])
+                throw NemotronSuperLocalPrefixCache.Failure.unavailable
+            }
+            let id = NemotronSuperLocalPrefixCache.bankReservationID()
+            guard await kvBudget.reserveBytes(requestID: id, bytes: UInt64(bankBytes)) else {
+                try await retireUnpublished(bridge, budget: kvBudget, releasing: [laneID])
+                throw NemotronSuperLocalPrefixCache.Failure.bankRefused
+            }
+            bankID = id
+        }
+        // Without speculation the dedicated image binding uses causal
+        // embeddings and no checkpoint identity; execution stays contiguous.
         return Owner(bridge: bridge, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,
-                     prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes)
+                     prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
+                     prefixBankID: bankID, prefixBankBytes: bankID == nil ? 0 : bankBytes)
+    }
+
+    /// A bridge that never reached an owner: shut it down and, only once the
+    /// engine has retired, release the owner-level reservations already taken.
+    private static func retireUnpublished(_ bridge: EngineV2Bridge, budget: GlobalKVCacheBudget,
+                                          releasing ids: [String]) async throws {
+        await bridge.shutdown()
+        guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
+        for id in ids { await budget.release(requestID: id) }
     }
 }
 
 private extension EngineV2Bridge {
     var superLocalEngineRetired: Bool { ownedEngine == nil }
+    /// The constructed engine's checkpoint bank budget; zero without a bank.
+    var superPrefixBankBytes: Int {
+        (ownedEngine as? EngineV2)?.hybridPrefixCache?.config.maximumBytes ?? 0
+    }
 }

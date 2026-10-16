@@ -277,3 +277,24 @@ struct EmbeddedQwen38RuntimeRequirementsTests {
             .contains("EigenLabs/Qwen3.8-27B-4bit-mtp"))
     }
 }
+
+@Suite("pplx-decider builds inherit the Qwen3.8-27B hardware invariant")
+struct PplxDeciderRuntimeRequirementsTests {
+    @Test("the decider build id and its alias carry the M5 + NAX requirement", arguments: [
+        "EigenLabs/pplx-decider-v1-27b-MLX-4bit", "pplx-decider-v1-27b",
+    ])
+    func deciderGated(modelID: String) {
+        #expect(ModelRuntimeRequirements.requiredCapabilities(for: modelID) == [.appleM5, .mlxNAX])
+        #expect(!ModelRuntimeRequirements.isEligible(modelID: modelID, available: [.appleM5]))
+        #expect(ModelRuntimeRequirements.isEligible(
+            modelID: modelID, available: [.appleM5, .mlxNAX]))
+    }
+
+    @Test("matching stays exact and case-sensitive", arguments: [
+        "PPLX-DECIDER-V1-27B", "perplexity-ai/pplx-decider-v1-27b",
+        "EigenLabs/pplx-decider-v1-27b-MLX-4bit-other",
+    ])
+    func otherSpellingsAreNotGated(modelID: String) {
+        #expect(ModelRuntimeRequirements.requiredCapabilities(for: modelID).isEmpty)
+    }
+}

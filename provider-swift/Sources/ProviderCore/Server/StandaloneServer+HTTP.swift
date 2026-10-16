@@ -136,6 +136,10 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             var response = try await inner.respond(to: request, context: context)
             response.headers[.accessControlAllowOrigin] = "*"
             return response
+        } catch let error as DecisionRequestError {
+            // Fixed, content-free messages (chat sent to a decision model,
+            // or a refused decision body).
+            return Self.openAIErrorResponse(status: .badRequest, message: error.localizedDescription)
         } catch let error as OpenAIRequestValidationError {
             // Chat upload interception lives outside the upstream router's
             // HTTPResponseError mapping. Preserve this fixed, content-free

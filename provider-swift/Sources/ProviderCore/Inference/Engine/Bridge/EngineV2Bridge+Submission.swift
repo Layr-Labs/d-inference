@@ -123,7 +123,9 @@ extension EngineV2Bridge {
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptWork: PromptWork? = nil,
-        measurementPurpose: EngineMeasurementPurpose = .serving
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        /// `top_logprobs` clamp ceiling (`EngineV2LogprobsPlumbing`).
+        maximumTopLogprobs: Int = EngineV2LogprobsPlumbing.openAIMaximumTopLogprobs
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -229,7 +231,8 @@ extension EngineV2Bridge {
             samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
-            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
+            maximumTopLogprobs: maximumTopLogprobs
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity

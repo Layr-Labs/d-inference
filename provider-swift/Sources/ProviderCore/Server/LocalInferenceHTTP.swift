@@ -33,15 +33,17 @@ public struct LocalInferenceHTTPConfig: Sendable {
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
-/// interception (32 MiB body ceiling for the media-bearing chat routes, see
-/// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+/// disconnect ownership → auth → CORS → MTP-augmented /metrics → decisions
+/// (`LocalDecisionResponder`) → chat-upload interception (32 MiB body ceiling
+/// for the media-bearing chat routes, see `LocalChatUploadResponder`) →
+/// upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
         LocalDisconnectResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+                    LocalDecisionResponder<
+                        LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -111,8 +113,14 @@ func makeLocalInferenceApplication(
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).
+    // POST /v1/decisions has no upstream route: the decision responder
+    // acquires the slot itself and runs the same runner as fleet serving.
+    let decisionResponder = LocalDecisionResponder(inner: uploadResponder) { request in
+        try await DecisionLocalServing.respond(
+            to: request, acquire: acquire, modelTypeProvider: modelTypeProvider)
+    }
     let metricsResponder = LocalMetricsResponder(
-        inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+        inner: decisionResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.

@@ -202,6 +202,7 @@ struct KVBackendPostureTests {
         "qwen3.5-35b-a3b",
         "qwen3.6-35b-a3b-vl-mtp-mxfp8",
         "EigenLabs/Qwen3.8-27B-4bit-mtp",
+        "EigenLabs/pplx-decider-v1-27b-MLX-4bit",
     ])
     func doctorPassesQwenAuto(modelID: String) {
         for fallbackReason: String? in [nil, "kernel_preflight: unavailable", "crash_loop_guard", "kill_switch"] {

@@ -52,6 +52,11 @@ enum ToolChoiceEnforcementPolicy {
             return .none
         }
 
+        // A decision head scores answer codes; it never emits tool calls.
+        if EngineV2SupportedModels.isPplxDeciderModelType(modelContext.modelType) {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "tools are not supported for decision models")
+        }
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2" {
@@ -67,6 +72,7 @@ enum ToolChoiceEnforcementPolicy {
     static func advertisesCapability(for model: ModelInfo) -> Bool {
         let context = ChatTemplateFixContext(
             modelId: model.id, modelType: model.modelType)
+        if EngineV2SupportedModels.isPplxDeciderModelType(model.modelType) { return false }
         if Gemma4TemplateFix.applies(to: context) {
             return model.toolConstraintTemplateHash
                 == Gemma4ToolConstraintContract.pinnedTemplateSHA256

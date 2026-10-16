@@ -156,7 +156,11 @@ public enum ModelRuntimeRequirements {
         catalogRequirements: [ProviderRuntimeCapability]? = nil
     ) -> Set<ProviderRuntimeCapability> {
         var required = Set(catalogRequirements ?? [])
-        if qwen38ConcreteModelIDs.contains(modelID) {
+        // The pplx-decider pack is the same dense Qwen3.8-27B target bytes
+        // class with a 255-row head; it inherits the identical invariant.
+        if qwen38ConcreteModelIDs.contains(modelID)
+            || EngineV2SupportedModels.isPplxDeciderListingModelID(modelID)
+        {
             required.formUnion(qwen38RequiredCapabilities)
         }
         return required

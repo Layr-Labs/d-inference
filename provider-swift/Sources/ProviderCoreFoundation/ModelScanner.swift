@@ -43,6 +43,8 @@ public struct ModelScanner: Sendable {
     public static let integrityFileNames: Set<String> = [
         "config.json",
         "hadamard.json",
+        // pplx-decider answer vocabulary (codes, token ids, temperature).
+        "decision_config.json",
         "tokenizer.json",
         "tokenizer_config.json",
         "tokenizer.model",
@@ -326,7 +328,8 @@ public struct ModelScanner: Sendable {
            filename == "vocab.json" || filename == "merges.txt" {
             return "tokenizer"
         }
-        if filename == "config.json" || filename == "hadamard.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
+        if filename == "config.json" || filename == "hadamard.json" || filename == "decision_config.json"
+            || filename == "generation_config.json" || filename == "quantize_config.json" {
             return "config"
         }
         if filename == "chat_template.jinja" || filename == "chat_template.json" {

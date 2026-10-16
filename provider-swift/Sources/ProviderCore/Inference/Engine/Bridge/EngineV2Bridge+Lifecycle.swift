@@ -137,6 +137,10 @@ extension EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
+        if glm5NextNativeOwner != nil {
+            try? await shutdownGLM5NextReportingCompletion()
+            return
+        }
         if nativeShutdownClosed, ownedEngine == nil { return }
         if let native = ownedEngine as? EngineV2,
             let contractID = native.nativeShutdownExecutionContractID {

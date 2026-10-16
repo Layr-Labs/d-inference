@@ -50,6 +50,16 @@ extension EngineV2Bridge {
     func canSubmitWithNativeOwner() -> Bool {
         guard !nativeShutdownClosed else { return false }
         do {
+            if isGLM5NextManaged {
+                try GLM5NextLoadFaultState.requireHealthy()
+            }
+            if let owner = glm5NextNativeOwner {
+                try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
+                guard nativeTransaction == nil, nativeTransactionID == nil,
+                    let actual = ownedEngine as? EngineV2 else { return false }
+                try owner.validate(bridge: self, engine: actual, budget: kvBudget)
+                return true
+            }
             if tracksNativeShutdown || nativeTransactionID != nil || nativeShutdownIdentity != nil {
                 try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
                 guard let transaction = nativeTransaction,
@@ -59,6 +69,44 @@ extension EngineV2Bridge {
             return true
         } catch {
             return false
+        }
+    }
+
+    var hasGLM5NextNativeOwner: Bool { glm5NextNativeOwner != nil }
+
+    /// The one GLM predicate for the process fault fence: an owned native
+    /// bridge, or any bridge serving the locally qualified GLM identity
+    /// (which can then never fall back to ownerless admission or growth).
+    nonisolated var isGLM5NextManaged: Bool {
+        glm5NextNativeOwner != nil || modelId == GLM5NextLocalQualification.modelID
+    }
+
+    #if DEBUG
+    func installGLM5NextRetirementRefusalForTesting(_ refusal: @escaping @Sendable () throws -> Void) throws {
+        guard let owner = glm5NextNativeOwner else { throw GLM5NextManagedLoadError.managedLoadRequired }
+        owner.installRetirementRefusalForTesting(refusal)
+    }
+    #endif
+
+    func shutdownGLM5NextReportingCompletion() async throws {
+        guard let owner = glm5NextNativeOwner else { throw GLM5NextManagedLoadError.managedLoadRequired }
+        do {
+            if ownedEngine == nil, case .quiescent(let receipt)? = nativeShutdownResult {
+                try owner.complete(receipt)
+                await owner.endResidencyAfterRetirement()
+                return
+            }
+            guard let actual = ownedEngine as? EngineV2 else { throw GLM5NextManagedLoadError.identityMismatch }
+            try owner.beginClosing(bridge: self, engine: actual)
+            switch try await shutdownNativeConstruction(expectedEngine: actual, executionContractID: owner.contractID) {
+            case .quiescent(let receipt): try owner.complete(receipt)
+            case .incomplete: throw GLM5NextManagedLoadError.retirementUnproven
+            }
+            await owner.endResidencyAfterRetirement()
+        } catch {
+            owner.retainFailure()
+            GLM5NextLoadFaultState.retain([self])
+            throw GLM5NextManagedLoadError.retirementUnproven
         }
     }
 

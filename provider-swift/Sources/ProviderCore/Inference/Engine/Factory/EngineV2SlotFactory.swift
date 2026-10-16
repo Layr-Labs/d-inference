@@ -263,6 +263,7 @@ enum EngineV2SlotFactory {
                 modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: preparation,
+                maximumContextLength: sizing.maxContextLength,
                 assistantLoader: assistantLoader,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo,
@@ -360,6 +361,7 @@ enum EngineV2SlotFactory {
                     performanceQualificationAllowed: !mtpConfig.effectiveEnabled
                         || mtpPerformanceConfiguration != nil,
                     mtpPerformanceConfiguration: mtpPerformanceConfiguration,
+                    kvBudget: kvBudget,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
@@ -582,11 +584,12 @@ enum EngineV2SlotFactory {
         do {
             try await bridge.requireServiceableOrdinaryGrant()
         } catch {
-            await bridge.shutdown()
+            try await GLM5NextRetirement.beforeRelease(bridge)
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
             throw error
         }
+        await bridge.glm5NextNativeOwner?.startResidency()
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }

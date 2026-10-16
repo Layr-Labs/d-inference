@@ -199,6 +199,7 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
+        try GLM5NextLoadFaultState.requireHealthy(modelType: advertisedModels[modelId]?.modelType)
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
@@ -265,6 +266,17 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
+        // Coordinator-connected GLM is not enabled: it is never advertised
+        // here and has no reviewed served-context bound, so its MTP history and
+        // KV would be sized for the 1,048,576-token model maximum. Refuse
+        // before any catalog request or reservation; only the bounded local
+        // server (`GLM5NextLocalQualification`) loads GLM.
+        if GLM5NextPromptPolicy.applies(modelType: modelInfo.modelType) {
+            let message = "Model '\(modelId)' (glm5_next) loads only in the bounded local server; "
+                + "coordinator-connected GLM serving is not enabled"
+            recordModelLoadError(model: modelId, message: message)
+            throw InferenceError.modelLoadFailed(message)
+        }
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -316,6 +328,7 @@ extension ProviderLoop {
             // while it was suspended at the gate).
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+            try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
@@ -681,6 +694,15 @@ extension ProviderLoop {
             var engineBundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
+            // The re-slice gate is held: an unproven unwind must still release it.
+            func unwindHoldingResliceGate() async throws {
+                do {
+                    try await unwindBuiltSlotAndRegrow(modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                } catch {
+                    releaseResliceGate()
+                    throw error
+                }
+            }
 
             // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): engine
             // construction can retain additional load-time memory beyond the
@@ -717,7 +739,8 @@ extension ProviderLoop {
                 logger.warning(
                     "mtp: model=\(modelId) fallback reason=\(reason.rawValue); rebuilding target-only")
                 await engineV2Runtime.unregister(modelId: modelId)
-                await engineV2Bridge.shutdown()
+                do { try await GLM5NextRetirement.beforeRelease(engineV2Bridge) }
+                catch { releaseResliceGate(); throw error }
                 engineBundle.releaseAssistant()
                 clearCacheAfterConfirmedNativeOwnership()
                 do {
@@ -761,8 +784,7 @@ extension ProviderLoop {
                 // while the aborted newcomer's weights are still resident
                 // would let Σ(grants) exceed the true fleet budget. Still
                 // holding the re-slice gate; release only after.
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 let message = "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
@@ -780,8 +802,7 @@ extension ProviderLoop {
             // timing await above. Never install a new slot after teardown has
             // begun; unwind the bridge and weights under the re-slice gate.
             if isShuttingDown || Task.isCancelled {
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 throw CancellationError()
             }
@@ -790,8 +811,7 @@ extension ProviderLoop {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate
                 // and wedge every future load.
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 throw InferenceError.modelLoadFailed(
                     "internal: newcomer container missing at install for '\(modelId)'")
@@ -963,7 +983,8 @@ extension ProviderLoop {
         else { return false }
         let engineV2 = engineBundle.bridge
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
+        var retainActivity = false
+        defer { if !retainActivity { deviceActivity.finish() } }
         let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(advertisedModels[modelId]?.modelType)
             || Qwen4SupportPolicy.isOwnedModelID(modelId)
         modelsUnloading.insert(modelId)
@@ -971,7 +992,15 @@ extension ProviderLoop {
         // stop fanning out to it, then drain the engine gracefully (running
         // requests finish, new submissions are rejected).
         await engineV2Runtime.unregister(modelId: modelId)
-        await engineV2.shutdown()
+        do { try await GLM5NextRetirement.beforeRelease(engineV2) }
+        catch {
+            // The slot stays in modelSlots/modelsUnloading (weights counted,
+            // excluded from re-slicing and eviction); charge its KV claim so
+            // survivors never regrow into pages the faulted engine may hold.
+            retainActivity = true
+            await GLM5NextRetirement.retainUnpublished(engineBundle, with: [self, deviceActivity])
+            return false
+        }
         engineBundle.releaseAssistant()
         await ModelContainerLoading.releaseExternalResources(in: modelSlots[modelId]?.container)
         // Drops the slot's container and MTP drafter references with the

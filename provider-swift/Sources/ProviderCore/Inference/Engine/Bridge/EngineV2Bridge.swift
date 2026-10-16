@@ -51,6 +51,7 @@ public actor EngineV2Bridge {
     // managed ownership cannot silently select legacy admission.
     weak var nativeTransaction: MiMoV26NativeLoadTransaction?
     var nativeTransactionID: UUID?
+    let glm5NextNativeOwner: GLM5NextNativeOperationOwner?
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }
@@ -381,9 +382,11 @@ public actor EngineV2Bridge {
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
+        glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
+        self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine

@@ -46,6 +46,58 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
 
+### Raw GLM discovery quotation
+
+`GLM5NextDiscoveryLoadFootprint.estimate` in
+`provider-swift/Sources/ProviderCoreFoundation/GLM5NextDiscoveryLoadFootprint.swift`
+prices exact `glm5_next` affine-Q4 metadata without constructing native arrays
+or hashing payloads. `ModelScanner.glm5NextLoadEstimate` in
+`provider-swift/Sources/ProviderCore/Models/ModelScanner+GLM5Next.swift` supplies
+the existing bounded header reader and flat regular-file inventory.
+
+| Term | Bytes counted |
+|---|---|
+| `disk` | All integrity files in the raw snapshot, including every weight shard and non-weight file |
+| Native copies | `2 * largestTensor + largestExpertBank + 2 * visionBytes + (257 << 20)` |
+| Tokenizer allowance | `max(64 << 20, 8 * allNonWeightBytes)` |
+| Residual (`residualAllowanceBytes`) | `max(1 << 30, ceil(disk / 32))` |
+| Full LOAD | `disk + nativeCopies + tokenizerAllowance + residual` |
+| `native_load_transient_bytes` | Native copies, tokenizer allowance and residual, **above** raw `disk` (no disk × 1.2) |
+
+The managed loader copies one bounded tensor or expert bank at a time, so the
+generic disk × 1.2 padding over-counted GLM. On the staged 122-shard Q4
+artifact, MLX active memory after the target load equalled the text and vision
+payload, 177,510,375,672 bytes. The MLX peak through a 512-token prefill was
+180.89 GB, at most 3.38 GB above residency and below the native copies alone.
+For the retained 43-header profile the full LOAD is 192,045,833,503 bytes
+(178.86 GiB), not 222,714,752,471 bytes (207.42 GiB). With the default
+activation and minimum-KV headroom it fits a 256 GiB Mac's 90% cap.
+`GLM5NextLoadQuotation` (`GLM5NextLoadAdmission.swift`) prices the managed load
+with the same formula from the selected manifest.
+
+All MTP weights remain in `disk`; expert banks include every stored expert,
+not the active-expert count. Integer arithmetic is checked through the signed
+wire range. Missing, malformed, non-Q4, unknown-role, nested-integrity or incomplete
+inventories are omitted from GLM discovery, not given a loadable generic quote.
+This footprint is not the native loader's complete architecture validation or
+a model-support grant.
+
+Metadata-only directories such as `.cache/` and `_provenance/` are permitted
+without adding their receipts to model bytes. The descriptor-relative scan
+checks every entry, including hidden entries, and rejects symlinks, special
+files and any nested filename classified as integrity-relevant by
+`ModelScanner.isIntegrityFile`. It allows at most 4,096 total entries and eight
+directory levels; ignored metadata is bounded to 32 MiB per file and 64 MiB in
+aggregate. These directories are inspected read-only and are never deleted.
+
+Only the tokenizer shipped in the weight snapshot is priced. The provider has no
+separate-tokenizer composition path, and the local selection refuses a
+`tokenizer` field, so the raw declaration never covers another tokenizer. Actual source
+identity, complete native inventory, reservation and post-load guards remain
+the managed loader's responsibility. This changes neither manifest publication
+nor catalog activation. The [memory policy](../architecture/hardware-support.md#load-gate-modelloadadmission)
+retains separate OS, activation and KV reserves.
+
 ### Aggregate hash
 
 MiMo checkpoints (`config.json` declares `model_type: "mimo_v2"`) also include

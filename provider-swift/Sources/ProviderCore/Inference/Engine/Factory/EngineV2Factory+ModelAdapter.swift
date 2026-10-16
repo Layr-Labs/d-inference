@@ -11,6 +11,9 @@ extension EngineV2Factory {
     static func directServingModel(
         model: any LanguageModel, isVLM: Bool
     ) throws -> any LanguageModel {
+        // GLM's root remains the serving owner even for text-only requests. Its
+        // original text tower is selected by the adapter without dropping vision.
+        if model is GLM5NextModel || model is GLM5NextProtectedModel { return model }
         guard isVLM else { return model }
         if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35 { return model }
         guard let gemma4 = model as? MLXVLM.Gemma4 else {
@@ -25,6 +28,11 @@ extension EngineV2Factory {
         ProductionModelAdapter(model: model)?.layerKinds
     }
 
+    static func glm5NextTarget(model: any LanguageModel) -> GLM5NextTextModel? {
+        (model as? GLM5NextTextModel) ?? (model as? GLM5NextModel)?.textTower
+            ?? (model as? GLM5NextProtectedModel)?.root.textTower
+    }
+
     /// One family dispatch supplies both backend metadata and cache construction.
     /// Cache creation stays lazy; GPT-OSS primes its sinks probe only there,
     /// after weights have loaded, and Gemma retains its compatibility check.
@@ -37,6 +45,18 @@ extension EngineV2Factory {
 
         init?(model: any LanguageModel) {
             switch model {
+            case let glm as GLM5NextProtectedModel:
+                layerKinds = glm.root.textTower.cbv2LayerKinds
+                modelCapabilities = glm.root.textTower.cbv2Capabilities
+                newCaches = { make in try glm.root.textTower.newCacheV2(makeLayerCache: make) }
+            case let glm as GLM5NextTextModel:
+                layerKinds = glm.cbv2LayerKinds
+                modelCapabilities = glm.cbv2Capabilities
+                newCaches = { make in try glm.newCacheV2(makeLayerCache: make) }
+            case let glm as GLM5NextModel:
+                layerKinds = glm.textTower.cbv2LayerKinds
+                modelCapabilities = glm.textTower.cbv2Capabilities
+                newCaches = { make in try glm.textTower.newCacheV2(makeLayerCache: make) }
             case let gemma as Gemma4TextModel:
                 layerKinds = gemma.cbv2LayerKinds
                 modelCapabilities = .attentionOnly

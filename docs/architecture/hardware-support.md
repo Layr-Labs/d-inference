@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -98,6 +98,38 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 ([`prefix-cache.md`](prefix-cache.md)).
 
 ### Load gate (`ModelLoadAdmission`)
+
+GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage
+layer charges `(headDim + valueHeadDim) * kvHeads * 4` bytes per token, not the
+generic symmetric FP16 estimate. KDA remains a separate fixed request charge
+including the engine's three-generation reservation; it is neither a weight nor
+a marginal KV token charge
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFunnel.swift`,
+`GLM5NextLoadFunnel.kvBytesPerToken`).
+
+There is no qualified GLM5Next load profile or hardware tier. Its initial
+[native integration](../design/glm53-flash-native.md) retains the ordinary
+full-artifact load allowance and adds native construction/tokenizer transients
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
+`GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
+unchanged. The activated expert count is not a resident-weight estimate.
+
+`GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
+`GLM5NextArtifactLoadRoots` retires individual expert sources only after the
+packed bank's checked evaluation, then retains completed modules instead of a
+parallel weight dictionary. A failed cleanup fence retains these roots, the
+pending permit, writer ownership and activity; it is not permission to clear
+the allocator cache or regrow survivor grants. The owner and native reader live
+in `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextConstructionOwner.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextArtifactLoader.swift`.
+
+The raw same-directory [discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
+now carries that complete allowance into scanner-based memory consumers.
+`ModelScanner.glm5NextLoadEstimate` refuses malformed profiles instead of
+falling back to the generic disk × 1.2, and prices only the tokenizer shipped in
+the snapshot. It remains a metadata
+bound, not native validation, a hardware qualification or permission to bypass
+the actual managed-load reservation and post-load guards.
 
 ```text
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
@@ -304,6 +336,14 @@ constructing EngineV2. Its bridge skips duplicate per-request reservations;
 contiguous slots retain their existing provider reservation path. Recurrent and
 MTP auxiliary state stays charged without materialization credit. Current load
 and provider headroom readers use the same shared ledger.
+An admitted MTP context is bound to one request generation. Both ordinary
+release and native reservation detachment retire that context immediately;
+reusing the request ID cannot revive it. Target retirement and outstanding
+assistant allocation leases then release their separate portions of the
+original prepaid charge, in either order
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`,
+`detachReservation`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/AdmittedMTPBinding.swift`).
 Native segmented allocation reserves an allocator-owned upper bound for each
 new backing before construction, including rounding and permitted cached-buffer
 reuse. After evaluating and draining the captured allocation stream, the fresh

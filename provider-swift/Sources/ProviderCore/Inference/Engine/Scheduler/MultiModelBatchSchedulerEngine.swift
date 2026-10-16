@@ -464,7 +464,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     ctx.model is MLXVLM.Qwen4Exp || ctx.model is MLXVLM.PrismHadamardQwen35
                 }
             }
-            if !MediaIngest.hasMedia(request) || nativeMediaTools || modelType == "mimo_v2" {
+            if !MediaIngest.hasMedia(request) || nativeMediaTools || modelType == "mimo_v2"
+                || GLM5NextPromptPolicy.applies(modelType: modelType) {
                 toolHandler = try ToolStreamPreparation.makeHandler(
                     request: request, prepared: prepared, modelType: modelType)
             } else {
@@ -486,6 +487,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // A VLM slot's bridge owns the exact same text tower used by direct VLM
         // forwards, but media must first run the wrapper's vision tower and
         // splice its embeddings; token-only preparation would discard media.
+        // GLM media needs an engine issued for prepared causal media. Refuse
+        // before any decode, vision reservation or tower work otherwise.
+        let glmMedia = GLM5NextPromptPolicy.applies(modelType: modelType) && MediaIngest.hasMedia(request)
+        if glmMedia, await engineV2Bridge?.servesGLM5NextMedia != true {
+            await releaseBox.fire()
+            throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
+        }
         if modelType == "mimo_v2", MediaIngest.hasMedia(request) {
             do {
                 return try await prepareNativeMiMoMedia(request:request,templateControls:templateControls,
@@ -538,7 +546,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // if it won't fit we reject with a retryable error instead of OOMing.
             // Released on every exit.
             let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
-            let projectedBytes = MediaIngest.projectedDecodeBytes(visionRequest)
+            var projectedBytes = MediaIngest.projectedDecodeBytes(visionRequest)
             // Scheduler-free vision gate (v0.7.5): the per-slot
             // `VisionMemoryGate` carries the slot's fp16 KV rate + context
             // window and reserves against the same shared budget the old
@@ -552,9 +560,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // vision path bypasses the batched KV reservation, so charging only the
             // output tokens would under-count the prompt + vision tokens that also
             // occupy KV.
-            let kvTokens = MediaIngest.projectedKVTokens(
+            var kvTokens = MediaIngest.projectedKVTokens(
                 visionRequest, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
+            if glmMedia, let container {
+                // GLM's tower runs inside this reservation, and one image can
+                // expand to its processor's full token cap.
+                let reservation = await GLM5NextVisionBudget.mediaReservation(
+                    container: container, request: visionRequest,
+                    defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength)
+                let (bytes, overflow) = projectedBytes.addingReportingOverflow(reservation.bytes)
+                projectedBytes = overflow ? .max : bytes
+                kvTokens = max(kvTokens, reservation.kvTokens)
+            }
             let mediaReserved = await mediaGate.reserve(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
                 kvTokens: kvTokens)
@@ -609,7 +627,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         visionPrepared = try await EngineV2VisionPrefill.prepareDiffusion(container: diffusionContainer,
                             request: visionRequest, templateControls: templateControls)
                     } else if let container {
-                        visionPrepared = try await plumbing.prepare(container, visionRequest, templateControls)
+                        // GLM normalizes the original request exactly as its text path does.
+                        visionPrepared = try await plumbing.prepare(
+                            container, glmMedia ? request : visionRequest, templateControls)
                     } else {
                         throw EngineV2VisionPrefillError.unsupportedVLM("missing typed model owner")
                     }

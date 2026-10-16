@@ -15,6 +15,41 @@ outside cached Autopilot consent. Enrollment remains saved, ordinary serving
 continues, and `darkbloom autopilot models` refreshes inventory before control
 can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
 
+## Local GLM qualification
+
+`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`
+can include the experimental GLM root only when
+`DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
+Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
+The file pins the exact catalog record, manifest and expected aggregate; see
+[configuration](../reference/configuration.md#local-glm-qualification) for its schema.
+GLM always uses its native paged KV backend: automatic selection resolves
+`paged`, and an explicit `contiguous` selection or the `DARKBLOOM_CBV2_PAGED_KV`
+kill switch refuses the load instead of falling back. GLM serves only through
+its embedded-MTP engine, which is on by default: the default `mtp_mode = "auto"`
+enables it without any setting (`MTPMode.enablesMTP`). `mtp_mode = "off"` or
+the `DARKBLOOM_CBV2_MTP=0` kill switch skips the model at startup with a
+message, because GLM cannot serve target-only. This opt-in does not select a performance profile,
+bypass memory admission or qualify the model. It is not forwarded into launchd.
+Stop the isolated local process to disable it. There is no target-only GLM
+serving engine; target-only construction is limited to benchmarks.
+
+Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
+(absorbed sparse attention, parallel-threshold selection, native KDA
+recurrence, fused hyper-connections and routed-expert combine), recorded in the
+encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
+`EigenLabs/GLM-5.3-Flash-MLX-4bit-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
+Prefill chunks and steps are each at most 512 tokens, and solo prefill stripes are off, including
+`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. Requests that omit sampling fields use the
+artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
+runs through the native GLM media path; the embedded-MTP serving engine accepts
+prepared causal media, so image rows prefill and decode target-only (no MTP
+speculation, no prefix reuse). Video input is refused with HTTP 400.
+Coordinator advertisement and default cohorts continue excluding GLM regardless
+of this variable (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
+`GLM5NextLocalQualification`; `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`,
+`EngineV2SupportedModels`).
+
 ## `darkbloom cache`
 
 Persistent settings for encrypted inference caches; downloaded model weights use
@@ -1648,6 +1683,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
+| `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, live) |

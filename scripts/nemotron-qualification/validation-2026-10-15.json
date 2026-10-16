@@ -1,0 +1,184 @@
+{
+  "date": "2026-10-15",
+  "sdk_source_commit": "637b1c82deae",
+  "provider_source_commit": "4441094c5",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "cpu_cores": 28,
+    "gpu_cores": 60,
+    "unified_memory_GiB": 256,
+    "os": "macOS 27.2",
+    "swift": "6.4"
+  },
+  "public_source_model": {
+    "repository": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+    "revision": "7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c",
+    "shards": 88,
+    "weight_bytes": 75010188240,
+    "mtp_tensors": 4120,
+    "identity_check": "Public source headers and Hub metadata; payload not hashed locally"
+  },
+  "fixture_tests_at_integration_heads": {
+    "sdk": {
+      "swift_testing_passed": 174,
+      "failed": 0,
+      "skipped_opt_in_benchmarks": 6,
+      "suites": 49,
+      "xctest_passed": 2
+    },
+    "provider": {
+      "swift_testing_passed": 53,
+      "failed": 0,
+      "suites": 11,
+      "xctest_passed": 23,
+      "includes_real_tokenizer_golden": true
+    },
+    "note": "synthetic fixtures; provider suite rerun after merging master 0813f1e50"
+  },
+  "full_checkpoint": {
+    "payload_verified": {
+      "shards": 88,
+      "weight_bytes": 75010188240,
+      "mtp_tensors": 4120,
+      "index_sha256": "c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741",
+      "seconds": 28.4
+    },
+    "load_bugs_fixed": [
+      "config.json is 8,668,620 bytes; 4 MiB bound raised to 16 MiB",
+      "autoreleased read buffers held 76 GB after shard hashing and leaked a second copy during staging",
+      "checkpoint A_log is BF16; widened exactly to the model's float32"
+    ],
+    "sdk_level_greedy_27_token_prompt": {
+      "eager_reference": {
+        "prefill_tok_s": 0.99,
+        "decode_ms_per_token_p50": 8862,
+        "output": "correct, stops at <|im_end|>"
+      },
+      "graph_release": {
+        "decode_ms_per_token_p50": 31.86,
+        "decode_tok_s": 31.4,
+        "stage_seconds": 20.4,
+        "tokens_identical_to_eager": "60/60",
+        "mlx_active_GB_after_load": 73.41
+      }
+    },
+    "sdk_level_prefill_1826_tokens_release": {
+      "exact_rowwise_tok_s": 227,
+      "tiled_tok_s": 441,
+      "chunk_limit": 1531,
+      "mlx_peak_GB": 81.05
+    },
+    "local_endpoint_release_runner": {
+      "cold_start_to_ready_s": 41.6,
+      "load_peak_phys_footprint_GB": 78.7,
+      "load_charge_GB": 86.4,
+      "plain": {
+        "decode_tok_s": {
+          "128": 27.1,
+          "2048": 27.1,
+          "15360": 26.4
+        },
+        "ttft_s": {
+          "128": 0.72,
+          "2048": 9.73,
+          "15360": 72.1
+        },
+        "image_ttft_s": {
+          "512x512": 1.8,
+          "1024x1024": 6.1,
+          "2048x1536": 17.7
+        }
+      },
+      "mtp_depth1_decode_tok_s": {
+        "128": 44.1,
+        "2048": 37.9,
+        "15360": 35.8
+      },
+      "mtp_depth3_decode_tok_s": {
+        "128": 62.5,
+        "2048": 51.3,
+        "15360": 48.1
+      },
+      "mtp_greedy_exactness": "6/6 natural prompts byte-identical plain vs depth 1 vs depth 3; depth 3 50.5-60.9 tok/s on them",
+      "batched_max_concurrent_8_short_prompt_aggregate_tok_s": {
+        "1": 23.0,
+        "2": 36.1,
+        "4": 48.6,
+        "8": 58.1
+      },
+      "batched_max_concurrent_8_2048_prompt_aggregate_tok_s": {
+        "1": 10.2,
+        "2": 11.9,
+        "4": 12.3,
+        "8": 12.8
+      }
+    },
+    "measured_gemm_ceiling_TFLOPS": {
+      "bf16": "13.9-19.0",
+      "nvfp4_qmm": "13.9-17.1",
+      "prefill_ceiling_tok_s_at_23.4_GFLOP_per_token": 810
+    }
+  },
+  "not_yet_qualified": [
+    "production discovery, managed load, coordinator request path and capacity quotes for Super",
+    "platform registration, prompt sidecar and admission",
+    "R2 publication; public Hugging Face source",
+    "paged KV and prefix caching",
+    "prefill target 700-800 tok/s (measured ~480-540)",
+    "long-context quality"
+  ],
+  "log_note": "Numbers come from receipts kept on the original machine; synthetic fixture results are not model evidence.",
+  "fixture_tests_at_serving_heads": {
+    "sdk": {
+      "swift_testing_passed": 203,
+      "failed": 0,
+      "skipped_opt_in_benchmarks": 12,
+      "xctest_passed": 6
+    },
+    "provider": {
+      "swift_testing_passed": 59,
+      "failed": 0,
+      "xctest_passed": 22,
+      "xctest_skipped": 1
+    },
+    "note": "includes fastpath through 19824b8d and provider master ab423c1c0"
+  },
+  "ship_check_endpoint_release_runner": {
+    "build": "serving snapshot s1 (SDK 92a9d3d1, provider 66095c26e); serving/fastpath changes since are tests and type-check fixes plus fastpath 19824b8d",
+    "cold_start_to_ready_s": 34.0,
+    "exactness": "MTP depth 3 byte-identical to plain on 6/6 natural prompts; tiled prefill rewords 4/6 vs exact prefill with correct answers",
+    "plain_max_concurrent_8": {
+      "ttft_s": {
+        "128": 0.55,
+        "2048": 4.26,
+        "image_1024x1024": 3.22
+      },
+      "decode_tok_s": 27.9,
+      "aggregate_tok_s_short_prompts": {
+        "1": 24.2,
+        "4": 52.2,
+        "8": 62.5
+      },
+      "ttft_p50_s_at_8_clients": 1.75
+    },
+    "mtp_depth3_max_concurrent_8": {
+      "ttft_s": {
+        "128": 0.51,
+        "2048": 3.79
+      },
+      "decode_tok_s": {
+        "128": 64.7,
+        "2048": 52.4
+      },
+      "aggregate_tok_s_short_prompts": {
+        "1": 50.9,
+        "4": 72.2,
+        "8": 76.4
+      },
+      "ttft_p50_s_at_8_clients": 1.17,
+      "kv_grant_gib": 28
+    },
+    "paged_kv": "not used (contiguous only)",
+    "prefix_cache": "not enabled"
+  }
+}

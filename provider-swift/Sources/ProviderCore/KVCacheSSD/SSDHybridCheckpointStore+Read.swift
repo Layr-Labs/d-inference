@@ -164,7 +164,14 @@ extension SSDHybridCheckpointStore {
                 transferred = true
                 return result(outcome.disposition, deviceBytes: outcome.deviceBytes)
             }
-            guard outcome.retryable else { return result(outcome.disposition) }
+            guard outcome.retryable else {
+                // The refund runs on its own task; a cold result returns only
+                // after this attempt's host IO left the ledger and the stats.
+                lease.finishIO()
+                lease.release()
+                await lease.waitForRefund()
+                return result(outcome.disposition)
+            }
 
             readScratch.close()
             access.release()

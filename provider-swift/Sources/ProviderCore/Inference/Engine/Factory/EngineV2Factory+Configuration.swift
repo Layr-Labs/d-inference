@@ -84,7 +84,22 @@ extension EngineV2Factory {
             requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
+        if let limit = calibratedPrefillTokenLimit(model: model) {
+            // Calibrated W4A4/FP8 workspace is a hard execution bound, not a
+            // throughput preference. Environment/profile overrides cannot widen it.
+            let limit = max(1, limit)
+            config.prefillChunkSize = min(config.prefillChunkSize, limit)
+            config.soloPrefillStripeTokens = nil
+            config.mixedStepPrefillTokenCap = min(config.mixedStepPrefillTokenCap ?? limit, limit)
+        }
         return config
+    }
+
+    /// Calibrated ModelOpt workspace bound of a Nemotron target, if it has one.
+    static func calibratedPrefillTokenLimit(model: (any LanguageModel)?) -> Int? {
+        (model as? NemotronHModel)?.calibratedPrefillTokenLimit
+            ?? (model as? NemotronSuperRecurrentAdapter)?.calibratedPrefillTokenLimit
+            ?? (model as? NemotronSuperMTPTextTarget)?.calibratedPrefillTokenLimit
     }
 
     static let qwen4BatchedQSAEnvKey = "DARKBLOOM_QWEN4_BATCHED_QSA"
@@ -95,6 +110,9 @@ extension EngineV2Factory {
     static func configureNativeQwen4Batching(
         model: any LanguageModel, environment: [String: String]
     ) throws {
+        if let limit = calibratedPrefillTokenLimit(model: model), limit <= 0 {
+            throw CBv2KVError.backendIneligible(reason: "calibrated Nemotron workspace cannot fit one token")
+        }
         guard let target = model as? any CBv2Qwen4BatchCapabilityConfiguring else { return }
         let enabled = environment[qwen4BatchedQSAEnvKey] == "1"
         do {

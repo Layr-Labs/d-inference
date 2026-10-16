@@ -9,7 +9,11 @@ import MLX
 /// loaded owner's own engine and declarations (logical bytes before allocator
 /// rounding unless named `projected`). Diagnostics only; nothing is allocated.
 enum RunnerRequestCharge {
-    static func json(bridge: EngineV2Bridge) async -> RunnerJSON {
+    /// `environment` and `contextTokens` are the load's: the serving policy's
+    /// owner estimate (`policy_owner_bound`) is reported beside the engine's
+    /// exact `owner` so a ready file shows whether the LOAD claim held it.
+    static func json(bridge: EngineV2Bridge, environment: [String: String] = [:],
+                     contextTokens: Int = NemotronSuperServingPolicy.contextTokens) async -> RunnerJSON {
         guard let engine = await bridge.ownedEngine as? EngineV2 else { return .null }
         var fields: [String: RunnerJSON] = [
             "engine_fixed_bytes": .bytes(engine.resolvedFixedBytesPerRequest),
@@ -43,8 +47,12 @@ enum RunnerRequestCharge {
             "per_token": .bytes(resolution.auxiliaryBytesPerToken),
             "linear_slack": .bytes(resolution.auxiliaryLinearSlackBytes),
             "owner": .bytes(resolution.ownerBytes),
+            "policy_owner_bound": .bytes(NemotronSuperServingPolicy.speculativeOwnerBoundBytes(
+                requests: engine.loopForTesting.scheduler.config.maxConcurrentRequests,
+                environment: environment, contextTokens: contextTokens)),
             "window_positions": .count(limits.maximumWindowPositions),
             "round_draft_steps": .count(limits.maximumRoundDraftSteps),
+            "history_copies": .count(limits.maximumHistoryCopies),
         ]
         let workspace = assistant.workspace
         let graph = workspace.graph

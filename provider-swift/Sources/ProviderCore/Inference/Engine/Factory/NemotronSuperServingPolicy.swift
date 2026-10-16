@@ -3,6 +3,7 @@
 import CryptoKit
 import Foundation
 import MLXLLM
+import MLXLMCommon
 import MLXVLM
 import ProviderCoreFoundation
 
@@ -127,7 +128,8 @@ enum NemotronSuperServingPolicy {
             let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
                 kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
                 pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
-            kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates) + bank {
+            kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates,
+                environment: environment) + bank {
             environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
@@ -136,24 +138,102 @@ enum NemotronSuperServingPolicy {
         return LoadPlan(environment: environment, speculates: speculates, requests: requests,
             prefixBankBytes: bank,
             admissionKVBytes: min(kvBytesCapacity,
-                admissionKVBytes(requests: requests, speculates: speculates) + bank))
+                admissionKVBytes(requests: requests, speculates: speculates, environment: environment) + bank))
     }
 
     /// Fixed bytes one request reserves (recurrent state, request workspace,
-    /// the speculation charge that does not grow with the sequence), measured
-    /// on the pinned checkpoint with 2,048-token chunks and rounded up:
-    /// 2,450,016,143 at depth 3, 516,253,712 plain, at any configured context.
-    /// The assistant's history is charged per token of each request (30,216
-    /// bytes beside 8,192 of KV), like the KV, not by the configured window.
-    static let speculativeRequestBoundBytes = 5 << 29
+    /// the assistant's frontier and partial history block), measured on the
+    /// pinned checkpoint with 2,048-token chunks and rounded up: 533,401,365
+    /// at depth 3, 516,253,712 plain, at any configured context. The
+    /// assistant's history is charged per token of each request (1,536 bytes
+    /// beside 8,192 of KV), like the KV, not by the configured window; its
+    /// round work is the owner's, once (`speculativeOwnerBoundBytes`).
+    static let speculativeRequestBoundBytes = 9 << 26
     static let plainRequestBoundBytes = 1 << 29
 
+    /// Units of the speculating owner's once-per-engine reservation
+    /// (`mtp_round`), recorded from the pinned checkpoint's ready charges
+    /// (default table, eight requests and one request, 65,536 and 133,120
+    /// tokens): one chained draft step, the prompt-history chunk with the
+    /// backend scratch allowance, the verify window's fixed workspace and its
+    /// part per position (4 positions 209,996,800 bytes, 16 positions
+    /// 236,007,424), one recurrent generation as projected, and one history
+    /// row's FP8 codes and decoded mirror of K and V.
+    static let pinnedMTPDraftStepBytes = 22_622_736
+    static let pinnedMTPOwnerFixedBytes = 562_037_760 + (256 << 20)
+    static let pinnedMTPWindowFixedBytes = 192 << 20
+    static let pinnedMTPWindowBytesPerPosition = 2_167_552
+    static let pinnedRecurrentGenerationBytes = 173_014_960
+    static let pinnedMTPHistoryBytesPerToken = 1_536
+    /// Allocator rounding the engine projects beyond the logical units
+    /// (0.4 MB for one request, 1.1 MB for eight, measured), bounded by this
+    /// slack; the total is then rounded up to the granule.
+    static let mtpOwnerAllocatorSlackBytes = 64 << 20
+    static let mtpOwnerGranuleBytes = 64 << 20
+
+    /// The speculating owner's MTP work, held once whatever the number of
+    /// requests, for `requests` at `contextTokens` under the depth the runtime
+    /// policy selects (the environment's, else `defaultDepthByRequests`):
+    /// the engine's own round counts for that table
+    /// (`CBv2MTPAllocationLimits`, the counts the SDK reserves) times the
+    /// pinned units plus `mtpOwnerAllocatorSlackBytes`, rounded up to
+    /// `mtpOwnerGranuleBytes`. It shrinks when the table drafts less at a width. A malformed
+    /// setting is counted as adaptive at the largest depth, every width's
+    /// worst case. An estimate for the LOAD claim; the builder reserves the
+    /// engine's exact `ownerBytes` and refuses the build when they do not fit.
+    static func speculativeOwnerBoundBytes(requests: Int, environment: [String: String] = [:],
+                                           contextTokens: Int = contextTokens) -> Int {
+        var resolved = environment
+        resolved[NemotronSuperLocalMTP.enabledKey] = "1"
+        if resolved[NemotronSuperLocalMTP.depthKey] == nil {
+            resolved[NemotronSuperLocalMTP.depthKey] = defaultDepthByRequests.map(String.init).joined(separator: ",")
+        }
+        let maximum = NemotronSuperMTPAssistant.Settings.maximumDepth
+        let setting = (try? NemotronSuperLocalMTP.Setting.resolve(environment: resolved)) ?? nil
+        let config = setting.map { NemotronSuperLocalMTP.config($0, requests: requests) }
+            ?? NemotronSuperLocalMTP.config(.init(depth: maximum, adaptive: true), requests: requests)
+        let depth = config.maxDraftTokens
+        let round = CBv2MTPAllocationLimits.roundBounds(config)
+        let generations = CBv2MTPAllocationLimits.capturedWindowGenerations(config, perRequest: 3)
+        let copies = CBv2MTPAllocationLimits.historyCopies(config, requests: requests)
+        let historyRows = max(1, contextTokens) + depth + 1
+        let parts = [
+            (round.steps, pinnedMTPDraftStepBytes), (1, pinnedMTPOwnerFixedBytes),
+            (1, pinnedMTPWindowFixedBytes), (round.positions, pinnedMTPWindowBytesPerPosition),
+            (generations, pinnedRecurrentGenerationBytes),
+            (copies, pinnedMTPHistoryBytesPerToken * historyRows),
+        ]
+        var total = mtpOwnerAllocatorSlackBytes
+        for (count, bytes) in parts {
+            let (product, productOverflow) = max(0, count).multipliedReportingOverflow(by: bytes)
+            let (sum, sumOverflow) = total.addingReportingOverflow(product)
+            guard !productOverflow, !sumOverflow else { return Int.max }
+            total = sum
+        }
+        let remainder = total % mtpOwnerGranuleBytes
+        let (rounded, overflow) = total.addingReportingOverflow(
+            remainder == 0 ? 0 : mtpOwnerGranuleBytes - remainder)
+        return overflow ? Int.max : rounded
+    }
+
     /// KV headroom the LOAD claim requires: every configured request's fixed
-    /// bytes plus 2 GiB for KV and the admission watermark. The built bridge's
-    /// exact grant check (`UnserviceableGrant`) stays authoritative.
-    static func admissionKVBytes(requests: Int, speculates: Bool) -> Int {
+    /// bytes, with speculation the owner's round work once
+    /// (`speculativeOwnerBoundBytes` for the environment's depth table at
+    /// `contextTokens`), plus 2 GiB for KV and the admission watermark. The
+    /// built bridge's exact grant check (`UnserviceableGrant`) and the
+    /// builder's exact round reservation stay authoritative.
+    static func admissionKVBytes(requests: Int, speculates: Bool, environment: [String: String] = [:],
+                                 contextTokens: Int = contextTokens) -> Int {
+        let requests = max(1, requests)
         let perRequest = speculates ? speculativeRequestBoundBytes : plainRequestBoundBytes
-        return max(1, requests) * perRequest + (2 << 30)
+        let owner = speculates
+            ? speculativeOwnerBoundBytes(requests: requests, environment: environment,
+                contextTokens: contextTokens)
+            : 0
+        let (fixed, fixedOverflow) = requests.multipliedReportingOverflow(by: perRequest)
+        let (withOwner, ownerOverflow) = fixed.addingReportingOverflow(owner)
+        let (total, overflow) = withOwner.addingReportingOverflow(2 << 30)
+        return fixedOverflow || ownerOverflow || overflow ? Int.max : total
     }
 
     // MARK: - Prefix checkpoint bank
@@ -191,7 +271,7 @@ enum NemotronSuperServingPolicy {
         guard let chunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: environment),
             kvBytesCapacity > 0, let media = mediaChargeBytes(imageCount: 1)
         else { return 0 }
-        let admission = admissionKVBytes(requests: requests, speculates: speculates)
+        let admission = admissionKVBytes(requests: requests, speculates: speculates, environment: environment)
         let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: chunk)
         let serving = kvBytesCapacity - admission - lane - Int(clamping: media)
         let claim = Int(clamping: pinnedLoadClaimBytes(speculates: speculates))

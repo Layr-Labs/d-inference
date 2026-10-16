@@ -247,18 +247,29 @@ enum NemotronSuperLocalBridgeBuilder {
 
     /// The owner-level reservations a pinned load's LOAD claim also holds, so
     /// one claim before allocation covers everything the loaded owner keeps:
-    /// the prefill lane at the measured whole-chunk bound and the default (or
-    /// operator) prefix bank, which paged KV never has.
+    /// the prefill lane at the measured whole-chunk bound, a speculating
+    /// owner's round work (`NemotronSuperServingPolicy.speculativeOwnerBoundBytes`)
+    /// and the default (or operator) prefix bank, which paged KV never has.
     struct OwnerShares: Equatable, Sendable {
         let lane: Int
+        var round = 0
         let bank: Int
+
+        /// Every share; nil when they overflow.
+        var total: Int? {
+            let (partial, first) = lane.addingReportingOverflow(round)
+            let (sum, second) = partial.addingReportingOverflow(bank)
+            return first || second ? nil : sum
+        }
     }
 
     /// `OwnerShares` of the pinned checkpoint's owner under this grant and
-    /// runtime policy, computed as `make` computes the lane and the bank. A
-    /// chunk key outside 1...`maximumContextTokens` counts no lane share (the
-    /// builder refuses the key itself).
+    /// runtime policy at `contextTokens`, computed as `make` computes the lane
+    /// and the bank and as the serving policy bounds the round. A chunk key
+    /// outside 1...`maximumContextTokens` counts no lane share (the builder
+    /// refuses the key itself).
     static func pinnedOwnerShares(environment: [String: String], kvBytesCapacity: Int, speculates: Bool,
+                                  contextTokens: Int = NemotronSuperServingPolicy.contextTokens,
                                   physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) throws
         -> OwnerShares {
         let lane = NemotronSuperLocalPrefill.requestedChunkTokens(environment: environment)
@@ -268,7 +279,12 @@ enum NemotronSuperLocalBridgeBuilder {
         let bank = paged ? 0 : NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
             physicalBytes: physicalBytes)?.maximumBytes ?? 0
-        return OwnerShares(lane: lane, bank: bank)
+        let round = speculates
+            ? NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: requests,
+                environment: environment, contextTokens: contextTokens)
+            : 0
+        guard round < Int.max else { throw Failure.unsupportedSizing }
+        return OwnerShares(lane: lane, round: round, bank: bank)
     }
 
     /// `loadLease` is the real existing pending LOAD claim, never a new permit;
@@ -297,7 +313,7 @@ enum NemotronSuperLocalBridgeBuilder {
         leaseShares: OwnerShares? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
-        let leaseWeightBytes = leaseShares.map { $0.lane + $0.bank } ?? installed.receipt.payloadBytes
+        let leaseWeightBytes = leaseShares.map { $0.total ?? -1 } ?? installed.receipt.payloadBytes
         guard installed.receipt.payloadBytes > 0, leaseWeightBytes >= 0,
             await kvBudget.recheckPendingLoad(loadLease,
                 minimumWeightBytes: UInt64(leaseWeightBytes),
@@ -380,7 +396,8 @@ enum NemotronSuperLocalBridgeBuilder {
         // prefill. It is reserved before the bridge can admit any request,
         // taking over the lease's lane share (any excess is admitted here).
         if let leaseShares {
-            guard await kvBudget.reducePendingLoad(loadLease, remainingWeightBytes: UInt64(leaseShares.bank))
+            guard await kvBudget.reducePendingLoad(loadLease,
+                remainingWeightBytes: UInt64(leaseShares.round + leaseShares.bank))
             else {
                 try await retireUnpublished(bridge, budget: kvBudget, releasing: [])
                 throw Failure.loadAdmissionLost
@@ -411,7 +428,16 @@ enum NemotronSuperLocalBridgeBuilder {
             rows = (id, rowsBytes)
         }
         // A speculating engine sizes its round work and captured windows once,
-        // whatever the number of requests; reserve them before any request.
+        // whatever the number of requests; reserve them before any request,
+        // taking over the lease's round share (any excess is admitted here).
+        if let leaseShares {
+            guard await kvBudget.reducePendingLoad(loadLease, remainingWeightBytes: UInt64(leaseShares.bank))
+            else {
+                try await retireUnpublished(bridge, budget: kvBudget,
+                    releasing: [laneID] + (rows.map { [$0.id] } ?? []))
+                throw Failure.loadAdmissionLost
+            }
+        }
         let roundBytes = await bridge.superMTPOwnerBytes
         var round: (id: String, bytes: Int)?
         if roundBytes > 0 {

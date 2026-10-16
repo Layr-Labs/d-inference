@@ -108,13 +108,14 @@ actor NemotronSuperLocalLoad {
             let shares = staging.pinned
                 ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: environment,
                     kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil,
-                    physicalBytes: physicalBytes)
+                    contextTokens: sizing.maxContextLength, physicalBytes: physicalBytes)
                 : nil
-            let ownerBytes = (shares?.lane ?? 0) + (shares?.bank ?? 0)
+            guard let ownerBytes = shares.map({ $0.total }) ?? 0 else { throw Failure.capacity }
             let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
-            // The bank is part of the admission; the claim holds it once, as a share.
+            // The bank and the round are part of the admission; the claim holds
+            // each once, as a share.
             let admission = admissionKVBytes ?? kvBytesCapacity
-            let kvFloor = admission - (shares?.bank ?? 0)
+            let kvFloor = admission - (shares?.bank ?? 0) - (shares?.round ?? 0)
             guard !overflow, !ownerOverflow, kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,

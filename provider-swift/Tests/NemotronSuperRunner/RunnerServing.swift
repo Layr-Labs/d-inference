@@ -18,15 +18,18 @@ struct RunnerLoadSettings: Sendable {
 
     /// The managed slot's LOAD KV headroom under this grant
     /// (`NemotronSuperServingPolicy.loadPlan`): every configured request's
-    /// fixed bytes, 2 GiB and the owner's prefix bank, never above the grant.
-    static func managedAdmissionKVBytes(grantBytes: Int, environment: [String: String]) -> Int {
+    /// fixed bytes, a speculating owner's round work at `contextTokens`, 2 GiB
+    /// and the owner's prefix bank, never above the grant.
+    static func managedAdmissionKVBytes(grantBytes: Int, environment: [String: String],
+                                        contextTokens: Int) -> Int {
         let speculates = environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1"
         let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: environment, speculates: speculates)) ?? 1
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment, kvBytesCapacity: grantBytes,
             requests: requests, speculates: speculates)?.maximumBytes ?? 0
         return min(grantBytes,
-            NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: speculates) + bank)
+            NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: speculates,
+                environment: environment, contextTokens: contextTokens) + bank)
     }
 
     /// The opt-in speculation the engine environment selects; the load

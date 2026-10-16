@@ -64,13 +64,45 @@ struct NemotronSuperServingPolicyTests {
                      depthByRequests: [3, 2, 2, 2, 1]))
         #expect(try NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: plan.environment, speculates: true) == 8)
-        // Every request's fixed bytes at the served 65,536-token context and the
-        // prefix bank this 100 GiB grant sizes on a 256 GiB machine (16 GiB):
-        // above the 38,433,323,149-byte minimum grant measured for depth 3 x 8
-        // without a bank.
+        // Every request's fixed bytes, the owner's round work once at the
+        // served 65,536-token context and the prefix bank this 100 GiB grant
+        // sizes on a 256 GiB machine (16 GiB). Beside the round and the bank,
+        // the KV floor is above the 5,622,055,519-byte minimum grant measured
+        // for depth 3 x 8 without a bank (6,695,797,343 with a 1 GiB bank).
         #expect(plan.admissionKVBytes
             == NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true) + (16 << 30))
-        #expect(plan.admissionKVBytes - plan.prefixBankBytes > 38_433_323_149)
+        let round = NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8,
+            environment: plan.environment)
+        #expect(plan.admissionKVBytes - plan.prefixBankBytes - round > 5_622_055_519)
+    }
+
+    /// The speculating owner's round work is held once, sized by the engine's
+    /// own counts for the depth table in effect: it covers the round the
+    /// pinned checkpoint reserved (`mtp_round`, measured 4,935,449,637 bytes
+    /// for the default table x 8 at 65,536 tokens and 2,791,734,886 for one
+    /// request at 133,120), shrinks when the table drafts less at a width,
+    /// and a malformed setting counts every width at the largest depth.
+    @Test func ownerRoundBoundFollowsTheDepthTable() {
+        typealias Policy = NemotronSuperServingPolicy
+        func bound(_ depth: String?, _ requests: Int, _ context: Int = Policy.contextTokens) -> Int {
+            var environment: [String: String] = [:]
+            if let depth { environment[NemotronSuperLocalMTP.depthKey] = depth }
+            return Policy.speculativeOwnerBoundBytes(requests: requests, environment: environment,
+                contextTokens: context)
+        }
+        #expect(bound(nil, 8) == 5_033_164_800 && bound(nil, 8) == bound("3,2,2,2,1", 8))
+        #expect(bound(nil, 8) > 4_935_449_637)
+        #expect(bound(nil, 1, 133_120) == 2_885_681_152 && bound(nil, 1, 133_120) > 2_791_734_886)
+        // Drafting less at three or more rows shrinks it; drafting more grows it.
+        #expect(bound("3,2,1", 8) == 4_362_076_160 && bound("3,2,1", 8) < bound(nil, 8))
+        #expect(bound("3,2", 8) == 8_120_172_544 && bound("3", 8) == 11_878_268_928)
+        #expect(bound("auto", 8) == bound("3", 8) && bound("9", 8) == bound("3", 8))
+        // History copies scale with the configured context; fewer requests hold less.
+        #expect(bound(nil, 8, 131_072) > bound(nil, 8) && bound(nil, 2) < bound(nil, 8))
+        #expect(Policy.admissionKVBytes(requests: 8, speculates: true)
+            == 8 * Policy.speculativeRequestBoundBytes + bound(nil, 8) + (2 << 30))
+        #expect(Policy.admissionKVBytes(requests: 8, speculates: false) == 8 * (1 << 29) + (2 << 30))
+        #expect(Policy.speculativeRequestBoundBytes > 533_401_365)
     }
 
     /// The managed slot sizes itself: alone on the measured 256 GB M3 Ultra its
@@ -117,8 +149,12 @@ struct NemotronSuperServingPolicyTests {
             base: [NemotronSuperLocalMTP.depthKey: "1", NemotronSuperLocalMTP.verificationKey: "rectangular"],
             mode: .on, configuredConcurrency: 2, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
         #expect(narrow.requests == 2 && narrow.environment[NemotronSuperLocalMTP.depthKey] == "1")
+        // The operator's depth-1 table sizes the round, not the default.
         #expect(narrow.admissionKVBytes
-            == NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true) + (16 << 30))
+            == NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true,
+                environment: narrow.environment) + (16 << 30))
+        #expect(narrow.admissionKVBytes
+            < NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true) + (16 << 30))
         let wide = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(wide.requests == 8, "one captured verify window bounds speculation")
@@ -347,6 +383,7 @@ struct NemotronSuperServingPolicyTests {
         let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: auto.environment,
             kvBytesCapacity: grant, speculates: true, physicalBytes: physical)
         #expect(shares.lane == 12 << 30 && shares.bank == auto.prefixBankBytes)
+        #expect(shares.round == Policy.speculativeOwnerBoundBytes(requests: 8, environment: auto.environment))
         let installation = Int(Policy.pinnedInstallationLoadBytes + Policy.pinnedHeadLoadBytes)
         let claim: Int = installation + shares.lane + admission
         let room: Int = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical)) - Int(activation) - claim
@@ -364,7 +401,7 @@ struct NemotronSuperServingPolicyTests {
         let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
         let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + admission + media) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        #expect(abs(footprint.estimatedMemoryGb - 122.324_139_233_678_58) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 111.511_639_233_678_58) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes

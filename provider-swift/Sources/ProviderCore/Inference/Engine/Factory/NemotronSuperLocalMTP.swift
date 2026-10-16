@@ -158,14 +158,23 @@ enum NemotronSuperLocalMTP {
                 maximumSequenceLength: maximumSequenceLength,
                 backendScratchBytes: backendScratchBytes, verification: verification,
                 maximumSpeculativeRows: requests))
-        guard let mode = assistant.requiredVerificationMode else {
+        guard let mode = assistant.requiredVerificationMode,
+            mode == config(head.setting, requests: requests).verificationMode
+        else {
             throw Failure.invalidVerification
         }
-        return Engine(
-            model: target, assistant: assistant,
-            config: CBv2MTPConfig(
-                enabled: true, maxDraftTokens: depth, maxSpeculativeBatch: requests,
-                fixedDraftTokens: head.setting.adaptive ? nil : depth,
-                fixedDraftTokensByDecodeRows: head.setting.depthByRequests, verificationMode: mode))
+        return Engine(model: target, assistant: assistant, config: config(head.setting, requests: requests))
+    }
+
+    /// The engine's MTP configuration for `setting` serving `requests`: the
+    /// fixed depth (none when adaptive), its width table and the assistant's
+    /// verification mode. The serving policy sizes the owner's round
+    /// reservation from the same value.
+    static func config(_ setting: Setting, requests: Int) -> CBv2MTPConfig {
+        CBv2MTPConfig(
+            enabled: true, maxDraftTokens: setting.depth, maxSpeculativeBatch: requests,
+            fixedDraftTokens: setting.adaptive ? nil : setting.depth,
+            fixedDraftTokensByDecodeRows: setting.depthByRequests,
+            verificationMode: setting.verification == .serial ? .serialTarget : .rectangularExact)
     }
 }

@@ -81,7 +81,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 65536 | the managed slot's context; the builder accepts at most 262144; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
-| `--kv-capacity-gib` | 4; with speculation 12 or the managed slot's admission, 2 + 2.5 x N, when larger (22 for N = 8); plain 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim unless `--managed-load-claim` (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes`, `serving_concurrency`, and the per-token rates each request's reservation adds for its prompt plus `max_tokens` (`kv_bytes_per_token`, of which `auxiliary_bytes_per_token` is the speculating assistant's history), and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
+| `--kv-capacity-gib` | 4; with speculation 12 or the managed slot's admission for N requests, the depth table and `--max-context` (`NemotronSuperServingPolicy.admissionKVBytes`, about 11.2 for N = 8 at 65536), when larger; plain 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim unless `--managed-load-claim` (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes`, `serving_concurrency`, and the per-token rates each request's reservation adds for its prompt plus `max_tokens` (`kv_bytes_per_token`, of which `auxiliary_bytes_per_token` is the speculating assistant's history), and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
 | `--managed-load-claim` | off | the LOAD claim holds the managed slot's KV headroom instead of the whole grant: every configured request's fixed bytes, 2 GiB and the default prefix bank (`NemotronSuperServingPolicy.loadPlan`), recorded as `admission_kv_bytes` in `load.quote`. A large grant then loads as it would in the provider; as there, the claim also holds the prefill lane and the bank once, and hands the installation's share to live usage once it is resident |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
@@ -116,8 +116,12 @@ reservations: recurrent state, any speculation charge, one decode row and KV),
 before the first request until retirement; the checkpoint path charges the
 SDK's full-model `prefillActivationBoundBytes` for the configured chunk),
 `prefix_bank` (the owner's resident checkpoint bank budget, held like the lane
-when prefix caching is on), `ballast`. `sampled_max_request_charges_held`
-includes the lane, not the bank.
+when prefix caching is on), `mtp_round` (a speculating owner's round work,
+verify window, captured-window generations and history copies, held once like
+the lane; the ready file's `request_charge.mtp_projected` reports its exact
+`owner` bytes beside the serving policy's `policy_owner_bound`), `ballast`.
+`sampled_max_request_charges_held` includes the lane and the round, not the
+bank.
 Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
 the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
 (`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one

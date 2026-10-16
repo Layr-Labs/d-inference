@@ -932,6 +932,11 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
+        // The model's own pages in the file cache (a download, a copy, an earlier load) are not counted by the load
+        // gate while they are active: dropped first, the part's load reads them back into its own memory.
+        if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
+            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+        }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments

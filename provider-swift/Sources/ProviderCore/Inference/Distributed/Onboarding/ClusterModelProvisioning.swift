@@ -199,6 +199,30 @@ public enum ClusterModelStore {
         return bytes > 0 ? .partial(bytes: bytes) : .missing
     }
 
+    /// Drops the pages macOS keeps in its file cache for every regular file directly in `folder` (a model's weights),
+    /// as a shared mapping invalidated with `msync(MS_INVALIDATE)`: no privileges, the files are untouched. A load
+    /// gate counts only the file cache the kernel can take before applications' memory; right after a download the
+    /// model's own pages sat in the active cache on a 36 GB M4 Max (23 GB file-backed, 0.09 GB counted) and its share
+    /// of the next start was refused (2026-10-16). Returns the bytes asked to drop; best effort.
+    @discardableResult
+    public static func dropCachedPages(folder: URL) -> Int64 {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return 0 }
+        var dropped: Int64 = 0
+        for name in names where !name.hasPrefix(".") {
+            let path = folder.appendingPathComponent(name).path
+            var information = stat()
+            guard lstat(path, &information) == 0, information.st_mode & S_IFMT == S_IFREG, information.st_size > 0 else { continue }
+            let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            defer { close(fd) }
+            let length = Int(information.st_size)
+            guard let mapping = mmap(nil, length, PROT_READ, MAP_SHARED, fd, 0), mapping != MAP_FAILED else { continue }
+            if msync(mapping, length, MS_INVALIDATE) == 0 { dropped += Int64(length) }
+            munmap(mapping, length)
+        }
+        return dropped
+    }
+
     /// A small regular file (no symbolic link) of at most 1 MiB.
     static func readSmall(_ url: URL) -> Data? {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -567,6 +591,8 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         }
         let parent = open(store.path, O_RDONLY | O_CLOEXEC)
         if parent >= 0 { _ = fsync(parent); close(parent) }
+        // Written with the cache off, but macOS may still keep the pages: the next load gate must not see them.
+        ClusterModelStore.dropCachedPages(folder: destination)
         return destination
     }
 

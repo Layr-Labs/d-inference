@@ -525,7 +525,13 @@ final class OnboardingLive: @unchecked Sendable {
         // The models single-Mac Darkbloom installed on this Mac are cluster models too (cloned in: no new blocks), when a
         // pair may serve them with this build (as for models copied from the other Mac or downloaded).
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
+        // Every model's own pages out of the file cache first: the plan judges each Mac by what its load gate counts,
+        // and a model's pages left active by a download or a copy are not counted (nor needed: a load reads them back).
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? [] where !name.hasPrefix(".") {
+            ClusterModelStore.dropCachedPages(folder: store.appendingPathComponent(name))
+        }
         for installed in ClusterProductModelStore.installed() where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
+            ClusterModelStore.dropCachedPages(folder: installed.directory)
             _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                                     accepts: context.workerAcceptsManifest)
         }
@@ -881,6 +887,9 @@ final class OnboardingLive: @unchecked Sendable {
         }
         _ = try ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                                accepts: context.workerAcceptsManifest)
+        // The download's pages stay in this Mac's file cache, active, even written and verified with the cache off:
+        // 21 GB after Qwen 3.6 35B on a 36 GB M4 Max, its load gate admitting 1.7 GB; dropped, 14.7 GB (2026-10-16).
+        ClusterModelStore.dropCachedPages(folder: installed.directory)
         guard case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: installed.artifact) else {
             throw ClusterSetupFailure("\(model.id) could not be placed in the cluster's model store")
         }

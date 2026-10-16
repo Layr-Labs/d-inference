@@ -8,6 +8,10 @@ inputs:
     description: Release version for the release lane; a dev version X.Y.Z-dev.N is stamped into ProviderCore.version
     required: false
     default: ''
+  environment:
+    description: Resolved environment (dev, staging or prod); only disambiguates retained SDK diagnostics names when dev and staging share one run
+    required: false
+    default: ''
 outputs:
   bin-dir:
     description: Optimized Swift products (release lane only)
@@ -237,7 +241,13 @@ runs:
       if: always() && inputs.lane == 'qualification'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: provider-sdk-test-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+        # The environment infix keeps the dev and staging qualify-sdk lanes from
+        # clashing when they share one GitHub run. The name is diagnostics only
+        # (resume never references it): a release lane adds -<environment>- (so
+        # prod deliberately carries -prod-), and a caller that passes no
+        # environment (the warm lane) keeps the historical name with no infix and
+        # no empty double dash.
+        name: provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-${{ github.sha }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/provider-sdk-tests
         if-no-files-found: ignore
         retention-days: 14

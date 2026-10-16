@@ -42,15 +42,27 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.42", "publish": publish})
 
-    def test_master_push_is_always_a_dev_publication(self):
+    def test_master_push_publishes_the_lane_the_caller_routes(self):
+        # A master push publishes dev and staging; the caller routes one lane per
+        # environment and passes RELEASE_ENVIRONMENT. The push itself carries no
+        # dispatch inputs, so validation and version overrides are ignored, and a
+        # push can never resolve to prod (the production signing identity).
         push = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
                 "GITHUB_REF": "refs/heads/master", "GITHUB_REF_NAME": "master"}
-        for inputs in ({"RELEASE_ENVIRONMENT": ""}, {"RELEASE_ENVIRONMENT": "prod"},
-                       {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
-            with self.subTest(inputs=inputs):
-                result, values = self.resolve(**push, **inputs)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.42", "publish": "true"})
+        expected = {"dev": "0.9.0-dev.42", "staging": "0.9.0-staging.42"}
+        for environment, version in expected.items():
+            for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+                with self.subTest(environment=environment, extra=extra):
+                    result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment, **extra)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(values, {"environment": environment, "version": version, "publish": "true"})
+        # A push with no routed environment, or a push routed to prod, fails
+        # closed with no authorization outputs.
+        for environment in ("", "prod"):
+            with self.subTest(environment=environment):
+                result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(values, {})
 
     def test_dev_versions_carry_the_run_number_and_production_does_not(self):
         summary = self.root / "summary"

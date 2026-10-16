@@ -57,10 +57,12 @@ owner-wide lane, reserved before the first request and held until retirement
 of a prefill workspace in every request's reservation.
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1` opts the owner into
 exact text prefix reuse: a resident recurrent checkpoint bank sized from the KV
-grant (half of what it leaves beside every request's fixed bytes, the prefill
-lane and one image, at most a quarter of the grant and 16 GiB, none below
-1 GiB; or `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`) whose budget is reserved from
-load until retirement. The managed slot turns it on whenever that size is
+grant and the machine (half of what the grant leaves beside every request's
+fixed bytes, the prefill lane and one image, and half of what the memory cap
+leaves while the load is in progress, at most a quarter of the grant and
+16 GiB, none below 1 GiB: 8.5 GiB for the speculating owner on 256 GiB; or
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`) whose budget is reserved from load until
+retirement. The managed slot turns it on whenever that size is
 non-zero. Checkpoints sit only at multiples
 of the prefill chunk, where a restored request continues a cold prefill bit for
 bit on synthetic fixtures; prompts shorter than one chunk restore nothing. On

@@ -159,11 +159,13 @@ Text prefix caching is the same kind of switch: `--engine-env
 DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the owner the SDK's resident
 recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized like the
 managed slot's: `NemotronSuperServingPolicy.defaultPrefixBankBytes` of
-`--kv-capacity-gib` for the pinned checkpoint (half of what the grant leaves
-beside every request's fixed bytes, the prefill lane and one image, at most a
-quarter of the grant and 16 GiB, none below 1 GiB; 16 GiB at
-`--kv-capacity-gib 100`, none at 34), `min(1 GiB, KV grant / 8)` for synthetic
-weights, or `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`. It is carved from the grant
+`--kv-capacity-gib` and the machine for the pinned checkpoint (half of what the
+grant leaves beside every request's fixed bytes, the prefill lane and one
+image, and half of what the memory cap leaves while the LOAD claim is held, at
+most a quarter of the grant and 16 GiB, none below 1 GiB; for eight speculating
+requests on 256 GiB: 8.5 GiB from `--kv-capacity-gib 60`, none at 34),
+`min(1 GiB, KV grant / 8)` for synthetic weights, or
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`. It is carved from the grant
 and charged as `prefix_bank` from load to retirement. One long entry holds two
 162.3 MiB checkpoints, the prompt's KV and, on the speculating owner, 8 KiB of
 assistant history per checkpoint token (0.39-0.44 GB at ~5.9K tokens). Checkpoints sit only at multiples of

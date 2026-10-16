@@ -132,14 +132,19 @@ the fixed bytes per request.
 `NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`. For the pinned checkpoint
 `NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
-recurrent checkpoint bank from the KV grant:
-`slack = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
-`bank = min(16 GiB, grant / 4, slack / 2)` rounded down to 256 MiB, and no bank
-below 1 GiB (eight speculating requests: none at a 34 GiB grant, 9 GiB at
-60 GiB, 16 GiB from about 80 GiB). The lane and media charges come from the
-same ledger the grant describes, so half of what is left beside them stays
-free; `grant / 4` is the engine's own bank ceiling when a re-slice shrinks the
-grant. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+recurrent checkpoint bank from the KV grant and the machine:
+`serving = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
+`load = memory cap - activation reserve - 2 x LOAD claim bytes - admissionKVBytes - lane bound`,
+`bank = min(16 GiB, grant / 4, serving / 2, load / 2)` rounded down to 256 MiB,
+and no bank below 1 GiB. The lane and media charges come from the same ledger
+the grant describes, so half of what is left beside them stays free. The
+builder reserves the lane and the bank while the LOAD claim (installation, any
+head and admission KV including the bank) is still held and the installed
+weights already count as MLX usage, so the load bound counts the weights and
+the bank twice. `grant / 4` is the engine's own bank ceiling when a re-slice
+shrinks the grant. A lone slot (grant = fleet KV budget) on 192 GiB gets no
+default bank; on 256 GiB the speculating owner gets 8.5 GiB and the plain one
+16 GiB; on 512 GiB both get 16 GiB. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
 keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns

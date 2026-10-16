@@ -32,14 +32,16 @@ enum NemotronSuperLocalPrefixCache {
     /// prompt history, so `hybridConfig`'s drafter gate stays off
     /// (`hasMTPDrafter: false`) for both. `pinned` selects the pinned
     /// checkpoint's measured default size; `requests` and `speculates` are the
-    /// owner's configuration under this grant.
+    /// owner's configuration under this grant, `physicalBytes` the machine's.
     static func config(environment: [String: String], kvBytesCapacity: Int, requests: Int,
                        speculates: Bool, pinned: Bool = true,
+                       physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
                        modelID: String = NemotronSuperLocalBinding.modelID)
         -> CBv2HybridPrefixCacheConfig? {
         let defaultBytes = pinned
             ? NemotronSuperServingPolicy.defaultPrefixBankBytes(kvBytesCapacity: kvBytesCapacity,
-                requests: requests, speculates: speculates, environment: environment)
+                requests: requests, speculates: speculates, environment: environment,
+                physicalBytes: physicalBytes)
             : nil
         guard var config = PrefixCachePolicy.hybridConfig(modelId: modelID,
             promptContractID: promptContractID, kvBytesCapacity: kvBytesCapacity,

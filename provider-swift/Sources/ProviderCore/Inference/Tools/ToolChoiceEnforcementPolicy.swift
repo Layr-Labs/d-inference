@@ -74,6 +74,12 @@ enum ToolChoiceEnforcementPolicy {
         if nativeStructuredTarget(context) {
             return true
         }
+        // The managed Super owner prompt-forces required/named calls on text
+        // requests and withholds output until the call validates
+        // (`NemotronSuperLocalOutput`); its image requests refuse tools.
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
+            return true
+        }
         return model.id == qwen38ConstrainedModelID
             && Qwen35TemplateFix.applies(to: context)
     }

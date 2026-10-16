@@ -237,6 +237,17 @@ struct NemotronSuperServingPolicyTests {
         #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.hfID) == true)
     }
 
+    /// Forced `tool_choice` is advertised for the registry id only: the owner
+    /// prompt-forces and validates the call. Other ids of the type are not.
+    @Test func forcedToolChoiceIsAdvertisedForTheRegistryIDOnly() {
+        func info(_ id: String, _ type: String) -> ModelInfo {
+            ModelInfo(id: id, modelType: type, sizeBytes: 1, estimatedMemoryGb: 1)
+        }
+        #expect(ToolChoiceEnforcementPolicy.advertisesCapability(for: info(Self.superID, "nemotron_h_omni")))
+        #expect(!ToolChoiceEnforcementPolicy.advertisesCapability(for: info(Self.hfID, "nemotron_h_omni")))
+        #expect(!ToolChoiceEnforcementPolicy.advertisesCapability(for: info(Self.superID, "qwen3")))
+    }
+
     /// The scanner's Super branch with the pinned `config.json` and index and
     /// a stand-in shard. Gated on the directory holding those reference files.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["NEMOTRON_SUPER_REFERENCE_DIR"] != nil))

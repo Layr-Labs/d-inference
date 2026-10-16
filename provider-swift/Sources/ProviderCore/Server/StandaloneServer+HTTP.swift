@@ -166,6 +166,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         {
             let failure = ProviderLoop.sanitizedInferenceFailure(
                 from: error, phase: .generation)
+            // The closed vocabulary only (the error's case name and bounded reason, never its text), so a failing
+            // local request leaves a line in this Mac's log (a cluster's 500 left nothing to read, 2026-10-16).
+            let kind = String(String(describing: error).prefix { $0 != "(" }.prefix(64))
+            FileHandle.standardError.write(Data(("local API: request failed: \(failure.code.rawValue) (\(kind)"
+                + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
+            if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
+                FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
+            }
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)

@@ -9,8 +9,21 @@ import Foundation
 enum QwenPrismHadamardConstants {
     /// The logical bytes of each F32 copy one rank's stage will hold, in
     /// canonical name order: twice the stored bytes of each F16 tensor.
+    /// The same for one plan and rank every time, and the idle context refresh asks for it in each of its many
+    /// charges (every tensor name through the plan): kept per plan and rank (one entry; a worker serves one stage).
     static func widenedBytes(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
                              rank: Int) throws -> [Int] {
+        let key = "\(plan.fingerprint)|\(rank)|\(profile.canonicalTensors.count)"
+        if let kept = memoLock.withLock({ memo?.key == key ? memo?.value : nil }) { return kept }
+        let value = try uncachedWidenedBytes(profile: profile, plan: plan, rank: rank)
+        memoLock.withLock { memo = (key, value) }
+        return value
+    }
+    private static let memoLock = NSLock()
+    nonisolated(unsafe) private static var memo: (key: String, value: [Int])?
+
+    static func uncachedWidenedBytes(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
+                                     rank: Int) throws -> [Int] {
         let tensors = Dictionary(uniqueKeysWithValues: profile.canonicalTensors.map { ($0.name, $0) })
         let embedding = QwenPrismStageConfiguration.namespace + QwenPrismStageConfiguration.embeddingPath + "."
         return try plan.parameters(canonicalSourceNames: profile.canonicalTensors.map(\.name))

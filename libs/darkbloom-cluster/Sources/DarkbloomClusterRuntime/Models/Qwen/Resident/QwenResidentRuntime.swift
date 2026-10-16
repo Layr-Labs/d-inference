@@ -266,7 +266,13 @@ public final class QwenResidentRuntime {
         let maximumContext = admission.profile.maximumContextTokens
         let policy = QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule)
         let sum = QwenLongPrefillCheckedBytes.sum
+        // A charge is the same for a context on this loaded stage every time; it is derived from the plan and costs
+        // tens of milliseconds (Bonsai's Prism configuration more), and the idle refresh searches it often: kept.
+        let memoKey = "\(admission.plan.fingerprint)|\(rank)|\(mode)|\(speculativeTerms != nil)"
         func charge(_ context: Int) throws -> QwenResidentAdmittedContext {
+            try QwenResidentChargeMemo.shared.value(key: memoKey, context: context) { try uncachedCharge(context) }
+        }
+        func uncachedCharge(_ context: Int) throws -> QwenResidentAdmittedContext {
             let prompt = min(admission.profile.maximumPromptTokens, context - 1)
             let chunk = min(admission.profile.maximumChunkTokens, prompt)
             let allowance = try stage.requestAllowance(plan: admission.plan, rank: rank,
@@ -583,4 +589,26 @@ struct QwenResidentAdmittedContext {
     /// Admissible memory (and allocator room) left beside this context's
     /// whole ask, on the same sample; the prefix cache's budget comes from it.
     var roomBytes = 0
+}
+
+/// `admittedContext`'s charges, per loaded stage (plan, rank, mode) and context: the idle refresh searched them again
+/// and again (each one derives the stage plan), and on a 36 GB M4 Max with Bonsai 2 27B a refresh outlasted the 10 s
+/// a request waits for its reservation, so every request failed (2026-10-16). Bounded; a worker serves one stage.
+final class QwenResidentChargeMemo: @unchecked Sendable {
+    static let shared = QwenResidentChargeMemo()
+    private let lock = NSLock()
+    private var key = ""
+    private var values: [Int: QwenResidentAdmittedContext] = [:]
+
+    func value(key: String, context: Int, _ make: () throws -> QwenResidentAdmittedContext) rethrows -> QwenResidentAdmittedContext {
+        if let found = lock.withLock({ () -> QwenResidentAdmittedContext? in
+            if self.key != key { self.key = key; values.removeAll() }
+            return values[context]
+        }) { return found }
+        let made = try make()
+        lock.withLock {
+            if self.key == key, values.count < 4_096 { values[context] = made }
+        }
+        return made
+    }
 }

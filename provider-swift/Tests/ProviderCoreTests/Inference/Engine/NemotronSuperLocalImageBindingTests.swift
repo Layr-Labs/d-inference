@@ -26,7 +26,8 @@ struct NemotronSuperLocalImageBindingTests {
 
     @Test func encodedBodyRejectsRemoteAndUnsupportedControls() throws {
         for uri in ["https://example.invalid/image.png", "file:///tmp/image.png",
-                    "data:image/jpeg;base64,AA==", "data:image/png,abc"] {
+                    "data:image/gif;base64,AA==", "data:image/jpg;base64,AA==", "data:image/png,abc",
+                    "data:image/jpeg,abc"] {
             let data = try body(image: uri)
             #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
                 try NemotronSuperLocalImageBinding.parseEncodedBody(data)
@@ -42,6 +43,13 @@ struct NemotronSuperLocalImageBindingTests {
         #expect(parsed.request.max_tokens == 7 && parsed.request.temperature == 0)
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperLocalImageBinding.encodedPlan(parsed.images, contextLength: 64)
+        }
+        // The JPEG label is admitted too; content, not the label, then decides.
+        let jpegLabel = try NemotronSuperLocalImageBinding.parseEncodedBody(
+            body(image: "data:image/jpeg;base64,AQID"))
+        #expect(jpegLabel.images == [Data([1, 2, 3])])
+        #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
+            try NemotronSuperLocalImageBinding.encodedPlan(jpegLabel.images, contextLength: 64)
         }
     }
 

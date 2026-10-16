@@ -62,10 +62,12 @@ struct NemotronSuperServingPolicyTests {
             == .init(depth: 3, verification: .rectangularExact, adaptive: false))
         #expect(try NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: plan.environment, speculates: true) == 8)
-        // Above the 25,926,570,879-byte minimum grant measured for depth 3 x 8,
-        // beside the 1 GiB prefix bank.
-        #expect(plan.admissionKVBytes == (26 << 30) + (1 << 30))
-        #expect(plan.admissionKVBytes - plan.prefixBankBytes > 25_926_570_879)
+        // Every request's fixed bytes at the served 65,536-token context and the
+        // 1 GiB prefix bank: above the minimum grants measured for depth 3 x 8,
+        // 39,507,064,973 bytes with the bank and 38,433,323,149 without it.
+        #expect(plan.admissionKVBytes == (36 << 30) + (1 << 30))
+        #expect(plan.admissionKVBytes > 39_507_064_973)
+        #expect(plan.admissionKVBytes - plan.prefixBankBytes > 38_433_323_149)
     }
 
     @Test func slotPolicyBoundsConcurrencyAndOperatorKeysStay() throws {
@@ -73,7 +75,7 @@ struct NemotronSuperServingPolicyTests {
             base: [NemotronSuperLocalMTP.depthKey: "1", NemotronSuperLocalMTP.verificationKey: "rectangular"],
             mode: .on, configuredConcurrency: 2, kvBytesCapacity: 100 << 30)
         #expect(narrow.requests == 2 && narrow.environment[NemotronSuperLocalMTP.depthKey] == "1")
-        #expect(narrow.admissionKVBytes == 2 * (3 << 30) + (2 << 30) + (1 << 30))
+        #expect(narrow.admissionKVBytes == 2 * (17 << 28) + (2 << 30) + (1 << 30))
         let wide = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(wide.requests == 8, "one captured verify window bounds speculation")
@@ -131,9 +133,9 @@ struct NemotronSuperServingPolicyTests {
         // Media is a serving reservation, not LOAD transient.
         #expect(footprint.nativeLoadTransientBytes == 15_938_749_104)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (26 << 30) + media) / 1_073_741_824
+        let expected = Double(82_100_665_864 + 8_848_271_480 + (12 << 30) + (36 << 30) + media) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        #expect(abs(footprint.estimatedMemoryGb - 126.324_139_233_678_58) < 1e-9)
+        #expect(abs(footprint.estimatedMemoryGb - 136.324_139_233_678_58) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         let plainBytes = 82_100_665_864 + (12 << 30) + plain.admissionKVBytes

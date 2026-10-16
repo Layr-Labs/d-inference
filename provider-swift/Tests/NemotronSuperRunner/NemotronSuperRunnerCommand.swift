@@ -24,8 +24,12 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var port = 0
     @Option(help: "Diagnostics port on 127.0.0.1 (0 = ephemeral).")
     var diagnosticsPort = 0
-    @Option(help: "Maximum context tokens (the Super builder accepts at most 16384).")
-    var maxContext = 16384
+    @Option(help: """
+        Maximum context tokens. Default: the managed slot's context \
+        (NemotronSuperServingPolicy.contextTokens); the builder accepts at most \
+        NemotronSuperServingPolicy.maximumContextTokens.
+        """)
+    var maxContext = NemotronSuperServingPolicy.contextTokens
     @Option(help: "max_tokens applied when a request omits it.")
     var defaultMaxTokens = 512
     @Option(help: """
@@ -59,8 +63,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         }
         guard !synthetic || template != nil else { throw ValidationError("--synthetic requires --template") }
         guard !preflight || checkpoint != nil else { throw ValidationError("--preflight requires --checkpoint") }
-        guard (1...16384).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
-            throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= 16384")
+        let ceiling = NemotronSuperServingPolicy.maximumContextTokens
+        guard (1...ceiling).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
+            throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= \(ceiling)")
         }
         guard kvCapacityGib.map({ $0 >= 1 }) ?? true, backendAllowanceGib > 0, sampleIntervalMs >= 5,
             verifyParallelism >= 1,

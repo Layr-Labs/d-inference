@@ -263,7 +263,8 @@ enum NemotronSuperLocalBridgeBuilder {
         else { throw Failure.loadAdmissionLost }
         guard sizing.weightsBytes >= installed.receipt.payloadBytes,
               sizing.fp16KVBytesPerToken > 0, kvBytesCapacity > 0,
-              sizing.maxContextLength > 0, sizing.maxContextLength <= 16384,
+              sizing.maxContextLength > 0,
+              sizing.maxContextLength <= NemotronSuperServingPolicy.maximumContextTokens,
               sizing.defaultMaxTokens > 0, sizing.defaultMaxTokens <= sizing.maxContextLength
         else { throw Failure.unsupportedSizing }
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)

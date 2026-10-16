@@ -1,0 +1,5 @@
+### The cluster comes back after a reboot
+
+- After a restart each Mac serves again once it is logged in (by itself with automatic login on); `darkbloom cluster` says which applies to each Mac.
+- `darkbloom cluster` (leader and members) installs this Mac's cluster service as a per-user LaunchAgent (`io.darkbloom.cluster-service.<digest of the install>`): launchd starts it at login and runs it under the cluster supervisor (`darkbloom cluster service --supervise`), which restarts it after 15 s doubling to 300 s and parks it after three quick failures; launchd restarts only a supervisor that crashed. Running `darkbloom cluster` again keeps an unchanged agent, replaces a changed one, restarts a parked one, and takes over from a service an earlier version started in a terminal. Nothing is asked beyond the cluster link's one approval.
+- `darkbloom cluster stop` stops this Mac's cluster service and removes its login agent (on the leader the cluster stops serving first); unpairing the last pairing (`darkbloom cluster pair --forget`) removes it too. `darkbloom status` shows whether the cluster service starts at login, whether it runs, and its supervisor's phase.

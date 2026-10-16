@@ -9,7 +9,8 @@ final class WorkerEvidenceSink {
     private let directory: Int32
     private var requests = Set<UUID>()
     static let maximumBytes = 16 * 1024 * 1024
-    static let maximumRequests = 16
+    /// A bound on the recorded evidence of one qualification run, not on serving.
+    static let maximumRequests = 4096
 
     /// The directory must already exist, belong to this user and be private.
     init(path: String) throws {

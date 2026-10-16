@@ -21,8 +21,24 @@ struct OwnerWire: Sendable {
     var bootstrapBytes: Data?
     var nativeStart: Data?
     var nativeLocalDeadline: UInt64?
+    /// S16: the worker's data-plane credential line, carried on the leader's
+    /// authenticated owner route (SSH with a pinned host key, or the local
+    /// pipe) and written as the worker's first input line. Never logged.
+    var dataPlaneTrust: Data?
 
-    func encoded(commandStream: Bool) throws -> Data {
+    /// Owner records cross the owner route once per token in each direction, from loops that never drain a pool (the
+    /// owner's writer and reader, the worker owner's service and relay): each encode, decode and command builds its JSON
+    /// in a pool of its own (round 6c case 5: rank 0 +20.6 and its worker owner +22.7 MiB a minute without it).
+    func encoded(commandStream: Bool) throws -> Data { try ClusterAutorelease.drained { try encodedRecord(commandStream: commandStream) } }
+    static func decode(_ data: Data, commandStream: Bool) throws -> Self { try ClusterAutorelease.drained { try decodeRecord(data, commandStream: commandStream) } }
+    static func command(_ frame: ClusterWorkerCommandFrame, lease: UUID, incarnation: UUID,
+                        sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
+        try ClusterAutorelease.drained {
+            try commandRecord(frame, lease: lease, incarnation: incarnation, sequence: sequence, now: now, deliveryDeadline: deliveryDeadline)
+        }
+    }
+
+    private func encodedRecord(commandStream: Bool) throws -> Data {
         var object: [String: Any] = ["version": 1, "kind": kind, "epoch": epoch.uuidString.lowercased(),
             "lease": lease.uuidString.lowercased(), "sequence": NSNumber(value: sequence)]
         if let incarnation { object["incarnation"] = incarnation.uuidString.lowercased() }
@@ -36,6 +52,7 @@ struct OwnerWire: Sendable {
         if let bootstrapBytes { object["bootstrapBytes"] = bootstrapBytes.base64EncodedString() }
         if let nativeStart { object["nativeStart"] = nativeStart.base64EncodedString() }
         if let nativeLocalDeadline { object["nativeLocalDeadline"] = NSNumber(value: nativeLocalDeadline) }
+        if let dataPlaneTrust { object["dataPlaneTrust"] = dataPlaneTrust.base64EncodedString() }
         if let termination {
             switch termination {
             case .launchFailed: object["termination"] = "launchFailed"
@@ -50,7 +67,7 @@ struct OwnerWire: Sendable {
         return data
     }
 
-    static func decode(_ data: Data, commandStream: Bool) throws -> Self {
+    private static func decodeRecord(_ data: Data, commandStream: Bool) throws -> Self {
         try validateClusterWorkerEnvelope(data, commandStream: true) // Outer-only512KiB; embedded WorkerCodec retains its own bounds.
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw invalid("Owner object required") }
         func string(_ key: String) throws -> String {
@@ -66,7 +83,7 @@ struct OwnerWire: Sendable {
         }
         guard try uint("version") == 1 else { throw invalid("Owner version differs") }
         let kind = try string("kind")
-        let allowed = commandStream ? ["open", "command", "fence", "release", "bootstrapReply"] : ["hello", "event", "terminal", "released", "bootstrapRound"]
+        let allowed = commandStream ? ["open", "command", "fence", "release", "bootstrapReply", "renew"] : ["hello", "event", "terminal", "released", "bootstrapRound"]
         guard allowed.contains(kind) else { throw invalid("Wrong owner message direction") }
         var keys: Set<String> = ["version", "kind", "epoch", "lease", "sequence"]
         let inc: UUID?
@@ -85,17 +102,33 @@ struct OwnerWire: Sendable {
             let cap = kind == "bootstrapRound" ? 65_536 : 131_072
             guard encoded.utf8.count <= ((cap + 2) / 3) * 4, let bytes = Data(base64Encoded: encoded),
                   bytes.count > 0, bytes.count <= cap, bytes.base64EncodedString() == encoded,
-                  value.bootstrapSequence! < 4 else { throw invalid("Bootstrap payload exceeds closed bounds") }
+                  value.bootstrapSequence! < UInt64(ClusterOwnerBootstrapProfile.maximumRounds) else { throw invalid("Bootstrap payload exceeds closed bounds") }
             value.bootstrapBytes = bytes
         case "open":
             keys.formUnion(["clusterID", "remainingNanoseconds"])
             value.clusterID = try string("clusterID")
             guard let label = value.clusterID, (1...128).contains(label.utf8.count), label.utf8.allSatisfy({ (33...126).contains($0) }) else { throw invalid("Cluster label differs") }
             value.remaining = try uint("remainingNanoseconds")
-            if value.bootstrapProfile == .nativeKeyPrelude {
-                keys.formUnion(["nativeStart", "nativeLocalDeadline"])
-                value.nativeLocalDeadline = try uint("nativeLocalDeadline")
-                guard value.nativeLocalDeadline! > 0 else { throw invalid("Local native deadline is empty") }
+            if object["dataPlaneTrust"] != nil {
+                keys.insert("dataPlaneTrust")
+                let encoded = try string("dataPlaneTrust")
+                guard encoded.utf8.count <= 5464, let line = Data(base64Encoded: encoded), line.base64EncodedString() == encoded,
+                      let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(line), trust.membershipEpoch == value.epoch else {
+                    throw invalid("Data-plane credential differs from its bound or epoch")
+                }
+                value.dataPlaneTrust = line
+            }
+            if value.bootstrapProfile?.carriesNativeStart == true {
+                keys.insert("nativeStart")
+                // Only the key-only development profile, opened by a local owner
+                // on the same Mac, carries a local uptime deadline. The combined
+                // profile may cross to another Mac, so it never does: its owner
+                // bounds the bootstrap on its own clock.
+                if value.bootstrapProfile == .nativeKeyPrelude {
+                    keys.insert("nativeLocalDeadline")
+                    value.nativeLocalDeadline = try uint("nativeLocalDeadline")
+                    guard value.nativeLocalDeadline! > 0 else { throw invalid("Local native deadline is empty") }
+                }
                 let encoded = try string("nativeStart")
                 guard encoded.utf8.count <= 4096, let start = Data(base64Encoded: encoded),
                       !start.isEmpty, start.count <= 3072, start.base64EncodedString() == encoded else {
@@ -104,6 +137,11 @@ struct OwnerWire: Sendable {
                 value.nativeStart = start
             }
         case "hello": keys.insert("launchID"); value.launchID = try uuid("launchID")
+        case "renew":
+            // A rank-lease renewal (S03): the owner's lease moves to this
+            // duration after the frame arrives.
+            keys.insert("remainingNanoseconds"); value.remaining = try uint("remainingNanoseconds")
+            guard value.remaining! <= ClusterWorkerLease.maximumNanoseconds else { throw invalid("Lease renewal exceeds its bound") }
         case "command", "event":
             keys.insert("worker")
             if kind == "command" { keys.insert("deliveryRemainingNanoseconds"); value.deliveryRemaining = try uint("deliveryRemainingNanoseconds") }
@@ -142,8 +180,8 @@ struct OwnerWire: Sendable {
         return value
     }
 
-    static func command(_ frame: ClusterWorkerCommandFrame, lease: UUID, incarnation: UUID,
-                        sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
+    private static func commandRecord(_ frame: ClusterWorkerCommandFrame, lease: UUID, incarnation: UUID,
+                                      sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
         var result = Self(kind: "command", epoch: frame.membershipEpoch, lease: lease, incarnation: incarnation, sequence: sequence)
         guard deliveryDeadline > now else { throw ClusterWorkerOwnerErrorProxy.deadline }
         result.deliveryRemaining = deliveryDeadline - now
@@ -158,6 +196,9 @@ struct OwnerWire: Sendable {
         result.payload = payload; return result
     }
 
+    /// The leader's remaining request duration becomes a local deadline. It is
+    /// not capped by the owner's lease, which the leader renews while the
+    /// request runs; it must only start before the lease has lapsed.
     func localCommand(now: UInt64, lifetimeDeadline: UInt64) throws -> ClusterWorkerCommandFrame {
         guard kind == "command", let payload else { throw Self.invalid("No native command") }
         let frame = try ClusterWorkerCodec.decodeCommand(payload)
@@ -169,7 +210,8 @@ struct OwnerWire: Sendable {
         return .init(membershipEpoch: frame.membershipEpoch, sequence: frame.sequence, requestID: frame.requestID,
             command: .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize,
-                deadlineUptimeNanoseconds: min(end.partialValue, lifetimeDeadline), capacityLimitBytes: r.capacityLimitBytes)))
+                deadlineUptimeNanoseconds: end.partialValue, capacityLimitBytes: r.capacityLimitBytes,
+                sampling: r.sampling, route: r.route)))
     }
     static func invalid(_ reason: String) -> ClusterOwnerStateError { .invalid(reason) }
 }

@@ -32,9 +32,11 @@ extension ClusterConsolePairing {
         self.init(clusterID: configuration.clusterID, memberID: configuration.memberID, role: configuration.role,
             localRank: local.rank, peerID: peer.id, peerRank: peer.rank, linkDevice: local.jacclDevice,
             trust: .observe(configuration.trust),
-            pairApproval: configuration.nativeMember.map {
-                .init(id: $0.approval.id, model: $0.approval.model, generation: $0.approval.generation,
-                    notAfter: $0.approval.notAfter, allowedChips: $0.approval.allowedChips)
+            pairApproval: configuration.nativeMember.flatMap { member in
+                member.approval.map { .init(id: $0.id, model: $0.model, generation: $0.generation,
+                    notAfter: $0.notAfter, allowedChips: $0.allowedChips) }
+                ?? member.clusterApproval.map { .init(id: $0.id, model: $0.model, generation: $0.generation,
+                    notAfter: $0.notAfter, allowedChips: $0.allowedNumericsClasses) }
             })
     }
 }
@@ -55,8 +57,6 @@ public struct ClusterConsoleSavedModel: Encodable, Sendable, Equatable {
     public let planSHA256: String
     public let prefillSchedule: String
     public let stages: [Stage]
-    public let maximumLifetimeSeconds: Int
-    public let maximumRequests: Int
     public let maximumPromptTokens: Int
     public let maximumOutputTokens: Int
 }
@@ -71,7 +71,6 @@ extension ClusterConsoleSavedModel {
                 .init(rank: stage.rank, peerID: configuration.peers[stage.rank].id, local: stage.rank == configuration.localRank,
                     sourceLayerStart: stage.sourceLayerStart, sourceLayerEnd: stage.sourceLayerEnd)
             },
-            maximumLifetimeSeconds: capability.maxLifetimeSeconds, maximumRequests: capability.maxRequests,
             maximumPromptTokens: capability.profile.maximumPromptTokens,
             maximumOutputTokens: capability.profile.maximumOutputTokens)
     }

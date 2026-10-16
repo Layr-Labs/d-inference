@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-09-17
+> Last updated: 2026-10-09
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 
@@ -9,15 +9,15 @@ Reference for the native Qwen4 support candidate and its remaining qualification
 | Concern | Current candidate contract | Source |
 |---|---|---|
 | Architecture | `qwen4_exp` / `qwen4_exp_text` use native QSA, GDN, hyper-connections, MoE, PLE and embedded MTP. Architecture recognition is separate from default artifact eligibility | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`) |
-| Qualified serving identifiers | Registry ID `qwen3.8-flash-next` and legacy ID `DarkBloom/Qwen3.8-Flash-Next-Q4-mtp` share native defaults. Matching is exact and case-sensitive; upstream HF IDs, download repositories, substrings and reference artifacts are not runtime aliases | `provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift` (`isQualified`); `coordinator/promptsidecar/src/qwen4_identity.rs` (`is_qualified`) |
-| Mixed fleet | All requests for the registry ID require provider `0.9.6` or newer. Legacy/other IDs retain their existing floors; an older binary must not silently serve the new ID without its native policies | `coordinator/registry/qwen4_model_policy.go` (`providerMeetsQwen4CatalogPolicyLocked`); `coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`) |
+| Qualified serving identifiers | Registry ID `qwen3.8-flash-next` and legacy ID `DarkBloom/Qwen3.8-Flash-Next-Q4-mtp` share native defaults. Matching is exact and case-sensitive; upstream HF IDs, download repositories, substrings and reference artifacts are not runtime aliases | `provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift` (`isQualified`); [coordinator/promptsidecar/src/qwen4_identity.rs](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/promptsidecar/src/qwen4_identity.rs) (`is_qualified`) |
+| Mixed fleet | All requests for the registry ID require provider `0.9.6` or newer. Legacy/other IDs retain their existing floors; an older binary must not silently serve the new ID without its native policies | [coordinator/registry/qwen4_model_policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/qwen4_model_policy.go) (`providerMeetsQwen4CatalogPolicyLocked`); [coordinator/registry/request_traits.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/request_traits.go) (`providerEligibleForTraitsLocked`) |
 | Concurrent generation | Native Qwen4 defaults to one active generation row; other requests may queue. `DARKBLOOM_QWEN4_BATCHED_QSA=1` exposes an opt-in candidate bounded by the installed native row capability, not a production concurrency qualification. The reported speed results are single-request measurements; generic scheduler/packed-fixture tests do not establish full Qwen4 multi-request serving | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`nativeConcurrentRequestLimit`, `configureNativeQwen4Batching`) |
 | Original checkpoint | Conversion tools pin `Qwen/Qwen3.8-Flash-Next` at `de4b8e4d43b917e7706784d8bb445c9af86a3540`. The resulting affine Q4 artifact is not oQ4e and is not numerically identical to BF16 | [Conversion contract](../../scripts/qwen38_conversion/README.md); `scripts/qwen38_conversion/qwen38_provenance.py` |
 | Media | Either qualified ID may select the VLM factory only with the full 48-layer/2560 text and 27-layer/1152 vision declaration, no DeepStack, and explicit `language_model_only=false`. Unqualified IDs, bare text types, missing/true overlays and wrong tower geometry remain text-only. The shared Qwen vision seam preserves causal spans, native media IDs and request-owned positions; real-model restoration qualification is separate | `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift` (`advertisesMedia`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/ModelContainerLoading.swift` (`factorySelection`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`buildQwenSubmission`) |
 | Context | Listing and runtime use positive native configuration, with a `262_144` metadata-only fallback for the two qualified IDs and a lower-only explicit operator override. There is no additional 82K clamp. Prompt plus resolved output reservation must fit: 229376 prompt + 32768 output fits 262144; one more token does not. Coordinator SLA/routing policy and physical memory admission remain separate | [Context configuration](configuration.md#native-flash-next-candidate); `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`contextLimit`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | Paging and cache defaults | Both qualified IDs select paging under `auto` and enable complete SSD prefix-cache eligibility. Loaded native dtype/layout, authenticated identity, keys and actual cache construction remain required; resident memory is separately opt-in | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`); `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache mechanism](../architecture/prefix-cache.md#flash-next-complete-state) |
 | Embedded MTP | A native architecture/head declaration and indexed `mtp.` or `language_model.mtp.` tensors select the trained head. `InlineWeightIndex` decodes `weight_map` without assuming all metadata values are integers: numeric `total_size` and string `format` can coexist. The complete config/index bytes remain hashed and revalidated | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecStore.swift` (`declaresNativeQwen4MTP`, `inspectInlineArtifact`, `InlineWeightIndex`, `revalidateForLoad`); `provider-swift/Tests/ProviderCoreTests/Qwen4EmbeddedMTPTests.swift` |
-| Capacity and errors | Model offload reduces only validated native weight-allocation estimates, not artifact size or actual OS page residency. The context rejection maps to bounded HTTP 400 / `invalid_request` / `client_error`; catalog and fleet-level capacity policy remain independent | [Offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
+| Capacity and errors | Model offload reduces only validated native weight-allocation estimates, not artifact size or actual OS page residency. The context rejection maps to bounded HTTP 400 / `invalid_request` / `client_error`; catalog and fleet-level capacity policy remain independent | [Offloaded-weight admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md#ssd-offloaded-model-weights); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 
 ## State and resource ownership
 
@@ -50,7 +50,7 @@ The [loading/MTP memory review](../reports/2026-09-17-qwen38-memory-mtp-review.m
 records the M5 follow-up, exact publication inputs, passing API/state checks
 and the still-open repeated-request cache qualification failure.
 
-The [native API/cache qualification](../reports/2026-09-15-qwen38-native-api-qualification.md)
+The [native API/cache qualification](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-15-qwen38-native-api-qualification.md)
 records the latest source-bound tests and remaining deployment gates. The
 [earlier performance/stability update](../reports/2026-09-15-qwen38-performance-stability.md)
 retains its original-checkpoint measurements and historical evidence scope.
@@ -59,7 +59,7 @@ trained template. Named choice still filters the tool declarations; native
 framing and final validation enforce names, schema and allowed parallelism.
 Other model/media prompt policies keep their prior parallel-aware wording.
 The normalization contract is v6; see the
-[prompt-contract mechanism](../architecture/prompt-contract-sidecar.md#contract-identity).
+[prompt-contract mechanism](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md#contract-identity).
 Source: `provider-swift/Sources/ProviderCore/Inference/Prompting/ToolChoicePromptPolicy.swift`
 (`prepare`, `parallelCallsInstruction`).
 
@@ -143,6 +143,6 @@ does not imply hosted routing, every physical RAM tier or universal quality.
 ## Related
 
 - [Configuration](configuration.md#native-flash-next-candidate)
-- [Consumer model contracts](../consumer/models.md#native-flash-next-candidate)
-- [Build](../developer/build.md#native-flash-next-candidate) and [test procedure](../developer/test.md#native-flash-next-candidate)
+- [Consumer model contracts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/models.md#native-flash-next-candidate)
+- [Build](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/build.md#native-flash-next-candidate) and [test procedure](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#native-flash-next-candidate)
 - [Model registry format](model-registry-format.md), [release procedure](../operations/provider-release.md)

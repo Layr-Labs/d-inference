@@ -1,4 +1,4 @@
-"""Copy reviewed deadline data into both binaries; never qualify or tune it.
+"""Copy reviewed deadline data into the provider; never qualify or tune it.
 
 Run from scripts: python3 -m serving_performance.catalog_codegen [--check]
 Add only a reviewed evaluator candidate to catalog/deadline_profiles.json first.
@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = Path("scripts/serving_performance/catalog/deadline_profiles.json")
 SWIFT = Path("provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/ReviewedDeadlineProfilesData.swift")
-GO = Path("coordinator/internal/registry/deadline/catalog_data.go")
 
 
 def _unique_object(pairs):
@@ -53,8 +52,7 @@ def rendered_sources(raw):
     while '"' + hashes in canonical or "\\" + hashes + "(" in canonical:
         hashes += "#"
     swift = header + "enum ReviewedDeadlineProfilesData {\n" + f'    static let json = {hashes}"{canonical}"{hashes}\n' + "}\n"
-    go = header + "package deadline\n\n" + "const CompiledProfilesJSON = " + json.dumps(canonical, ensure_ascii=False) + "\n"
-    return {SWIFT: swift, GO: go}
+    return {SWIFT: swift}
 
 
 def sync(root=ROOT, check=False):

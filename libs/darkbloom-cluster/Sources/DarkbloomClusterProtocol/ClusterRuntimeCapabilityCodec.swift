@@ -3,7 +3,9 @@ import Foundation
 /// Exactly one canonical, sorted-key JSON object and LF, bounded to 16 KiB.
 /// Reuses the protocol scanner and strict typed object reader; never hashes Plans.
 public enum ClusterRuntimeCapabilityCodec {
-    public static let maximumBytes = 16 * 1024
+    /// Room for `maximumPartitions` partitions (about 600 bytes each) beside the rest.
+    public static let maximumBytes = 96 * 1024
+    public static let maximumPartitions = 128
 
     public static func encode(_ value: ClusterRuntimeCapability) throws -> Data {
         try ClusterRuntimeCapabilityValidation.check(value)
@@ -28,8 +30,7 @@ public enum ClusterRuntimeCapabilityCodec {
             },
             "arithmeticPolicyID": value.arithmeticPolicyID, "arithmeticPolicySHA256": value.arithmeticPolicySHA256,
             "stateSemantics": value.stateSemantics, "rankCount": value.rankCount, "batchSize": value.batchSize,
-            "maxActiveRequests": value.maxActiveRequests, "maxLifetimeSeconds": value.maxLifetimeSeconds,
-            "maxRequests": value.maxRequests, "schedulingPolicy": value.schedulingPolicy,
+            "maxActiveRequests": value.maxActiveRequests, "schedulingPolicy": value.schedulingPolicy,
             "selectionPolicy": value.selectionPolicy, "modality": value.modality, "stopPolicy": value.stopPolicy,
             "speculation": value.speculation, "prefixReuse": value.prefixReuse,
         ]
@@ -106,8 +107,7 @@ public enum ClusterRuntimeCapabilityCodec {
             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
-            arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), maxLifetimeSeconds: r.int("maxLifetimeSeconds"),
-            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules,
+            arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), supportedPrefillSchedules: schedules,
             supportedGenerationModes: modes)
         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize

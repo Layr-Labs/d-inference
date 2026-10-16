@@ -127,5 +127,35 @@ extension ClusterDiagnosticsCheck {
             try require(try !detail(missing, "configuredLinkDevice").contains(unlisted)
                 && detail(missing, "configuredLinkDevice").contains("Darkbloom will not"), "unlisted device detail")
         }
+
+        // Link setup v2: where the network around a port was read, the doctor
+        // says whether it is isolated. A ready port that is not fails where
+        // serving would use it, because it can lose its address mid-session.
+        var exposed = device(7, .ready)
+        exposed.isolation = ClusterLinkIsolationStatus(findings: [.defaultRouteViaPort, .dnsViaPort, .dhcpLeaseOnPort,
+            .clusterServiceMissing, .otherServiceOnPort], hardwarePort: "Thunderbolt 6", otherServices: ["Thunderbolt 6"])
+        let exposedReport = report(Link(state: .ready, devices: [device(2, .noActivePort), exposed]))
+        try requireChecks(exposedReport, [("localLink", .passed), ("localLinkDevice.rdma_en7", .passed),
+            ("localLinkIsolation.rdma_en7", .failed)], "a ready port that is not isolated")
+        try require(try detail(exposedReport, "localLinkIsolation.rdma_en7").hasPrefix(
+            "defaultRouteViaPort, dnsViaPort, dhcpLeaseOnPort, clusterServiceMissing, otherServiceOnPort: The cluster port en7 is not isolated")
+            && detail(exposedReport, "localLinkIsolation.rdma_en7").contains("run `darkbloom cluster`"), "isolation detail names the findings and the fix")
+        try require(try detail(exposedReport, "localLink").contains("not isolated"), "the Mac's guidance leads with the isolation")
+        try require(try !detail(exposedReport, "localLinkIsolation.rdma_en7").contains("Thunderbolt 6"), "service names stay out")
+        var isolatedPort = device(7, .ready)
+        isolatedPort.isolation = ClusterLinkIsolationStatus(findings: [])
+        let isolatedReport = report(Link(state: .ready, devices: [isolatedPort]))
+        try requireChecks(isolatedReport, [("localLink", .passed), ("localLinkDevice.rdma_en7", .passed),
+            ("localLinkIsolation.rdma_en7", .passed)], "an isolated port")
+        try require(try detail(isolatedReport, "localLinkIsolation.rdma_en7").hasPrefix("Isolated: Thunderbolt port en7 has its own network service"),
+            "isolated detail")
+        var blockedPort = device(6, .ready, bridge: "bridge0")
+        blockedPort.isolation = ClusterLinkIsolationStatus(findings: [.portInBridge, .internetSharingOverPortBridge, .internetSharingToPort,
+            .clusterServiceMissing], bridge: "bridge0", hardwarePort: "Thunderbolt 2")
+        let sharing = report(Link(state: .ready, devices: [blockedPort, isolatedPort]), configuredDevice: "rdma_en7")
+        try requireChecks(sharing, [("localLink", .passed), ("localLinkDevice.rdma_en6", .passed), ("localLinkIsolation.rdma_en6", .notObserved),
+            ("localLinkDevice.rdma_en7", .passed), ("localLinkIsolation.rdma_en7", .passed)], "an exposed port serving does not use")
+        try require(try detail(sharing, "localLinkIsolation.rdma_en6").contains("Darkbloom does not change Internet Sharing")
+            && detail(sharing, "localLinkIsolation.rdma_en6").contains("“Thunderbolt 2” (en6)"), "the owner's step for Internet Sharing")
     }
 }

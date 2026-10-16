@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Foundation
 
 /// One line of the screen before it is fitted to a width.
@@ -49,6 +50,7 @@ enum ClusterConsoleContent {
             + pairing(snapshot, interactive: true) + [.blank]
             + model(snapshot, status: status) + [.blank]
             + session(status: status, state: state) + [.blank]
+            + observability(status) + [.blank]
             + activity(state) + [.blank]
             + [.heading("Not available in this build"),
                .init(ClusterConsoleWiring.unavailable.map(\.title).joined(separator: "; ") + ". Press ? for the reasons.", .dim, from: .frame)]
@@ -61,6 +63,7 @@ enum ClusterConsoleContent {
             + pairing(snapshot, interactive: false) + [.blank]
             + model(snapshot, status: snapshot.diagnostics) + [.blank]
             + liveSession(snapshot.diagnostics, heading: "Session") + [.blank]
+            + observability(snapshot.diagnostics) + [.blank]
             + [.heading("Not available in this build")]
             + ClusterConsoleWiring.unavailable.map { .init("\($0.title): \($0.reason)", from: .frame) }
         return lines.map { String(repeating: " ", count: $0.indent) + $0.text }
@@ -121,8 +124,12 @@ enum ClusterConsoleContent {
                 : byKey), .warning, from: .wired("link.wait"))]
         }
         let fix: String
+        let fixPort = snapshot.link.devices.first { $0.device == snapshot.setup.fixDevice }
         if options.dryRun {
             fix = "Press f for a dry run of the fix: it lists the commands an approval would run, and changes nothing."
+        } else if !options.temporary, fixPort?.isolationApplies == true {
+            // Link setup v2: the port gets its own network service, ready or not.
+            fix = "Press f to give that port its own network service with a fixed address, no router and no DNS, outside every bridge, which macOS keeps there. \(approval)"
         } else if snapshot.link.state == .ready {
             // A ready port is offered a fix only because nothing keeps its address.
             fix = "Press f to install the system job that keeps that address there. \(approval)"
@@ -217,7 +224,7 @@ enum ClusterConsoleContent {
                 } else if interactive {
                     lines.append(.init("Not saved and not trusted. Press a, then y, to approve it; any other key leaves it unapproved.", .warning, indent: 4, from: source))
                 } else {
-                    lines.append(.init("Not saved and not trusted. `darkbloom cluster configure`, or `a` in the console, approves it.", .warning, indent: 4, from: source))
+                    lines.append(.init("Not saved and not trusted. Press a in the console to approve it.", .warning, indent: 4, from: source))
                 }
             }
         }
@@ -251,7 +258,7 @@ enum ClusterConsoleContent {
             : .init("Identity file: missing, or not an owner-only regular file.", .bad, from: identity))
         if let error = trust.error { lines.append(.init(error, .bad, from: identity)) }
         if let approval = pairing.pairApproval {
-            lines.append(.init("Coordinator pair approval \(approval.id), generation \(approval.generation), for \(approval.model) on \(approval.allowedChips.joined(separator: ", ")), until \(approval.notAfter). A saved expectation: only the coordinator's own file approves a pair.", from: .wired("pair.approval")))
+            lines.append(.init("Coordinator pair approval \(approval.id), generation \(approval.generation), for \(approval.model) on \(approval.allowedChips.isEmpty ? "any Apple silicon" : approval.allowedChips.joined(separator: ", ")), until \(approval.notAfter). A saved expectation: only the coordinator's own file approves a pair.", from: .wired("pair.approval")))
         } else {
             lines.append(.init("Coordinator pair approval: none saved.", .dim, from: .wired("pair.approval")))
         }
@@ -269,11 +276,16 @@ enum ClusterConsoleContent {
             lines.append(.init("No model is selected: a model is chosen by the saved setup, and none is read.", .dim, from: .wired("model.saved")))
             return lines
         }
-        lines.append(.init("Saved setup serves \(model.publicModelID) as \(model.runtimeModelID): artifact \(ClusterConsoleText.short(model.artifactSHA256)), Plan \(ClusterConsoleText.short(model.planSHA256)), \(model.prefillSchedule) prefill, at most \(model.maximumRequests) requests and \(model.maximumLifetimeSeconds) seconds per session.", from: .wired("model.saved")))
+        lines.append(.init("Saved setup serves \(model.publicModelID) as \(model.runtimeModelID): artifact \(ClusterConsoleText.short(model.artifactSHA256)), Plan \(ClusterConsoleText.short(model.planSHA256)), \(model.prefillSchedule) prefill. The model stays loaded and serving until the cluster is stopped; a session has no time or request limit.", from: .wired("model.saved")))
         let members = status.live?.session.members ?? []
         for stage in model.stages {
             let count = stage.sourceLayerEnd - stage.sourceLayerStart
             lines.append(.init("Rank \(stage.rank), \(stage.peerID)\(stage.local ? " (this Mac)" : ""): layers \(stage.sourceLayerStart) to \(stage.sourceLayerEnd - 1) (\(count)).", indent: 4, from: .wired("model.ranks")))
+        }
+        // The plan's figure from the model's own files, beside this Mac's size:
+        // a small share on a large Mac is the plan and not a sign of nothing running.
+        if let holdings = snapshot.saved.installed?.holdings {
+            lines.append(.init(holdings.line, holdings.holdings == nil ? .dim : .normal, indent: 4, from: .wired("model.holdings")))
         }
         for member in members {
             if member.nativeReady {
@@ -308,7 +320,7 @@ enum ClusterConsoleContent {
         let process = ClusterConsoleLine.Source.wired("session.process")
         switch state.session {
         case .none: lines.insert(.init("No session was started from this screen.", from: process), at: 1)
-        case .launching: lines.insert(.init("Starting `darkbloom start --local --distributed`.", .warning, from: process), at: 1)
+        case .launching: lines.insert(.init("Starting the cluster session.", .warning, from: process), at: 1)
         case .running(let identifier):
             lines.insert(.init("Process \(identifier), started from this screen, is running.", .good, from: process), at: 1)
         case .stopping(let identifier):
@@ -334,9 +346,18 @@ enum ClusterConsoleContent {
         }
         lines.append(.init("Local leader: host \(live.hostPhase), session \(live.session.phase), \(live.ready ? "ready" : "not ready"), admission \(live.admissionAvailable ? "available" : "closed"), port \(live.boundPort), \(live.authenticationConfigured ? "bearer authentication" : "no authentication").",
             live.ready ? .good : .warning, from: .wired("host.local")))
-        lines.append(.init("Epoch \(live.session.observedMembershipEpoch ?? "not observed"); native bootstrap \(live.session.nativeBootstrap.rawValue)\(live.session.nativeBootstrapOwnerAuthenticated ? "" : " (the peer that answers is not authenticated)"); collective progress limit \(live.session.collectiveProgressLimitMilliseconds) ms.", from: source))
+        let dataPlane: String
+        switch (live.session.encryptedDataPlane, live.session.peerVerified) {
+        case (true?, true?): dataPlane = "; data plane encrypted, peer verified against its pin"
+        case (true?, _): dataPlane = "; data plane encrypted, peer not verified"
+        case (false?, _): dataPlane = "; data plane not encrypted"
+        default: dataPlane = ""
+        }
+        let unauthenticated = live.session.nativeBootstrapOwnerAuthenticated || live.session.peerVerified == true
+            ? "" : " (the peer that answers is not authenticated)"
+        lines.append(.init("Epoch \(live.session.observedMembershipEpoch ?? "not observed"); native bootstrap \(live.session.nativeBootstrap.rawValue)\(unauthenticated)\(dataPlane); collective progress limit \(live.session.collectiveProgressLimitMilliseconds) ms.", from: source))
         if let admission = live.session.admission {
-            lines.append(.init("Lifetime remaining \(admission.remainingLifetimeNanoseconds / 1_000_000_000) s; admissions remaining \(admission.remainingRequests); \(admission.activeRequest ? "a request is active" : "no active request")\(admission.draining ? "; draining" : "").", from: source))
+            lines.append(.init("Requests served \(admission.requestsServed); keep-warm exchanges \(admission.keepWarmExchanges); \(admission.activeRequest ? "a request is active" : "no active request")\(admission.draining ? "; draining" : "").", from: source))
         }
         for member in live.session.members {
             var text = "Rank \(member.rank), \(member.peerID): \(member.transport.rawValue); native \(member.nativeReady ? "ready" : "not ready"); cleanup \(member.nativeCleanupObserved ? "observed" : "not observed"); release \(member.ownerReleaseAcknowledged ? "acknowledged" : "not acknowledged")"
@@ -346,6 +367,52 @@ enum ClusterConsoleContent {
             lines.append(.init(text + ".", member.nativeReady ? .good : .warning, indent: 4, from: source))
         }
         if live.quarantined { lines.append(.init("Quarantined: an owner has not released its device.", .bad, from: source)) }
+        return lines
+    }
+
+    // MARK: - Observability
+
+    /// The incident log, the leader's pair telemetry and the mirrored
+    /// follower status (S24), as `cluster status` prints them.
+    static func observability(_ status: ClusterDiagnosticsReport) -> [ClusterConsoleLine] {
+        var lines = [ClusterConsoleLine.heading("Incidents and requests")]
+        guard let snapshot = status.observability else {
+            lines.append(.init("No incident has been recorded on this Mac.", .good, from: .wired("observe.incidents")))
+            lines.append(.init("No pair request has been recorded by a leader on this Mac.", .dim, from: .wired("observe.requests")))
+            lines.append(.init("No follower status has been mirrored to this Mac over the link.", .dim, from: .wired("session.follower")))
+            return lines
+        }
+        if let incidents = snapshot.incidents {
+            lines.append(.init("Incidents: \(incidents.open) open of \(incidents.total) recorded.", incidents.open == 0 ? .good : .warning,
+                from: .wired("observe.incidents")))
+            for incident in incidents.recent {
+                lines.append(.init("#\(incident.seq) \(incident.stateCode)" + (incident.reasonCode.map { " (\($0))" } ?? "")
+                    + " [\(incident.source)]: \(incident.message)", incident.severity == .error ? .bad : .warning, indent: 4,
+                    from: .wired("observe.incidents")))
+            }
+            for guidance in incidents.guidance {
+                lines.append(.init("\(guidance.title): " + guidance.steps.joined(separator: " "), indent: 4, from: .wired("observe.incidents")))
+            }
+        } else {
+            lines.append(.init("No incident has been recorded on this Mac.", .good, from: .wired("observe.incidents")))
+        }
+        if let telemetry = snapshot.telemetry {
+            for line in ClusterObservabilitySnapshot(incidents: nil, telemetry: telemetry, followers: nil).lines {
+                lines.append(.init(line.trimmingCharacters(in: .whitespaces), line.hasPrefix("  ") ? .normal : .heading,
+                    indent: line.hasPrefix("  ") ? 4 : 2, from: .wired("observe.requests")))
+            }
+        } else {
+            lines.append(.init("No pair request has been recorded by a leader on this Mac.", .dim, from: .wired("observe.requests")))
+        }
+        if let followers = snapshot.followers, !followers.entries.isEmpty {
+            for line in ClusterObservabilitySnapshot(incidents: nil, telemetry: nil, followers: followers).lines {
+                let stale = line.contains("STALE") || line.contains("failed")
+                lines.append(.init(line.trimmingCharacters(in: .whitespaces), stale ? .warning : .normal,
+                    indent: line.hasPrefix("  ") ? 4 : 2, from: .wired("session.follower")))
+            }
+        } else {
+            lines.append(.init("No follower status has been mirrored to this Mac over the link.", .dim, from: .wired("session.follower")))
+        }
         return lines
     }
 

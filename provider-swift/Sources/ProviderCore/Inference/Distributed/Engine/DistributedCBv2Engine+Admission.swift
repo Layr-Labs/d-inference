@@ -15,11 +15,12 @@ extension DistributedCBv2Engine {
     }
 
     func admit(
-        _ request: CBv2Request, deadlineContext: DistributedRequestDeadlineContext,
+        _ submitted: CBv2Request, deadlineContext: DistributedRequestDeadlineContext,
         projected: CBv2FirstTokenProjectedWork? = nil,
         cancellation: DistributedAdmissionCancellation? = nil
     ) throws -> Admission {
-        try validate(request)
+        try validate(submitted)
+        let request = resolvingSeed(submitted)
         try deadlineContext.checkAdmission(at: clock.now())
         let deadline = deadlineContext.firstTokenDeadline
         guard let capacity = readyCapacity(), capacity > 0 else {
@@ -41,7 +42,7 @@ extension DistributedCBv2Engine {
             detokenizer: detokenizers.makeDetokenizer(stopStrings: request.stopStrings),
             absoluteDeadline: deadlineContext.generationDeadline, firstTokenDeadline: deadline,
             admissionStartedAt: admissionStartedAt, reservedAt: clock.now())
-        active = state
+        actives[state.generation] = state
         observe(state, phase: .reserved)
         cancellation?.arm { [weak self, weak state] in
             guard let self, let state else { return }
@@ -49,7 +50,7 @@ extension DistributedCBv2Engine {
         }
         continuation.onTermination = { [weak self, generation = state.generation] _ in
             self?.onQueue {
-                guard self?.active?.generation == generation else { return }
+                guard self?.actives[generation] != nil else { return }
                 self?.stop(state, reason: .cancelled)
             }
         }
@@ -61,8 +62,9 @@ extension DistributedCBv2Engine {
         }
         var refused = false
         let admittedAt = clock.now()
-        if state.terminal != nil {
-            // Cancellation during reserve is consumed before native start.
+        if state.terminal != nil, !state.cleanStopPending {
+            // A cancellation during reserve that the lease could not take as a
+            // clean stop is consumed before native start.
         } else if lease.identity != identity || lease.requestID != request.id ||
             lease.reservedBytes <= 0 || lease.reservedBytes > capacity {
             stop(state, reason: .error("distributed owner returned an invalid reservation"))
@@ -78,12 +80,18 @@ extension DistributedCBv2Engine {
         } else if let deadline, clock.now() >= deadline {
             stop(state, reason: .terminal(cause: .admissionTimeout, message: "distributed first-token deadline"))
         } else {
+            // Also reached by a request whose consumer went away during
+            // reserve: the owner has no way to give a reservation back, so the
+            // request is started and ends at its first token with the clean
+            // stop, which keeps the pair.
             armDeadline(state)
             do {
                 try lease.start { [weak self, weak state] event in
                     guard let self, let state else { return false }
                     return self.onQueue { self.receive(event, state: state) }
                 }
+                state.leaseStarted = true
+                publishFailure(state)
             } catch {
                 stop(state, reason: .error("distributed owner start failed: \(error)"))
             }
@@ -93,26 +101,37 @@ extension DistributedCBv2Engine {
 
     func validate(_ request: CBv2Request) throws {
         guard !stopping else { throw DistributedEngineError.shuttingDown }
-        guard active == nil else { throw CBv2KVError.capacityExhausted(needed: 1, available: 0) }
+        // A request the pair can never serve is refused for what it is, even
+        // while another request runs.
+        if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
+        // A pair that can no longer serve says so first, also while its last
+        // request is still retiring (not "busy", which invites a retry).
         guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
+        guard actives.count < max(1, owner.concurrentRequests) else {
+            throw CBv2KVError.capacityExhausted(needed: 1, available: 0)
+        }
+        // Within the profile but longer than what the owner serves now (a
+        // rank's live admissible memory): refused up front, retryably.
         let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)
-        guard !request.promptTokens.isEmpty, request.promptTokens.count <= profile.maxPromptTokens,
-            request.maxTokens > 0, request.maxTokens <= profile.maxOutputTokens,
-            !total.overflow, total.partialValue <= profile.maxContextTokens,
-            request.promptTokens.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }),
-            request.stopTokens.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize })
-        else { throw DistributedEngineError.unsupportedRequest("token limits or vocabulary") }
-        let p = request.sampling
-        guard p.temperature == 0, p.topP == 1, p.topK == 0, p.minP == 0,
-            p.repetitionPenalty == 1, p.frequencyPenalty == 0, p.presencePenalty == 0,
-            p.seed == nil, p.logitBias.isEmpty, p.topLogprobs == 0,
-            request.multimodal == nil, request.positionState == nil,
-            request.tokenConstraint == nil, request.priority == 0,
-            request.prefixCacheReceiptID == nil,
-            request.stopStrings.count <= 16,
-            request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 })
-        else { throw DistributedEngineError.unsupportedRequest("only greedy text without MTP, constraints or logprobs") }
-        // prefixCacheEnabled permits reuse; this engine always reports disabled.
-        // No cache state is reused or donated, including across cacheSalt values.
+        if let serving = owner.readiness()?.servingContextTokens, !total.overflow, total.partialValue > serving {
+            throw DistributedEngineError.refusedForCapacity(requestedContextTokens: total.partialValue,
+                servingContextTokens: serving, reason: "capacity")
+        }
+        // Sampling (temperature, top-p/k, min-p, penalties, logit bias, seed)
+        // is the decoding rank's, with the product's sampler. A receipt only
+        // names this submission for the bridge's evidence; the peers decide
+        // reuse themselves (rank-local caches, agreed before the first
+        // forward) and the terminal usage reports what they reused.
+    }
+
+    /// An omitted seed takes this engine's fallback, as the product's
+    /// sampler gives every row without a seed its engine-level seed: fixed
+    /// for this engine, random across runs. Paired with the request's own
+    /// identity, it gives each unseeded request its own random stream.
+    func resolvingSeed(_ request: CBv2Request) -> CBv2Request {
+        guard request.sampling.seed == nil else { return request }
+        var resolved = request
+        resolved.sampling.seed = fallbackSeed
+        return resolved
     }
 }

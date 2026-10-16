@@ -23,6 +23,9 @@ struct QwenGenerationDiagnosticEvidence: Encodable {
     let resourceObservationCount: Int
     let minimumObservedActualFreeBytes: Int
     let minimumObservedAllocatorLimitBytes: Int
+    /// Rank 1 of `pipeline_mtp_v1` only: one step per selected token
+    /// (`QwenRecordedStep`); omitted otherwise.
+    var steps: [QwenRecordedStep]? = nil
     let actualAllocatorBoundsUsed = true
     let correctnessOnly = true
     let throughputMeasurementValid = false

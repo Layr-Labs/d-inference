@@ -33,6 +33,17 @@ public struct ClusterConsoleInstalled: Encodable, Sendable, Equatable {
     public let manifest: Finding
     /// Nil when the manifest could not be verified.
     public let artifactFiles: ArtifactFiles?
+    /// What each Mac holds while a session of the saved Plan is up, by the
+    /// plan tool's reading of the model directory, or why that was not read.
+    /// Nil when the saved setup's own files could not be resolved.
+    public let holdings: ClusterInstalledHoldings.Observation?
+
+    init(workerBinary: Finding, hasProgressGuard: Bool?, acceptsStartupDeadline: Bool?, manifest: Finding,
+         artifactFiles: ArtifactFiles?, holdings: ClusterInstalledHoldings.Observation? = nil) {
+        self.workerBinary = workerBinary; self.hasProgressGuard = hasProgressGuard
+        self.acceptsStartupDeadline = acceptsStartupDeadline; self.manifest = manifest
+        self.artifactFiles = artifactFiles; self.holdings = holdings
+    }
 
     private static let listedProblems = 6
 
@@ -58,7 +69,8 @@ public struct ClusterConsoleInstalled: Encodable, Sendable, Equatable {
             files = artifactFiles(value, directory: URL(fileURLWithPath: plan.localPeer.modelDirectory))
         } catch { manifest = .failed(error) }
         return .init(workerBinary: worker, hasProgressGuard: features?.hasProgressGuard,
-            acceptsStartupDeadline: features?.acceptsStartupDeadline, manifest: manifest, artifactFiles: files)
+            acceptsStartupDeadline: features?.acceptsStartupDeadline, manifest: manifest, artifactFiles: files,
+            holdings: ClusterInstalledHoldings.observe(configuration: plan.configuration, capability: plan.capability, deadline: deadline))
     }
 
     /// One `lstat` per manifest entry: a regular file of the manifest's size.

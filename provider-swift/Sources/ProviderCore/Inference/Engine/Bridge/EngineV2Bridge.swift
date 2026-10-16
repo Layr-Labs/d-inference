@@ -81,6 +81,8 @@ public actor EngineV2Bridge {
     /// charges. Segmented paged storage follows runtime grant changes; only
     /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
+    public nonisolated let kvQuantization: EngineV2KVQuantizationSelection
+    public nonisolated let kvCheckpointQuantization: EngineV2KVQuantizationSelection
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
     /// Construction-time fallback reason, retained for heartbeat reporting.
@@ -108,6 +110,9 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
+    /// A cluster pair's context: an omitted `max_tokens` is the default cut
+    /// to what still fits after the prompt (nil everywhere else).
+    let defaultMaxTokensContextLimit: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -300,7 +305,8 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
-    var mimoCalibration = MimoCalibrationState()
+    var modelCalibration = ModelCalibrationState()
+    let calibrationPosturePermitsWork: @Sendable () -> Bool
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
@@ -354,6 +360,7 @@ public actor EngineV2Bridge {
         extraEOSTokens: [String] = [],
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
+        defaultMaxTokensContextLimit: Int? = nil,
         maxConcurrentRequests: Int = 4,
         performanceProfile: ServingPerformanceProfile? = nil,
         deadlineProfile: DeadlinePerformanceProfile? = nil,
@@ -375,17 +382,24 @@ public actor EngineV2Bridge {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
         distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+        calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
+            !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
+        },
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
+        self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
+        self.kvQuantization = kvQuantization
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
@@ -404,6 +418,7 @@ public actor EngineV2Bridge {
         )
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
+        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile
@@ -439,6 +454,7 @@ public actor EngineV2Bridge {
             completeStore = nil
         }
         self.ssdHybridCheckpointStore = completeStore
+        self.kvCheckpointQuantization = completeStore == nil ? .native : kvCheckpointQuantization
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil
@@ -457,7 +473,10 @@ public actor EngineV2Bridge {
         // Complete-checkpoint lookup always precedes the resident bank.
         // Do not advertise a tier this engine cannot adopt, including while
         // its durable capability is temporarily absent during a scan/epoch change.
-        let residentEvidence = (engine as? EngineV2)?.hybridPrefixCache == nil
+        // A distributed engine's prefix caches live on its peers; it reports
+        // the frontiers both hold, so it may advertise the memory tier too.
+        let residentEvidence = engine is DistributedCBv2Engine ? residentPrefixCacheEvidence
+            : (engine as? EngineV2)?.hybridPrefixCache == nil
             || (engine as? EngineV2)?.completePrefixCache != nil
             ? nil : residentPrefixCacheEvidence
         self.residentPrefixCacheEvidence = residentEvidence
@@ -468,6 +487,11 @@ public actor EngineV2Bridge {
         }
         if let residentEvidence, let liveEngine = engine as? EngineV2 {
             liveEngine.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
+                residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
+            }
+        }
+        if let residentEvidence, let distributed = engine as? DistributedCBv2Engine {
+            distributed.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
                 residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
             }
         }

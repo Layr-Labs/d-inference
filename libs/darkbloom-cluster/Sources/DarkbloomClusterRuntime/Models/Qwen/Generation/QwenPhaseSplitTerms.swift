@@ -113,7 +113,7 @@ struct QwenPhaseSplitPlan: Equatable {
         var shapes: [QwenPhaseSplitStateShape] = []
         for layer in stage.layers.sorted(by: { $0.globalIndex < $1.globalIndex }) {
             switch layer.kind {
-            case "full_attention":
+            case "full_attention", "attention":
                 let bytes = try product(kvShape + [element])
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "kv.keys",
                     shape: kvShape, dtype: activationDType, byteCount: bytes))
@@ -121,7 +121,8 @@ struct QwenPhaseSplitPlan: Equatable {
                     shape: [1], dtype: "int32", byteCount: 4))
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "kv.values",
                     shape: kvShape, dtype: activationDType, byteCount: bytes))
-            case "linear_attention":
+            case "moe": continue  // a Nemotron expert block owns no request state
+            case "linear_attention", "mamba":
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "conv",
                     shape: convShape, dtype: activationDType, byteCount: try product(convShape + [element])))
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "ssm",
@@ -172,9 +173,12 @@ struct QwenPhaseSplitAllowance: Encodable, Equatable {
     let extraHostBytes: Int
     var reservedBytes: Int { get throws { try QwenLongPrefillCheckedBytes.sum([extraNativeBytes, extraHostBytes]) } }
 
+    /// `speculative` is the decoding rank's per-request head storage when the
+    /// mode runs the speculative head; nil otherwise and always on rank 0.
     static func derive(rank: Int, shapes: [QwenPhaseSplitStateShape], producerFusionBytes: Int,
+                       speculative: QwenMTPAllowance? = nil,
                        bound: (Int) throws -> Int) throws -> Self {
-        guard (0...1).contains(rank), !shapes.isEmpty, producerFusionBytes >= 0 else {
+        guard (0...1).contains(rank), !shapes.isEmpty, producerFusionBytes >= 0, speculative == nil || rank == 1 else {
             throw ProbeError("Invalid phase-split allowance geometry")
         }
         var native = 0, host = 0
@@ -185,8 +189,9 @@ struct QwenPhaseSplitAllowance: Encodable, Equatable {
             host = try QwenLongPrefillCheckedBytes.sum([host, entry.byteCount])
         }
         return .init(rank: rank,
-            extraNativeBytes: try QwenLongPrefillCheckedBytes.sum([native, rank == 1 ? producerFusionBytes : 0]),
-            extraHostBytes: host)
+            extraNativeBytes: try QwenLongPrefillCheckedBytes.sum([native, rank == 1 ? producerFusionBytes : 0,
+                speculative?.extraNativeBytes ?? 0]),
+            extraHostBytes: try QwenLongPrefillCheckedBytes.sum([host, speculative?.extraHostBytes ?? 0]))
     }
 }
 
@@ -203,8 +208,12 @@ struct QwenPhaseSplitFault: Equatable {
     /// its deadline, as a rank that has stalled would.
     var stallAfterSegment: Int?
     var stallMilliseconds = 0
+    /// Either rank: the prompt-prefix SSD tier's restore fails (`prefix_ssd_restore_fail=1`)
+    /// or stops halfway for this long (`prefix_ssd_restore_stall=MILLISECONDS`).
+    var prefixDisk: QwenStagePrefixDiskFault?
 
-    /// `handoff_corrupt_segment=N` or `handoff_stall_after_segment=N:MILLISECONDS`.
+    /// `handoff_corrupt_segment=N`, `handoff_stall_after_segment=N:MILLISECONDS`,
+    /// `prefix_ssd_restore_fail=1` or `prefix_ssd_restore_stall=MILLISECONDS`.
     static func admit(environment: [String: String]) throws -> Self? {
         guard let text = environment[environmentName] else { return nil }
         let parts = text.split(separator: "=", omittingEmptySubsequences: false)
@@ -223,6 +232,11 @@ struct QwenPhaseSplitFault: Equatable {
             guard values.count == 2 else { throw ProbeError("\(environmentName) stall needs SEGMENT:MILLISECONDS") }
             return Self(stallAfterSegment: try number(values[0], 0...4096),
                         stallMilliseconds: try number(values[1], 1...600_000))
+        case "prefix_ssd_restore_fail":
+            guard parts[1] == "1" else { throw ProbeError("\(environmentName) prefix_ssd_restore_fail takes 1") }
+            return Self(prefixDisk: .init(restoreFails: true))
+        case "prefix_ssd_restore_stall":
+            return Self(prefixDisk: .init(restoreStallMilliseconds: try number(parts[1], 1...600_000)))
         default: throw ProbeError("Unknown \(environmentName)")
         }
     }
@@ -250,4 +264,6 @@ struct QwenPhaseSplitSummary: Encodable, Equatable {
     let beforeHandoff: Memory
     let afterHandoff: Memory
     let afterRetirement: Memory
+    /// Present on a decoding rank that ran the speculative head.
+    var mtp: QwenMTPStatistics? = nil
 }

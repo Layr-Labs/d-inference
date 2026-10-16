@@ -27,7 +27,7 @@ public struct LocalInferenceHTTPConfig: Sendable {
     /// Bearer token required on every inference route (nil = open / `--no-auth`).
     public let authToken: String?
 
-    public init(host: String = "127.0.0.1", port: UInt16 = 8000, authToken: String? = nil) {
+    public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil) {
         self.host = host
         self.port = port
         self.authToken = authToken
@@ -76,7 +76,8 @@ func makeLocalInferenceApplication(
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
     modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
     clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
-    distributedResponses: (any DistributedHTTPResponseProviding)? = nil
+    distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
+    defaultReasoningParser: ReasoningParserFormat? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -97,10 +98,11 @@ func makeLocalInferenceApplication(
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
-            modelTypeProvider: modelTypeProvider
+            modelTypeProvider: modelTypeProvider,
+            defaultReasoningParser: defaultReasoningParser
         )
         return MLXOpenAIService(
-            engine: engine, responseStore: responseStore, metrics: metrics)
+            engine: engine, responseStore: responseStore, metrics: metrics, defaultReasoningParser: defaultReasoningParser)
     }
     let service = serviceForTemplateControls(.init())
     let router = MLXServerApplication.buildRouter(service: service)

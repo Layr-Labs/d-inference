@@ -30,7 +30,24 @@ public final class ClusterBootstrapListener: @unchecked Sendable {
     }
 
     deinit { socket.cancel(); unlink(socketPath); rmdir(directory) }
-    public func cancel() { socket.cancel() }
+    /// Ends the listener for good. A listening socket ignores `shutdown`, so
+    /// without more a child that connects afterwards, or whose connection is
+    /// still queued, would wait for a reply until its own bootstrap deadline
+    /// (a start cancelled before the owner accepted its child: the other rank
+    /// was refused at launch). The path goes first, so nothing new can arrive;
+    /// then whatever is queued is closed. The descriptor itself stays open
+    /// until release, as for every bootstrap socket.
+    public func cancel() {
+        socket.cancel()
+        unlink(socketPath)
+        socket.refuseQueuedConnections()
+        // The directory too: a process that ends without this object's
+        // deinit (a leader that exits 1 after a rank loss) left it behind,
+        // which the teardown verification found on hardware (orphan matrix,
+        // 2026-10-12); the orphan reaper removes such leftovers, and this
+        // keeps the product from making them.
+        rmdir(directory)
+    }
 
     public func accept(processID: Int32, identity: ClusterBootstrapIdentity,
                        deadlineUptimeNanoseconds: UInt64,

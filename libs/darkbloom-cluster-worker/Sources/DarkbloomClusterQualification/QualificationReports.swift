@@ -39,7 +39,8 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
 
     /// Field names that differ, and optional fields only one side carries.
     public func differences(from other: Self, allowCutDifference: Bool = false,
-                            allowScheduleDifference: Bool = false) -> (differing: [String], notCompared: [String]) {
+                            allowScheduleDifference: Bool = false,
+                            allowProfileDifference: Bool = false) -> (differing: [String], notCompared: [String]) {
         var differing: [String] = [], skipped: [String] = []
         func required<T: Equatable>(_ name: String, _ a: T, _ b: T) { if a != b { differing.append(name) } }
         func optional<T: Equatable>(_ name: String, _ a: T?, _ b: T?) {
@@ -56,8 +57,17 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
         if !allowScheduleDifference { required("prefillSchedule", prefillSchedule, other.prefillSchedule) }
         required("artifactSHA256", artifactSHA256, other.artifactSHA256)
         required("configurationSHA256", configurationSHA256, other.configurationSHA256)
-        optional("requestFingerprint", requestFingerprint, other.requestFingerprint)
-        optional("profileFingerprint", profileFingerprint, other.profileFingerprint)
+        // A profile's limits (largest prompt, output and context) decide which
+        // requests are admitted, not what one computes; the same tokens, chunk,
+        // outputs and stops under two limits are one computation. The request
+        // fingerprint binds the profile, so it follows.
+        if allowProfileDifference {
+            if requestFingerprint != other.requestFingerprint { skipped.append("requestFingerprint") }
+            if profileFingerprint != other.profileFingerprint { skipped.append("profileFingerprint") }
+        } else {
+            optional("requestFingerprint", requestFingerprint, other.requestFingerprint)
+            optional("profileFingerprint", profileFingerprint, other.profileFingerprint)
+        }
         optional("arithmeticSHA256", arithmeticSHA256, other.arithmeticSHA256)
         // The cut selects the Plan, the stages and how storage is divided.
         if !(allowCutDifference && stageCut != other.stageCut) {
@@ -79,12 +89,15 @@ public struct QualificationStep: Codable, Equatable, Sendable {
     public var topLogits: [Float]
     public var maximumTieCount: Int
     public var rowSHA256: String
+    /// The row's native dtype, when the step carries it (MiMo's step
+    /// evidence); otherwise the final row's dtype describes every row.
+    public var rowDType: String?
 
     public init(ordinal: Int, frameSequence: Int, committedTokens: Int, tokenID: Int, topTokenIDs: [Int],
-                topLogits: [Float], maximumTieCount: Int, rowSHA256: String) {
+                topLogits: [Float], maximumTieCount: Int, rowSHA256: String, rowDType: String? = nil) {
         self.ordinal = ordinal; self.frameSequence = frameSequence; self.committedTokens = committedTokens
         self.tokenID = tokenID; self.topTokenIDs = topTokenIDs; self.topLogits = topLogits
-        self.maximumTieCount = maximumTieCount; self.rowSHA256 = rowSHA256
+        self.maximumTieCount = maximumTieCount; self.rowSHA256 = rowSHA256; self.rowDType = rowDType
     }
 }
 
@@ -141,6 +154,31 @@ public struct QualificationStateEntry: Codable, Equatable, Sendable {
     }
 }
 
+/// The prefix plan both ranks agreed for a recorded request: prompt tokens
+/// restored from the prefix caches, and whether the last prompt token ran in a
+/// frame of its own (which the cache does so that the state after all but the
+/// last token is an exact frame boundary). Both change only the prefill
+/// framing; absent for a run without the prefix cache.
+public struct QualificationPrefillPlan: Codable, Equatable, Sendable {
+    public var reusedPromptTokens: Int
+    public var splitFinalPromptToken: Bool
+    public init(reusedPromptTokens: Int, splitFinalPromptToken: Bool) {
+        self.reusedPromptTokens = reusedPromptTokens; self.splitFinalPromptToken = splitFinalPromptToken
+    }
+
+    /// Prefill frames of a prompt of `prompt` tokens in frames of `chunk`
+    /// under this plan, as the runtime frames it (frames end on the chunk
+    /// grid from the reused prefix; a split last token runs alone).
+    public func prefillFrames(prompt: Int, chunk: Int) -> Int? {
+        guard prompt >= 1, chunk >= 1, reusedPromptTokens >= 0, reusedPromptTokens < prompt else { return nil }
+        let split = splitFinalPromptToken && prompt >= 2
+        let last = split ? prompt - 1 : prompt
+        var frames = 0, offset = reusedPromptTokens
+        while offset < last { offset = min(last, (offset / chunk + 1) * chunk); frames += 1 }
+        return frames + (split ? 1 : 0)
+    }
+}
+
 public struct QualificationEvidence: Codable, Equatable, Sendable {
     public var selectedTokenIDs: [Int]
     public var finishReason: String
@@ -150,6 +188,10 @@ public struct QualificationEvidence: Codable, Equatable, Sendable {
     public var finalLogits: QualificationFinalLogits?
     public var stateEntries: [QualificationStateEntry]?
     public var stateSHA256: String?
+    /// The agreed prefix plan of a pair run with the prefix cache on; nil for
+    /// a run without it (and for the single-Mac reference, which frames the
+    /// prompt in fixed chunks from offset zero).
+    public var prefillPlan: QualificationPrefillPlan?
 
     public init(selectedTokenIDs: [Int], finishReason: String, completedFrames: Int? = nil, committedTokens: Int? = nil,
                 steps: [QualificationStep]? = nil, finalLogits: QualificationFinalLogits? = nil,
@@ -355,6 +397,16 @@ public struct PairRankReport: Codable, Equatable, Sendable {
     /// Lines the runtime wrote for its launcher: load, hand-off and release
     /// sizes and durations of this rank. Sizes are MLX's own byte counts.
     public var runtimeLines: [String]?
+    /// Rank-lease renewals the driver wrote to this worker (S03).
+    public var leaseRenewalsSent: UInt64?
+    /// Keep-warm data-plane exchanges this worker answered (S27 tier 2).
+    public var keepWarmExchanges: Int?
+    /// S16: what this rank reported at readiness: `encrypted_v1` and whether it
+    /// verified its peer against its pin; the transcript digest (not secret)
+    /// is equal on both ranks of one keyed session.
+    public var dataPlane: String?
+    public var peerVerified: Bool?
+    public var dataPlaneTranscriptSHA256: String?
 
     public init(role: String, rank: Int) { self.role = role; self.rank = rank }
 }
@@ -375,6 +427,19 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
     public var tokens: Int
     public var selectedTokenIDsSHA256: String
     public var finishReason: String
+    /// The idle gap the session spent loaded before this request (idle-latency runs).
+    public var idleBeforeSeconds: Double?
+    /// Prompt tokens both ranks restored from their prefix caches (nil: none).
+    public var reusedPromptTokens: Int?
+    /// Prompt frontiers both ranks kept after this request.
+    public var storedPromptFrontiers: [Int]?
+    /// The request's prompt length and its prompt digest, for a session that
+    /// runs more than one request file.
+    public var promptTokens: Int?
+    public var promptTokenIDsSHA256: String?
+    /// The pair's serving context when this request was reserved
+    /// (`ClusterWorkerPair.servingContextTokens`).
+    public var servingContextTokens: Int?
 
     public init(requestID: String, admissionSeconds: Double, firstTokenSeconds: Double, prefillTokensPerSecond: Double,
                 decodeSeconds: Double, decodeTokensPerSecond: Double?, totalSeconds: Double,
@@ -385,6 +450,87 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
         self.totalSeconds = totalSeconds; self.secondTokenGapSeconds = secondTokenGapSeconds
         self.tokens = tokens; self.selectedTokenIDsSHA256 = selectedTokenIDsSHA256; self.finishReason = finishReason
     }
+}
+
+/// A request the pair refused before it started: refused up front because it
+/// is longer than the pair's serving context, or refused by a rank's live gate
+/// at reservation and given back by the other rank. Only this request failed;
+/// the session went on to the next one.
+public struct PairRefusedRequest: Codable, Equatable, Sendable {
+    public var ordinal: Int
+    public var requestID: String
+    public var promptTokens: Int
+    public var outputTokens: Int
+    /// `ClusterWorkerRefusal` raw value.
+    public var reason: String
+    /// The pair's serving context when it was refused.
+    public var servingContextTokens: Int
+    /// True when no rank was asked (longer than the serving context).
+    public var refusedUpFront: Bool
+    /// Ranks whose own reservation answer was a refusal.
+    public var refusingRanks: [Int]
+    public init(ordinal: Int, requestID: String, promptTokens: Int, outputTokens: Int, reason: String,
+                servingContextTokens: Int, refusedUpFront: Bool, refusingRanks: [Int]) {
+        self.ordinal = ordinal; self.requestID = requestID; self.promptTokens = promptTokens
+        self.outputTokens = outputTokens; self.reason = reason; self.servingContextTokens = servingContextTokens
+        self.refusedUpFront = refusedUpFront; self.refusingRanks = refusingRanks
+    }
+}
+
+/// One request of a continuous-batching run, timed from its own start.
+public struct PairBatchRequestTiming: Codable, Equatable, Sendable {
+    /// Index of the request file in the run's batch list.
+    public var promptIndex: Int
+    public var requestID: String
+    public var promptTokens: Int
+    public var startOffsetSeconds: Double
+    public var firstTokenSeconds: Double?
+    public var decodeSeconds: Double?
+    public var decodeTokensPerSecond: Double?
+    public var totalSeconds: Double?
+    public var tokens: Int
+    public var selectedTokenIDsSHA256: String
+    public var finishReason: String
+    public var failure: String?
+    /// Against the same request run alone in this session: identical tokens,
+    /// or the first index where they differ.
+    public var matchesSolo: Bool?
+    public var firstDifferenceIndex: Int?
+    /// Prompt tokens both ranks restored from their prefix caches (nil: none).
+    public var reusedPromptTokens: Int?
+    public var selectedTokenIDs: [Int]
+
+    public init(promptIndex: Int, requestID: String, promptTokens: Int, startOffsetSeconds: Double, tokens: [Int],
+                finishReason: String) {
+        self.promptIndex = promptIndex; self.requestID = requestID; self.promptTokens = promptTokens
+        self.startOffsetSeconds = startOffsetSeconds; self.tokens = tokens.count
+        self.selectedTokenIDsSHA256 = QualificationHash.tokenIDs(tokens); self.finishReason = finishReason
+        self.selectedTokenIDs = tokens
+    }
+}
+
+/// `concurrency` requests started together in one loaded session.
+public struct PairBatchWave: Codable, Equatable, Sendable {
+    public var concurrency: Int
+    /// First start to last finish.
+    public var wallSeconds: Double
+    public var totalTokens: Int
+    /// All tokens of the wave over its wall time.
+    public var aggregateTokensPerSecond: Double
+    /// Sum of the requests' own decode rates (tokens after the first over
+    /// first token to last token), the steady aggregate decode rate.
+    public var summedDecodeTokensPerSecond: Double?
+    public var requests: [PairBatchRequestTiming]
+    public var allMatchSolo: Bool?
+}
+
+public struct PairBatchTiming: Codable, Equatable, Sendable {
+    public var lanes: Int
+    public var kvBackend: String?
+    /// Each request file run alone, one after another: the unbatched reference.
+    public var solo: [PairBatchRequestTiming]
+    public var waves: [PairBatchWave]
+    public var note: String
 }
 
 public struct PairTiming: Codable, Equatable, Sendable {
@@ -399,6 +545,13 @@ public struct PairTiming: Codable, Equatable, Sendable {
     public var totalSeconds: Double?
     /// Every request of the run in order; the fields above describe the first.
     public var repetitions: [PairRepetitionTiming]?
+    /// Requests refused before they started; the session served on.
+    public var refusedRequests: [PairRefusedRequest]?
+    /// Each rank's serving context at readiness and the pair's at the end.
+    public var servingContextAtReady: [Int?]?
+    public var servingContextAtEnd: Int?
+    /// Continuous batching waves, when the run asked for them.
+    public var batch: PairBatchTiming?
     public var note: String
 
     public init(note: String) { self.note = note }
@@ -434,6 +587,16 @@ public struct PairReport: Codable, Equatable, Sendable {
     /// `jaccl`, or `local-socket-test` when both ranks ran on one Mac over a
     /// loopback socket: a correctness run, not RDMA, and not a pair timing.
     public var workerTransport: String?
+    /// S16: the data plane the run asked for (`encrypted_v1` or `plaintext`),
+    /// and whether both ranks reported one encrypted, peer-verified session.
+    public var dataPlane: String?
+    public var encryptedDataPlane: Bool?
+    public var peerVerified: Bool?
+    /// S16: from each rank's last `darkbloom-data-plane-status-v1` line, whether
+    /// every record one rank sealed the other opened (records, bytes and key
+    /// generation, both directions), and how many key rotations the session made.
+    public var dataPlaneRecordsAgree: Bool?
+    public var dataPlaneKeyRotations: Int?
 
     public init(outcome: String, failure: String?, identity: QualificationIdentity?, evidence: QualificationEvidence?,
                 ranks: [PairRankReport], workerHashesIdentical: Bool?, metallibHashesIdentical: Bool?, recording: Bool,
@@ -496,7 +659,9 @@ public enum QualificationReportFiles {
                 throw QualificationError("Pair report \(url.lastPathComponent) records outcome '\(report.outcome)' and has no evidence to compare")
             }
             let chips = report.ranks.map { $0.chip ?? "unknown chip" }.joined(separator: " + ")
-            return .init(label: "two-rank pair (\(chips))", identity: identity, evidence: evidence)
+            var read = evidence
+            if read.finalLogits == nil, read.steps == nil, let steps = try MiMoQualificationEvidence.pairSteps(report) { read.steps = steps }
+            return .init(label: "two-rank pair (\(chips))", identity: identity, evidence: read)
         default:
             throw QualificationError("\(url.lastPathComponent) is neither a reference report nor a pair report")
         }

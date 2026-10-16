@@ -14,7 +14,8 @@ struct QwenLayerStageGenerationResult: Encodable {
     let finishReason: QwenLayerStageGenerationFinishReason
     let bothRequestStatesRetired = true
     let modelRemainsResident = true
-    let mtpEnabled = false
+    /// True when the decoding rank drafted and verified with the speculative head.
+    var mtpEnabled = false
     let physicalTransferQualified = false
     let independentNumericalComparisonPerformed = false
     let externalTTFTMeasured = false
@@ -22,4 +23,8 @@ struct QwenLayerStageGenerationResult: Encodable {
     var prefillSchedule: QwenGenerationPrefillSummary? = nil
     /// Present only when a declared phase-split request performed its hand-off.
     var phaseSplit: QwenPhaseSplitSummary? = nil
+    /// Nil is omitted. The prefix plan both ranks agreed and what this rank kept.
+    var prefixCache: QwenStagePrefixSummary? = nil
+    /// Nil is omitted. Rank 1 of `pipeline_mtp_v1`: the rounds' counts and times.
+    var speculativeRounds: QwenMTPStatistics? = nil
 }

@@ -13,13 +13,14 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
     private let listener: ClusterBootstrapListener
     private let condition = NSCondition()
     private var connection: ClusterBootstrapConnection?
-    private var pending: ClusterBootstrapRound?
+    /// The round published and awaiting its reply, by wire sequence.
+    private var pending: (sequence: UInt64, contribution: Data, rank: Int)?
     private var reply: Data?
     private var failed = false
     private var completed = false
 
     init(profile: ClusterOwnerBootstrapProfile, deadline: UInt64, nativeStart: ClusterNativeAuthorizationStart? = nil) throws {
-        guard (profile == .nativeKeyPrelude) == (nativeStart != nil) else { throw OwnerWire.invalid("Native prelude profile/start differs") }
+        guard profile.carriesNativeStart == (nativeStart != nil) else { throw OwnerWire.invalid("Native prelude profile/start differs") }
         self.nativeStart = nativeStart
         self.profile = profile; deadlineUptimeNanoseconds = deadline
         listener = try .init(deadlineUptimeNanoseconds: deadline)
@@ -38,8 +39,8 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
         guard !failed, let pending, pending.sequence == sequence, reply == nil,
               bytes.count <= 131_072 else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
         try profile.validateReply(sequence: sequence, contribution: pending.contribution, reply: bytes)
-        if profile == .mesh2 {
-            let start = pending.identity.rank * pending.contribution.count
+        if !profile.isPrelude(sequence) {
+            let start = pending.rank * pending.contribution.count
             guard Data(bytes.dropFirst(start).prefix(pending.contribution.count)) == pending.contribution else { throw OwnerWire.invalid("Bootstrap reply changed local contribution") }
         }
         reply = bytes; condition.broadcast()
@@ -54,8 +55,7 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
     private func exchangePublic(sequence: UInt64, bytes: Data, identity: ClusterBootstrapIdentity,
                                 publish: @Sendable (UInt64, Data) throws -> Void) throws -> Data {
         try profile.validate(sequence: sequence, contribution: bytes)
-        let round = try ClusterBootstrapRound(identity: identity, sequence: sequence, contribution: bytes)
-        condition.lock(); pending = round; reply = nil; condition.unlock()
+        condition.lock(); pending = (sequence, bytes, identity.rank); reply = nil; condition.unlock()
         try publish(sequence, bytes)
         condition.lock()
         while !failed && reply == nil && DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds {
@@ -72,7 +72,7 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
             let connection = try listener.accept(processID: pid,
                 identity: .init(membershipEpoch: binding.identity.membershipEpoch, rank: binding.rank),
                 deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
-                mode: profile == .mesh2 ? .mesh2 : .nativeKeyPreludeV1)
+                mode: profile.carriesNativeStart ? .nativeKeyPreludeV1 : .mesh2)
             condition.lock()
             guard !failed else { condition.unlock(); connection.cancel(); throw ClusterBootstrapError.closed }
             self.connection = connection; condition.unlock()
@@ -89,20 +89,26 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
                 try context.sendPeerConfirmation(exchangePublic(sequence: 1, bytes: confirmation, identity: connection.identity, publish: publish))
                 try context.requireComplete(transcriptSHA256: accepted.transcriptSHA256)
                 _ = try exchangePublic(sequence: 2, bytes: accepted.transcriptSHA256, identity: connection.identity, publish: publish)
-                // The key-only native fixture acknowledges that it retained the
-                // confirmed authority before exiting. This is not an RDMA mesh
-                // round or a model Ready receipt; it prevents EOF racing the
-                // owner's final public publication.
-                let receipt = try connection.receiveRound()
-                let marker = Data("native-key-prelude-complete-v1".utf8)
-                guard receipt.sequence == 0, receipt.contribution == marker else { throw OwnerWire.invalid("Native key-only completion marker differs") }
-                try connection.reply(to: receipt, gathered: marker + marker)
-            } else { for expected in 0..<profile.rounds {
+                if profile == .nativeKeyPrelude {
+                    // The key-only native fixture acknowledges that it retained the
+                    // confirmed authority before exiting. This is not an RDMA mesh
+                    // round or a model Ready receipt; it prevents EOF racing the
+                    // owner's final public publication.
+                    let receipt = try connection.receiveRound()
+                    let marker = Data("native-key-prelude-complete-v1".utf8)
+                    guard receipt.sequence == 0, receipt.contribution == marker else { throw OwnerWire.invalid("Native key-only completion marker differs") }
+                    try connection.reply(to: receipt, gathered: marker + marker)
+                }
+            }
+            // The mesh rounds follow the prelude on the same connection; the
+            // child numbers them from 0, the wire after the prelude's rounds.
+            for expected in 0..<profile.meshRounds {
                 let round = try connection.receiveRound()
                 guard round.sequence == UInt64(expected) else { throw OwnerWire.invalid("Bootstrap local sequence differs") }
-                try profile.validate(sequence: round.sequence, contribution: round.contribution)
-                condition.lock(); pending = round; reply = nil; condition.unlock()
-                try publish(round.sequence, round.contribution)
+                let wire = profile.wireSequence(meshRound: round.sequence)
+                try profile.validate(sequence: wire, contribution: round.contribution)
+                condition.lock(); pending = (wire, round.contribution, round.identity.rank); reply = nil; condition.unlock()
+                try publish(wire, round.contribution)
                 condition.lock()
                 while !failed && reply == nil && DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds {
                     _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
@@ -111,7 +117,6 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
                 guard valid, let value else { throw ClusterWorkerOwnerErrorProxy.deadline }
                 try connection.reply(to: round, gathered: value)
                 condition.lock(); pending = nil; reply = nil; condition.unlock()
-            }
             }
             condition.lock(); completed = true; condition.broadcast(); condition.unlock()
             // Initialization rounds are complete, not proof of native retirement.

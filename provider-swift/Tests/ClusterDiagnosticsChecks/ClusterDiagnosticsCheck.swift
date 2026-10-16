@@ -76,7 +76,7 @@ private func reject(_ body: () throws -> Void) throws {
         let sample = ClusterLiveStatus(schema: ClusterLiveStatus.schemaName, nonce: nonce, binding: binding,
             authenticationConfigured: true, hostPhase: "serving", session: .init(binding: binding, phase: "ready",
                 observedMembershipEpoch: epoch, observedPrefillSchedule: .serial, observedGenerationMode: .pipeline, ready: true,
-                admission: .init(remainingLifetimeNanoseconds: 8_000_000_000, remainingRequests: 16, activeRequest: false, draining: false, valid: true),
+                admission: .init(requestsServed: 0, keepWarmExchanges: 0, activeRequest: false, draining: false, valid: true),
                 members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
                     nativeReady: true, requestCapacityBytes: 1024, nativeCleanupObserved: false, ownerReleaseAcknowledged: false, ownerTermination: nil) },
                 mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation",
@@ -102,7 +102,9 @@ private func reject(_ body: () throws -> Void) throws {
         try reject { _ = try decode(changed { $0["boundPort"] = 8001 }) }
         try reject { _ = try decode(changed { $0["ready"] = false }) }
         try reject { _ = try decode(changed { var b = $0["binding"] as! [String: Any]; b["planSHA256"] = String(repeating: "0", count: 64); $0["binding"] = b }) }
-        for (key, value) in [("remainingRequests", 17), ("remainingLifetimeNanoseconds", 11_000_000_000)] {
+        // Counters only: no lifetime or request count exists to report; a
+        // negative counter or a retired field is refused.
+        for (key, value) in [("requestsServed", -1), ("keepWarmExchanges", -1), ("remainingRequests", 16), ("remainingLifetimeNanoseconds", 1)] {
             try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; var a = s["admission"] as! [String: Any]; a[key] = value; s["admission"] = a; $0["session"] = s }) }
         }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedPrefillSchedule"] = "one_chunk_lookahead_v1"; $0["session"] = s }) }
@@ -189,11 +191,12 @@ private func reject(_ body: () throws -> Void) throws {
     }
 
     /// What the status binding shows of the mode, and what `cluster doctor`
-    /// says about a model that is not served on a pair.
+    /// says about a model or a chip a pair does not serve. Each fixture is a
+    /// leader, rank 0 of two: the pipeline-only rank under every grant.
     static func modeAndServingPolicy(_ f: InstalledFixture) throws {
-        func validation(_ fixture: InstalledFixture) -> [ClusterDiagnosticsReport.Check] {
+        func validation(_ fixture: InstalledFixture, chip: String = "Apple M3 Ultra") -> [ClusterDiagnosticsReport.Check] {
             ClusterInstalledMetadataChecks.localInstalledMetadata(reference: fixture.reference, paths: fixture.paths,
-                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, localChipClass: ClusterChipClass(chipName: chip))
         }
         let ordinary = validation(f)
         try require(ordinary.map(\.name) == ["localInstalledMetadata"] && ordinary[0].outcome == .passed, "ordinary setup: \(ordinary.map(\.detail))")
@@ -203,12 +206,44 @@ private func reject(_ body: () throws -> Void) throws {
         let shown = try ClusterStatusBinding(configuration: split.configuration, capability: split.capability)
         try require(shown.generationMode == .phaseSplit && shown.peers.map(\.supportedGenerationModes) == [all, all], "the binding does not show the mode and each worker's support")
         try require(validation(split).first?.outcome == .passed, "an advertised mode failed the doctor")
+        // MTP on by default: the session reports it from the saved mode and what both workers advertise.
+        try require(DistributedInstalledSpeculation(mode: .phaseSplitMTP, everyMemberAdvertisesHead: true)
+            == .init(enabled: true, offReason: "none")
+            && DistributedInstalledSpeculation(mode: .phaseSplit, everyMemberAdvertisesHead: true).offReason == "setupSelectsPhaseSplitWithoutHead"
+            && DistributedInstalledSpeculation(mode: .pipeline, everyMemberAdvertisesHead: true).offReason == "generationModeRunsNoHead"
+            && DistributedInstalledSpeculation(mode: .phaseSplit, everyMemberAdvertisesHead: false).offReason == "runtimeCapabilityDisablesSpeculation",
+            "MTP posture differs from the saved mode")
+        let head: [ClusterGenerationMode] = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
+        let speculative = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-mtp"), probe: f.probe, owner: f.owner, worker: f.worker,
+            generationMode: "phase_split_mtp_v1", advertisedModes: head)
+        try require(speculative.capability.speculation == ClusterRuntimeCapability.decodingRankSpeculation
+            && DistributedInstalledSpeculation(configuration: speculative.configuration, capability: speculative.capability).enabled,
+            "a setup naming the speculative phase split does not report MTP on")
+        try require(validation(speculative).first?.outcome == .passed, "the speculative phase split failed the doctor")
         let big = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-27b"), probe: f.probe, owner: f.owner, worker: f.worker,
             advertisedModes: all, registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
-        let refused = validation(big)
-        try require(refused.map(\.name) == ["pairServingPolicy", "localInstalledMetadata"] && refused[0].outcome == .failed && refused[1].outcome == .notRun,
-            "a withheld model was reported as a metadata fault: \(refused.map(\.name))")
-        try require(refused[0].detail.contains("policy decision") && refused[0].detail.contains("EigenLabs/Qwen3.8-27B-4bit-mtp"), "policy refusal text: \(refused[0].detail)")
+        // The owner's serving (2026-10-14 08:45): any Apple silicon runs any rank of the 27B, and the doctor passes it.
+        for chip in ["Apple M3 Ultra", "Apple M5 Max", "Apple M4 Max"] {
+            let granted = validation(big, chip: chip)
+            try require(granted.map(\.name) == ["localInstalledMetadata"] && granted[0].outcome == .passed,
+                "the 27B failed the doctor on \(chip): \(granted.map { "\($0.name) \($0.outcome) \($0.detail)" })")
+        }
+        // A chip with no class is a policy refusal; the metadata still passed.
+        let refused = validation(big, chip: "Apple M1 (Virtual)")
+        try require(refused.map(\.name) == ["pairServingPolicy", "localInstalledMetadata"] && refused[0].outcome == .failed
+            && refused[1].outcome == .passed, "a classless chip was not reported as policy: \(refused.map(\.name))")
+        try require(refused[0].detail.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused[0].detail.contains("policy decision"),
+            "policy refusal text: \(refused[0].detail)")
+        // The 9B led by the M5 Max: no role is tied to a chip.
+        try require(validation(f, chip: "Apple M5 Max").map(\.name) == ["localInstalledMetadata"], "9B led by the M5 Max was refused")
+        // GPT-OSS at cut 4 (the fixture's): the M3 Ultra ran rank 0 at cut 4 in a check that diverged, so its rank is a
+        // policy refusal there and nowhere else.
+        let gpt = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-gptoss"), probe: f.probe, owner: f.owner, worker: f.worker,
+            registered: ("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1", "fixture/gpt-oss"), adapter: .gptossLayerStage)
+        let steered = validation(gpt, chip: "Apple M3 Ultra")
+        try require(steered.first?.name == "pairServingPolicy" && steered[0].detail.contains("diverged from its single-Mac reference"),
+            "GPT-OSS's diverged rank-shape on the M3 Ultra: \(steered.map(\.detail))")
+        try require(validation(gpt, chip: "Apple M4 Max").map(\.name) == ["localInstalledMetadata"], "GPT-OSS on an M4 Max was refused")
     }
 
     static func journal(_ f: InstalledFixture) throws {

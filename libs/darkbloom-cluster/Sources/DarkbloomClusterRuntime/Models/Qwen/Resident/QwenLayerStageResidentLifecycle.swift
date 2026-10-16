@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// CPU identity supplied by the existing admitted request, not a new decoder.
@@ -31,23 +32,21 @@ struct QwenLayerStageResidentLifecycleSnapshot: Equatable {
 /// No model, native array, request cache, trace recorder or cleanup callback is
 /// retained here. A failed body poisons the cohort even if its error is caught.
 final class QwenLayerStageResidentLifecycle {
-    static let maximumCohortRequests = 16
     private enum Phase { case idle, request(UUID), releasing, released, releaseFailed }
     private let lock = NSLock()
-    private let requestLimit: Int
     private var phase = Phase.idle
     private var failure = false
     private var rejectionGeneration = UUID()
+    /// Recent request IDs and epochs, to refuse a reuse: windows of
+    /// `requestReplayWindow`, never a request count. A resident owner serves
+    /// requests for as long as its worker is kept.
     private var requestIDs = Set<UUID>()
     private var epochs = Set<UUID>()
+    private var recent: [(request: UUID, epoch: UUID)] = []
+    private var admittedRequests = 0
     private var completedScopes = 0
 
-    init(maximumRequests: Int) throws {
-        guard (1...Self.maximumCohortRequests).contains(maximumRequests) else {
-            throw QwenLayerStageResidentLifecycleError.rejected("Resident cohort limit must be 1...16")
-        }
-        requestLimit = maximumRequests
-    }
+    init() {}
 
     var snapshot: QwenLayerStageResidentLifecycleSnapshot {
         locked {
@@ -59,7 +58,7 @@ final class QwenLayerStageResidentLifecycle {
             case .released: attempted = true; released = true
             case .idle, .request: attempted = false; released = false
             }
-            return .init(admittedRequests: requestIDs.count, completedRequestScopes: completedScopes,
+            return .init(admittedRequests: admittedRequests, completedRequestScopes: completedScopes,
                 requestScopeActive: active, failed: failure, releaseAttempted: attempted,
                 releaseCallbackCompleted: released)
         }
@@ -78,11 +77,14 @@ final class QwenLayerStageResidentLifecycle {
             guard bytes.count == 64, bytes.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
                 throw reject("Resident request requires its admitted lowercase history fingerprint")
             }
-            guard requestIDs.count < requestLimit,
-                  !requestIDs.contains(identity.requestID), !epochs.contains(identity.epoch) else {
-                throw reject("Resident request limit, UUID or epoch was reused")
+            guard !requestIDs.contains(identity.requestID), !epochs.contains(identity.epoch) else {
+                throw reject("Resident request UUID or epoch was reused")
             }
             requestIDs.insert(identity.requestID); epochs.insert(identity.epoch)
+            recent.append((identity.requestID, identity.epoch)); admittedRequests += 1
+            if recent.count > ClusterWorkerLimits.requestReplayWindow {
+                let oldest = recent.removeFirst(); requestIDs.remove(oldest.request); epochs.remove(oldest.epoch)
+            }
             let lease = UUID(); phase = .request(lease)
             return lease
         }

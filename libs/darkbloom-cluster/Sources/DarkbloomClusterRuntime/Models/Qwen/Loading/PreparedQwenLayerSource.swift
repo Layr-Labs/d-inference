@@ -23,6 +23,9 @@ struct PreparedQwenLayerSource {
     let largestSourceBytes: Int
     let sourceTensorManifestSHA256: String
     let sourceParameterLayoutSHA256: String
+    /// A Prism Hadamard pack's verified transforms, which each stage's packed
+    /// modules are built with; nil for every other artifact.
+    var prism: QwenPrismHadamardSource? = nil
 }
 
 /// Scalar-record assembly after registered descriptor validation. Does not
@@ -37,10 +40,14 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
     for record in validated.tensors {
         let name = record.canonical.name, tensor = prepared.canonical[name]!
         let part = tensor.parts[0]
+        // Validation fixed the part count by name: one, or the routed experts' two.
+        let second = tensor.parts.dropFirst().first.map {
+            QwenStageSourcePart(canonicalPartName: $0.name, file: $0.tensor.storedFile, offset: $0.tensor.storedOffset)
+        }
         tensors.append(QwenStageSourceTensor(sourceName: name, canonicalPartName: part.name,
             file: part.tensor.storedFile, offset: part.tensor.storedOffset, shape: tensor.shape,
             sourceDType: String(describing: tensor.dtype),
-            loadedDType: record.loadedDType, byteCount: tensor.byteCount))
+            loadedDType: record.loadedDType, byteCount: tensor.byteCount, secondPart: second))
     }
     let mappings = try plan.parameters(canonicalSourceNames: tensors.map(\.sourceName))
     guard bytes > 0, mappings.count == tensors.count,
@@ -59,9 +66,12 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
         }
         resolved[path] = declared
     }
-    let embeddingPath = (root["model_type"] as? String == "qwen3_5" ? "language_model." : "")
-        + "model.embed_tokens"
-    let activation = try qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
+    let wrapped = QwenRoutedExpertStageMetadata.wrapperModelTypes.contains(root["model_type"] as? String ?? "")
+    let embeddingPath = NemotronStageMetadata.accepts(root) ? NemotronStageMetadata.embeddingPath
+        : (wrapped ? "language_model." : "") + "model.embed_tokens"
+    // A Prism pack's stream is not in the dtype of its embedding's scales.
+    let activation = try prepared.prism.map { try $0.activationDType(model: model, canonical: prepared.canonical) }
+        ?? qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
     try check()
     return PreparedQwenLayerSource(verifiedAggregateSHA256: verifiedAggregateSHA256,
         sourceTensorCount: prepared.sourceTensorCount, tensors: tensors, mappings: mappings,
@@ -70,19 +80,21 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
         largestSourceBytes: largest, sourceTensorManifestSHA256: sha256(try canonicalJSONData(tensors)),
         sourceParameterLayoutSHA256: qwenStageLayout(tensors.map {
             "\($0.sourceName):\($0.loadedDType):\($0.shape)"
-        }))
+        }), prism: prepared.prism)
 }
 
 func validateQwenStageDenseModel(_ model: any LanguageModel, layerCount: Int) throws {
+    if model is NemotronHModel { return try NemotronStageConstruction.validate(model, layerCount: layerCount) }
     guard model is Qwen35Model || model is Qwen35TextModel,
           let mtp = model as? any MTPCapable, !mtp.hasMTPHead else {
         throw ProbeError("Layer stages require public dense Qwen without an attached MTP head")
     }
     let mlps = model.namedModules().filter { $0.0.hasSuffix(".mlp") }
     guard mlps.count == layerCount,
-          mlps.allSatisfy({ String(describing: type(of: $0.1)) == "Qwen3NextMLP" }) else {
+          mlps.allSatisfy({ String(describing: type(of: $0.1)) == QwenRoutedExpertStageModel.feedForwardTypeName(model) }) else {
         throw ProbeError("Layer stage changed the original dense Qwen MLP topology")
     }
+    try QwenRoutedExpertStageModel.validate(model, layerCount: layerCount)
 }
 
 func qwenStageLoadedDType(_ dtype: DType, convert: Bool) -> DType {

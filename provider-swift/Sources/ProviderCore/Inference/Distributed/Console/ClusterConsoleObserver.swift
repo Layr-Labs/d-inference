@@ -48,7 +48,9 @@ enum ClusterConsoleObserver {
         var lines = repair.summaryLines
         // The link command prints an administrator's commands on standard
         // error, which a screen does not have; they are pointed to, not shown.
-        if !repair.manualCommands.isEmpty {
+        if repair.manualScript != nil {
+            // The message already names the one line to type.
+        } else if !repair.manualCommands.isEmpty {
             lines.append("This screen has no standard error to print them on: `darkbloom cluster link --fix --dry-run` lists the same commands.")
         }
         return .init(succeeded: repair.outcome.exitCode == 0, lines: lines)

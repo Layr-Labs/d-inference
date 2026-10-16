@@ -79,6 +79,8 @@ extension ProviderLoop {
             return boundedCapacityReason(from: message, fallback: .capacityBusy)
         case .generationFailed, .platformTerminal:
             return nil
+        case .distributedRequestRefused(let refusal, _):
+            return refusal.exceedsContext ? .requestExceedsContext : .clientError
         }
     }
 
@@ -166,6 +168,8 @@ extension ProviderLoop {
                 return .unsupportedMedia
             case .multimodalRejected:
                 return .invalidMedia
+            case .distributedRequestRefused:
+                return .invalidRequest
             case .platformTerminal(let cause, _, _):
                 switch cause {
                 case .admissionTimeout:
@@ -290,6 +294,9 @@ extension ProviderLoop {
                 return 400
             case .generationFailed:
                 return 500
+            case .distributedRequestRefused:
+                // Deterministic for the request on this pair: a client error.
+                return 400
             case .platformTerminal(let cause, _, _):
                 // Client-facing status only — the coordinator's HEALTH
                 // decisions key off `terminal_cause`, not this code. NEVER 429:

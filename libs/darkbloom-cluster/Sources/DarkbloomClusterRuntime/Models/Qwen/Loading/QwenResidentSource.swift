@@ -32,17 +32,24 @@ func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
                               check: () throws -> Void) throws -> QwenResidentLocalSource {
     guard !_qwen35MTPEnabled else { throw ProbeError("Resident generation requires MTP disabled") }
     let ceilings = try QwenResidentResourceCeilings(specification: admission.specification)
-    let checkpoint = try VerifiedCheckpoint(directory: admission.configuration.modelDirectory,
+    // Several files hashed at once, and one verification per load when the
+    // decoding rank of a phase split loads both stages (finding R1).
+    let checkpoint = try VerifiedCheckpointReuse.checkpoint(directory: admission.configuration.modelDirectory,
         configurationData: admission.configBytes, expectedAggregateSHA256: admission.specification.artifactSHA256,
         maximumPayloadBytes: ceilings.maximumManifestPayloadBytes,
-        expectedManifestSHA256: admission.specification.manifestSHA256)
+        expectedManifestSHA256: admission.specification.manifestSHA256,
+        hashingConcurrency: VerifiedCheckpoint.derivedHashingConcurrency())
     try checkpoint.requireConfiguration(admission.configBytes)
     let prepared = try prepareQwenResidentMetadata(admission,
         artifact: .init(aggregateSHA256: checkpoint.aggregate, configurationSHA256: checkpoint.configurationSHA256,
                         verifiedManifestSHA256: checkpoint.verifiedManifestSHA256),
         check: check, confirmUnchanged: checkpoint.checkUnchanged) { model, policy in
+            // The registered row says whether the files hold unsigned bytes
+            // no stage owns; the sanitizer drops those tensors, and one it
+            // kept would be refused as an unsupported source dtype.
             try PreparedQwenCheckpoint(model: model, checkpoint: checkpoint,
-                originalConfiguration: admission.configBytes, policy: policy)
+                originalConfiguration: admission.configBytes, policy: policy,
+                scope: .init(acceptsUInt8: admission.specification.unownedUInt8Tensors))
         }
     return .init(metadata: prepared.source, payload: .init(checkpoint: checkpoint, canonical: prepared.canonical))
 }
@@ -78,18 +85,25 @@ func prepareQwenResidentMetadata<Stored>(_ admission: QwenResidentAdmission,
                 throw ProbeError("Resident source differs from the exact registered model and selected Plan")
             }
             let pair = try QwenDenseStorageRequirement.derive(profile: profile, plan: rebuilt, role: .sequentialPair)
+            // What the registered pack stores decides the load conversion and
+            // the dtype every stage must then be found to run in.
+            let pack = profile.model.pack
             let identity = QwenDenseObservedSourceIdentity(aggregateSHA256: artifact.aggregateSHA256,
                 configurationSHA256: artifact.configurationSHA256,
                 verifiedManifestSHA256: artifact.verifiedManifestSHA256,
-                retainedSourceCount: prepared.sourceTensorCount, bf16ConversionEnabled: true)
+                retainedSourceCount: prepared.sourceTensorCount, bf16ConversionEnabled: pack.convertsFloat16ToBFloat16)
             let validation = try QwenDenseObservedSourceValidation.validateRegistered(observed,
                 identity: identity, profile: profile, requirement: pair, plan: rebuilt)
             let source = try finishPreparedQwenLayerSource(prepared: prepared,
                 verifiedAggregateSHA256: artifact.aggregateSHA256, model: model,
-                plan: rebuilt, policy: policy, convert: true, validated: validation, root: root,
+                plan: rebuilt, policy: policy, convert: pack.convertsFloat16ToBFloat16, validated: validation, root: root,
                 hidden: profile.geometry.hiddenSize, vocabulary: profile.vocabularySize, check: check)
             try confirmUnchanged()
-            guard source.activationDType == .bfloat16 else { throw ProbeError("Resident source is not native BF16") }
+            guard String(describing: source.activationDType) == pack.activationDType,
+                  (source.prism != nil) == (pack == .prismHadamard) else {
+                throw ProbeError(pack == .affineBFloat16 ? "Resident source is not native BF16"
+                    : "Resident source does not run in its registered pack's activation dtype")
+            }
             return (QwenResidentSource(source: source, validation: validation, profile: profile, pairRequirement: pair),
                     prepared.canonical)
         }

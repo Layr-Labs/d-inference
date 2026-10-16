@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
+import DarkbloomClusterSecurity
 @testable import DarkbloomClusterRemote
 
 @main struct FakeOwner {
@@ -14,6 +15,17 @@ import DarkbloomClusterProcess
         let parts = CommandLine.arguments[4].split(separator: "+").map(String.init)
         let options = Set(parts.dropLast()), behavior = parts.last ?? ""
         if behavior == "transport-exit" { return }
+        // An owner that refuses at launch and says why on its standard error.
+        if behavior == "refuse-exit" {
+            FileHandle.standardError.write(Data("starting\nstage load refused: fixture reason (needs 9 GiB, 3 GiB reclaimable)\n".utf8))
+            return
+        }
+        if options.contains("refuse-launch") {
+            // An owner that refuses its launch with its own reason (as a memory
+            // gate does) and exits with status 1, before any worker starts.
+            FileHandle.standardError.write(Data("fixture owner: the memory gate refused this load\u{1b}[0m\n".utf8))
+            exit(1)
+        }
         if behavior == "inflight-round" {
             let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: STDOUT_FILENO, readingCommands: true)
             let deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
@@ -25,7 +37,7 @@ import DarkbloomClusterProcess
             try lease.record(binding: binding, launchID: launch)
             let child = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "hang"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: deadline, lifetimeDeadline: deadline)
+                startupDeadline: deadline, initialLeaseDeadline: deadline)
             try child.launch()
             _ = try child.receiveWorkerEvent(until: deadline)
             try pipe.write(OwnerWire(kind: "hello", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 0,
@@ -89,10 +101,18 @@ import DarkbloomClusterProcess
         // retired within a test's patience. The order of the stages is unchanged.
         let policy: ClusterWorkerSignalPolicy = options.contains("quick")
             ? .init(terminateMarginNanoseconds: 300_000_000, killMarginNanoseconds: 500_000_000, reapMarginNanoseconds: 1_000_000_000) : .standard
+        let authorize: @Sendable (ClusterNativeAuthorizationStart) throws -> Void = { start in
+            guard start.common.epoch == fixtureIdentity.membershipEpoch, start.rank == rank else {
+                throw ClusterOwnerStateError.invalid("Fake native start differs")
+            }
+        }
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
             output: options.contains("garbage") ? filter.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
-            clusterID: "cpu-test", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
-            bootstrapProfile: behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
+            clusterID: "cpu-test", leaseDirectory: directory,
+            bootstrapProfile: behavior.hasPrefix("bootstrap-prelude") ? .nativeKeyPreludeMesh2 : behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
+            // The combined profile's committed start: this stand-in admits one
+            // for its own membership epoch and rank only.
+            authorizeNativeStart: behavior.hasPrefix("bootstrap-prelude") ? authorize : nil,
             binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fake epoch differs") }
                 return try .init(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: lease,
@@ -104,7 +124,7 @@ import DarkbloomClusterProcess
                 return try .init(launch: .init(executable: program, arguments: [String(rank), behavior] + (attachment?.workerArguments ?? []), environment: [:]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
-                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), lifetimeDeadline: deadline,
+                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), initialLeaseDeadline: deadline,
                     retirement: policy)
             })
     }

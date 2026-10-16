@@ -20,6 +20,7 @@ extension EngineV2Factory {
   ) -> Int? {
     guard backend == .paged, let store = store as? SSDHybridCheckpointStore,
             store.config.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout
+                || store.config.backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
     else { return nil }
     if model is Qwen35Model, !(model is Qwen35MoEModel) {
       return store.config.minEffectiveTokens
@@ -54,7 +55,8 @@ extension EngineV2Factory {
     guard constructionPurpose == .benchmark,
       checkpointPartition == .demandedRecurrentQualification,
       backend == .paged,
-      backendLayout == CBv2CompleteCheckpointManifest.pagedLayout,
+      backendLayout == CBv2CompleteCheckpointManifest.pagedLayout
+        || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout,
       minimumTokens >= 1_024, hasRecurrentState
     else { return nil }
     return minimumTokens

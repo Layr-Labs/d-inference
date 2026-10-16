@@ -40,22 +40,31 @@ private enum PhaseSplitFixture {
             stopTokenIDs: stopTokenIDs)
     }
 
-    static func agreement(_ request: QwenLayerStageGenerationRequest, cut: Int = 4, split: Bool = true,
-                          maximumSegmentBytes: Int = 16 * 1024 * 1024, relayBatchTokens: Int = 16,
-                          epoch: UUID = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!,
-                          model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageGenerationAgreement {
+    static let numericalPolicySHA256 = String(repeating: "3", count: 64)
+
+    static func source(cut: Int = 4, model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageWireSourceIdentity {
         let plan = try plan(cut: cut, model: model)
-        let source = try QwenLayerStageWireSourceIdentity(
+        return try QwenLayerStageWireSourceIdentity(
             sourceConfigurationSHA256: sha256(try configuration(model)),
             artifactAggregateSHA256: try specification(model).artifactSHA256,
             storageCommitmentSHA256: String(repeating: "c", count: 64),
             planFingerprint: plan.fingerprint, producerStageFingerprint: plan.stages[0].fingerprint)
-        return try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: epoch, source: source,
+    }
+
+    static func agreement(_ request: QwenLayerStageGenerationRequest, cut: Int = 4, split: Bool = true,
+                          maximumSegmentBytes: Int = 16 * 1024 * 1024, relayBatchTokens: Int = 16,
+                          epoch: UUID = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!,
+                          model: QwenRegisteredDenseModel = .qwen35NineB,
+                          speculativeHead: QwenMTPTerms? = nil) throws -> QwenLayerStageGenerationAgreement {
+        let plan = try plan(cut: cut, model: model)
+        return try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: epoch,
+            source: try source(cut: cut, model: model),
             consumerStageFingerprint: plan.stages[1].fingerprint,
             rankBuildSHA256: [String(repeating: "1", count: 64), String(repeating: "1", count: 64)],
-            numericalPolicySHA256: String(repeating: "3", count: 64),
+            numericalPolicySHA256: numericalPolicySHA256,
             phaseSplit: split ? try QwenPhaseSplitPlan(plan: plan, geometry: try specification(model).expectedGeometry(),
-                request: request, maximumSegmentBytes: maximumSegmentBytes, relayBatchTokens: relayBatchTokens) : nil)
+                request: request, maximumSegmentBytes: maximumSegmentBytes, relayBatchTokens: relayBatchTokens) : nil,
+            speculativeHead: speculativeHead)
     }
 
     /// Deterministic bytes that differ from one position to the next.
@@ -112,7 +121,9 @@ private enum PhaseSplitFixture {
 struct PhaseSplitContractTests {
     @Test func modeIsDeclaredNeverGuessed() throws {
         // One closed list, shared with the worker's flag and the capability record.
-        #expect(QwenResidentGenerationMode.allCases.map(\.rawValue) == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1"])
+        #expect(QwenResidentGenerationMode.allCases.map(\.rawValue)
+            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1",
+                "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1", "pipeline_mtp_v1"])
         #expect(ClusterGenerationMode(rawValue: "phase_split_v1") == QwenResidentGenerationMode.phaseSplit)
         // A misspelt or empty declaration is no mode at all; nothing maps it to the default.
         for bad in ["phase-split", "", "phase_split", "PHASE_SPLIT_V1", "pipeline"] { #expect(ClusterGenerationMode(rawValue: bad) == nil) }
@@ -170,11 +181,56 @@ struct PhaseSplitContractTests {
         #expect(QwenResidentQualificationSwitches.faultEnvironmentName == QwenPhaseSplitFault.environmentName)
     }
 
+    @Test func speculativeHeadTermsAreBoundOnlyToAPhaseSplit() throws {
+        #expect(QwenMTPTerms.standard.depth == QwenMTPTerms.maximumDepth && QwenMTPTerms.maximumDepth == 4)
+        // A row's default depth: 3 on the routed-expert rows (measured fastest there), the ceiling elsewhere.
+        for model in QwenRegisteredDenseModel.allCases {
+            let routed = model == .qwen35ThirtyFiveBA3B || model == .qwen36ThirtyFiveBA3B
+            #expect(QwenMTPTerms.standard(for: model).depth == (routed ? 3 : QwenMTPTerms.maximumDepth))
+        }
+        #expect((try? QwenMTPTerms(depth: 0)) == nil && (try? QwenMTPTerms(depth: 5)) == nil)
+        #expect(try QwenMTPTerms(depth: 2).loadAgreementFields(headSHA256: "h")
+            == ["qwen_resident_speculative_head_v1", "depth=2", "verification=captured_window_exact_greedy", "head=h"])
+        #expect(QwenResidentGenerationMode.phaseSplitMTP.isPhaseSplit && QwenResidentGenerationMode.phaseSplitMTP.usesSpeculativeHead
+            && !QwenResidentGenerationMode.phaseSplit.usesSpeculativeHead && !QwenResidentGenerationMode.pipeline.isPhaseSplit)
+        let request = try PhaseSplitFixture.request()
+        let plain = try PhaseSplitFixture.agreement(request)
+        let speculative = try PhaseSplitFixture.agreement(request, speculativeHead: .standard)
+        let shallow = try PhaseSplitFixture.agreement(request, speculativeHead: try QwenMTPTerms(depth: 2))
+        #expect(!plain.descriptor.mtpEnabled && speculative.descriptor.mtpEnabled)
+        #expect(Set([plain.fingerprint, speculative.fingerprint, shallow.fingerprint]).count == 3)
+        // A head only on the decoding rank of a phase split, never on the pipeline.
+        #expect(throws: (any Error).self) { _ = try PhaseSplitFixture.agreement(request, split: false, speculativeHead: .standard) }
+    }
+
+    /// The reservation charges a request's prefix capture after the prefix
+    /// this rank holds for it, before any agreement exists: it must key the
+    /// cache exactly as the agreement does, before and after the prefix plan.
+    @Test func theReservationKeysThePrefixCacheAsTheAgreementDoes() throws {
+        let request = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 16)
+        let agreement = try PhaseSplitFixture.agreement(request, speculativeHead: .standard)
+        let reserved = qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
+            numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: request)
+        #expect(reserved == qwenStagePrefixScope(agreement))
+        let planned = try agreement.planned(try request.planned(reusedPrefix: 512, splitFinalToken: true))
+        #expect(qwenStagePrefixScope(planned) == reserved)
+        // Another chunk size is another scope.
+        let other = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 8)
+        #expect(qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
+            numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: other) != reserved)
+    }
+
     @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {
         for model in QwenRegisteredDenseModel.allCases {
             let definition = try QwenResidentModelDefinition(model: model)
-            // The pipeline first; the row is what load, the worker and the capability consult.
-            #expect(definition.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+            // The pipeline first; the row is what load, the worker and the capability consult. The 9B,
+            // 27B and both 35B A3B artifacts ship the product's speculative head, so their rows also list it.
+            // The dense 9B and 27B also run tensor parallel (`QwenTensorParallelResidentRuntime`, round 6e).
+            let head = [.qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model)
+            let tensor = [.qwen35NineB, .qwen38TwentySevenB].contains(model)
+            #expect(definition.supportedGenerationModes
+                == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP] : []) + (tensor ? [.tensorParallel] : [])
+                    + (head ? [.pipelineMTP] : []))
             #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model.rawValue)?.supportedGenerationModes
                 == definition.supportedGenerationModes)
         }
@@ -636,7 +692,7 @@ struct PhaseSplitContractTests {
         // The 9B's profile and its cut-4 Plan are the ones the capability
         // fixture pinned before this work, and the pipeline over JACCL adds
         // nothing to the load agreement.
-        #expect(try PhaseSplitFixture.request().profile.fingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff")
+        #expect(try PhaseSplitFixture.request().profile.fingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
         #expect(try PhaseSplitFixture.plan(cut: 4).fingerprint == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
         #expect(QwenResidentGenerationMode.pipeline.loadAgreementFields.isEmpty && ClusterTransport.jaccl.loadAgreementFields.isEmpty)
     }

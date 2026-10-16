@@ -4,7 +4,7 @@ import Foundation
 /// peer agreement, scheduler or fencing implementation. Do not use it as a
 /// total-order mirror of two independently arriving pipes on the provider side.
 public struct ClusterWorkerSession: Sendable {
-    private enum Phase { case loading, idle, reserving, reserved, running, decision, retiring, shuttingDown, closed }
+    private enum Phase { case loading, idle, warming, reserving, reserved, running, decision, retiring, shuttingDown, closed }
     private let identity: ClusterWorkerIdentity
     private let rank: Int
     private let profile: ClusterWorkerProfile
@@ -12,7 +12,12 @@ public struct ClusterWorkerSession: Sendable {
     private var phase = Phase.loading
     private var commandSequence: UInt64 = 0
     private var eventSequence: UInt64 = 0
+    /// The most recent request IDs, oldest first, to refuse a replay. A window
+    /// of `requestReplayWindow` IDs, never a count of requests: a session has
+    /// no request limit and no lifetime.
     private var seen = Set<UUID>()
+    private var seenOrder: [UUID] = []
+    private var keepWarmOrdinal: Int?
     private var requestID: UUID?
     private var request: ClusterWorkerReservation?
     private var capacity = 0
@@ -20,6 +25,8 @@ public struct ClusterWorkerSession: Sendable {
     private var lastToken: Int?
     private var lastDecision: ClusterWorkerTokenDecision?
     private var finishReason: ClusterWorkerFinishReason?
+    private var reusedTokens: Int?
+    private var telemetrySent = false
     private var cancellation: ClusterWorkerCancellationReason?
     private var nativeFailure = false
     public private(set) var protocolFailed = false
@@ -47,10 +54,10 @@ public struct ClusterWorkerSession: Sendable {
                 try workerRequire(phase == .idle && locallyAvailable && requestID == nil,
                     "Worker is not available for a reservation")
                 guard let id = frame.requestID else { throw ClusterWorkerProtocolError.invalid("Missing request") }
-                try workerRequire(seen.count < ClusterWorkerLimits.requestsPerEpoch && !seen.contains(id),
-                    "Request ID replay or epoch request limit")
-                seen.insert(id); requestID = id; request = value; phase = .reserving
+                try workerRequire(!seen.contains(id), "Request ID replay")
+                remember(id); requestID = id; request = value; phase = .reserving
                 tokenCount = 0; lastToken = nil; lastDecision = nil; finishReason = nil; cancellation = nil; nativeFailure = false
+                reusedTokens = nil; telemetrySent = false
             case .start:
                 try current(frame.requestID); try workerRequire(phase == .reserved, "Request is not admitted")
                 try workerRequire(locallyAvailable, "Readiness was invalidated")
@@ -66,6 +73,10 @@ public struct ClusterWorkerSession: Sendable {
             case .shutdown:
                 try workerRequire(requestID == nil && (phase == .idle || phase == .loading), "Shutdown precedes local retirement")
                 locallyAvailable = false; phase = .shuttingDown
+            case .keepWarm(let ordinal):
+                try workerRequire(phase == .idle && locallyAvailable && requestID == nil
+                    && ordinal > (keepWarmOrdinal ?? 0), "Keep-warm needs an idle, available worker and a new ordinal")
+                keepWarmOrdinal = ordinal; phase = .warming
             }
             commandSequence += 1
         } catch { protocolFailed = true; locallyAvailable = false; throw error }
@@ -100,6 +111,20 @@ public struct ClusterWorkerSession: Sendable {
                 // A prior EOS/limit decision cannot authorize another token.
                 if let lastToken { try workerRequire(!request!.stopTokenIDs.contains(lastToken), "Token follows EOS") }
                 tokenCount += 1; lastToken = token; lastDecision = nil; phase = .decision
+            case .promptCache(let reused, let stored):
+                try current(frame.requestID); try deadline(now)
+                // Once, before finish; every count leaves one prompt token to compute.
+                let prompt = request!.promptTokenIDs.count
+                try workerRequire(phase == .running && reusedTokens == nil && !telemetrySent && reused < prompt
+                    && stored.allSatisfy({ $0 < prompt })
+                    && (rank == 1 || (tokenCount > 0 && lastDecision != nil)), "Prompt cache report is out of order")
+                reusedTokens = reused
+            case .requestTelemetry:
+                try current(frame.requestID); try deadline(now)
+                // Once, before finish, after any prompt cache report.
+                try workerRequire(phase == .running && !telemetrySent
+                    && (rank == 1 || (tokenCount > 0 && lastDecision != nil)), "Request telemetry is out of order")
+                telemetrySent = true
             case .finished(let reason):
                 try current(frame.requestID); try deadline(now)
                 // Only rank 0 owns the provider callback. Rank 1 reports the actual
@@ -132,9 +157,23 @@ public struct ClusterWorkerSession: Sendable {
             case .shutdownComplete:
                 try workerRequire(phase == .shuttingDown && requestID == nil, "Unrequested shutdown acknowledgment")
                 phase = .closed
+            case .keptWarm(let ordinal, _, let serving):
+                try workerRequire(phase == .warming && ordinal == keepWarmOrdinal
+                    && (serving.map { $0 <= profile.maximumContextTokens } ?? true), "Unrequested keep-warm acknowledgment")
+                phase = .idle
             }
             eventSequence += 1
         } catch { protocolFailed = true; locallyAvailable = false; throw error }
+    }
+
+    /// True while a keep-warm exchange is outstanding: no request may start.
+    public var keepWarmOutstanding: Bool { phase == .warming }
+
+    private mutating func remember(_ id: UUID) {
+        seen.insert(id); seenOrder.append(id)
+        if seenOrder.count > ClusterWorkerLimits.requestReplayWindow {
+            seen.remove(seenOrder.removeFirst())
+        }
     }
 
     private func current(_ id: UUID?) throws {
@@ -151,6 +190,8 @@ public struct ClusterWorkerSession: Sendable {
             && r.profileID == profile.id && r.promptTokenIDs.count <= profile.maximumPromptTokens
             && r.outputCount <= profile.maximumOutputTokens && r.chunkSize <= profile.maximumChunkTokens
             && r.promptTokenIDs.count <= profile.maximumContextTokens - r.outputCount
-            && (r.promptTokenIDs + r.stopTokenIDs).allSatisfy({ $0 < profile.vocabularySize }), "Reservation exceeds resident profile/deadline")
+            && (r.promptTokenIDs + r.stopTokenIDs).allSatisfy({ $0 < profile.vocabularySize })
+            && (r.sampling?.logitBias ?? []).allSatisfy({ $0.tokenID < profile.vocabularySize })
+            && (r.sampling?.topK ?? 0) <= profile.vocabularySize, "Reservation exceeds resident profile/deadline")
     }
 }

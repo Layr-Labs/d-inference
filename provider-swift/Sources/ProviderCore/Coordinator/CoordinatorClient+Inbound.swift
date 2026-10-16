@@ -11,6 +11,11 @@ extension CoordinatorClient {
         guard !Task.isCancelled, !sessionRegistered,
               let current = memberNegotiation, current.nonce == nonce,
               now >= current.deadline else { return }
+        // Still open at the end of its window: a coordinator that knows the
+        // role has acknowledged or closed by now. One that answered the
+        // registration as an ordinary provider's does not know the role; one
+        // that answered nothing at all stays a refusal.
+        if memberOrdinaryAnswer { memberRoleUnsupported = true }
         refuseMemberNegotiation()
     }
     internal func refuseMemberNegotiation() {
@@ -49,7 +54,7 @@ extension CoordinatorClient {
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
         profileAnchor: SuspendingClock.Instant = .now,
-        sourceConnection: NWConnection? = nil
+        connection: NWConnection? = nil
     ) async {
         // Native-pair public frames are consumed before the ordinary codec on
         // member connections; solo connections never carry them. One that
@@ -58,11 +63,11 @@ extension CoordinatorClient {
             do {
                 let wall = Date().timeIntervalSince1970 * 1_000_000_000
                 guard wall > 0, wall < Double(Int64.max) else { throw NativePairMemberError.deadline }
-                if try consumeNativePairFrame(data, sourceConnection: sourceConnection,
+                if try consumeNativePairFrame(data, sourceConnection: connection,
                     receivedAt: DispatchTime.now().uptimeNanoseconds, wallUnixNanoseconds: Int64(wall)) { return }
             } catch {
                 detachNativePairMember()
-                sourceConnection?.cancel()
+                connection?.cancel()
                 return
             }
         }
@@ -78,6 +83,11 @@ extension CoordinatorClient {
         // attachment: its session's native work is cancelled at once.
         if case .trustStatus(let status) = parsed, ["untrusted", "offline"].contains(status.status) { detachNativePairMember() }
         if case .runtimeStatus(let status) = parsed, !status.verified || !status.mismatches.isEmpty { detachNativePairMember() }
+        // A coordinator that does not know the member role answers its
+        // registration like any provider's (desired builds, challenges...).
+        if config.executionRole == .clusterMember, memberNegotiation != nil, !sessionRegistered {
+            if case .clusterMemberAccepted = parsed {} else { memberOrdinaryAnswer = true }
+        }
         switch parsed {
         case .clusterMemberAccepted(let ack):
             guard config.executionRole == .clusterMember else { return }
@@ -98,7 +108,9 @@ extension CoordinatorClient {
             if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
-            if config.executionRole == .clusterMember {
+            // A member serving its pair slot (S09) hands the request to the
+            // loop like any provider; every other member refuses it here.
+            if config.executionRole == .clusterMember, state.memberPairSlotModel == nil {
                 sendOnCurrentConnection(encodeInferenceError(requestId: requestId,
                     failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
                     identifier: "inference_error")
@@ -208,7 +220,12 @@ extension CoordinatorClient {
             ))
 
         case .appAttestShadow(let payload):
-            eventContinuation?.yield(.appAttestShadow(payload))
+            guard let connection, nwConnection === connection, sessionRegistered, !shutdownRequested else { return }
+            eventContinuation?.yield(.appAttestShadow(payload,
+                reply: appAttestShadowReply(to: payload, on: connection)))
+
+        case .appAttestResume(let challenge):
+            if let connection { answerAppAttestResume(challenge, on: connection) }
 
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(

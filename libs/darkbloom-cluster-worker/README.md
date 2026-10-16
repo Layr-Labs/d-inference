@@ -14,6 +14,7 @@ no submodule pin changes.
 | `darkbloom-cluster-stage-check` | One Mac, one rank, the real artifact, no collective. Runs the verified loader for that rank's layer range, releases it, and reports memory before, loaded and after. |
 | `darkbloom-cluster-reference` | One Mac, both stages, the real artifact, no collective. Runs a request through stage 0 and stage 1 in one process and writes a reference report. |
 | `darkbloom-cluster-pair-check` | No MLX. Writes a request, runs it on rank 0 (this Mac) and rank 1 (the second Mac over SSH), and compares a pair report with a reference report. |
+| `darkbloom-cluster-tp-check` | Qualification of tensor parallelism (TP2) for the dense Qwen 3.5-family models: the unsharded model, the single-process TP oracle, one rank of a two-rank TP run over JACCL, the hybrid (solo prefill, state cut by heads, TP decode), and a comparator applying the near-tie rule. Not a serving path. |
 
 `Sources/DarkbloomClusterWorker`: `WorkerMain.swift` is the entry point.
 `Startup/` parses startup and bootstrap arguments; `Capabilities/` serves
@@ -38,8 +39,11 @@ bash libs/darkbloom-cluster-worker/build-native-worker.sh \
 
 The script builds with explicit Swift and C++ 26.2 targets, then refuses the
 result unless the binary contains the JACCL group implementation and its Mach-O
-minimum is exactly macOS 26.2. It copies the verified metallib beside the binary
-and prints the binary path. `DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS` sets the job
+minimum is exactly macOS 26.2. It copies the verified metallib beside the binary,
+and beside it `pagedattention.metal` (the paged KV backend's runtime kernel
+source, which the lookup cannot find inside this build's `Contents/Resources`
+bundle layout; a paged stage refuses to load without it), and prints the binary
+path. `DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS` sets the job
 count (default 2). See the [provider build procedure](../../docs/developer/build.md)
 for toolchain and submodule setup.
 
@@ -60,6 +64,85 @@ swift test --package-path libs/darkbloom-cluster-worker --skip-build \
 bash libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh /ABS/darkbloom-cluster-worker
 ```
 
+## Tensor parallel qualification (`darkbloom-cluster-tp-check`)
+
+`DarkbloomClusterRuntime/Models/Qwen/TensorParallel/` holds the plan (the
+owner's oMLX Qwen3-Next recipe applied to Qwen 3.5's separate projections:
+column-parallel q/k/v, linear-attention in-projections, convolution channels,
+`A_log`/`dt_bias`, MLP gate/up and the LM head by vocabulary rows; row-parallel
+attention output, linear-attention output and MLP down projection; equal
+shards), the row-parallel projection (float32 partial, lazy all-sum on the CPU
+stream, one rounding), the single-process oracle, the distributed argmax (one
+four-value all-sum per token, so both ranks pick the same token without an
+exchange) and the hybrid hand-off. The plan's coverage of a checkpoint is
+checked model-free by `libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh [MODEL_DIR...]`.
+
+```sh
+# Both ranks: the same arguments; rank 0 is the JACCL listener. The first exchange is a versioned
+# launch digest of fixed width, so a rank of another build or launch is refused (builds before
+# 808b33f47 used a variable-length first agreement: never mix them with newer ones). Arithmetic environment as for the worker,
+# plus MLX_METAL_FAST_SYNCH=1 (the lazy all-sum is slow without it).
+env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 MLX_METAL_FAST_SYNCH=1 \
+  JACCL_RANK=0 JACCL_IBV_DEVICES=/ABS/matrix.json JACCL_COORDINATOR=ADDRESS:PORT \
+  darkbloom-cluster-tp-check run --mode tp --backend jaccl --model-dir /ABS/MODEL --request REQUEST.json --report rank0.json
+darkbloom-cluster-tp-check run --mode full --model-dir /ABS/MODEL --request REQUEST.json --report full.json --record-top 8
+darkbloom-cluster-tp-check compare --reference full.json --candidate rank0.json
+# Two ranks on ONE Mac (correctness only, never a timing): --backend socket, MLX_RANK=0|1 and
+# MLX_HOSTFILE=[["127.0.0.1:PORT0"],["127.0.0.1:PORT1"]]; rank 0 listens on PORT0. Each all-sum is
+# evaluated, exchanged whole over one loopback TCP connection (framed and length-checked) and summed
+# rank 0 + rank 1 on the CPU, which equals JACCL's two-value sum. --backend ring uses MLX's ring where
+# the build has it.
+```
+
+Measured on the M3 Ultra + M5 Max pair (registered 27B, greedy): tokens pass
+the near-tie rule against either Mac alone, and a rank ended mid-decode leaves
+nothing allocated; but TP2 decode (30-32 tok/s) is slower than either Mac
+alone (34-36 tok/s). One rank's shard without any collective decodes at
+25 ms/token against 30 ms for the whole model: batch-1 decode has a per-token
+floor that splitting the weights does not divide, and 129 all-sums per token
+cost more than the 5 ms saved. The local ring is not compiled into this MLX
+build; the one-Mac two-rank step uses `--backend socket` instead.
+
+Where the floor is (M5 Max, same session): the host spends 6-13 ms of thread
+CPU per 24-30 ms step (graph construction 2-4 ms) and then waits for the GPU,
+so the GPU is the bound, not graph building. One decode step is 3,169 MLX
+primitives (`--census yes`: about 2,200 that launch kernels, 353 quantized
+matmuls, 305 RMS norms, 434 casts); half the weights still take 24 ms
+(bfloat16 partials; the float32 partial path, 256 more casts and float32-input
+row-parallel matmuls, adds 1 ms), where reading them needs about 13 ms. Metal
+command-buffer limits
+(`MLX_MAX_OPS_PER_BUFFER` 50-400 x `MLX_MAX_MB_PER_BUFFER` 50-512 or 4096) do
+not move it (tokens identical, steps within about 2%). `--mode shard-local
+--shard-rank R` is the floor meter: TP2 can only win where the shard alone
+plus about 6 ms of all-sums beats the faster Mac alone.
+
+Weighted shares, routed experts and records (2026-10-14, M3 Ultra + M5 Ultra over TB5 RDMA):
+
+- `--shares A:B` (tp and shard-local) gives each rank a weighted share. Each part moves in whole
+  blocks whose row-parallel input width stays on MLX's quantized matrix-vector fast path (input
+  width a multiple of (32 / bits) x 2 x 32: 512 for 4-bit), KV heads with their query heads,
+  linear key heads with their value heads, vocabulary rows in 8s; the shares are part of the
+  first exchange (launch digest v3). Equal shards are unchanged.
+- Routed experts (Qwen 3.5 35B A3B): every expert divided by its intermediate channels, the
+  router replicated, one reduction per MoE block. Lossless (near tie) but slow on this MLX: a
+  256-wide expert is off the gather_qmv fast path, so a half shard decodes slower than the whole
+  model. Expert parallelism is the split to build next for MoE.
+- `record --rank0 R0 --rank1 R1 --reference REF... --model-dir DIR --output FILE` appends a
+  `ClusterPairQualificationRecord` (mode `tensor_parallel_v1`, no cut, `tensorParallelLayout`
+  naming plan, partials and shares) after the near-tie comparison, as pair-check does for a
+  pipeline run.
+- `DARKBLOOM_QWEN35_FUSE_ELEMENTWISE=0` turns off the qwen3_5 compiled decode chains (on by
+  default; bit-identical tokens, -24 % primitives, about -2 % step: the removed kernels were off
+  the critical path).
+
+Measured (27B, greedy, 128 outputs; tokens equal or near tie against both Macs alone at 1K, 4K
+and 16K): each Mac alone decodes at 38.3 (M3 Ultra) and 55.8 tok/s (M5 Ultra); an equal TP2 at
+36.8 tok/s (1K) with a native all-sum, i.e. about 2.7 ms of all-sums per token behind the slower
+rank's half; with an explicit evaluate-and-synchronize before every all-sum (the class of a
+host-driven keyed exchange) 14.4 tok/s. A shard's step is not a straight line in its share (M3
+Ultra: whole 26.1 ms, half 24.7, quarter 16.3; M5 Ultra: whole 18.0, 3/4 21.2, half 15.8,
+quarter 10.2), so the planner takes per-share probes (`ClusterShareRate`).
+
 ## Generation modes
 
 How the two ranks divide one request is declared to both workers at launch
@@ -72,8 +155,8 @@ either stage is read. Absent, the worker runs the pipeline exactly as before.
 | `pipeline_compact_decode_v1` | The same pipeline; a decode step's messages travel as four transfers instead of eleven |
 | `phase_split_v1` | The prompt is prefilled as a pipeline. After the first selected token rank 0 hands its request state to rank 1, which holds every layer and decodes alone, and relays tokens to rank 0 in batches |
 
-The mode must be one the registered model's own row lists; both registered
-models list all three, and `--describe-runtime` reports them as
+The mode must be one the registered model's own row lists; the three dense
+models (9B, 27B, Bonsai 2 27B) list all three, and `--describe-runtime` reports them as
 `supportedGenerationModes` (omitted when a runtime runs the pipeline only, so
 such a record keeps the bytes it always had). An unknown mode is refused at
 startup; it never falls back to the pipeline. A phase-split rank 1 loads both
@@ -103,7 +186,14 @@ env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32
 
 The registered model is the one whose pinned `config.json` the directory
 holds, and the cut must be one of that model's cuts (4, 8, 12 or 16 for the
-9B; 4 through 60 in steps of 4 for the 27B).
+9B; 4 through 60 in steps of 4 for the 27B and for Bonsai 2 27B).
+
+A model's arithmetic contract can require more than those three variables.
+Ternary Bonsai 2 27B is a Prism Hadamard pack: its ranks also need
+`DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1` and
+`DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1`, with `MLX_QUANTIZED_CONSTANT_CACHE`
+unset. A rank started without them is refused before anything is read. The
+pair driver and the solo driver add a request model's own variables themselves.
 It passes the same admission and host resource gates as the worker, hashes the
 artifact, materializes only that rank's stage, then releases it. The JSON
 receipt carries the verified aggregate, the storage commitment (equal on both
@@ -111,6 +201,20 @@ ranks and both Macs for one cut), loaded bytes, load time, and active and cached
 bytes after release. Exit status is 0 only if the model object was released.
 `--hold-seconds N` keeps the loaded stage resident for N seconds first, so a
 second load can be tried against it.
+
+GPT-OSS 20B is recognised by its own pinned `config.json` and loaded by its own
+adapter (cuts 6, 8, 10 or 12). Its arithmetic environment is `MLX_ENABLE_TF32=1`
+with no `DARKBLOOM_GPTOSS_*` switch; the two other variables above are
+tolerated, because the pair driver sets all three for every rank. For that
+model the tool has one more mode, which loads no stage: it compares the experts
+as a stage holds them (the stored gate and up projections, separate) with the
+product's load-time layout (one concatenated projection) on the artifact's own
+bytes, byte for byte, and exits 0 only if every output is identical:
+
+```sh
+env MLX_ENABLE_TF32=1 darkbloom-cluster-stage-check expert-layout \
+  --model-dir /ABS/MODEL [--layers 0,11,23] [--chunk-tokens 512]
+```
 It refuses to run with a cluster transport environment set. It shows nothing
 about membership, transport or generation.
 
@@ -218,8 +322,8 @@ directory is removed at the end, once no worker is left there, unless
 `--keep-run-files yes`. The driver itself, like the reference, ends at a hard
 deadline kept by a thread; a worker's own last resort is the same.
 
-The second Mac needs the worker and `mlx.metallib` in one directory (the driver
-hashes both) and the artifact. Copy `mlx-swift-lm_MLXLMCommon.bundle` and
+The second Mac needs the worker, `mlx.metallib` and `pagedattention.metal` in
+one directory (the driver hashes the first two) and the artifact. Copy `mlx-swift-lm_MLXLMCommon.bundle` and
 `mlx-swift_Cmlx.bundle` from the build output beside them as well: on the build
 Mac the reference runs from a directory holding only the binary and
 `mlx.metallib`, but there a missing bundle can still be found in the build
@@ -310,11 +414,28 @@ both.
 
 ## Limits
 
+- GPT-OSS 20B (`registered_gpt_oss_20b`) runs on its own adapter,
+  `Models/GPTOSS`: the product's `GPTOSSModel` cut into two layer stages, with
+  the class's ordinary attention caches as request state and the experts held
+  as the artifact stores them. It lists the pipeline and its compact decode
+  framing only; the phase split cannot carry a sliding-window layer's rows.
+  Its requests are raw text (`pair-check request --raw-text-file`): the chat
+  wrapper the request tool writes is not this model's. The residual that
+  crosses its cut is float32, because the product class promotes the stream
+  in its expert activation.
 - The worker accepts the registered Qwen3.5 9B and Qwen3.8 27B artifacts,
   greedy text, one request at a time. The 9B has run across two Macs. The 27B
   has passed admission, per-rank stage loads and the single-Mac reference on
   both chips; it has not yet completed a two-Mac run (see
   [handoff/QWEN27B-PAIR.md](../../handoff/QWEN27B-PAIR.md)).
+- Ternary Bonsai 2 27B (a Prism Hadamard pack; adapter
+  `qwen35-prism-hadamard-layer-stage`) is the third dense model. It has run
+  across two Macs at cut 24 in all three generation modes with every token
+  equal to the single-Mac reference, and a rank ended mid-decode left
+  nothing behind. Its stream and state are float32. Both Macs must hold the
+  artifact: it has no pinned content inventory, so a stage cannot be received
+  from the peer. The provider's installed path has no pair-serving row or
+  rank environment for it yet.
 - The host gate admits on free pages plus part of the file cache: three
   quarters of the file-backed memory that is both above the kernel's own
   file-cache minimum and short of the point where half of the cache is
@@ -332,11 +453,17 @@ both.
   fails part-way prints one record with what it still held after release. See
   [handoff/DESIGN-resource-gate-v3.md](../../handoff/DESIGN-resource-gate-v3.md).
 - The owner-authenticated JACCL bootstrap (`--bootstrap-socket-path`,
-  `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`) is parsed
-  but refused: the pinned mlx-c does not carry the bootstrap bridge. Without
-  those flags the worker uses the direct native bootstrap, where JACCL opens its
-  own coordinator socket. The installed provider therefore starts the worker
-  without them and reports `nativeBootstrap: directNative` in `cluster status`.
+  `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`, and with
+  the combined profile `--native-authorization-start-base64`) is accepted: the
+  worker connects to its owner's PID-authenticated local socket, runs the
+  native key prelude when a start is given (an X25519 agreement with the other
+  rank, bound to the committed start), and creates its JACCL group through the
+  pinned mlx-c bridge `mlx_distributed_init_jaccl_with_bootstrap`: the four mesh
+  rounds travel through both authenticated owners and the leader's relay, and
+  JACCL opens no coordinator socket. A worker given the attachment whose load
+  did not use it stops; there is no fallback. Without those flags the worker
+  uses the direct native bootstrap, where JACCL opens its own coordinator
+  socket.
 - `--prefill-schedule` accepts `serial_v1` and `one_chunk_lookahead_v1`;
   omission means serial. `--describe-runtime` advertises the supported
   schedules; capability metadata does not report readiness or available memory.

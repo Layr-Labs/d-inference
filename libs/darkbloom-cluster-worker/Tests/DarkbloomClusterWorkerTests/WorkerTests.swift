@@ -13,6 +13,10 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     private var closed = false
     private var starts = 0
     private var shutdowns = 0
+    /// Reservations to refuse for this request alone, as a live gate does.
+    var refusals = 0
+    private(set) var released: [UUID] = []
+    private var reservedID: UUID?
     init(rank: Int = 0) {
         ready = .init(identity: .init(membershipEpoch: UUID(), modelID: "registered_qwen35_9b",
             artifactSHA256: String(repeating: "a", count: 64), configurationSHA256: String(repeating: "b", count: 64),
@@ -27,8 +31,19 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     var shutdownCount: Int { lock.lock(); defer { lock.unlock() }; return shutdowns }
     var startCount: Int { lock.lock(); defer { lock.unlock() }; return starts }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
-        lock.lock(); defer { lock.unlock() }; request = value; return 1024
+        lock.lock(); defer { lock.unlock() }
+        if refusals > 0 {
+            refusals -= 1
+            throw ClusterResidentRequestRefusal(reason: .capacity, message: "Resident request needs 11.90 GiB and has 11.39 GiB")
+        }
+        request = value; reservedID = id; return 1024
     }
+    func releaseReservation(_ id: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard reservedID == id else { throw WorkerFailure.invalid("Fake release has no reservation") }
+        released.append(id); reservedID = nil; request = nil; cancelled = false
+    }
+    func refreshServingContext() -> Int? { 6000 }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
         lock.lock(); starts += 1; let value = request!; lock.unlock()
         if ready.rank == 1 { return .length }
@@ -43,6 +58,9 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     }
     func cancel(_ id: UUID) { lock.lock(); cancelled = true; lock.unlock() }
     func shutdown() throws { lock.lock(); shutdowns += 1; closed = true; lock.unlock() }
+    func keepWarmPulse() throws -> UInt64 { lock.lock(); pulses += 1; lock.unlock(); return 1 }
+    func dataPlanePing() throws -> UInt64 { lock.lock(); pings += 1; lock.unlock(); return 1 }
+    var pulses = 0, pings = 0
 }
 
 private final class ResultBox: @unchecked Sendable {
@@ -52,28 +70,65 @@ private final class ResultBox: @unchecked Sendable {
     var error: Error? { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Records when the coordinator would begin the process's forced exit, and
+/// whether the runtime was still loaded at that moment.
+private final class ExitRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [(reason: String, runtimeClosed: Bool)] = []
+    weak var runtime: FakeRuntime?
+    var hooks: WorkerExitHooks {
+        WorkerExitHooks(begin: { [self] reason in
+            lock.lock(); calls.append((reason, runtime?.didClose ?? true)); lock.unlock()
+        })
+    }
+    var reasons: [String] { lock.lock(); defer { lock.unlock() }; return calls.map(\.reason) }
+    var beganBeforeRelease: Bool { lock.lock(); defer { lock.unlock() }; return calls.first.map { !$0.runtimeClosed } ?? false }
+}
+
 private final class Harness {
     let runtime: FakeRuntime
+    let exits = ExitRecorder()
     let done = DispatchGroup()
     let result = ResultBox()
     private(set) var input: Int32
     private(set) var output: Int32
     private var sequence: UInt64 = 0
-    init(rank: Int = 0) throws {
+    private var renewals: UInt64 = 0
+    init(rank: Int = 0, leaseNanoseconds: UInt64 = 5_000_000_000) throws {
         runtime = FakeRuntime(rank: rank)
+        exits.runtime = runtime
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
         guard pipe(&a) == 0, pipe(&b) == 0 else { throw WorkerFailure.invalid("Test pipe creation failed") }
         input = a[1]; output = b[0]
-        let childInput = a[0], childOutput = b[1], runtime = runtime, result = result, done = done
+        let childInput = a[0], childOutput = b[1], runtime = runtime, result = result, done = done, hooks = exits.hooks
+        let box = coordinatorBox
         done.enter()
         Thread.detachNewThread {
             do {
                 let io = try WorkerPipes(input: childInput, output: childOutput,
-                    deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
-                try WorkerCoordinator(runtime: runtime, pipes: io).run()
+                    deadline: DispatchTime.now().uptimeNanoseconds + leaseNanoseconds)
+                let coordinator = try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks)
+                box.set(coordinator)
+                try coordinator.run()
             } catch { result.save(error) }
             close(childInput); close(childOutput); done.leave()
         }
+    }
+    /// The coordinator under test, for the force-cancel hook (set before `run`).
+    final class CoordinatorBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: WorkerCoordinator?
+        func set(_ coordinator: WorkerCoordinator) { lock.lock(); value = coordinator; lock.unlock() }
+        var coordinator: WorkerCoordinator? { lock.lock(); defer { lock.unlock() }; return value }
+    }
+    let coordinatorBox = CoordinatorBox()
+    /// One rank-lease renewal line, outside the request sequence.
+    func renew(ttl: UInt64) throws {
+        renewals += 1
+        let data = try ClusterWorkerCodec.encode(ClusterWorkerLeaseRenewal(membershipEpoch: runtime.ready.identity.membershipEpoch,
+            renewal: renewals, ttlNanoseconds: ttl))
+        let count = data.withUnsafeBytes { Darwin.write(input, $0.baseAddress, $0.count) }
+        guard count == data.count else { throw WorkerFailure.invalid("Test renewal short write") }
     }
     func send(_ command: ClusterWorkerCommand, id: UUID? = nil) throws {
         let data = try ClusterWorkerCodec.encode(.init(membershipEpoch: runtime.ready.identity.membershipEpoch,
@@ -110,7 +165,7 @@ private final class Harness {
     func reservation(deadline: UInt64? = nil) -> ClusterWorkerReservation {
         .init(profileID: "test", promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2,
             chunkSize: 2, deadlineUptimeNanoseconds: deadline ?? (DispatchTime.now().uptimeNanoseconds + 3_000_000_000),
-            capacityLimitBytes: 4096)
+            capacityLimitBytes: 4096, sampling: nil)
     }
     func start(_ id: UUID, deadline: UInt64? = nil) throws {
         guard case .ready = try event().event else { throw WorkerFailure.invalid("Missing fake ready") }
@@ -131,7 +186,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         for cut in [4, 8, 12, 16] { for rank in [0, 1] {
             var selected = args; selected[3] = String(rank); selected[5] = String(cut)
             let value = try WorkerConfiguration(arguments: selected, now: 100)
@@ -142,7 +197,8 @@ final class WorkerTests: XCTestCase {
             var selected = args; selected[5] = cut
             XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100))
         }
-        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "300000000101")] {
+        // The launch deadline is the rank lease's first grant: at most 120 s.
+        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "120000000101"), (23, "300000000100")] {
             var changed = args; changed[index] = value
             XCTAssertThrowsError(try WorkerConfiguration(arguments: changed, now: 100))
         }
@@ -157,7 +213,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         for cut in stride(from: 4, through: 60, by: 4) { for rank in [0, 1] {
             var selected = args; selected[3] = String(rank); selected[5] = String(cut)
             let value = try WorkerConfiguration(arguments: selected, now: 100)
@@ -185,13 +241,42 @@ final class WorkerTests: XCTestCase {
         }
     }
 
+    /// The Prism Hadamard pack is its own closed ID with the 27B's cuts; its
+    /// catalog ID and near misses are refused like any unregistered model.
+    func testRegisteredBonsaiArgumentsAndUnregisteredNeighbours() throws {
+        let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "24",
+            "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_ternary_bonsai_2_27b",
+            "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+            "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+            "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+            "--deadline-uptime-nanoseconds", "120000000100"]
+        for cut in stride(from: 4, through: 60, by: 4) { for rank in [0, 1] {
+            var selected = args; selected[3] = String(rank); selected[5] = String(cut)
+            let value = try WorkerConfiguration(arguments: selected, now: 100)
+            XCTAssertEqual(value.load.rank, rank); XCTAssertEqual(value.load.stageCut, cut)
+            XCTAssertEqual(value.load.identity.modelID, "registered_ternary_bonsai_2_27b")
+            XCTAssertEqual(value.load.allocatorPolicy, .disableFreedBufferCache)
+        } }
+        XCTAssertEqual(try WorkerConfiguration(arguments: args + ["--prefill-schedule", "one_chunk_lookahead_v1"], now: 100)
+            .load.prefillSchedule, .oneChunkLookahead)
+        for cut in ["0", "2", "26", "30", "62", "64", "-4", "024", "24.0"] {
+            var selected = args; selected[5] = cut
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "Bonsai cut \(cut)")
+        }
+        for model in ["ternary-bonsai-2-27b", "registered_ternary_bonsai_2_27b ", "registered_ternary_bonsai_2",
+                      "registered_bonsai_2_27b", "Registered_Ternary_Bonsai_2_27B", "prism_hadamard_qwen35"] {
+            var selected = args; selected[9] = model
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "model \(model)")
+        }
+    }
+
     func testEvidenceDirectoryIsOptionalAndMustBeNormalized() throws {
         let args = ["--model-dir", "/invented/model", "--rank", "1", "--stage-cut", "4",
             "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         // A serving launch names no evidence directory and gets none.
         XCTAssertNil(try WorkerConfiguration(arguments: args, now: 100).evidenceDirectory)
         let recording = try WorkerConfiguration(arguments: args + ["--evidence-directory", "/private/run/evidence"], now: 100)
@@ -215,14 +300,22 @@ final class WorkerTests: XCTestCase {
              "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
              "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
              "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-             "--deadline-uptime-nanoseconds", "300000000100"]
+             "--deadline-uptime-nanoseconds", "120000000100"]
         }
-        for (model, cut) in [("registered_qwen35_9b", "8"), ("registered_qwen38_27b", "16")] {
+        for (model, cut) in [("registered_qwen35_9b", "8"), ("registered_qwen38_27b", "16"),
+                             ("registered_ternary_bonsai_2_27b", "24")] {
             let base = args(model, cut)
             let plain = try WorkerConfiguration(arguments: base, now: 100)
             XCTAssertEqual(plain.generationMode, .pipeline, "absent means the pipeline")
             XCTAssertFalse(plain.qualificationSwitchesPermitted)
+            let row = try XCTUnwrap(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes)
             for mode in ClusterGenerationMode.allCases {
+                guard row.contains(mode) else {
+                    // A mode the model's own row does not list stops the worker.
+                    XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", mode.rawValue], now: 100),
+                        "\(model) \(mode.rawValue)")
+                    continue
+                }
                 let value = try WorkerConfiguration(arguments: base + ["--generation-mode", mode.rawValue], now: 100)
                 XCTAssertEqual(value.generationMode, mode, "\(model) \(mode.rawValue)")
                 // The mode is no part of the load configuration the runtime already had.
@@ -237,6 +330,18 @@ final class WorkerTests: XCTestCase {
             XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", "phase_split_v1",
                                                                           "--generation-mode", "pipeline_v1"], now: 100))
             XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode"], now: 100))
+            // The speculative depth: only with the speculative phase split, 1...4, canonical, once.
+            if row.contains(.phaseSplitMTP) {
+                let speculative = base + ["--generation-mode", "phase_split_mtp_v1"]
+                XCTAssertNil(try WorkerConfiguration(arguments: speculative, now: 100).speculativeTerms, "absent means the default")
+                XCTAssertEqual(try WorkerConfiguration(arguments: speculative + ["--mtp-depth", "2"], now: 100).speculativeTerms?.depth, 2)
+                for bad in ["0", "5", "04", "", "four", "-1"] {
+                    XCTAssertThrowsError(try WorkerConfiguration(arguments: speculative + ["--mtp-depth", bad], now: 100), bad)
+                }
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", "phase_split_v1", "--mtp-depth", "4"], now: 100))
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--mtp-depth", "4"], now: 100))
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: speculative + ["--mtp-depth", "4", "--mtp-depth", "4"], now: 100))
+            }
             // It composes with every other optional argument.
             let all = try WorkerConfiguration(arguments: base + ["--prefill-schedule", "one_chunk_lookahead_v1",
                 "--generation-mode", "phase_split_v1", "--startup-deadline-uptime-nanoseconds", "90000000100",
@@ -245,10 +350,12 @@ final class WorkerTests: XCTestCase {
             XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
             XCTAssertEqual(all.evidenceDirectory, "/private/run/evidence"); XCTAssertTrue(all.qualificationSwitchesPermitted)
         }
-        // The catalog the worker checks against is the runtime's own row.
-        for model in ["registered_qwen35_9b", "registered_qwen38_27b"] {
+        // The catalog the worker checks against is the runtime's own row; the 9B and 27B ship a head and run
+        // tensor parallel (round 6e).
+        for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_ternary_bonsai_2_27b"] {
             XCTAssertEqual(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes,
-                           [.pipeline, .pipelineCompactDecode, .phaseSplit], model)
+                           [.pipeline, .pipelineCompactDecode, .phaseSplit]
+                               + (model.contains("bonsai") ? [] : [.phaseSplitMTP, .tensorParallel, .pipelineMTP]), model)
         }
     }
 
@@ -260,7 +367,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         let installed = try WorkerConfiguration(arguments: args, now: 100)
         let qualification = try WorkerConfiguration(arguments: args + ["--qualification-switches", "yes"], now: 100)
         XCTAssertFalse(installed.qualificationSwitchesPermitted); XCTAssertTrue(qualification.qualificationSwitchesPermitted)
@@ -283,7 +390,10 @@ final class WorkerTests: XCTestCase {
         // Without the flag each switch is refused by name, whatever its value,
         // including an empty or unknown one: present is enough.
         for (name, values) in [("DARKBLOOM_CLUSTER_TRANSPORT", ["local-socket-test", "jaccl", "", "tcp"]),
-                               ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", ["handoff_corrupt_segment=3", "handoff_stall_after_segment=2:1500", "", "x"])] {
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", ["handoff_corrupt_segment=3", "handoff_stall_after_segment=2:1500", "", "x"]),
+                               // S16: the data-plane tamper fault and the short rekey interval.
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER", ["residualPayload:3", "", "x"]),
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_REKEY", ["records:64", "", "x"])] {
             for value in values {
                 let message = refusal(false, [name: value])
                 XCTAssertNotNil(message, "\(name)=\(value) must be refused without the flag")
@@ -306,20 +416,22 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(QwenResidentQualificationSwitches.permittingArgument, "--qualification-switches")
     }
 
-    func testStartupDeadlineIsOptionalCanonicalAndWithinTheLifetime() throws {
+    func testStartupDeadlineIsOptionalCanonicalAndWithinTheHour() throws {
         let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "4",
             "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         XCTAssertNil(try WorkerConfiguration(arguments: args, now: 100).startupDeadlineUptimeNanoseconds)
         let named = try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", "90000000100"], now: 100)
         XCTAssertEqual(named.startupDeadlineUptimeNanoseconds, 90_000_000_100)
+        // A startup may outlast the first lease grant (the lease is renewed
+        // while the model loads), up to the protocol's hour.
         XCTAssertEqual(try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", "300000000100"], now: 100)
             .startupDeadlineUptimeNanoseconds, 300_000_000_100)
-        // In the past, beyond the lifetime, or not canonical.
-        for value in ["100", "99", "300000000101", "090000000100", "+90000000100", "9e10", ""] {
+        // In the past, beyond the hour, or not canonical.
+        for value in ["100", "99", "3600000000101", "090000000100", "+90000000100", "9e10", ""] {
             XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", value], now: 100), value)
         }
         // It composes with the other optional arguments.
@@ -327,6 +439,36 @@ final class WorkerTests: XCTestCase {
             "--startup-deadline-uptime-nanoseconds", "90000000100", "--evidence-directory", "/private/run/evidence"], now: 100)
         XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
         XCTAssertEqual(all.load.prefillSchedule, .oneChunkLookahead)
+    }
+
+    /// The rank lease (S03): renewals are read outside the request sequence
+    /// and keep the worker past its first grant; the keep-warm command (S27
+    /// tier 2) runs the data-plane exchange on the executor and is answered.
+    func testLeaseRenewalsKeepTheWorkerAndKeepWarmIsAnswered() throws {
+        let h = try Harness(leaseNanoseconds: 1_000_000_000)
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        // Four renewals over 2.4 s, each good for one second: well past the first grant.
+        for _ in 0..<4 { try h.renew(ttl: 1_000_000_000); Thread.sleep(forTimeInterval: 0.6) }
+        try h.send(.keepWarm(ordinal: 1))
+        guard case .keptWarm(1, _, let serving) = try h.event().event else { return XCTFail("Keep-warm was not answered") }
+        // The answer carries the serving context the runtime re-derived now.
+        XCTAssertEqual(serving, 6000)
+        // The renewals took no command sequence number: keep-warm was command 0.
+        XCTAssertEqual(h.runtime.pings, 1)
+        try h.renew(ttl: 1_000_000_000)
+        try h.send(.shutdown)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(h.exits.reasons.isEmpty, "\(h.exits.reasons)")
+    }
+
+    /// Without renewals the lease lapses: the reader ends the worker through
+    /// the forced exit's hook, as an owner that died would leave it.
+    func testUnrenewedLeaseEndsTheWorker() throws {
+        let h = try Harness(leaseNanoseconds: 1_000_000_000)
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        XCTAssertEqual(h.done.wait(timeout: .now() + 5), .success)
+        XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
+        XCTAssertEqual(h.exits.reasons.first, "lease-expired")
     }
 
     func testStartupDeadlineFiresOnlyWhileArmed() throws {
@@ -396,7 +538,53 @@ final class WorkerTests: XCTestCase {
             XCTAssertEqual(try h.event().event, .shutdownComplete)
             XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
             XCTAssertNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
+            // A clean end never begins the forced exit.
+            XCTAssertEqual(h.exits.reasons, [])
         }
+    }
+
+    /// A reservation the runtime refuses for this request alone (its live
+    /// gate) is answered `refused(capacity)` and the worker keeps serving:
+    /// the next reservation is admitted and runs. Round 2: the worker exited.
+    func testRefusedReservationKeepsTheWorkerServing() throws {
+        let h = try Harness(), first = UUID(), second = UUID()
+        h.runtime.refusals = 1
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        try h.send(.reserve(h.reservation()), id: first)
+        XCTAssertEqual(try h.event().event, .refused(.capacity))
+        try h.send(.reserve(h.reservation()), id: second)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.start, id: second)
+        for ordinal in 0..<2 {
+            XCTAssertEqual(try h.event().event, .committedToken(ordinal: ordinal, tokenID: 7 + ordinal, committedTokens: 3 + ordinal))
+            try h.send(.tokenDecision(ordinal: ordinal, decision: .proceed), id: second)
+        }
+        XCTAssertEqual(try h.event().event, .finished(.length))
+        XCTAssertEqual(try h.event().event, .retired(.clean))
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
+    }
+
+    /// The owner gives back a reservation that never started because the
+    /// other rank refused the request: `cancel` is answered `retired(cancelled)`,
+    /// the runtime's reservation is released and the worker keeps serving.
+    func testCancelledUnstartedReservationIsGivenBack() throws {
+        let h = try Harness(rank: 1), first = UUID(), second = UUID()
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        try h.send(.reserve(h.reservation()), id: first)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.cancel(.callerCancelled), id: first)
+        XCTAssertEqual(try h.event().event, .retired(.cancelled))
+        XCTAssertEqual(h.runtime.released, [first])
+        try h.send(.reserve(h.reservation()), id: second)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.start, id: second)
+        XCTAssertEqual(try h.event().event, .finished(.length))
+        XCTAssertEqual(try h.event().event, .retired(.clean))
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
     }
 
     func testFalseDecisionCleanlyStopsBeforeNextToken() throws {
@@ -427,6 +615,9 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertThrowsError(try h.event())
+        // The reader saw the deadline: the forced exit begins there, before release.
+        XCTAssertEqual(h.exits.reasons.first, "request-deadline")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
     }
 
     func testOutputFailurePreventsNativeStart() throws {
@@ -455,6 +646,65 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertEqual(h.runtime.startCount, 0)
+        // Lost input begins the forced exit from the reader, before the
+        // executor releases the model; the executor's own failure path joins it.
+        XCTAssertEqual(h.exits.reasons.first, "lost-input")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
+    }
+
+    func testExecutorFailureBeginsTheForcedExitBeforeLocalCleanup() throws {
+        let h = try Harness(), id = UUID()
+        try h.start(id); _ = try h.event()
+        try h.send(.cancel(.callerCancelled), id: id)
+        XCTAssertEqual(try h.event().event, .failed(.runtimeError))
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(h.exits.reasons.contains("worker-failure"), "\(h.exits.reasons)")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
+    }
+
+    /// The rank-side force-cancel hook (SIGUSR1 handler): mid-request it
+    /// claims the forced exit first, the active request is published as
+    /// failed, the model is released and the run ends; the signal's reason is
+    /// what the exit records.
+    func testForceCancelMidRequestReleasesAndEndsTheWorker() throws {
+        let h = try Harness(), id = UUID()
+        try h.start(id); _ = try h.event()
+        var coordinator: WorkerCoordinator?
+        for _ in 0..<50 { coordinator = h.coordinatorBox.coordinator; if coordinator != nil { break }; usleep(20_000) }
+        XCTAssertEqual(coordinator?.forceCancel(reason: "signal-usr1"), 1, "one active request")
+        // As after a lost input: nothing more is published once the worker
+        // fails; the owner's evidence is the exit it observes directly.
+        XCTAssertThrowsError(try h.event(), "the event stream ends with the worker")
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
+        XCTAssertEqual(h.exits.reasons.first, "force-cancel-signal-usr1", "\(h.exits.reasons)")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
+        XCTAssertEqual(h.runtime.startCount, 1)
+    }
+
+    /// Idle, a force-cancel still ends the worker through the same path (the
+    /// owner then starts a fresh one): nothing is left half-cancelled.
+    func testForceCancelWhileIdleEndsTheWorkerWithNoRequestToFail() throws {
+        let h = try Harness()
+        _ = try h.event()
+        var coordinator: WorkerCoordinator?
+        for _ in 0..<50 { coordinator = h.coordinatorBox.coordinator; if coordinator != nil { break }; usleep(20_000) }
+        XCTAssertEqual(coordinator?.forceCancel(reason: "test"), 0)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(h.runtime.didClose)
+        // The force-cancel claims first; the executor's own failure path joins it.
+        XCTAssertEqual(h.exits.reasons.first, "force-cancel-test", "\(h.exits.reasons)")
+        XCTAssertEqual(h.exits.reasons.last, "worker-failure")
+    }
+
+    func testCleanShutdownThenEOFNeverBeginsTheForcedExit() throws {
+        let h = try Harness()
+        _ = try h.event()
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        h.closeInput()
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
     }
 
     func testBufferedStartAndEarlyDecisionCannotBorrowFutureCredit() throws {

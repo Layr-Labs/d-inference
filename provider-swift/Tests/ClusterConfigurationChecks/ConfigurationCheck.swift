@@ -28,7 +28,7 @@ import DarkbloomClusterProtocol
             profile: profile, profileFingerprint: hash("e"), partitions: [ClusterRuntimePartition(planSHA256: hash("f"), stages: [
                 ClusterRuntimeStage(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 4, stagePlanSHA256: hash("1"), constructionConfigurationSHA256: hash("2")),
                 ClusterRuntimeStage(rank: 1, sourceLayerStart: 4, sourceLayerEnd: 32, stagePlanSHA256: hash("3"), constructionConfigurationSHA256: hash("4"))])],
-            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"), maxLifetimeSeconds: 300, maxRequests: 16)
+            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"))
         let capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
         let capabilityHash = ClusterConfigurationCodec.sha256(capabilityData)
         let key = root.appendingPathComponent("key"), hosts = root.appendingPathComponent("known_hosts")
@@ -99,6 +99,25 @@ import DarkbloomClusterProtocol
         let splitBytes = try ClusterConfigurationCodec.encode(split, capability: modesCapability, capabilitySHA256: modesHash)
         try require(split.selectedGenerationMode == .phaseSplit && String(decoding: splitBytes, as: UTF8.self).contains("\"generationMode\":\"phase_split_v1\"")
             && (try ClusterConfigurationCodec.decode(splitBytes, capability: modesCapability, capabilitySHA256: modesHash)) == split, "Advertised mode lost")
+        // Tensor-parallel shares: saved only beside tensor_parallel_v1, two
+        // unequal weights; passed to both workers as `--tensor-shares A:B`.
+        var tpObject = try JSONSerialization.jsonObject(with: capabilityData) as! [String: Any]
+        tpObject["supportedGenerationModes"] = ["pipeline_v1", "tensor_parallel_v1"]
+        var tpData = try JSONSerialization.data(withJSONObject: tpObject, options: [.sortedKeys, .withoutEscapingSlashes]); tpData.append(10)
+        let tpCapability = try ClusterCapabilityRecord.decode(tpData, writtenBy: "the fixture")
+        let tpHash = ClusterConfigurationCodec.sha256(tpData)
+        var tensor = object; tensor["capabilitySHA256"] = tpHash; tensor["generationMode"] = "tensor_parallel_v1"; tensor["tensorShares"] = [1, 3]
+        let weighted = try ClusterConfigurationCodec.decode(bytes(tensor), capability: tpCapability, capabilitySHA256: tpHash)
+        let weightedBytes = try ClusterConfigurationCodec.encode(weighted, capability: tpCapability, capabilitySHA256: tpHash)
+        try require(weighted.tensorShares == [1, 3] && String(decoding: weightedBytes, as: UTF8.self).contains("\"tensorShares\":[1,3]")
+            && (try ClusterConfigurationCodec.decode(weightedBytes, capability: tpCapability, capabilitySHA256: tpHash)) == weighted,
+            "Tensor-parallel shares were not kept")
+        for bad: Any in [[1, 1], [0, 3], [1, 65], [1, 2, 3], NSNull(), "1:3"] {
+            var refused = tensor; refused["tensorShares"] = bad
+            try rejected { _ = try ClusterConfigurationCodec.decode(bytes(refused), capability: tpCapability, capabilitySHA256: tpHash) }
+        }
+        var pipelineShares = object; pipelineShares["tensorShares"] = [1, 3]
+        try rejected { _ = try decode(pipelineShares) }
         // A record this build cannot read is explained as a mixed install.
         for edit in [{ (o: inout [String: Any]) in o["supportedGenerationModes"] = ["pipeline_v1", "a_newer_mode_v1"] },
                      { (o: inout [String: Any]) in o["aNewerField"] = 1 }] {
@@ -107,7 +126,7 @@ import DarkbloomClusterProtocol
             do { _ = try ClusterCapabilityRecord.decode(newerData, writtenBy: "the worker (capability.json)"); throw ClusterConfigurationError.invalid("unreadable record accepted") }
             catch let ClusterConfigurationError.invalid(message) {
                 try require(message.contains("cannot read the capability record written by the worker (capability.json)")
-                    && message.contains("not built from the same tree") && message.contains("cluster configure"), "Mixed install not explained: \(message)")
+                    && message.contains("not built from the same tree") && message.contains("run `darkbloom cluster` again"), "Mixed install not explained: \(message)")
             }
         }
         var selectedLookahead = object; selectedLookahead["prefillSchedule"] = "one_chunk_lookahead_v1"
@@ -131,7 +150,7 @@ import DarkbloomClusterProtocol
         let changes: [(String, Any)] = [("schema", "other"), ("enabled", true), ("capacity", 100), ("environment", ["KEY": "VALUE"]),
             ("deviceLeaseDirectory", "/tmp/other"), ("role", "both"), ("memberID", "peer-1"), ("clusterID", "-option"),
             ("publicModelID", "bad\nmodel"), ("capabilitySHA256", hash("0")), ("selectedPlanSHA256", hash("0")),
-            ("chunkTokens", 0), ("chunkTokens", 513), ("chunkTokens", true), ("requestTimeoutSeconds", 301), ("requestTimeoutSeconds", 0)]
+            ("chunkTokens", 0), ("chunkTokens", 513), ("chunkTokens", true), ("requestTimeoutSeconds", 3601), ("requestTimeoutSeconds", 0)]
         for (field, value) in changes { var bad = object; bad[field] = value; try rejected { _ = try decode(bad) } }
         for field in object.keys { var bad = object; bad.removeValue(forKey: field); try rejected { _ = try decode(bad) } }
         let text = String(decoding: canonical, as: UTF8.self)
@@ -252,6 +271,45 @@ import DarkbloomClusterProtocol
         try Data("tampered saved record".utf8).write(to: URL(fileURLWithPath: result.configuration))
         try rejected { _ = try store.load(reference: savedReference) }
         try require(try Data(contentsOf: pointer) == oldPointer, "Refused save replaced pointer")
-        print("Cluster configuration: 12 schema/store groups passed; fabricated metadata and local files only")
+
+        // A setup whose follower is reached over the link control channel (S08):
+        // no SSH trust at all, an edge secret file instead; never both.
+        let secret = root.appendingPathComponent("link-secret")
+        try Data((String(repeating: "ab", count: 32) + "\n").utf8).write(to: secret)
+        try require(chmod(secret.path, 0o600) == 0, "Cannot make private fixture secret")
+        let attachment: [String: Any] = ["schema": "darkbloom_cluster_link_control_v1", "port": 47431,
+            "linkEpoch": "0b6f2c1e-4d1a-4c3b-9a55-7f1e2d3c4b5a", "edgeID": "5e4d3c2b-1a09-4f8e-8d7c-6b5a49382716", "secretFile": secret.path]
+        var linked = object; linked.removeValue(forKey: "trust"); linked["linkControl"] = attachment
+        let linkSetup = try decode(linked)
+        try require(linkSetup.trust == nil && linkSetup.linkControl?.port == 47431 && linkSetup.linkControl?.secretFile == secret.path,
+            "Link control setup not read as one without SSH trust")
+        let linkBytes = try ClusterConfigurationCodec.encode(linkSetup, capability: capability, capabilitySHA256: capabilityHash)
+        try require(!String(decoding: linkBytes, as: UTF8.self).contains("\"trust\"")
+            && (try ClusterConfigurationCodec.decode(linkBytes, capability: capability, capabilitySHA256: capabilityHash)) == linkSetup,
+            "Link control setup round trip gained SSH trust or changed")
+        var linkFollower = linked; linkFollower["role"] = "follower"; linkFollower["memberID"] = "peer-1"
+        try require(try decode(linkFollower).localRank == 1, "Link control follower rank differs")
+        var both = linked; both["trust"] = object["trust"]; try rejected { _ = try decode(both) }
+        var nullLink = linked; nullLink["linkControl"] = NSNull(); try rejected { _ = try decode(nullLink) }
+        let badAttachments: [(String, Any?)] = [("port", 80), ("port", 70000), ("port", "47431"), ("schema", "other"),
+            ("linkEpoch", "0B6F2C1E-4D1A-4C3B-9A55-7F1E2D3C4B5A"), ("edgeID", attachment["linkEpoch"]!), ("edgeID", "edge"),
+            ("secretFile", "relative/secret"), ("secretFile", "/Users/fixture/a b"), ("extra", true), ("port", nil)]
+        for (field, value) in badAttachments {
+            var bad = attachment; bad[field] = value
+            var setup = linked; setup["linkControl"] = bad; try rejected { _ = try decode(setup) }
+        }
+        let linkInput = root.appendingPathComponent("link-input.json")
+        try bytes(linked, pretty: true).write(to: linkInput)
+        func saveLink() throws -> ClusterConfigurationSaveResult {
+            try store.save(configurationInput: linkInput, capabilityInput: capabilityInput, capabilitySHA256: capabilityHash) { _ in }
+        }
+        try require(chmod(secret.path, 0o644) == 0, "Cannot loosen fixture secret")
+        try rejected { _ = try saveLink() }
+        try require(chmod(secret.path, 0o600) == 0, "Cannot restore fixture secret")
+        let linkSaved = try saveLink()
+        try require(try store.load(reference: .init(configuration: linkSaved.configuration, sha256: ClusterConfigurationCodec.sha256(
+            Data(contentsOf: URL(fileURLWithPath: linkSaved.configuration))))).configuration.linkControl == linkSetup.linkControl,
+            "Saved link control setup differs")
+        print("Cluster configuration: 13 schema/store groups passed; fabricated metadata and local files only")
     }
 }

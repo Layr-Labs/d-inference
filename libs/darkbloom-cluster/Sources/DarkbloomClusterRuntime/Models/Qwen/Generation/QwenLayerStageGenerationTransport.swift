@@ -1,3 +1,4 @@
+import DarkbloomClusterSecurity
 import Foundation
 import MLX
 
@@ -14,6 +15,12 @@ final class QwenLayerStageGenerationTransport {
     }
     private var pendingBoundaryFingerprint: String?
     var rank: Int { collective.rank }
+
+    /// The record each transfer is on a keyed data plane (S16): its kind, this
+    /// request, this agreement, and a label both ranks derive locally.
+    private func record(_ type: ClusterRecordType, _ label: String) -> CollectiveRecordScope {
+        .request(type, requestID: agreement.request.requestID, agreementFingerprint: agreement.fingerprint, label)
+    }
 
     init(agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
         guard collective.size == 2, (0...1).contains(collective.rank) else {
@@ -54,9 +61,11 @@ final class QwenLayerStageGenerationTransport {
             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
                 hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype)
             try check()
-            try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check)
+            try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes,
+                record: record(.residualHeader, "boundary"), check: check)
             try receiveAck(.boundaryReady, packet.fingerprint, from: 1, check: check)
-            _ = try collective.sendCompleted(boundary.array, to: 1, maximumBytes: expected.byteCount, check: check)
+            _ = try collective.sendCompleted(boundary.array, to: 1, maximumBytes: expected.byteCount,
+                scope: record(.residualPayload, packet.fingerprint), check: check)
             pendingBoundaryFingerprint = packet.fingerprint
             return BoundaryTicket(packet: packet)
         }
@@ -78,7 +87,8 @@ final class QwenLayerStageGenerationTransport {
         try operation {
             guard rank == 1 else { throw ProbeError("Only generation rank1 receives residuals") }
             let packet = try QwenLayerStageGenerationBoundaryPacket.decode(
-                receiveData(maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check), expected: expected)
+                receiveData(maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes,
+                    record: record(.residualHeader, "boundary"), check: check), expected: expected)
             try sendAck(.boundaryReady, packet.fingerprint, check: check)
             let dtype: DType
             switch expected.dtype {
@@ -88,7 +98,7 @@ final class QwenLayerStageGenerationTransport {
             default: throw ProbeError("Generation receive dtype unsupported")
             }
             let array = try collective.receiveCompleted(shape: expected.shape, dtype: dtype, from: 0,
-                maximumBytes: expected.byteCount, check: check)
+                maximumBytes: expected.byteCount, scope: record(.residualPayload, packet.fingerprint), check: check)
             let source = agreement.descriptor
             let boundary = QwenLayerStageBoundary(requestFingerprint: expected.requestFingerprint,
                 sourceConfigurationSHA256: source.sourceConfigurationSHA256,
@@ -109,7 +119,7 @@ final class QwenLayerStageGenerationTransport {
     func sendToken(_ packet: QwenLayerStageGenerationTokenPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only generation rank1 selects target tokens") }
-            try sendData(packet.encoded(), maximumBytes: 4096, check: check)
+            try sendData(packet.encoded(), maximumBytes: 4096, record: record(.targetToken, "token"), check: check)
             try receiveAck(.tokenAccepted, packet.fingerprint, from: 0, check: check)
         }
     }
@@ -117,8 +127,8 @@ final class QwenLayerStageGenerationTransport {
                       committedTokens: Int, check: () throws -> Void) throws -> QwenLayerStageGenerationTokenPacket {
         try operation {
             guard rank == 0 else { throw ProbeError("Only generation rank0 receives target tokens") }
-            return try .decode(receiveData(maximumBytes: 4096, check: check), agreement: agreement,
-                boundaryFingerprint: boundaryFingerprint, previousTokenChainSHA256: previousChain,
+            return try .decode(receiveData(maximumBytes: 4096, record: record(.targetToken, "token"), check: check),
+                agreement: agreement, boundaryFingerprint: boundaryFingerprint, previousTokenChainSHA256: previousChain,
                 ordinal: ordinal, committedTokens: committedTokens)
         }
     }
@@ -131,7 +141,7 @@ final class QwenLayerStageGenerationTransport {
     func sendDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0 else { throw ProbeError("Only request owner sends generation decisions") }
-            try sendData(packet.encoded(), maximumBytes: 4096, check: check)
+            try sendData(packet.encoded(), maximumBytes: 4096, record: record(.generationDecision, "decision"), check: check)
             try receiveAck(.decisionAccepted, packet.fingerprint, from: 1, check: check)
         }
     }
@@ -139,7 +149,8 @@ final class QwenLayerStageGenerationTransport {
                          check: () throws -> Void) throws -> QwenLayerStageGenerationDecisionPacket {
         try operation {
             guard rank == 1 else { throw ProbeError("Only generation rank1 receives decisions") }
-            return try .decode(receiveData(maximumBytes: 4096, check: check), agreement: agreement, token: token)
+            return try .decode(receiveData(maximumBytes: 4096, record: record(.generationDecision, "decision"), check: check),
+                agreement: agreement, token: token)
         }
     }
     func acknowledgeDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
@@ -156,9 +167,9 @@ final class QwenLayerStageGenerationTransport {
             let actual: [Int32]
             if rank == 0 {
                 try sendAck(.requestRetired, decision.fingerprint, check: check)
-                actual = try receiveAckValues(check: check)
+                actual = try receiveAckValues(type: .requestRetired, check: check)
             } else {
-                actual = try receiveAckValues(check: check)
+                actual = try receiveAckValues(type: .requestRetired, check: check)
                 try sendAck(.requestRetired, decision.fingerprint, check: check)
             }
             try QwenLayerStageGenerationAcknowledgement.validate(actual, agreement: agreement,
@@ -215,7 +226,7 @@ final class QwenLayerStageGenerationTransport {
             body.append(contentsOf: [UInt8(truncatingIfNeeded: length >> 24), UInt8(truncatingIfNeeded: length >> 16),
                                      UInt8(truncatingIfNeeded: length >> 8), UInt8(truncatingIfNeeded: length)])
             body.append(header); body.append(payload)
-            try sendFrame(body, frameBytes: compactBoundaryFrameBytes, check: check)
+            try sendFrame(body, frameBytes: compactBoundaryFrameBytes, record: record(.residualPayload, "compact-boundary"), check: check)
         }
     }
 
@@ -225,7 +236,8 @@ final class QwenLayerStageGenerationTransport {
             guard rank == 1, agreement.compactDecode, expected.frame.phase == .decode else {
                 throw ProbeError("Only compact-decode rank1 receives combined residuals")
             }
-            let body = [UInt8](try receiveFrame(frameBytes: compactBoundaryFrameBytes, check: check))
+            let body = [UInt8](try receiveFrame(frameBytes: compactBoundaryFrameBytes,
+                record: record(.residualPayload, "compact-boundary"), check: check))
             guard body.count > 4 else { throw ProbeError("Compact boundary frame is empty") }
             let length = Int(body[0]) << 24 | Int(body[1]) << 16 | Int(body[2]) << 8 | Int(body[3])
             guard length > 0, length <= Self.compactHeaderLimit, body.count == 4 + length + expected.byteCount else {
@@ -261,14 +273,15 @@ final class QwenLayerStageGenerationTransport {
     func sendCompactToken(_ packet: QwenLayerStageGenerationTokenPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1, agreement.compactDecode else { throw ProbeError("Only compact-decode rank1 selects target tokens") }
-            try sendFrame(try packet.encoded(), frameBytes: Self.compactControlFrameBytes, check: check)
+            try sendFrame(try packet.encoded(), frameBytes: Self.compactControlFrameBytes, record: record(.targetToken, "compact-token"), check: check)
         }
     }
     func receiveCompactToken(boundaryFingerprint: String, previousChain: String, ordinal: Int, committedTokens: Int,
                              check: () throws -> Void) throws -> QwenLayerStageGenerationTokenPacket {
         try operation {
             guard rank == 0, agreement.compactDecode else { throw ProbeError("Only compact-decode rank0 receives target tokens") }
-            return try .decode(receiveFrame(frameBytes: Self.compactControlFrameBytes, check: check), agreement: agreement,
+            return try .decode(receiveFrame(frameBytes: Self.compactControlFrameBytes,
+                record: record(.targetToken, "compact-token"), check: check), agreement: agreement,
                 boundaryFingerprint: boundaryFingerprint, previousTokenChainSHA256: previousChain,
                 ordinal: ordinal, committedTokens: committedTokens)
         }
@@ -277,7 +290,8 @@ final class QwenLayerStageGenerationTransport {
     func sendCompactDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0, agreement.compactDecode else { throw ProbeError("Only the request owner sends generation decisions") }
-            try sendFrame(try packet.encoded(), frameBytes: Self.compactControlFrameBytes, check: check)
+            try sendFrame(try packet.encoded(), frameBytes: Self.compactControlFrameBytes,
+                record: record(.generationDecision, "compact-decision"), check: check)
             try receiveAck(.decisionAccepted, packet.fingerprint, from: 1, check: check)
         }
     }
@@ -285,7 +299,8 @@ final class QwenLayerStageGenerationTransport {
                                 check: () throws -> Void) throws -> QwenLayerStageGenerationDecisionPacket {
         try operation {
             guard rank == 1, agreement.compactDecode else { throw ProbeError("Only compact-decode rank1 receives decisions") }
-            return try .decode(receiveFrame(frameBytes: Self.compactControlFrameBytes, check: check),
+            return try .decode(receiveFrame(frameBytes: Self.compactControlFrameBytes,
+                record: record(.generationDecision, "compact-decision"), check: check),
                 agreement: agreement, token: token)
         }
     }
@@ -301,13 +316,16 @@ final class QwenLayerStageGenerationTransport {
         try operation {
             guard rank == 0, agreement.phaseSplit != nil else { throw ProbeError("Only phase-split rank0 hands state over") }
             let header = sender.header
-            try sendFrame(try header.encoded(), frameBytes: QwenPhaseSplitHandoffHeader.frameBytes, check: check)
+            try sendFrame(try header.encoded(), frameBytes: QwenPhaseSplitHandoffHeader.frameBytes,
+                record: record(.handoffHeader, "handoff"), check: check)
             try receiveHandoffAck(.handoffReady, header.fingerprint, check: check)
+            let state = record(.handoffState, header.fingerprint)
             for (index, segment) in sender.segments.enumerated() {
                 try autoreleasepool {
                     let array = try QwenPhaseSplitArrays.materialize(sender, segment: segment,
                         corrupted: fault?.corruptSegment == index, check: check)
-                    _ = try collective.sendCompleted(array, to: 1, maximumBytes: segment.byteCount, check: check)
+                    _ = try collective.sendCompleted(array, to: 1, maximumBytes: segment.byteCount,
+                        scope: state.part("segment-\(index)"), check: check)
                 }
             }
             try receiveHandoffAck(.handoffAccepted, header.fingerprint, check: check)
@@ -323,7 +341,8 @@ final class QwenLayerStageGenerationTransport {
                         check: () throws -> Void) throws {
         try operation {
             guard rank == 1, agreement.phaseSplit != nil else { throw ProbeError("Only phase-split rank1 adopts state") }
-            let frame = try receiveFrame(frameBytes: QwenPhaseSplitHandoffHeader.frameBytes, check: check)
+            let frame = try receiveFrame(frameBytes: QwenPhaseSplitHandoffHeader.frameBytes,
+                record: record(.handoffHeader, "handoff"), check: check)
             do { try intake.receiver.acceptHeader(frame) }
             catch {
                 try? sendAck(.handoffRefused, agreement.fingerprint, check: check)
@@ -331,12 +350,13 @@ final class QwenLayerStageGenerationTransport {
             }
             guard let header = intake.receiver.header else { throw ProbeError("Hand-off header was not retained") }
             try sendAck(.handoffReady, header.fingerprint, check: check)
+            let state = record(.handoffState, header.fingerprint)
             var index = 0
             while let segment = intake.nextSegment {
                 try autoreleasepool {
                     let array = try collective.receiveCompleted(shape: segment.shape,
                         dtype: try QwenPhaseSplitArrays.dtype(segment.dtype), from: 0,
-                        maximumBytes: segment.byteCount, check: check)
+                        maximumBytes: segment.byteCount, scope: state.part("segment-\(index)"), check: check)
                     try intake.accept(array, check: check)
                 }
                 if let fault, fault.stallAfterSegment == index {
@@ -370,7 +390,8 @@ final class QwenLayerStageGenerationTransport {
     func sendRelay(_ packet: QwenPhaseSplitRelayPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only phase-split rank1 relays tokens") }
-            try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayPacket.frameBytes, check: check)
+            try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayPacket.frameBytes,
+                record: record(.tokenRelay, "relay"), check: check)
         }
     }
 
@@ -379,8 +400,8 @@ final class QwenLayerStageGenerationTransport {
                               check: () throws -> Void) throws -> QwenPhaseSplitRelayDecisionPacket {
         try operation {
             guard rank == 1 else { throw ProbeError("Only phase-split rank1 receives relay decisions") }
-            return try .decode(receiveFrame(frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes, check: check),
-                agreement: agreement, relay: packet)
+            return try .decode(receiveFrame(frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes,
+                record: record(.relayDecision, "relay-decision"), check: check), agreement: agreement, relay: packet)
         }
     }
 
@@ -390,7 +411,8 @@ final class QwenLayerStageGenerationTransport {
                       check: () throws -> Void) throws -> QwenPhaseSplitRelayPacket {
         try operation {
             guard rank == 0 else { throw ProbeError("Only the request owner receives relayed tokens") }
-            return try .decode(receiveFrame(frameBytes: QwenPhaseSplitRelayPacket.frameBytes, check: check),
+            return try .decode(receiveFrame(frameBytes: QwenPhaseSplitRelayPacket.frameBytes,
+                record: record(.tokenRelay, "relay"), check: check),
                 agreement: agreement, handoffFingerprint: handoffFingerprint, firstOrdinal: firstOrdinal,
                 previousTokenChainSHA256: previousTokenChainSHA256)
         }
@@ -399,24 +421,45 @@ final class QwenLayerStageGenerationTransport {
     func sendRelayDecision(_ packet: QwenPhaseSplitRelayDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0 else { throw ProbeError("Only the request owner answers relayed tokens") }
-            try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes, check: check)
+            try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes,
+                record: record(.relayDecision, "relay-decision"), check: check)
+        }
+    }
+
+    /// Rank 1, serving a request alone: its prompt frames' residual digests.
+    func sendAlonePrompt(_ packet: QwenAlonePromptPacket, check: () throws -> Void) throws {
+        try operation {
+            guard rank == 1 else { throw ProbeError("Only the decoding rank serves a request alone") }
+            try sendFrame(try packet.encoded(), frameBytes: QwenAlonePromptPacket.frameBytes,
+                record: record(.tokenRelay, "alone-prompt"), check: check)
+        }
+    }
+
+    /// Rank 0: the next batch of those digests, from frame `firstFrame`.
+    func receiveAlonePrompt(firstFrame: Int, check: () throws -> Void) throws -> QwenAlonePromptPacket {
+        try operation {
+            guard rank == 0 else { throw ProbeError("Only the request owner receives an alone-route prompt") }
+            return try .decode(receiveFrame(frameBytes: QwenAlonePromptPacket.frameBytes,
+                record: record(.tokenRelay, "alone-prompt"), check: check), agreement: agreement, firstFrame: firstFrame)
         }
     }
 
     /// One fixed-size zero-padded transfer per control message.
-    private func sendFrame(_ body: Data, frameBytes: Int, check: () throws -> Void) throws {
+    private func sendFrame(_ body: Data, frameBytes: Int, record scope: CollectiveRecordScope,
+                           check: () throws -> Void) throws {
         let frame = try QwenControlFrame.encode(body, frameBytes: frameBytes)
-        _ = try collective.sendCompleted(MLXArray(Array(frame)), to: 1 - rank, maximumBytes: frameBytes, check: check)
+        _ = try collective.sendCompleted(MLXArray(Array(frame)), to: 1 - rank, maximumBytes: frameBytes,
+            scope: scope, check: check)
     }
-    private func receiveFrame(frameBytes: Int, check: () throws -> Void) throws -> Data {
+    private func receiveFrame(frameBytes: Int, record scope: CollectiveRecordScope, check: () throws -> Void) throws -> Data {
         let data = try collective.receiveCompleted(shape: [frameBytes], dtype: .uint8, from: 1 - rank,
-            maximumBytes: frameBytes, check: check).asData().data
+            maximumBytes: frameBytes, scope: scope, check: check).asData().data
         try check()
         return try QwenControlFrame.decode(data, frameBytes: frameBytes)
     }
     private func receiveHandoffAck(_ phase: QwenLayerStageGenerationAcknowledgement.Phase, _ fingerprint: String,
                                    check: () throws -> Void) throws {
-        let actual = try receiveAckValues(check: check)
+        let actual = try receiveAckValues(type: .acknowledgement, check: check)
         // A refusal is bound to the agreement alone: a rank that rejected the
         // header never held a fingerprint of it that it could trust.
         if actual == (try QwenLayerStageGenerationAcknowledgement.values(agreement: agreement,
@@ -427,34 +470,42 @@ final class QwenLayerStageGenerationTransport {
             phase: phase, packetFingerprint: fingerprint, rank: 1)
     }
 
-    private func sendData(_ data: Data, maximumBytes: Int, check: () throws -> Void) throws {
+    private func sendData(_ data: Data, maximumBytes: Int, record scope: CollectiveRecordScope,
+                          check: () throws -> Void) throws {
         guard !data.isEmpty, data.count <= maximumBytes else { throw ProbeError("Generation send control byte cap") }
-        _ = try collective.sendCompleted(MLXArray([UInt32(data.count)]), to: 1 - rank, maximumBytes: 4, check: check)
-        _ = try collective.sendCompleted(MLXArray(Array(data)), to: 1 - rank, maximumBytes: maximumBytes, check: check)
+        _ = try collective.sendCompleted(MLXArray([UInt32(data.count)]), to: 1 - rank, maximumBytes: 4,
+            scope: scope.part("length"), check: check)
+        _ = try collective.sendCompleted(MLXArray(Array(data)), to: 1 - rank, maximumBytes: maximumBytes,
+            scope: scope.part("body"), check: check)
     }
-    private func receiveData(maximumBytes: Int, check: () throws -> Void) throws -> Data {
+    private func receiveData(maximumBytes: Int, record scope: CollectiveRecordScope,
+                             check: () throws -> Void) throws -> Data {
         let length = try collective.receiveCompleted(shape: [1], dtype: .uint32, from: 1 - rank,
-            maximumBytes: 4, check: check).item(UInt32.self)
+            maximumBytes: 4, scope: scope.part("length"), check: check).item(UInt32.self)
         guard length > 0, Int(length) <= maximumBytes else { throw ProbeError("Generation received control byte cap") }
         let data = try collective.receiveCompleted(shape: [Int(length)], dtype: .uint8, from: 1 - rank,
-            maximumBytes: maximumBytes, check: check).asData().data
+            maximumBytes: maximumBytes, scope: scope.part("body"), check: check).asData().data
         try check(); return data
     }
+    /// Acknowledgements: one record kind (retirement has its own); the
+    /// values themselves carry and are checked for the phase and packet.
     private func sendAck(_ phase: QwenLayerStageGenerationAcknowledgement.Phase, _ fingerprint: String,
                          check: () throws -> Void) throws {
         let values = try QwenLayerStageGenerationAcknowledgement.values(agreement: agreement,
             phase: phase, packetFingerprint: fingerprint, rank: rank)
-        _ = try collective.sendCompleted(MLXArray(values), to: 1 - rank, maximumBytes: 256, check: check)
+        let type: ClusterRecordType = phase == .requestRetired ? .requestRetired : .acknowledgement
+        _ = try collective.sendCompleted(MLXArray(values), to: 1 - rank, maximumBytes: 256,
+            scope: record(type, "ack"), check: check)
     }
-    private func receiveAckValues(check: () throws -> Void) throws -> [Int32] {
+    private func receiveAckValues(type: ClusterRecordType, check: () throws -> Void) throws -> [Int32] {
         let actual = try collective.receiveCompleted(shape: [64], dtype: .int32, from: 1 - rank,
-            maximumBytes: 256, check: check).asArray(Int32.self)
+            maximumBytes: 256, scope: record(type, "ack"), check: check).asArray(Int32.self)
         try check(); return actual
     }
     private func receiveAck(_ phase: QwenLayerStageGenerationAcknowledgement.Phase, _ fingerprint: String,
                             from peer: Int, check: () throws -> Void) throws {
-        try QwenLayerStageGenerationAcknowledgement.validate(receiveAckValues(check: check), agreement: agreement,
-            phase: phase, packetFingerprint: fingerprint, rank: peer)
+        try QwenLayerStageGenerationAcknowledgement.validate(receiveAckValues(type: .acknowledgement, check: check),
+            agreement: agreement, phase: phase, packetFingerprint: fingerprint, rank: peer)
     }
     private func operation<T>(allowPendingBoundary: Bool = false, _ body: () throws -> T) throws -> T {
         guard !inOperation, !isFailed, allowPendingBoundary || pendingBoundaryFingerprint == nil else {

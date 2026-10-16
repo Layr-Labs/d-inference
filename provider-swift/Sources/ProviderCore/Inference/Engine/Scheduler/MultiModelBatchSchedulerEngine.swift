@@ -54,6 +54,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// infers architecture from the caller's requested name. The acquired
     /// model and its actual native audio binding are revalidated afterward.
     private let modelTypeProvider: (@Sendable (String) async -> String?)?
+    /// The parser a request that names none is served with (the cluster's API: by its one model's type), so the
+    /// prompt's open think block seeds the streaming parser as the coordinator path's resolved parser does. Nil:
+    /// the request's own, as before.
+    private var defaultReasoningParser: ReasoningParserFormat? = nil
     /// Listing closure used by `availableModels()` when the engine was
     /// constructed via the atomic-`acquire` init. Returns the set of
     /// model IDs that should appear in `/v1/models`.
@@ -82,6 +86,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// known-native owner must throw, never return nil into the legacy path.
     private let nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)?
     private let defaultMaxTokens: Int
+    private let measurementPurpose: EngineMeasurementPurpose
 
     /// OpenAI `reasoning_effort` and Qwen template controls for this request
     /// (`low`/`medium`/`high` for gpt-oss; model-specific otherwise).
@@ -176,8 +181,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) {
+        self.measurementPurpose = measurementPurpose
         self.profile = profile
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -224,11 +231,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         defaultMaxTokens: Int = 4096,
         templateControls: ChatTemplateControls = .init(),
         nativeLocalCacheScope: String? = nil,
-        modelTypeProvider: (@Sendable (String) async -> String?)? = nil
+        modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
+        defaultReasoningParser: ReasoningParserFormat? = nil
     ) {
+        self.measurementPurpose = .serving
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
         self.modelTypeProvider = modelTypeProvider
+        self.defaultReasoningParser = defaultReasoningParser
         self.availableModelsOverride = availableModels
         self.registryProvider = nil
         self.ensureLoaded = { _ in }
@@ -288,6 +298,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        // Without the resolved parser the prompt's open think block was not seeded, and a cluster's Qwen streamed
+        // its whole reasoning in one frame when it closed (1.7 s of keep-alives, 2026-10-16).
+        var request = request
+        if request.reasoningParser == nil { request.reasoningParser = defaultReasoningParser }
         // Capture before acquisition and tokenization consume the budget.
         // Preparation can run on another task, so the value is passed
         // explicitly instead of being read from the task-local again.
@@ -330,10 +344,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reserve) and is retained only for ProviderLoop where
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
+        let acquired = try await acquireForCompletion(modelId: request.model)
+        // Time spent in a cluster pair's request queue is not the pair's
+        // first-token or request budget: those start when the queue lets go.
+        let origin = acquired.queueExitedAt.map { exited in distributedRequestOrigin.map { max($0, exited) } ?? exited }
+            ?? distributedRequestOrigin
         return try await prepareAcquiredCompletion(
             request: request, templateControls: templateControls, requestUsage: requestUsage,
-            distributedRequestOrigin: distributedRequestOrigin,
-            acquired: try await acquireForCompletion(modelId: request.model))
+            distributedRequestOrigin: origin, acquired: acquired)
     }
 
     /// Keep registry/acquisition snapshots out of the parent preparation frame.
@@ -691,7 +709,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation,
                         promptWork: promptWork,
-                        distributedRequestOrigin: distributedRequestOrigin
+                        distributedRequestOrigin: distributedRequestOrigin,
+                        measurementPurpose: measurementPurpose
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -911,7 +930,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     serviceReservationID: serviceReservationID,
                     serviceReservation: serviceReservation,
                     promptWork: promptWork,
-                    distributedRequestOrigin: distributedRequestOrigin
+                    distributedRequestOrigin: distributedRequestOrigin,
+                    measurementPurpose: measurementPurpose
                 )
                 do {
                     try checkFirstContentDeadline()
@@ -1024,7 +1044,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             request:Self.translate(openAIRequest:request,defaultMaxTokens:maximumOutput,
                 logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
             requestId:id,cacheScope:cacheScope,cacheEnabled:false,usageSignal:requestUsage,
-            multimodal:native.request.multimodal,firstContentDeadline:firstContentDeadline,profile:profile)
+            multimodal:native.request.multimodal,firstContentDeadline:firstContentDeadline,profile:profile,
+            measurementPurpose:measurementPurpose)
         // Install the ONE existing router/forwarder before any post-submit
         // cancellation veto. Its protected mode drains actual terminal/error.
         do {

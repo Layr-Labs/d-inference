@@ -1,6 +1,6 @@
 # Set provider cache writes and storage
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-14
 
 Set a persistent write limit and optionally store encrypted inference caches on
 a separate disk. These commands affect cache payloads; use
@@ -44,7 +44,7 @@ a separate disk. These commands affect cache payloads; use
    darkbloom cache set --daily-write-gb 100 --directory "/Volumes/Cache SSD/provider-cache"
    ```
 
-   The CLI records the volume UUID. Cache files use its `darkbloom/kv3` child;
+   The CLI records the volume UUID. Cache files use its `darkbloom/kv3` child (a dev build uses its own namespace instead of `darkbloom`);
    existing files are not copied or removed. A missing or different volume
    disables SSD caching while inference can continue without it.
    Normal expiration prevents reuse but cannot delete files on detached or
@@ -75,6 +75,17 @@ have a startup environment different from the current shell. Set an explicit
 `--daily-write-gb` value when you want the same limit across launches.
 Use [runtime cache observations](../reference/ssd-kv-cache.md#verification) to
 check caching activity. A valid disk does not imply every model supports caching.
+
+On a Mac that is part of a [two-Mac cluster](two-mac-cluster.md), status also
+prints one line for the pair's prompt-cache tier. It uses the same daily
+allowance and cache volume settings with a folder of its own, and its records
+are encrypted with AES-GCM under a key derived (HKDF-SHA256, its own label)
+from the same Secure Enclave-rooted key the single-Mac tier uses, so no new
+keychain item or permission is involved. The key reaches the rank processes
+on an input pipe, never in their environment or arguments. Records are scoped
+to the model, plan, rank and Mac, so another model, plan, rank or Mac cannot
+load them. A development build without the keychain entitlement uses an
+owner-only key file instead.
 
 ## Troubleshooting
 

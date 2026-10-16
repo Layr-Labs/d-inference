@@ -19,7 +19,7 @@ public struct NativePairMessage: Codable, Sendable, Equatable {
 
     public static let maximumFrameBytes = 64 * 1024
     public static let inboundTypes: Set<String> = ["native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released", "native_pair_cancel"]
-    public static let outboundTypes: Set<String> = ["native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_cancel"]
+    public static let outboundTypes: Set<String> = ["native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_lease", "native_pair_cancel"]
     public enum Invalid: Error { case publicFrame }
     enum CodingKeys: String, CodingKey {
         case type, version, epoch, generation, sequence, payload, signature

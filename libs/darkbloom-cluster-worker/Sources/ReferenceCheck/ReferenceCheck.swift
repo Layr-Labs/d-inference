@@ -11,6 +11,10 @@ import Foundation
 //
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
+// and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust;
+// for a Prism Hadamard pack, also DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1
+// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset;
+// and for a Gemma artifact MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum ReferenceCheck {
     static func main() async {
@@ -18,7 +22,7 @@ import Foundation
             var fields: [String: String] = [:]
             let arguments = Array(CommandLine.arguments.dropFirst())
             let names = ["--model-dir", "--request", "--stage-cut", "--report", "--deadline-seconds",
-                         "--handoff", "--handoff-segment-bytes", "--handoff-corrupt-segment", "--serve"]
+                         "--handoff", "--handoff-segment-bytes", "--handoff-corrupt-segment", "--serve", "--mtp-depth"]
             guard arguments.count % 2 == 0 else { throw Failure(usage) }
             for index in stride(from: 0, to: arguments.count, by: 2) {
                 guard names.contains(arguments[index]), fields[arguments[index]] == nil else {
@@ -30,13 +34,12 @@ import Foundation
                 guard fields["--serve"] == "yes", fields["--request"] == nil, fields["--report"] == nil,
                       fields["--handoff"] == nil, let model = fields["--model-dir"], model.hasPrefix("/"),
                       let cut = fields["--stage-cut"].flatMap(Int.init),
-                      let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
+                      let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...3600).contains(seconds) else {
                     throw Failure(usage)
                 }
                 // As below: the artifact's configuration selects the registered
                 // model, and the cut must be one of that model's cuts.
-                let served = try QwenResidentCapabilityMetadata.registeredModel(configuration: QualificationFiles.read(
-                    URL(fileURLWithPath: model).appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+                let served = try registeredModel(modelDirectory: URL(fileURLWithPath: model))
                 guard served.supportedCuts.contains(cut) else {
                     throw Failure("--stage-cut must be one of " + served.supportedCuts.map(String.init).joined(separator: ", "))
                 }
@@ -45,7 +48,7 @@ import Foundation
             guard let model = fields["--model-dir"], model.hasPrefix("/"),
                   let requestPath = fields["--request"], let reportPath = fields["--report"],
                   let cut = fields["--stage-cut"].flatMap(Int.init),
-                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds),
+                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...3600).contains(seconds),
                   ["in-process", nil].contains(fields["--handoff"]) else {
                 throw Failure(usage)
             }
@@ -66,7 +69,18 @@ import Foundation
             } else if fields["--handoff-segment-bytes"] != nil || fields["--handoff-corrupt-segment"] != nil {
                 throw Failure("Hand-off options need --handoff in-process")
             }
+            // The decoding rank of phase_split_mtp_v1, in one process: after the
+            // hand-off, the model's speculative head with this fixed depth.
+            var speculativeDepth: Int?
+            if let text = fields["--mtp-depth"] {
+                guard handoff != nil, handoff?.corruptSegment == nil, let depth = Int(text), (1...4).contains(depth) else {
+                    throw Failure("--mtp-depth takes 1...4 and needs --handoff in-process")
+                }
+                speculativeDepth = depth
+            }
             let request = try QualificationRequest.read(URL(fileURLWithPath: requestPath))
+            // The reference selects argmax tokens; it is no oracle for a sampled request.
+            guard request.sampling == nil else { throw Failure("The staged reference runs greedy requests only; this request is sampled") }
             let reportURL = URL(fileURLWithPath: reportPath)
             guard !FileManager.default.fileExists(atPath: reportURL.path) else {
                 throw Failure("Report \(reportURL.lastPathComponent) already exists; a report is never overwritten")
@@ -75,8 +89,10 @@ import Foundation
             // The artifact's configuration selects the registered model; the
             // request must have been written for that model and the cut must be
             // one of its cuts, before anything is hashed or loaded.
-            let registered = try QwenResidentCapabilityMetadata.registeredModel(
-                configuration: QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+            let registered = try registeredModel(modelDirectory: modelDirectory)
+            guard !registered.isGPTOSS || handoff == nil else {
+                throw Failure("GPT-OSS has no phase split: its hand-off cannot carry a sliding-window layer's rows")
+            }
             guard request.modelID == registered.runtimeModelID, request.profileID == registered.profileID else {
                 throw Failure("The request is for \(request.modelID); the artifact in --model-dir is \(registered.runtimeModelID)")
             }
@@ -84,18 +100,29 @@ import Foundation
                 throw Failure("--stage-cut must be one of " + registered.supportedCuts.map(String.init).joined(separator: ", "))
             }
             let started = DispatchTime.now().uptimeNanoseconds
-            // Covers a native call that never returns; nothing is released by it.
-            // The thread is the bound that is relied on: an alarm alone did not
-            // end a process spinning in a native loop on real hardware.
+            // Covers a native call that never returns. The thread is the bound
+            // that is relied on: an alarm alone did not end a process spinning
+            // in a native loop on real hardware. When it fires it takes the one
+            // forced exit, which resets MLX's wired limit and returns its cache.
+            ProcessNativeMemoryRelease.installForForcedExit()
             signal(SIGALRM) { _ in Darwin._exit(124) }
             alarm(UInt32(seconds + 5))
             try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
             let result: QwenStagedGenerationReference.Result
+            // Counts which route the routed experts' gathers take in this run;
+            // zero attempts for a model that has none.
+            QwenRoutedExpertRouteObservation.arm()
             do {
-                result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
-                    request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
-                        stopTokenIDs: request.stopTokenIDs, chunkSize: request.chunkSize, outputCount: request.outputCount),
-                    deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff)
+                let staged = QwenStagedGenerationReference.Request(requestID: request.requestUUID,
+                    promptTokenIDs: request.promptTokenIDs, stopTokenIDs: request.stopTokenIDs,
+                    chunkSize: request.chunkSize, outputCount: request.outputCount)
+                // The registered model's own adapter runs both stages.
+                result = registered.isGPTOSS
+                    ? try GPTOSSStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
+                        request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000)
+                    : try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
+                        request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff,
+                        speculativeDepth: speculativeDepth)
             } catch let refusal as QwenStagedGenerationReference.HandoffRefusal {
                 // The outcome a fault run asks for: the adopting side refused
                 // the state, and nothing was left allocated afterwards.
@@ -117,6 +144,7 @@ import Foundation
                 Darwin.exit(handoff?.corruptSegment != nil && released ? 0 : 2)
             }
             alarm(0)
+            let route = QwenRoutedExpertRouteObservation.finish()
             if handoff?.corruptSegment != nil {
                 throw Failure("A corrupted hand-off segment was adopted without refusal")
             }
@@ -220,6 +248,14 @@ import Foundation
                 "rankRecordsJoinToThisEvidence": true,
                 "residualFramesAPairSenderWouldRefuse": result.unownedResidualFrames.count,
             ]
+            // Present for a run in which the route was requested or a routed
+            // gather was counted; a dense model's summary is as it was.
+            if route.requested || route.attempts > 0 {
+                summary["expertTileRoute"] = ["requested": route.requested, "kernelsInMetallib": route.kernelsAvailable,
+                    "routedGathers": route.attempts, "tookTheRoute": route.hits, "fellBack": route.fallbacks,
+                    "fellBackForMissingKernels": route.fallbackMetallibUnavailable,
+                    "fellBackRetracted": route.fallbackSortednessRetracted] as [String: Any]
+            }
             if !result.unownedResidualFrames.isEmpty {
                 FileHandle.standardError.write(Data(("darkbloom-cluster-reference: \(result.unownedResidualFrames.count) stage 0 "
                     + "residual(s) would be refused by a pair's sender, first at frame \(result.unownedResidualFrames[0])\n").utf8))
@@ -236,6 +272,19 @@ import Foundation
                 summary["handoffTransferSeconds"] = Double(handoff.transferNanoseconds) / 1e9
                 summary["handoffAdoptionSeconds"] = Double(handoff.adoptionNanoseconds) / 1e9
                 summary["handoffProducerStateRetired"] = handoff.producerStateRetired
+            }
+            if let speculative = result.speculative {
+                summary["mtp"] = ["depth": speculative.depth, "rounds": speculative.rounds,
+                    "plainSteps": speculative.plainSteps, "emittedTokens": speculative.emittedTokens,
+                    "examinedByPosition": speculative.examinedByPosition, "acceptedByPosition": speculative.acceptedByPosition,
+                    "acceptanceRate": speculative.examinedByPosition.reduce(0, +) > 0
+                        ? Double(speculative.acceptedByPosition.reduce(0, +)) / Double(speculative.examinedByPosition.reduce(0, +)) : 0,
+                    "tokensPerRound": speculative.rounds > 0
+                        ? Double(speculative.emittedTokens - speculative.plainSteps) / Double(speculative.rounds) : 0,
+                    "buildSeconds": speculative.buildSeconds, "evaluateSeconds": speculative.evaluateSeconds,
+                    "settleSeconds": speculative.settleSeconds, "headLoadSeconds": speculative.headLoadSeconds,
+                    "headFileBytes": speculative.headFileBytes, "headActiveBytesAdded": speculative.headActiveBytesAdded,
+                    "headSHA256": speculative.headSHA256] as [String: Any]
             }
             if let text = report.decodedOutput { summary["decodedOutput"] = text }
             print(String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))
@@ -255,11 +304,36 @@ import Foundation
     }
 
     static let usage = """
-        usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]
-                 [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
-               --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
-          CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B
-        """
+        usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...3600]
+                 [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]
+                  [--mtp-depth 1...4 (speculative decode after the hand-off; models whose artifact ships a head)]]
+               --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...3600]
+          CUT is one of the registered model's cuts
+          (GPT-OSS runs under MLX_ENABLE_TF32=1 with no DARKBLOOM_GPTOSS_* switch, and has no --handoff):
+
+        """ + "    " + (RegisteredResidentModels.registeredCutsUsage + "\n" + GPTOSSResidentCapabilityMetadata.registeredCutsUsage)
+            .replacingOccurrences(of: "\n", with: "\n    ") + "\n"
+
+    /// The registered model an artifact belongs to, whichever adapter
+    /// registers it: what a request must name and the cuts it may use. GPT-OSS
+    /// is known by its configuration; every model of the layer-stage resident
+    /// runtime (the Qwen catalog and Gemma 4) by its configuration and manifest.
+    struct Registered {
+        let runtimeModelID: String, profileID: String
+        let supportedCuts: [Int]
+        let isGPTOSS: Bool
+    }
+    static func registeredModel(modelDirectory: URL) throws -> Registered {
+        let configuration = try QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20)
+        if GPTOSSStagedGenerationReference.handles(configuration: configuration) {
+            let model = try GPTOSSResidentCapabilityMetadata.registeredModel(configuration: configuration)
+            return .init(runtimeModelID: model.runtimeModelID, profileID: model.profileID,
+                         supportedCuts: model.supportedCuts, isGPTOSS: true)
+        }
+        let model = try RegisteredResidentModels.registeredModel(modelDirectory: modelDirectory)
+        return .init(runtimeModelID: model.runtimeModelID, profileID: model.profileID,
+                     supportedCuts: model.supportedCuts, isGPTOSS: false)
+    }
 
     /// One event per line on standard output, written at once.
     static func emit(_ event: [String: Any]) throws {
@@ -287,13 +361,15 @@ import Foundation
         signal(SIGALRM) { _ in Darwin._exit(124) }
         alarm(UInt32(seconds + 5))
         try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
-        let release = try QwenStagedGenerationReference.serve(modelDirectory: modelDirectory, stageCut: cut,
-            deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000,
-            ready: {
+        let isGPTOSS = (try? Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+            .map(GPTOSSStagedGenerationReference.handles(configuration:)) ?? false
+        let service = isGPTOSS ? GPTOSSStagedGenerationReference.serve : QwenStagedGenerationReference.serve
+        let release = try service(modelDirectory, cut, started + UInt64(seconds) * 1_000_000_000,
+            {
                 try emit(["event": "ready", "stageLoadSeconds": $0.stageLoadSeconds,
                           "activeBytesBefore": $0.activeBytesBefore, "activeBytesLoaded": $0.activeBytesLoaded])
             },
-            next: {
+            {
                 // `prepare` carries the request and is answered; `start` then
                 // begins it. A pair is driven the same way: the prompt travels
                 // with the reservation, and the clock starts at the start command.
@@ -313,8 +389,8 @@ import Foundation
                 return QwenStagedGenerationReference.Request(requestID: id, promptTokenIDs: prompt,
                     stopTokenIDs: command.stopTokenIDs ?? [], chunkSize: chunk, outputCount: count)
             },
-            token: { try emit(["event": "token", "ordinal": $0, "tokenID": $1]) },
-            finished: {
+            { try emit(["event": "token", "ordinal": $0, "tokenID": $1]) },
+            {
                 try emit(["event": "finished", "reason": $0.finishReason, "tokens": $0.selectedTokenIDs.count,
                           "firstTokenNanoseconds": $0.firstTokenNanoseconds, "lastTokenNanoseconds": $0.lastTokenNanoseconds,
                           "retiredNanoseconds": $0.retiredNanoseconds, "residualCopies": $0.residualCopies,

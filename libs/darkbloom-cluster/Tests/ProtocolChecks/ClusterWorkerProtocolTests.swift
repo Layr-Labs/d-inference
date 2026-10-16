@@ -22,7 +22,7 @@ private let ready = ClusterWorkerReady(identity: identity, rank: 0, profile: pro
     executionPlanSHA256: String(repeating: "e", count: 64), requestCapacityBytes: 1024)
 private func reservation(output: Int = 2, stops: [Int] = [], deadline: UInt64 = 1000) -> ClusterWorkerReservation {
     .init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
-        outputCount: output, chunkSize: 2, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900)
+        outputCount: output, chunkSize: 2, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900, sampling: nil)
 }
 private struct Conversation {
     var session: ClusterWorkerSession
@@ -34,13 +34,14 @@ private struct Conversation {
             executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: ready.requestCapacityBytes)))
     }
     mutating func command(_ command: ClusterWorkerCommand, now: UInt64 = 10) throws {
-        let request: UUID? = command == .shutdown ? nil : id
+        var request: UUID? = command == .shutdown ? nil : id
+        if case .keepWarm = command { request = nil }
         try session.accept(.init(membershipEpoch: epoch, sequence: commandSequence, requestID: request, command: command), now: now)
         commandSequence += 1
     }
     mutating func event(_ event: ClusterWorkerEvent, now: UInt64 = 10) throws {
         let request: UUID?
-        switch event { case .ready, .unavailable, .shutdownComplete: request = nil; default: request = id }
+        switch event { case .ready, .unavailable, .shutdownComplete, .keptWarm: request = nil; default: request = id }
         try session.accept(.init(membershipEpoch: epoch, sequence: eventSequence, requestID: request, event: event), now: now)
         eventSequence += 1
     }
@@ -53,7 +54,75 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        print("{\"passed\":true,\"groups\":7,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try tensorParallelModes()
+        print("{\"passed\":true,\"groups\":12,\"modelExecution\":false,\"localPipeIO\":true}")
+    }
+    /// Round-2 fixes: the serving context travels in readiness and in every
+    /// keep-warm answer; a refused reservation and a reservation given back
+    /// before start (`cancel` then `retired(cancelled)`) both leave the worker
+    /// idle and available for the next request.
+    static func servingContextAndGiveBack() throws {
+        let serving = ClusterWorkerReady(identity: identity, rank: 1, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, servingContextTokens: 12)
+        for event: ClusterWorkerEvent in [.ready(serving), .keptWarm(ordinal: 3, microseconds: 40, servingContextTokens: 12),
+                                          .keptWarm(ordinal: 4, microseconds: 40)] {
+            let frame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: event)
+            try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Serving context round trip")
+        }
+        // Absent on the wire when nil: an older reader's records are unchanged.
+        let plain = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: .ready(ready))
+        try check(!String(decoding: try ClusterWorkerCodec.encode(plain), as: UTF8.self).contains("servingContext"),
+            "A worker without a serving context writes none")
+        for bad in [0, 21] {
+            let value = ClusterWorkerReady(identity: identity, rank: 0, profile: profile,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, servingContextTokens: bad)
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: nil, event: .ready(value))) }
+        }
+        // The link probe a tensor-parallel load measured travels in readiness;
+        // absent when nil; refused when malformed.
+        let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 18, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+            allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_600)
+        let probed = ClusterWorkerReady(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, linkProbe: probe)
+        let probedFrame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: .ready(probed))
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(probedFrame)) == probedFrame, "Link probe round trip")
+        try check(!String(decoding: try ClusterWorkerCodec.encode(plain), as: UTF8.self).contains("linkProbe"),
+            "A worker without a link probe writes none")
+        for bad in [ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+                        pointToPointSmallMicroseconds: 0, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+                        allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_600),
+                    ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+                        pointToPointSmallMicroseconds: 18, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+                        allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 20_480, allSumLargeMicroseconds: 2_600),
+                    ClusterWorkerLinkProbe(transport: "carrier-pigeon", keyed: true, pointToPointSmallBytes: 64,
+                        pointToPointSmallMicroseconds: 18, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+                        allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_600)] {
+            let value = ClusterWorkerReady(identity: identity, rank: 0, profile: profile,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, linkProbe: bad)
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: nil, event: .ready(value))) }
+        }
+        // Refused for capacity: idle and available, the next reservation proceeds.
+        var refused = try Conversation()
+        try refused.command(.reserve(reservation()))
+        try refused.event(.refused(.capacity))
+        try check(refused.session.locallyAvailable && refused.session.activeRequestID == nil, "Capacity refusal keeps the worker")
+        refused.id = UUID(); try refused.command(.reserve(reservation())); try refused.event(.admitted(reservedBytes: 512))
+        // Given back before start: cancel, retired(cancelled), available again.
+        var given = try Conversation()
+        try given.command(.reserve(reservation())); try given.event(.admitted(reservedBytes: 512))
+        try given.command(.cancel(.callerCancelled)); try given.event(.retired(.cancelled))
+        try check(given.session.locallyAvailable && given.session.activeRequestID == nil && !given.session.protocolFailed,
+            "A reservation given back before start keeps the worker")
+        given.id = UUID(); try given.command(.reserve(reservation())); try given.event(.admitted(reservedBytes: 512))
+        // A keep-warm answer may not claim more than the profile allows.
+        var warm = try Conversation()
+        try warm.command(.keepWarm(ordinal: 1))
+        try warm.event(.keptWarm(ordinal: 1, microseconds: 1, servingContextTokens: 20))
+        try warm.command(.keepWarm(ordinal: 2))
+        try refuses { try warm.event(.keptWarm(ordinal: 2, microseconds: 1, servingContextTokens: 21)) }
     }
     static func roundTrips() throws {
         let commands: [ClusterWorkerCommand] = [.reserve(reservation()), .start,
@@ -75,9 +144,25 @@ struct ClusterWorkerProtocolTests {
             try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Event round trip")
         }
         let boundary = ClusterWorkerReservation(profileID: "large", promptTokenIDs: Array(repeating: 262143, count: 32767),
-            stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1)
+            stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1, sampling: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(boundary))
         try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "Bounded maximum token input")
+        // A routed request: the route survives the codec; the pair as placed has no field at all.
+        let base = reservation()
+        let routed = ClusterWorkerReservation(profileID: base.profileID, promptTokenIDs: base.promptTokenIDs,
+            stopTokenIDs: base.stopTokenIDs, outputCount: base.outputCount, chunkSize: base.chunkSize,
+            deadlineUptimeNanoseconds: base.deadlineUptimeNanoseconds, capacityLimitBytes: base.capacityLimitBytes, sampling: base.sampling,
+            route: .decodingRankAlone)
+        let routedFrame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(routed))
+        let routedBytes = try ClusterWorkerCodec.encode(routedFrame)
+        try check(try ClusterWorkerCodec.decodeCommand(routedBytes) == routedFrame, "Routed reservation round trip")
+        let plainBytes = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
+            requestID: requestID, command: .reserve(base)))
+        try check(!String(decoding: plainBytes, as: UTF8.self).contains("route")
+            && String(decoding: routedBytes, as: UTF8.self).contains("\"route\":\"decoding_rank_alone\""),
+            "Only a routed reservation carries a route field")
+        let unknown = String(decoding: routedBytes, as: UTF8.self).replacingOccurrences(of: "decoding_rank_alone", with: "both_ranks_alone")
+        try check((try? ClusterWorkerCodec.decodeCommand(Data(unknown.utf8))) == nil, "An unknown route is refused")
     }
     static func malformedJSON() throws {
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(reservation()))
@@ -128,6 +213,100 @@ struct ClusterWorkerProtocolTests {
         let bytes = try pipe.fileHandleForReading.readToEnd() ?? Data()
         try check(try piped.append(bytes) == [raw], "Actual local pipe bytes")
         try piped.finish(); try pipe.fileHandleForReading.close()
+    }
+    /// The prefix report: round trip, bounds, once and only before finish,
+    /// never the whole prompt, on either rank.
+    static func promptCache() throws {
+        let report = ClusterWorkerEvent.promptCache(reusedTokens: 2, storedFrontiers: [1, 2])
+        let frame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, event: report)
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Prompt cache round trip")
+        for bad in [ClusterWorkerEvent.promptCache(reusedTokens: 0, storedFrontiers: []),
+                    .promptCache(reusedTokens: -1, storedFrontiers: [1]), .promptCache(reusedTokens: 1, storedFrontiers: [2, 1]),
+                    .promptCache(reusedTokens: 1, storedFrontiers: Array(1...33))] {
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: requestID, event: bad)) }
+        }
+        var c = try Conversation(); try c.start()
+        try c.event(.committedToken(ordinal: 0, tokenID: 12, committedTokens: 3))
+        try c.command(.tokenDecision(ordinal: 0, decision: .proceed))
+        try c.event(.committedToken(ordinal: 1, tokenID: 13, committedTokens: 4))
+        try c.command(.tokenDecision(ordinal: 1, decision: .proceed))
+        try c.event(.promptCache(reusedTokens: 2, storedFrontiers: [2]))
+        try refuses { var again = c; try again.event(.promptCache(reusedTokens: 2, storedFrontiers: [2])) }
+        try c.event(.finished(.length)); try c.event(.retired(.clean))
+        // The whole prompt (3 tokens) is never reused: one token is always computed.
+        var whole = try Conversation(); try whole.start()
+        try whole.event(.committedToken(ordinal: 0, tokenID: 12, committedTokens: 3))
+        try whole.command(.tokenDecision(ordinal: 0, decision: .proceed))
+        try refuses { try whole.event(.promptCache(reusedTokens: 3, storedFrontiers: [])) }
+        // Rank 0 reports only after a token decision; rank 1 while running.
+        var early = try Conversation(); try early.start()
+        try refuses { try early.event(.promptCache(reusedTokens: 1, storedFrontiers: [])) }
+        var peer = try Conversation(rank: 1); try peer.start()
+        try peer.event(.promptCache(reusedTokens: 2, storedFrontiers: [2])); try peer.event(.finished(.length))
+        try peer.event(.retired(.clean))
+    }
+    /// Sampling: exact round trip of every value (float bit patterns, full
+    /// 64-bit seed and stream), greedy reservations unchanged on the wire,
+    /// canonical form only, and the resident profile's bounds.
+    static func sampling() throws {
+        let value = ClusterWorkerSampling(temperature: 0.7, topP: 0.95, topK: 20, minP: 0.05,
+            repetitionPenalty: 1.1, repetitionContextSize: 64, frequencyPenalty: -0.25, presencePenalty: 0.5,
+            seed: UInt64.max, stream: (1 << 63) | 12345,
+            logitBias: [.init(tokenID: 3, bias: -100), .init(tokenID: 500, bias: 2.5)])
+        let sampled = ClusterWorkerReservation(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: value)
+        let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(sampled))
+        let decoded = try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame))
+        try check(decoded == frame, "Sampling round trip")
+        guard case .reserve(let back) = decoded.command, let s = back.sampling else { throw TestFailure(message: "Sampling lost") }
+        try check(s.temperature.bitPattern == Float(0.7).bitPattern && s.seed == UInt64.max
+            && s.stream == (1 << 63) | 12345 && s.logitBias[1].bias == 2.5, "Exact sampling values")
+        // A greedy reservation carries no sampling field at all.
+        let greedy = String(decoding: try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch,
+            sequence: 0, requestID: requestID, command: .reserve(reservation()))), as: UTF8.self)
+        try check(!greedy.contains("sampling"), "Greedy reservation bytes unchanged")
+        // Greedy with only a logit bias still needs the decoding rank's transform.
+        let biasOnly = ClusterWorkerSampling(temperature: 0, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2,
+            logitBias: [.init(tokenID: 7, bias: 5)])
+        try check(!biasOnly.isGreedyNoOp && !biasOnly.isStochastic && !biasOnly.admitsSpeculativeVerification, "Bias-only flags")
+        try check(value.dependsOnHistory && !value.admitsSpeculativeVerification, "Penalties depend on history")
+        func with(_ s: ClusterWorkerSampling) -> ClusterWorkerCommandFrame {
+            .init(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(.init(profileID: profile.id,
+                promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000,
+                capacityLimitBytes: 900, sampling: s)))
+        }
+        func variant(temperature: Float = 0.7, topK: Int = 20, context: Int = 64,
+                     bias: [ClusterWorkerSampling.LogitBias] = []) -> ClusterWorkerSampling {
+            .init(temperature: temperature, topP: 1, topK: topK, minP: 0, repetitionPenalty: 1,
+                repetitionContextSize: context, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: bias)
+        }
+        for bad in [variant(temperature: 0), variant(temperature: .nan), variant(temperature: .infinity),
+                    variant(topK: -1), variant(topK: 262_145), variant(context: -1),
+                    variant(bias: [.init(tokenID: 5, bias: 1), .init(tokenID: 4, bias: 1)]),
+                    variant(bias: [.init(tokenID: 5, bias: 1), .init(tokenID: 5, bias: 2)]),
+                    variant(bias: [.init(tokenID: 262_144, bias: 1)]),
+                    variant(bias: [.init(tokenID: 1, bias: .nan)]),
+                    variant(bias: (0..<4097).map { .init(tokenID: $0, bias: 1) })] {
+            try refuses { _ = try ClusterWorkerCodec.encode(with(bad)) }
+        }
+        let raw = String(decoding: try ClusterWorkerCodec.encode(frame), as: UTF8.self)
+        for mutation in [raw.replacingOccurrences(of: "\"topK\":20", with: "\"topK\":20,\"extra\":1"),
+                         raw.replacingOccurrences(of: "\"seed\":\"ffffffffffffffff\"", with: "\"seed\":\"FFFFFFFFFFFFFFFF\""),
+                         raw.replacingOccurrences(of: "\"seed\":\"ffffffffffffffff\"", with: "\"seed\":18446744073709551615"),
+                         raw.replacingOccurrences(of: "\"logitBiasBits\":[", with: "\"logitBiasBits\":[1,"),
+                         raw.replacingOccurrences(of: "\"temperatureBits\":\(Float(0.7).bitPattern)", with: "\"temperatureBits\":0.7")] {
+            try check(mutation != raw, "Mutation applies")
+            try refuses { _ = try ClusterWorkerCodec.decodeCommand(Data(mutation.utf8)) }
+        }
+        // The session holds a logit-bias token to the resident vocabulary.
+        var c = try Conversation()
+        try c.command(.reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
+            sampling: variant(bias: [.init(tokenID: 512, bias: 1)]))))
+        try refuses { try c.event(.admitted(reservedBytes: 800)) }
+        var ok = try Conversation(); try ok.start(sampled)
     }
     static func lifecycle() throws {
         var c = try Conversation(); try c.start()
@@ -216,5 +395,143 @@ struct ClusterWorkerProtocolTests {
         try early.event(.admitted(reservedBytes: 800)); try refuses { try early.event(.finished(.length)) }
         var cancelled = try Conversation(rank: 1); try cancelled.start()
         try cancelled.command(.cancel(.callerCancelled)); try refuses { try cancelled.event(.finished(.clientStop)) }
+    }
+
+    /// Batch lanes: requests interleave, each keeps the one-request order;
+    /// a full set of lanes, shutdown or keep-warm while busy are refused.
+    static func lanes() throws {
+        let a = UUID(uuidString: "cccccccc-1111-2222-3333-dddddddddddd")!
+        let b = UUID(uuidString: "dddddddd-1111-2222-3333-eeeeeeeeeeee")!
+        let c = UUID(uuidString: "eeeeeeee-1111-2222-3333-ffffffffffff")!
+        var session = try ClusterWorkerLaneSession(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 2)
+        var commands: UInt64 = 0, events: UInt64 = 0
+        func command(_ value: ClusterWorkerCommand, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: id, command: value), now: 10)
+            commands += 1
+        }
+        func event(_ value: ClusterWorkerEvent, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: events, requestID: id, event: value), now: 10)
+            events += 1
+        }
+        try refuses { _ = try ClusterWorkerLaneSession(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 1) }
+        try event(.ready(ready), nil)
+        try command(.reserve(reservation(output: 3)), a); try event(.admitted(reservedBytes: 800), a)
+        try command(.reserve(reservation(output: 2)), b); try event(.admitted(reservedBytes: 800), b)
+        // Both lanes taken: a third reservation is a protocol error.
+        var full = session
+        try refuses { try full.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: c,
+            command: .reserve(reservation())), now: 10) }
+        try command(.start, b); try command(.start, a)
+        try check(Set(session.activeRequestIDs) == [a, b], "Both lanes are active")
+        try event(.committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), a)
+        try event(.committedToken(ordinal: 0, tokenID: 8, committedTokens: 3), b)
+        try check(session.awaitsDecision(a) && session.awaitsDecision(b), "Each lane awaits its own decision")
+        // A second token before its decision, and a decision for the wrong ordinal, are refused.
+        var early = session
+        try refuses { try early.accept(.init(membershipEpoch: epoch, sequence: events, requestID: a,
+            event: .committedToken(ordinal: 1, tokenID: 9, committedTokens: 4)), now: 10) }
+        var wrong = session
+        try refuses { try wrong.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: a,
+            command: .tokenDecision(ordinal: 1, decision: .proceed)), now: 10) }
+        try command(.tokenDecision(ordinal: 0, decision: .proceed), b)
+        try command(.tokenDecision(ordinal: 0, decision: .proceed), a)
+        try event(.committedToken(ordinal: 1, tokenID: 9, committedTokens: 4), b)
+        try command(.tokenDecision(ordinal: 1, decision: .proceed), b)
+        // Lane b reached its output count: length, then clean retirement.
+        try event(.finished(.length), b); try event(.retired(.clean), b)
+        try check(session.activeRequestIDs == [a], "One lane left")
+        var busy = session
+        try refuses { try busy.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: nil,
+            command: .shutdown), now: 10) }
+        var warm = session
+        try refuses { try warm.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: nil,
+            command: .keepWarm(ordinal: 1)), now: 10) }
+        // The freed lane takes a new request while lane a still runs (refused below for capacity).
+        try command(.reserve(reservation()), c)
+        try event(.committedToken(ordinal: 1, tokenID: 10, committedTokens: 4), a)
+        try command(.tokenDecision(ordinal: 1, decision: .cleanStop), a)
+        var wrongReason = session
+        try refuses { try wrongReason.accept(.init(membershipEpoch: epoch, sequence: events, requestID: a,
+            event: .finished(.length)), now: 10) }
+        try event(.finished(.clientStop), a); try event(.retired(.clean), a)
+        try event(.refused(.capacity), c)
+        try check(session.activeRequestIDs.isEmpty, "Every lane retired")
+        // A replayed request ID is refused even after it retired.
+        var replay = session
+        try refuses { try replay.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: a,
+            command: .reserve(reservation())), now: 10) }
+        try command(.keepWarm(ordinal: 1), nil); try event(.keptWarm(ordinal: 1, microseconds: 5), nil)
+        try command(.shutdown, nil); try event(.shutdownComplete, nil)
+        try check(session.isShutdown, "Lane session shut down")
+        // Rank 1 reports finish without tokens and without decisions.
+        var peer = try ClusterWorkerLaneSession(identity: identity, rank: 1, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 4)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(.init(identity: identity,
+            rank: 1, profile: profile, executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024))), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 0, requestID: a, command: .reserve(reservation())), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 1, requestID: a, event: .admitted(reservedBytes: 800)), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 1, requestID: a, command: .start), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 2, requestID: a, event: .finished(.eos)), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 3, requestID: a, event: .retired(.clean)), now: 10)
+        try check(peer.activeRequestIDs.isEmpty, "Rank 1 lane retired")
+    }
+
+    /// Tensor parallel (`tensor_parallel_v1`) and its hybrid
+    /// (`pipeline_prefill_tensor_decode_v1`): new closed cases after the four
+    /// existing ones, their wire names fixed, the layer cuts each implies, the
+    /// terms both ranks bind, and the qualification records that may carry them.
+    static func tensorParallelModes() throws {
+        try check(ClusterGenerationMode.allCases.map(\.rawValue) == ["pipeline_v1", "pipeline_compact_decode_v1",
+            "phase_split_v1", "phase_split_mtp_v1", "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1", "pipeline_mtp_v1"],
+            "tensor-parallel modes follow the existing four, then the pipeline's speculative rounds, in order, with fixed wire names")
+        try check(ClusterGenerationMode.tensorParallel.usesTensorParallelDecode
+            && ClusterGenerationMode.pipelinePrefillTensorDecode.usesTensorParallelDecode
+            && !ClusterGenerationMode.phaseSplit.usesTensorParallelDecode && !ClusterGenerationMode.pipeline.usesTensorParallelDecode,
+            "both tensor-parallel modes decode by tensor parallel; no other mode does")
+        try check(!ClusterGenerationMode.tensorParallel.isPhaseSplit && !ClusterGenerationMode.pipelinePrefillTensorDecode.isPhaseSplit
+            && !ClusterGenerationMode.tensorParallel.usesSpeculativeHead,
+            "a tensor-parallel mode is not a phase split and runs no speculative head")
+        try check(ClusterGenerationMode.tensorParallel.layerCutCount(ranks: 2) == 0
+            && ClusterGenerationMode.pipelinePrefillTensorDecode.layerCutCount(ranks: 2) == 1
+            && ClusterGenerationMode.pipeline.layerCutCount(ranks: 3) == 2,
+            "tensor parallel cuts no layer range; the hybrid's prefill and every other mode cut ranks - 1 times")
+        let terms = ClusterTensorParallelTerms.current
+        try check(terms.partialsDType == "float32" && terms.shardRule == "kernel_aligned_heads_and_channels_v1"
+            && terms.reduction == "sealed_all_gather_sum_v1" && terms.ranks == 2,
+            "the bound terms: float32 partials, kernel-aligned shares of heads and channels, the sealed all-sum, two ranks")
+        try check(terms.loadAgreementFields == ["cluster-tensor-parallel-v1", "float32", "kernel_aligned_heads_and_channels_v1",
+            "sealed_all_gather_sum_v1", "2"], "the terms are bound into the load agreement field by field")
+        var bf16 = terms; bf16.partialsDType = "bfloat16"
+        try check(bf16.loadAgreementFields != terms.loadAgreementFields, "another partials dtype is another agreement")
+        try check(ClusterGenerationMode.tensorParallel.tensorParallelTerms == terms
+            && ClusterGenerationMode.pipelinePrefillTensorDecode.tensorParallelTerms == terms
+            && ClusterGenerationMode.phaseSplit.tensorParallelTerms == nil, "only the tensor-parallel modes carry terms")
+        func record(_ mode: String, cuts: [Int], layout: String? = nil) -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: "registered_qwen38_27b", artifactSHA256: String(repeating: "a", count: 64),
+                ranks: [.init(rank: 0, chip: "Apple M3 Ultra", operatingSystem: "27.2"),
+                        .init(rank: 1, chip: "Apple M5 Ultra", operatingSystem: "27.0.1")],
+                cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", chunkTokens: 512, promptTokens: 1024,
+                outputTokens: 128, transport: "jaccl", pairReportSHA256: String(repeating: "b", count: 64),
+                pairReportCreatedUTC: "2026-10-14T05:00:00Z",
+                comparisons: [.init(referenceChip: "Apple M3 Ultra", verdict: "exact", firstDivergenceIndex: nil,
+                    gapInULPs: nil, nearTieThresholdULPs: 4, allowed: ["cut", "schedule", "profile"])],
+                producer: "darkbloom-cluster-tp-check record", tensorParallelLayout: layout)
+        }
+        let layout = "plan=qwen_dense_heads_and_channels_v1;partials=float32;shares=equal"
+        try check(record("tensor_parallel_v1", cuts: [], layout: layout).isConsistent, "a tensor-parallel record has no cut and is consistent")
+        try check(!record("tensor_parallel_v1", cuts: [32], layout: layout).isConsistent, "a tensor-parallel record with a cut is not")
+        try check(record("pipeline_prefill_tensor_decode_v1", cuts: [32], layout: layout).isConsistent, "a hybrid record has its prefill cut")
+        try check(!record("pipeline_prefill_tensor_decode_v1", cuts: [], layout: layout).isConsistent, "a hybrid record without a cut is not")
+        try check(!record("tensor_parallel_v1", cuts: []).isConsistent,
+            "a tensor-parallel record must name its layout (plan, partials, shares): it qualifies that layout only")
+        try check(!record("pipeline_v1", cuts: [32], layout: layout).isConsistent, "a pipeline record carries no tensor-parallel layout")
+        let line = try record("pipeline_v1", cuts: [32]).encodedLine()
+        try check(!line.contains("tensorParallelLayout"), "a record without a layout encodes as before (no new key)")
+        let decoded = try ClusterPairQualificationRecord.decodeLines(try record("tensor_parallel_v1", cuts: [], layout: layout).encodedLine())
+        try check(decoded.first?.tensorParallelLayout == layout && decoded.first?.isConsistent == true, "the layout round-trips")
+        try check(!record("pipeline_v1", cuts: []).isConsistent && record("pipeline_v1", cuts: [32]).isConsistent,
+            "a pipeline record still needs its cut")
     }
 }

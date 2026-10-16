@@ -14,6 +14,8 @@ extension ClusterDiagnosticsReport {
         saved = other.saved; live = other.live; deviceJournal = other.deviceJournal
         self.checks = checks
         localLinkInspectionPerformed = other.localLinkInspectionPerformed
+        // Incident and follower text was redacted when it was recorded.
+        observability = other.observability
     }
 }
 
@@ -35,7 +37,8 @@ extension ClusterConsoleInstalled {
     func cleaned(_ clean: ClusterConsoleFreeText) -> ClusterConsoleInstalled {
         .init(workerBinary: .init(verified: workerBinary.verified, detail: clean(workerBinary.detail)),
             hasProgressGuard: hasProgressGuard, acceptsStartupDeadline: acceptsStartupDeadline,
-            manifest: .init(verified: manifest.verified, detail: clean(manifest.detail)), artifactFiles: artifactFiles)
+            manifest: .init(verified: manifest.verified, detail: clean(manifest.detail)), artifactFiles: artifactFiles,
+            holdings: holdings.map { .init(holdings: $0.holdings, detail: clean($0.detail)) })
     }
 }
 

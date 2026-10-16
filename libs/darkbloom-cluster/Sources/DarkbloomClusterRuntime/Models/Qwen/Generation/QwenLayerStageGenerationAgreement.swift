@@ -18,29 +18,41 @@ struct QwenLayerStageGenerationAgreement {
         let rankBuildSHA256: [String]
         let numericalPolicySHA256: String
         let prefillSchedulingPolicy: String?
-        let mtpEnabled = false
+        /// True only for a phase-split request whose decoding rank runs the
+        /// model's speculative head; false keeps every earlier agreement's bytes.
+        let mtpEnabled: Bool
         /// Nil is omitted, so a pipeline agreement keeps its existing bytes.
         let phaseSplit: QwenPhaseSplitTerms?
+        /// Nil is omitted. The head's fixed draft depth and verification rule.
+        let speculativeHead: QwenMTPTerms?
         /// Nil is omitted. Both ranks must frame decode steps the same way.
         let decodeFraming: String?
     }
-    let request: QwenLayerStageGenerationRequest
+    private(set) var request: QwenLayerStageGenerationRequest
     let descriptor: Descriptor
     let fingerprint: String
     let initialTokenChainSHA256: String
     let prefillPolicy: QwenResidentPrefillPolicy
     /// Present only for a declared phase-split request.
     let phaseSplit: QwenPhaseSplitPlan?
+    /// Present only for a phase-split request whose decoding rank drafts and
+    /// verifies with the model's speculative head (`phase_split_mtp_v1`).
+    let speculativeHead: QwenMTPTerms?
     /// Decode steps use one fixed frame per message and no separate ready,
     /// consumed or token acknowledgements.
     let compactDecode: Bool
     static let compactDecodeFraming = "combined_frames_v1"
+    /// Decode runs as speculative rounds through both stages of a pipeline
+    /// (`pipeline_mtp_v1`): the framing names the round terms both ranks hold.
+    /// Nil for every other request, whose bytes it leaves unchanged.
+    let speculativeRoundsFraming: String?
 
     init(request: QwenLayerStageGenerationRequest, membershipEpoch: UUID,
          source: QwenLayerStageWireSourceIdentity, consumerStageFingerprint: String,
          rankBuildSHA256: [String], numericalPolicySHA256: String,
          prefillPolicy: QwenResidentPrefillPolicy = .serial,
-         phaseSplit: QwenPhaseSplitPlan? = nil, compactDecode: Bool = false) throws {
+         phaseSplit: QwenPhaseSplitPlan? = nil, compactDecode: Bool = false,
+         speculativeHead: QwenMTPTerms? = nil, speculativeRoundsFraming: String? = nil) throws {
         guard rankBuildSHA256.count == 2,
               (rankBuildSHA256 + [consumerStageFingerprint, numericalPolicySHA256]).allSatisfy(qwenStageWireIsSHA256),
               consumerStageFingerprint != source.producerStageFingerprint else {
@@ -51,10 +63,23 @@ struct QwenLayerStageGenerationAgreement {
                 throw ProbeError("Phase-split terms were derived for a different request")
             }
         }
+        // Only a phase split's decoding rank holds every layer, so only it can serve a request alone.
+        guard !request.decodingRankAlone || phaseSplit != nil else {
+            throw ProbeError("A request routed to the decoding rank alone needs a phase split: no rank holds every layer")
+        }
+        guard speculativeHead == nil || (phaseSplit != nil && !compactDecode) else {
+            throw ProbeError("A speculative head runs only on the decoding rank of a phase-split request")
+        }
+        guard speculativeRoundsFraming.map({ !$0.isEmpty && $0.utf8.count <= 256 && phaseSplit == nil && !compactDecode
+                && speculativeHead == nil }) ?? true else {
+            throw ProbeError("Speculative rounds frame the decode of a plain pipeline request only")
+        }
         self.request = request
         self.prefillPolicy = prefillPolicy
         self.phaseSplit = phaseSplit
         self.compactDecode = compactDecode
+        self.speculativeHead = speculativeHead
+        self.speculativeRoundsFraming = speculativeRoundsFraming
         descriptor = .init(membershipEpoch: membershipEpoch.uuidString.lowercased(),
             requestID: request.requestID.uuidString.lowercased(), requestFingerprint: request.fingerprint,
             profileFingerprint: request.profile.fingerprint,
@@ -64,10 +89,27 @@ struct QwenLayerStageGenerationAgreement {
             stageFingerprints: [source.producerStageFingerprint, consumerStageFingerprint],
             rankBuildSHA256: rankBuildSHA256, numericalPolicySHA256: numericalPolicySHA256,
             prefillSchedulingPolicy: prefillPolicy == .serial ? nil : prefillPolicy.rawValue,
-            phaseSplit: phaseSplit?.terms, decodeFraming: compactDecode ? Self.compactDecodeFraming : nil)
+            mtpEnabled: speculativeHead != nil, phaseSplit: phaseSplit?.terms,
+            speculativeHead: speculativeHead,
+            decodeFraming: compactDecode ? Self.compactDecodeFraming : speculativeRoundsFraming)
         fingerprint = try qwenGenerationFingerprint("agreement", descriptor)
         initialTokenChainSHA256 = sha256(Data(("qwen-generation-history-v1|" + fingerprint + "|"
             + qwenGenerationTokenHash(request.promptTokenIDs)).utf8))
+    }
+}
+
+extension QwenLayerStageGenerationAgreement {
+    /// The same agreement after both ranks agreed a prefix plan for its
+    /// request. The descriptor and fingerprint are unchanged: the plan only
+    /// moves where prefill frames start and end, and every frame packet
+    /// carries its offsets, which both ranks check against this request.
+    func planned(_ planned: QwenLayerStageGenerationRequest) throws -> QwenLayerStageGenerationAgreement {
+        guard planned.fingerprint == request.fingerprint, planned.promptTokenIDs == request.promptTokenIDs else {
+            throw ProbeError("A prefix plan belongs to a different request")
+        }
+        var copy = self
+        copy.request = planned
+        return copy
     }
 }
 

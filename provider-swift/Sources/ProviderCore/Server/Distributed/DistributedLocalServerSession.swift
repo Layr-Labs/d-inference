@@ -10,9 +10,11 @@ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
     var status: DistributedInstalledSessionStatus { get }
     var httpAdmissionAvailable: Bool { get }
     var httpSessionInvalid: Bool { get }
-    var httpSessionExhausted: Bool { get }
     var httpCanRotate: Bool { get }
-    var lifetimeDeadlineUptimeNanoseconds: UInt64? { get }
+    /// Identifiers, mode, cut and owner diagnostics for incidents and telemetry (S24).
+    var httpObservabilityFacts: DistributedSessionFacts? { get }
+    /// Why an unresolved stop is unresolved (S24).
+    var httpStopDetail: String? { get }
     func validateModelInputs() throws
     func start() async throws
     func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus
@@ -22,6 +24,8 @@ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
 extension DistributedLocalServerSession {
     var httpDiagnosticObservation: ClusterSessionObservation? { nil }
     var httpCanRotate: Bool { status == .released }
+    var httpObservabilityFacts: DistributedSessionFacts? { nil }
+    var httpStopDetail: String? { nil }
 }
 
 extension DistributedInstalledSession: DistributedLocalServerSession {
@@ -29,14 +33,12 @@ extension DistributedInstalledSession: DistributedLocalServerSession {
     var httpCanRotate: Bool { canRotate }
     var httpAdmissionAvailable: Bool { status == .ready && admissionState?.canAdmit() == true }
     var httpSessionInvalid: Bool { admissionState?.isValid == false }
-    var httpSessionExhausted: Bool {
-        guard let state = admissionState else { return false }
-        return state.isValid && state.admissionsRemaining == 0 && !state.hasActiveRequest
-    }
+    var httpObservabilityFacts: DistributedSessionFacts? { observabilityFacts }
+    var httpStopDetail: String? { stopDetail }
 }
 
 public enum DistributedLocalServerPhase: String, Sendable {
-    case prepared, starting, serving, rotating, draining, stopping, quarantined, stopped
+    case prepared, starting, serving, draining, stopping, quarantined, stopped
 }
 
 public struct DistributedLocalServerStatus: Sendable {
@@ -51,6 +53,6 @@ public struct DistributedLocalServerStatus: Sendable {
 }
 
 public enum DistributedLocalServerError: Error, Sendable {
-    case alreadyStarted, startupInterrupted, bindFailed, bindTimedOut, lifetimeExpired
-    case replacementIdentityChanged, replacementNotPrepared, replacementNotReleased
+    case alreadyStarted, startupInterrupted, bindFailed, bindTimedOut
+    case replacementIdentityChanged
 }

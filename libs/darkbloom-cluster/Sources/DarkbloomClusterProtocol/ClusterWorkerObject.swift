@@ -40,6 +40,7 @@ struct WorkerObject {
         return value
     }
     mutating func optionalUUID(_ key: String) throws -> UUID? { values[key] == nil ? nil : try uuid(key) }
+    mutating func optionalInt(_ key: String) throws -> Int? { values[key] == nil ? nil : try int(key) }
     mutating func enumeration<T: RawRepresentable>(_ key: String) throws -> T where T.RawValue == String {
         guard let value = T(rawValue: try string(key)) else { throw ClusterWorkerProtocolError.invalid("Unknown enum: " + key) }
         return value
@@ -56,5 +57,6 @@ struct WorkerObject {
         guard let value = try take(key) as? [Any] else { throw ClusterWorkerProtocolError.invalid("Expected integer array: " + key) }
         return try value.map { item in var r = WorkerObject([key: item]); return try r.int(key) }
     }
+    func peekString(_ key: String) -> String? { values[key] as? String }
     func finish() throws { try workerRequire(values.isEmpty, "Unknown worker record fields") }
 }

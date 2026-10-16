@@ -29,7 +29,7 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         let begin = now()
         let value = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), behavior], environment: [:]),
             expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-            startupDeadline: begin + seconds(startup), lifetimeDeadline: begin + seconds(lifetime), retirement: retirement)
+            startupDeadline: begin + seconds(startup), initialLeaseDeadline: begin + seconds(lifetime), retirement: retirement)
         try value.launch()
         return value
     }
@@ -112,7 +112,7 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         }
         func reservation() -> ClusterWorkerReservation {
             .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                  deadlineUptimeNanoseconds: now() + seconds(10), capacityLimitBytes: 1800)
+                  deadlineUptimeNanoseconds: now() + seconds(10), capacityLimitBytes: 1800, sampling: nil)
         }
         func settle(_ pair: ClusterWorkerPair) {
             let done = DispatchSemaphore(value: 0)

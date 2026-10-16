@@ -15,6 +15,16 @@ public struct DistributedRequestObservation: Sendable {
     public let reservationMilliseconds: Double
     public let remainingFirstTokenMilliseconds: Double?
     public let outcome: String?
+    /// From admission to the first committed token (S24); nil before it.
+    public let firstTokenMilliseconds: Double?
+    /// Committed tokens after the first, per second between the first and the latest.
+    public let decodeTokensPerSecond: Double?
+    /// Prompt tokens both ranks restored from their prefix caches.
+    public let reusedPromptTokens: Int
+    /// What the ranks measured (hand-off, MTP), once they reported it.
+    public let rankTelemetry: DistributedRankTelemetry?
+    /// Which way the request went and why (`ClusterRequestRouter`); nil when the owner routes nothing.
+    public let route: DistributedRequestRouteNote?
     /// Cumulative observations discarded by this engine's bounded sink before
     /// this delivery. Drop-newest overflow; saturates at UInt64.max.
     public private(set) var droppedObservations: UInt64 = 0
@@ -33,6 +43,14 @@ public struct DistributedRequestObservation: Sendable {
         reservationMilliseconds = Self.milliseconds(state.admissionStartedAt.duration(to: state.reservedAt))
         remainingFirstTokenMilliseconds = state.firstTokenDeadline.map { Self.milliseconds(now.duration(to: $0)) }
         outcome = reason.map(Self.outcome)
+        firstTokenMilliseconds = state.firstTokenAt.map { Self.milliseconds(state.admissionStartedAt.duration(to: $0)) }
+        if let first = state.firstTokenAt, let last = state.lastTokenAt, state.completionTokens > 1 {
+            let seconds = Self.milliseconds(first.duration(to: last)) / 1_000
+            decodeTokensPerSecond = seconds > 0 ? (Double(state.completionTokens - 1) / seconds * 100).rounded() / 100 : nil
+        } else { decodeTokensPerSecond = nil }
+        reusedPromptTokens = state.reusedPromptTokens
+        rankTelemetry = state.rankTelemetry
+        route = state.lease.route
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {

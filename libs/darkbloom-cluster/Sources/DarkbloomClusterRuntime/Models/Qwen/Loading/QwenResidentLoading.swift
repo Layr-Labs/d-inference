@@ -11,7 +11,7 @@ struct QwenResidentLoadedStage {
 
 /// A private ordered-load gate for this separately admitted resident cut4|8|12|16
 /// scope. The existing default-half-only StageLoadBudget policy is untouched.
-private final class QwenResidentLoadGate: QwenLayerStageGate {
+final class QwenResidentLoadGate: QwenLayerStageGate {
     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
     private var next = 0
     private var failed = false
@@ -78,12 +78,36 @@ func loadQwenResidentStage(_ admission: QwenResidentAdmission, check: () throws 
                                      constructed: constructed)
 }
 
+/// `pipeline_mtp_v1`, the last rank: this rank's stage and, through the same
+/// verified checkpoint and from the producer stage's own inventory, a copy of
+/// the token embedding for the model's speculative head (`QwenEmbeddingCopy`).
+func loadQwenResidentStageWithEmbeddingCopy(_ admission: QwenResidentAdmission, check: () throws -> Void,
+                                           constructed: (Module) -> Void = { _ in })
+    throws -> (stage: QwenResidentLoadedStage, embedding: QwenEmbeddingCopy) {
+    guard admission.configuration.rank == 1 else {
+        throw ProbeError("Only the last rank reads a copy of the token embedding")
+    }
+    let local = try prepareQwenResidentSource(admission, check: check)
+    var copy: QwenEmbeddingCopy?
+    let stage = try loadQwenResidentStage(admission, source: local.metadata, payload: local.payload, check: check,
+        constructed: constructed, afterStage: { producer in
+            copy = try QwenEmbeddingCopy.read(producer: producer, source: local.metadata.source,
+                payload: local.payload, planFingerprint: admission.plan.fingerprint, check: check)
+        })
+    guard let copy else { throw ProbeError("The embedding copy was not read") }
+    return (stage, copy)
+}
+
 /// The same checks and the same materializer for any payload source: the
-/// metadata fixes every tensor before the payload supplies one.
+/// metadata fixes every tensor before the payload supplies one. `afterStage`
+/// runs once this rank's stage is resident, with the other stage's inventory.
 func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: QwenResidentSource,
                           payload: some QwenLayerStagePayloadSource, check: () throws -> Void,
-                          constructed: (Module) -> Void = { _ in }) throws -> QwenResidentLoadedStage {
+                          constructed: (Module) -> Void = { _ in },
+                          afterStage: (_ otherInventory: QwenStagePreparedInventory) throws -> Void = { _ in })
+    throws -> QwenResidentLoadedStage {
     let plan = admission.plan, index = admission.configuration.rank
+    try admission.definition.arithmetic.requireNativeRoute()
     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
         try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
     }
@@ -108,6 +132,7 @@ func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: 
                 gate: gate, check: { try check(); try gate.observe(); try check() },
                 beforeTensor: { try check(); try gate.beforeRead($0); try check() })
             try gate.finish(); try check()
+            try afterStage(other); try check()
             return .init(loaded: loaded, profile: prepared.profile, selectedRequirement: selected)
         }
     }

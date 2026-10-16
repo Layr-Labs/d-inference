@@ -11,23 +11,49 @@ public struct QwenResidentLoadConfiguration: Sendable {
     public let deadlineUptimeNanoseconds: UInt64
     public let allocatorPolicy: QwenResidentAllocatorPolicy
     public let prefillSchedule: ClusterPrefillSchedule
+    /// The worker's renewable rank lease (S03), or nil for a bounded tool run.
+    /// A leased load has no fixed lifetime: `deadlineUptimeNanoseconds` is the
+    /// lease's first deadline, and the owner moves the lease on while it wants
+    /// the model resident.
+    public let lease: ClusterLeaseDeadline?
 
     public init(identity: ClusterWorkerIdentity, modelDirectory: URL, rank: Int,
                 stageCut: Int, deadlineUptimeNanoseconds: UInt64,
                 allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged,
-                prefillSchedule: ClusterPrefillSchedule = .serial) {
+                prefillSchedule: ClusterPrefillSchedule = .serial,
+                lease: ClusterLeaseDeadline? = nil) {
         self.identity = identity; self.modelDirectory = modelDirectory
         self.rank = rank; self.stageCut = stageCut
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
         self.allocatorPolicy = allocatorPolicy
         self.prefillSchedule = prefillSchedule
+        self.lease = lease
+    }
+
+    /// The deadline now: the lease's when leased, else the fixed one.
+    public var currentDeadlineUptimeNanoseconds: UInt64 { lease?.uptimeNanoseconds ?? deadlineUptimeNanoseconds }
+
+    /// Whether the load's deadline is admissible at `now`: in the future and at
+    /// most one lease grant away when leased, or within the protocol's one-hour
+    /// bound for a bounded tool run. There is no per-model lifetime.
+    func admitsLoadDeadline(now: UInt64) -> Bool {
+        let current = currentDeadlineUptimeNanoseconds
+        let bound = lease == nil ? ClusterWorkerLimits.deadlineNanoseconds : ClusterWorkerLease.maximumNanoseconds
+        return current > now && current - now <= bound
+    }
+
+    /// Whether a request's absolute deadline is admissible at `now`. Under a
+    /// lease the owner renews the lease for as long as the request runs, so
+    /// only the request protocol's own bound applies; a bounded run must end
+    /// its requests before its fixed deadline.
+    func admitsRequestDeadline(_ deadline: UInt64, now: UInt64) -> Bool {
+        guard deadline > now else { return false }
+        return lease == nil ? deadline <= deadlineUptimeNanoseconds : deadline - now <= ClusterWorkerLimits.deadlineNanoseconds
     }
 }
 
 struct QwenResidentAdmission {
     static let profileID = QwenResidentAdapterDefinition.profileID
-    static let maximumLifetimeNanoseconds = QwenResidentAdapterDefinition.maximumLifetimeNanoseconds
-    static let maximumRequests = QwenResidentAdapterDefinition.maximumRequests
     let configuration: QwenResidentLoadConfiguration
     let configBytes: Data, manifestBytes: Data
     let specification: QwenDenseRegisteredSpecification
@@ -52,8 +78,7 @@ struct QwenResidentAdmission {
               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
               identity.peers.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 128 &&
                   $0.id.utf8.allSatisfy({ (33...126).contains($0) }) && qwenStageWireIsSHA256($0.buildSHA256) }),
-              configuration.deadlineUptimeNanoseconds > now,
-              configuration.deadlineUptimeNanoseconds - now <= Self.maximumLifetimeNanoseconds,
+              configuration.admitsLoadDeadline(now: now),
               (1...1_048_576).contains(configBytes.count),
               (1...4_194_304).contains(manifestBytes.count),
               case let spec = definition.specification,
@@ -64,7 +89,7 @@ struct QwenResidentAdmission {
             throw ProbeError("Resident load requires a registered model's closed identity, one of its cuts and a bounded local lifetime")
         }
         // Before any model construction or native environment cache is used.
-        arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+        arithmetic = try definition.arithmetic.admit(environment)
         arithmeticSHA256 = sha256(try canonicalJSONData(arithmetic))
         jaccl = try QwenResidentJACCLConfiguration.admit(environment: environment, read: read)
         guard jaccl.rank == configuration.rank else { throw ProbeError("Resident local rank differs from JACCL") }
@@ -86,12 +111,12 @@ struct QwenResidentAdmission {
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
         guard value.profileID == profile.identifier, value.capacityLimitBytes > 0,
               value.stopTokenIDs == Array(Set(value.stopTokenIDs)).sorted(),
-              value.deadlineUptimeNanoseconds > now,
-              value.deadlineUptimeNanoseconds <= configuration.deadlineUptimeNanoseconds else {
+              configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
-            chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs))
+            chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
+            sampling: value.sampling, route: value.route)
     }
 
     /// Rank, local path and local uptime are intentionally absent. The explicit

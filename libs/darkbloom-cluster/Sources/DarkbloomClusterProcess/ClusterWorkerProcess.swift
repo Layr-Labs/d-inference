@@ -4,6 +4,12 @@ import DarkbloomClusterProtocol
 
 public enum ClusterWorkerOwnerError: Error, Equatable, Sendable {
     case invalid(String), unavailable, deadline, cancelled, closed
+    /// The request was refused before it started, for `reason`, and nothing
+    /// of it is left on either rank: a rank refused its reservation (or the
+    /// pair's serving context is shorter than the request) and every rank
+    /// that had admitted it gave its reservation back. The pair is still
+    /// valid and takes the next request. Only this request failed.
+    case refused(ClusterWorkerRefusal)
 }
 
 /// Recorded by the direct-child supervisor, never inferred from a pipe event.
@@ -32,12 +38,50 @@ final class WorkerCompletion: @unchecked Sendable {
 ///
 /// A fence is cooperative first: the owner closes the child's command stream,
 /// which a worker treats as the order to cancel its request, release its model
-/// and exit. A signal ends the process without that release, so none is sent
-/// until the child's own hard deadline has passed: the lifetime it was started
-/// with, or its startup deadline when it was told one and never became ready.
+/// and exit, and it stops renewing the child's rank lease. A signal ends the
+/// process without that release, so none is sent until the child's own hard
+/// deadline has passed: the last lease deadline this owner granted it, or its
+/// startup deadline when it was told one and never became ready.
 /// SIGKILL follows SIGTERM only for a process that ignored both its own
 /// deadline and SIGTERM; nothing else could return the device, and by then the
 /// child's contract says it no longer runs.
+/// The owner's file of its workers' diagnostics (their standard error, as written): the worker's own words for
+/// what it admitted and reused (`darkbloom-prefix-v1`, `darkbloom-resident-context-v1`) were kept only as a tail for
+/// a worker that failed, so a healthy session's prefix cache could not be read at all. Owner-only, bounded: past
+/// `maximumBytes` the file is moved to `.1` and started again. Best effort; never fails a worker.
+public final class ClusterWorkerDiagnosticsLog: @unchecked Sendable {
+    public static let maximumBytes = 4 << 20
+    private let url: URL
+    private let lock = NSLock()
+    private var descriptor: Int32 = -1
+    private var size = 0
+
+    public init(url: URL) { self.url = url }
+
+    /// The log every worker this process owns writes to; nil: none.
+    nonisolated(unsafe) public static var shared: ClusterWorkerDiagnosticsLog?
+
+    public func append(_ data: Data) {
+        lock.withLock {
+            if descriptor < 0 || size + data.count > Self.maximumBytes {
+                if descriptor >= 0 {
+                    close(descriptor); descriptor = -1
+                    _ = rename(url.path, url.path + ".1")
+                }
+                descriptor = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                guard descriptor >= 0 else { return }
+                var information = stat()
+                guard fstat(descriptor, &information) == 0, information.st_mode & S_IFMT == S_IFREG,
+                      information.st_uid == geteuid() else { close(descriptor); descriptor = -1; return }
+                _ = fchmod(descriptor, 0o600)
+                size = Int(information.st_size)
+            }
+            let written = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+            if written > 0 { size += written }
+        }
+    }
+}
+
 public struct ClusterWorkerSignalPolicy: Sendable, Equatable {
     /// The child was given its startup deadline and exits there by itself.
     public let childEndsItselfAtStartupDeadline: Bool
@@ -59,7 +103,39 @@ public struct ClusterWorkerSignalPolicy: Sendable, Equatable {
     /// Longest an owner waits past the child's lifetime for its observed exit.
     public var allowanceNanoseconds: UInt64 { terminateMarginNanoseconds + killMarginNanoseconds + reapMarginNanoseconds }
     var isBounded: Bool {
-        [terminateMarginNanoseconds, killMarginNanoseconds, reapMarginNanoseconds].allSatisfy { $0 <= 60_000_000_000 }
+        terminateMarginNanoseconds <= 60_000_000_000 && reapMarginNanoseconds <= 60_000_000_000
+            && killMarginNanoseconds <= Self.maximumKillMarginNanoseconds
+    }
+
+    // MARK: Kill margin sized to the memory the child holds
+
+    /// Rate at which a rank is assumed to unwind and unwire what it holds once
+    /// it has SIGTERM: the owner's measured conservative figure, 2 GiB/s.
+    public static let releaseBytesPerSecond: UInt64 = 2 << 30
+    public static let minimumKillMarginNanoseconds: UInt64 = 30_000_000_000
+    public static let maximumKillMarginNanoseconds: UInt64 = 120_000_000_000
+    /// The longest allowance any sized policy can have.
+    public static let maximumAllowanceNanoseconds: UInt64 =
+        ClusterWorkerSignalPolicy.standard.terminateMarginNanoseconds + maximumKillMarginNanoseconds
+        + ClusterWorkerSignalPolicy.standard.reapMarginNanoseconds
+
+    /// SIGTERM to SIGKILL for a child that holds `plannedBytes`: the bytes at
+    /// `releaseBytesPerSecond`, never under 30 s nor over 120 s. A SIGKILL that
+    /// lands before a loaded rank has released is the path that can strand
+    /// wired memory; the flat 10 s this replaces was measured too short for a
+    /// rank of about 90 GiB. Unknown or zero bytes get the floor.
+    public static func killMarginNanoseconds(plannedBytes: UInt64) -> UInt64 {
+        let seconds = Double(plannedBytes) / Double(releaseBytesPerSecond)
+        let scaled = seconds >= Double(maximumKillMarginNanoseconds) / 1e9 ? maximumKillMarginNanoseconds : UInt64(seconds * 1e9)
+        return min(maximumKillMarginNanoseconds, max(minimumKillMarginNanoseconds, scaled))
+    }
+
+    /// The standard margins with the kill margin sized to `plannedBytes`.
+    public static func sized(plannedBytes: UInt64, childEndsItselfAtStartupDeadline: Bool = false) -> ClusterWorkerSignalPolicy {
+        .init(childEndsItselfAtStartupDeadline: childEndsItselfAtStartupDeadline,
+              terminateMarginNanoseconds: standard.terminateMarginNanoseconds,
+              killMarginNanoseconds: killMarginNanoseconds(plannedBytes: plannedBytes),
+              reapMarginNanoseconds: standard.reapMarginNanoseconds)
     }
 }
 
@@ -67,8 +143,15 @@ public struct ClusterWorkerLaunch: Sendable {
     public let executable: URL
     public let arguments: [String]
     public let environment: [String: String]
-    public init(executable: URL, arguments: [String], environment: [String: String]) {
+    /// Written to the child's input before anything else: the worker's secret
+    /// lines (S16: its data-plane credential; then its prefix-SSD key), at most
+    /// `maximumInitialLines`, each LF-terminated and at most 4,096 bytes. Never
+    /// an argument or a variable.
+    public let initialInput: Data?
+    public static let maximumInitialLines = 2
+    public init(executable: URL, arguments: [String], environment: [String: String], initialInput: Data? = nil) {
         self.executable = executable; self.arguments = arguments; self.environment = environment
+        self.initialInput = initialInput
     }
 }
 
@@ -76,13 +159,28 @@ public struct ClusterWorkerLaunch: Sendable {
 /// An event or a sent signal never completes observedExit; actual process exit does.
 /// A fence closes the child's command stream and waits; see ClusterWorkerSignalPolicy
 /// for the only conditions under which this owner signals the child.
+///
+/// The child has no fixed lifetime. It is launched with a first rank-lease
+/// deadline (S03), and while this owner keeps it (not fenced) the pump renews
+/// the lease every `ClusterWorkerLease.renewNanoseconds` with an
+/// `extendDeadline` line. A fence stops the renewals: the child ends by itself
+/// on the closed command stream, or at the latest within the lease's time to
+/// live. An owner process that dies stops them the same way.
 public final class ClusterWorkerProcess: @unchecked Sendable {
     public let expectedIdentity: ClusterWorkerIdentity
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
     public let executionPlanSHA256: String
-    public let lifetimeDeadline: UInt64
+    /// The latest deadline this owner has granted the child: the launch
+    /// deadline, then each renewal's enqueue time plus the time to live. The
+    /// child's own deadline is never earlier than this estimate's grant.
+    public var lifetimeDeadline: UInt64 { lock.withLock { leaseDeadline } }
     public let retirement: ClusterWorkerSignalPolicy
+    private var leaseDeadline: UInt64
+    private var leaseRenewals: UInt64 = 0
+    private var nextRenewalAt: UInt64 = 0
+    /// Renewals this owner has queued for the child.
+    public var renewalsSent: UInt64 { lock.withLock { leaseRenewals } }
     private let process = Process()
     /// The child's exit as Foundation reports it; see `ClusterProcessExit`.
     private let childExit = ClusterProcessExit()
@@ -104,6 +202,15 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     private let notifications = DispatchQueue(label: "darkbloom.worker.invalidation")
     private var stderrTail = Data()
     private var stderrBytes = 0
+    /// Bytes written to standard error in the current flood window (S24).
+    private var stderrWindowBytes = 0
+    private var stderrWindowStart: UInt64 = 0
+    /// A worker that writes more than this to standard error within one
+    /// window is flooding it and fails; a long-running worker that writes a
+    /// few lines per request never does. (A bound on the cumulative total
+    /// would end a healthy session with no fixed lifetime.)
+    static let stderrFloodBytes = 1024 * 1024
+    static let stderrFloodWindowNanoseconds: UInt64 = 10_000_000_000
     private let startupDeadline: UInt64
     private var launched = false
     private var terminalValue: ClusterWorkerProcessTermination?
@@ -116,16 +223,19 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     /// After this an owner stops waiting: the child outlived its own hard
     /// deadline, SIGTERM and SIGKILL, and its ownership cannot be resolved here.
     public var retirementDeadlineUptimeNanoseconds: UInt64 {
-        let value = lifetimeDeadline.addingReportingOverflow(retirement.allowanceNanoseconds)
+        let value = lock.withLock { leaseDeadline }.addingReportingOverflow(retirement.allowanceNanoseconds)
         return value.overflow ? UInt64.max : value.partialValue
     }
     public var termination: ClusterWorkerProcessTermination? { lock.withLock { terminalValue } }
     public var observedExit: Bool { exited.isComplete }
     public var readiness: ClusterWorkerReady? { lock.withLock { fault == nil && fenceAt == nil ? readyValue : nil } }
     public var diagnosticTail: Data { lock.withLock { stderrTail } }
+    /// Every byte the worker wrote to standard error, including what the tail no longer holds.
+    public var diagnosticBytesTotal: Int { lock.withLock { stderrBytes } }
 
     public init(launch: ClusterWorkerLaunch, expectedIdentity: ClusterWorkerIdentity, rank: Int,
-                profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64, lifetimeDeadline: UInt64,
+                profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64,
+                initialLeaseDeadline lifetimeDeadline: UInt64,
                 retirement: ClusterWorkerSignalPolicy = .standard) throws {
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
             executionPlanSHA256: executionPlanSHA256)
@@ -135,13 +245,14 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
               launch.environment.count <= 128,
               launch.environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0")
                   && !$0.value.contains("\0") && $0.key.utf8.count <= 256 && $0.value.utf8.count <= 8192 }),
-              startupDeadline > now, lifetimeDeadline >= startupDeadline, retirement.isBounded,
-              lifetimeDeadline - now <= ClusterWorkerLimits.deadlineNanoseconds else {
+              startupDeadline > now, lifetimeDeadline > now, retirement.isBounded,
+              startupDeadline - now <= ClusterWorkerLimits.deadlineNanoseconds,
+              lifetimeDeadline - now <= ClusterWorkerLease.maximumNanoseconds else {
             throw ClusterWorkerOwnerError.invalid("Invalid worker launch")
         }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.startupDeadline = startupDeadline
-        self.lifetimeDeadline = lifetimeDeadline; self.retirement = retirement
+        leaseDeadline = lifetimeDeadline; self.retirement = retirement
         wakeup = try WorkerPumpWakeup()
         process.executableURL = launch.executable; process.arguments = launch.arguments
         process.environment = launch.environment
@@ -154,12 +265,24 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
             throw ClusterWorkerOwnerError.invalid("Cannot suppress pipe SIGPIPE")
         }
+        if let line = launch.initialInput {
+            let lines = line.split(separator: 10, omittingEmptySubsequences: false).dropLast()
+            guard !line.isEmpty, line.last == 10, (1...ClusterWorkerLaunch.maximumInitialLines).contains(lines.count),
+                  lines.allSatisfy({ !$0.isEmpty && $0.count < 4096 }) else {
+                throw ClusterWorkerOwnerError.invalid("Invalid initial worker input")
+            }
+            // First on the command stream; the pump writes it before any renewal or command.
+            outgoing.append((line, 0, startupDeadline)); queuedBytes += line.count
+        }
     }
 
     public func launch() throws {
         try lock.withLock {
             guard !launched else { throw ClusterWorkerOwnerError.invalid("Worker launched twice") }
             launched = true
+            // The launch deadline is the first grant; the first renewal falls
+            // due one interval later.
+            nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
             do { try childExit.run(process); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
@@ -201,7 +324,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             if observedExit { throw ClusterWorkerOwnerError.closed }
             if let error = lock.withLock({ fault }) { throw error }
             let now = DispatchTime.now().uptimeNanoseconds
-            if now >= lifetimeDeadline { fail(.deadline) }
+            if now >= lock.withLock({ leaseDeadline }) { fail(.deadline) }
             guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
             _ = arrivals.wait(timeout: .init(uptimeNanoseconds: min(deadline, now + 50_000_000)))
         }
@@ -223,6 +346,22 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         }
         if failure.changed { wakeup.signal() }
         arrivals.signal(); if let notify = failure.notify { notifications.async(execute: notify) }
+    }
+
+    /// Queues one rank-lease renewal when it is due. Called by the pump only;
+    /// never after a fence. The caller holds lock.
+    private func renewLeaseLocked(now: UInt64) {
+        guard launched, fault == nil, fenceAt == nil, now >= nextRenewalAt,
+              let renewal = try? ClusterWorkerLeaseRenewal(membershipEpoch: expectedIdentity.membershipEpoch,
+                  renewal: leaseRenewals + 1),
+              let bytes = try? ClusterWorkerCodec.encode(renewal) else { return }
+        // A renewal that cannot be queued is skipped; the next pass tries
+        // again. A lease the child never receives ends it at its last grant.
+        guard outgoing.count < 16, queuedBytes <= 1024 * 1024 - bytes.count else { return }
+        outgoing.append((bytes, 0, now + ClusterWorkerLease.ttlNanoseconds)); queuedBytes += bytes.count
+        leaseRenewals += 1
+        leaseDeadline = max(leaseDeadline, now + ClusterWorkerLease.ttlNanoseconds)
+        nextRenewalAt = now + ClusterWorkerLease.renewNanoseconds
     }
 
     /// All call sites hold lock. Notifications never run on the pipe pump.
@@ -267,7 +406,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         }
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
-            if now >= lifetimeDeadline { fail(.deadline) }
+            lock.withLock { renewLeaseLocked(now: now) }
+            if now >= lock.withLock({ leaseDeadline }) { fail(.deadline) }
             if lock.withLock({ readyValue == nil && fault == nil && nextEvent == 0 }) && now >= startupDeadline { fail(.deadline) }
             if lock.withLock({ fenceAt }) != nil {
                 // End of the command stream is the fence. A worker reads it as
@@ -276,7 +416,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
                 if process.isRunning {
                     // The child's own hard deadline: the last moment it has
                     // promised to still be running. No signal precedes it.
-                    let own = lock.withLock { retirement.childEndsItselfAtStartupDeadline && !readyObserved ? startupDeadline : lifetimeDeadline }
+                    let own = lock.withLock { retirement.childEndsItselfAtStartupDeadline && !readyObserved ? startupDeadline : leaseDeadline }
                     if terminateSentAt == nil, now >= own, now - own >= retirement.terminateMarginNanoseconds {
                         process.terminate(); terminateSentAt = now; lock.withLock { signals.append(SIGTERM) }
                     }
@@ -304,11 +444,21 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
                         let data = Data(bytes.prefix(count))
                         if index == 0 { for line in try decoder.append(data) { try publish(ClusterWorkerCodec.decodeEvent(line)) } }
                         else {
+                            // Diagnostics are kept as a bounded rolling tail and counted;
+                            // only a flood (more than 1 MiB within 10 s) fails the worker.
                             try lock.withLock {
-                                guard stderrBytes <= 1024 * 1024 - count else { throw ClusterWorkerOwnerError.invalid("Worker stderr exceeded bound") }
-                                stderrBytes += count; stderrTail.append(data)
+                                let now = DispatchTime.now().uptimeNanoseconds
+                                if now &- stderrWindowStart > Self.stderrFloodWindowNanoseconds {
+                                    stderrWindowStart = now; stderrWindowBytes = 0
+                                }
+                                stderrWindowBytes += count
+                                guard stderrWindowBytes <= Self.stderrFloodBytes else {
+                                    throw ClusterWorkerOwnerError.invalid("Worker stderr flood exceeded its bound")
+                                }
+                                stderrBytes = stderrBytes &+ count; stderrTail.append(data)
                                 if stderrTail.count > 65_536 { stderrTail.removeFirst(stderrTail.count - 65_536) }
                             }
+                            ClusterWorkerDiagnosticsLog.shared?.append(data)
                         }
                     } catch {
                         fail(.invalid("Invalid or excessive worker output"))

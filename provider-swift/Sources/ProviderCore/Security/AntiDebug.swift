@@ -7,7 +7,7 @@ import os
 @_silgen_name("ptrace")
 private func ptrace_raw(_ request: CInt, _ pid: pid_t, _ addr: UnsafeMutableRawPointer?, _ data: CInt) -> CInt
 
-private let antiDebugLogger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
+private let antiDebugLogger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "security")
 
 // MARK: - PT_DENY_ATTACH
 

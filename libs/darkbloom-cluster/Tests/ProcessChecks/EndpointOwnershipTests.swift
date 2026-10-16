@@ -55,7 +55,7 @@ private final class HeldProofEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         let values = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: now + 5_000_000_000, lifetimeDeadline: now + UInt64(20 + rank) * 1_000_000_000)
+                startupDeadline: now + 5_000_000_000, initialLeaseDeadline: now + UInt64(20 + rank) * 1_000_000_000)
         }
         do { for value in values { try value.launch() } }
         catch { for value in values { value.fence() }; throw error }
@@ -66,7 +66,7 @@ private final class HeldProofEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
               outputCount: 2, chunkSize: 2,
               deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000,
-              capacityLimitBytes: 1800)
+              capacityLimitBytes: 1800, sampling: nil)
     }
 
     static func awaitFact(_ message: String, _ fact: () -> Bool) async throws {

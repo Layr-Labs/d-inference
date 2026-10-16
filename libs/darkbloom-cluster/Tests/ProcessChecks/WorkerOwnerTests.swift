@@ -16,6 +16,10 @@ private final class Captured: @unchecked Sendable {
     func append(_ value: ClusterWorkerRequestEvent) { lock.withLock { values.append(value) } }
     var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id) = $0 { return id }; return nil } } }
     var clean: Bool { lock.withLock { values.contains { if case .finished = $0 { return true }; return false } } }
+    var failureText: String? { lock.withLock { values.lazy.compactMap { if case .failed(let text) = $0 { return text }; return nil }.first } }
+    var telemetry: (ClusterWorkerRequestTelemetry?, ClusterWorkerRequestTelemetry?)? {
+        lock.withLock { values.lazy.compactMap { if case .telemetry(let a, let b) = $0 { return (a, b) }; return nil }.first }
+    }
 }
 private struct Harness: Sendable {
     let workers: [ClusterWorkerProcess]
@@ -26,7 +30,7 @@ private struct Harness: Sendable {
         workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), behaviors[rank]], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: deadline, lifetimeDeadline: lifetime)
+                startupDeadline: deadline, initialLeaseDeadline: lifetime)
         }
         do { for worker in workers { try worker.launch() }; pair = try .init(workers: workers, startupDeadline: deadline) }
         catch { for worker in workers { worker.fence() }; throw error }
@@ -34,7 +38,7 @@ private struct Harness: Sendable {
     func reservation(outputs: Int = 2, stops: [Int] = [], seconds: UInt64 = 10, capacity: Int = 1800) -> ClusterWorkerReservation {
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
             outputCount: outputs, chunkSize: 2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000,
-            capacityLimitBytes: capacity)
+            capacityLimitBytes: capacity, sampling: nil)
     }
     func awaitRetirement(_ request: ClusterWorkerRequest, seconds: Double = 8) async throws {
         let end = ProcessInfo.processInfo.systemUptime + seconds
@@ -60,7 +64,8 @@ private struct Harness: Sendable {
         try progress("processLifetime"); try await processLifetime(executable)
         try progress("blockedFailureCallback"); try await blockedFailureCallback(executable)
         try progress("slowInvalidation"); try await slowInvalidation(executable)
-        print("{\"passed\":true,\"groups\":10,\"actualOwnedChildIO\":true,\"modelExecution\":false}")
+        try progress("telemetryAndDiagnostics"); try await telemetryAndDiagnostics(executable)
+        print("{\"passed\":true,\"groups\":11,\"actualOwnedChildIO\":true,\"modelExecution\":false}")
     }
     static func progress(_ group: String) throws {
         try FileHandle.standardOutput.write(contentsOf: Data(("{\"testing\":\"\(group)\"}\n").utf8))
@@ -118,6 +123,33 @@ private struct Harness: Sendable {
             try await h.finish()
         }
     }
+    /// S24: each rank's request telemetry reaches the owner's callback once,
+    /// before the finish; a worker that writes more than 1 MiB of diagnostics
+    /// slowly over a long session is not failed for it (only a flood is).
+    static func telemetryAndDiagnostics(_ executable: URL) async throws {
+        let h = try Harness(executable, behaviors: ["telemetry", "telemetry"])
+        do {
+            defer { for worker in h.workers { worker.fence() } }
+            let lease = try h.pair.reserve(requestID: UUID(), reservation: h.reservation())
+            let captured = Captured(); try lease.start { captured.append($0); return true }
+            try await h.awaitRetirement(lease); lease.releaseResources()
+            let telemetry = captured.telemetry
+            try require(captured.clean && captured.tokens == [9, 10], "Telemetry request finished cleanly")
+            try require(telemetry?.0?.handoffNanoseconds == 70_000_000 && telemetry?.1?.handoffNanoseconds == 81_000_000
+                && telemetry?.1?.mtpAccepted == 8 && telemetry?.1?.mtpDrafted == 10, "Both ranks' telemetry reached the callback")
+            try await h.finish()
+        }
+        let c = try Harness(executable, behaviors: ["chatty", "normal"], lifetimeSeconds: 40)
+        defer { for worker in c.workers { worker.fence() } }
+        let lease = try c.pair.reserve(requestID: UUID(), reservation: c.reservation(seconds: 30))
+        let captured = Captured(); try lease.start { captured.append($0); return true }
+        try progress("telemetryAndDiagnostics:chatty")
+        try await c.awaitRetirement(lease, seconds: 25); lease.releaseResources()
+        try require(captured.clean && c.pair.readiness != nil, "Slow diagnostics past 1 MiB do not fail the worker")
+        try require(c.workers[0].diagnosticBytesTotal > 1_048_576 && c.workers[0].diagnosticTail.count <= 65_536,
+            "Every diagnostic byte is counted; the tail stays bounded")
+        try await c.finish()
+    }
     static func blockedCallback(_ executable: URL) async throws {
         let h = try Harness(executable); defer { for worker in h.workers { worker.fence() } }
         let lease = try h.pair.reserve(requestID: UUID(), reservation: h.reservation()), entered = DispatchSemaphore(value: 0), leave = DispatchSemaphore(value: 0)
@@ -138,8 +170,10 @@ private struct Harness: Sendable {
         let h = try Harness(executable, behaviors: ["normal", "refuse"])
         defer { for worker in h.workers { worker.fence() } }
         try rejects { _ = try h.pair.reserve(requestID: UUID(), reservation: h.reservation()) }
-        try require(h.pair.readiness == nil, "Partial admission must quarantine the pair")
-        try require(h.workers[1].observedExit, "Failed reserve returned before its partial ownership was retired/fenced")
+        // Round 2: a rank's refusal is the request's alone. Rank 0 gave back
+        // what it had admitted; the pair is ready and both ranks still run.
+        try require(h.pair.readiness != nil, "A request-scoped refusal must not quarantine the pair")
+        try require(!h.workers[0].observedExit && !h.workers[1].observedExit, "A refusal ended a rank")
         try await h.finish()
     }
     static func asymmetricCapacity(_ executable: URL) async throws {
@@ -155,13 +189,16 @@ private struct Harness: Sendable {
         try rejects { _ = try tooSmall.pair.reserve(requestID: UUID(), reservation: tooSmall.reservation(capacity: 2100)) }
         try await tooSmall.finish()
     }
+    /// A first lease grant (1 s) that lapses before the owner's first renewal
+    /// (5 s): the owner fences each child and observes it end by itself.
+    /// There is no lifetime: an owner that renews keeps its child.
     static func processLifetime(_ executable: URL) async throws {
         let h = try Harness(executable, lifetimeSeconds: 1)
         defer { for worker in h.workers { worker.fence() } }
-        try rejects { _ = try h.pair.reserve(requestID: UUID(), reservation: h.reservation()) }
         let end = ContinuousClock.now.advanced(by: .seconds(4))
         while !h.workers.allSatisfy(\.observedExit) && ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(10)) }
-        try require(h.workers.allSatisfy(\.observedExit) && h.pair.readiness == nil, "Idle process lifetime needs independent exit observation")
+        try require(h.workers.allSatisfy(\.observedExit) && h.pair.readiness == nil, "A lapsed lease needs independent exit observation")
+        try require(h.workers.allSatisfy { $0.sentSignals.isEmpty }, "A lapsed lease ended its child with a signal")
         try await h.finish()
     }
     static func blockedFailureCallback(_ executable: URL) async throws {
@@ -169,15 +206,18 @@ private struct Harness: Sendable {
         defer { for worker in h.workers { worker.fence() } }
         let lease = try h.pair.reserve(requestID: UUID(), reservation: h.reservation())
         let entered = DispatchSemaphore(value: 0), leave = DispatchSemaphore(value: 0)
+        let cause = Captured()
         defer { leave.signal() }
         try lease.start { value in
-            if case .failed = value { entered.signal(); _ = leave.wait(timeout: .now() + 10) }
+            if case .failed = value { cause.append(value); entered.signal(); _ = leave.wait(timeout: .now() + 10) }
             return true
         }
         let began = await withCheckedContinuation { continuation in
             DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 2) == .success) }
         }
         try require(began, "Failure callback never entered")
+        // S24: the failure names its cause (the owner side's own fixed text), never a bare "failed".
+        try require(cause.failureText?.lowercased().contains("token") == true, "The failure does not name its cause: \(cause.failureText ?? "none")")
         try await h.awaitRetirement(lease)
         try require(h.workers.allSatisfy(\.observedExit), "A blocked failed callback cannot suppress real fencing")
         lease.releaseResources(); leave.signal(); try await h.finish()

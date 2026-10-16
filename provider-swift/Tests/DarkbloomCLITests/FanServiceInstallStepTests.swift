@@ -2,6 +2,7 @@ import DarkbloomFanCore
 import DarkbloomFanProtocol
 import DarkbloomFanService
 import Foundation
+import ProviderCore
 import Testing
 
 #if canImport(Darwin)
@@ -94,7 +95,7 @@ struct FanServiceInstallStepTests {
                 Issue.record("expected unsafeFile, got \(String(describing: error))")
                 continue
             }
-            #expect(detail == "Darkbloom.app fan capability marker is missing or invalid")
+            #expect(detail == "\(BuildEnvironment.current.appBundleName) fan capability marker is missing or invalid")
         }
     }
 

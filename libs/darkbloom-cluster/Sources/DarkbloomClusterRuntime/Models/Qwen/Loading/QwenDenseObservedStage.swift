@@ -39,6 +39,7 @@ enum QwenDenseObservedStageValidation {
         }
         for (actual, expected) in zip(inert, expectedInert) {
             let norm = expected.path == "model.norm" || expected.path.hasSuffix(".model.norm")
+                || expected.path == NemotronStageMetadata.finalNormPath
             guard actual.responsibility == expected.responsibility,
                   actual.replacementKind == (norm ? "parameter-only-replacement" : "module-replacement"),
                   actual.parameters.count == 1 else {
@@ -48,7 +49,7 @@ enum QwenDenseObservedStageValidation {
             guard parameter.localName == expected.path + ".weight",
                   parameter.shape == (norm ? [profile.geometry.hiddenSize] : [1, profile.geometry.hiddenSize]),
                   parameter.dtype == profile.requiredNativeDType,
-                  parameter.byteCount == profile.geometry.hiddenSize * 2 else {
+                  parameter.byteCount == profile.geometry.hiddenSize * profile.model.pack.activationElementBytes else {
                 throw ProbeError("Registered compact inactive parameter differs")
             }
         }

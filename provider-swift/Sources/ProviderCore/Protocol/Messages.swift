@@ -187,6 +187,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case attestationResponse(AttestationResponse)
     case codeAttestationResponse(CodeAttestationResponse)
     case appAttestShadow(AppAttestShadowPayload)
+    case appAttestResume(AppAttestResumeResponse)
     case loadModelStatus(LoadModelStatus)
     case modelAutopilotStatus(ModelAutopilotStatus)
     case prefetchModelStatus(PrefetchModelStatus)
@@ -233,6 +234,8 @@ public enum ProviderMessage: Sendable, Equatable {
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
         public var appAttestProtocol: Int?
+        public var appAttestResumeProtocol: Int?
+        public var appAttestResumeNonce: String?
         /// Provider-confirmed prefix-cache protocol version. Omitted by legacy
         /// providers; only version 2 carries exact, provider-proven ownership.
         public var prefixCacheProtocol: Int?
@@ -270,6 +273,8 @@ public enum ProviderMessage: Sendable, Equatable {
             toolConstraintProtocol: Int? = nil,
             toolConstraintModels: [String]? = nil,
             appAttestProtocol: Int? = nil,
+            appAttestResumeProtocol: Int? = nil,
+            appAttestResumeNonce: String? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
             autopilotInventory: [ModelInfo]? = nil,
             executionRole: ProviderExecutionRole = .solo,
@@ -300,6 +305,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
             self.appAttestProtocol = appAttestProtocol
+            self.appAttestResumeProtocol = appAttestResumeProtocol
+            self.appAttestResumeNonce = appAttestResumeNonce
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
             self.prefixCacheMemoryModels = prefixCacheMemoryModels
@@ -338,6 +345,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// dashboard) tell "unloaded on purpose, wakes on demand" apart from
         /// "should be loaded and isn't". nil/omitted from older providers.
         public var idleUnloadMins: UInt64?
+        /// S16: the coordinator-formed session this member's owner runs and
+        /// how its data plane is protected (`cluster_session`); nil while the
+        /// member runs no owner, and for every provider that is not a member.
+        public var clusterSession: ClusterSessionStatus?
 
         public init(
             status: ProviderStatus,
@@ -354,8 +365,10 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             idleUnloadMins: UInt64? = nil,
-            modelAutopilot: ModelAutopilotSnapshot? = nil
+            modelAutopilot: ModelAutopilotSnapshot? = nil,
+            clusterSession: ClusterSessionStatus? = nil
         ) {
+            self.clusterSession = clusterSession
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -885,6 +898,7 @@ extension ProviderMessage: Codable {
         case attestationResponse = "attestation_response"
         case codeAttestationResponse = "code_attestation_response"
         case appAttestShadow = "app_attest_shadow"
+        case appAttestResume = "app_attest_resume"
         case loadModelStatus = "load_model_status"
         case modelAutopilotStatus = "model_autopilot_status"
         case prefetchModelStatus = "prefetch_model_status"
@@ -920,6 +934,8 @@ extension ProviderMessage: Codable {
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
         case appAttestProtocol = "app_attest_protocol"
+        case appAttestResumeProtocol = "app_attest_resume_protocol"
+        case appAttestResumeNonce = "app_attest_resume_nonce"
         case payload
         case prefixCacheProtocol = "prefix_cache_protocol"
         case prefixCacheV2Models = "prefix_cache_v2_models"
@@ -938,6 +954,7 @@ extension ProviderMessage: Codable {
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
+        case clusterSession = "cluster_session"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -1047,6 +1064,8 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(r.apnsDeviceToken, forKey: .apnsDeviceToken)
             try container.encodeIfPresent(r.apnsEnvironment, forKey: .apnsEnvironment)
             try container.encodeIfPresent(r.appAttestProtocol, forKey: .appAttestProtocol)
+            try container.encodeIfPresent(r.appAttestResumeProtocol, forKey: .appAttestResumeProtocol)
+            try container.encodeIfPresent(r.appAttestResumeNonce, forKey: .appAttestResumeNonce)
             if let version = r.prefixCacheProtocol, version != 0 {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
@@ -1086,6 +1105,7 @@ extension ProviderMessage: Codable {
             // 0 ("always ready") is a real value and MUST reach the wire; only
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
+            try container.encodeIfPresent(h.clusterSession, forKey: .clusterSession)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1165,6 +1185,10 @@ extension ProviderMessage: Codable {
 
         case .appAttestShadow(let p):
             try container.encode(TypeValue.appAttestShadow, forKey: .type)
+            try container.encode(p, forKey: .payload)
+
+        case .appAttestResume(let p):
+            try container.encode(TypeValue.appAttestResume, forKey: .type)
             try container.encode(p, forKey: .payload)
 
         case .codeAttestationResponse(let c):
@@ -1326,6 +1350,8 @@ extension ProviderMessage: Codable {
                 toolConstraintModels: try container.decodeIfPresent(
                     [String].self, forKey: .toolConstraintModels),
                 appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol),
+                appAttestResumeProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestResumeProtocol),
+                appAttestResumeNonce: try container.decodeIfPresent(String.self, forKey: .appAttestResumeNonce),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
                 autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory),
                 executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
@@ -1356,7 +1382,8 @@ extension ProviderMessage: Codable {
                     [PrefixCacheDonationOutcomeCount].self,
                     forKey: .prefixCacheDonationOutcomes),
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
-                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot)
+                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
+                clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession)
             ))
 
         case .serviceReservationReleased:
@@ -1434,6 +1461,9 @@ extension ProviderMessage: Codable {
 
         case .appAttestShadow:
             self = .appAttestShadow(try container.decode(AppAttestShadowPayload.self, forKey: .payload))
+
+        case .appAttestResume:
+            self = .appAttestResume(try container.decode(AppAttestResumeResponse.self, forKey: .payload))
 
         case .codeAttestationResponse:
             self = .codeAttestationResponse(CodeAttestationResponse(
@@ -1582,6 +1612,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case attestationChallenge(AttestationChallenge)
     case codeAttestationResumeChallenge(CodeAttestationResumeChallenge)
     case appAttestShadow(AppAttestShadowPayload)
+    case appAttestResume(AppAttestResumeChallenge)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case modelAutopilotControl(ModelAutopilotControl)
@@ -1805,6 +1836,7 @@ extension CoordinatorMessage: Codable {
         case attestationChallenge = "attestation_challenge"
         case codeAttestationResumeChallenge = "code_attestation_resume_challenge"
         case appAttestShadow = "app_attest_shadow"
+        case appAttestResume = "app_attest_resume"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case modelAutopilotControl = "model_autopilot_control"
@@ -1894,6 +1926,10 @@ extension CoordinatorMessage: Codable {
 
         case .appAttestShadow(let p):
             try container.encode(TypeValue.appAttestShadow, forKey: .type)
+            try container.encode(p, forKey: .payload)
+
+        case .appAttestResume(let p):
+            try container.encode(TypeValue.appAttestResume, forKey: .type)
             try container.encode(p, forKey: .payload)
 
         case .codeAttestationResumeChallenge(let challenge):
@@ -2027,6 +2063,9 @@ extension CoordinatorMessage: Codable {
 
         case .appAttestShadow:
             self = .appAttestShadow(try container.decode(AppAttestShadowPayload.self, forKey: .payload))
+
+        case .appAttestResume:
+            self = .appAttestResume(try container.decode(AppAttestResumeChallenge.self, forKey: .payload))
 
         case .codeAttestationResumeChallenge:
             self = .codeAttestationResumeChallenge(

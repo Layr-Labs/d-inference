@@ -1,5 +1,10 @@
 # Runbook: two Macs
 
+> Last updated: 2026-10-14
+
+> **Bench/developer only. Product path: `darkbloom cluster`** on each Mac, pick a
+> model, done ([two-mac-cluster.md](../docs/provider/two-mac-cluster.md)).
+
 Commands in "Verified" were run here and behaved as described. Commands in
 "Not yet verified" come from reading the source and have not completed on two
 Macs. Replace placeholders in capitals; never commit real addresses.
@@ -29,10 +34,10 @@ ibv_devinfo -v -d rdma_enN | grep -c "::ffff:"   # must be 1 or more
 ```
 
 If the port is only a member of the Thunderbolt Bridge, the last command prints
-0 and JACCL refuses the device with "No IPv4-mapped GID for this device". Give
-that Thunderbolt port its own IPv4 address in System Settings → Network (or
-take it out of the bridge). This is a network setting; an administrator makes
-it, not this tooling.
+0 and JACCL refuses the device with "No IPv4-mapped GID for this device". The
+product sets the port's address itself: `darkbloom cluster` gives the port
+Darkbloom's own link service after one macOS approval. Nothing is typed in
+System Settings → Network.
 
 ## 2. Build the native products — verified on Mac A
 
@@ -91,7 +96,35 @@ version `2026-09-03-r1`, 12 files, 6,113,952,230 bytes, aggregate SHA-256
 a flat directory of real files on each Mac, owned by the user, with no symlink
 in any path component. Hugging Face cache snapshots are refused.
 
-## 5. Saved setup and serving — not yet verified end to end
+## 4b. Pair the two Macs (no SSH) — verified on the pair 2026-10-11
+
+```sh
+# On the Mac that will lead (it listens on its Thunderbolt link interface):
+darkbloom cluster pair --cluster-id my-pair
+#   prints: On the other Mac run:  darkbloom cluster pair --connect <its link address>
+# On the other Mac (it only dials):
+darkbloom cluster pair --connect <address the first Mac printed>
+```
+
+Both screens show the other Mac's attested chip, macOS and security posture and
+the same six-digit code; type `y` on each Mac when the codes match (`n` if not).
+Each Mac then pins the other's Secure Enclave key (the key its attestation is
+signed with), both countersign the cluster roster the coordinator registers
+(registration v3), and both store the key of their link control channel, in
+owner-only files under `~/.darkbloom/cluster-pairing/`. A code is valid for 10
+minutes; three failed pairings lock pairing out for 10 minutes. `darkbloom
+cluster pair --status [--json]` lists the pairings (public values only);
+`--forget PIN` unpairs. A saved roster registration starts only when every
+other member in it is a key this Mac pinned. The setup wizard's step 3 runs the
+same ceremony (`l` listens, `c` connects). A debug build without the signed
+build's keychain entitlement needs `DARKBLOOM_DEBUG_SE_KEY_FILE` so its key
+(and so the pin) survives a restart.
+
+## 5. Saved setup and serving (developer-only) — not yet verified end to end
+
+Developer-only: `darkbloom cluster` saves and syncs the setup and starts both
+Macs itself. `cluster configure` and `start --local --distributed` below are
+the manual developer route.
 
 ```sh
 # On each Mac: capability metadata from the installed worker.

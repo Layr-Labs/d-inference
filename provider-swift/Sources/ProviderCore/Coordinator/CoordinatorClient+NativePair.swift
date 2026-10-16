@@ -24,7 +24,20 @@ extension CoordinatorClient {
                   available: config.runtimeCapabilities),
               let membership = try? installation.membership,
               config.clusterMembership == membership else { throw NativePairMemberError.unconfigured }
+        adoptNativePairMember(control)
+    }
+
+    /// Makes `control` this client's member control. A change of its session's
+    /// report (its owner launched; its worker published the data plane's
+    /// protection) goes to the coordinator in a heartbeat at once: a re-formed
+    /// cluster is refused public requests until every member reported its
+    /// session encrypted and peer-verified, and the periodic interval left it
+    /// refused for up to a whole interval (integration round 4, finding 1).
+    internal func adoptNativePairMember(_ control: NativePairMemberControl) {
         nativePairMember = control
+        control.sessionStatusChanged = { [weak self] _ in
+            Task { await self?.sendEventHeartbeat() }
+        }
     }
 
     /// Called at this connection's member acceptance. The connection was built
@@ -39,9 +52,12 @@ extension CoordinatorClient {
         nativePairConnection = try nativePairMember.attach(nonce: negotiation.nonce, connection: connection)
     }
 
-    /// Every connection boundary drops the attachment. Detaching cancels the
-    /// session's native work independently of any signer or WebSocket write;
-    /// the control keeps a committed obligation it could not release.
+    /// Every connection boundary drops the attachment. A session that is not
+    /// yet established is cancelled at once, independently of any signer or
+    /// WebSocket write; an established one keeps its owner for the disconnect
+    /// grace (never past its grant lease) and is claimed again with `resume`
+    /// on the next connection. The control keeps a committed obligation it
+    /// could not release.
     internal func detachNativePairMember() {
         if let nativePairConnection { nativePairMember?.detach(nativePairConnection) }
         nativePairConnection = nil

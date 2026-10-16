@@ -1,0 +1,28 @@
+{
+  "answer": {
+    "early": "cedar-0837",
+    "late": "hazel-2651",
+    "middle": "juniper-1942"
+  },
+  "candidateArtifacts": {
+    "darkbloom": "b7c00f1dbfcba088be3c009b85f28a9a6875757561da8a6e70526c40394ee42b",
+    "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+  },
+  "candidateSourceDigest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa",
+  "commandOmitsPrecision": true,
+  "completionTokenCount": 52,
+  "exitCode": 0,
+  "expectedAnswer": {
+    "early": "cedar-0837",
+    "late": "hazel-2651",
+    "middle": "juniper-1942"
+  },
+  "finishReason": "stop",
+  "kvQuantization": "balanced",
+  "modelID": "gemma-4-26b",
+  "passed": true,
+  "rawSHA256": "db548d46c473c39769748d5a77f0ac5f1f7d8fa2c7a53496ebe933e5ece0e538",
+  "resolvedBackend": "paged",
+  "stderrSHA256": "4adea1fff5109807fe8c9f5afad69d4761caf203df33caaf163177915b2f5ddd",
+  "verifiedModelAggregateSHA256": "a4722b6020adb1894c700b45ddcd58bc0e0f033abe7139f86cbbbfe60cba4eb6"
+}

@@ -9,10 +9,11 @@
 
 import Foundation
 import MLXLMCommon
+import ProviderAppAttest
 
 public enum LaunchAgent: Sendable {
 
-    public static let label = "io.darkbloom.provider"
+    public static let label = BuildEnvironment.current.launchAgentLabel
 
     // MARK: - Paths
 
@@ -25,8 +26,8 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        LaunchctlControl.homeDirectory()
-            .appendingPathComponent(".darkbloom/provider.log")
+        BuildEnvironment.current.installDirectory(home: LaunchctlControl.homeDirectory())
+            .appendingPathComponent("provider.log")
     }
 
     // MARK: - Queries
@@ -74,7 +75,7 @@ public enum LaunchAgent: Sendable {
         public let port: UInt16
         public let bind: String
         public let noAuth: Bool
-        public init(enabled: Bool = false, port: UInt16 = 8000, bind: String = "127.0.0.1", noAuth: Bool = false) {
+        public init(enabled: Bool = false, port: UInt16 = BuildEnvironment.current.defaultLocalPort, bind: String = "127.0.0.1", noAuth: Bool = false) {
             self.enabled = enabled
             self.port = port
             self.bind = bind
@@ -86,7 +87,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String] = [],
         configPath: URL? = nil,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        clusterMember: Bool = false
     ) throws {
         // Determine the binary path (current executable)
         let binaryPath = currentExecutablePath()
@@ -101,9 +103,24 @@ public enum LaunchAgent: Sendable {
             coordinatorURL: coordinatorURL,
             models: models,
             configPath: configPath,
-            localEndpoint: localEndpoint
+            localEndpoint: localEndpoint,
+            clusterMember: clusterMember
         )
         try loadService()
+    }
+
+    /// Whether the installed provider job runs a cluster member (S18): its
+    /// supervisor owns restarts' backoff and the coordinated update, so the
+    /// watchdog must not update its binary on its own.
+    public static func installedJobIsClusterMember(at path: URL = plistPath()) -> Bool {
+        guard let data = try? Data(contentsOf: path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String] else { return false }
+        return isClusterMemberJob(arguments)
+    }
+
+    static func isClusterMemberJob(_ programArguments: [String]) -> Bool {
+        programArguments.dropFirst().contains("--cluster-member")
     }
 
     // MARK: - Stop
@@ -253,6 +270,8 @@ public enum LaunchAgent: Sendable {
     /// export that did not reach launchd would silently no-op in the normal
     /// `darkbloom start` deployment, leaving the advertised recovery lever
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
+    /// `DARKBLOOM_R2_CDN_URL`: the model CDN override. The daemon downloads and
+    /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
@@ -286,16 +305,19 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_PREFIX_CACHE_DISK_GB",
         "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
+        "DARKBLOOM_CBV2_KV_QUANTIZATION",
+        "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+        "DARKBLOOM_R2_CDN_URL",
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
     ///
-    /// One value-conditional entry rides along: the operator drain
+    /// A value-conditional entry rides along: the operator drain
     /// refinement of the expert-slice route
     /// (`GemmaOptimizationEnvironment.daemonDrainPassthrough`). Serving
     /// defaults to `trust`; launchd does not inherit the installing shell, so
@@ -310,6 +332,11 @@ public enum LaunchAgent: Sendable {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }
+        }
+        // Persist only the worker opt-in, never native diagnostic/fault flags.
+        let workerKey = AppAttestWorkerSelection.qualificationEnvironment
+        if environment[workerKey] == "1" {
+            out[workerKey] = "1"
         }
         // An explicitly empty/invalid memory policy fails toward free-only in
         // foreground mode too. Persist its canonical value instead of dropping
@@ -326,7 +353,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String],
         configPath: URL?,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        clusterMember: Bool = false
     ) throws {
         let plist = plistPath()
         let parentDir = plist.deletingLastPathComponent()
@@ -337,13 +365,15 @@ public enum LaunchAgent: Sendable {
 
         let log = logPath().path
 
-        let programArguments = serviceProgramArguments(
-            binaryPath: binaryPath,
-            coordinatorURL: coordinatorURL,
-            models: models,
-            configPath: configPath,
-            localEndpoint: localEndpoint
-        )
+        let programArguments = clusterMember
+            ? clusterMemberProgramArguments(binaryPath: binaryPath, coordinatorURL: coordinatorURL, configPath: configPath)
+            : serviceProgramArguments(
+                binaryPath: binaryPath,
+                coordinatorURL: coordinatorURL,
+                models: models,
+                configPath: configPath,
+                localEndpoint: localEndpoint
+            )
 
         let plistDict = makeServicePlist(
             label: label,
@@ -390,6 +420,18 @@ public enum LaunchAgent: Sendable {
             if localEndpoint.noAuth {
                 arguments.append("--no-auth")
             }
+        }
+        return arguments
+    }
+
+    /// The cluster-member job (S18): launchd runs the supervisor, which runs
+    /// the member. Same label, log, RunAtLoad and watchdog as a solo provider;
+    /// no model selection or local endpoint (the saved setup decides).
+    static func clusterMemberProgramArguments(binaryPath: String, coordinatorURL: String, configPath: URL?) -> [String] {
+        var arguments = [binaryPath, "start", "--foreground", "--cluster-member", "--supervise",
+                         "--coordinator-url", coordinatorURL]
+        if let configPath {
+            arguments.append(contentsOf: ["--config", configPath.standardizedFileURL.path])
         }
         return arguments
     }
@@ -556,7 +598,7 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
         case .disableFailed(let detail):
             return "launchctl disable failed (the provider may auto-start again at next login): \(detail)"
         case .notInstalled:
-            return "provider service is not installed; run `darkbloom start` first"
+            return "provider service is not installed; run `\(BuildEnvironment.current.cliName) start` first"
         }
     }
 }

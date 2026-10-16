@@ -56,20 +56,21 @@ extension QwenStagedGenerationReference {
         // As the staged reference: the artifact's own configuration selects the
         // registered model. Bytes of no registered model stop here.
         let configBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
-        let specification = try QwenResidentModelDefinition(configuration: configBytes).specification
+        let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304)
+        let specification = try RegisteredResidentModels.identity(configuration: configBytes, manifest: manifestBytes)
         let matrixPath = "/var/empty/darkbloom-staged-service.matrix.json"
         let matrix = Data(#"[[null,"staged-service-0"],["staged-service-1",null]]"#.utf8)
         let identity = ClusterWorkerIdentity(membershipEpoch: UUID(),
-            modelID: specification.model.rawValue,
+            modelID: specification.runtimeModelID,
             artifactSHA256: specification.artifactSHA256, configurationSHA256: specification.configurationSHA256,
             peers: (0...1).map { ClusterWorkerPeer(id: "staged-service-\($0)", buildSHA256: String(repeating: "0", count: 64)) })
-        let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304)
-        let admissions = try (0...1).map { rank -> QwenResidentAdmission in
+        let admissions = try (0...1).map { rank -> any LayerStageResidentAdmission in
             var environment = processEnvironment
             environment["JACCL_RANK"] = String(rank)
             environment["JACCL_IBV_DEVICES"] = matrixPath
             environment["JACCL_COORDINATOR"] = "127.0.0.1:1"
-            return try QwenResidentAdmission(configuration: .init(identity: identity, modelDirectory: modelDirectory,
+            return try LayerStageResidentFamily.admission(configuration: .init(identity: identity,
+                    modelDirectory: modelDirectory,
                     rank: rank, stageCut: stageCut, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
                     allocatorPolicy: .disableFreedBufferCache),
                 configBytes: configBytes, manifestBytes: manifestBytes, environment: environment,
@@ -87,7 +88,7 @@ extension QwenStagedGenerationReference {
         try control.check()
         try QwenResidentResourceEnvironment.require()
 
-        var stages: [QwenResidentLoadedStage] = []
+        var stages: [any LayerStageResidentStage] = []
         weak var retired0: Module?
         weak var retired1: Module?
         var sessions: [QwenLayerStageSession] = []
@@ -106,7 +107,7 @@ extension QwenStagedGenerationReference {
                 for rank in 0...1 {
                     let started = DispatchTime.now().uptimeNanoseconds
                     try autoreleasepool {
-                        let loaded = try loadQwenResidentStage(admissions[rank], check: checked)
+                        let loaded = try admissions[rank].loadResidentStage(check: checked, constructed: { _ in })
                         if rank == 0 { retired0 = loaded.loaded.model } else { retired1 = loaded.loaded.model }
                         stages.append(loaded)
                     }
@@ -125,6 +126,12 @@ extension QwenStagedGenerationReference {
                       receipts[0].sourceParameterLayoutSHA256 == receipts[1].sourceParameterLayoutSHA256 else {
                     throw ProbeError("Staged service stages did not load matching verified commitments")
                 }
+                let kvKind = try ClusterStageKVBackendKind.fromEnvironment(ProcessInfo.processInfo.environment)
+                for (rank, stage) in stages.enumerated() {
+                    try CBv2StageKVHost.install(on: stage.loaded, kind: kvKind, lanes: 1,
+                        maximumTokensPerRequest: admissions[rank].profile.maximumContextTokens,
+                        maximumChunkTokens: admissions[rank].profile.maximumChunkTokens)
+                }
                 try ready(.init(stageLoadSeconds: loadSeconds, activeBytesBefore: before,
                                 activeBytesLoaded: Memory.snapshot().activeMemory))
 
@@ -135,11 +142,11 @@ extension QwenStagedGenerationReference {
                     let request = try admissions[0].request(.init(profileID: admissions[0].profile.identifier,
                             promptTokenIDs: value.promptTokenIDs, stopTokenIDs: value.stopTokenIDs,
                             outputCount: value.outputCount, chunkSize: value.chunkSize,
-                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1),
+                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil),
                         id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
                     // Each rank's named request allowance, checked live as the worker does.
                     let allowances = try (0...1).map {
-                        try QwenResidentRequestAllowance.derive(profile: stages[$0].profile, plan: plan, rank: $0,
+                        try stages[$0].requestAllowance(plan: plan, rank: $0,
                             maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
                             bound: QwenResidentResourceEnvironment.allocationBound)
                     }
@@ -219,7 +226,7 @@ extension QwenStagedGenerationReference {
                         activeBytesDuringRequest: during, activeBytesAfterRetirement: Memory.snapshot().activeMemory))
                 }
                 let peak = Memory.snapshot().peakMemory
-                stages.removeAll()
+                for stage in stages { CBv2StageKVHost.uninstall(from: stage.loaded) }; stages.removeAll()
                 try settle()
                 Memory.clearCache()
                 try settle()
@@ -230,7 +237,7 @@ extension QwenStagedGenerationReference {
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
                 for session in sessions { try? session.cancel() }
-                sessions.removeAll(); stages.removeAll()
+                sessions.removeAll(); for stage in stages { CBv2StageKVHost.uninstall(from: stage.loaded) }; stages.removeAll()
                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
                 Memory.clearCache()
                 throw primary

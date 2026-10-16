@@ -21,7 +21,7 @@ struct QwenGenerationPrefillWindow {
     struct Commit: Equatable { let sequence: Int, committedTokens: Int }
     let promptCount: Int
     let chunkSize: Int
-    let frameCount: Int
+    private(set) var frameCount: Int
     private(set) var nextSequence = 0
     private(set) var preparing: Int?
     private(set) var prepared: Commit?
@@ -38,17 +38,35 @@ struct QwenGenerationPrefillWindow {
         }
         self.promptCount = promptCount; self.chunkSize = chunkSize
         frameCount = (promptCount - 1) / chunkSize + 1
+        frameStarts = nil; frameEnds = nil
     }
+
+    /// The window over explicit prefill frames (a planned request's reused
+    /// prefix, grid-aligned chunks and split final token): each frame's start
+    /// and end offsets, in order, contiguous and inside the prompt.
+    init(promptCount: Int, chunkSize: Int, frameStarts starts: [Int], frameEnds ends: [Int]) throws {
+        try self.init(promptCount: promptCount, chunkSize: chunkSize)
+        guard !starts.isEmpty, starts.count == ends.count, ends.last == promptCount,
+              zip(starts, ends).allSatisfy({ $0 < $1 && $0 >= 0 }),
+              zip(ends, starts.dropFirst()).allSatisfy({ $0 == $1 }) else {
+            throw ProbeError("Invalid bounded prefill window frames")
+        }
+        frameCount = starts.count; frameStarts = starts; frameEnds = ends
+    }
+    private var frameStarts: [Int]?
+    private var frameEnds: [Int]?
+    private func start(_ sequence: Int) -> Int { frameStarts.map { $0[sequence] } ?? sequence * chunkSize }
+    private func end(_ sequence: Int) -> Int { frameEnds.map { $0[sequence] } ?? min(promptCount, (sequence + 1) * chunkSize) }
     mutating func beginPreparation(sequence: Int, nativeCommittedTokens: Int) throws {
         let expected = nextSequence + (pending == nil ? 0 : 1)
         try require(sequence == expected && sequence < frameCount && preparing == nil && prepared == nil
-            && (pending == nil || sendCompleted) && nativeCommittedTokens == sequence * chunkSize,
+            && (pending == nil || sendCompleted) && nativeCommittedTokens == start(sequence),
             "Prefill preparation exceeds one slot, unsent credit or exact native frontier")
         preparing = sequence
     }
     mutating func commitPreparation(sequence: Int, nativeCommittedTokens: Int) throws {
         try require(preparing == sequence && prepared == nil
-            && nativeCommittedTokens == min(promptCount, (sequence + 1) * chunkSize),
+            && nativeCommittedTokens == end(sequence),
             "Prepared prefill commit differs from its actual frame")
         prepared = .init(sequence: sequence, committedTokens: nativeCommittedTokens); preparing = nil
         maximumPreparedBoundaries = 1

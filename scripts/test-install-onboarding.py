@@ -6,15 +6,35 @@ import subprocess
 import tempfile
 import unittest
 
+from provider_release_identity import DOCUMENT, identity
+
+DEV_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarkers"]["dev"] + "12"
+STAGING_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarkers"]["staging"] + "12"
+
 
 class InstallerOnboardingTests(unittest.TestCase):
-    def run_setup(self, version, enrolled=False, request_fails=False, interactive=False):
+    def run_setup(self, version, enrolled=False, request_fails=False, interactive=False,
+                  release="0.9.20"):
         source = (Path(__file__).resolve().parent / "install.sh").read_text()
-        start = source.index("configure_device_verification() {")
-        end = source.index("\n}\n", start) + 3
+
+        def function(name):
+            start = source.index(name + "() {")
+            return source[start:source.index("\n}\n", start) + 3]
+
+        def constant(name):
+            for line in source.splitlines():
+                if line.startswith(name + "="):
+                    return line + "\n"
+            raise AssertionError(f"{name} not found in install.sh")
+
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "calls"
-            script = source[start:end] + r'''
+            # select_provider_identity reads the designated-requirement constants
+            # to pick the per-identity signature requirement, so define them here.
+            script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
+                      + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
+                      + function("select_provider_identity")
+                      + function("configure_device_verification")) + r'''
 profiles() {
     echo profiles >> "$ONBOARDING_TRACE"
     if [ "$ONBOARDING_ENROLLED" = yes ]; then
@@ -30,6 +50,7 @@ curl() {
 mktemp() { echo "$ONBOARDING_TMP"; }
 open() { echo "open $*" >> "$ONBOARDING_TRACE"; }
 sleep() { :; }
+select_provider_identity "$ONBOARDING_RELEASE"
 configure_device_verification
 echo "next installation phase"
 '''
@@ -39,6 +60,7 @@ echo "next installation phase"
                      "INTERACTIVE": "true" if interactive else "false",
                      "COORD_URL": "https://coordinator.invalid",
                      "ONBOARDING_TRACE": str(trace), "ONBOARDING_TMP": directory,
+                     "ONBOARDING_RELEASE": release,
                      "ONBOARDING_ENROLLED": "yes" if enrolled else "no",
                      "ONBOARDING_REQUEST_FAILS": "yes" if request_fails else "no"},
                 input="", capture_output=True, text=True, check=True, timeout=5)
@@ -82,6 +104,20 @@ echo "next installation phase"
             self.assertEqual(calls, "")
             self.assertIn("no MDM profile was downloaded", output)
             self.assertLess(output.index("darkbloom login"), output.index("darkbloom enroll"))
+
+    def test_dev_release_names_the_dev_cli(self):
+        for version in ("27.0", "26.5"):
+            with self.subTest(version=version):
+                output, _ = self.run_setup(version, release=DEV_RELEASE)
+                self.assertIn(identity(DEV_RELEASE)["cliName"] + " login", output)
+                self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
+
+    def test_staging_release_names_the_staging_cli(self):
+        for version in ("27.0", "26.5"):
+            with self.subTest(version=version):
+                output, _ = self.run_setup(version, release=STAGING_RELEASE)
+                self.assertIn(identity(STAGING_RELEASE)["cliName"] + " login", output)
+                self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
 
     def test_legacy_setup_never_attempts_anonymous_enrollment_or_fallback(self):
         output, calls = self.run_setup("26.5", request_fails=True)

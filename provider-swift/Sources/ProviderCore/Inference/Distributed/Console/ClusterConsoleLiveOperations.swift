@@ -88,7 +88,7 @@ extension ClusterConsoleOperations {
             userNames: [NSUserName(), NSFullUserName()],
             hostNames: hostNames(),
             serials: machineIdentifiers(),
-            secrets: [LocalEndpoint.readToken(), AuthTokenStore.load()].compactMap { $0 })
+            secrets: [LocalEndpoint.readToken(), LocalEndpoint.existingClusterToken(), AuthTokenStore.load()].compactMap { $0 })
         var setups = [candidate?.configurationInput].compactMap { $0 }
         if let reference = try? ClusterConfigurationStore.optionalInstalledReference(providerConfiguration: providerConfiguration) {
             setups.append(URL(fileURLWithPath: reference.configuration))

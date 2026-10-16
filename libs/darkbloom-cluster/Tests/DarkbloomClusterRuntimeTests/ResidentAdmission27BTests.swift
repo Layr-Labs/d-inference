@@ -109,8 +109,8 @@ struct ResidentAdmission27BTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: large.specification)
         #expect(profile.identifier == large.profileID && profile.hiddenSize == 5120)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumPromptTokens == 8192 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 128 && profile.maximumContextTokens == 8320)
+        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
         let smallProfile = try QwenResidentAdapterDefinition.profile(specification: small.specification)
         #expect(smallProfile.identifier == QwenResidentAdapterDefinition.profileID && smallProfile.hiddenSize == 4096)
         #expect(profile.fingerprint != smallProfile.fingerprint)
@@ -119,23 +119,29 @@ struct ResidentAdmission27BTests {
     @Test func ceilingsBelongToEachRegisteredModel() throws {
         let large = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
         #expect(large.maximumManifestPayloadBytes == 16_320_415_757)
-        #expect(large.namedStateByteCeiling == 1_616_248_896 && large.maximumNamedStateBytes == 1_616_248_896)
-        // The 9B keeps the bounds it was always admitted under: nothing was raised.
+        // Each model's own estimate at its derived largest context (32,768
+        // tokens); the pinned integer at the reservation's 8,320 stays checked.
+        #expect(large.namedStateByteCeiling == 4_920_836_160 && large.maximumNamedStateBytes == 1_616_248_896)
+        // The 9B keeps its 8 GiB manifest bound; its state ceiling, too, is its
+        // own estimate at 32,768 tokens, and the 768 MiB receipt bound stays.
         let small = try QwenResidentResourceCeilings(model: .qwen35NineB)
         #expect(small.maximumManifestPayloadBytes == 8 * 1024 * 1024 * 1024)
-        #expect(small.namedStateByteCeiling == 768 * 1024 * 1024 && small.maximumNamedStateBytes == 754_188_320)
+        #expect(small.namedStateByteCeiling == 2_456_551_456 && small.maximumNamedStateBytes == 754_188_320)
         #expect(LocalCorrectnessStorage.maximumManifestPayloadBytes == 8 * 1024 * 1024 * 1024)
         #expect(QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling == 768 * 1024 * 1024)
-        // Under the 9B's ceilings the 27B is refused at both: that is why it has its own row.
+        // The 27B's estimate exceeds the 9B's ceiling: that is why each has its own row.
         let spec = try Self.specification()
         #expect(spec.manifestBytes > small.maximumManifestPayloadBytes)
-        #expect(large.maximumNamedStateBytes > small.namedStateByteCeiling)
+        #expect(large.namedStateByteCeiling > small.namedStateByteCeiling)
+        #expect(large.maximumNamedStateBytes > QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling)
         // The model's own estimate, recomputed: the registered 8,193-token
         // metadata value and the resident maximum of 8,320 tokens.
         let geometry = try spec.expectedGeometry()
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8320, chunkSize: 512)
+            .conservativeStateAndBoundaryBytes == 1_616_248_896)
+        #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 32_768, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == large.namedStateByteCeiling)
     }
 
@@ -170,12 +176,12 @@ struct ResidentAdmission27BTests {
         // A request within the profile is admitted under the 27B's profile ID only.
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1)
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
         #expect(try leader.request(reservation, id: UUID(), now: Self.now).maximumTokens == 8320)
         #expect(throws: (any Error).self, "the 9B's profile ID on a 27B admission") {
             _ = try leader.request(.init(profileID: QwenResidentAdapterDefinition.profileID,
                 promptTokenIDs: [1000], stopTokenIDs: [], outputCount: 1, chunkSize: 1,
-                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1), id: UUID(), now: Self.now)
+                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil), id: UUID(), now: Self.now)
         }
     }
 
@@ -198,7 +204,7 @@ struct ResidentAdmission27BTests {
             try Self.admit(Self.configuration(deadline: Self.now, identity: valid))
         }
         refuses("lifetime beyond the closed bound") {
-            try Self.admit(Self.configuration(deadline: Self.now + 300_000_000_001, identity: valid))
+            try Self.admit(Self.configuration(deadline: Self.now + 3_600_000_000_001, identity: valid))
         }
         refuses("duplicate peer labels") {
             try Self.admit(Self.configuration(identity: try Self.identity(peers: [
@@ -316,7 +322,7 @@ struct ResidentAdmission27BTests {
         #expect(small.runtimeModelID == "registered_qwen35_9b" && small.profile.id == QwenResidentAdapterDefinition.profileID)
         #expect(small.partitions.map { $0.stages[0].sourceLayerEnd } == [4, 8, 12, 16])
         #expect(small.partitions[0].planSHA256 == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
-        #expect(small.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff")
+        #expect(small.profileFingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
         // A configuration is never described with the other model's manifest.
         #expect(throws: (any Error).self, "27B configuration, 9B manifest") {
             _ = try QwenResidentCapabilityMetadata.describe(configuration: try Self.fixture("configuration"),

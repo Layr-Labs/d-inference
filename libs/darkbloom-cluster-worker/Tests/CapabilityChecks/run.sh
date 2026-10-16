@@ -15,7 +15,12 @@ task_sources=(
   Support/WorkerJSONScanner
   Support/BoundedProbeInput
   Models/Qwen/Metadata/QwenLayerStageMetadata
+  Models/Qwen/Metadata/QwenRoutedExpertStageMetadata
   Models/Qwen/Metadata/QwenLayerStagePlan
+  Models/Qwen/Prism/QwenPrismStageConfiguration
+  Models/Qwen/Prism/QwenRegisteredPack
+  Models/Nemotron/NemotronStageMetadata
+  Models/Nemotron/NemotronLayerStagePlan
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
   Models/Qwen/Metadata/QwenDenseProfileTypes
   Models/Qwen/Metadata/QwenDenseRegisteredSpecification
@@ -26,10 +31,31 @@ task_sources=(
   Support/CanonicalJSON
   Support/ClusterMetadataHashing
   Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment
+  Models/Qwen/Prefill/QwenResidentArithmeticPolicy
   Models/Qwen/Loading/QwenLayerStageCandidates
   Models/Qwen/Resident/QwenResidentModelDefinition
+  Models/Qwen/Resources/QwenResidentContextLimits
+  Models/Qwen/Resources/QwenResidentContextLimits+Registered
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
+  Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification
+  Models/GPTOSS/Metadata/GPTOSSLayerStagePlan
+  Models/GPTOSS/Metadata/GPTOSSStageMetadata
+  Models/GPTOSS/Metadata/GPTOSSArithmeticEnvironment
+  Models/GPTOSS/Resident/GPTOSSResidentCapabilityMetadata
+  Models/MiMo/Metadata/MiMoRegisteredSpecification
+  Models/MiMo/Metadata/MiMoLayerStagePlan
+  Models/MiMo/Metadata/MiMoArithmeticEnvironment
+  Models/MiMo/Resident/MiMoResidentCapabilityMetadata
+  Models/Metadata/ClusterResidentModelCatalog
+  Models/RegisteredResidentModels
+  Models/Gemma4/Metadata/Gemma4RegisteredSpecification
+  Models/Gemma4/Metadata/Gemma4StageGeometry
+  Models/Gemma4/Metadata/Gemma4LayerStagePlanning
+  Models/Gemma4/Model/Gemma4ArithmeticEnvironment
+  Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition
+  Models/Gemma4/Resident/Gemma4ResidentRegisteredModel
+  Models/Gemma4/Resident/Gemma4ResidentCapabilityMetadata
 )
 task_paths=()
 for task_source in "${task_sources[@]}"; do task_paths+=("$task_runtime/$task_source.swift"); done

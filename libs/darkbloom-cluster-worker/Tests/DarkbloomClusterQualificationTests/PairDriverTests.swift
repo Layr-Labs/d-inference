@@ -53,16 +53,17 @@ private final class Sides {
         return url
     }
 
-    func configuration(outputCount: Int = 5, recording: Bool = true, lifetime: Int = 30, startup: Int = 10,
+    func configuration(outputCount: Int = 5, recording: Bool = true, startup: Int = 10,
                        schedule: String = "serial_v1", progress: Int? = 60_000,
-                       keepRunFiles: Bool = true) throws -> PairConfiguration {
+                       keepRunFiles: Bool = true, localRank: Int = 0) throws -> PairConfiguration {
         let request = try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16,
             outputCount: outputCount, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "test"))
-        return try PairConfiguration(request: request, stageCut: 8, local: sides[0], remote: sides[1],
+        // Each of the two directories belongs to a rank; the local side is the one of the local rank.
+        return try PairConfiguration(request: request, stageCut: 8, local: sides[localRank], remote: sides[1 - localRank],
             remoteTransport: ["/bin/sh", "-c"], coordinator: Self.coordinator, prefillSchedule: schedule,
-            recording: recording, lifetimeSeconds: lifetime, startupSeconds: startup, requestSeconds: 10,
+            recording: recording, startupSeconds: startup, requestSeconds: 10,
             rankOneDelaySeconds: 0, progressTimeoutMilliseconds: progress, keepRunFiles: keepRunFiles,
-            sensitive: ["operator@peer-mac.example"])
+            sensitive: ["operator@peer-mac.example"], localRank: localRank)
     }
 
     func runDirectory(_ configuration: PairConfiguration, _ rank: Int) -> URL {
@@ -97,6 +98,49 @@ final class PairDriverTests: XCTestCase {
             XCTAssertEqual(rank.signalsSentByDriver, 0, file: file, line: line)
             XCTAssertEqual(rank.workerProcessesLeft, 0, file: file, line: line)
         }
+    }
+
+    func testLocalRankOneRunsRankZeroBehindTheRemoteTransportAndKeepsEverythingByRank() throws {
+        let sides = try Sides(modes: ["ok", "ok"], skews: [-90_000_000_000, 500_000_000_000])
+        let plain = try sides.configuration(), turned = try sides.configuration(localRank: 1)
+        // The default arrangement keeps its labels, identities, matrix and commands.
+        XCTAssertEqual(plain.roles, ["rank 0 local", "rank 1 remote"])
+        XCTAssertEqual(plain.peerIDs, ["rank0-local", "rank1-remote"])
+        XCTAssertEqual(plain.deviceMatrix, "[[null,\"rdma_en5\"],[\"rdma_en7\",null]]\n")
+        XCTAssertEqual(plain.command(0, script: "x y"), ["/bin/sh", "-c", "x y"])
+        XCTAssertEqual(plain.command(1, script: "x y"), ["/bin/sh", "-c", "/bin/sh -c 'x y'"])
+        // Turned round: the labels say which side held which rank, rank 0 goes
+        // through the remote transport, and the matrix is still by rank.
+        XCTAssertEqual(turned.roles, ["rank 0 remote", "rank 1 local"])
+        XCTAssertEqual(turned.peerIDs, ["rank0-remote", "rank1-local"])
+        XCTAssertEqual(turned.deviceMatrix, "[[null,\"rdma_en5\"],[\"rdma_en7\",null]]\n")
+        XCTAssertEqual(turned.command(0, script: "x y"), ["/bin/sh", "-c", "/bin/sh -c 'x y'"])
+        XCTAssertEqual(turned.command(1, script: "x y"), ["/bin/sh", "-c", "x y"])
+        XCTAssertEqual(turned.runDirectory(0), plain.runDirectory(0).replacingOccurrences(
+            of: plain.membershipEpoch.uuidString.lowercased(), with: turned.membershipEpoch.uuidString.lowercased()))
+        // With the same two sides and the ranks exchanged between them, the matrix follows the ranks.
+        var exchanged = plain; exchanged.localRank = 1
+        XCTAssertEqual(exchanged.deviceMatrix, "[[null,\"rdma_en7\"],[\"rdma_en5\",null]]\n")
+        var invalid = plain; invalid.localRank = 2
+        XCTAssertThrowsError(try invalid.validate())
+
+        let report = PairDriver(configuration: turned).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.evidence?.selectedTokenIDs, [100, 101, 102, 103, 104])
+        XCTAssertEqual(report.ranksAgreeOnTokens, true)
+        XCTAssertEqual(report.ranks.map(\.role), ["rank 0 remote", "rank 1 local"])
+        XCTAssertEqual(report.ranks.map(\.rank), [0, 1])
+        for rank in report.ranks {
+            XCTAssertTrue(rank.launched && rank.readyObserved && rank.shutdownCompleteObserved && rank.exitObserved)
+            XCTAssertEqual(rank.exitStatus, 0); XCTAssertTrue(rank.evidenceCollected)
+        }
+        // Rank 0 was started before rank 1, and each from its own side's directory.
+        XCTAssertEqual(report.ranks[0].events, ["ready", "admitted", "committedToken x5", "finished:length", "retired:clean", "shutdownComplete"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sides.runDirectory(turned, 0).appendingPathComponent("observed.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sides.runDirectory(turned, 1).appendingPathComponent("observed.json").path))
+        XCTAssertTrue(report.timing.note.contains("Rank 0 ran on the second Mac"))
+        XCTAssertFalse(PairDriver(configuration: try sides.configuration()).configuration.roles.contains("rank 0 remote"))
+        assertEndedByItself(report, sides, turned)
     }
 
     func testCompletedRunRelaysTokensCollectsBothRanksAndShutsDownCleanly() throws {
@@ -262,9 +306,10 @@ final class PairDriverTests: XCTestCase {
     }
 
     func testRefusesWhileAWorkerFromThisPathIsStillRunningAndCountsIt() throws {
-        // A first run whose rank 1 stays alive until its 10-second lifetime ends.
+        // A first run whose rank 1 ignores its input, and so its lease
+        // renewals, and stays alive until its first lease grant ends.
         let sides = try Sides(modes: ["ok", "never-ready"])
-        let first = try sides.configuration(lifetime: 10, startup: 3)
+        let first = try sides.configuration(startup: 3)
         let ended = expectation(description: "first run ended")
         let firstReport = ReportBox()
         DispatchQueue.global().async { firstReport.set(PairDriver(configuration: first).run()); ended.fulfill() }
@@ -302,32 +347,66 @@ final class PairDriverTests: XCTestCase {
         assertEndedByItself(report, sides, configuration)
     }
 
-    func testWorkerThatNeverBecomesReadyIsLeftToItsOwnLifetime() throws {
+    func testWorkerThatNeverBecomesReadyIsLeftToItsOwnLease() throws {
         let sides = try Sides(modes: ["ok", "never-ready"])
-        let configuration = try sides.configuration(lifetime: 10, startup: 3)
+        let configuration = try sides.configuration(startup: 3)
         let started = Date()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "failed")
-        XCTAssertTrue(report.failure?.contains("not ready within 3 s: rank 1 remote") == true, report.failure ?? "")
-        // It ignored its input and ended at the lifetime it was launched with.
+        // With the keyed data plane (the default) rank 0 cannot be ready
+        // either: its key exchange waits for the peer that never answers.
+        XCTAssertTrue(report.failure?.contains("not ready within 3 s: ") == true
+            && report.failure?.contains("rank 1 remote") == true, report.failure ?? "")
+        // It ignored its input, renewals included, and ended at the first
+        // lease grant it was launched with: no lifetime, only the lease.
         XCTAssertEqual(report.ranks[1].exitStatus, 124)
         XCTAssertGreaterThan(Date().timeIntervalSince(started), 8)
         XCTAssertEqual(report.ranks[0].exitStatus, 1)
         assertEndedByItself(report, sides, configuration)
     }
 
-    func testRefusedReservationStartsNothingAndBothWorkersEnd() throws {
+    func testRefusedReservationStartsNothingAndThePairShutsDownCleanly() throws {
         let sides = try Sides(modes: ["ok", "refuse"])
         let configuration = try sides.configuration()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "refused")
-        XCTAssertTrue(report.failure?.contains("rank 1 remote refused the reservation (capacity)") == true, report.failure ?? "")
+        XCTAssertTrue(report.failure?.contains("refused before it started (capacity)") == true, report.failure ?? "")
         XCTAssertEqual(report.ranks[0].admitted, true); XCTAssertEqual(report.ranks[1].admitted, false)
         XCTAssertEqual(report.ranks[1].refusal, "capacity")
-        // The admitted rank was cancelled; neither saw a start, so no token exists.
+        // The admitted rank gave its reservation back; neither saw a start, so
+        // no token exists. Only the request failed: both ranks stayed ready and
+        // ended through an acknowledged shutdown (round 2: both exited 1).
         XCTAssertFalse(report.ranks[0].events.contains { $0.hasPrefix("committedToken") })
+        XCTAssertEqual(report.ranks[0].events, ["ready", "admitted", "retired:cancelled", "shutdownComplete"])
+        XCTAssertEqual(report.ranks[1].events, ["ready", "refused:capacity", "shutdownComplete"])
+        XCTAssertEqual(report.ranks.map(\.exitStatus), [0, 0])
+        XCTAssertEqual(report.timing.refusedRequests?.map(\.refusingRanks), [[1]])
+        XCTAssertEqual(report.timing.refusedRequests?.first?.refusedUpFront, false)
         XCTAssertNil(report.evidence)
-        assertEndedByItself(report, sides, configuration)
+        XCTAssertEqual(report.noWorkerProcessLeft, true)
+        XCTAssertFalse(sides.signalled(configuration))
+    }
+
+    /// The production rule for a refusal: the request fails alone and the
+    /// same session serves the next one.
+    func testRefusedRequestLeavesThePairServingTheNextRequest() throws {
+        let sides = try Sides(modes: ["ok", "refuse-once"])
+        var configuration = try sides.configuration(outputCount: 3, recording: false)
+        configuration.followRequests = [try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...20),
+            chunkSize: 16, outputCount: 3, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "next"))]
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.timing.refusedRequests?.map(\.ordinal), [0])
+        XCTAssertEqual(report.timing.refusedRequests?.first?.reason, "capacity")
+        XCTAssertEqual(report.timing.repetitions?.count, 1)
+        XCTAssertEqual(report.timing.repetitions?.first?.promptTokens, 20)
+        XCTAssertEqual(report.timing.repetitions?.first?.tokens, 3)
+        XCTAssertEqual(report.ranks[1].events.prefix(2), ["ready", "refused:capacity"])
+        XCTAssertTrue(report.ranks[0].events.contains("retired:cancelled"))
+        XCTAssertEqual(report.ranks.map(\.exitStatus), [0, 0])
+        XCTAssertEqual(report.ranks.map(\.shutdownCompleteObserved), [true, true])
+        XCTAssertEqual(report.noWorkerProcessLeft, true)
     }
 
     func testWorkerThatExitsDuringTheRequestCancelsThePeer() throws {
@@ -388,8 +467,8 @@ final class PairDriverTests: XCTestCase {
             ("coordinator without port", changed { $0.coordinator = "10.0.0.1" }),
             ("multicast coordinator", changed { $0.coordinator = "224.0.0.1:47000" }),
             ("padded port", changed { $0.coordinator = "10.0.0.1:047000" }),
-            ("lifetime", changed { $0.lifetimeSeconds = 301 }),
-            ("startup beyond lifetime", changed { $0.startupSeconds = 31 }),
+            ("no repetitions", changed { $0.repetitions = 0 }),
+            ("startup beyond an hour", changed { $0.startupSeconds = 3601 }),
             ("schedule", changed { $0.prefillSchedule = "eager" }),
             ("progress timeout", changed { $0.progressTimeoutMilliseconds = 10 }),
             ("guard required without a timeout", changed { $0.progressTimeoutMilliseconds = nil }),
@@ -484,6 +563,29 @@ final class PairDriverTests: XCTestCase {
         assertEndedByItself(pipeline, sides, configuration)
     }
 
+    func testStageResidencyReachesBothRanksWithTheExplicitFlag() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.stageResidency = true
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+            XCTAssertEqual(environment["DARKBLOOM_CLUSTER_STAGE_RESIDENCY"], "stage_wired_residency_v1")
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            let index = try XCTUnwrap(arguments.firstIndex(of: "--qualification-switches"))
+            XCTAssertEqual(arguments[index + 1], "yes")
+        }
+        assertEndedByItself(report, sides, configuration)
+        // S00's lines are kept in reports; anything else a worker prints is not.
+        let lines = PairDriver.runtimeLines("darkbloom-forced-exit-v1 status=143 reason=signal-15 phase=claimed dead_man_ms=20000\n"
+            + "darkbloom-orphan-wired-v1 role=worker-rank-0 decision=clear wired=1 baseline=2\n"
+            + "darkbloom-stage-residency-v1 rank=0 policy=stage_wired_residency_v1 applied=3\nsomething else\n")
+        XCTAssertEqual(lines.count, 3)
+    }
+
     func testQualificationSwitchesReachOnlyTheRankTheyAreMeantFor() throws {
         let sides = try Sides(modes: ["ok", "ok"])
         var configuration = try sides.configuration(outputCount: 2)
@@ -523,6 +625,114 @@ final class PairDriverTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
         invalid = configuration; invalid.workerTransport = "tcp"
         XCTAssertThrowsError(try invalid.validate())
+        // A model with no recording runtime (MiMo) can only run a phase split as a serving run, so its
+        // hand-off fault is that run's input; still a phase split only, and never a recording run of it.
+        var serving = configuration
+        serving.request.modelID = "registered_mimo_v26_flash_mopd"
+        serving.request.profileID = "registered_mimo_v26_flash_mopd_greedy_generation_v1"
+        serving.recording = false
+        XCTAssertNoThrow(try serving.validate())
+        invalid = serving; invalid.generationMode = PairConfiguration.pipelineMode
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = serving; invalid.recording = true
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
+    // MARK: S16 data plane (the fake stands in for the pinned exchange and a refused record)
+
+    func testEncryptedDataPlaneIsTheDefaultAndBothRanksReportOnePinnedSession() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        let configuration = try sides.configuration(outputCount: 2)
+        XCTAssertEqual(configuration.dataPlane, "encrypted_v1")
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.dataPlane, "encrypted_v1")
+        XCTAssertEqual(report.encryptedDataPlane, true); XCTAssertEqual(report.peerVerified, true)
+        XCTAssertEqual(report.ranks.map(\.dataPlane), ["encrypted_v1", "encrypted_v1"])
+        XCTAssertEqual(report.ranks.map(\.peerVerified), [true, true])
+        XCTAssertNotNil(report.ranks[0].dataPlaneTranscriptSHA256)
+        XCTAssertEqual(report.ranks[0].dataPlaneTranscriptSHA256, report.ranks[1].dataPlaneTranscriptSHA256)
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            XCTAssertEqual(arguments.firstIndex(of: "--data-plane").map { arguments[$0 + 1] }, "encrypted_v1")
+            // The credential travels on the input only: never an argument or a variable.
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+            XCTAssertFalse((arguments + Array(environment.keys) + Array(environment.values)).contains { $0.contains("dataPlaneTrust") || $0.count > 200 })
+        }
+        let text = String(decoding: try QualificationReportFiles.encode(report), as: UTF8.self)
+        XCTAssertFalse(text.contains("workerSigningKey"))
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    func testAWrongPinStopsThePairBeforeReadinessAndBothRanksEnd() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.wrongPinRank = 1
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "failed")
+        XCTAssertTrue(report.failure?.contains("before the pair was ready") == true, report.failure ?? "")
+        XCTAssertEqual(report.ranks.map(\.admitted), [nil, nil])
+        XCTAssertNil(report.evidence)
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    func testATamperedRecordFailsTheRequestAndBothRanksEndByThemselves() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2, recording: false)
+        configuration.tamperRank = 0; configuration.tamperValue = "residualPayload:1"
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "failed")
+        XCTAssertEqual(report.ranks[1].events.last, "failed:runtimeError")
+        XCTAssertEqual(report.ranks[1].exitStatus, 1)
+        XCTAssertEqual(report.ranks[0].exitStatus, 1)
+        let observed = try sides.observed(configuration, 0)
+        let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+        XCTAssertEqual(environment["DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"], "residualPayload:1")
+        XCTAssertNil((try sides.observed(configuration, 1)["environment"] as? [String: String])?["DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"])
+        assertEndedByItself(report, sides, configuration)
+        var invalid = configuration
+        invalid.dataPlane = "plaintext"
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.tamperValue = "residualPayload:1; id"
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
+    func testAShortRekeyIntervalReachesBothRanksAsAQualificationSwitch() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2, recording: false)
+        configuration.rekeyRecords = 64
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+            XCTAssertEqual(environment["DARKBLOOM_CLUSTER_QUALIFICATION_REKEY"], "records:64")
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            XCTAssertEqual(arguments.firstIndex(of: "--qualification-switches").map { arguments[$0 + 1] }, "yes")
+        }
+        assertEndedByItself(report, sides, configuration)
+        var invalid = configuration
+        invalid.dataPlane = "plaintext"
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.rekeyRecords = 1
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.rekeyRecords = 262_145
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
+    func testThePlaintextDataPlaneRemainsForTheOverheadComparison() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.dataPlane = "plaintext"
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.dataPlane, "plaintext"); XCTAssertNil(report.encryptedDataPlane)
+        XCTAssertFalse((try sides.observed(configuration, 0)["arguments"] as? [String] ?? []).contains("--data-plane"))
+        assertEndedByItself(report, sides, configuration)
     }
 
     func testOwnerStopIsAServingPathInputWithinTheOutputLimit() throws {
@@ -576,7 +786,10 @@ final class PairDriverTests: XCTestCase {
         var recording = try sides.configuration()
         recording.repetitions = 2
         XCTAssertThrowsError(try recording.validate())
-        recording.repetitions = 9; recording.recording = false
+        // A serving run has no session limit: hundreds of requests are one run.
+        recording.repetitions = 300; recording.recording = false
+        XCTAssertNoThrow(try recording.validate())
+        recording.repetitions = PairConfiguration.maximumRepetitions + 1
         XCTAssertThrowsError(try recording.validate())
     }
 
@@ -595,6 +808,39 @@ final class PairDriverTests: XCTestCase {
         XCTAssertEqual(lines[2], "darkbloom-resident-release-v1 rank=1 active=4024 cache=0")
         // A line that carries anything but lowercase names, digits and '=' is free text, and is redacted elsewhere.
         XCTAssertFalse(lines.contains { $0.contains("10.0.0.2") })
+    }
+
+    /// S16: each rank's last status line; what one sealed the other opened.
+    func testDataPlaneStatusLinesAgreeOnlyWhenEveryRecordWasOpened() {
+        let rank0 = ["darkbloom-data-plane-status-v1 rank=0 active=1 sealed_records=40 opened_records=30 sealed_bytes=900 "
+                + "opened_bytes=70 send_generation=0 receive_generation=0",
+            "darkbloom-data-plane-status-v1 rank=0 active=1 sealed_records=435 opened_records=356 sealed_bytes=67731754 "
+                + "opened_bytes=91354 send_generation=6 receive_generation=5"]
+        let rank1 = ["darkbloom-resident-release-v1 rank=1 active=4024 cache=0",
+            "darkbloom-data-plane-status-v1 rank=1 active=1 sealed_records=356 opened_records=435 sealed_bytes=91354 "
+                + "opened_bytes=67731754 send_generation=5 receive_generation=6"]
+        XCTAssertEqual(PairDriver.runtimeLines((rank0 + rank1).joined(separator: "\n")).count, 4)
+        let agreed = PairDriver.dataPlaneRecordAgreement([rank0, rank1])
+        XCTAssertEqual(agreed?.agree, true); XCTAssertEqual(agreed?.rotations, 11)
+        // A record sealed and never opened, or a generation the peer did not follow.
+        let lost = rank1.map { $0.replacingOccurrences(of: "opened_records=435", with: "opened_records=434") }
+        XCTAssertEqual(PairDriver.dataPlaneRecordAgreement([rank0, lost])?.agree, false)
+        let behind = rank1.map { $0.replacingOccurrences(of: "receive_generation=6", with: "receive_generation=5") }
+        XCTAssertEqual(PairDriver.dataPlaneRecordAgreement([rank0, behind])?.agree, false)
+        let poisoned = rank1.map { $0.replacingOccurrences(of: "active=1", with: "active=0") }
+        XCTAssertEqual(PairDriver.dataPlaneRecordAgreement([rank0, poisoned])?.agree, false)
+        // Nothing to compare: a plaintext plane, one rank without a line, the ranks swapped, a malformed field.
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([[], []]))
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([rank0, [rank1[0]]]))
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([rank1, rank0]))
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([rank0, rank1.map { $0.replacingOccurrences(of: "sealed_bytes=91354", with: "sealed_bytes=x") }]))
+    }
+
+    func testMiMoStepLinesAreKeptVerbatim() {
+        let step = "darkbloom-mimo-step-v1 rank=1 i=28 boundary=abababababababab row=cdcdcdcdcdcdcdcd "
+            + "dtype=bfloat16 top=279_41bc0000_264_41bb0000_11_41ba0000_7_41b90000"
+        let lines = PairDriver.runtimeLines(step + "\ndarkbloom-mimo-step-v1 rank=1 i=29 top=1.5\n")
+        XCTAssertEqual(lines, [step])
     }
 
     /// A shell script stands in for `darkbloom-cluster-reference --serve yes`:
@@ -680,5 +926,16 @@ final class PairDriverTests: XCTestCase {
         XCTAssertEqual(failed.outcome, "failed"); XCTAssertNil(failed.readySeconds)
         XCTAssertThrowsError(try SoloConfiguration(request: missing.request, stageCut: 5, modelDirectory: "/m", servicePath: "/s",
             transport: ["/bin/sh", "-c"], remote: false))
+    }
+}
+
+final class PairTelemetryLineTests: XCTestCase {
+    func testTelemetryLineCarriesEveryFigureAndMarksMissingOnes() {
+        let full = ClusterWorkerRequestTelemetry(handoffNanoseconds: 81_000_000, handoffBytes: 4_194_304, mtpDrafted: 40,
+                                                 mtpAccepted: 31, prefillNanoseconds: 512_000_000)
+        XCTAssertEqual(PairWorkerEndpoint.telemetryLine(full),
+                       "requestTelemetry:handoffNs=81000000:handoffBytes=4194304:mtpAccepted=31:mtpDrafted=40:prefillNs=512000000")
+        XCTAssertEqual(PairWorkerEndpoint.telemetryLine(ClusterWorkerRequestTelemetry(prefillNanoseconds: 7)),
+                       "requestTelemetry:handoffNs=-:handoffBytes=-:mtpAccepted=-:mtpDrafted=-:prefillNs=7")
     }
 }

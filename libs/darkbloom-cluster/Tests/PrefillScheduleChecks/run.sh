@@ -24,6 +24,10 @@ xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloom
 xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterBootstrap \
   -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
   "$task_package"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
+# The worker's bootstrap configuration parses the committed native start (S07).
+xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterSecurity \
+  -emit-module-path "$task_build/DarkbloomClusterSecurity.swiftmodule" "${task_links[@]}" -lDarkbloomClusterBootstrap \
+  "$task_package"/Sources/DarkbloomClusterSecurity/*.swift -o "$task_build/libDarkbloomClusterSecurity.dylib"
 # The worker configuration checks its model ID and cut against the closed
 # catalog, so the stand-in runtime carries that catalog's actual pure source
 # closure (the one the capability checks compile); no MLX/Cmlx, no model.
@@ -31,8 +35,16 @@ task_catalog=(
   Support/WorkerJSONScanner
   Support/BoundedProbeInput
   Models/Qwen/Metadata/QwenLayerStageMetadata
+  Models/Qwen/Metadata/QwenRoutedExpertStageMetadata
   Models/Qwen/Metadata/QwenLayerStagePlan
+  Models/Qwen/Prism/QwenPrismStageConfiguration
+  Models/Qwen/Prism/QwenRegisteredPack
+  Models/Nemotron/NemotronStageMetadata
+  Models/Nemotron/NemotronLayerStagePlan
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
+  Models/PipelineSpeculativeRoundTerms
+  Models/Qwen/Generation/QwenResidentGenerationMode
+  Models/Qwen/MTP/QwenMTPTerms
   Models/Qwen/Metadata/QwenDenseProfileTypes
   Models/Qwen/Metadata/QwenDenseRegisteredSpecification
   Models/Qwen/Generation/QwenLayerStageGenerationRequest
@@ -42,18 +54,39 @@ task_catalog=(
   Support/CanonicalJSON
   Support/ClusterMetadataHashing
   Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment
+  Models/Qwen/Prefill/QwenResidentArithmeticPolicy
   Models/Qwen/Loading/QwenLayerStageCandidates
   Models/Qwen/Resident/QwenResidentModelDefinition
+  Models/Qwen/Resources/QwenResidentContextLimits
+  Models/Qwen/Resources/QwenResidentContextLimits+Registered
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
+  Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification
+  Models/GPTOSS/Metadata/GPTOSSLayerStagePlan
+  Models/GPTOSS/Metadata/GPTOSSStageMetadata
+  Models/GPTOSS/Metadata/GPTOSSArithmeticEnvironment
+  Models/GPTOSS/Resident/GPTOSSResidentCapabilityMetadata
+  Models/MiMo/Metadata/MiMoRegisteredSpecification
+  Models/MiMo/Metadata/MiMoLayerStagePlan
+  Models/MiMo/Metadata/MiMoArithmeticEnvironment
+  Models/MiMo/Resident/MiMoResidentCapabilityMetadata
+  Models/Metadata/ClusterResidentModelCatalog
+  Models/RegisteredResidentModels
+  Models/Gemma4/Metadata/Gemma4RegisteredSpecification
+  Models/Gemma4/Metadata/Gemma4StageGeometry
+  Models/Gemma4/Metadata/Gemma4LayerStagePlanning
+  Models/Gemma4/Model/Gemma4ArithmeticEnvironment
+  Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition
+  Models/Gemma4/Resident/Gemma4ResidentRegisteredModel
+  Models/Gemma4/Resident/Gemma4ResidentCapabilityMetadata
 )
 task_catalog_paths=()
 for task_source in "${task_catalog[@]}"; do task_catalog_paths+=("$task_runtime/$task_source.swift"); done
 xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterRuntime \
   -emit-module-path "$task_build/DarkbloomClusterRuntime.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
-  "$task_bootstrap_tests/LoadConfiguration.swift" "${task_catalog_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
+  "$task_bootstrap_tests/LoadConfiguration.swift" "$task_runtime/Support/ClusterLeaseDeadline.swift" "${task_catalog_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" \
-  -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap \
+  -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity \
   "$task_worker/Startup/WorkerConfiguration.swift" "$task_worker/Startup/WorkerBootstrapConfiguration.swift" \
   "$task_bootstrap_tests/WorkerBootstrapAdmissionCheck.swift" -o "$task_build/worker-check"
 "$task_build/worker-check"

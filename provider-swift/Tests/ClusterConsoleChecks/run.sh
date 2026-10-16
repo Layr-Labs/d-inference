@@ -14,6 +14,8 @@ task_target="$(uname -m)-apple-macos14.0"
 task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")
 task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
 
+# The installed contract is built with DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS: a fixture's own files stand for the
+# registered artifact its model's qualification records ran (never in a product build).
 build_module() {
   local task_name="$1"
   shift
@@ -22,7 +24,8 @@ build_module() {
     DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
     DarkbloomClusterSecurity) task_dependencies+=(-lDarkbloomClusterBootstrap) ;;
     DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity) ;;
-    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation) ;;
+    DarkbloomClusterPlacement) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
+    InstalledContract) task_dependencies+=(-D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
   esac
   xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
     -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
@@ -31,15 +34,23 @@ build_module() {
     -Xlinker -install_name -Xlinker "@rpath/lib$task_name.dylib"
 }
 
-# The live operations file is the one console source that needs the whole
-# provider (the doctor, the provider configuration reader, the local endpoint
-# token); the full Provider suite compiles it. Everything else is built here.
+# The two live operations files (the console's and the setup wizard's) are the
+# console sources that need the whole provider (the doctor, the provider
+# configuration reader and writer, the local endpoint token); the full Provider
+# suite compiles them. Everything else is built here.
 task_console=()
 for task_source in "$task_sources"/Inference/Distributed/Console/*.swift; do
-  [[ "$(basename "$task_source")" == "ClusterConsoleLiveOperations.swift" ]] || task_console+=("$task_source")
+  case "$(basename "$task_source")" in
+    ClusterConsoleLiveOperations.swift|ClusterSetupWizardLiveOperations.swift) ;;
+    *) task_console+=("$task_source") ;;
+  esac
 done
+# The setup record keeps the derived control leader (pure, Foundation only).
+task_console+=("$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift"
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift")
 
 build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
+build_module DarkbloomClusterPlacement "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift
 build_module DarkbloomClusterBootstrap "$task_cluster"/Sources/DarkbloomClusterBootstrap/*.swift
 build_module DarkbloomClusterSecurity "$task_cluster"/Sources/DarkbloomClusterSecurity/*.swift
 build_module DarkbloomClusterProcess "$task_cluster"/Sources/DarkbloomClusterProcess/*.swift
@@ -52,8 +63,11 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Config/ClusterNativeMemberAttachment.swift" \
+  "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
+  "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
+  "$task_sources/Coordinator/NativePairMemberServing.swift" "$task_fixtures/AttestationSignerStandIn.swift" \
+  "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
   "$task_sources/Config/ClusterGenerationSelection.swift" \
   "$task_sources/Config/ClusterCapabilityRecord.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
@@ -62,6 +76,11 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "$task_sources/Protocol/ProviderExecutionRole.swift" \
+  "$task_sources"/Inference/Distributed/LinkControl/*.swift \
+  "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
+  "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift \
@@ -71,21 +90,24 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterInstalledMetadataChecks.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift \
-  "${task_console[@]}"
+  "${task_console[@]}" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioningLink.swift"
 
-task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
+task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
 for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker ConsoleSessionStandIn ClusterConsoleCheck; do
+  task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
-    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
+    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE) ;;
     # The stand-in for `darkbloom start --local --distributed`: the real
     # installed session over the fabricated owner and worker children.
     ConsoleSessionStandIn) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_checks/StandIn/ConsoleSessionStandIn.swift") ;;
     ClusterConsoleCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_checks"/*.swift) ;;
   esac
-  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
+  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
 done
 

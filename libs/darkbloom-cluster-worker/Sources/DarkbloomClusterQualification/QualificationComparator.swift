@@ -79,10 +79,14 @@ public struct QualificationComparator: Sendable {
     public var nearTieULPs: Float
     public var allowCutDifference: Bool
     public var allowScheduleDifference: Bool
+    /// Profiles that differ only in their limits (the long-context profiles
+    /// against a reference recorded under the earlier 8,192-token reservation).
+    public var allowProfileDifference: Bool
 
-    public init(nearTieULPs: Float = 4, allowCutDifference: Bool = false, allowScheduleDifference: Bool = false) {
+    public init(nearTieULPs: Float = 4, allowCutDifference: Bool = false, allowScheduleDifference: Bool = false,
+                allowProfileDifference: Bool = false) {
         self.nearTieULPs = nearTieULPs; self.allowCutDifference = allowCutDifference
-        self.allowScheduleDifference = allowScheduleDifference
+        self.allowScheduleDifference = allowScheduleDifference; self.allowProfileDifference = allowProfileDifference
     }
 
     /// Spacing of adjacent representable values at `value` for a row dtype.
@@ -100,7 +104,8 @@ public struct QualificationComparator: Sendable {
 
     public func compare(reference: QualificationSubject, candidate: QualificationSubject) throws -> QualificationComparison {
         let identity = reference.identity.differences(from: candidate.identity, allowCutDifference: allowCutDifference,
-                                                      allowScheduleDifference: allowScheduleDifference)
+                                                      allowScheduleDifference: allowScheduleDifference,
+                                                      allowProfileDifference: allowProfileDifference)
         let a = reference.evidence, b = candidate.evidence
         let prefix = zip(a.selectedTokenIDs, b.selectedTokenIDs).prefix { $0 == $1 }.count
         let countsEqual = a.selectedTokenIDs.count == b.selectedTokenIDs.count
@@ -115,6 +120,9 @@ public struct QualificationComparator: Sendable {
             committedTokensEqual: zipOptional(a.committedTokens, b.committedTokens).map { $0 == $1 })
         if allowCutDifference && reference.identity.stageCut != candidate.identity.stageCut {
             result.reasons.append("stage cuts differ (\(reference.identity.stageCut) and \(candidate.identity.stageCut)) and were allowed to")
+        }
+        if allowProfileDifference && reference.identity.profileFingerprint != candidate.identity.profileFingerprint {
+            result.reasons.append("profile fingerprints differ (limits only: same model, profile, tokens, chunk, outputs and stops) and were allowed to")
         }
         if allowScheduleDifference && reference.identity.prefillSchedule != candidate.identity.prefillSchedule {
             result.reasons.append("prefill schedules differ (\(reference.identity.prefillSchedule) and \(candidate.identity.prefillSchedule)) and were allowed to")
@@ -148,11 +156,29 @@ public struct QualificationComparator: Sendable {
             }
             return result
         }
-        guard result.completedFramesEqual != false, result.committedTokensEqual != false else {
-            result.reasons.append("tokens are equal but the frame count or committed frontier differs")
-            return result
+        if result.completedFramesEqual == false, result.committedTokensEqual != false,
+           let framing = prefillFramingExplains(reference: reference, candidate: candidate) {
+            // Same request, same tokens, same committed frontier: the frames
+            // differ only in how the prompt was framed, which each run's own
+            // recorded prefix plan accounts for exactly (the prefix cache runs
+            // the last prompt token alone; a restored prefix is not prefilled).
+            result.reasons.append(framing)
+        } else {
+            guard result.completedFramesEqual != false, result.committedTokensEqual != false else {
+                result.reasons.append("tokens are equal but the frame count or committed frontier differs")
+                return result
+            }
         }
         guard let logits = result.logits else {
+            // Without a final row, a run whose every selected row carries its
+            // native bytes' digest (MiMo's step evidence) is told apart by those:
+            // equal digests on every row are an exact run.
+            if let rows = Self.stepRowsEqual(a, b) {
+                result.verdict = rows.equal ? .exact : .tokensEqualLogitsDiffer
+                result.reasons.append("no final row: the digests of all \(rows.compared) selected rows were compared"
+                    + (rows.equal ? " and are equal" : "; the first that differs is at index \(rows.firstDifferent ?? 0)"))
+                return result
+            }
             result.reasons.append("all \(prefix) tokens are equal, but \(result.logitsNotCompared!), so exact and tokensEqualLogitsDiffer cannot be told apart")
             return result
         }
@@ -165,6 +191,49 @@ public struct QualificationComparator: Sendable {
             if logits.bytesEqual { result.reasons.append("the final row is bit-identical but \(result.state!.differingEntries.count) state entries differ") }
         }
         return result
+    }
+
+    /// A note when each run's frame count is exactly its own prefill framing
+    /// (its recorded prefix plan, or fixed chunks from zero without one) plus
+    /// one decode frame per token after the first, and the two framings
+    /// differ; nil otherwise.
+    func prefillFramingExplains(reference: QualificationSubject, candidate: QualificationSubject) -> String? {
+        let prompt = reference.identity.promptTokenCount, chunk = reference.identity.chunkSize
+        guard prompt == candidate.identity.promptTokenCount, chunk == candidate.identity.chunkSize,
+              reference.evidence.selectedTokenIDs.count == candidate.evidence.selectedTokenIDs.count,
+              !reference.evidence.selectedTokenIDs.isEmpty else { return nil }
+        let decodeFrames = reference.evidence.selectedTokenIDs.count - 1
+        func framing(_ subject: QualificationSubject) -> (frames: Int, label: String)? {
+            let plan = subject.evidence.prefillPlan ?? .init(reusedPromptTokens: 0, splitFinalPromptToken: false)
+            guard let prefill = plan.prefillFrames(prompt: prompt, chunk: chunk),
+                  subject.evidence.completedFrames == prefill + decodeFrames else { return nil }
+            let label = subject.evidence.prefillPlan == nil ? "fixed chunks" : (plan.splitFinalPromptToken
+                ? "prefix cache: \(plan.reusedPromptTokens) reused, last prompt token alone" : "prefix cache: \(plan.reusedPromptTokens) reused")
+            return (prefill, label)
+        }
+        guard let a = framing(reference), let b = framing(candidate), a.frames != b.frames else { return nil }
+        return "the prompt was framed differently (reference \(a.frames) prefill frames, \(a.label); candidate "
+            + "\(b.frames), \(b.label)); tokens and the committed frontier are equal, so the frame counts are compared "
+            + "through each run's own framing"
+    }
+
+    /// Row digests both runs recorded for every selected token, compared on
+    /// the characters both carry (at least 16: a runtime line keeps 64 bits).
+    /// Nil unless each side has exactly one step per selected token, in order.
+    static func stepRowsEqual(_ a: QualificationEvidence, _ b: QualificationEvidence)
+        -> (equal: Bool, compared: Int, firstDifferent: Int?)? {
+        guard let x = a.steps, let y = b.steps, !a.selectedTokenIDs.isEmpty,
+              a.selectedTokenIDs == b.selectedTokenIDs else { return nil }
+        let count = a.selectedTokenIDs.count
+        guard x.map(\.ordinal) == Array(0..<count), y.map(\.ordinal) == Array(0..<count) else { return nil }
+        var first: Int?
+        for index in 0..<count {
+            let left = x[index].rowSHA256.lowercased(), right = y[index].rowSHA256.lowercased()
+            let shared = min(left.count, right.count)
+            guard shared >= 16, left.allSatisfy(\.isHexDigit), right.allSatisfy(\.isHexDigit) else { return nil }
+            if first == nil, left.prefix(shared) != right.prefix(shared) { first = index }
+        }
+        return (first == nil, count, first)
     }
 
     private func zipOptional<T>(_ a: T?, _ b: T?) -> (T, T)? {
@@ -224,7 +293,7 @@ public struct QualificationComparator: Sendable {
         detail.referenceTop1Logit = step.topLogits[0]
         detail.referenceTop2TokenID = step.topTokenIDs[1]
         detail.referenceTop1Top2Margin = step.topLogits[0] - step.topLogits[1]
-        let dtype = reference.finalLogits?.dtype ?? "bfloat16"
+        let dtype = step.rowDType ?? reference.finalLogits?.dtype ?? "bfloat16"
         detail.ulpAtTop1 = Self.unitInLastPlace(of: step.topLogits[0], dtype: dtype)
         guard let token = detail.candidateTokenID, let rank = step.topTokenIDs.firstIndex(of: token) else { return detail }
         let gap = step.topLogits[0] - step.topLogits[rank]

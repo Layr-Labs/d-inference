@@ -11,6 +11,10 @@ import Foundation
 /// its environment carries one: a switch is never silently ignored, and never
 /// silently obeyed.
 ///
+/// `DARKBLOOM_CLUSTER_STAGE_RESIDENCY=stage_wired_residency_v1` asks the worker
+/// to hold a standing MLX wired limit for its loaded stage (S00's measurement of
+/// whether dense stages should hold one between requests, as MiMo does).
+///
 /// `DARKBLOOM_CLUSTER_GENERATION_MODE` was how a launcher declared the mode
 /// before the worker had `--generation-mode`. It is refused always, so that a
 /// launcher still using it cannot believe it declared a mode it did not.
@@ -21,6 +25,17 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
     public static let transportEnvironmentName = "DARKBLOOM_CLUSTER_TRANSPORT"
     public static let faultEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
     public static let retiredGenerationModeEnvironmentName = "DARKBLOOM_CLUSTER_GENERATION_MODE"
+    /// `measure` records what the host memory gate would have refused for
+    /// admissible memory alone instead of enforcing it; see
+    /// `QwenDenseStageLoadMeasurement`. Spelled out here so this file still
+    /// compiles without the rest of the runtime.
+    public static let memoryGateEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE"
+    public static let stageResidencyEnvironmentName = "DARKBLOOM_CLUSTER_STAGE_RESIDENCY"
+    /// One flipped ciphertext byte on the keyed data plane (S16); the peer must refuse it.
+    public static let tamperEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"
+    /// A short rekey interval on the keyed data plane (S16), to cross key generations in one request.
+    public static let rekeyEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_REKEY"
+    public static let stageResidencyValue = "stage_wired_residency_v1"
     /// The worker argument that permits the two switches, with the value `yes`.
     public static let permittingArgument = "--qualification-switches"
 
@@ -38,9 +53,24 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
                 + "declare the mode with the worker's --generation-mode argument")
         }
         guard !permitted else { return }
-        for name in [Self.transportEnvironmentName, Self.faultEnvironmentName] where environment[name] != nil {
+        for name in [Self.transportEnvironmentName, Self.faultEnvironmentName, Self.memoryGateEnvironmentName,
+                     Self.stageResidencyEnvironmentName, Self.tamperEnvironmentName, Self.rekeyEnvironmentName]
+            where environment[name] != nil {
             throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(Self.permittingArgument) yes; it is refused, not ignored")
         }
+    }
+
+    /// Whether a permitted caller asked for a standing stage residency. Any
+    /// value other than the one policy name is refused, never ignored.
+    public func stageResidencyRequested(environment: [String: String]) throws -> Bool {
+        guard let value = environment[Self.stageResidencyEnvironmentName] else { return false }
+        guard permitted else {
+            throw ProbeError("\(Self.stageResidencyEnvironmentName) is a qualification switch; it is refused, not ignored")
+        }
+        guard value == Self.stageResidencyValue else {
+            throw ProbeError("\(Self.stageResidencyEnvironmentName) takes only \(Self.stageResidencyValue)")
+        }
+        return true
     }
 }

@@ -4,7 +4,7 @@ import ProviderCore
 
 extension Cluster {
     /// Registered by adding `Console.self` to `Cluster.configuration.subcommands`.
-    /// Bare `darkbloom cluster` in a terminal opens it too; see `replacesGuidedSetup`.
+    /// Developer screen (hidden); `darkbloom cluster` runs the onboarding.
     struct Console: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "console",
             abstract: "Show this Mac's cluster readiness, pairing, model and session on one screen, and run the cluster commands from it.",
@@ -14,11 +14,10 @@ extension Cluster {
                 address and installs the system job that keeps it, a is `cluster configure` on the \
                 setup passed with --input, s is `start --local --distributed`, x interrupts the session this screen \
                 started, c is `cluster recover`, and e writes a redacted diagnostics file into the current \
-                directory. Nothing is trusted, started or cleared without a key. The one exception is the link: \
-                when the port only lacks an address, or nothing keeps the one it has, opening the screen asks \
-                macOS for approval once, as the guided setup does. With --json or --plain, or when not run in a \
-                terminal, the same state is printed and the command exits.
-                """)
+                directory. Nothing is trusted, started, cleared or changed without a key, the link included. This is a \
+                developer screen: `darkbloom cluster` is the user's one command. With --json or --plain, or when \
+                not run in a terminal, the same state is printed and the command exits.
+                """, shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
         @Flag(help: "Print the state as one JSON object and exit.") var json = false
         @Flag(help: "Print the state as text and exit.") var plain = false
@@ -48,16 +47,7 @@ extension Cluster {
             }
         }
 
-        mutating func run() async throws { try await run(asGuidedSetup: false) }
-
-        /// Bare `darkbloom cluster` in a terminal: the same screen, ending as
-        /// the guided setup ends, with a failure status unless the link is ready.
-        static func runAsGuidedSetup() async throws {
-            let console = try Console.parse([])
-            try await console.run(asGuidedSetup: true)
-        }
-
-        private func run(asGuidedSetup: Bool) async throws {
+        mutating func run() async throws {
             Darkbloom.ensureLogging()
             let providerPath = try configOptions.config ?? ConfigManager.defaultConfigPath().path
             var candidate: ClusterConsoleCandidate?
@@ -65,7 +55,8 @@ extension Cluster {
                 candidate = .init(configurationInput: try Self.absolute(input), capabilityInput: try Self.absolute(capability),
                     capabilitySHA256: capabilitySHA256)
             }
-            let options = ClusterConsoleState.Options(dryRun: dryRun, temporary: temporary)
+            // The link fix runs only when asked for with f: never on opening.
+            let options = ClusterConsoleState.Options(dryRun: dryRun, temporary: temporary, onboarding: false)
             let operations = try ClusterConsoleOperations.live(.init(
                 providerConfiguration: try Self.absolute(providerPath), candidate: candidate,
                 darkbloomExecutable: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]),
@@ -99,16 +90,6 @@ extension Cluster {
             withExtendedLifetime(instance) {}
             for line in exit.farewell { print(line) }
             if exit.code != 0 { throw ExitCode(exit.code) }
-            // The guided setup's status says whether the link is ready, so a
-            // command chained after `darkbloom cluster` does not run on a
-            // link that is not. It is read once more, now, not remembered.
-            if asGuidedSetup {
-                let link = try await Self.onOwnThread { operations.inspectLink() }
-                if link.state != .ready {
-                    print("This Mac's link is not ready (\(link.state.rawValue)); `darkbloom cluster link` shows it.")
-                    throw ExitCode.failure
-                }
-            }
         }
 
         /// A line on standard error that cannot raise when the terminal has
@@ -137,18 +118,6 @@ extension Cluster {
         static func drawsScreens(_ terminalType: String?) -> Bool {
             guard let terminalType, !terminalType.isEmpty else { return false }
             return terminalType != "dumb" && terminalType != "unknown"
-        }
-
-        /// Whether bare `darkbloom cluster` opens the console instead of the
-        /// line-by-line guided setup. Only in a terminal, and only when none
-        /// of the setup's own flags was given: with any of them, and as
-        /// `darkbloom cluster setup`, it is always the line-by-line flow; so it
-        /// is on a terminal that cannot draw a screen.
-        /// `setup` takes no values, so the word can only be the subcommand's name.
-        static func replacesGuidedSetup(arguments: [String], json: Bool, yes: Bool, temporary: Bool, dryRun: Bool,
-                                        inputIsTerminal: Bool, outputIsTerminal: Bool, terminalType: String?) -> Bool {
-            !json && !yes && !temporary && !dryRun && inputIsTerminal && outputIsTerminal && drawsScreens(terminalType)
-                && !arguments.dropFirst().contains("setup")
         }
 
         private static func absolute(_ path: String) throws -> URL {

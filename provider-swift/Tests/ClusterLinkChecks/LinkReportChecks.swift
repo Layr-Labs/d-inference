@@ -192,12 +192,17 @@ extension ClusterLinkCheck {
             // Either the fix can add the missing address after approval, or
             // the sentence says plainly that Darkbloom does not do this.
             if state.fixableByAddingAddress {
-                expect(guidance.contains("`darkbloom cluster link --fix`") && guidance.contains("approval in a macOS prompt")
-                    && guidance.contains("System Settings → Network"), "\(state) guidance offers the fix and the manual way")
+                // No network setting in the user path (C18): the one approved fix, never a manual address.
+                // The one command, which fixes the port after one macOS approval; no wizard step, developer command or setting.
+                expect(guidance.contains("run `darkbloom cluster` again") && guidance.contains("one macOS approval")
+                    && !guidance.contains("cluster link") && !guidance.contains("step 2") && !guidance.contains("System Settings"),
+                    "\(state) guidance offers the one approved fix and no manual network setting")
                 expect(!guidance.contains("will not") && !guidance.contains("cannot"), "\(state) guidance does not deny the fix")
             } else {
-                expect(guidance.contains("Darkbloom will not") || guidance.contains("Darkbloom cannot"),
-                    "\(state) guidance says Darkbloom does not make the change")
+                expect(guidance.contains("Darkbloom will not") || guidance.contains("Darkbloom cannot") || guidance.contains("run `darkbloom cluster` again"),
+                    "\(state) guidance says Darkbloom does not make the change, or what to do before running it again")
+                expect(!guidance.contains("cluster link") && !guidance.contains("step 2") && !guidance.contains("ibv_devinfo") && !guidance.contains("ifconfig"),
+                    "\(state) guidance names no developer command or wizard step")
             }
         }
         expectEqual(ClusterLinkReadinessState.allCases.filter(\.fixableByAddingAddress),
@@ -206,11 +211,13 @@ extension ClusterLinkCheck {
         expect(disabled.contains("macOS Recovery") && disabled.contains("rdma_ctl enable"), "disabled guidance names the Recovery command")
         expect((ClusterLinkReadinessState.portBridgedWithoutAddress.guidance ?? "").contains("Thunderbolt Bridge"),
             "bridged guidance names the bridge")
-        expect((ClusterLinkReadinessState.portWithoutIPv4Address.guidance ?? "").contains("IPv4 address"), "unaddressed guidance")
+        expect((ClusterLinkReadinessState.portWithoutIPv4Address.guidance ?? "").contains("not set up for the cluster yet"), "unaddressed guidance")
         expect((ClusterLinkReadinessState.noActivePort.guidance ?? "").contains("Thunderbolt 5 cable"), "no-port guidance")
         let unpublished = ClusterLinkReadinessState.gidNotPublished.guidance ?? ""
-        expect(unpublished.contains("--fix") && unpublished.contains("only adds a missing address"),
-            "unpublished guidance says why the fix does not apply")
+        expect(unpublished.contains("reconnect the cable") && unpublished.contains("run `darkbloom cluster` again"),
+            "unpublished guidance says what to do")
+        expect((ClusterLinkReadinessState.rdmaDisabled.guidance ?? "").hasSuffix("then restart and run `darkbloom cluster` again."),
+            "disabled guidance ends with the one command")
     }
 
     private static func json(_ report: ClusterLinkReadinessReport) -> String {

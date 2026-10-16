@@ -48,6 +48,87 @@ struct DistributedCBv2EngineTests {
         await engine.shutdown()
     }
 
+    /// Batch lanes: an owner that serves two requests at once gets two
+    /// concurrent streams, each with its own tokens and terminal; a third is
+    /// refused until one retires, and the slot is reusable after release.
+    @Test func batchLanesServeConcurrentRequestsIndependently() async throws {
+        let owner = DistributedTestOwner()
+        owner.lanes = 2
+        let engine = try distributedTestEngine(owner)
+        let first = try engine.submit(distributedTestRequest(1))
+        let second = try engine.submit(distributedTestRequest(2))
+        #expect(owner.reserveCount == 2)
+        #expect(engine.capacity().activeRequests == 2)
+        #expect(engine.capacity().kvBytesReserved == 128)
+        #expect(throws: CBv2KVError.self) { try engine.submit(distributedTestRequest(3)) }
+        let a = owner.lease(0), b = owner.lease(1)
+        #expect(a.send(.token(4)))
+        #expect(b.send(.token(7)))
+        #expect(!b.send(.token(8)))
+        #expect(!a.send(.token(5)))
+        b.acknowledge()
+        let secondEvents = await distributedCollect(second)
+        #expect(distributedText(secondEvents) == "t7t8")
+        #expect(distributedTerminal(secondEvents)?.0 == .length)
+        #expect(engine.capacity().activeRequests == 1)
+        // The freed lane takes another request while the first still runs.
+        let third = try engine.submit(distributedTestRequest(3))
+        let c = owner.lease(2)
+        a.acknowledge()
+        let firstEvents = await distributedCollect(first)
+        #expect(distributedText(firstEvents) == "t4t5")
+        #expect(c.send(.token(9)))
+        #expect(!c.send(.token(10)))
+        c.acknowledge()
+        let thirdEvents = await distributedCollect(third)
+        #expect(distributedText(thirdEvents) == "t9t10")
+        #expect([a, b, c].allSatisfy { $0.releaseCount == 1 && $0.cancelCount == 0 })
+        #expect(engine.capacity().activeRequests == 0)
+        await engine.shutdown()
+        #expect(owner.shutdownCount == 1)
+    }
+
+    /// The peers' prefix report: a receipt is accepted, the reuse is the
+    /// usage's hit, and the frontiers both peers hold reach the publication
+    /// handler with the receipt. A report never changes the token stream.
+    @Test func peerPrefixReuseIsReportedInUsageAndPublished() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        let published = DistributedPublishedFrontiers()
+        engine.setResidentPrefixPublicationHandler { receipt, frontiers in published.record(receipt, frontiers) }
+        var request = distributedTestRequest(); request.promptTokens = [1, 2, 3, 1, 2]
+        request.prefixCacheReceiptID = .init(77)
+        let stream = try engine.submit(request)
+        let lease = owner.last
+        #expect(lease.send(.token(4)))
+        #expect(!lease.send(.token(5)))
+        // After the last token, before the finish: the report still counts.
+        lease.send(.promptCache(reused: 4, stored: [2, 4]))
+        lease.acknowledge()
+        let events = await distributedCollect(stream)
+        #expect(distributedText(events) == "t4t5")
+        let usage = distributedTerminal(events)?.1
+        #expect(usage?.prefixCacheHitTokens == 4 && usage?.prefixCachePrefillTokensSaved == 4)
+        #expect(usage?.prefixCacheOutcome == .hit && usage?.prefixCacheTier == .resident)
+        #expect(published.values == [(77, [2, 4])].map { "\($0.0):\($0.1)" })
+        await engine.shutdown()
+    }
+
+    @Test func aColdRequestReportsNoHitAndPublishesNothingWithoutFrontiers() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        let published = DistributedPublishedFrontiers()
+        engine.setResidentPrefixPublicationHandler { receipt, frontiers in published.record(receipt, frontiers) }
+        var request = distributedTestRequest(); request.prefixCacheReceiptID = .init(78)
+        let stream = try engine.submit(request)
+        owner.last.send(.token(4)); owner.last.send(.token(5))
+        owner.last.acknowledge()
+        let usage = distributedTerminal(await distributedCollect(stream))?.1
+        #expect(usage?.prefixCacheHitTokens == 0 && usage?.prefixCacheOutcome != .hit)
+        #expect(published.values.isEmpty)
+        await engine.shutdown()
+    }
+
     @Test func stopTokenAndSplitStopStringDoNotLeakText() async throws {
         for stopToken in [true, false] {
             let owner = DistributedTestOwner()
@@ -106,28 +187,91 @@ struct DistributedCBv2EngineTests {
         }
     }
 
-    @Test func unsupportedRequestsNeverReserve() async throws {
+    /// Every refusal names its rule (a 4xx with that reason at the client)
+    /// and never reaches the owner.
+    @Test func unsupportedRequestsAreRefusedWithTheirReasonAndNeverReserve() async throws {
         let owner = DistributedTestOwner()
         let engine = try distributedTestEngine(owner)
-        var requests: [CBv2Request] = []
-        var request = distributedTestRequest(); request.sampling.temperature = 1; requests.append(request)
-        request = distributedTestRequest(); request.sampling.temperature = .nan; requests.append(request)
-        request = distributedTestRequest(); request.sampling.topLogprobs = 1; requests.append(request)
-        request = distributedTestRequest(); request.sampling.logitBias = [1: 1]; requests.append(request)
-        request = distributedTestRequest(); request.sampling.seed = 1; requests.append(request)
-        request = distributedTestRequest(); request.priority = 1; requests.append(request)
-        request = distributedTestRequest(); request.promptTokens = []; requests.append(request)
-        request = distributedTestRequest(); request.promptTokens = [100]; requests.append(request)
-        request = distributedTestRequest(); request.promptTokens = Array(repeating: 1, count: 8193); requests.append(request)
-        request = distributedTestRequest(); request.maxTokens = 129; requests.append(request)
-        request = distributedTestRequest(); request.maxTokens = Int.max; requests.append(request)
-        request = distributedTestRequest(); request.stopStrings = [""]; requests.append(request)
-        request = distributedTestRequest(); request.prefixCacheReceiptID = .init(2); requests.append(request)
-        for invalid in requests {
-            #expect(throws: DistributedEngineError.self) { try engine.submit(invalid) }
+        var cases: [(CBv2Request, DistributedRequestRefusal)] = []
+        var request = distributedTestRequest(); request.sampling.temperature = .nan; cases.append((request, .invalidSampling))
+        request = distributedTestRequest(); request.sampling.logitBias = [1: .infinity]; cases.append((request, .invalidSampling))
+        request = distributedTestRequest(); request.sampling.topLogprobs = 1; cases.append((request, .logprobsUnsupported))
+        request = distributedTestRequest(); request.priority = 1; cases.append((request, .priorityUnsupported))
+        request = distributedTestRequest(); request.promptTokens = []; cases.append((request, .emptyPrompt))
+        request = distributedTestRequest(); request.promptTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
+        request = distributedTestRequest(); request.stopTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
+        request = distributedTestRequest(); request.promptTokens = Array(repeating: 1, count: 8193); cases.append((request, .promptTooLong))
+        request = distributedTestRequest(); request.maxTokens = 0; cases.append((request, .invalidMaxTokens))
+        request = distributedTestRequest(); request.maxTokens = 129; cases.append((request, .outputTooLong))
+        request = distributedTestRequest(); request.maxTokens = Int.max; cases.append((request, .outputTooLong))
+        request = distributedTestRequest(); request.stopStrings = [""]; cases.append((request, .invalidStopSequences))
+        for (invalid, reason) in cases {
+            #expect(throws: DistributedEngineError.refused(reason)) { try engine.submit(invalid) }
         }
         #expect(owner.reserveCount == 0)
         await engine.shutdown()
+    }
+
+    /// Sampling is served: the owner receives the request's values, with an
+    /// omitted seed resolved to the engine's own fallback (as the product's
+    /// engine keys unseeded rows), and a seeded request keeps its seed.
+    @Test func sampledRequestsReachTheOwnerWithAResolvedSeed() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        for seed in [nil, UInt64(42)] {
+            var request = distributedTestRequest(UInt64(seed ?? 7), maxTokens: 1)
+            request.sampling = .init(temperature: 0.7, topP: 0.9, topK: 20, repetitionPenalty: 1.1,
+                presencePenalty: 0.5, seed: seed, logitBias: [5: -100, 1000: 3])
+            let stream = try engine.submit(request)
+            owner.last.send(.token(4)); owner.last.acknowledge()
+            _ = await distributedCollect(stream)
+            let reserved = try #require(owner.reservedRequests.last)
+            #expect(reserved.sampling.seed == (seed ?? engine.fallbackSeed))
+            let wire = try #require(DistributedSampling.wire(for: reserved, vocabularySize: 100))
+            #expect(wire.temperature == 0.7 && wire.topP == 0.9 && wire.topK == 20 && wire.stream == reserved.id.raw)
+            #expect(wire.seed == (seed ?? engine.fallbackSeed) && wire.repetitionPenalty == 1.1 && wire.presencePenalty == 0.5)
+            // Bias for a token outside the vocabulary has no effect and is dropped.
+            #expect(wire.logitBias == [.init(tokenID: 5, bias: -100)])
+        }
+        // Greedy text with no transform carries no sampling at all.
+        #expect(DistributedSampling.wire(for: distributedTestRequest(), vocabularySize: 100) == nil)
+        var greedyBias = distributedTestRequest(); greedyBias.sampling.logitBias = [3: 5]
+        #expect(DistributedSampling.wire(for: greedyBias, vocabularySize: 100)?.isStochastic == false)
+        var wideTopK = distributedTestRequest(); wideTopK.sampling.temperature = 1; wideTopK.sampling.topK = 500
+        #expect(DistributedSampling.wire(for: wideTopK, vocabularySize: 100)?.topK == 0)
+        await engine.shutdown()
+    }
+
+    @Test func refusalsBecomeClientErrorsWithTheirReason() throws {
+        let profile = try distributedTestProfile()
+        for refusal in DistributedRequestRefusal.allCases {
+            let message = EngineV2Translation.admissionErrorMessage(
+                for: DistributedEngineError.refused(refusal), distributedProfile: profile)
+            let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            guard case .distributedRequestRefused(let parsed, let text) = typed else {
+                Issue.record("\(refusal) did not parse: \(message)"); continue
+            }
+            #expect(parsed == refusal && text == refusal.message(profile))
+            #expect(ProviderLoop.mapInferenceErrorToStatus(typed) == 400)
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: typed, phase: .generation)
+            // Over this pair's context: the coordinator may route it to a node
+            // with more room (the product's own `request_exceeds_context`
+            // classification); every other refusal is the client's.
+            #expect(failure.code == (refusal.exceedsContext ? .capacity : .invalidRequest))
+            #expect(failure.errorReason == (refusal.exceedsContext ? .requestExceedsContext : .clientError))
+        }
+        #expect(DistributedRequestRefusal.outputTooLong.message(profile).contains("128"))
+        let unavailable = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+            EngineV2Translation.admissionErrorMessage(for: DistributedEngineError.unavailable))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(unavailable) == 503)
+        let busy = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+            EngineV2Translation.admissionErrorMessage(for: CBv2KVError.capacityExhausted(needed: 1, available: 0)))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(busy) == 429)
+        // An omitted max_tokens: the product's default, cut to the pair's context.
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 30_000, contextLimit: 32_768) == 2768)
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 100, contextLimit: 32_768) == 4096)
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 40_000, contextLimit: 32_768) == 1)
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 30_000, contextLimit: nil) == 4096)
     }
 
     @Test func customProfileAndBudgetAreEnforcedWithoutGeometryAssumptions() async throws {
@@ -252,4 +396,14 @@ struct DistributedCBv2EngineTests {
         await bridge.shutdown()
         #expect(owner.shutdownCount == 1)
     }
+}
+
+
+final class DistributedPublishedFrontiers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    func record(_ receipt: CBv2RequestID, _ frontiers: [Int]) {
+        lock.withLock { recorded.append("\(receipt.raw):\(frontiers)") }
+    }
+    var values: [String] { lock.withLock { recorded } }
 }

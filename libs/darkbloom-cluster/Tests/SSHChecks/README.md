@@ -37,6 +37,23 @@ cover how an owner ends its child and what it leaves behind:
   process holds the device scope, while a running process carries the recorded
   membership epoch, or when the journal is not a record this build wrote.
 
+Four writer-wake groups (`OwnerWriterWakeTests.swift`) follow. The endpoint's
+writer writes a queued frame as soon as it is queued; it used to write one
+frame per pass and sleep 5 ms between passes, so each command waited for the
+next pass:
+
+- The idle wake is the next renewal, capped at 50 ms, and counts the renewal
+  time only while a renewal can be sent (not before the hello, not after a
+  fence).
+- Keep-warm and request round trips through the actual owner service and a
+  stand-in worker that answers at once have a median under 2.5 ms; a polling
+  writer cannot go below one 5 ms pass there.
+- An owner that prepares for 1.5 s before the hello costs the writer no spin,
+  and the hello wakes it for the first command.
+- An idle writer renews every 5 s on time; after a fence it sends no renewal
+  and does not spin on the stale renewal time while the owner retires a child
+  that needs three seconds.
+
 An owner signals its child only after the child's own hard deadline plus a
 margin; `ProcessChecks/RetirementPolicyTests.swift` checks that order directly.
 

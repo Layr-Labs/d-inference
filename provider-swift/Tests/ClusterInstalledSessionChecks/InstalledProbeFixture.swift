@@ -9,13 +9,16 @@ import CryptoKit
         // A worker built with the guarded runtime contains both names; the
         // installed validation reads them from the pinned binary's bytes.
         if args == ["--fixture-features"] {
-            print(ProcessInfo.processInfo.environment["JACCL_PROGRESS_TIMEOUT_MS"] ?? "unset", "--startup-deadline-uptime-nanoseconds")
+            print(ProcessInfo.processInfo.environment["JACCL_PROGRESS_TIMEOUT_MS"] ?? "unset", "--startup-deadline-uptime-nanoseconds",
+                // and the prefix-SSD key's input scheme (ClusterWorkerPrefixSSDKey.argument)
+                "darkbloom/prefix-ssd-key/input-line/v1")
             return
         }
         #endif
         if args.count == 1 {
             switch args[0] {
-            case "--fixture-overflow": try FileHandle.standardOutput.write(contentsOf: Data(repeating: 32, count: 16385))
+            // One byte more than a capability record may hold (ClusterRuntimeCapabilityCodec.maximumBytes, 96 KiB).
+            case "--fixture-overflow": try FileHandle.standardOutput.write(contentsOf: Data(repeating: 32, count: 96 * 1024 + 1))
             case "--fixture-stderr": try FileHandle.standardError.write(contentsOf: Data("synthetic refusal\n".utf8))
             case "--fixture-exit": exit(7)
             case "--fixture-hang": signal(SIGTERM, SIG_IGN); while true { pause() }

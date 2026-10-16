@@ -12,34 +12,44 @@ import MLX
 ///
 /// `producerStage` is the stage-0 model a phase-split rank 1 also holds. It is
 /// touched only after rank 0 has handed its request state over.
+///
+/// `speculativeRounds` (`pipeline_mtp_v1`): the agreed terms on both ranks;
+/// rank 1 is also handed the head. Decode then runs as speculative rounds
+/// (`QwenPipelineMTPGeneration`) after the prompt and the first token.
 func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
-    producerStage: LoadedQwenLayerStage? = nil,
+    producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
+    speculativeRounds: QwenMTPTerms? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
-    collective: Collective, onCommittedToken: (Int) throws -> Bool,
+    collective: Collective, prefixCache: QwenStagePrefixCache? = nil, onCommittedToken: (Int) throws -> Bool,
     check: () throws -> Void
 ) throws -> QwenLayerStageGenerationResult {
-    try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, plan: plan, agreement: agreement,
-        collective: collective, diagnostics: nil, onCommittedToken: onCommittedToken, check: check).result
+    try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, speculativeHead: speculativeHead,
+        speculativeRounds: speculativeRounds, plan: plan, agreement: agreement,
+        collective: collective, diagnostics: nil, prefixCache: prefixCache, onCommittedToken: onCommittedToken,
+        check: check).result
 }
 
 /// Explicit diagnostic entry for an already owned reservation. The owner must
 /// pass the exact allowance derived for that reservation and retain all existing
 /// build/source/arithmetic, deadline and cancellation checks. There is no default
 /// diagnostic mode or permissive resource callback. Do not time this as serving.
+///
+/// `speculativeRounds` (`pipeline_mtp_v1`): the request runs its rounds as
+/// served, and rank 1 also records one step per selected token from the row
+/// that token was taken from (`QwenRecordedStep`): the accepted timeline.
 func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
-    producerStage: LoadedQwenLayerStage? = nil,
-    profile: QwenRegisteredDenseModelProfile,
-    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
-    collective: Collective, requestAllowance: QwenResidentRequestAllowance,
-    phaseSplitFault: QwenPhaseSplitFault? = nil,
+    producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
+    speculativeRounds: QwenMTPTerms? = nil, plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+    collective: Collective, resources makeResources: () throws -> QwenGenerationDiagnosticResources,
+    phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> QwenGenerationDiagnosticEvidence {
     let resources = try MLX.withError { nativeError in
         do {
             try check(); try nativeError.check()
-            let value = try QwenGenerationDiagnosticResources(loaded: loaded, profile: profile,
-                plan: plan, request: agreement.request,
-                rank: collective.rank, requestAllowance: requestAllowance)
+            // The loaded stage's own family binds the capture to its source and
+            // rederives the reserved allowance with the actual allocator.
+            let value = try makeResources()
             try nativeError.check(); try check(); try nativeError.check()
             return value
         } catch {
@@ -51,8 +61,8 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
         rank: collective.rank, resources: resources)
     defer { capture.discard() }
     let (result, handedOver) = try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage,
-        plan: plan, agreement: agreement,
-        collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault,
+        speculativeHead: speculativeHead, speculativeRounds: speculativeRounds, plan: plan, agreement: agreement,
+        collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault, prefixCache: prefixCache,
         onCommittedToken: onCommittedToken, check: check)
     // The core has validated both retirement acknowledgements and its final
     // native error check. Only CPU values are assembled outside that scope.
@@ -80,10 +90,10 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 }
 
 private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
-    producerStage: LoadedQwenLayerStage?,
-    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+    producerStage: LoadedQwenLayerStage?, speculativeHead: QwenMTPHead? = nil,
+    speculativeRounds: QwenMTPTerms? = nil, plan: QwenLayerStagePlan, agreement unplannedAgreement: QwenLayerStageGenerationAgreement,
     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
-    phaseSplitFault: QwenPhaseSplitFault? = nil,
+    phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, handedOver: QwenPhaseSplitRecordedState?) {
     try MLX.withError { nativeError in
@@ -93,43 +103,147 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             try nativeError.check()
         }
         do {
-            try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+            try requireGenerationSource(loaded: loaded, plan: plan, agreement: unplannedAgreement, collective: collective)
             // A phase-split rank 1 must already hold the producer stage of this
             // exact source; a pipeline rank must not be handed one.
-            if agreement.phaseSplit != nil, collective.rank == 1 {
+            if unplannedAgreement.phaseSplit != nil, collective.rank == 1 {
                 guard let producerStage, producerStage.stageIndex == 0,
                       producerStage.plan.fingerprint == plan.fingerprint,
-                      producerStage.receipt.stagePlanSHA256 == agreement.descriptor.stageFingerprints[0],
-                      producerStage.receipt.storageCommitmentSHA256 == agreement.descriptor.storageCommitmentSHA256,
-                      producerStage.receipt.verifiedAggregateSHA256 == agreement.descriptor.artifactAggregateSHA256 else {
+                      producerStage.receipt.stagePlanSHA256 == unplannedAgreement.descriptor.stageFingerprints[0],
+                      producerStage.receipt.storageCommitmentSHA256 == unplannedAgreement.descriptor.storageCommitmentSHA256,
+                      producerStage.receipt.verifiedAggregateSHA256 == unplannedAgreement.descriptor.artifactAggregateSHA256 else {
                     throw ProbeError("Phase-split rank1 does not hold the agreed producer stage")
                 }
             } else if producerStage != nil {
                 throw ProbeError("Only a phase-split rank1 runs with a producer stage")
             }
+            // The decoding rank of a speculative phase split, and the last rank
+            // of a speculative pipeline, hold the head; no other rank, and no
+            // other request, may be handed one. A pipeline's rounds are the
+            // agreement's decode framing, on both ranks; a recording request
+            // runs them too (its rank 1 records the accepted timeline).
+            try requireQwenSpeculativeRole(agreement: unplannedAgreement, rounds: speculativeRounds,
+                holdsHead: speculativeHead != nil, rank: collective.rank)
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
-                material: { .generation(agreementFingerprint: agreement.fingerprint) },
-                disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
+                material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
+                disagreementMessage: "Generation membership/request/source readiness differs",
+                scope: .request(.requestAgreement, requestID: unplannedAgreement.request.requestID,
+                    agreementFingerprint: unplannedAgreement.fingerprint, "generation-readiness"), check: checked)
+            // Before the session: the consumer stage's computed prompt rows are
+            // the head's history. A prefix reused from the cache is not observed
+            // again (exact tokens either way; the head drafts from what it saw).
+            var decoder: QwenMTPDecoder?
+            if let speculativeHead, let terms = unplannedAgreement.speculativeHead ?? speculativeRounds {
+                decoder = try QwenMTPDecoder(head: speculativeHead, terms: terms, request: unplannedAgreement.request)
+            }
+            // Prefix plan, before the first forward: both ranks agree what to
+            // reuse, restore it, and confirm; anything else prefills from zero
+            // on both ranks.
+            var session: QwenLayerStageSession?
+            let prefix: QwenStagePrefixSummary
+            let agreement: QwenLayerStageGenerationAgreement
+            // A request routed to the decoding rank alone reuses and keeps no
+            // prompt prefix: both ranks skip the prefix exchanges alike (the
+            // route is in the agreement both checked above).
+            let alone = unplannedAgreement.request.decodingRankAlone
+            if alone {
+                agreement = unplannedAgreement
+                session = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
+                    hiddenTap: collective.rank == 1 ? decoder?.tap() : nil)
+                prefix = .init(reusedPromptTokens: 0, agreedPromptTokens: 0, splitFinalToken: false, storedFrontiers: [],
+                    cacheEntries: prefixCache?.count ?? 0)
+            } else {
+                let planned = try agreeQwenStagePrefixPlan(cache: prefixCache, loaded: loaded, plan: plan,
+                    agreement: unplannedAgreement, collective: collective, hiddenTap: decoder?.tap(), check: checked)
+                agreement = planned.agreement; session = planned.session; prefix = planned.summary
+            }
+            // This request's capture, within what its reservation charged:
+            // older entries make room first, so the entries and this capture
+            // stay within the cache's budget together.
+            let captureLimit = prefixCache?.takeAdmittedCapture()
+            if let prefixCache, prefixCache.enabled, let owned = session, !owned.prefixCaptureFrontiers.isEmpty {
+                owned.prefixCaptureLimitBytes = captureLimit
+                owned.prefixCaptureMaximumFrontiers = prefixCache.frontiersPerPrompt
+                // The history cost the reservation charged: measured once a capture
+                // of this stage was, conservative before (F32 rows and an Int32
+                // token), so the session keeps what its charge was computed for.
+                owned.prefixHistoryBytesPerToken = decoder == nil ? 0
+                    : prefixCache.historyBytesPerToken(estimate: agreement.request.profile.hiddenSize * 4 + 4)
+                prefixCache.makeRoom(forCapture: captureLimit ?? 0)
+            }
+            if let decoder, let prefixCache, prefixCache.enabled {
+                // The head keeps this prompt's history for the entries this
+                // request stores, and a restored prefix brings its own back:
+                // the head then drafts from the whole prompt, as a cold
+                // request's does. Exactness never depends on it.
+                decoder.keepsHistory = prefix.splitFinalToken
+                let reused = prefix.reusedPromptTokens
+                if reused > 0 {
+                    let tokens = Array(unplannedAgreement.request.promptTokenIDs[0..<reused])
+                    let history = prefixCache.state(scope: qwenStagePrefixScope(agreement),
+                        tokens: unplannedAgreement.request.promptTokenIDs, frontier: reused)?.speculativeHistory
+                    let adopted = history.map { decoder.adopt($0, prefixTokens: tokens) } ?? false
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) mtp-history=\(adopted ? "restored" : "absent")"
+                        + " frontier=\(reused)")
+                }
+            }
+            if let prefixCache, prefixCache.enabled, let owned = session {
+                // The running check may withdraw this capture when memory runs
+                // short (`QwenStagePrefixCache.withdrawCapture`): the session lets
+                // go of its frontiers and the head of its history, and the
+                // request goes on. The head keeps a history only for a prompt
+                // the session keeps.
+                decoder?.historyWanted = { [weak owned] in owned?.keepsPrefixCapture ?? false }
+                prefixCache.beginCapture { [weak owned, weak decoder] in
+                    owned?.withdrawPrefixCapture(); decoder?.dropKeptHistory()
+                }
+            }
+            defer { prefixCache?.endCapture() }
+            diagnostics?.request = agreement.request
+            diagnostics?.recordsSteps = speculativeRounds != nil && collective.rank == 1
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
-            var session: QwenLayerStageSession?
             var producer: QwenGenerationLookaheadProducer?
             do {
-                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
-                session = owned
-                if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
+                let owned = session!
+                if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0, !alone {
                     producer = try .init(request: agreement.request)
                 }
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
+                var discardedDecodeForwards = 0
+                var roundStatistics: QwenMTPStatistics?
                 // A phase-split request leaves this loop after its first agreed
                 // token and decision; a pipeline request runs it to the end.
                 let split = agreement.phaseSplit
-                while control.phase == .frame,
+                // A request the decoding rank serves alone runs no pair frame at all.
+                while control.phase == .frame, !alone,
                       split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()
+                        if let speculativeRounds, control.selectedTokenCount > 0 {
+                            // The prompt and the first token ran as frames; decode runs as rounds.
+                            guard producer == nil || producer!.isComplete else {
+                                throw ProbeError("Speculative rounds precede lookahead prompt drain")
+                            }
+                            let outcome: QwenPipelineMTPGeneration.Outcome
+                            if collective.rank == 0 {
+                                outcome = try QwenPipelineMTPGeneration.runProducer(session: owned, control: control,
+                                    terms: speculativeRounds, collective: collective, recording: diagnostics,
+                                    onCommittedToken: onCommittedToken, check: checked)
+                            } else {
+                                guard let decoder else { throw ProbeError("Speculative rounds need the head on rank 1") }
+                                try decoder.begin(firstToken: selectedTokens[0])
+                                outcome = try QwenPipelineMTPGeneration.runConsumer(session: owned, decoder: decoder,
+                                    control: control, collective: collective, recording: diagnostics, check: checked)
+                            }
+                            selectedTokens += outcome.selected
+                            finalDecision = outcome.finalDecision
+                            discardedDecodeForwards = outcome.discardedDecodeForwards
+                            roundStatistics = outcome.statistics
+                            return
+                        }
                         let expected = try control.beginFrame()
                         if agreement.compactDecode, expected.frame.phase == .decode {
                             guard producer == nil || producer!.isComplete else {
@@ -164,6 +278,10 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                             transport: transport, check: checked)
                         let selected = try control.takeCommittedToken()
                         selectedTokens.append(selected)
+                        // A recorded speculative pipeline's first token: its step, from this frame's row.
+                        if let diagnostics, diagnostics.recordsSteps, let row {
+                            try diagnostics.captureStep(row, frame: expected.frame, tokenID: selected, check: checked)
+                        }
                         // The scalar agreement is complete. No next forward can run
                         // while this callback is active or before decision agreement.
                         let decision: QwenLayerStageGenerationDecisionPacket
@@ -204,7 +322,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     let outcome = try QwenPhaseSplitGeneration.run(producerStage: producerStage, plan: plan,
                         split: split, control: control, transport: transport, session: owned,
                         selectedTokens: &selectedTokens, recording: diagnostics, fault: phaseSplitFault,
-                        onCommittedToken: onCommittedToken, check: checked)
+                        decoder: decoder, onCommittedToken: onCommittedToken, check: checked)
                     finalDecision = outcome.finalDecision; handedOver = outcome
                 }
                 guard control.phase == .retiring, !control.isFailed,
@@ -223,7 +341,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     try diagnostics?.captureState(session: owned, stage: plan.stages[collective.rank],
                         selectedTokenIDs: selectedTokens, completedFrames: control.completedFrames,
                         committedTokens: control.committedTokens, reason: reason, check: checked)
-                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken,
+                        discardedDecodeForwards: discardedDecodeForwards)
                 }
                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
@@ -233,7 +352,48 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                return (QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
+                // The head's history at each kept frontier, taken before the
+                // decoder lets go of it.
+                let histories = decoder.map { decoder in
+                    { (frontier: Int) in decoder.prefixHistory(at: frontier) }
+                }
+                defer { decoder?.release() }
+                // Both ranks retired cleanly: only now do this rank's captured
+                // frontiers become reusable. A failed request stores nothing.
+                var stored: [Int] = []
+                if let prefixCache, prefixCache.enabled {
+                    var states = owned.capturedPrefixStates()
+                    if let histories {
+                        for index in states.indices { states[index].speculativeHistory = histories(states[index].committedTokens) }
+                    }
+                    let historyBytes = states.isEmpty ? 0 : decoder?.keptHistoryBytes ?? 0
+                    let scope = qwenStagePrefixScope(agreement)
+                    prefixCache.insert(scope: scope, tokens: agreement.request.promptTokenIDs,
+                        states: states, sharedBytes: owned.capturedSharedBytes + historyBytes)
+                    // The SSD record (stage state and the head's history) is
+                    // written behind; serving does not wait for it.
+                    prefixCache.disk?.persist(scope: scope, tokens: agreement.request.promptTokenIDs, states: states,
+                        blockTokens: prefixCache.stride(chunkSize: agreement.request.chunkSize))
+                    if let cost = owned.prefixCaptureCost {
+                        let tokens = max(1, agreement.request.promptCount - 1)
+                        prefixCache.record(.init(attentionBytesPerToken: cost.attentionBytesPerToken,
+                            recurrentBytesPerFrontier: cost.recurrentBytesPerFrontier,
+                            historyBytesPerToken: historyBytes > 0 ? (historyBytes + tokens - 1) / tokens
+                                : cost.historyBytesPerToken))
+                    }
+                    stored = states.map(\.committedTokens)
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) held_bytes=\(prefixCache.bytesInUse)"
+                        + " budget_bytes=\(prefixCache.budgetBytes) capture_limit=\(captureLimit.map(String.init) ?? "none")"
+                        + " captured_shared=\(owned.capturedSharedBytes + historyBytes)"
+                        + " captured_own=\(states.reduce(0) { $0 + $1.ownBytes })"
+                        + " capture_withdrawn=\(owned.prefixCaptureWithdrawn)")
+                }
+                owned.discardCapturedPrefix()
+                let prefixSummary = QwenStagePrefixSummary(reusedPromptTokens: prefix.reusedPromptTokens,
+                    restoredTier: prefix.restoredTier,
+                    agreedPromptTokens: prefix.agreedPromptTokens, splitFinalToken: prefix.splitFinalToken,
+                    storedFrontiers: stored, cacheEntries: prefixCache?.count ?? 0)
+                var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
                     completedFrames: control.completedFrames, committedTokens: control.committedTokens,
@@ -241,13 +401,18 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                         : .init(policy: agreement.prefillPolicy.rawValue, rank: collective.rank,
                             preparedAheadFrames: producer?.preparedAheadFrames ?? 0,
                             maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0),
-                    phaseSplit: handedOver?.summary), handedOver?.recorded)
+                    phaseSplit: handedOver?.summary, prefixCache: prefixCache == nil ? nil : prefixSummary)
+                result.mtpEnabled = agreement.speculativeHead != nil || speculativeRounds != nil
+                result.speculativeRounds = roundStatistics
+                return (result, handedOver?.recorded)
             } catch {
                 // Prefer a recorded native fault before invoking any cleanup. The
                 // normal withError epilogue is skipped when its body throws Swift.
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
                 producer?.cancel()
+                decoder?.release()
+                session?.discardCapturedPrefix()
                 diagnostics?.discard()
                 control.cancel(); transport.retire()
                 do { try session?.cancel() }
@@ -258,6 +423,20 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             try nativeError.check()
             throw error
         }
+    }
+}
+
+/// The decoding rank of a speculative phase split, and the last rank of a
+/// speculative pipeline, hold the head; no other rank, and no other request,
+/// may be handed one. A pipeline's rounds are the agreement's decode framing
+/// on both ranks, never a phase split's. A recording request runs its rounds
+/// as a served one does (its rank 1 records the accepted timeline).
+func requireQwenSpeculativeRole(agreement: QwenLayerStageGenerationAgreement, rounds: QwenMTPTerms?,
+                                holdsHead: Bool, rank: Int) throws {
+    guard agreement.speculativeRoundsFraming == rounds?.pipelineDecodeFraming,
+          rounds == nil || agreement.phaseSplit == nil,
+          holdsHead == ((agreement.speculativeHead != nil || rounds != nil) && rank == 1) else {
+        throw ProbeError("Speculative head differs from this rank's agreed role")
     }
 }
 
@@ -415,4 +594,121 @@ private func agreeGenerationToken(row: MLXArray?, boundary: QwenLayerStageGenera
         try transport.acknowledgeToken(packet, check: check)
     }
     return packet
+}
+
+/// The agreed prefix plan and this rank's session for it.
+private struct QwenStagePrefixPlanOutcome {
+    let agreement: QwenLayerStageGenerationAgreement
+    let session: QwenLayerStageSession
+    let summary: QwenStagePrefixSummary
+}
+
+/// Exchange 1: each rank offers the frontiers it holds for this prompt; both
+/// derive the same choice. Each rank restores that frontier into a new
+/// session. Exchange 2: both confirm the choice, the key and the restore;
+/// unless all agree, both ranks discard what they restored and prefill from
+/// zero. Both exchanges run whether or not a cache exists, so the two ranks
+/// always take the same steps.
+/// A stage whose every attention row holds all committed tokens. A sliding
+/// layer (Gemma 4) keeps only a ring of its window, so its rows at a prompt
+/// frontier are not a prefix of the request's rows and cannot be captured or
+/// restored: such a stage offers nothing and asks for no split, which turns
+/// reuse off for both ranks (one rank off is enough).
+func qwenStageAdmitsPrefixCapture(_ loaded: LoadedQwenLayerStage) -> Bool {
+    guard let forwarding = loaded.model as? any LayerStageFrameForwarding else { return true }
+    guard let geometry = try? forwarding.layerStageRequestGeometry(maximumTokens: 1) else { return false }
+    return geometry.kinds.allSatisfy { kind in
+        if case .full = kind.attention { return true }
+        return false
+    }
+}
+
+private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: LoadedQwenLayerStage,
+    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement, collective: Collective,
+    hiddenTap: QwenLayerStageHiddenTap? = nil, check: () throws -> Void
+) throws -> QwenStagePrefixPlanOutcome {
+    let request = agreement.request, scope = qwenStagePrefixScope(agreement)
+    let enabled = (cache?.enabled ?? false) && qwenStageAdmitsPrefixCapture(loaded)
+    // Both tiers: the resident entries and the SSD records this rank holds.
+    var resident: [Int] = [], onDisk: [Int] = []
+    if enabled, let cache {
+        resident = cache.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1)
+        onDisk = cache.disk?.frontiers(scope: scope, tokens: request.promptTokenIDs,
+            maximumFrontier: request.promptCount - 1) ?? []
+    }
+    let offered = Array(Set(resident).union(onDisk).sorted(by: >).prefix(QwenStagePrefixCache.maximumOffered))
+    let local = QwenStagePrefixOffer(enabled: enabled, frontiers: offered, onDisk: Set(onDisk).subtracting(resident))
+    let record = CollectiveRecordScope.request(.prefixAgreement, requestID: request.requestID,
+        agreementFingerprint: agreement.fingerprint, "prefix")
+    let peer = QwenStagePrefixOffer(words: try exchangeQwenStagePrefixWords(collective: collective,
+        words: local.words, scope: record.part("offer"), check: check), promptCount: request.promptCount)
+    let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount)
+    var restoredSession: QwenLayerStageSession?
+    var key: String?
+    var tier: String?
+    var fromDisk: QwenStagePrefixState?
+    var restoredState: QwenStagePrefixState?
+    if choice.reusedPrefix > 0, let cache {
+        if let state = cache.state(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) {
+            restoredState = state; tier = "resident"
+            cache.disk?.touch(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix)
+        } else if let disk = cache.disk,
+                  let state = try disk.restore(scope: scope, tokens: request.promptTokenIDs,
+                      frontier: choice.reusedPrefix, check: check) {
+            restoredState = state; fromDisk = state; tier = "ssd"
+        }
+    }
+    if let state = restoredState {
+        key = QwenStagePrefixCache.key(scope: scope, tokens: request.promptTokenIDs[0..<choice.reusedPrefix])
+        do {
+            let planned = try request.planned(reusedPrefix: choice.reusedPrefix, splitFinalToken: choice.splitFinalToken)
+            restoredSession = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: planned,
+                adopting: state.adopted, hiddenTap: hiddenTap)
+        } catch {
+            // This rank could not restore; the confirmation says so and both
+            // ranks prefill from zero. A native fault still surfaces below.
+            log("darkbloom-prefix-v1 rank=\(collective.rank) restore-failed frontier=\(choice.reusedPrefix): \(error)")
+            restoredSession = nil
+            if tier == "ssd" { cache?.disk?.forget(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) }
+        }
+        try check()
+    }
+    let confirmation = QwenStagePrefixConfirmation(choice: choice,
+        restored: choice.reusedPrefix == 0 || restoredSession != nil, key: key)
+    let peerConfirmation = QwenStagePrefixConfirmation(words: try exchangeQwenStagePrefixWords(collective: collective,
+        words: confirmation.words, scope: record.part("confirmation"), check: check))
+    let settled = QwenStagePrefixConfirmation.settle(local: confirmation, peer: peerConfirmation)
+    if settled.reusedPrefix != choice.reusedPrefix || restoredSession == nil {
+        // Both ranks prefill from zero. A state THIS rank read and adopted
+        // from its SSD is still this rank's valid state at that frontier: it
+        // stays resident (within the budget, giving way as any entry) so the
+        // next offer finds it in memory instead of reading and decrypting the
+        // record again (oMLX U#3327: no duplicate restore work).
+        let ownRestoreHeld = restoredSession != nil
+        try restoredSession?.cancel(); restoredSession = nil; tier = nil
+        if ownRestoreHeld, let fromDisk, let cache {
+            cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
+            log("darkbloom-prefix-v1 rank=\(collective.rank) event=restore-kept frontier=\(choice.reusedPrefix) reason=peer_cold")
+        }
+    } else if let fromDisk, let cache {
+        // Both ranks restored the same frontier from what each holds; a state
+        // read from disk becomes resident too, on both ranks alike, so the
+        // next repeat is a memory hit (it gives way under pressure as any entry).
+        cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
+    }
+    fromDisk = nil; restoredState = nil
+    let plannedRequest = try request.planned(reusedPrefix: settled.reusedPrefix, splitFinalToken: settled.splitFinalToken)
+    let plannedAgreement = try agreement.planned(plannedRequest)
+    let session = try restoredSession
+        ?? QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: plannedRequest, hiddenTap: hiddenTap)
+    if enabled, let cache, settled.splitFinalToken {
+        session.prefixCaptureFrontiers = plannedRequest.prefixCaptureFrontiers(stride: cache.stride(chunkSize: request.chunkSize))
+    }
+    if settled.reusedPrefix > 0 || choice.reusedPrefix > 0 {
+        log("darkbloom-prefix-v1 rank=\(collective.rank) agreed=\(choice.reusedPrefix) reused=\(settled.reusedPrefix)"
+            + " prompt=\(request.promptCount) tier=\(tier ?? "none") peer_disk=\(peer.onDisk.contains(choice.reusedPrefix))")
+    }
+    return .init(agreement: plannedAgreement, session: session, summary: .init(
+        reusedPromptTokens: settled.reusedPrefix, restoredTier: tier, agreedPromptTokens: choice.reusedPrefix,
+        splitFinalToken: settled.splitFinalToken, storedFrontiers: [], cacheEntries: cache?.count ?? 0))
 }

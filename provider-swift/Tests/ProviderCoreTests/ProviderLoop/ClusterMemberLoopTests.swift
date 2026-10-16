@@ -132,11 +132,29 @@ struct ClusterMemberLoopTests {
         #expect(await loop.memberControlRequiresStop == false)
         _ = await loop.consumeClusterMemberEvent(.connected, send: send)
         #expect(await loop.memberConnectionID != nil)
+        #expect(await loop.memberStopReason == nil)
         _ = await loop.consumeClusterMemberEvent(.disconnected, send: send)
         #expect(await loop.memberControlRequiresStop)
         #expect(await loop.memberConnectionID == nil)
+        // The stop states why (qualifier soak slice 4: a leader whose
+        // coordinator went away stopped, failed its request and exited 0 with
+        // no reason anywhere); the first reason is kept.
+        #expect(await loop.memberStopReason?.contains("coordinator control connection ended") == true)
         _ = await loop.consumeClusterMemberEvent(.connected, send: send)
         #expect(await loop.memberConnectionID == nil)
+        _ = await loop.consumeClusterMemberEvent(.runtimeOutdated(mismatches: []), send: send)
+        #expect(await loop.memberStopReason?.contains("coordinator control connection ended") == true)
+    }
+
+    @Test func untrustedLeaderControlStopStatesTheTrustReason() async throws {
+        let loop = try makeMemberLoop(stopOnDisconnect: true), send = SendHandle { _ in }
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        await loop.memberTestStateFile(path)
+        _ = await loop.consumeClusterMemberEvent(.connected, send: send)
+        _ = await loop.consumeClusterMemberEvent(.trustStatus(trustLevel: "none", status: "offline", reason: "test"), send: send)
+        #expect(await loop.memberControlRequiresStop)
+        #expect(await loop.memberStopReason?.contains("offline") == true)
     }
 
     @Test func unacknowledgedAndCancelledRegistrationWaitsRefuse() async throws {

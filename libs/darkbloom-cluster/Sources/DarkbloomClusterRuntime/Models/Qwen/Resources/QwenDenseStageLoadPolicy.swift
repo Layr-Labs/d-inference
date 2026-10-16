@@ -133,7 +133,8 @@ struct QwenDenseStageLoadNativeObservation: Encodable {
 ///
 /// Counted is three quarters of the file-backed memory inside both of the
 /// kernel's own bounds (above its file-cache minimum, and before fewer than
-/// half of the file cache is inactive), at most 32 GiB. Those bounds say
+/// half of the file cache is inactive, speculative pages counted inactive),
+/// at most 32 GiB. Those bounds say
 /// where the pageout scan is forced onto anonymous pages; inside them it may
 /// still compress, so counting cache is a bet that the kernel can evict
 /// closed files, and it is withdrawn the moment the bet is seen to fail: a
@@ -153,8 +154,28 @@ struct QwenDenseStageLoadNativeObservation: Encodable {
 enum QwenDenseStageLoadPolicy {
     static let identifier = "registered_dense_selected_stage_load_resources_v3"
     static let gib = 1_073_741_824
-    /// Floor on admissible memory for any decision.
-    static let minimumAdmissibleBytes = 6 * gib
+    /// Floor on admissible memory for any decision on this Mac (`minimumAdmissibleBytes(physicalMemoryBytes:)`).
+    static var minimumAdmissibleBytes: Int { minimumAdmissibleBytes(physicalMemoryBytes: localPhysicalMemoryBytes) }
+
+    /// The two fixed margins (this floor and `loadingHeadroomBytes`) were measured on 256 GiB Macs and keep their
+    /// values on any Mac with `fullMarginsPhysicalMemoryBytes` or more. Below that they are the same share of the
+    /// Mac's memory, never under `least`: a fixed 6 GiB floor kept a 36 GB Mac out of every cluster whatever its part
+    /// held (one Gemma layer, 2026-10-15, owner: "1 layer can absolutely fit"). Every load and request is still
+    /// checked against the Mac's memory as it is at that moment.
+    static func minimumAdmissibleBytes(physicalMemoryBytes: Int) -> Int {
+        scaledMargin(6 * gib, least: 2 * gib, physicalMemoryBytes: physicalMemoryBytes)
+    }
+    static func loadingHeadroomBytes(physicalMemoryBytes: Int) -> Int {
+        scaledMargin(4 * gib, least: gib + gib / 2, physicalMemoryBytes: physicalMemoryBytes)
+    }
+    static let fullMarginsPhysicalMemoryBytes = 96 * gib
+    static func scaledMargin(_ full: Int, least: Int, physicalMemoryBytes: Int) -> Int {
+        guard physicalMemoryBytes > 0, physicalMemoryBytes < fullMarginsPhysicalMemoryBytes else { return full }
+        let share = Double(full) * Double(physicalMemoryBytes) / Double(fullMarginsPhysicalMemoryBytes)
+        return max(least, Int(share.rounded(.up)))
+    }
+    /// This Mac's memory: the margins of a decision made here (a decision on an observation uses the observation's).
+    static let localPhysicalMemoryBytes = Int(clamping: ProcessInfo.processInfo.physicalMemory)
     /// Floor on pages that are free right now, about the kernel's reserved
     /// pool. The kernel runs loads from cache at 0.1 GiB free, so this is a
     /// tripwire for a kernel that is not keeping up, not a budget.
@@ -182,7 +203,8 @@ enum QwenDenseStageLoadPolicy {
     /// Pages by which two counters of one sample may disagree before the
     /// sample is thrown out as inconsistent.
     static let counterSlackPages = 1024
-    static let loadingHeadroomBytes = 4 * gib
+    /// Margin on top of what a load reads, on this Mac (`loadingHeadroomBytes(physicalMemoryBytes:)`).
+    static var loadingHeadroomBytes: Int { loadingHeadroomBytes(physicalMemoryBytes: localPhysicalMemoryBytes) }
     static let allocatorHeadroomBytes = 2 * gib
     static let maximumObservationAgeNanoseconds: UInt64 = 1_000_000_000
     /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical.
@@ -199,20 +221,29 @@ enum QwenDenseStageLoadPolicy {
     }
 
     static func requireInitial(_ os: QwenDenseStageLoadOSObservation, now: UInt64) throws {
-        _ = try requireAdmissible(os, requiredBytes: minimumAdmissibleBytes, purpose: "Selected-stage loading", now: now)
+        _ = try requireAdmissible(os, requiredBytes: minimumAdmissibleBytes(physicalMemoryBytes: os.physicalMemoryBytes),
+                                  purpose: "Selected-stage loading", now: now)
     }
 
     /// The decision for one requirement. Throws only for an observation that
     /// cannot be judged (invalid, stale, critical pressure, swap under
     /// pressure); a judged refusal is returned with its sentence. `baseline`
     /// is the first sample of the load or request this decision belongs to.
+    ///
+    /// `floor` is the least admissible memory the decision asks for whatever
+    /// the requirement: by default the observed Mac's floor for a load or a
+    /// reservation (`minimumAdmissibleBytes(physicalMemoryBytes:)`); a request
+    /// that was admitted and is running asks only for what it still needs
+    /// (`QwenResidentRequestAllowance.requireContinuing`).
     static func decide(_ os: QwenDenseStageLoadOSObservation, requiredBytes: Int, purpose: String,
-                       now: UInt64, since baseline: QwenDenseStageLoadBaseline? = nil) throws -> QwenDenseStageLoadAdmission {
+                       now: UInt64, since baseline: QwenDenseStageLoadBaseline? = nil,
+                       floor: Int? = nil) throws -> QwenDenseStageLoadAdmission {
         try validateOS(os, now: now)
-        guard requiredBytes >= 0, !purpose.isEmpty else { throw ProbeError("Invalid resource requirement") }
+        let floor = floor ?? minimumAdmissibleBytes(physicalMemoryBytes: os.physicalMemoryBytes)
+        guard requiredBytes >= 0, floor >= 0, !purpose.isEmpty else { throw ProbeError("Invalid resource requirement") }
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
         let page = os.pageSizeBytes
-        let required = max(minimumAdmissibleBytes, requiredBytes)
+        let required = max(floor, requiredBytes)
         // First kernel bound: its file-cache minimum. The kernel's formula on
         // this snapshot, rounded up, and the kernel's own figure when that is
         // larger. The sysctl alone can be stale.
@@ -222,8 +253,16 @@ enum QwenDenseStageLoadPolicy {
         let abovePages = max(0, os.fileBackedPages - reservePages)
         // Second kernel bound: taking x inactive file pages leaves fewer than
         // half of the file cache inactive once x exceeds 2 * inactive - total.
+        // Speculative pages (read ahead and not used since) are file-backed,
+        // stand on the inactive side of the kernel's inactive target (it
+        // weighs inactive + speculative against half of active + inactive +
+        // speculative) and are the first the pageout scan takes, so they count
+        // with the inactive file pages. Without them a Mac whose cache is
+        // mostly read-ahead counted none of it: the M5 Ultra with 186 GiB
+        // speculative, 0 compressions and 97 % free by `memory_pressure`
+        // refused a 6 GiB stage (2026-10-11).
         let beforeAnonymousPages = try os.inactiveFileBackedPages.map {
-            max(0, try product([$0, inactiveFileCacheTargetDenominator]) - os.fileBackedPages)
+            max(0, try product([try sum([$0, os.speculativePages]), inactiveFileCacheTargetDenominator]) - os.fileBackedPages)
         }
         let countablePages = min(abovePages, beforeAnonymousPages ?? 0)
         let aboveBytes = try product([abovePages, page]), countableBytes = try product([countablePages, page])

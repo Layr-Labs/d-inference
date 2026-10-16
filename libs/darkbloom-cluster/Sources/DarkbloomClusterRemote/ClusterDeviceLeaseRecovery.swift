@@ -98,6 +98,39 @@ public enum ClusterDeviceLeaseRecovery {
         return .cleared(record)
     }
 
+    /// What the journal holds, without changing it: absent or empty, held by
+    /// a live owner (its exclusive lock is taken), a stranded record, or bytes
+    /// this build did not write. Verification reads this; recovery clears.
+    public enum Inspection: Equatable, Sendable {
+        case absentOrEmpty
+        case heldByLiveOwner
+        case stranded(Record)
+        case unreadable
+    }
+
+    public static func inspect(directoryURL: URL) throws -> Inspection {
+        var directoryStat = stat()
+        guard directoryURL.isFileURL, directoryURL.path.hasPrefix("/") else {
+            throw ClusterDeviceLeaseRecoveryError.invalid("Invalid lease directory")
+        }
+        if lstat(directoryURL.path, &directoryStat) != 0, errno == ENOENT { return .absentOrEmpty }
+        let directory = Darwin.open(directoryURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw ClusterDeviceLeaseRecoveryError.invalid("Lease directory is missing or follows a link") }
+        defer { Darwin.close(directory) }
+        let descriptor = openat(directory, "native-device.lease", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        if descriptor < 0, errno == ENOENT { return .absentOrEmpty }
+        guard descriptor >= 0 else { throw ClusterDeviceLeaseRecoveryError.invalid("Cannot open device lease") }
+        defer { Darwin.close(descriptor) }
+        // A live owner holds the exclusive lock; a shared lock then fails at once.
+        guard flock(descriptor, LOCK_SH | LOCK_NB) == 0 else { return .heldByLiveOwner }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0 else { throw ClusterDeviceLeaseRecoveryError.invalid("Device lease is unsafe") }
+        if value.st_size == 0 { return .absentOrEmpty }
+        guard value.st_size <= 16_384, let record = try parse(read(descriptor, count: Int(value.st_size))) else { return .unreadable }
+        return .stranded(record)
+    }
+
     private static func read(_ descriptor: Int32, count: Int) throws -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
         var offset = 0

@@ -66,13 +66,32 @@ struct ResidentAdmissionTests {
             now: now, read: { _, _ in matrix })
     }
 
+    /// A worker's load is leased (S03), never given a lifetime: its deadline
+    /// is at most one lease grant away, and a request may run past the lease's
+    /// current deadline because the owner renews the lease while it runs.
+    @Test func aLeasedLoadHasNoLifetimeOnlyItsLease() throws {
+        let valid = try Self.identity()
+        func leased(_ ahead: UInt64) -> QwenResidentLoadConfiguration {
+            QwenResidentLoadConfiguration(identity: valid, modelDirectory: URL(fileURLWithPath: "/tmp"), rank: 0, stageCut: 4,
+                deadlineUptimeNanoseconds: Self.now + ahead,
+                lease: ClusterLeaseDeadline(uptimeNanoseconds: Self.now + ahead))
+        }
+        #expect(throws: (any Error).self) { _ = try Self.admit(leased(ClusterWorkerLease.maximumNanoseconds + 1)) }
+        let admission = try Self.admit(leased(ClusterWorkerLease.ttlNanoseconds))
+        let longRequest = try ClusterWorkerReservation(profileID: QwenResidentAdapterDefinition.profileID,
+            promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 4, chunkSize: 512,
+            deadlineUptimeNanoseconds: Self.now + 600_000_000_000, capacityLimitBytes: 1, sampling: nil)
+        _ = try admission.request(longRequest, id: UUID(), now: Self.now)
+    }
+
     @Test func adapterDefinitionPinsTheRegisteredProfile() throws {
         #expect(QwenResidentAdapterDefinition.profileID == "registered_qwen35_9b_greedy_generation_v1")
-        #expect(QwenResidentAdapterDefinition.maximumRequests == 16)
         #expect(QwenResidentAdapterDefinition.supportedCuts == [4, 8, 12, 16])
         let profile = try QwenResidentAdapterDefinition.profile(specification: try Self.specification())
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumContextTokens == 8320 && profile.maximumOutputTokens == 128)
+        // Derived from the protocol bounds and the declared 262,144-token context.
+        #expect(profile.maximumContextTokens == 32_768 && profile.maximumOutputTokens == 4096)
+        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
         #expect(profile.fingerprint.count == 64)
     }
 
@@ -110,8 +129,10 @@ struct ResidentAdmissionTests {
         refuses("deadline already reached") {
             try Self.admit(Self.configuration(deadline: Self.now, identity: valid))
         }
-        refuses("lifetime beyond the closed bound") {
-            try Self.admit(Self.configuration(deadline: Self.now + 300_000_000_001, identity: valid))
+        // No per-model lifetime: a bounded run's deadline is held to the
+        // protocol's hour, and a leased load's to one lease grant.
+        refuses("deadline beyond the hour") {
+            try Self.admit(Self.configuration(deadline: Self.now + 3_600_000_000_001, identity: valid))
         }
         refuses("duplicate peer labels") {
             try Self.admit(Self.configuration(identity: try Self.identity(peers: [

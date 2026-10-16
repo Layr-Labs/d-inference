@@ -14,6 +14,8 @@ let package = Package(
         .executable(name: "darkbloom-cluster-stage-check", targets: ["StageLoadCheck"]),
         .executable(name: "darkbloom-cluster-reference", targets: ["ReferenceCheck"]),
         .executable(name: "darkbloom-cluster-pair-check", targets: ["PairCheck"]),
+        .executable(name: "darkbloom-cluster-plan", targets: ["PlacementPlan"]),
+        .executable(name: "darkbloom-cluster-tp-check", targets: ["TensorParallelCheck"]),
     ],
     dependencies: [
         .package(path: "../darkbloom-cluster"),
@@ -25,11 +27,16 @@ let package = Package(
     targets: [
         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+            // The native key prelude of the owner's bootstrap (S07) and the
+            // data-plane credential (S16): certificate check before any model work.
+            .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+            // The orphan-wired guard at worker start (no MLX).
+            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
         ]),
         .testTarget(name: "DarkbloomClusterWorkerTests", dependencies: [
-            "DarkbloomClusterWorker",
+            "DarkbloomClusterWorker", "DarkbloomClusterQualification", "DarkbloomClusterPrompt",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
@@ -37,11 +44,18 @@ let package = Package(
         .executableTarget(name: "StageLoadCheck", dependencies: [
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
+        // One Mac, no model: this Mac's device profile, an artifact's layout
+        // and the placement of a model on two or more devices.
+        .executableTarget(name: "PlacementPlan", dependencies: [
+            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+        ]),
         // Qualification: requests, reports, the comparator and the pair driver.
         // No MLX; the driver process never touches the GPU or a model.
         .target(name: "DarkbloomClusterQualification", dependencies: [
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+            // Per-run member identities and worker credentials for the data plane (S16).
+            .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
         ]),
         .target(name: "DarkbloomClusterPrompt", dependencies: [
             "DarkbloomClusterQualification",
@@ -61,6 +75,12 @@ let package = Package(
         .testTarget(name: "DarkbloomClusterQualificationTests", dependencies: [
             "DarkbloomClusterQualification", "PairCheckFakeWorker",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+        ]),
+        // Tensor parallel for the dense Qwen models: the unsharded reference, the
+        // single-process oracle and one rank of a two-rank run, plus the comparator.
+        .executableTarget(name: "TensorParallelCheck", dependencies: [
+            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+            .product(name: "MLX", package: "mlx-swift"),
         ]),
         // Two-rank transport qualification: real collectives, no model.
         .executableTarget(name: "CollectiveCheck", dependencies: [

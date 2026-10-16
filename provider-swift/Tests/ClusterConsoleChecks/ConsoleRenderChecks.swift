@@ -71,7 +71,9 @@ extension ClusterConsoleCheck {
         scrolling.drew(first)
         _ = scrolling.handle(.key(.end), at: time)
         let last = ClusterConsoleRenderer.frame(scrolling)
-        expect(last.text.contains("Press ? for the reasons."), "the end of the body is reachable")
+        // The last sentence may wrap; read the frame's lines as one text.
+        let flowing = last.lines.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        expect(flowing.contains("Press ? for the reasons."), "the end of the body is reachable")
         let total = first.maximumScroll + first.bodyRows
         expect(last.lines[0].text.hasSuffix("lines \(first.maximumScroll + 1)-\(total) of \(total)"), "the header says where the body is: \(last.lines[0].text)")
         expect(first.lines[0].text.hasSuffix("lines 1-\(first.bodyRows) of \(total)") && first.lines[0].text.count == 60, "and it stays visible in a narrow window")
@@ -276,7 +278,7 @@ extension ClusterConsoleCheck {
         let serving = screen(state(ConsoleFixtures.snapshot(saved: ConsoleFixtures.savedSetup(),
             live: try live(host: "serving", phase: "ready", ready: true, capacity: [4096, 8192]))))
         for sentence in ["host serving, session ready, ready, admission available", "Epoch 11111111-2222-3333-4444-555555555555",
-                         "Lifetime remaining 281 s; admissions remaining 15; no active request.", "Rank 1, peer-1: authenticatedSSH; native ready;"] {
+                         "Requests served 1; keep-warm exchanges 12; no active request.", "Rank 1, peer-1: authenticatedSSH; native ready;"] {
             expect(serving.contains(sentence), "the serving session lacks: \(sentence)")
         }
         // A newer observation replaces the session lines, and only those.
@@ -342,7 +344,7 @@ extension ClusterConsoleCheck {
         let plain = ConsoleFixtures.snapshot(link: ConsoleFixtures.bridgedLink, saved: ConsoleFixtures.savedSetup(),
             candidate: ConsoleFixtures.candidate()).plainLines.joined(separator: "\n")
         for sentence in ["Readiness: link portBridgedWithoutAddress", "Next: run `darkbloom cluster` in a terminal on this Mac and approve the macOS prompt",
-                         "Cluster fixture-cluster: this Mac is peer-0", "`darkbloom cluster configure`, or `a` in the console, approves it.",
+                         "Cluster fixture-cluster: this Mac is peer-0", "Press a in the console to approve it.",
                          "Local leader: not observed.", "Join: A member in this build declines every pairing"] {
             expect(plain.contains(sentence), "the plain output lacks: \(sentence)")
         }

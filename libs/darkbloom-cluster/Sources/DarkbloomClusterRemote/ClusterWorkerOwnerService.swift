@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
@@ -24,33 +25,59 @@ public enum ClusterWorkerOwnerService {
     public typealias BindingFactory = @Sendable (UUID, UUID, UUID) throws -> ClusterOwnerBinding
 
     public typealias AttachedNativeFactory = @Sendable (ClusterOwnerBinding, UInt64, ClusterOwnerBootstrapAttachment?) throws -> ClusterWorkerProcess
+    /// The same with the worker's data-plane credential line from the open
+    /// frame (S16), already checked against this owner's epoch and rank; nil
+    /// when the leader sent none. The factory writes it as the worker's first
+    /// input line (`ClusterWorkerLaunch.initialInput`).
+    public typealias KeyedNativeFactory = @Sendable (ClusterOwnerBinding, UInt64, ClusterOwnerBootstrapAttachment?, Data?) throws -> ClusterWorkerProcess
+    /// There is no configured owner lifetime. The leader opens with a first
+    /// rank-lease grant of at most `ClusterWorkerLease.maximumNanoseconds` and
+    /// renews it with `renew` frames while it keeps the session; the native
+    /// child's own lease is renewed by its supervisor until this owner fences
+    /// it. A leader that stops renewing (stopped, died, lost its link) leaves
+    /// this owner to fence the child at the lease's end.
     public static func serve(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
-                             maximumLifetimeNanoseconds: UInt64, binding: BindingFactory, native: NativeFactory) throws {
+                             binding: BindingFactory, native: NativeFactory) throws {
         try serveConfigured(input: input, output: output, clusterID: clusterID, leaseDirectory: leaseDirectory,
-            maximumLifetimeNanoseconds: maximumLifetimeNanoseconds, bootstrapProfile: nil, binding: binding,
+            bootstrapProfile: nil, binding: binding,
             native: { binding, deadline, _ in try native(binding, deadline) })
     }
     public static func serveConfigured(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
-                             maximumLifetimeNanoseconds: UInt64, bootstrapProfile: ClusterOwnerBootstrapProfile?,
+                             bootstrapProfile: ClusterOwnerBootstrapProfile?,
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
                              binding: BindingFactory, native: AttachedNativeFactory) throws {
+        try serveKeyed(input: input, output: output, clusterID: clusterID, leaseDirectory: leaseDirectory,
+            bootstrapProfile: bootstrapProfile, authorizeNativeStart: authorizeNativeStart, binding: binding,
+            native: { binding, deadline, attachment, trust in
+                guard trust == nil else { throw OwnerWire.invalid("This owner launches no keyed data plane") }
+                return try native(binding, deadline, attachment)
+            })
+    }
+
+    public static func serveKeyed(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
+                             bootstrapProfile: ClusterOwnerBootstrapProfile?,
+                             authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
+                             binding: BindingFactory, native: KeyedNativeFactory) throws {
         let pipe = try ClusterOwnerPipe(input: input, output: output, readingCommands: true)
-        let begin = DispatchTime.now().uptimeNanoseconds
-        guard maximumLifetimeNanoseconds > 0, maximumLifetimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds else {
-            throw OwnerWire.invalid("Invalid configured owner lifetime")
+        // The force-cancel hook is routed before any child exists; a failure
+        // to route it is noted on standard error and never stops the owner.
+        if let problem = ClusterOwnerForceCancel.route() {
+            FileHandle.standardError.write(Data("darkbloom-force-cancel-v1 role=owner routed=no reason=\(problem)\n".utf8))
         }
+        let begin = DispatchTime.now().uptimeNanoseconds
         guard let bytes = try pipe.read(until: begin + 5_000_000_000) else { throw ClusterWorkerOwnerErrorProxy.deadline }
         let open = try OwnerWire.decode(bytes, commandStream: true)
-        guard open.kind == "open", open.sequence == 0, open.clusterID == clusterID, open.bootstrapProfile == bootstrapProfile, let duration = open.remaining else {
-            throw OwnerWire.invalid("Owner open differs from installed configuration")
+        guard open.kind == "open", open.sequence == 0, open.clusterID == clusterID, open.bootstrapProfile == bootstrapProfile, let duration = open.remaining,
+              duration <= ClusterWorkerLease.maximumNanoseconds else {
+            throw OwnerWire.invalid("Owner open differs from installed configuration or exceeds one lease grant")
         }
         // Opt-in is configured locally. Wire start bytes alone never enable it.
         let nativeStart: ClusterNativeAuthorizationStart?
-        if bootstrapProfile == .nativeKeyPrelude {
+        if bootstrapProfile?.carriesNativeStart == true {
             guard let authorizeNativeStart, let bytes = open.nativeStart else { throw OwnerWire.invalid("Native authorization is not configured") }
             let value = try ClusterNativeAuthorizationStart(encoded: bytes)
             guard value.common.epoch == open.epoch, value.leaseID == open.lease,
-                  let deadline = open.nativeLocalDeadline, deadline > DispatchTime.now().uptimeNanoseconds else {
+                  bootstrapProfile != .nativeKeyPrelude || (open.nativeLocalDeadline ?? 0) > DispatchTime.now().uptimeNanoseconds else {
                 throw OwnerWire.invalid("Native committed start identity/deadline differs")
             }
             try authorizeNativeStart(value)
@@ -59,6 +86,12 @@ public enum ClusterWorkerOwnerService {
         let ownerBinding = try binding(open.epoch, open.lease, nativeStart?.ownerIncarnation ?? UUID())
         guard ownerBinding.route.clusterID == clusterID, ownerBinding.route.membershipEpoch == open.epoch,
               ownerBinding.route.leaseID == open.lease else { throw OwnerWire.invalid("Configured owner binding differs") }
+        if let line = open.dataPlaneTrust {
+            guard let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(line), trust.rank == ownerBinding.rank,
+                  trust.membershipEpoch == ownerBinding.identity.membershipEpoch else {
+                throw OwnerWire.invalid("Data-plane credential belongs to another rank or epoch")
+            }
+        }
         if let nativeStart {
             guard ownerBinding.rank == nativeStart.rank,
                   ownerBinding.executionPlanSHA256 == nativeStart.common.planSHA256.map({ String(format: "%02x", $0) }).joined(),
@@ -66,7 +99,7 @@ public enum ClusterWorkerOwnerService {
         }
         let lease = try ClusterDeviceLease(directoryURL: leaseDirectory)
         let localNow = DispatchTime.now().uptimeNanoseconds
-        var remaining = min(duration, maximumLifetimeNanoseconds)
+        var remaining = duration
         if let end = open.nativeLocalDeadline {
             guard end > localNow else { throw OwnerWire.invalid("Native local lifetime expired before lease admission") }
             remaining = min(remaining, end - localNow)
@@ -82,7 +115,7 @@ public enum ClusterWorkerOwnerService {
         try context.publish(kind: "hello", launchID: launchID)
         let child: ClusterWorkerProcess
         do {
-            child = try native(ownerBinding, state.lifetimeDeadlineUptimeNanoseconds, attachment)
+            child = try native(ownerBinding, state.lifetimeDeadlineUptimeNanoseconds, attachment, open.dataPlaneTrust)
             context.child = child
             guard child.launchedProcessIdentifier == nil, child.termination == nil, !child.nativeCleanupObserved, child.expectedIdentity == ownerBinding.identity, child.rank == ownerBinding.rank,
                   child.expectedProfile == ownerBinding.profile, child.executionPlanSHA256 == ownerBinding.executionPlanSHA256,
@@ -96,6 +129,9 @@ public enum ClusterWorkerOwnerService {
             throw error
         }
         context.supervisionDeadline = Self.supervisionDeadline(child)
+        // The owner-side force-cancel hook: SIGUSR1 fences this child.
+        ClusterOwnerForceCancel.register(child)
+        defer { ClusterOwnerForceCancel.register(nil) }
         // The journal names this launch immediately before it can exist.
         do { try lease.record(binding: ownerBinding, launchID: launchID) }
         catch {
@@ -141,14 +177,21 @@ public enum ClusterWorkerOwnerService {
         do {
             while !released {
                 let now = DispatchTime.now().uptimeNanoseconds
-                // At the lifetime the state requests a fence; the child ends
+                // The child's lease, and so its retirement ceiling, moves with
+                // each renewal its supervisor queues.
+                context.lock.withLock { context.supervisionDeadline = Self.supervisionDeadline(child) }
+                // At the lease's end the state requests a fence; the child ends
                 // itself there. This loop keeps serving the terminal and the
                 // release handshake until the child's retirement ceiling.
                 try context.observeTime()
                 if now >= context.supervisionDeadline { throw ClusterWorkerOwnerErrorProxy.deadline }
                 guard let line = try pipe.read(until: min(context.supervisionDeadline, now + 100_000_000)) else { continue }
-                let frame = try OwnerWire.decode(line, commandStream: true)
-                try context.accept(frame)
+                // One pool per frame: this loop never returns to a run loop (see ClusterAutorelease).
+                let frame = try ClusterAutorelease.drained { () throws -> OwnerWire in
+                    let frame = try OwnerWire.decode(line, commandStream: true)
+                    try context.accept(frame)
+                    return frame
+                }
                 if frame.kind == "release" {
                     // Terminal was emitted only after actual native cleanup. The
                     // ACK proves this connection received it, not future recovery.
@@ -203,14 +246,17 @@ private final class ServiceContext: @unchecked Sendable {
     var terminalWriteSucceeded = false
     var admissionDeadline: UInt64?
     var session: ClusterWorkerSession
-    let deadline: UInt64
-    /// Set once the child exists; until then the owner's own lifetime bounds IO.
+    /// The rank lease's current deadline: the leader's renewals move it.
+    private let leaseLock = NSLock()
+    private var leaseDeadline: UInt64
+    var deadline: UInt64 { leaseLock.withLock { leaseDeadline } }
+    /// Set once the child exists; until then the owner's lease bounds IO.
     var supervisionDeadline: UInt64
     let binding: ClusterOwnerBinding
     let attachment: ClusterOwnerBootstrapAttachment?
     init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID, attachment: ClusterOwnerBootstrapAttachment?) {
         self.pipe = pipe; self.state = state; self.launchID = launchID
-        deadline = state.lifetimeDeadlineUptimeNanoseconds; supervisionDeadline = deadline
+        leaseDeadline = state.lifetimeDeadlineUptimeNanoseconds; supervisionDeadline = state.lifetimeDeadlineUptimeNanoseconds
         binding = state.binding; self.attachment = attachment
         // Binding was validated by its initializer.
         session = try! ClusterWorkerSession(identity: state.binding.identity, rank: state.binding.rank,
@@ -254,6 +300,10 @@ private final class ServiceContext: @unchecked Sendable {
             let now = DispatchTime.now().uptimeNanoseconds
             switch frame.kind {
             case "fence": state.disconnect(); attachment?.cancel(); child?.requestNativeCleanup()
+            case "renew":
+                guard let ttl = frame.remaining else { throw OwnerWire.invalid("Lease renewal without a duration") }
+                try state.renewLease(now: now, ttl: ttl)
+                leaseLock.withLock { leaseDeadline = state.lifetimeDeadlineUptimeNanoseconds }
             case "bootstrapReply":
                 guard let attachment, let sequence = frame.bootstrapSequence, let bytes = frame.bootstrapBytes else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
                 try attachment.acceptReply(sequence: sequence, bytes: bytes)
@@ -285,7 +335,7 @@ private final class ServiceContext: @unchecked Sendable {
                     } else {
                         try control(.shutdown, now: now)
                     }
-                case .tokenDecision: break
+                case .tokenDecision, .keepWarm: break
                 }
                 guard let delivery = frame.deliveryRemaining else { throw OwnerWire.invalid("Missing delivery duration") }
                 let deliveryEnd = now.addingReportingOverflow(delivery)
@@ -308,30 +358,35 @@ private final class ServiceContext: @unchecked Sendable {
                     if DispatchTime.now().uptimeNanoseconds < deadline { continue }; throw ClusterWorkerOwnerError.deadline
                 }
                 catch ClusterWorkerOwnerError.closed { break }
-                if case .ready = frame.event {
-                    guard attachment?.profile != .nativeKeyPrelude else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
-                    try attachment?.requireCompleted()
-                }
-                try lock.withLock {
-                    let now = DispatchTime.now().uptimeNanoseconds
-                    try session.accept(frame, now: now)
-                    switch frame.event {
-                    case .ready(let ready): try state.observeReady(ready, launchID: launchID, now: now)
-                    case .admitted(let bytes):
-                        try state.observeAdmitted(requestID: frame.requestID!, reservedBytes: bytes)
-                        if let admissionDeadline, now >= admissionDeadline { state.disconnect() }
-                        admissionDeadline = nil
-                    case .refused: try state.observeRefused(requestID: frame.requestID!); admissionDeadline = nil
-                    case .retired(let outcome):
-                        try state.observeRetired(requestID: frame.requestID!, retirement: outcome)
-                        try releaseRequest(frame.requestID!)
-                    case .failed, .unavailable: state.disconnect()
-                    default: break
+                // One pool per event: this relay never returns to a run loop (see ClusterAutorelease).
+                try ClusterAutorelease.drained {
+                    if case .ready = frame.event {
+                        guard attachment?.profile.publishesReadiness != false else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
+                        try attachment?.requireCompleted()
                     }
+                    try lock.withLock {
+                        let now = DispatchTime.now().uptimeNanoseconds
+                        try session.accept(frame, now: now)
+                        switch frame.event {
+                        case .ready(let ready): try state.observeReady(ready, launchID: launchID, now: now)
+                        case .admitted(let bytes):
+                            try state.observeAdmitted(requestID: frame.requestID!, reservedBytes: bytes)
+                            if let admissionDeadline, now >= admissionDeadline { state.disconnect() }
+                            admissionDeadline = nil
+                        case .refused(let reason):
+                            try state.observeRefused(requestID: frame.requestID!, reason: reason); admissionDeadline = nil
+                        case .retired(let outcome):
+                            try state.observeRetired(requestID: frame.requestID!, retirement: outcome)
+                            try releaseRequest(frame.requestID!)
+                        case .failed(let reason): Self.echoWorkerTail(child, label: "event=failed:\(reason.rawValue)"); state.disconnect()
+                        case .unavailable(let reason): Self.echoWorkerTail(child, label: "event=unavailable:\(reason.rawValue)"); state.disconnect()
+                        default: break
+                        }
+                    }
+                    if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup(); throw ClusterWorkerOwnerError.deadline }
+                    try publish(kind: "event", payload: ClusterWorkerCodec.encode(frame))
+                    if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup() }
                 }
-                if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup(); throw ClusterWorkerOwnerError.deadline }
-                try publish(kind: "event", payload: ClusterWorkerCodec.encode(frame))
-                if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup() }
             }
         } catch { lock.withLock { state.disconnect() }; child.requestNativeCleanup() }
         // Bounded by the child's retirement ceiling. Without an observed exit
@@ -342,9 +397,36 @@ private final class ServiceContext: @unchecked Sendable {
         attachment?.cancel()
         do {
             guard let termination = child.termination else { throw OwnerWire.invalid("Missing actual native terminal") }
+            Self.echoWorkerTail(child, termination: termination)
             try recordTerminal(termination)
             try publishTerminal()
         } catch { lock.withLock { state.disconnect() } }
+    }
+
+    /// S24: a worker that ended abnormally usually names the cause in its own
+    /// diagnostics, which only this owner holds. Their last lines are repeated
+    /// on the owner's standard error, where its launcher keeps a bounded tail
+    /// for the incident it records (classified, then redacted). Sizes, codes
+    /// and the worker's own messages only; best effort, never fatal.
+    static func echoWorkerTail(_ child: ClusterWorkerProcess, termination: ClusterWorkerProcessTermination) {
+        guard let text = ClusterWorkerOwnerService.workerExitEcho(rank: child.rank, termination: termination,
+                                                                  diagnosticTail: child.diagnosticTail) else { return }
+        writeDiagnostics(text)
+    }
+    /// S24: the same tail when the worker reports a failed or unavailable
+    /// request while it is still alive, so that its own words for the cause
+    /// reach the member log and the leader's incident.
+    static func echoWorkerTail(_ child: ClusterWorkerProcess, label: String) {
+        writeDiagnostics(ClusterWorkerOwnerService.workerFailureEcho(rank: child.rank, label: label, diagnosticTail: child.diagnosticTail))
+    }
+    static func writeDiagnostics(_ text: String) {
+        _ = fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
+        let bytes = Array(text.utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let count = bytes[offset...].withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress, $0.count) }
+            if count > 0 { offset += count } else if count < 0 && errno == EINTR { continue } else { return }
+        }
     }
     func recordTerminal(_ value: ClusterWorkerProcessTermination) throws {
         try lock.withLock {
@@ -362,5 +444,31 @@ private final class ServiceContext: @unchecked Sendable {
         lock.withLock { terminalPublished = true }
         try publish(kind: "terminal", launchID: launchID, termination: terminal.termination)
         lock.withLock { terminalWriteSucceeded = true }
+    }
+}
+
+extension ClusterWorkerOwnerService {
+    /// S24: what an owner repeats on its standard error when its worker ended
+    /// abnormally (nil after a clean exit): one exit line, then the last 12
+    /// lines (300 bytes each at most, control characters removed) of the
+    /// worker's last 2 KiB of diagnostics. It is also the member log's record
+    /// of why a worker ended (it replaces the separate stderr forwarder the
+    /// public end-to-end track added for the same purpose).
+    static func workerExitEcho(rank: Int, termination: ClusterWorkerProcessTermination, diagnosticTail: Data) -> String? {
+        if case .exited(0) = termination { return nil }
+        return workerDiagnosticEcho(header: "darkbloom-worker-exit-v1 rank=\(rank) termination=\(termination)", diagnosticTail: diagnosticTail)
+    }
+    static func workerFailureEcho(rank: Int, label: String, diagnosticTail: Data) -> String {
+        workerDiagnosticEcho(header: "darkbloom-worker-fail-v1 rank=\(rank) \(label)", diagnosticTail: diagnosticTail)
+    }
+    static func workerDiagnosticEcho(header: String, diagnosticTail: Data) -> String {
+        let tail = String(decoding: diagnosticTail.suffix(2_048), as: UTF8.self)
+        var text = header + "\n"
+        for line in tail.split(whereSeparator: \.isNewline).suffix(12) {
+            // Control characters removed: the member log and the incident record are plain text.
+            let clean = String(String.UnicodeScalarView(line.prefix(300).unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))
+            text += "darkbloom-worker-tail-v1 \(clean)\n"
+        }
+        return text
     }
 }

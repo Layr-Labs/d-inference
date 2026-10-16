@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 @_spi(OwnerService) import DarkbloomClusterProcess
 @testable import DarkbloomClusterRemote
 
@@ -23,6 +24,7 @@ func directory() throws -> URL {
         try normal(owner, worker)
         try ownerExitIsObservedInEverySession(owner, worker)
         try failure(owner, worker)
+        try ownerDeathEndsTheWaits(owner, worker)
         try transportLoss(owner, worker)
         try ownerEOF(owner, worker)
         try admissionExpiry(owner, worker)
@@ -30,26 +32,30 @@ func directory() throws -> URL {
         try bootstrap(owner, worker)
         try invalidBootstrap(owner, worker)
         try bootstrapContracts()
+        try combinedBootstrap(owner, worker)
+        try combinedBootstrapContracts()
         try cancelledInflightRound(owner, worker)
         try journalFollowsTheLaunch(owner, worker)
         try ownerKeepsItsCeilingAfterAReaderError(owner, worker)
         try lifetimeExpiryStillReleases(owner, worker)
         try ownerCeilingFollowsTheOwnersClock(owner, worker)
         try recovery(worker)
-        print("remote-owner: 19 CPU groups passed")
+        print("remote-owner: 22 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
         let original = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 2, requestID: request,
             command: .reserve(.init(profileID: "cpu", promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2,
-                chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100)))
+                chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil)))
         let wire = try OwnerWire.command(original, lease: lease, incarnation: inc, sequence: 3, now: 8_000, deliveryDeadline: 8_200)
         let data = try wire.encoded(commandStream: true)
         try require(!String(decoding: data, as: UTF8.self).contains("deadlineUptimeNanoseconds"), "Foreign uptime leaked")
         let decoded = try OwnerWire.decode(data, commandStream: true)
         try require(decoded.deliveryRemaining == 200, "Admission duration lost")
         let local = try decoded.localCommand(now: 300, lifetimeDeadline: 1_100)
-        if case .reserve(let r) = local.command { try require(r.deadlineUptimeNanoseconds == 1_100, "Remote translation failed") }
+        // The leader's remaining duration is translated, not capped by the
+        // owner's lease, which the leader renews while the request runs.
+        if case .reserve(let r) = local.command { try require(r.deadlineUptimeNanoseconds == 1_300, "Remote translation failed") }
         else { throw OwnerWire.invalid("Expected reserve") }
         try rejects { _ = try OwnerWire.decode(Data("{\"version\":1,\"version\":1}\n".utf8), commandStream: true) }
         try rejects { _ = try OwnerWire.decode(data.dropLast(), commandStream: true) }
@@ -91,6 +97,26 @@ func directory() throws -> URL {
             try require(launch.arguments.contains(option), "SSH identity policy lost \(option)")
         }
         try require(Array(launch.arguments.prefix(2)) == ["-F", "/dev/null"] && launch.environment["SSH_AUTH_SOCK"] == nil, "SSH launch reads user configuration or an agent")
+        // The operator's own agent serves the configured identity only when allowed, and only from a socket this user owns.
+        let socketPath = dir.appendingPathComponent("agent.sock").path
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in socketPath.utf8CString.withUnsafeBytes { raw.copyMemory(from: UnsafeRawBufferPointer(rebasing: $0.prefix(raw.count))) } }
+        let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+        defer { close(listener); unlink(socketPath) }
+        func agent(_ environment: [String: String]) throws -> [String] {
+            try ClusterSSHConfiguration(host: "peer.local", user: "gaj", port: 22, knownHostsFile: known, identityFile: key,
+                installedDarkbloom: "/usr/local/bin/darkbloom", environment: environment).launch().arguments
+        }
+        try require(bound == 0, "the fixture agent socket was not bound at \(socketPath)")
+        do {
+            try require(try agent(["SSH_AUTH_SOCK": socketPath]).contains("IdentityAgent=none"), "an agent was used without the operator's switch")
+            let allowed = try agent(["SSH_AUTH_SOCK": socketPath, "DARKBLOOM_CLUSTER_SSH_AGENT": "1"])
+            try require(allowed.contains("IdentityAgent=\(socketPath)") && allowed.contains("IdentitiesOnly=yes") && allowed.contains("ForwardAgent=no"),
+                "the allowed agent widened what is offered")
+            try require(try agent(["SSH_AUTH_SOCK": known.path, "DARKBLOOM_CLUSTER_SSH_AGENT": "1"]).contains("IdentityAgent=none"), "a regular file was taken as an agent")
+            try require(try agent(["SSH_AUTH_SOCK": "relative.sock", "DARKBLOOM_CLUSTER_SSH_AGENT": "1"]).contains("IdentityAgent=none"), "a relative socket was taken")
+        }
         try rejects { _ = try ClusterSSHConfiguration(host: "peer;touch-bad", user: "gaj", port: 22,
             knownHostsFile: known, identityFile: key, installedDarkbloom: "/bin/sh -c") }
     }
@@ -263,7 +289,7 @@ func directory() throws -> URL {
         _ = try event(e)
         let id = UUID(), deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
         try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024)), requestID: id, deadline: deadline)
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil)), requestID: id, deadline: deadline)
         if case .admitted = try event(e).event {} else { throw OwnerWire.invalid("Expected admission") }
         try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
         for i in 0..<2 {
@@ -329,6 +355,36 @@ func directory() throws -> URL {
         try require(e.nativeCleanupObserved, "Cancellation watchdog failed to obtain actual native terminal")
         try require(e.readiness == nil, "Failed owner became ready")
     }
+    /// An owner killed by a signal while a request runs can never publish its
+    /// worker's cleanup. The leader's waits on it end at once, claiming nothing: no
+    /// cleanup is observed, ownership stays unresolved, the signal is named.
+    static func ownerDeathEndsTheWaits(_ owner: URL, _ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let e = try endpoint(owner, worker, dir, behavior: "normal")
+        _ = try event(e)
+        let id = UUID(), deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
+        try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil)), requestID: id, deadline: deadline)
+        if case .admitted = try event(e).event {} else { throw OwnerWire.invalid("Expected admission") }
+        try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
+        if case .committedToken = try event(e).event {} else { throw OwnerWire.invalid("Expected the first token") }
+        guard let pid = e.ownerProcessIdentifier else { throw OwnerWire.invalid("Owner process not running") }
+        let ended = DispatchSemaphore(value: 0)
+        Thread { e.waitForNativeCleanup(); ended.signal() }.start()
+        // SIGKILL (a fixture owner; no model): SIGUSR1, the qualifier's F3
+        // trigger, is now the owner's force-cancel hook (orphan eradication),
+        // which fences the worker and proves its cleanup instead of dying.
+        try require(Darwin.kill(pid, SIGKILL) == 0, "Could not signal the owner")
+        let began = DispatchTime.now().uptimeNanoseconds
+        try require(ended.wait(timeout: .now() + 10) == .success, "The cleanup wait outlived the owner's death (10 s)")
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e9
+        try require(!e.nativeCleanupObserved && !e.ownerDeviceLeaseReleasedObserved, "A dead owner's cleanup was claimed")
+        try require(e.ownerTermination == .signalled(SIGKILL), "Owner termination differs: \(String(describing: e.ownerTermination))")
+        try require(e.unresolvedReason?.contains("terminated by signal \(SIGKILL)") == true, "The cause is not named: \(e.unresolvedReason ?? "none")")
+        try require(!e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000), "A dead owner's release was claimed")
+        try require(e.readiness == nil, "A dead owner stayed ready")
+        print(String(format: "PASS an owner killed by a signal mid-request ends the leader's waits in %.2f s, claiming nothing", elapsed))
+    }
     static func transportLoss(_ owner: URL, _ worker: String) throws {
         for behavior in ["transport-exit", "wrong-terminal"] {
             let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
@@ -380,7 +436,7 @@ func directory() throws -> URL {
         _ = try event(e)
         let now = DispatchTime.now().uptimeNanoseconds
         try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: now + 8_000_000_000, capacityLimitBytes: 1024)),
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: now + 8_000_000_000, capacityLimitBytes: 1024, sampling: nil)),
             requestID: UUID(), deadline: now + 100_000_000)
         try rejects { _ = try event(e) }
         let end = now + 3_000_000_000
@@ -395,7 +451,7 @@ func directory() throws -> URL {
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000, capacityLimitBytes: 1800))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000, capacityLimitBytes: 1800, sampling: nil))
         let entered = DispatchSemaphore(value: 0), unblock = DispatchSemaphore(value: 0)
         defer { unblock.signal(); first.requestNativeCleanup(); second.requestNativeCleanup() }
         try request.start { event in
@@ -425,7 +481,7 @@ func directory() throws -> URL {
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
         try request.start { _ in true }
         let end = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
         while !request.isRetired && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
@@ -467,8 +523,80 @@ func directory() throws -> URL {
         var wrong = OwnerWire(kind: "bootstrapReply", epoch: fixtureIdentity.membershipEpoch, lease: UUID(), incarnation: UUID(), sequence: 1,
             bootstrapSequence: 0, bootstrapBytes: Data(repeating: 0, count: 131_073))
         try rejects { _ = try wrong.encoded(commandStream: true) }
-        wrong.bootstrapBytes = Data([2, 0, 0, 0, 2, 0, 0, 0]); wrong.bootstrapSequence = 4
+        // Past the most rounds any profile carries (the combined profile's seven).
+        wrong.bootstrapBytes = Data([2, 0, 0, 0, 2, 0, 0, 0]); wrong.bootstrapSequence = 7
         try rejects { _ = try wrong.encoded(commandStream: true) }
+    }
+
+    /// The combined profile (S07): the native key prelude through both owners
+    /// and the leader's relay, then the mesh rounds on the same connections.
+    static func combinedBootstrap(_ owner: URL, _ worker: String) throws {
+        let a = try directory(), b = try directory()
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000,
+            nativeStarts: try fixtureNativeStarts())
+        let first = try endpoint(owner, worker, a, behavior: "bootstrap-prelude", rank: 0, bootstrapRelay: relay)
+        let second = try endpoint(owner, worker, b, behavior: "bootstrap-prelude", rank: 1, bootstrapRelay: relay)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 8_000_000_000)
+        let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
+            promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+        try request.start { _ in true }
+        let end = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        while !request.isRetired && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
+        try require(request.isRetired, "Combined-profile paired request did not retire")
+        request.releaseResources()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached { await pair.shutdown(); done.signal() }
+        try require(done.wait(timeout: .now() + 6) == .success, "Combined-profile owners did not shut down")
+        try require(first.nativeCleanupObserved && second.nativeCleanupObserved, "Missing combined-profile native cleanup proof")
+        for e in [first, second] {
+            try require(e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000), "Combined-profile owner release missing")
+        }
+    }
+
+    static func combinedBootstrapContracts() throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        let starts = try fixtureNativeStarts()
+        // A relay for the combined profile needs both ranks' starts of its membership.
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: [starts[0], starts[0]]) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: try fixtureNativeStarts(epoch: UUID())) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: String(repeating: "f", count: 64),
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: starts) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPrelude, deadlineUptimeNanoseconds: deadline, nativeStarts: starts) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            deadlineUptimeNanoseconds: deadline, nativeStarts: starts) }
+        // An owner whose route is not the one its start names is refused.
+        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: starts)
+        let stranger = try ClusterOwnerBinding(clusterID: "cpu-test", ownerIncarnation: UUID(), leaseID: starts[0].leaseID,
+            identity: fixtureIdentity, profile: fixtureProfile, rank: 0, executionPlanSHA256: fixturePlan)
+        try rejects { _ = try relay.exchange(binding: stranger, sequence: 0, contribution: Data(repeating: 1, count: 32)) }
+        // Profile rounds: prelude 0-2, mesh 3-6, nothing past.
+        let profile = ClusterOwnerBootstrapProfile.nativeKeyPreludeMesh2
+        try require(profile.rounds == 7 && profile.preludeRounds == 3 && profile.meshRounds == 4, "Combined profile rounds differ")
+        try profile.validate(sequence: 3, contribution: Data([2, 0, 0, 0]))
+        try profile.validate(sequence: 4, contribution: Data(repeating: 9, count: 64))
+        try profile.validate(sequence: 6, contribution: Data([0, 0, 0, 0]))
+        try profile.validate(sequence: 1, contribution: Data(repeating: 9, count: 32))
+        try rejects { try profile.validate(sequence: 7, contribution: Data([0, 0, 0, 0])) }
+        try rejects { try profile.validate(sequence: 3, contribution: Data(repeating: 9, count: 32)) }
+        try rejects { try profile.validate(sequence: 0, contribution: Data([2, 0, 0, 0])) }
+        // The combined open carries the start and never a host uptime.
+        var open = OwnerWire(kind: "open", epoch: fixtureIdentity.membershipEpoch, lease: starts[1].leaseID, incarnation: nil,
+            sequence: 0, clusterID: "cpu-test", remaining: 6_000_000_000, bootstrapProfile: profile)
+        try rejects { _ = try open.encoded(commandStream: true) }
+        open.nativeStart = starts[1].canonicalBytes
+        let decoded = try OwnerWire.decode(try open.encoded(commandStream: true), commandStream: true)
+        try require(decoded.nativeStart == starts[1].canonicalBytes && decoded.nativeLocalDeadline == nil, "Combined open lost its start")
+        open.nativeLocalDeadline = 5
+        try rejects { _ = try open.encoded(commandStream: true) }
     }
 
     static func cancelledInflightRound(_ owner: URL, _ worker: String) throws {

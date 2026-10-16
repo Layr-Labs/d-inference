@@ -4,15 +4,72 @@ import Foundation
 /// Artifact, configuration, profile and Plan hashes come from the native adapter.
 public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     case qwen35Dense = "qwen35-dense-layer-stage"
+    /// The same two-stage layer pipeline for Qwen3.5-architecture models whose
+    /// feed-forward is a routed bank of experts beside a shared expert.
+    case qwen35RoutedExperts = "qwen35-routed-expert-layer-stage"
+    /// The same pipeline for a dense Qwen3.5-architecture model stored as a
+    /// Prism Hadamard pack: packed modules behind signed block transforms,
+    /// F16 scales and F32 norms, so the stream and its state are F32.
+    case qwen35PrismHadamard = "qwen35-prism-hadamard-layer-stage"
+    /// GPT-OSS text as a two-stage layer pipeline on the product's own class:
+    /// alternating sliding-window and full attention with learned sinks, and
+    /// routed MXFP4 experts held as the artifact stores them.
+    case gptossLayerStage = "gpt-oss-layer-stage"
+    /// The same pipeline for Nemotron-H models: single-mixer blocks whose
+    /// kinds (Mamba2, mixture of experts, attention) follow an explicit list.
+    case nemotronH = "nemotron-h-layer-stage"
+    /// MiMo V2.6 text as a two-stage layer pipeline on the product's own text
+    /// class: full and sliding-window attention, routed MXFP4 experts.
+    case mimoV26LayerStage = "mimo-v26-layer-stage"
+    /// Gemma 4 26B as two stages of the product's own decoder layers.
+    case gemma4LayerStage = "gemma4-layer-stage"
     public var version: Int { 1 }
-    public var runtimeModelID: String { "registered_qwen35_9b" }
-    public var profileID: String { "registered_qwen35_9b_greedy_generation_v1" }
+    /// The adapter's original pair: the first row of `registeredProfiles`.
+    public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
+    public var profileID: String { registeredProfiles[0].profileID }
     /// Every model/profile pair this adapter revision executes, the original
     /// pair first. A capability naming any other pair, or a model from one row
     /// with the profile of another, is refused.
     public var registeredProfiles: [(runtimeModelID: String, profileID: String)] {
-        [(runtimeModelID, profileID),
-         ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
+        switch self {
+        case .qwen35Dense:
+            [("registered_qwen35_9b", "registered_qwen35_9b_greedy_generation_v1"),
+             ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
+        case .qwen35RoutedExperts:
+            [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1"),
+             ("registered_qwen36_35b_a3b", "registered_qwen36_35b_a3b_greedy_generation_v1")]
+        case .qwen35PrismHadamard:
+            [("registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_27b_greedy_generation_v1")]
+        case .gptossLayerStage:
+            [("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1")]
+        case .nemotronH:
+            [("registered_nemotron35_lightning", "registered_nemotron35_lightning_greedy_generation_v1")]
+        case .mimoV26LayerStage:
+            [("registered_mimo_v26_flash_mopd", "registered_mimo_v26_flash_mopd_greedy_generation_v1")]
+        case .gemma4LayerStage:
+            // One row per catalog entry of Gemma 4 26B; the last two are one artifact.
+            [("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1"),
+             ("registered_gemma4_26b", "registered_gemma4_26b_greedy_generation_v1"),
+             ("registered_gemma4_26b_8bit", "registered_gemma4_26b_8bit_greedy_generation_v1")]
+        }
+    }
+    /// The one arithmetic policy a capability of this adapter may name. An
+    /// adapter whose arithmetic depends on more of the process environment
+    /// names its own policy, so a rank started under another one is refused.
+    public var arithmeticPolicyID: String {
+        switch self {
+        case .qwen35Dense: "qwen_cbv2_query128_bf16_tf32_default_v1"
+        case .qwen35RoutedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
+        case .qwen35PrismHadamard: "qwen_cbv2_query128_tf32_prism_hadamard_f32_v1"
+        case .gptossLayerStage: "gpt_oss_ordinary_cache_split_experts_bf16_defaults_v1"
+        case .nemotronH: "nemotron_h_cbv2_query128_bf16_tf32_default_v1"
+        case .mimoV26LayerStage: "mimo_v26_text_ordinary_cache_bf16_defaults_v1"
+        case .gemma4LayerStage: "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
+        }
+    }
+    /// The adapter that registers a runtime model, or nil for an unregistered ID.
+    public static func registering(runtimeModelID: String) -> ClusterRuntimeAdapter? {
+        allCases.first { $0.registeredProfiles.contains { $0.runtimeModelID == runtimeModelID } }
     }
 }
 
@@ -64,8 +121,8 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     public let rankCount = 2
     public let batchSize = 1
     public let maxActiveRequests = 1
-    public let maxLifetimeSeconds: Int
-    public let maxRequests: Int
+    // No session lifetime and no request count: a loaded runtime serves until
+    // its owner stops it or its rank lease lapses (ClusterWorkerLease).
     /// Requests remain serialized even when adjacent prefill stages overlap.
     public let schedulingPolicy = "serial"
     public let supportedPrefillSchedules: [ClusterPrefillSchedule]
@@ -75,14 +132,18 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     public let selectionPolicy = "greedy"
     public let modality = "text"
     public let stopPolicy = "selectedTokenIDs"
-    public let speculation = "off"
+    /// "off", or the one speculative scheme a runtime may advertise: the
+    /// decoding rank of a phase split drafts with the model's own head and
+    /// keeps only the target's greedy tokens. It follows from the modes.
+    public let speculation: String
+    public static let decodingRankSpeculation = "decodingRankHeadExactGreedy"
     public let prefixReuse = false
 
     public init(runtimeBinarySHA256: String, adapterID: String, adapterVersion: Int,
                 runtimeModelID: String, artifactSHA256: String, configurationSHA256: String,
                 manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
-                arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int,
+                arithmeticPolicySHA256: String,
                 supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
                 supportedGenerationModes: [ClusterGenerationMode] = [.pipeline]) throws {
         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
@@ -90,9 +151,9 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
         self.profile = profile; self.profileFingerprint = profileFingerprint; self.partitions = partitions
         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
-        self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
         self.supportedPrefillSchedules = supportedPrefillSchedules
         self.supportedGenerationModes = supportedGenerationModes
+        self.speculation = supportedGenerationModes.contains(where: \.usesSpeculativeHead) ? Self.decodingRankSpeculation : "off"
         try ClusterRuntimeCapabilityValidation.check(self)
     }
 

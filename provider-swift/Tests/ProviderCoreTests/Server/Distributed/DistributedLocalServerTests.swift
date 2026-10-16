@@ -60,12 +60,17 @@ import Testing
     #expect(done.cleanupComplete)
 }
 
-@Test func distributedLocalServerExpiryStopsWithoutHTTPRequests() async throws {
+/// No fixed lifetime: the server keeps serving past what used to be the
+/// session's lifetime and stops only when it is asked to (or the session fails).
+@Test func distributedLocalServerHasNoLifetimeAndServesUntilStopped() async throws {
     let session = LocalHostTestSession(); session.lifetimeNanoseconds = 1_000_000_000
     let discovery = LocalHostDiscovery()
     let host = localHost(session, discovery: discovery)
     try await host.start()
-    let done = await host.waitUntilStopped()
+    try await Task.sleep(for: .milliseconds(1_500))
+    let serving = await host.status
+    #expect(serving.phase == .serving && discovery.value != nil)
+    let done = await host.stop(until: localHostDeadline())
     #expect(done.cleanupComplete && session.base.reserveCount == 0 && discovery.value == nil)
 }
 
@@ -143,20 +148,6 @@ import Testing
     #expect(result.cleanupComplete)
 }
 
-@Test func distributedLocalServerExhaustionKeepsLastResponseAcquisitionUntilRelease() async throws {
-    let session = LocalHostTestSession()
-    let serving = localHost(session)
-    try await serving.start()
-    let acquired = try await serving.acquire(session.model.publicModelID)
-    session.exhaustRequests()
-    try await Task.sleep(for: .milliseconds(150))
-    let held = await serving.status
-    #expect(held.phase == .serving && held.acquisitions == 1 && !session.nativeCleanupObserved)
-    await acquired.releaseToken.fire()
-    let done = await serving.waitUntilStopped()
-    #expect(done.cleanupComplete && !done.failed)
-}
-
 @Test func distributedLocalServerUnexpectedSessionLossLatchesFailureAfterCleanup() async throws {
     let session = LocalHostTestSession(), discovery = LocalHostDiscovery()
     let host = localHost(session, discovery: discovery)
@@ -166,11 +157,10 @@ import Testing
     #expect(done.cleanupComplete && done.failed && discovery.value == nil)
 }
 
-@Test func distributedLocalServerInvalidPairBeforeStatusCallbackIsFailureNotQuotaCompletion() async throws {
+@Test func distributedLocalServerInvalidPairIsFailure() async throws {
     let session = LocalHostTestSession()
     let serving = localHost(session)
     try await serving.start()
-    session.exhaustRequests()
     session.invalidatePairBeforeStatusCallback()
     #expect(session.status == .ready)
     let done = await serving.waitUntilStopped()

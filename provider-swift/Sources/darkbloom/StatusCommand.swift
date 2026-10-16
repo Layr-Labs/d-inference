@@ -18,22 +18,22 @@ struct Status: AsyncParsableCommand {
         let config = snapshot.config
         let models = advertisedModels(from: snapshot.models, config: config)
 
-        print("darkbloom \(ProviderCore.version)")
+        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version)")
         print("Provider: \(config.provider.name)")
         print("Config: \(describeConfigPath(snapshot))")
         print("Coordinator: \(config.coordinator.url)")
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
-        print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
+        print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `\(BuildEnvironment.current.cliName) idle`)")
         if config.backend.modelAutopilot.hasConsent && !config.coordinator.privateOnly {
-            print("Autopilot enrollment: Experimental (not live activation; run `darkbloom autopilot status` for the current mode)")
+            print("Autopilot enrollment: Experimental (not live activation; run `\(BuildEnvironment.current.cliName) autopilot status` for the current mode)")
             print("  The saved idle policy applies in shadow mode or while waiting for control.")
         }
         let preloadSource = config.backend.preloadModels.isEmpty
             ? "selected models" : "explicit preload_models (\(config.backend.preloadModels.count))"
         print("Startup preload: \(config.backend.startupPreload ? "on" : "off") "
               + "(\(preloadSource); timeout \(config.backend.startupPreloadTimeoutSecs)s)")
-        print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
+        print("Beta features: \(betaFeaturesStatus(config)) (manage with `\(BuildEnvironment.current.cliName) beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {
@@ -61,6 +61,12 @@ struct Status: AsyncParsableCommand {
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
+        if LaunchAgent.installedJobIsClusterMember(),
+           let supervisor = ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self,
+                                                         from: ClusterSupervisionFiles.statePath()) {
+            print(supervisor.summary(now: Date().timeIntervalSince1970))
+        }
+        for line in Self.clusterServiceLines() { print(line) }
         printDaemonStatus(config: config, models: snapshot.models)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
@@ -88,7 +94,7 @@ struct Status: AsyncParsableCommand {
         if WatchdogAgent.isInstalled() {
             return "on (watchdog installed but not loaded)"
         }
-        return "on (watchdog not installed — run `darkbloom start` or `restart` to arm)"
+        return "on (watchdog not installed — run `\(BuildEnvironment.current.cliName) start` or `restart` to arm)"
     }
 
     func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot) -> String {
@@ -102,7 +108,7 @@ struct Status: AsyncParsableCommand {
     private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo]) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
-            print("Daemon: not running (run `darkbloom start`)")
+            print("Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)")
             return
         }
         let alive = daemonProcessAlive(pid: state.pid)
@@ -295,7 +301,7 @@ struct Status: AsyncParsableCommand {
             }
         }
         if coldLoadBlocked {
-            lines.append("  Free at least \(String(format: "%.1f", coldShortfallGb)) GB with margin, confirm with `darkbloom doctor`, then retry the load.")
+            lines.append("  Free at least \(String(format: "%.1f", coldShortfallGb)) GB with margin, confirm with `\(BuildEnvironment.current.cliName) doctor`, then retry the load.")
         }
         return lines
     }

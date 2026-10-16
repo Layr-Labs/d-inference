@@ -24,15 +24,27 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// The pipeline has one saved spelling, the omitted one, so naming it in an
     /// input does not make a second digest for the same setup.
     mutating func makeGenerationSelectionCanonical() { if generationMode == .pipeline { generationMode = nil } }
+    /// Tensor parallel only: each rank's share weight of every layer (rank
+    /// order), as the planner chose it from the model plan's kernel-aligned
+    /// options. Omitted for equal shares and every other mode, so a setup
+    /// saved before this field keeps its bytes. Passed to both workers
+    /// (`--tensor-shares`), which bind it into their load agreement.
+    public private(set) var tensorShares: [Int]?
     public let chunkTokens: Int
     public let requestTimeoutSeconds: Int
     public let peers: [Peer]
     public let coordinator: Coordinator
-    public let trust: Trust
+    /// The existing SSH trust the leader's session uses to reach the follower.
+    /// Absent exactly when the follower is reached over the link control
+    /// channel (`linkControl`): such a setup has no SSH configuration at all.
+    public let trust: Trust?
     public let tokenizerFiles: [TokenizerFile]
     /// Present only on a Mac set up to be paired by the coordinator. Omission
     /// preserves an existing setup and its saved bytes; null is rejected.
     public private(set) var nativeMember: ClusterNativeMemberAttachment?
+    /// Present only on a setup whose follower is reached over the link control
+    /// channel (PROD-PLAN S08). Omission preserves an existing setup's bytes.
+    public private(set) var linkControl: ClusterLinkControlAttachment?
 
     public enum Role: String, Codable, Sendable { case leader, follower }
     public struct Peer: Codable, Sendable, Equatable {
@@ -69,9 +81,13 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// launches itself over SSH: the two would contend for the same device.
     func requireOrdinarySessionRoute() throws {
         guard nativeMember == nil else {
-            throw ClusterConfigurationError.invalid("This setup is saved for coordinator pairing (nativeMember); run `darkbloom start --cluster-member`, or save a setup without it for a local distributed session")
+            throw ClusterConfigurationError.invalid("Run `darkbloom cluster` again; it sets the cluster up by itself. (This setup is saved for coordinator pairing and cannot run a local distributed session.)")
         }
     }
+
+    /// The refusal when a peer's installed native worker is not the build the capability was made with (the two Macs
+    /// run different Darkbloom builds); the onboarding says it in plain words (`ClusterSetupPlanning.differentBuilds`).
+    static let peerBuildDiffers = "Peer native build differs from the capability"
 
     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
         func require(_ value: Bool, _ message: String) throws {
@@ -87,7 +103,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         _ = try capability.selection(planSHA256: selectedPlanSHA256)
         try capability.requireSupport(for: selectedPrefillSchedule)
         try require((1...capability.profile.maximumChunkTokens).contains(chunkTokens)
-            && (1...capability.maxLifetimeSeconds).contains(requestTimeoutSeconds), "Cluster request bounds exceed the runtime capability")
+            && (1...3600).contains(requestTimeoutSeconds), "Cluster request bounds exceed the runtime capability")
         try require(peers.count == 2 && peers.map(\.rank) == [0, 1]
             && Set(peers.map(\.id)).count == 2, "Expected two distinct peers in rank order")
         try require(peers[localRank].id == memberID, "Leader/follower role does not match the local ranked member")
@@ -99,14 +115,25 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
                         "Peer installation paths must be absolute and shell-safe")
             // The first compatibility contract is one installed native build on
             // both hosts. This pin is checked on installation/start, not here.
-            try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, "Peer native build differs from the capability")
+            try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, Self.peerBuildDiffers)
             try require(ClusterConfigurationSyntax.label(peer.jacclDevice, maximum: 63), "Invalid JACCL device name")
         }
         // After the peers: the refusal names the workers the record describes.
         try ClusterGenerationSelection.requireSupport(for: selectedGenerationMode, peers: peers, capability: capability)
+        try require(tensorShares.map { shares in selectedGenerationMode == .tensorParallel && shares.count == 2
+            && shares.allSatisfy({ (1...64).contains($0) }) && Set(shares).count > 1 } ?? true,
+            "Tensor-parallel shares are two unequal weights of 1...64, and only under tensor_parallel_v1")
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
-        try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)
-            && trust.identityFile != trust.knownHostsFile && ClusterConfigurationSyntax.hash(trust.knownHostsSHA256), "Invalid existing SSH trust inputs")
+        if let linkControl {
+            // A coordinator-paired setup (`nativeMember`) may carry it too: the
+            // members of a committed start reach each other over the link (S10).
+            try require(trust == nil, "A setup reached over the link control channel has no SSH trust")
+            try linkControl.validate()
+        } else {
+            guard let trust else { throw ClusterConfigurationError.invalid("Missing existing SSH trust inputs") }
+            try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)
+                && trust.identityFile != trust.knownHostsFile && ClusterConfigurationSyntax.hash(trust.knownHostsSHA256), "Invalid existing SSH trust inputs")
+        }
         try require((1...16).contains(tokenizerFiles.count)
             && Set(tokenizerFiles.map(\.path)).count == tokenizerFiles.count
             && tokenizerFiles.contains(where: { $0.purpose == .tokenizer }), "Missing or duplicate tokenizer metadata pins")

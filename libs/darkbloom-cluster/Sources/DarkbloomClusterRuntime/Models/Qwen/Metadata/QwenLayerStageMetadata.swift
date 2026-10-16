@@ -12,7 +12,10 @@ enum QwenStageMetadata {
         return value
     }
     static func validate(text: [String: Any], root: [String: Any], nested: Bool) throws {
-        guard text["model_type"] == nil || text["model_type"] as? String == "qwen3_5_text"
+        // Non-nil only for the routed-expert wrapper, whose own sizes it admits.
+        let routed = try QwenRoutedExpertStageMetadata.geometry(text: text, root: root, nested: nested)
+        let textType = routed == nil ? "qwen3_5_text" : QwenRoutedExpertStageMetadata.textModelType
+        guard text["model_type"] == nil || text["model_type"] as? String == textType
             || (!nested && text["model_type"] as? String == "qwen3_5") else {
             throw ProbeError("Unknown dense Qwen text configuration type")
         }
@@ -30,7 +33,7 @@ enum QwenStageMetadata {
             "mamba_ssm_dtype", "dtype", "torch_dtype", "initializer_range", "use_cache", "eos_token_id",
             "bos_token_id", "pad_token_id", "quantization", "quantization_config", "architectures",
             "transformers_version", "cluster_fixture_profile", "cluster_fixture_dtype", "mtplx_mtp", "mtplx_mtp_quantization"]
-        guard Set(text.keys).isSubset(of: knownKeys),
+        guard Set(text.keys).isSubset(of: routed == nil ? knownKeys : knownKeys.union(QwenRoutedExpertStageMetadata.textKeys)),
             root["mtplx_mtp"] == nil || root["mtplx_mtp"] is [String: Any] else {
             throw ProbeError("Unqualified Qwen text metadata or malformed optional MTP declaration")
         }
@@ -58,7 +61,8 @@ enum QwenStageMetadata {
                 }
             }
         }
-        for key in ["num_experts", "num_experts_per_tok", "moe_intermediate_size", "shared_expert_intermediate_size"] {
+        for key in ["num_experts", "num_experts_per_tok", "moe_intermediate_size", "shared_expert_intermediate_size"]
+        where routed == nil {
             guard text[key] == nil || BoundedProbeInput.integer(text[key]) == 0 else {
                 throw ProbeError("Layer stages do not support MoE metadata")
             }
@@ -95,7 +99,10 @@ enum QwenStageMetadata {
             "linear_num_value_heads": 128, "linear_key_head_dim": 512, "linear_value_head_dim": 512,
             "linear_conv_kernel_dim": 16, "vocab_size": 262144, "max_position_embeddings": 1048576]
         var dimensions: [String: Int] = [:]
-        for (key, bound) in bounds { dimensions[key] = try integer(text, key, limit: bound) }
+        // A routed-expert layer has no dense width; its own sizes were admitted above.
+        for (key, bound) in bounds where routed == nil || key != "intermediate_size" {
+            dimensions[key] = try integer(text, key, limit: bound)
+        }
         guard dimensions["num_attention_heads"]! % dimensions["num_key_value_heads"]! == 0,
             dimensions["linear_num_value_heads"]! % dimensions["linear_num_key_heads"]! == 0,
             dimensions["linear_key_head_dim"]! % 32 == 0 else {
@@ -106,7 +113,8 @@ enum QwenStageMetadata {
         -> (modules: Set<String>, inputWidths: [String: Int], required: Set<String>) {
         // Called only after validate established bounded positive dimensions.
         let hidden = BoundedProbeInput.integer(text["hidden_size"])!
-        let intermediate = BoundedProbeInput.integer(text["intermediate_size"])!
+        let routed = QwenRoutedExpertStageMetadata.admittedGeometry(text)
+        let intermediate = routed == nil ? BoundedProbeInput.integer(text["intermediate_size"])! : 0
         let attentionWidth = BoundedProbeInput.integer(text["num_attention_heads"])!
             * BoundedProbeInput.integer(text["head_dim"])!
         let recurrentWidth = BoundedProbeInput.integer(text["linear_num_value_heads"])!
@@ -117,8 +125,13 @@ enum QwenStageMetadata {
         for (layer, kind) in layerTypes.enumerated() {
             let base = namespace + "model.layers.\(layer)."
             modules.formUnion([base + "input_layernorm", base + "post_attention_layernorm"])
-            for name in ["gate_proj", "up_proj"] { inputWidths[base + "mlp." + name] = hidden }
-            inputWidths[base + "mlp.down_proj"] = intermediate
+            if let routed {
+                inputWidths.merge(QwenRoutedExpertStageMetadata.inputWidths(base: base + "mlp.", hidden: hidden,
+                    geometry: routed)) { current, _ in current }
+            } else {
+                for name in ["gate_proj", "up_proj"] { inputWidths[base + "mlp." + name] = hidden }
+                inputWidths[base + "mlp.down_proj"] = intermediate
+            }
             if kind == "full_attention" {
                 for name in ["q_proj", "k_proj", "v_proj"] { inputWidths[base + "self_attn." + name] = hidden }
                 inputWidths[base + "self_attn.o_proj"] = attentionWidth

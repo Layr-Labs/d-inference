@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Foundation
 
 public enum ClusterDiagnostics {
@@ -59,14 +60,16 @@ public enum ClusterDiagnostics {
             return .init(operation: operation, configurationState: .notConfigured, saved: nil, live: nil,
                 deviceJournal: journal, checks: [.init(name: "savedConfiguration", outcome: .notRun,
                     detail: "No saved cluster reference; ordinary solo behavior is unchanged.")],
-                localLink: localLink, configuredLinkDevice: nil)
+                localLink: localLink, configuredLinkDevice: nil,
+                observability: ClusterObservabilitySnapshot.read(homeDirectory: saved.paths.homeDirectory))
         }
         checks.append(.init(name: "savedConfiguration", outcome: .passed,
             detail: "Canonical configuration/capability pins and selected policy verified; this is not readiness."))
         if doctor {
             checks += await Task.detached {
                 ClusterInstalledMetadataChecks.localInstalledMetadata(reference: reference, paths: saved.paths,
-                    deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+                    deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000,
+                    localChipClass: ClusterChipClass.local())
             }.value
         } else {
             checks.append(.init(name: "localInstalledMetadata", outcome: .notRun, detail: "Run cluster doctor for local installed metadata checks."))
@@ -97,7 +100,8 @@ public enum ClusterDiagnostics {
                 ? "Native ranks are started with the owner-authenticated bootstrap exchange."
                 : "Native ranks are started with the runtime's own bootstrap exchange on the configured link address. The owner-authenticated exchange is not available in this build, so nothing vouches for the peer that answers on that address. Each rank is started with a \(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) ms collective progress limit."))
         return .init(operation: operation, configurationState: .verified, saved: binding, live: live,
-            deviceJournal: journal, checks: checks, localLink: localLink, configuredLinkDevice: saved.linkDevice)
+            deviceJournal: journal, checks: checks, localLink: localLink, configuredLinkDevice: saved.linkDevice,
+            observability: ClusterObservabilitySnapshot.read(homeDirectory: saved.paths.homeDirectory))
     }
 
     private static func bounded(_ error: Error) -> String { ClusterDiagnosticsReport.boundedDetail(error) }

@@ -157,11 +157,23 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
+        } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
+            // A cluster pair's refusal names its rule and the model's limits
+            // (a closed template, never request content): the client sees why.
+            return Self.openAIErrorResponse(status: .badRequest, message: message, code: refusal.rawValue)
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {
             let failure = ProviderLoop.sanitizedInferenceFailure(
                 from: error, phase: .generation)
+            // The closed vocabulary only (the error's case name and bounded reason, never its text), so a failing
+            // local request leaves a line in this Mac's log (a cluster's 500 left nothing to read, 2026-10-16).
+            let kind = String(String(describing: error).prefix { $0 != "(" }.prefix(64))
+            FileHandle.standardError.write(Data(("local API: request failed: \(failure.code.rawValue) (\(kind)"
+                + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
+            if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
+                FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
+            }
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
@@ -186,10 +198,11 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// body even on a cross-origin request.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
-        message: String
+        message: String,
+        code: String? = nil
     ) -> Response {
         let body = OpenAIErrorEnvelope(
-            error: .init(message: message, type: "invalid_request_error")
+            error: .init(message: message, type: "invalid_request_error", code: code)
         )
         let data: Data
         do {
@@ -216,6 +229,8 @@ private struct OpenAIErrorEnvelope: Encodable {
     struct ErrorObject: Encodable {
         let message: String
         let type: String
+        /// Omitted when nil, so every existing envelope is unchanged.
+        var code: String? = nil
     }
     let error: ErrorObject
 }

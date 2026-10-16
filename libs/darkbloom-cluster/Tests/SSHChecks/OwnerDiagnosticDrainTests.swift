@@ -49,7 +49,12 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         }
         try require(endpoint.nativeCleanupObserved && endpoint.ownerDeviceLeaseReleasedObserved,
             "Actual native cleanup and authenticated ACK must precede fixture diagnostic")
-        try require(endpoint.diagnosticTail.isEmpty, "Late diagnostic was emitted before test opened gate")
+        // S24: before its acknowledgement the owner repeats the abnormal exit and the
+        // child's last diagnostic lines (each line marked); nothing else may precede the gate.
+        let echo = Data((ClusterWorkerOwnerService.workerExitEcho(rank: 0, termination: .exited(7),
+                                                                  diagnosticTail: expected) ?? "").utf8)
+        try require(!echo.isEmpty && echo.starts(with: endpoint.diagnosticTail),
+            "Late diagnostic was emitted before test opened gate")
         try Data([1]).write(to: directory.appendingPathComponent("emit-after-ack"), options: .withoutOverwriting)
         let released = await endpoint.waitUntilOwnerReleased(deadline: start + 6_000_000_000)
         let emitted = try Data(contentsOf: directory.appendingPathComponent("emitted-diagnostic"))
@@ -57,7 +62,7 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         try require(endpoint.nativeCleanupObserved && endpoint.ownerDeviceLeaseReleasedObserved,
             "Transport drain changed native/lease proofs")
         #if OWNER_DIAGNOSTIC_DRAIN
-        try require(endpoint.diagnosticTail == expected && endpoint.diagnosticDrainComplete,
+        try require(endpoint.diagnosticTail == echo + expected && endpoint.diagnosticDrainComplete,
             "Post-ACK bytes or EOF lost before owner-ended barrier")
         if behavior == "normal" {
             try require(released && endpoint.ownerTermination == .exited(0), "Natural owner return not observed")
@@ -68,7 +73,7 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
             try require(DispatchTime.now().uptimeNanoseconds - start < 5_000_000_000, "Exit grace was extended")
         }
         #else
-        try require(released && endpoint.ownerTermination == .exited(0) && endpoint.diagnosticTail.isEmpty,
+        try require(released && endpoint.ownerTermination == .exited(0) && echo.starts(with: endpoint.diagnosticTail),
             "Baseline no longer reproduces unread post-ACK bytes")
         #endif
         let journal = try Data(contentsOf: directory.appendingPathComponent("native-device.lease"))

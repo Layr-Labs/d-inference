@@ -46,7 +46,7 @@ public enum GPUEnforcement {
                 return "MLX default device resolved to CPU. "
                     + "GPU enforcement could not pin Device.gpu as the "
                     + "default \u{2014} this is usually a sign that the "
-                    + "Metal device probe failed. See `darkbloom doctor`."
+                    + "Metal device probe failed. See `\(BuildEnvironment.current.cliName) doctor`."
             }
         }
     }

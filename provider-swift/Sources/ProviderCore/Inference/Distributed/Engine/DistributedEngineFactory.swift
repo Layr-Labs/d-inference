@@ -4,6 +4,9 @@ import MLXLMCommon
 /// Explicit opt-in only. The caller starts and verifies its owner and supplies
 /// a tokenizer; these factories never load a local model container or weights.
 public enum DistributedEngineFactory {
+    /// The single-Mac product's output default (`slotDefaultMaxTokens`).
+    public static let defaultOutputTokens = 4096
+
     public static func makeBridge(
         owner: any DistributedResidentExecutionOwner,
         expectedIdentity: DistributedResidentIdentity,
@@ -11,25 +14,45 @@ public enum DistributedEngineFactory {
         tokenizer: TokenizerHandle,
         eosTokenIDs: Set<Int>,
         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-        publicModelID: String? = nil
+        publicModelID: String? = nil,
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
+        modelType: String? = nil,
+        modelDirectory: URL? = nil,
+        pairTelemetry: DistributedPairTelemetryContext? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
-        guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
+        let modelID = publicModelID ?? expectedIdentity.modelID
+        // Product parity: the single-Mac slot's stop set, from the same files
+        // by the same rules (`EngineV2SlotFactory`).
+        let stopTokenIDs = productStopTokenIDs(installed: eosTokenIDs, modelID: modelID, modelType: modelType,
+                                               modelDirectory: modelDirectory, tokenizer: tokenizer)
+        guard stopTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
             throw DistributedEngineError.invalidConfiguration("invalid EOS vocabulary")
         }
         try firstTokenBudgetPolicy?.validate(maximumPromptTokens: profile.maxPromptTokens)
         let engine = try DistributedCBv2Engine(
             owner: owner, expectedIdentity: expectedIdentity,
             profile: profile, detokenizers: CBv2TextDetokenizerFactory(tokenizer: tokenizer.inner),
-            requestObserver: DistributedRequestObservation.log)
+            requestObserver: pairTelemetry?.observer() ?? DistributedRequestObservation.log)
         // The owner performs atomic per-peer admission. Parent MLX counters do
         // not measure remote allocations, so no invented parent byte charges are
         // attached here. The engine reports its owner's conservative capacity.
+        // Prefix reuse happens on the peers (rank-local caches, agreed before
+        // the first forward). With evidence the bridge mints a receipt per
+        // request and advertises the frontiers both peers hold.
+        // Product parity: the artifact's sampling defaults for the families
+        // the product honours them for (legacy greedy defaults otherwise);
+        // an omitted `max_tokens` is the product's 4,096 (the pair's output
+        // limit), cut to the context left after the prompt.
+        let samplingDefaults = EngineV2SamplingDefaults.resolve(
+            modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
         return EngineV2Bridge(
-            engine: engine, modelId: publicModelID ?? expectedIdentity.modelID, tokenizer: tokenizer,
-            eosTokenIds: eosTokenIDs, defaultMaxTokens: profile.maxOutputTokens,
-            maxConcurrentRequests: 1, kvBackendKind: .contiguous,
-            distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
+            engine: engine, modelId: modelID, tokenizer: tokenizer,
+            eosTokenIds: stopTokenIDs, samplingDefaults: samplingDefaults,
+            defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
+            defaultMaxTokensContextLimit: profile.maxContextTokens,
+            maxConcurrentRequests: 1, residentPrefixCacheEvidence: residentPrefixEvidence,
+            kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
     }
 
     /// Text-only registry construction for a successfully started installed
@@ -44,14 +67,33 @@ public enum DistributedEngineFactory {
         tokenizer: TokenizerHandle,
         eosTokenIDs: Set<Int>,
         modelType: String? = nil,
-        firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil
+        firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
+        modelDirectory: URL? = nil,
+        pairTelemetry: DistributedPairTelemetryContext? = nil
     ) throws -> MultiModelBatchSchedulerEngine.ModelRegistryEntry {
         let bridge = try makeBridge(
             owner: owner, expectedIdentity: expectedIdentity, profile: profile,
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs,
-            firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID)
+            firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID,
+            residentPrefixEvidence: residentPrefixEvidence, modelType: modelType, modelDirectory: modelDirectory,
+            pairTelemetry: pairTelemetry)
         return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
                      isVLM: false, engineV2Bridge: bridge, visionGate: nil)
+    }
+
+    /// The stop set a single-Mac slot of this model serves with
+    /// (`EngineV2SlotFactory`): the artifact's EOS as the model loader reads
+    /// it (`ModelEOSPolicy.artifactEOSTokenIds`) plus the model's EOS policy
+    /// (GPT-OSS/Harmony stops at `<|call|>`, `<|return|>` and
+    /// `<|endoftext|>`). The bridge adds the tokenizer's EOS, as it does for
+    /// a single-Mac slot. The installed model's EOS is the base only when the
+    /// directory has no model configuration.
+    static func productStopTokenIDs(installed: Set<Int>, modelID: String, modelType: String?,
+                                    modelDirectory: URL?, tokenizer: TokenizerHandle) -> Set<Int> {
+        let base = modelDirectory.flatMap { ModelEOSPolicy.artifactEOSTokenIds(modelDirectory: $0) } ?? installed
+        return ModelEOSPolicy.effectiveEOSTokenIds(modelId: modelID, modelType: modelType, base: base,
+                                                   tokenToId: { tokenizer.inner.convertTokenToId($0) })
     }
 
     /// Same public-route bounds as saved cluster configuration. The installed

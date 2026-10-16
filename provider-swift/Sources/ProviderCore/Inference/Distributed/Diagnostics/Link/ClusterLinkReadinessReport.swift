@@ -30,13 +30,26 @@ public struct ClusterLinkReadinessReport: Encodable, Sendable, Equatable {
         /// whether the system job that puts that address back is installed and
         /// loaded as Darkbloom writes it.
         public internal(set) var addressKept: Bool? = nil
+        /// Nil unless the network around the port was read (link setup v2):
+        /// whether the port belongs to the cluster alone, and if not, why.
+        public internal(set) var isolation: ClusterLinkIsolationStatus? = nil
 
         /// The address is Darkbloom's and nothing would put it back.
         var addressIsTemporary: Bool { assignedAddress == .present && addressKept == false }
 
+        /// A port the approval of link setup v2 could isolate, or one that
+        /// needs it but has something in the way: ready, or lacking only an address.
+        var isolationApplies: Bool {
+            guard portActive, let isolation, !isolation.isolated else { return false }
+            return verdict == .ready || verdict.fixableByAddingAddress
+        }
+
         /// What to do about this port: the verdict's guidance, unless what it
         /// lacks, or is about to lose, is an address Darkbloom assigned to it.
+        /// Where the network around the port was read, what isolating it
+        /// takes comes first, because that is what keeps an address there.
         var guidance: String? {
+            if isolationApplies, let interface, let advice = isolation?.guidance(interface: interface) { return advice }
             if assignedAddress == .missing, verdict.fixableByAddingAddress { return ClusterLinkReadinessReport.addressLostGuidance }
             if verdict == .ready, addressIsTemporary { return ClusterLinkReadinessReport.addressTemporaryGuidance }
             return verdict.guidance

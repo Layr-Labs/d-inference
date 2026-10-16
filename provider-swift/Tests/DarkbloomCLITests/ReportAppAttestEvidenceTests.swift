@@ -21,13 +21,13 @@ struct ReportAppAttestEvidenceTests {
 
         #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == nil)
         #expect(try String(contentsOf: retired, encoding: .utf8) == "retired-test-token\n")
-        #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent(".darkbloom").path))
+        #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent(BuildEnvironment.current.installDirectoryName).path))
     }
 
     @Test func sudoReportReadsTheCanonicalCredential() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-auth-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
-        let canonical = home.appendingPathComponent(".darkbloom/auth_token")
+        let canonical = home.appendingPathComponent("\(BuildEnvironment.current.installDirectoryName)/auth_token")
         try writeToken("canonical-test-token\n", at: canonical)
 
         #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == "canonical-test-token")
@@ -46,7 +46,7 @@ struct ReportAppAttestEvidenceTests {
     @Test func sudoReportHonorsAnExplicitOverrideWithoutFallback() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-auth-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
-        let canonical = home.appendingPathComponent(".darkbloom/auth_token")
+        let canonical = home.appendingPathComponent("\(BuildEnvironment.current.installDirectoryName)/auth_token")
         let override = home.appendingPathComponent("operator-token")
         try writeToken("canonical-test-token\n", at: canonical)
         try writeToken("override-test-token\n", at: override)

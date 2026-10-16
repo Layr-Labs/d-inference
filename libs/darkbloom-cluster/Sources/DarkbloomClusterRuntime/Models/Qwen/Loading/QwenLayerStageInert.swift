@@ -1,4 +1,6 @@
+import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXNN
 
@@ -17,13 +19,41 @@ private final class QwenStageDiscardedHead: Linear {
 /// This weight exists only for pinned Qwen's metadata-only activation/cache
 /// dtype query. Stage 1 must enter through inputEmbedding (raw residual), never
 /// token lookup or tied-head fallback. The session checks that contract first.
-private final class QwenStageResidualEmbedding: Embedding {
+///
+/// One exception, used only by a decoding rank that runs the speculative head
+/// (`Models/Qwen/MTP`): the public forwards that also return the trunk's hidden
+/// state take token IDs and nothing else. For the length of one such call the
+/// caller names the residual this stage must start from, and the lookup hands
+/// it back unchanged. The residual is kept outside the module, so the module's
+/// parameters, and with them every stage receipt, are what they always were.
+final class QwenStageResidualEmbedding: Embedding {
+    private final class Pending: @unchecked Sendable {
+        private let lock = NSLock()
+        private var residuals: [ObjectIdentifier: MLXArray] = [:]
+        func set(_ value: MLXArray?, for key: ObjectIdentifier) { lock.withLock { residuals[key] = value } }
+        func value(for key: ObjectIdentifier) -> MLXArray? { lock.withLock { residuals[key] } }
+    }
+    private static let pending = Pending()
+
     init(hiddenSize: Int, dtype: DType) {
         super.init(weight: MLXArray.zeros([1, hiddenSize], dtype: dtype))
     }
 
+    /// Runs `body`, whose one token lookup on this stage returns `residual`.
+    func withResidual<T>(_ residual: MLXArray, _ body: () throws -> T) rethrows -> T {
+        let key = ObjectIdentifier(self)
+        precondition(Self.pending.value(for: key) == nil, "Layer stage 1 residual ingress is not reentrant")
+        Self.pending.set(residual, for: key)
+        defer { Self.pending.set(nil, for: key) }
+        return try body()
+    }
+
     override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        preconditionFailure("Layer stage 1 requires residual ingress, not token embedding")
+        guard let residual = Self.pending.value(for: ObjectIdentifier(self)),
+              residual.ndim == 3, x.ndim == 2, residual.dim(0) == x.dim(0), residual.dim(1) == x.dim(1) else {
+            preconditionFailure("Layer stage 1 requires residual ingress, not token embedding")
+        }
+        return residual
     }
 
     override func asLinear(_ x: MLXArray) -> MLXArray {
@@ -36,6 +66,10 @@ private final class QwenStageResidualEmbedding: Embedding {
 func installQwenStageInertParameters(model: any LanguageModel,
     stage: QwenLayerStagePlan.Stage, hiddenSize: Int, activationDType: DType
 ) throws -> [QwenStageInertModule] {
+    if model is NemotronHModel {
+        return try NemotronStageConstruction.installInertParameters(model: model, stage: stage,
+            hiddenSize: hiddenSize, activationDType: activationDType)
+    }
     let modules = Dictionary(uniqueKeysWithValues: model.namedModules())
     var replacements: [(String, Module)] = []
     var norm: (String, RMSNorm)?

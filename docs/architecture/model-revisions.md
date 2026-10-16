@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-09
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -191,10 +191,10 @@ random rollout jitter is not a fleet availability guarantee.
 | Concern | Implementation |
 |---|---|
 | Publisher and immutable R2 reservation | `scripts/publish-model-revision.py` (`reserve_revision`, `publish_files`) |
-| Update and retirement API | `coordinator/api/catalog/model_revision_handlers.go` |
-| Persistent acceptance and immutable versions | `coordinator/store/model_revision.go`, `postgres_model_revisions.go`, `postgres_model_registry.go`; `CachedStore` overrides |
-| Desired state and routing hash admission | `coordinator/registry/model_commands.go`, `model_revisions.go`, `model_catalog.go` |
-| Drained inventory hash validation | `coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`) |
+| Update and retirement API | [coordinator/api/catalog/model_revision_handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/model_revision_handlers.go) |
+| Persistent acceptance and immutable versions | [coordinator/store/model_revision.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/model_revision.go), `postgres_model_revisions.go`, `postgres_model_registry.go`; `CachedStore` overrides |
+| Desired state and routing hash admission | [coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go), `model_revisions.go`, `model_catalog.go` |
+| Drained inventory hash validation | [coordinator/registry/provider_models_replace.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_models_replace.go) (`ReplaceProviderModels`) |
 | Immutable files and atomic selection | `provider-swift/Sources/ProviderCore/Models/ModelArtifactRevision.swift`, `ModelArtifactWriteLease.swift` |
 | Verified local receipt recovery | `provider-swift/Sources/ProviderCore/Models/ModelArtifactReceipt.swift` (`verifyRevisionAndRepairReceipt`) |
 | Reconciliation and backoff | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisions.swift` |

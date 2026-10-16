@@ -17,8 +17,6 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
     /// The saved setup's selected generation mode; the pipeline when it names none.
     public let generationMode: ClusterGenerationMode
     public let peers: [Peer]
-    public let maximumLifetimeSeconds: Int
-    public let maximumRequests: Int
 
     public struct Peer: Codable, Sendable, Equatable {
         public let id: String
@@ -38,7 +36,6 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
         artifactSHA256 = capability.artifactSHA256; configurationModelSHA256 = capability.configurationSHA256
         planSHA256 = configuration.selectedPlanSHA256; prefillSchedule = configuration.selectedPrefillSchedule
         generationMode = configuration.selectedGenerationMode
-        maximumLifetimeSeconds = capability.maxLifetimeSeconds; maximumRequests = capability.maxRequests
         peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256,
             supportedGenerationModes: ClusterGenerationSelection.supportedModes(for: $0, capability: capability)) }
     }
@@ -85,30 +82,41 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
     public let nativeBootstrapOwnerAuthenticated: Bool
     /// The collective progress limit each native rank was started with.
     public let collectiveProgressLimitMilliseconds: Int
+    /// S16, observed once both ranks are ready (absent before): every transfer
+    /// between the ranks is an authenticated, encrypted record, and each rank
+    /// verified its peer against the identity it pins. A public route may
+    /// require both (decision D1, S20).
+    public let encryptedDataPlane: Bool?
+    public let peerVerified: Bool?
 
     init(binding: ClusterStatusBinding, phase: String, observedMembershipEpoch: String?,
          observedPrefillSchedule: ClusterPrefillSchedule?, observedGenerationMode: ClusterGenerationMode?,
          ready: Bool, admission: Admission?, members: [Member],
          mtpEnabled: Bool, mtpOffReason: String, nativeBootstrap: DistributedInstalledBootstrap,
-         collectiveProgressLimitMilliseconds: Int) {
+         collectiveProgressLimitMilliseconds: Int, encryptedDataPlane: Bool? = nil, peerVerified: Bool? = nil) {
         self.binding = binding; self.phase = phase; self.observedMembershipEpoch = observedMembershipEpoch
         self.observedPrefillSchedule = observedPrefillSchedule; self.observedGenerationMode = observedGenerationMode
         self.ready = ready; self.admission = admission
         self.members = members; self.mtpEnabled = mtpEnabled; self.mtpOffReason = mtpOffReason
         self.nativeBootstrap = nativeBootstrap; nativeBootstrapOwnerAuthenticated = nativeBootstrap.ownerAuthenticated
         self.collectiveProgressLimitMilliseconds = collectiveProgressLimitMilliseconds
+        self.encryptedDataPlane = encryptedDataPlane; self.peerVerified = peerVerified
     }
 
+    /// A session has no lifetime and no request count; these are counters.
     public struct Admission: Codable, Sendable, Equatable {
-        /// The leader's already-clamped local lifetime, sampled locally.
-        public let remainingLifetimeNanoseconds: UInt64
-        public let remainingRequests: Int
+        /// Requests admitted since the pair became ready.
+        public let requestsServed: Int
+        /// Keep-warm data-plane exchanges completed while idle.
+        public let keepWarmExchanges: Int
         public let activeRequest: Bool
         public let draining: Bool
         public let valid: Bool
     }
     public struct Member: Codable, Sendable, Equatable {
-        public enum Transport: String, Codable, Sendable { case localPipes, authenticatedSSH }
+        /// `linkControl`: the follower member serves its rank over the link
+        /// control channel (no SSH configuration exists for it).
+        public enum Transport: String, Codable, Sendable { case localPipes, authenticatedSSH, linkControl }
         public let peerID: String
         public let rank: Int
         public let transport: Transport

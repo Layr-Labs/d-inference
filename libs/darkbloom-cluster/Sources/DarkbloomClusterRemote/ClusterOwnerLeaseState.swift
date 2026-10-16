@@ -6,7 +6,10 @@ import DarkbloomClusterProtocol
 /// here. Native observations must come from the actual local supervisor.
 public struct ClusterOwnerLeaseState: Sendable {
     public let binding: ClusterOwnerBinding
-    public let lifetimeDeadlineUptimeNanoseconds: UInt64
+    /// The rank lease's current deadline on this Mac (S03). The leader renews
+    /// it every few seconds while it keeps the session; there is no fixed
+    /// lifetime. Past it the state fences, as for any loss of the leader.
+    public internal(set) var lifetimeDeadlineUptimeNanoseconds: UInt64
     public internal(set) var nextControlSequence: UInt64 = 0
     public internal(set) var quarantined = false
     public internal(set) var deviceLeaseReleased = false
@@ -19,7 +22,9 @@ public struct ClusterOwnerLeaseState: Sendable {
     var nativeTerminal: ClusterOwnerNativeTerminal?
     var readyCapacity: Int?
     var request: Request?
+    /// Recent request IDs, to refuse a replay: a window, never a count.
     var seen = Set<UUID>()
+    var seenOrder: [UUID] = []
     var releasedRequests = 0
 
     struct Request: Sendable {
@@ -108,6 +113,17 @@ public struct ClusterOwnerLeaseState: Sendable {
     }
 
     public mutating func disconnect() { quarantine() }
+
+    /// One renewal of the rank lease from the leader: the deadline moves to
+    /// `ttl` after `now`, never earlier than it was. A fenced, released or
+    /// expired lease is not revived.
+    public mutating func renewLease(now: UInt64, ttl: UInt64) throws {
+        try clock(now)
+        try require(!recoveryOnly && !quarantined && !deviceLeaseReleased
+                    && (1...ClusterWorkerLease.maximumNanoseconds).contains(ttl), "Lease renewal refused")
+        let end = now.addingReportingOverflow(ttl)
+        if !end.overflow { lifetimeDeadlineUptimeNanoseconds = max(lifetimeDeadlineUptimeNanoseconds, end.partialValue) }
+    }
 
     /// Expiry only requests fencing. It never manufactures a native-exit receipt.
     public mutating func observeTime(_ now: UInt64) throws { try clock(now) }

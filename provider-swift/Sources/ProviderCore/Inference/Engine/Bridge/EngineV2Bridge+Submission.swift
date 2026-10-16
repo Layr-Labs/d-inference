@@ -12,7 +12,8 @@ extension EngineV2Bridge {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil,
-        logprobsChannel: EngineV2LogprobsChannel? = nil
+        logprobsChannel: EngineV2LogprobsChannel? = nil,
+        cacheEnabled: Bool = true
     ) async -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
             [
@@ -35,7 +36,7 @@ extension EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: "", logprobsChannel: logprobsChannel
+            cacheScope: "", cacheEnabled: cacheEnabled, logprobsChannel: logprobsChannel
         )
     }
 
@@ -59,7 +60,8 @@ extension EngineV2Bridge {
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         donationDemand: SSDCheckpointDonationDemand? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -76,7 +78,8 @@ extension EngineV2Bridge {
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
                 donationDemand: donationDemand,
-                firstContentDeadline: nil, promptWork: promptWork)
+                firstContentDeadline: nil, promptWork: promptWork,
+                measurementPurpose: measurementPurpose)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -122,7 +125,8 @@ extension EngineV2Bridge {
         serviceReservation: ServiceReservationLifetime? = nil,
         promptWork: PromptWork? = nil,
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
-        distributedRequestOrigin: ContinuousClock.Instant? = nil
+        distributedRequestOrigin: ContinuousClock.Instant? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) async throws -> AsyncStream<GenerationEvent> {
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
@@ -159,7 +163,7 @@ extension EngineV2Bridge {
         }
         // Foreground work on any model preempts the shared idle calibration.
         // The original deadline keeps running while native retirement completes.
-        let foreground = mimoCalibration.requests[id] == nil
+        let foreground = modelCalibration.requests[id] == nil
             ? await serviceBudget?.idleCalibration.beginForeground() : nil
         defer { foreground?.finish() }
         // Waiting for a probe is an actor suspension: revalidate request and
@@ -234,7 +238,8 @@ extension EngineV2Bridge {
             samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
-            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
+            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
@@ -554,7 +559,7 @@ extension EngineV2Bridge {
                 serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
         }
         let calibrationGuard: CBv2FirstContentEvidenceGuard?
-        if mimoCalibration.requests[id]?.width == 1 {
+        if modelCalibration.requests[id]?.width == 1 {
             if let captured = serviceBudget?.calibrationEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id) {
                 calibrationGuard = captured
             } else {
@@ -568,6 +573,8 @@ extension EngineV2Bridge {
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
             deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
             isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard,
+            measurementPurpose: measurementPurpose,
+            calibrationCell: modelCalibration.requests[id],
             nativeCausalMedia: nativeCausalMedia,
             nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
@@ -810,9 +817,9 @@ extension EngineV2Bridge {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
-                } else if let native = engine as? EngineV2,
-                    native.nativeShutdownExecutionContractID != nil {
-                    let submitted = try native.submitWithNativeRetirement(engineRequest)
+                } else if let autoregressive = engine as? EngineV2,
+                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
+                    let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else if let distributed, let selectedContext {
@@ -905,15 +912,17 @@ extension EngineV2Bridge {
             // A refused distributed admission has no native terminal for the
             // HTTP writer to report. Throw the mapped error before response
             // headers instead of returning a stream that can only abort.
+            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
             if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
                 throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-                    EngineV2Translation.admissionErrorMessage(for: error))
+                    EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile))
             }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
+                for: error, distributedProfile: distributedProfile)))
             continuation.finish()
             return stream
         }

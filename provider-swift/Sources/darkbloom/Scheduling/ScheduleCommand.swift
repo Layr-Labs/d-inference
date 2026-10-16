@@ -48,7 +48,7 @@ struct AvailabilitySchedule: AsyncParsableCommand {
         }
         let changed = try draft.save(configPath: loaded.configPath.path, expected: current)
         print(changed ? "Availability saved to \(loaded.configPath.path)." : "Availability unchanged.")
-        print("Apply to a running provider with `darkbloom restart`; otherwise use `darkbloom start`.")
+        print("Apply to a running provider with `\(BuildEnvironment.current.cliName) restart`; otherwise use `\(BuildEnvironment.current.cliName) start`.")
         if configOptions.config != nil { print("Use --config \(loaded.configPath.path) when starting this configuration.") }
     }
 
@@ -60,7 +60,7 @@ struct AvailabilitySchedule: AsyncParsableCommand {
 
     static func requireInteractiveTerminal(interactive: Bool = isatty(STDIN_FILENO) != 0 && isatty(STDOUT_FILENO) != 0) throws {
         guard interactive else {
-            throw ValidationError("The schedule wizard requires an interactive terminal. Run `darkbloom schedule` in a terminal, or edit [schedule] / [[schedule.windows]] and [backend] startup_preload in provider.toml. Use `darkbloom schedule --show` to inspect saved settings.")
+            throw ValidationError("The schedule wizard requires an interactive terminal. Run `\(BuildEnvironment.current.cliName) schedule` in a terminal, or edit [schedule] / [[schedule.windows]] and [backend] startup_preload in provider.toml. Use `\(BuildEnvironment.current.cliName) schedule --show` to inspect saved settings.")
         }
     }
 }

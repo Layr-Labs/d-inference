@@ -1,5 +1,6 @@
 import Foundation
 import NIOCore
+import MLXLMServer
 
 extension DistributedLocalServer {
     nonisolated func makeApplication() -> LocalInferenceApplication {
@@ -8,8 +9,12 @@ extension DistributedLocalServer {
             tokenizerProvider: { try await self.resolveTokenizer($0) },
             availableModels: { await self.catalog() }, mtpSlots: { [] },
             onServerRunning: { await self.didBind($0) },
+            modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
-            distributedResponses: responseRouter)
+            distributedResponses: responseRouter,
+            // The cluster serves one model: its reasoning markers are parsed as the coordinator path parses them
+            // (`ProviderLoop.inferReasoningParser`), so Gemma's thought channel never reaches `content`.
+            defaultReasoningParser: ProviderLoop.inferReasoningParser(for: binding.modelType))
     }
 
     func clusterStatus(nonce: String) throws -> ClusterLiveStatus {
@@ -23,16 +28,13 @@ extension DistributedLocalServer {
             hostPhase: phase.rawValue, session: observation, boundPort: port,
             acquisitions: pin == nil ? 0 : 1, failed: failed, ready: ready,
             admissionAvailable: ready && pin == nil && admission?.valid == true
-                && admission?.activeRequest == false && admission?.draining == false
-                && (admission?.remainingRequests ?? 0) > 0,
+                && admission?.activeRequest == false && admission?.draining == false,
             quarantined: phase == .quarantined || observation.phase == "quarantined")
     }
 
     func didBind(_ channel: any Channel) {
         guard phase == .starting,
               let port = channel.localAddress?.port, let port = UInt16(exactly: port), port != 0,
-              let deadline = session.lifetimeDeadlineUptimeNanoseconds,
-              DispatchTime.now().uptimeNanoseconds < deadline,
               session.status == .ready, session.readiness() != nil else {
             failed = true; beginTeardown(drainUntil: nil); return
         }
@@ -48,15 +50,14 @@ extension DistributedLocalServer {
         }
     }
 
-    func acquire(_ modelID: String) throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+    func acquire(_ modelID: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
         guard modelID == binding.publicModelID else {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
         }
-        // A single pipeline has one acquisition. No host-side waiting queue can
-        // retain unlimited tokenizers/requests or extend owner lifetime.
+        // A single pipeline has one acquisition; further requests wait for it
+        // in arrival order, in a bounded queue (`DistributedRequestQueue`).
         let target = generation
-        guard phase == .serving, target.pin == nil, let entry = target.entry,
-              target.session.httpAdmissionAvailable else {
+        guard servable(target) else {
             throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
         }
         if let response = DistributedHTTPResponseScope.current {
@@ -64,14 +65,66 @@ extension DistributedLocalServer {
                 throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed response generation is unavailable")
             }
         }
-        let id = UUID(); target.pin = id
+        let (id, queued) = try await waitForTurn(target)
+        guard let entry = target.entry else {
+            release(id, generation: target)
+            throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
+        }
         return .init(tokenizer: entry.tokenizer,
             releaseToken: OneShotRelease(release: { _ in await self.release(id, generation: target) }, modelId: modelID),
             modelType: entry.modelType, container: nil, isVLM: false,
-            engineV2Bridge: entry.engineV2Bridge, visionGate: nil)
+            engineV2Bridge: entry.engineV2Bridge, visionGate: nil,
+            queueExitedAt: queued ? ContinuousClock.now : nil)
     }
 
-    private func release(_ id: UUID, generation target: DistributedLocalServerGeneration) {
+    /// The session serves and can take requests, now or after the queue.
+    private func servable(_ target: DistributedLocalServerGeneration) -> Bool {
+        phase == .serving && generation === target && target.entry != nil
+            && target.session.status == .ready && !target.session.httpSessionInvalid
+    }
+
+    /// Nothing holds the pipeline: no acquisition, both ranks admit, and the
+    /// engine has retired the previous request.
+    private func idle(_ target: DistributedLocalServerGeneration) async -> Bool {
+        guard target.pin == nil, target.session.httpAdmissionAvailable, let bridge = target.entry?.engineV2Bridge else {
+            return false
+        }
+        return await bridge.activeRequestCount() == 0
+    }
+
+    /// Returns this request's acquisition once it is the oldest waiter and the
+    /// pipeline is idle. The pin is taken here, with no suspension after the
+    /// last check, so no later arrival can pass a waiter.
+    private func waitForTurn(_ target: DistributedLocalServerGeneration) async throws -> (UUID, queued: Bool) {
+        func take() -> UUID { let id = UUID(); target.pin = id; return id }
+        if waiting.isEmpty, await idle(target), waiting.isEmpty, target.pin == nil, servable(target) {
+            return (take(), false)
+        }
+        guard waiting.count < DistributedRequestQueue.maximumWaiting else {
+            throw MultiModelBatchSchedulerEngineError.queueFull(DistributedRequestQueue.fullMessage)
+        }
+        let ticket = UUID()
+        waiting.append(ticket)
+        defer { waiting.removeAll { $0 == ticket } }
+        let ceiling = ContinuousClock.now.advanced(by: DistributedRequestQueue.waitCeiling(
+            requestTimeout: target.session.profile.requestTimeout))
+        while true {
+            // A client that went away leaves the queue.
+            if Task.isCancelled || DistributedHTTPResponseScope.current?.isComplete == true { throw CancellationError() }
+            guard servable(target) else {
+                throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
+            }
+            if waiting.first == ticket, await idle(target), waiting.first == ticket, target.pin == nil, servable(target) {
+                return (take(), true)
+            }
+            guard ContinuousClock.now < ceiling else {
+                throw MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.waitedTooLongMessage)
+            }
+            try? await Task.sleep(for: DistributedRequestQueue.pollInterval)
+        }
+    }
+
+    func release(_ id: UUID, generation target: DistributedLocalServerGeneration) {
         guard target.pin == id else { return }
         target.pin = nil
         let waiters = target.pinWaiters; target.pinWaiters.removeAll()

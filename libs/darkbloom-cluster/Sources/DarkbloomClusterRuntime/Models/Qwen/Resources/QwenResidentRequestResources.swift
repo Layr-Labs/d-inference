@@ -6,12 +6,20 @@ struct QwenResidentRequestAllowance {
     let stateBytes: Int
     let fusionBytes: Int
     let reservedBytes: Int
+    /// One prefill frame's attention transient at this request's context
+    /// (`QwenResidentPrefillTransient`), included in `reservedBytes`.
+    var transientBytes = 0
+    /// Prompt plus output tokens this allowance was derived for; 0 when unknown.
+    var contextTokens = 0
     /// This request's record at the host memory gate, and its first sample.
     let watch = QwenDenseStageLoadWatch("Resident request")
 
     /// Actual allocator bounds applied per named array. The original F32 state
     /// formula is retained; weights are already resident and charged by active
     /// memory. Fusion permits old parameters and their new banks concurrently.
+    /// A Prism Hadamard pack fuses nothing; its first forward instead leaves
+    /// one F32 copy of every packed projection's F16 scales and biases beside
+    /// them, and `fusionBytes` is the allowance for those copies.
     /// This named ledger excludes unknown workspace/whole-process peak claims.
     static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
                        rank: Int, maximumTokens: Int, chunkSize: Int,
@@ -45,7 +53,15 @@ struct QwenResidentRequestAllowance {
         ])
         let tensors = Dictionary(uniqueKeysWithValues: profile.canonicalTensors.map { ($0.name, $0) })
         var fused = [Int](), logical = [Int]()
-        for layer in plan.stages[rank].sourceRange where (layer + 1) % plan.interval != 0 {
+        let pack = profile.model.pack
+        if pack == .prismHadamard {
+            fused = try QwenPrismHadamardConstants.widenedBytes(profile: profile, plan: plan, rank: rank).map {
+                try allowance($0, 1)
+            }
+        }
+        // A Plan without an interval (Nemotron) has no fused recurrent projections.
+        for layer in plan.stages[rank].sourceRange where plan.interval > 0 && (layer + 1) % plan.interval != 0
+            && pack.fusesGatedDeltaInputProjections {
             for suffix in ["weight", "scales", "biases"] {
                 let parts = try ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"].map { projection in
                     let name = "language_model.model.layers.\(layer).linear_attn.\(projection).\(suffix)"
@@ -66,7 +82,17 @@ struct QwenResidentRequestAllowance {
             role: rank == 0 ? .stage0 : .stage1)
         guard try sum(logical) == selected.fusionReplacementBytes else { throw ProbeError("Resident fusion ownership differs") }
         let fusion = try sum(fused)
-        return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion]))
+        // The attention transient of one prefill frame at this context: what
+        // the owner's planner and prefill guard price beside the KV (oMLX
+        // U#3651), so a context the gate admits is one the frame can run in.
+        // From the stage's own layer kinds: a Plan without an interval (Nemotron,
+        // interval 0) names its attention blocks `attention`.
+        let stageHasAttention = plan.stages[rank].layers.contains { ["full_attention", "attention"].contains($0.kind) }
+        let transientLogical = try QwenResidentPrefillTransient.bytes(geometry: g, stageHasAttention: stageHasAttention,
+            chunkTokens: chunkSize, contextTokens: maximumTokens)
+        let transient = transientLogical == 0 ? 0 : try allowance(transientLogical, 1)
+        return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion, transient]),
+            transientBytes: transient, contextTokens: maximumTokens)
     }
 
     func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
@@ -80,14 +106,31 @@ struct QwenResidentRequestAllowance {
                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try watch.admits(os, bytes: free), Memory.memoryLimit >= allocator else {
-            throw ProbeError("Resident request exceeds the allocator limit")
+        do {
+            guard try watch.admits(os, bytes: free), Memory.memoryLimit >= allocator else {
+                throw ProbeError("Resident request exceeds the allocator limit")
+            }
+        } catch {
+            // Name the context the refusal was for: the gate's own sentence
+            // names the bytes; the operator needs the tokens to act on it.
+            guard contextTokens > 0 else { throw error }
+            throw ProbeError("A request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
         }
     }
 }
 
 enum QwenResidentResourceEnvironment {
     static func require() throws {
+        try requirePower()
+        _ = try QwenDenseStageLoadResources.requireInitial()
+    }
+
+    /// AC power, normal power mode and a nominal or fair thermal state: the
+    /// environment part of `require`, without the entry check's 6 GiB of
+    /// admissible memory. A request that was admitted and is running asks for
+    /// what it still needs instead (`requireContinuing`); asking it for the
+    /// entry floor counted its own allocations against it.
+    static func requirePower() throws {
         guard let unmanaged = IOPSCopyPowerSourcesInfo() else { throw ProbeError("Cannot observe resident power source") }
         let info = unmanaged.takeRetainedValue()
         let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
@@ -96,7 +139,6 @@ enum QwenResidentResourceEnvironment {
               thermal == .nominal || thermal == .fair else {
             throw ProbeError("Resident execution requires AC, normal power mode and nominal/fair thermal state")
         }
-        _ = try QwenDenseStageLoadResources.requireInitial()
     }
 
     static func allocationBound(_ bytes: Int) throws -> Int {

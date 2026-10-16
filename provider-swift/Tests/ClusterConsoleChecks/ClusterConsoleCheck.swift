@@ -26,8 +26,10 @@ import Darwin
     }
 
     static func main() {
-        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(120); defer { alarm(0) }
+        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(240); defer { alarm(0) }
         let arguments = CommandLine.arguments
+        // The member side of the cache-control check, run as a second process.
+        if arguments.count > 1, arguments[1] == "--member-cache-child" { memberCacheChild(Array(arguments.dropFirst(2))) }
         guard arguments.count == 7 else {
             print("usage: ClusterConsoleCheck probe owner worker session-stand-in wiring-table adapter-source")
             exit(64)
@@ -36,6 +38,9 @@ import Darwin
         worker = URL(fileURLWithPath: arguments[3]); sessionStandIn = URL(fileURLWithPath: arguments[4])
         wiringTable = URL(fileURLWithPath: arguments[5]); adapterSource = URL(fileURLWithPath: arguments[6])
         scratch = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("console-" + UUID().uuidString)
+        // The wizard's captured fixtures, beside these checks in the checkout the wiring table is in.
+        WizardFixtures.directory = wiringTable.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("provider-swift/Tests/ClusterConsoleChecks/Fixtures/setup-wizard", isDirectory: true)
         try! FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
 
@@ -52,7 +57,12 @@ import Darwin
             ("renderer: content", rendererContent),
             ("redaction", redaction),
             ("diagnostic export", diagnosticExport),
+            ("onboarding diagnostics file", onboardingDiagnostics),
             ("saved setup, trust and candidate", savedSetup),
+            ("serving scope kept in the setup record", servingScopeInTheRecord),
+            ("the cable moved to another port: listeners follow it", cableMovesToAnotherPort),
+            ("the owner a setup names is the file, not the PATH link", ownerIsTheFileNotThePathLink),
+            ("what each Mac holds", holdings),
             ("link fix results and the guided setup's reading", linkFixResults),
             ("recovery results", recoveryResults),
             ("terminal mode", terminalMode),
@@ -63,6 +73,17 @@ import Darwin
             ("second instance", secondInstance),
             ("session process", sessionProcess),
             ("session through the installed fixtures", sessionThroughInstalledFixtures),
+            ("wizard: wiring", wizardWiring),
+            ("wizard: report, code, record, inbox and readers on captured outputs", wizardObservations),
+            ("wizard: which steps are done, and where a new run resumes", wizardProgress),
+            ("wizard: reducer, every step, failure and fix", wizardReducer),
+            ("wizard: pairing over the link (S17), reducer and pseudo-terminal", wizardLinkPairing),
+            ("wizard: step 4 over the paired link (report, facts, inbox delivery), no SSH", wizardLinkExchange),
+            ("member cache control over the link: settings sync and reclaim on unpair, member in a second process", memberCacheControl),
+            ("wizard: ports chosen on the leader, not fixed", wizardPorts),
+            ("wizard: screen at every size, in colour and ASCII", wizardScreen),
+            ("wizard: what each step says, and the planner on captured readings", wizardContent),
+            ("wizard: the walkthrough on a pseudo-terminal", wizardOnPseudoTerminal),
         ]
         // Set to follow a run that stops: each group is named on standard error as it starts.
         let narrate = ProcessInfo.processInfo.environment["CLUSTER_CONSOLE_CHECK_VERBOSE"] != nil

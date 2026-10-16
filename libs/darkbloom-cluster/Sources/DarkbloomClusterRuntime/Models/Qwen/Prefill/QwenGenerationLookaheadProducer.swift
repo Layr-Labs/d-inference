@@ -16,7 +16,7 @@ final class QwenGenerationLookaheadProducer {
     var maximumPreparedBoundaries: Int { window.maximumPreparedBoundaries }
     init(request: QwenLayerStageGenerationRequest) throws {
         self.request = request
-        window = try .init(promptCount: request.promptCount, chunkSize: request.chunkSize)
+        window = try .init(request: request)
     }
     func cancel() { prepared = nil; window.cancel() }
     private func prepare(sequence: Int, session: QwenLayerStageSession, check: () throws -> Void) throws {
@@ -69,3 +69,12 @@ final class QwenGenerationLookaheadProducer {
     }
 }
 
+
+extension QwenGenerationPrefillWindow {
+    /// The window over a planned request's own prefill frames.
+    init(request: QwenLayerStageGenerationRequest) throws {
+        let frames = try (0..<request.prefillFrameCount).map { try request.frame(sequence: $0) }
+        try self.init(promptCount: request.promptCount, chunkSize: request.chunkSize,
+            frameStarts: frames.map { $0.tokenOffset }, frameEnds: frames.map { $0.tokenOffset + $0.tokenCount })
+    }
+}

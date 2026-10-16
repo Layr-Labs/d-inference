@@ -31,11 +31,16 @@ enum ClusterStatusCodec {
               value.nonce == (try nonce(expectedNonce)), value.binding == binding,
               value.session.binding == binding, value.boundPort == port,
               value.authenticationConfigured == authenticationConfigured,
-              ["starting", "serving", "rotating", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
+              ["starting", "serving", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
               ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
               (0...1).contains(value.acquisitions), value.session.members.count == 2,
-              !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation",
+              DistributedInstalledSpeculation(mode: binding.generationMode,
+                  everyMemberAdvertisesHead: binding.peers.allSatisfy { $0.supportedGenerationModes.contains(.phaseSplitMTP) })
+                  == .init(enabled: value.session.mtpEnabled, offReason: value.session.mtpOffReason),
               value.session.nativeBootstrapOwnerAuthenticated == value.session.nativeBootstrap.ownerAuthenticated,
+              // S16: a verified peer only on an encrypted data plane, and only once both ranks are observed ready.
+              value.session.peerVerified != true || value.session.encryptedDataPlane == true,
+              (value.session.encryptedDataPlane == nil) == (value.session.peerVerified == nil),
               (1...3_600_000).contains(value.session.collectiveProgressLimitMilliseconds) else {
             throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")
         }
@@ -50,7 +55,7 @@ enum ClusterStatusCodec {
         }
         for (rank, member) in value.session.members.enumerated() {
             guard member.rank == rank, member.peerID == binding.peers[rank].id,
-                  member.transport == (rank == 0 ? .localPipes : .authenticatedSSH),
+                  rank == 0 ? member.transport == .localPipes : member.transport != .localPipes,
                   member.nativeReady == (member.requestCapacityBytes != nil),
                   member.requestCapacityBytes.map({ $0 > 0 }) ?? true,
                   !member.ownerReleaseAcknowledged || member.nativeCleanupObserved else {
@@ -63,20 +68,18 @@ enum ClusterStatusCodec {
             }
         }
         if let admission = value.session.admission {
-            guard admission.remainingLifetimeNanoseconds <= UInt64(binding.maximumLifetimeSeconds) * 1_000_000_000,
-                  (0...binding.maximumRequests).contains(admission.remainingRequests) else {
-                throw ClusterConfigurationError.invalid("Status lifetime or admission count exceeded its bound")
+            guard admission.requestsServed >= 0, admission.keepWarmExchanges >= 0 else {
+                throw ClusterConfigurationError.invalid("Status counters are negative")
             }
         }
         let admitted = value.session.admission
         let sessionReady = value.session.ready
         guard !sessionReady || (value.session.observedMembershipEpoch != nil
-            && value.session.members.allSatisfy(\.nativeReady) && admitted?.valid == true
-            && (admitted?.remainingLifetimeNanoseconds ?? 0) > 0),
+            && value.session.members.allSatisfy(\.nativeReady) && admitted?.valid == true),
               value.ready == (value.hostPhase == "serving" && !value.failed && sessionReady),
               value.admissionAvailable == (value.ready && value.acquisitions == 0
                 && admitted?.valid == true && admitted?.activeRequest == false
-                && admitted?.draining == false && (admitted?.remainingRequests ?? 0) > 0),
+                && admitted?.draining == false),
               value.quarantined == (value.hostPhase == "quarantined" || value.session.phase == "quarantined") else {
             throw ClusterConfigurationError.invalid("Inconsistent status readiness observation")
         }

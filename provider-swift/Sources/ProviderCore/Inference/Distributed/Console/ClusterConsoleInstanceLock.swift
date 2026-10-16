@@ -39,6 +39,11 @@ public final class ClusterConsoleInstanceLock: @unchecked Sendable {
     }
 
     static func acquire(directory: URL) throws -> ClusterConsoleInstanceLock {
+        try acquire(directory: directory, fileName: fileName, waitSeconds: 0)
+    }
+
+    /// The same owner-only lock under another name; `waitSeconds` above 0 waits that long for a holder to let go.
+    static func acquire(directory: URL, fileName: String, waitSeconds: Double) throws -> ClusterConsoleInstanceLock {
         let parent = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard parent >= 0 else { throw ClusterConfigurationError.invalid("Cannot open the directory for the console lock") }
         defer { Darwin.close(parent) }
@@ -54,9 +59,13 @@ public final class ClusterConsoleInstanceLock: @unchecked Sendable {
             Darwin.close(descriptor)
             throw ClusterConfigurationError.invalid("The console lock is not an owner-only regular file")
         }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            Darwin.close(descriptor)
-            throw Held()
+        let deadline = Date(timeIntervalSinceNow: waitSeconds)
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR, Date() < deadline else {
+                Darwin.close(descriptor)
+                throw Held()
+            }
+            usleep(50_000)
         }
         return ClusterConsoleInstanceLock(descriptor: descriptor)
     }

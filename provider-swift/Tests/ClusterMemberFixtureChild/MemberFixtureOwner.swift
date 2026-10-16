@@ -12,8 +12,7 @@ func memberFixtureOwner(executable: URL) throws {
     let configuration = try MemberFixtureConfiguration.read(beside: executable)
     let expected = try configuration.start
     try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
-        clusterID: configuration.clusterID, leaseDirectory: URL(fileURLWithPath: configuration.leaseDirectory),
-        maximumLifetimeNanoseconds: 20_000_000_000, bootstrapProfile: .nativeKeyPrelude,
+        clusterID: configuration.clusterID, leaseDirectory: URL(fileURLWithPath: configuration.leaseDirectory), bootstrapProfile: .nativeKeyPrelude,
         authorizeNativeStart: { observed in
             guard observed.canonicalBytes == expected.canonicalBytes else { throw MemberFixtureError.invalid }
         }, binding: { epoch, lease, incarnation in
@@ -29,6 +28,6 @@ func memberFixtureOwner(executable: URL) throws {
                 expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                 executionPlanSHA256: binding.executionPlanSHA256,
                 startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 10_000_000_000),
-                lifetimeDeadline: deadline)
+                initialLeaseDeadline: deadline)
         })
 }

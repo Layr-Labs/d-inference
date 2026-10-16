@@ -42,7 +42,7 @@ import Testing
         #expect(MDMTrustDiagnosis.diagnose(
             trustLevel: nil,
             status: nil,
-            enrollment: .enrolledDarkbloom(serverURL: "https://api.dev.darkbloom.xyz/mdm/connect")) == nil)
+            enrollment: .enrolledDarkbloom(serverURL: "https://api.dev.darkbloom.dev/mdm/connect")) == nil)
     }
 
     @Test func selfSignedButUntrustedStaysSilent() {

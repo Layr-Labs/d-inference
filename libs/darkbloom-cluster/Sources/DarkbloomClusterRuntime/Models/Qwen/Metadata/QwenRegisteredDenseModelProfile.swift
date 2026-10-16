@@ -11,24 +11,33 @@ struct QwenRegisteredDenseModelProfile {
     let geometry: QwenLongPrefillBudgetGeometry
     let vocabularySize: Int, manifestPayloadBytes: Int, sourceTensorBytes: Int, largestSourceTensorBytes: Int
     let fingerprint: String
-    let requiredNativeDType = "bfloat16", requiredBF16ConversionPolicy = true
+    /// The registered pack's activation dtype and load conversion: BF16 and
+    /// converted for every affine pack.
+    let requiredNativeDType: String, requiredBF16ConversionPolicy: Bool
     let runtimeExecutionAuthorized = false, actualPayloadVerificationEstablished = false
     let providerEligibilityEstablished = false
     let supportedPlanningRoles = QwenDenseStorageRole.allCases
 
-    private init(spec: QwenDenseRegisteredSpecification, configuration: Data, manifest: Data,
-                 tensors: [QwenDenseCanonicalTensor], geometry: QwenLongPrefillBudgetGeometry) {
+    /// Internal for `NemotronRegisteredProfile`, which makes the same checks
+    /// for its own configuration semantics; no other caller constructs one.
+    init(spec: QwenDenseRegisteredSpecification, configuration: Data, manifest: Data,
+         tensors: [QwenDenseCanonicalTensor], geometry: QwenLongPrefillBudgetGeometry,
+         vocabularySize: Int = 248_320) {
         self.model = spec.model; self.configuration = configuration; self.manifest = manifest
         self.configurationSHA256 = spec.configurationSHA256; self.manifestSHA256 = spec.manifestSHA256
         self.artifactAggregateSHA256 = spec.artifactSHA256; self.canonicalInventorySHA256 = spec.inventorySHA256
-        self.canonicalTensors = tensors; self.geometry = geometry; self.vocabularySize = 248_320
+        self.canonicalTensors = tensors; self.geometry = geometry; self.vocabularySize = vocabularySize
         self.manifestPayloadBytes = spec.manifestBytes; self.sourceTensorBytes = spec.sourceBytes
         self.largestSourceTensorBytes = spec.largestTensorBytes
+        let pack = spec.model.pack
+        self.requiredNativeDType = pack.activationDType
+        self.requiredBF16ConversionPolicy = pack.convertsFloat16ToBFloat16
         self.fingerprint = QwenDenseProfileIdentity.fingerprint([
             "qwen-registered-dense-metadata-profile-v1", spec.model.rawValue,
             spec.configurationSHA256, spec.manifestSHA256, spec.artifactSHA256, spec.inventorySHA256,
             "manifest=\(spec.manifestBytes)", "source=\(spec.sourceBytes)", "count=\(spec.tensorCount)",
-            "largest=\(spec.largestTensorBytes)", "native=bfloat16", "bf16Policy=true", "executionAuthorized=false",
+            "largest=\(spec.largestTensorBytes)", "native=\(pack.activationDType)",
+            "bf16Policy=\(pack.convertsFloat16ToBFloat16)", "executionAuthorized=false",
         ])
     }
 
@@ -44,6 +53,10 @@ struct QwenRegisteredDenseModelProfile {
               expectedArtifactAggregateSHA256 == spec.artifactSHA256 else {
             throw QwenDenseProfileError("Configuration, manifest or expected artifact is not the exact registered model")
         }
+        if spec.model == .nemotron35Lightning {
+            return try NemotronRegisteredProfile.admit(specification: spec, configuration: configuration,
+                manifest: manifest, canonicalTensors: canonicalTensors)
+        }
         struct Manifest: Decodable {
             struct Entry: Decodable { let path: String, sha256: String; let size_bytes: Int }
             let aggregate_sha256: String, file_count: Int, total_size_bytes: Int, files: [Entry]
@@ -55,7 +68,7 @@ struct QwenRegisteredDenseModelProfile {
               try QwenLongPrefillCheckedBytes.sum(declared.files.map(\.size_bytes)) == spec.manifestBytes,
               declared.files.first(where: { $0.path == "config.json" })?.sha256 == configurationSHA,
               let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
-              root["model_type"] as? String == "qwen3_5", let text = root["text_config"] as? [String: Any] else {
+              root["model_type"] as? String == spec.rootModelType, let text = root["text_config"] as? [String: Any] else {
             throw QwenDenseProfileError("Pinned registered manifest/configuration semantics differ")
         }
         try QwenStageMetadata.validate(text: text, root: root, nested: true)
@@ -67,7 +80,8 @@ struct QwenRegisteredDenseModelProfile {
             linearKeyDimension: n("linear_key_head_dim"), linearValueDimension: n("linear_value_head_dim"),
             convolutionKernel: n("linear_conv_kernel_dim"))
         guard geometry == (try spec.expectedGeometry()), try n("vocab_size") == 248_320,
-              try n("max_position_embeddings") >= 8193 else {
+              try n("max_position_embeddings") >= 8193,
+              try QwenRoutedExpertStageMetadata.geometry(text: text, root: root, nested: true) == spec.routedExperts else {
             throw QwenDenseProfileError("Registered geometry differs from independently pinned expectations")
         }
         for tensor in canonicalTensors { try tensor.validate() }
@@ -92,6 +106,7 @@ struct QwenRegisteredDenseModelProfile {
     }
 
     func makePlanningPlan(stageCut: Int? = nil) throws -> QwenLayerStagePlan {
+        if model == .nemotron35Lightning { return try NemotronRegisteredProfile.planningPlan(self, stageCut: stageCut) }
         let cut = stageCut ?? geometry.layers / 2
         let legal = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
             fullAttentionInterval: geometry.fullAttentionInterval)

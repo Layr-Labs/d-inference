@@ -12,11 +12,21 @@ public final class ClusterAuthenticatedRecordChannel: @unchecked Sendable {
     public let limits: ClusterRecordLimits
     private let state: ClusterRecordState
 
+    /// `rekey` (S16) moves each direction to fresh keys by record count, bytes
+    /// or age; nil keeps one key per direction for the whole session.
     public init(sessionKey: SymmetricKey, binding: ClusterRecordBinding,
-                localRank: Int, limits: ClusterRecordLimits) throws {
+                localRank: Int, limits: ClusterRecordLimits, rekey: ClusterRecordRekeyPolicy? = nil) throws {
         self.limits = limits
         state = try ClusterRecordState(sessionKey: sessionKey, binding: binding,
-            localRank: localRank, limits: limits)
+            localRank: localRank, limits: limits, rekey: rekey)
+    }
+
+    /// Checks only: the same channel on an injected clock.
+    init(sessionKey: SymmetricKey, binding: ClusterRecordBinding, localRank: Int, limits: ClusterRecordLimits,
+         rekey: ClusterRecordRekeyPolicy?, clock: @escaping @Sendable () -> UInt64) throws {
+        self.limits = limits
+        state = try ClusterRecordState(sessionKey: sessionKey, binding: binding,
+            localRank: localRank, limits: limits, rekey: rekey, clock: clock)
     }
 
     public var status: ClusterRecordStatus { state.status }

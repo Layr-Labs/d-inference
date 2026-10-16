@@ -29,11 +29,23 @@ extension ProviderLoop {
             memberConnectionID = UUID()
             finishMemberRegistrationWait(nil)
             writeDaemonState()
-        case .disconnected, .runtimeOutdated:
+        case .disconnected:
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
-            memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
+            latchMemberControlStop(Self.memberStopReasonDisconnected)
+            // A registration wait past its deadline learns at once that its
+            // final attempt ended (before its deadline this is a no-op).
+            if memberRegistrationWaiter != nil, let waitID = memberRegistrationWaitID {
+                Task { await self.memberRegistrationWaitDue(waitID) }
+            }
+        case .runtimeOutdated:
+            memberConnectionID = nil
+            latchMemberControlStop(Self.memberStopReasonRuntimeOutdated)
         case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _):
+            // A leader serving its pair slot handles the request like any
+            // provider; the handler checks the requested model. Every other
+            // member refuses it with the retryable no-model answer.
+            if clusterPairSlot != nil { return false }
             rejectClusterMemberInference(id, send: send)
             return true
         case .loadModel(let id):
@@ -51,11 +63,32 @@ extension ProviderLoop {
         case .trustStatus(_, let status, _, _):
             if status == "untrusted" || status == "offline" {
                 memberConnectionID = nil
-                memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
+                latchMemberControlStop(Self.memberStopReasonTrust(status))
             }
         default: break
         }
         return false
+    }
+
+    static let memberStopReasonDisconnected =
+        "the coordinator control connection ended; a cluster member keeps no grant or key across it, so serving stops (restart this member once the coordinator is reachable)"
+    static let memberStopReasonRuntimeOutdated =
+        "the coordinator reported this member's runtime as outdated; serving stops until it is updated"
+    static func memberStopReasonTrust(_ status: String) -> String {
+        "the coordinator marked this member \(status == "offline" ? "offline" : "untrusted"); serving stops"
+    }
+
+    /// The accepted control connection ended or lost trust: the loop stops
+    /// instead of reconnecting under a new nonce (only when configured to,
+    /// and only after a connection was accepted). The first reason is kept
+    /// and stated, so a member that stops on its own says why (a leader then
+    /// fails its request in flight and exits; without the reason that stop
+    /// looked like a pair failure).
+    internal func latchMemberControlStop(_ reason: String) {
+        guard loopConfig.clusterMemberStopsOnDisconnect, memberHadAcceptedConnection, !memberControlRequiresStop else { return }
+        memberControlRequiresStop = true
+        memberStopReason = reason
+        logger.warning("cluster member stops: \(reason)")
     }
 
     internal func rejectClusterMemberInference(_ id: String, send: SendHandle) {
@@ -74,6 +107,15 @@ extension ProviderLoop {
 
     /// Startup waits for protocol support, not trust/readiness. The existing
     /// coordinator still owns attestation and the future pair start grant.
+    ///
+    /// The coordinator client keeps its reconnects inside the wait: a retry
+    /// its backoff would place after `deadline` is made at the deadline, and
+    /// that final attempt, like any attempt under way at the deadline, runs
+    /// to the end of its own terms (its handshake, then its connection's
+    /// negotiation window) before the wait gives up.
+    /// A wait that ends without any attempt reaching the coordinator throws
+    /// `coordinatorUnreachable`, not a role refusal (F11). The role check is
+    /// unchanged: only this connection's nonce-bound acceptance connects.
     public func waitForClusterMemberRegistration(until deadline: ContinuousClock.Instant) async throws {
         guard isClusterMember else { throw ClusterMemberControlError.incompatibleConfiguration }
         if memberConnectionID != nil { return }
@@ -86,14 +128,39 @@ extension ProviderLoop {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 memberRegistrationWaitID = waitID
                 memberRegistrationWaiter = continuation
+                memberRegistrationWaitDeadline = deadline
                 memberRegistrationTimer = Task { [weak self] in
+                    await self?.coordinatorClient?.setMemberRegistrationDeadline(deadline)
                     do { try await ContinuousClock().sleep(until: deadline) } catch { return }
                     guard !Task.isCancelled else { return }
-                    await self?.finishMemberRegistrationWait(ClusterMemberControlError.negotiationFailed, expected: waitID)
+                    await self?.memberRegistrationWaitDue(waitID)
                 }
             }
         } onCancel: {
             Task { await self.finishMemberRegistrationWait(CancellationError(), expected: waitID) }
+        }
+    }
+
+    /// The wait reached its deadline (or, past it, its final attempt ended):
+    /// it ends unless the final attempt is still within its terms.
+    internal func memberRegistrationWaitDue(_ waitID: UUID) async {
+        guard memberRegistrationWaitID == waitID, memberRegistrationWaiter != nil,
+              let deadline = memberRegistrationWaitDeadline, ContinuousClock.now >= deadline else { return }
+        let progress = await coordinatorClient?.memberRegistrationProgress() ?? .notAccepted
+        guard memberRegistrationWaitID == waitID, memberRegistrationWaiter != nil else { return }
+        switch progress {
+        case .finalAttempt(let until):
+            memberRegistrationTimer?.cancel()
+            memberRegistrationTimer = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: until) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.memberRegistrationWaitDue(waitID)
+            }
+        case .unreachable(let reason):
+            logger.warning("cluster member registration: the coordinator was not reached before the wait ended (\(reason))")
+            finishMemberRegistrationWait(ClusterMemberControlError.coordinatorUnreachable, expected: waitID)
+        case .notAccepted:
+            finishMemberRegistrationWait(ClusterMemberControlError.negotiationFailed, expected: waitID)
         }
     }
 
@@ -103,6 +170,10 @@ extension ProviderLoop {
         guard let waiter = memberRegistrationWaiter else { return }
         memberRegistrationWaiter = nil
         memberRegistrationWaitID = nil
+        if let ended = memberRegistrationWaitDeadline, let client = coordinatorClient {
+            Task { await client.clearMemberRegistrationDeadline(ended) }
+        }
+        memberRegistrationWaitDeadline = nil
         if let error { waiter.resume(throwing: error) } else { waiter.resume() }
     }
 }

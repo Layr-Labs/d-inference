@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 @_spi(Benchmark) import DarkbloomClusterRuntime
+import DarkbloomClusterSecurity
 import Foundation
 
 /// The same resident owner driven through its recording entry, selected only by
@@ -15,20 +16,24 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     private let sink: WorkerEvidenceSink
     private let policy: QwenResidentPrefillPolicy
     private var active: (id: UUID, deadline: UInt64)?
+    /// The owner's bootstrap connection and native key, held for the worker's lifetime.
+    private let attachment: WorkerOwnerAttachment?
 
-    init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
+    init(_ configuration: QwenResidentLoadConfiguration, attachment: WorkerOwnerAttachment? = nil,
          evidenceDirectory: String, generationMode: ClusterGenerationMode = .pipeline,
-         qualification: QwenResidentQualificationSwitches = .refused) throws {
-        guard bootstrap == nil else {
-            throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
-        }
+         speculativeTerms: QwenMTPTerms? = nil,
+         qualification: QwenResidentQualificationSwitches = .refused,
+         dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil) throws {
+        self.attachment = attachment
         // Opened before any model work: an unusable directory fails the launch.
         sink = try WorkerEvidenceSink(path: evidenceDirectory)
         switch configuration.prefillSchedule {
         case .serial: policy = .serial
         case .oneChunkLookahead: policy = .oneChunkLookahead
         }
-        owner = try .load(configuration, generationMode: generationMode, qualification: qualification)
+        owner = try .load(configuration, generationMode: generationMode, speculativeTerms: speculativeTerms,
+            qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
+        try JACCLOwnerBootstrap.requireConsumedIfInstalled()
     }
 
     /// The recording ceiling: the serving allowance plus the capture terms.
@@ -56,6 +61,16 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         return result.completion.finishReason
     }
 
+    func releaseReservation(_ id: UUID) throws {
+        guard let reservation = active, reservation.id == id else {
+            throw WorkerFailure.invalid("Recording release has no matching reservation")
+        }
+        try owner.releaseReservation(requestID: id)
+        active = nil
+    }
+    func refreshServingContext() -> Int? { owner.refreshServingContext() }
     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
+    func keepWarmPulse() throws -> UInt64 { try owner.keepWarmPulse() }
+    func dataPlanePing() throws -> UInt64 { try owner.dataPlanePing() }
     func shutdown() throws { try owner.shutdown(); active = nil }
 }

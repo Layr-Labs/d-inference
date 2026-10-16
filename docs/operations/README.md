@@ -1,63 +1,9 @@
-# Operations runbooks
+# Provider Publication Operations
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
-Procedures for deploying, migrating, and operating Darkbloom production
-infrastructure. Every runbook has the same shape — when to use, prerequisites,
-steps, verification, rollback — and is written for an operator with production
-access. Architecture and security context live under
-[`../architecture/README.md`](../architecture/README.md); API and protocol
-shapes under [`../reference/README.md`](../reference/README.md).
+Only approved provider/model publication API actions are maintained here. No backend build, deployment or hosting cutover is authorized. Production mutations require specific human approval; use isolated development targets before publication.
 
-| Runbook | Scope |
-|---|---|
-| [telemetry-history.md](telemetry-history.md) | Copy and verify retained telemetry into queryable history before coordinator changes |
-| [accounting-history.md](accounting-history.md) | Copy exact accounting history into isolated storage and query it with BigQuery |
-| [history-queries.md](history-queries.md) | Submit, poll, page and cancel bounded custom queries over pinned historical catalogs |
-| [analytics-snapshots.md](analytics-snapshots.md) | Serve qualified public analytics snapshots without history scans |
-| [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
-| [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |
-| [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
-| [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
-| [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
-| [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
-| [`schema-migration.md`](schema-migration.md) | Back up, check for long queries, apply and verify goose migrations; the first goose cut-over; rollback rules |
-| [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
-| [`account-erasure.md`](account-erasure.md) | Erase an account's personal data (GDPR): plan, confirm, grace period, scrub, Stripe deletions, refused credits, replay after a restore, cancel |
-| [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |
-| [`provider-emails.md`](provider-emails.md) | Preview provider-owner update audiences, sync Resend segments, test and review unsent campaign drafts |
-| [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
-| [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
-| [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
-| [`model-autopilot.md`](model-autopilot.md) | Observe and activate a small consenting cohort; verify paired capacity, donor protection and rollback |
-| [`autopilot-rewards.md`](autopilot-rewards.md) | Fund the independent daily floor, verify first-ever baseline evidence and recover pending rewards without changing live control |
-| [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
-| [`cache-routing-rollout.md`](cache-routing-rollout.md) | Turn exact prefix-cache routing on in production, widen the activation percent and plan-QPS bounds one at a time, verify with `GET /v1/cache/status`, roll back to `off` |
-| [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
-| [`model-revisions.md`](model-revisions.md) | Publish replacement weights under the same model ID and roll back |
-| [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
-| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
-| [`coordinator-perf-tier1-rollout.md`](coordinator-perf-tier1-rollout.md) | Roll out the 2026-09 coordinator performance Tier 1 branch: `GOGC` gate, Tier 0 env knobs, before/after checks |
-| [`coordinator-perf-tier23-rollout.md`](coordinator-perf-tier23-rollout.md) | Prepare the remaining performance upgrade: exact build identity, dev checks, shared reservation mode, provider rollout dependency, and rollback |
-
-The EigenCloud → GCP move is a frozen report, not a live runbook:
-[`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md).
-
-Two rules apply to every page here:
-
-1. Production mutations — GCP deploys, Secret Manager, VM/container/service
-   changes, database, DNS, traffic, release registration — require explicit
-   human approval for the specific operation. Without it, agents prepare
-   commands and perform read-only inspection only.
-2. Validate on dev first. Anything that publishes a model, flips an alias, or
-   changes routing runs against the dev coordinator
-   ([`dev-environment.md`](dev-environment.md)) before production.
-
-Provider CLI releases register a release with the production coordinator and
-follow both rules: [`provider-release.md`](provider-release.md).
-
-- [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
-
-- [Stripe account migration](stripe-migration.md) — activate self-service Global Payouts, retain old settlement and move Checkout.
-
-- [Threat review rollout](threat-review-rollout.md): provision attributed Bedrock access and activate conditional author auto-merge.
+- [Migrate a public model to a new build](model-migration.md)
+- [Publish new weights for an existing model](model-revisions.md)
+- [Release A Provider Version](provider-release.md)

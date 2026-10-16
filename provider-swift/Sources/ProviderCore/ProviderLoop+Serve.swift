@@ -28,7 +28,7 @@ extension ProviderLoop {
             }
         }
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -144,6 +144,11 @@ extension ProviderLoop {
             return
         }
 
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
+
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
         // Secure-Enclave-signed attestation below.
@@ -213,10 +218,14 @@ extension ProviderLoop {
         }
         // 4. Create coordinator client and start connection
         publishModelAutopilotSnapshot()
+        let fixedKey = keyPair
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
-            state: state
+            state: state,
+            appAttestResumeResponder: { challenge, nonce in
+                try fixedKey.appAttestResumeResponse(to: challenge, clientNonce: nonce)
+            }
         )
         // Installed before the first connection: each connection attaches it
         // only after TLS readiness and its nonce-bound acceptance (inside the
@@ -235,6 +244,9 @@ extension ProviderLoop {
             }
             return
         }
+        // A registration wait that began before the client existed keeps
+        // the client's first reconnects inside it as well.
+        await coordinator.setMemberRegistrationDeadline(memberRegistrationWaitDeadline)
         let (events, sendFn) = await coordinator.start()
         if Task.isCancelled || servingDrain.refusing {
             guard await shutdownBeforeRegistration() else {
@@ -309,23 +321,13 @@ extension ProviderLoop {
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
         coordinatorEventLoopStarted = true
-        let eventTask = Task {
-            for await event in events {
-                // Member-mode events are consumed first: ordinary dispatch
-                // paths never see them, and direct work handlers refuse
-                // member mode independently.
-                if consumeClusterMemberEvent(event, send: send) { continue }
-                if memberControlRequiresStop {
-                    // The accepted control connection ended or lost trust.
-                    // End the loop instead of reconnecting under a new nonce.
-                    await coordinator.shutdown()
-                    break
-                }
+        let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
+        let workTask = Task {
+            for await event in workEvents {
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
-                    clearConnectionAuthorization()
                     clearAutopilotControl()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
@@ -335,10 +337,8 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    clearConnectionAuthorization()
                     modelSwitchTask?.cancel()
                     clearAutopilotControl()
-                    cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -380,8 +380,9 @@ extension ProviderLoop {
                         send: send
                     )
 
-                case .appAttestShadow(let payload):
-                    handleAppAttestShadow(payload, send: send)
+                case .appAttestShadow, .trustStatus:
+                    // Consumed by the connection-control reader below.
+                    break
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
@@ -411,16 +412,56 @@ extension ProviderLoop {
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)
 
-                case .trustStatus(let trustLevel, let status, let reason, let authorization):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
-                                      authorization: authorization)
                 }
             }
+        }
+        let eventTask = Task {
+            // Model admission, hashing and cancellation may suspend for longer
+            // than an attestation exchange. Read connection controls separately
+            // so a healthy socket can renew trust while that work is parked.
+            // All fast handlers are synchronous on this actor; connection
+            // invalidation therefore precedes the next session's challenge.
+            for await event in events {
+                // Member-mode events are consumed first: ordinary dispatch
+                // paths never see them, and direct work handlers refuse
+                // member mode independently.
+                if consumeClusterMemberEvent(event, send: send) { continue }
+                if memberControlRequiresStop {
+                    // The accepted control connection ended or lost trust.
+                    // End the loop instead of reconnecting under a new nonce.
+                    await coordinator.shutdown()
+                    break
+                }
+                switch event {
+                case .appAttestShadow(let payload, let reply):
+                    handleAppAttestShadow(payload, reply: reply)
+                    continue
+                case .trustStatus(let level, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: level, status: status, reason: reason,
+                                      authorization: authorization)
+                    continue
+                case .connected, .disconnected:
+                    clearConnectionAuthorization()
+                    cancelAppAttestShadow()
+                default:
+                    break
+                }
+                // Slow work keeps its original FIFO ordering, including
+                // disconnect cleanup before the next connection's work.
+                workContinuation.yield(event)
+            }
+            clearConnectionAuthorization()
+            cancelAppAttestShadow()
+            workContinuation.finish()
+            await workTask.value
         }
         await withTaskCancellationHandler {
             await eventTask.value
         } onCancel: {
-            Task { _ = await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) }
+            Task {
+                if await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) { return }
+                await self.shutdownStoppedClusterMember()
+            }
         }
 
         clearConnectionAuthorization()
@@ -430,9 +471,20 @@ extension ProviderLoop {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
             state.refusingNewWork = true
-            finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            // A refused or unanswered negotiation ended the client: a waiting
+            // start reports that, not a plain connection end.
+            let roleRefused = await coordinator.memberRoleFailure
+            let roleUnsupported = await coordinator.memberRoleUnsupported
+            let roleError: ClusterMemberControlError = roleUnsupported ? .roleUnsupported : .negotiationFailed
+            finishMemberRegistrationWait(roleRefused ? roleError : ClusterMemberControlError.connectionEnded)
+            // The pair slot's engine shuts its owner down, so both ranks end
+            // their work and each member's owner can release its device.
+            await retireClusterPairSlot(reason: "member stopping")
             await coordinator.shutdown()
-            if await coordinator.memberRoleFailure { throw ClusterMemberControlError.negotiationFailed }
+            if await coordinator.memberRoleFailure {
+                throw await coordinator.memberRoleUnsupported ? ClusterMemberControlError.roleUnsupported
+                                                               : ClusterMemberControlError.negotiationFailed
+            }
             return
         }
         closeNativeMiMoLifecycle() // close native generation before teardown awaits
@@ -518,7 +570,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

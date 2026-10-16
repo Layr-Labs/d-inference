@@ -103,14 +103,14 @@ private final class Tokens: @unchecked Sendable {
         let workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: now + 3_000_000_000, lifetimeDeadline: lifetime)
+                startupDeadline: now + 3_000_000_000, initialLeaseDeadline: lifetime)
         }
         defer { for worker in workers { worker.fence() } }
         for worker in workers { try worker.launch() }
         let pair = try ClusterWorkerPair(workers: workers, startupDeadline: now + 3_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 128, chunkSize: 2,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 4_000_000_000, capacityLimitBytes: 1800))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 4_000_000_000, capacityLimitBytes: 1800, sampling: nil))
         let captured = Tokens()
         try request.start { captured.accept($0) }; await request.waitUntilRetired()
         request.releaseResources()

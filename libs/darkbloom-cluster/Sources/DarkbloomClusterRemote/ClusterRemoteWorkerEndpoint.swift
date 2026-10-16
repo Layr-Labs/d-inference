@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
+import DarkbloomClusterSecurity
 
 /// One authenticated SSH owner connection. The SSH process is only transport;
 /// nativeCleanupObserved requires that owner's current-incarnation terminal.
@@ -12,11 +13,13 @@ import DarkbloomClusterProcess
 /// device journal, so without a release acknowledgement this endpoint closes its
 /// command stream (the owner's order to fence) and lets the owner run to its own
 /// retirement ceiling before signalling it.
-public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
+public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unchecked Sendable {
     /// Past the session lifetime: the child's retirement allowance, the owner's
-    /// release handshake, and slack for the connection.
+    /// release handshake, and slack for the connection. An owner sizes its
+    /// child's SIGTERM-to-SIGKILL margin to the bytes the child holds (up to
+    /// 120 s), so this side allows the largest such margin.
     public static let standardOwnerRetirementAllowanceNanoseconds: UInt64 =
-        ClusterWorkerSignalPolicy.standard.allowanceNanoseconds + ClusterWorkerOwnerService.handshakeAllowanceNanoseconds + 5_000_000_000
+        ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + ClusterWorkerOwnerService.handshakeAllowanceNanoseconds + 5_000_000_000
     private let ownerRetirementAllowance: UInt64
     /// Guarded by `lock`; only ever moved later, once, when the hello arrives.
     private var ownerCeiling: UInt64
@@ -37,13 +40,24 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
     public let executionPlanSHA256: String
-    public let localLifetimeDeadlineUptimeNanoseconds: UInt64
+    /// The rank lease this endpoint has granted the owner, on this Mac's
+    /// clock (S03): the open's first grant, then each renewal's send time plus
+    /// the time to live. There is no fixed lifetime; it moves while this
+    /// endpoint keeps the owner and stops when it is fenced or released.
+    public var localLifetimeDeadlineUptimeNanoseconds: UInt64 { lock.withLock { leaseDeadline } }
+    private var leaseDeadline: UInt64
+    private var nextRenewalAt: UInt64 = 0
+    private var renewalsSent: UInt64 = 0
     let clusterID: String
     let leaseID: UUID
     private let nativeKeyRelay: ClusterOwnerNativeKeyRelay?
     private var selectedBootstrapProfile: ClusterOwnerBootstrapProfile? { nativeKeyRelay == nil ? bootstrapRelay?.profile : .nativeKeyPrelude }
     private var selectedBootstrapDeadline: UInt64? { nativeKeyRelay?.deadlineUptimeNanoseconds ?? bootstrapRelay?.deadlineUptimeNanoseconds }
-    private let bootstrapRelay: ClusterOwnerBootstrapRelay?
+    private let bootstrapRelay: (any ClusterOwnerBootstrapExchange)?
+    /// The committed native start of this rank under the combined profile.
+    private let relayStart: ClusterNativeAuthorizationStart?
+    /// S16: the worker's data-plane credential line, sent once in the open frame.
+    private let dataPlaneTrust: Data?
     private var bootstrapReplies: [(UInt64, Data)] = []
     private var bootstrapBusy = false
     private var nextBootstrapSequence: UInt64 = 0
@@ -55,9 +69,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
     private let arrivals = DispatchSemaphore(value: 0)
+    /// Wakes the writer whenever it has something new to write: a queued
+    /// command or bootstrap reply, a fence or release request, or the hello
+    /// that starts the renewal schedule. The writer writes as soon as it is
+    /// woken and otherwise rests until the next renewal is due.
+    private let writerWake = DispatchSemaphore(value: 0)
+    /// The longest an idle writer rests: the lifetime check and the owner's
+    /// exit are seen at least this often.
+    static let writerIdleNanoseconds: UInt64 = 50_000_000
     private let nativeEnded = DispatchGroup()
     private let ownerEnded = DispatchGroup()
     private var ownerTerminationValue: ClusterWorkerProcessTermination?
+    /// Why this owner's cleanup proof will never arrive (S24), once that is known.
+    private var unresolvedText: String?
     private let notifications = DispatchQueue(label: "darkbloom.remote-owner.invalidation")
     private var handler: (@Sendable () -> Void)?
     private var notified = false
@@ -84,6 +108,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     /// bounds. Independent of native cleanup, release ACK and transport exit.
     public var diagnosticDrainComplete: Bool { diagnosticCapture.isComplete }
     public var ownerTermination: ClusterWorkerProcessTermination? { lock.withLock { ownerTerminationValue } }
+    /// Set once the owner (or its transport) is gone without its worker's
+    /// cleanup proof: what happened, for the unresolved-cleanup incident.
+    public var unresolvedReason: String? { lock.withLock { unresolvedText } }
+    /// The owner process while it runs (checks only).
+    var ownerProcessIdentifier: Int32? { process.isRunning ? process.processIdentifier : nil }
+    static func describe(_ termination: ClusterWorkerProcessTermination?) -> String {
+        switch termination {
+        case .exited(let status)?: "exited with status \(status)"
+        case .signalled(let signal)?: "was terminated by signal \(signal)"
+        case .launchFailed?: "could not be launched"
+        case nil: "ended"
+        }
+    }
 
     public func waitForOwnerReleased(deadline: UInt64) -> Bool {
         let finished = ownerEnded.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success
@@ -106,10 +143,11 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            bootstrapRelay: ClusterOwnerBootstrapRelay?) throws {
+                            bootstrapRelay: (any ClusterOwnerBootstrapExchange)?, dataPlaneTrust: Data? = nil) throws {
         try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
-            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
+            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay,
+            dataPlaneTrust: dataPlaneTrust)
     }
 
     /// Only a local owned process may receive a local monotonic key-prelude deadline.
@@ -126,24 +164,41 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
 
     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
-                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws {
+                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)? = nil,
+                            dataPlaneTrust: Data? = nil) throws {
         try self.init(transport: configuration.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
-            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
+            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay,
+            dataPlaneTrust: dataPlaneTrust)
     }
     // Internal local-child seam exists solely for CPU service tests. Production
     // callers cannot substitute an arbitrary shell/transport through this API.
     init(transport: ClusterWorkerLaunch, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
-         lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
-         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil,
+         lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)? = nil,
+         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil, dataPlaneTrust: Data? = nil,
          ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws {
+        if let dataPlaneTrust {
+            guard let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(dataPlaneTrust),
+                  trust.membershipEpoch == expectedIdentity.membershipEpoch, trust.rank == rank else {
+                throw OwnerWire.invalid("Data-plane credential differs from this endpoint's epoch or rank")
+            }
+        }
+        self.dataPlaneTrust = dataPlaneTrust
         let ceiling = lifetimeDeadlineUptimeNanoseconds.addingReportingOverflow(ownerRetirementAllowanceNanoseconds)
         guard !ceiling.overflow, ownerRetirementAllowanceNanoseconds <= 300_000_000_000 else { throw OwnerWire.invalid("Invalid owner retirement allowance") }
         ownerRetirementAllowance = ownerRetirementAllowanceNanoseconds
         ownerCeiling = ceiling.partialValue
         self.nativeKeyRelay = nativeKeyRelay
-        self.leaseID = nativeKeyRelay?.start.leaseID ?? UUID()
+        // Under the combined profile the relay holds this rank's committed
+        // start, and the owner's lease is the one that start names.
+        let relayStart = bootstrapRelay?.profile.carriesNativeStart == true ? bootstrapRelay?.nativeStart(rank: rank) : nil
+        guard bootstrapRelay?.profile.carriesNativeStart != true
+            || (relayStart?.rank == rank && relayStart?.common.epoch == expectedIdentity.membershipEpoch) else {
+            throw OwnerWire.invalid("Bootstrap relay lacks this rank's committed native start")
+        }
+        self.relayStart = relayStart
+        self.leaseID = nativeKeyRelay?.start.leaseID ?? relayStart?.leaseID ?? UUID()
         guard bootstrapRelay == nil || nativeKeyRelay == nil else { throw OwnerWire.invalid("Ambiguous bootstrap relay") }
         try nativeKeyRelay?.requireBinding(identity: expectedIdentity, rank: rank, plan: executionPlanSHA256)
         if let nativeKeyRelay {
@@ -153,14 +208,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             identity: expectedIdentity, profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256)
         let now = DispatchTime.now().uptimeNanoseconds
         guard lifetimeDeadlineUptimeNanoseconds > now,
-              lifetimeDeadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else { throw OwnerWire.invalid("Invalid remote lifetime") }
+              lifetimeDeadlineUptimeNanoseconds - now <= ClusterWorkerLease.maximumNanoseconds else { throw OwnerWire.invalid("Invalid first lease grant") }
         if let bootstrapRelay {
             guard bootstrapRelay.identity == expectedIdentity, bootstrapRelay.executionPlanSHA256 == executionPlanSHA256,
                   bootstrapRelay.deadlineUptimeNanoseconds <= lifetimeDeadlineUptimeNanoseconds else { throw OwnerWire.invalid("Bootstrap relay configuration differs") }
         }
         self.bootstrapRelay = bootstrapRelay
         self.clusterID = clusterID; self.expectedIdentity = expectedIdentity; expectedProfile = profile; self.rank = rank
-        self.executionPlanSHA256 = executionPlanSHA256; localLifetimeDeadlineUptimeNanoseconds = lifetimeDeadlineUptimeNanoseconds
+        self.executionPlanSHA256 = executionPlanSHA256; leaseDeadline = lifetimeDeadlineUptimeNanoseconds
         process.executableURL = transport.executable; process.arguments = transport.arguments; process.environment = transport.environment
         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
         let pipe = try ClusterOwnerPipe(input: output.fileHandleForReading.fileDescriptor, output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
@@ -169,7 +224,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         nativeEnded.enter(); ownerEnded.enter()
         do { try ownerExit.run(process) } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
-        DispatchQueue(label: "darkbloom.remote-owner.writer").async { self.writeLoop(pipe) }
+        // Every token's decision waits on this writer, so it runs at the
+        // priority of the request it serves.
+        DispatchQueue(label: "darkbloom.remote-owner.writer", qos: .userInteractive).async { self.writeLoop(pipe) }
         DispatchQueue(label: "darkbloom.remote-owner.reader").async { self.readLoop(pipe) }
     }
     public func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -180,8 +237,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         guard invalid, !notified, let handler else { return nil }; notified = true; return handler
     }
     private func fail() {
-        let call = lock.withLock { invalid = true; ready = nil; if !cleanup { fenceRequested = true }; return notificationLocked() }
+        let (call, changed) = lock.withLock { () -> ((@Sendable () -> Void)?, Bool) in
+            // Only a new failure or a new fence order gives the writer work;
+            // the repeated calls after a lifetime expiry must not keep it awake.
+            let changed = !invalid || (!cleanup && !fenceRequested)
+            invalid = true; ready = nil; if !cleanup { fenceRequested = true }; return (notificationLocked(), changed)
+        }
         bootstrapRelay?.cancel(); nativeKeyRelay?.cancel()
+        if changed { writerWake.signal() }
         arrivals.signal(); if let call { notifications.async(execute: call) }
     }
     /// Called under Pair/Request locks: validates and queues only, never performs
@@ -196,6 +259,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             guard bytes.count <= 1_048_576 - queued else { throw OwnerWire.invalid("Remote command queue full") }
             outgoing.append((frame, deadline)); nextCommand += 1
         }
+        writerWake.signal()
     }
     public func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
         while DispatchTime.now().uptimeNanoseconds < deadline {
@@ -211,27 +275,51 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public func waitUntilNativeCleanup() async {
         await withCheckedContinuation { c in nativeEnded.notify(queue: .global()) { c.resume() } }
     }
+    /// The rank lease is renewed only while this endpoint keeps the owner:
+    /// after the hello, and never once it failed, fenced or saw cleanup.
+    /// The caller holds lock.
+    private var renewalCanBeSentLocked: Bool {
+        !invalid && !cleanup && !fenceRequested && !releaseRequested && incarnation != nil
+    }
+    /// When an idle writer looks again: at the next renewal while one can
+    /// still be sent, and never later than `writerIdleNanoseconds` from now.
+    /// `nextRenewalAt` means nothing before the hello (it is zero) or after a
+    /// fence, release or cleanup (it goes stale), so it is ignored then; an
+    /// overdue renewal that can be sent is due now.
+    static func writerWakeDeadline(now: UInt64, nextRenewalAt: UInt64, renewalCanBeSent: Bool) -> UInt64 {
+        let idle = now.addingReportingOverflow(writerIdleNanoseconds)
+        let latest = idle.overflow ? UInt64.max : idle.partialValue
+        guard renewalCanBeSent else { return latest }
+        return max(now, min(latest, nextRenewalAt))
+    }
     private func writeLoop(_ pipe: ClusterOwnerPipe) {
         var sequence: UInt64 = 0
         do {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard now < localLifetimeDeadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
-            let offered = localLifetimeDeadlineUptimeNanoseconds - now
+            let firstGrant = localLifetimeDeadlineUptimeNanoseconds
+            guard now < firstGrant else { throw ClusterWorkerOwnerError.deadline }
+            let offered = firstGrant - now
             lock.withLock { offeredLifetime = offered }
             let open = OwnerWire(kind: "open", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
                 incarnation: nil, sequence: 0, clusterID: clusterID, remaining: offered, bootstrapProfile: selectedBootstrapProfile,
-                nativeStart: nativeKeyRelay?.start.canonicalBytes,
-                nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(localLifetimeDeadlineUptimeNanoseconds, nativeKeyRelay!.deadlineUptimeNanoseconds))
-            try pipe.write(open.encoded(commandStream: true), until: min(localLifetimeDeadlineUptimeNanoseconds, now + 5_000_000_000)); sequence += 1
+                nativeStart: nativeKeyRelay?.start.canonicalBytes ?? relayStart?.canonicalBytes,
+                nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(firstGrant, nativeKeyRelay!.deadlineUptimeNanoseconds),
+                dataPlaneTrust: dataPlaneTrust)
+            try pipe.write(open.encoded(commandStream: true), until: min(firstGrant, now + 5_000_000_000)); sequence += 1
             var sentFence = false, sentRelease = false
             while process.isRunning {
+                // Wakes from before this pass looked are answered by it. One
+                // that arrives after the drain stays counted, so none is lost.
+                while writerWake.wait(timeout: .now()) == .success {}
                 let now = DispatchTime.now().uptimeNanoseconds
                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
-                let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?) in
+                let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?, Bool) in
                     let bootstrap = !invalid && !bootstrapReplies.isEmpty ? bootstrapReplies.removeFirst() : nil
-                    let next = bootstrap == nil && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
-                    return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap)
+                    let renew = renewalCanBeSentLocked && now >= nextRenewalAt
+                    let next = bootstrap == nil && !renew && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
+                    return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap, renew)
                 }
+                var wrote = false
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
                     var writeDeadline = min(ownerRetirementDeadlineUptimeNanoseconds, now + 500_000_000)
@@ -239,6 +327,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
                     } else if work.1 && !sentFence {
                         frame = OwnerWire(kind: "fence", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentFence = true
+                    } else if work.5 {
+                        var renewal = OwnerWire(kind: "renew", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
+                            incarnation: incarnation, sequence: sequence)
+                        renewal.remaining = ClusterWorkerLease.ttlNanoseconds
+                        frame = renewal
+                        lock.withLock {
+                            renewalsSent += 1; nextRenewalAt = now + ClusterWorkerLease.renewNanoseconds
+                            leaseDeadline = max(leaseDeadline, now + ClusterWorkerLease.ttlNanoseconds)
+                            // The owner's lease ends no later than the renewal's
+                            // arrival plus the time to live, and so its ceiling.
+                            let ceiling = (now + ClusterWorkerLease.ttlNanoseconds).addingReportingOverflow(ownerRetirementAllowance)
+                            if !ceiling.overflow { ownerCeiling = max(ownerCeiling, ceiling.partialValue + 5_000_000_000) }
+                        }
                     } else if let (round, bytes) = work.4 {
                         frame = OwnerWire(kind: "bootstrapReply", epoch: expectedIdentity.membershipEpoch,
                             lease: leaseID, incarnation: incarnation, sequence: sequence,
@@ -251,11 +352,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     } else { frame = nil }
                     if let frame {
                         try pipe.write(frame.encoded(commandStream: true), until: writeDeadline)
-                        sequence += 1
+                        sequence += 1; wrote = true
                     }
                 }
                 if lock.withLock({ ownerReleased }) { return }
-                Thread.sleep(forTimeInterval: 0.005)
+                // A pass that wrote looks again at once: a renewal, a reply or
+                // a fence may have held back a queued frame. Otherwise rest
+                // until woken or until the next renewal is due.
+                if wrote { continue }
+                let wake = lock.withLock {
+                    Self.writerWakeDeadline(now: DispatchTime.now().uptimeNanoseconds, nextRenewalAt: nextRenewalAt,
+                        renewalCanBeSent: renewalCanBeSentLocked)
+                }
+                _ = writerWake.wait(timeout: .init(uptimeNanoseconds: wake))
             }
         } catch {
             fail()
@@ -301,6 +410,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             diagnosticCapture.drain(diagnostics.fileHandleForReading.fileDescriptor, until: limit)
             try? input.fileHandleForWriting.close(); try? output.fileHandleForReading.close(); try? diagnostics.fileHandleForReading.close()
             ownerEnded.leave()
+            // The owner, or the transport that carried its records, is gone:
+            // no terminal record can reach this endpoint any more, so every
+            // wait on it ends now. Nothing is claimed: `nativeCleanupObserved`
+            // stays false and ownership stays unresolved (the device journal
+            // keeps the record for `cluster recover`); the cause is named (S24).
+            let unproven = lock.withLock { () -> Bool in
+                guard !cleanup else { return false }
+                if unresolvedText == nil {
+                    unresolvedText = "no cleanup proof: its owner \(Self.describe(ownerTerminationValue)) before it published its worker's cleanup; ownership unresolved"
+                }
+                return true
+            }
+            if unproven { nativeEnded.leave() }
         }
         do {
             while true {
@@ -311,7 +433,10 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                 // lifetime is reported after it, not before.
                 if now >= ownerRetirementDeadlineUptimeNanoseconds { throw ClusterWorkerOwnerError.deadline }
                 try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
-                if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                // One pool per pass: this loop never returns to a run loop (see ClusterAutorelease).
+                try ClusterAutorelease.drained {
+                    if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                }
                 if lock.withLock({ ownerReleased }) { return }
                 if !process.isRunning { throw ClusterWorkerOwnerError.closed }
             }
@@ -325,10 +450,12 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                   frame.sequence == nextWireEvent else { throw OwnerWire.invalid("Remote owner epoch/lease/replay differs") }
             if frame.kind == "hello" {
                 guard nextWireEvent == 0, incarnation == nil, frame.bootstrapProfile == selectedBootstrapProfile, let inc = frame.incarnation, let launch = frame.launchID else { throw OwnerWire.invalid("Repeated owner incarnation") }
-                if let nativeKeyRelay {
-                    guard inc == nativeKeyRelay.start.ownerIncarnation, launch == nativeKeyRelay.start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
+                if let start = nativeKeyRelay?.start ?? relayStart {
+                    guard inc == start.ownerIncarnation, launch == start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
                 }
                 incarnation = inc; launchID = launch
+                // The open was the first grant; renewals follow one interval on.
+                nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
                 // See ownerRetirementDeadlineUptimeNanoseconds: the owner's own
                 // lifetime, and so its ceiling, ends no later than this.
                 let latest = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(offeredLifetime)
@@ -354,7 +481,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     guard event.membershipEpoch == expectedIdentity.membershipEpoch, event.sequence == nextNativeEvent,
                           incoming.count < 32 else { throw OwnerWire.invalid("Native event replay or queue bound") }
                     if case .ready(let value) = event.event {
-                        guard nativeKeyRelay == nil, nextNativeEvent == 0, bootstrapRelay == nil || nextBootstrapSequence == 4, value.identity == expectedIdentity, value.profile == expectedProfile,
+                        guard nativeKeyRelay == nil, nextNativeEvent == 0, bootstrapRelay.map({ nextBootstrapSequence == UInt64($0.profile.rounds) }) ?? true,
+                              value.identity == expectedIdentity, value.profile == expectedProfile,
                               value.rank == rank, value.executionPlanSHA256 == executionPlanSHA256 else { throw OwnerWire.invalid("Remote readiness differs") }
                         ready = value
                     } else { guard nextNativeEvent > 0 else { throw OwnerWire.invalid("Event precedes readiness") } }
@@ -379,11 +507,15 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                         guard !self.invalid, !self.cleanup, self.bootstrapReplies.isEmpty else { throw OwnerWire.invalid("Bootstrap reply queue unavailable") }
                         self.bootstrapReplies.append((sequence, gathered)); self.nextBootstrapSequence += 1; self.bootstrapBusy = false
                     }
+                    self.writerWake.signal()
                 } catch { self.fail() }
             }
         }
         if complete { nativeEnded.leave() }
         if complete || invalidateEvent { fail() }
+        // The hello starts renewals and lets queued commands go out; a
+        // terminal asks for the release; a release ACK ends the writer.
+        writerWake.signal()
         arrivals.signal()
     }
 }

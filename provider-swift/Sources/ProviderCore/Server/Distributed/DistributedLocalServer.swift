@@ -2,30 +2,31 @@ import Foundation
 import Hummingbird
 import MLXLMCommon
 
-/// One listener and retained generation ownership. A replacement factory enables
-/// quota rotation only; fixed-lifetime expiry still stops this first increment.
+/// One listener and retained generation ownership. The session has no fixed
+/// lifetime and no request count, so there is no rotation: the loaded model
+/// stays resident and serving until the server is stopped or the session fails.
 public actor DistributedLocalServer {
-    typealias ReplacementFactory = @Sendable () async throws -> any DistributedLocalServerSession
     var generation: DistributedLocalServerGeneration
-    var seenMembershipEpochs: Set<UUID>
     let binding: DistributedLocalSessionBinding
-    let replacementSessionFactory: ReplacementFactory?
     let config: LocalInferenceHTTPConfig
     let defaultMaxTokens: Int
     let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     let tokenizerLoader: @Sendable (URL) async throws -> TokenizerHandle
     let discovery: DistributedLocalDiscovery?
+    /// Incident log and pair telemetry (S24); nil records nothing (tests).
+    let observability: ClusterObservability?
     let responseRouter = DistributedHTTPResponseRouter()
     var phase: DistributedLocalServerPhase = .prepared
     var boundPort: UInt16?
     var ownDiscovery: LocalEndpoint.Info?
     var failed = false
     var startupTask: Task<Void, Error>?
-    var rotationTask: Task<Void, Never>?
     var serviceTask: Task<Void, Never>?
-    var lifetimeTask: Task<Void, Never>?
+    var monitorTask: Task<Void, Never>?
     var teardownTask: Task<Void, Never>?
     var stopWaiters: [CheckedContinuation<DistributedLocalServerStatus, Never>] = []
+    /// Requests waiting for the pipeline, oldest first (`DistributedRequestQueue`).
+    var waiting: [UUID] = []
 
     // Existing test/read-only host views refer to the retained current generation.
     var session: any DistributedLocalServerSession { generation.session }
@@ -35,30 +36,26 @@ public actor DistributedLocalServer {
 
     public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-                publishDiscovery: Bool = true,
-                replacementSessionFactory: (@Sendable () async throws -> DistributedInstalledSession)? = nil) {
+                publishDiscovery: Bool = true, observability: ClusterObservability? = .current()) {
         generation = .init(session: session); binding = .init(session)
-        seenMembershipEpochs = [session.expectedIdentity.membershipEpoch]
-        self.config = config; defaultMaxTokens = session.profile.maxOutputTokens
+        self.config = config
+        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
-        if let factory = replacementSessionFactory {
-            self.replacementSessionFactory = { try await factory() }
-        } else { self.replacementSessionFactory = nil }
+        self.observability = observability
     }
 
     init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
          firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
-         discovery: DistributedLocalDiscovery? = nil,
-         replacementSessionFactory: ReplacementFactory? = nil) {
+         discovery: DistributedLocalDiscovery? = nil, observability: ClusterObservability? = nil) {
         generation = .init(session: session); binding = .init(session)
-        seenMembershipEpochs = [session.expectedIdentity.membershipEpoch]
-        self.config = config; defaultMaxTokens = session.profile.maxOutputTokens
+        self.config = config
+        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
-        self.replacementSessionFactory = replacementSessionFactory
+        self.observability = observability
     }
 
     public var status: DistributedLocalServerStatus {
@@ -82,8 +79,43 @@ public actor DistributedLocalServer {
             try await withTaskCancellationHandler { try await task.value; try Task.checkCancellation() }
                 onCancel: { Task { await self.beginTeardown(drainUntil: nil) } }
         } catch {
-            failed = true; beginTeardown(drainUntil: nil); throw error
+            failed = true
+            recordLaunchFailure(error, target: target)
+            beginTeardown(drainUntil: nil); throw error
         }
+    }
+
+    /// Every launch failure becomes one incident with a classified reason (S24).
+    func recordLaunchFailure(_ error: Error, target: DistributedLocalServerGeneration) {
+        guard let observability else { return }
+        let interrupted = error is CancellationError || (error as? DistributedLocalServerError) == .startupInterrupted
+        observability.recordFailure(interrupted ? .activationRejected : .activationLaunchFailed, source: "leader",
+            error: Self.describe(error), facts: target.session.httpObservabilityFacts, severity: interrupted ? .warn : .error)
+    }
+
+    /// A serving session that ended without being asked to (S24).
+    func recordSessionFailure(_ target: DistributedLocalServerGeneration) {
+        guard let observability else { return }
+        let facts = target.session.httpObservabilityFacts
+        let lost = !(facts?.terminations.isEmpty ?? true)
+        observability.recordFailure(lost ? .peerLost : .sessionFailed, source: "leader",
+            error: "The serving session stopped without being asked to (session \(target.session.status.rawValue))"
+                + (facts?.terminations.first.map { "; " + $0 } ?? ""), facts: facts)
+    }
+
+    /// A stop that could not prove every owner released its device (S24).
+    func recordCleanupUnresolved(_ target: DistributedLocalServerGeneration) {
+        guard let observability else { return }
+        observability.recordFailure(.cleanupUnresolved, source: "leader",
+            error: "Distributed cleanup is unresolved (session \(target.session.status.rawValue)); ownership cannot be resolved yet"
+                + (target.session.httpStopDetail.map { "; " + $0 } ?? ""),
+            facts: target.session.httpObservabilityFacts, severity: .warn)
+    }
+
+    static func describe(_ error: Error) -> String {
+        let text = String(describing: error)
+        let type = String(describing: Swift.type(of: error))
+        return text.contains(type) ? text : "\(type): \(text)"
     }
 
     func listenerExited() {

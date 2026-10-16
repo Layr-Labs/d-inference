@@ -10,7 +10,13 @@ import Foundation
 /// This endpoint never signals anything. "Native cleanup" here means closing
 /// the worker's input and waiting for the process to end by itself: a worker
 /// that loses its input releases its model and exits, and one blocked in a
-/// native call ends at the lifetime it was started with. The library's own
+/// native call ends when its rank lease lapses.
+///
+/// The worker has no fixed lifetime. It is launched with a first rank-lease
+/// grant (S03) and this endpoint, its owner, renews the lease every five
+/// seconds on the worker's input for as long as it keeps the worker. A driver
+/// that dies stops the renewals with it; `stopRenewalsAfterNanoseconds` stops
+/// them on purpose, to show that the worker then ends within the time to live. The library's own
 /// `ClusterWorkerProcess` terminates and then kills its child two seconds
 /// after a fence, which a qualification run on a loaded model must not do.
 public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
@@ -23,7 +29,12 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
     public let executionPlanSHA256: String
-    private let lifetimeNanoseconds: UInt64
+    /// Qualification only: stop renewing the rank lease this long after the
+    /// launch, with the input still open.
+    private let stopRenewalsAfterNanoseconds: UInt64?
+    private var leaseDeadline: UInt64 = 0
+    private var renewalsValue: UInt64 = 0
+    private var lastRenewalAt: UInt64?
     private let process = Process()
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
@@ -49,22 +60,34 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     private var stderrLine = Data()
     private var eventLog: [String] = []
     private var tokenEvents = 0
+    private var keepWarmEvents = 0
+    /// Keep-warm exchanges this rank answered.
+    public var keepWarmAnswered: Int { lock.withLock { keepWarmEvents } }
     private var shutdownSent = false
     private var shutdownComplete = false
     private var admittedValue: Bool?
     private var refusalValue: String?
+    private var refusals = 0
+
+    /// Written to the worker's input before anything else: its data-plane
+    /// credential line (S16). Never logged or kept after it is written.
+    private var initialLine: Data?
+    private var dataPlaneAtReady: ClusterWorkerDataPlane?
+    /// What the worker reported about its data plane when it became ready.
+    public var dataPlane: ClusterWorkerDataPlane? { lock.withLock { dataPlaneAtReady } }
 
     public init(command: [String], expectedIdentity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, lifetimeSeconds: Int) throws {
+                executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil, initialLine: Data? = nil) throws {
         // Validates the identity, rank, profile and plan the way a worker does.
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
                                      executionPlanSHA256: executionPlanSHA256)
-        guard let executable = command.first, executable.hasPrefix("/"), (10...300).contains(lifetimeSeconds) else {
+        guard let executable = command.first, executable.hasPrefix("/") else {
             throw ClusterWorkerOwnerError.invalid("Invalid pair worker launch")
         }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256
-        lifetimeNanoseconds = UInt64(lifetimeSeconds) * 1_000_000_000
+        self.stopRenewalsAfterNanoseconds = stopRenewalsAfterNanoseconds
+        self.initialLine = initialLine
         writer = DispatchQueue(label: "darkbloom.pair-check.writer.\(rank)")
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = Array(command.dropFirst())
@@ -91,6 +114,8 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public var shutdownCompleteObserved: Bool { lock.withLock { shutdownComplete } }
     public var admitted: Bool? { lock.withLock { admittedValue } }
     public var refusal: String? { lock.withLock { refusalValue } }
+    /// Reservation refusals this rank answered with, in this session.
+    public var refusalCount: Int { lock.withLock { refusals } }
     public var readyObserved: Bool { lock.withLock { readyAt != nil } }
     public var diagnosticTail: String {
         let text = String(decoding: lock.withLock { stderrTail }, as: UTF8.self)
@@ -98,6 +123,9 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     }
     /// The worker's process ID on its own Mac, once its launch line arrived.
     public var workerProcessID: Int32? { lock.withLock { preamble?.processID } }
+    /// Rank-lease renewals written to the worker, and when the last one was.
+    public var renewalsSent: UInt64 { lock.withLock { renewalsValue } }
+    public var lastRenewalUptimeNanoseconds: UInt64? { lock.withLock { lastRenewalAt } }
     public var faultDescription: String? { lock.withLock { fault.map { "\($0)" } } }
 
     private func zip2<A, B>(_ a: A?, _ b: B?) -> (A, B)? {
@@ -131,11 +159,46 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                 throw error
             }
             launchedAt = started
+            leaseDeadline = started + ClusterWorkerLease.ttlNanoseconds
+            // First on the input, before any renewal or command is queued.
+            if let line = initialLine {
+                initialLine = nil
+                writer.async { [self] in
+                    do { try input.fileHandleForWriting.write(contentsOf: line) } catch { fail(.closed) }
+                }
+            }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close()
         try? diagnostics.fileHandleForWriting.close()
         Thread.detachNewThread { [self] in readEvents(); streams.leave() }
         Thread.detachNewThread { [self] in readDiagnostics(); streams.leave() }
+        Thread.detachNewThread { [self] in renewLease() }
+    }
+
+    /// The rank lease: one `extendDeadline` line every renewal interval, queued
+    /// behind any command already written, until the input closes, the worker
+    /// exits or the qualification fault says to stop.
+    private func renewLease() {
+        // The launch deadline is the first grant; renewals follow one interval on.
+        Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let state = lock.withLock { () -> (stop: Bool, renewal: UInt64, started: UInt64) in
+                (inputClosed || terminationValue != nil || fault != nil, renewalsValue + 1, launchedAt ?? now)
+            }
+            if state.stop { return }
+            if let limit = stopRenewalsAfterNanoseconds, now - state.started >= limit { return }
+            if let value = try? ClusterWorkerLeaseRenewal(membershipEpoch: expectedIdentity.membershipEpoch, renewal: state.renewal),
+               let bytes = try? ClusterWorkerCodec.encode(value) {
+                lock.withLock {
+                    guard !inputClosed else { return }
+                    renewalsValue = state.renewal; lastRenewalAt = now
+                    leaseDeadline = max(leaseDeadline, now + ClusterWorkerLease.ttlNanoseconds)
+                    writer.async { [self] in try? input.fileHandleForWriting.write(contentsOf: bytes) }
+                }
+            }
+            Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
+        }
     }
 
     /// Waits for the launch line that carries the worker's clock.
@@ -202,7 +265,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                       ready.profile == expectedProfile, ready.executionPlanSHA256 == executionPlanSHA256 else {
                     throw ClusterWorkerOwnerError.invalid("Worker readiness differs from the expected identity, profile or plan")
                 }
-                readyValue = ready; capacityAtReady = ready.requestCapacityBytes
+                readyValue = ready; capacityAtReady = ready.requestCapacityBytes; dataPlaneAtReady = ready.dataPlane
                 readyAt = DispatchTime.now().uptimeNanoseconds
             } else if nextEvent == 0 { throw ClusterWorkerOwnerError.invalid("Worker event precedes readiness") }
             guard incoming.count < 64 else { throw ClusterWorkerOwnerError.invalid("Worker event queue exceeded bound") }
@@ -210,15 +273,20 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             switch frame.event {
             case .ready: eventLog.append("ready")
             case .admitted: eventLog.append("admitted"); admittedValue = true
-            case .refused(let reason): eventLog.append("refused:\(reason.rawValue)"); admittedValue = false; refusalValue = reason.rawValue
+            case .refused(let reason):
+                eventLog.append("refused:\(reason.rawValue)"); admittedValue = false; refusalValue = reason.rawValue
+                refusals += 1
             case .committedToken:
                 if tokenEvents == 0 { eventLog.append("committedToken") }
                 tokenEvents += 1
+            case .promptCache(let reused, let stored): eventLog.append("promptCache:\(reused):\(stored.count)")
+            case .requestTelemetry(let t): eventLog.append(Self.telemetryLine(t))
             case .finished(let reason): eventLog.append("finished:\(reason.rawValue)")
             case .retired(let outcome): eventLog.append("retired:\(outcome.rawValue)")
             case .failed(let reason): eventLog.append("failed:\(reason.rawValue)")
             case .unavailable(let reason): eventLog.append("unavailable:\(reason.rawValue)")
             case .shutdownComplete: eventLog.append("shutdownComplete"); shutdownComplete = true
+            case .keptWarm: keepWarmEvents += 1
             }
             switch frame.event {
             case .unavailable, .failed: readyValue = nil; return notificationLocked()
@@ -227,6 +295,14 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         }
         arrivals.signal()
         if let notify { notifications.async(execute: notify) }
+    }
+
+    /// The rank's request telemetry as one event-log line, so a pair-check report carries the hand-off,
+    /// MTP and prefill figures the product records per request ("-" where the rank reported none).
+    static func telemetryLine(_ t: ClusterWorkerRequestTelemetry) -> String {
+        func show<V>(_ value: V?) -> String { value.map { "\($0)" } ?? "-" }
+        return "requestTelemetry:handoffNs=\(show(t.handoffNanoseconds)):handoffBytes=\(show(t.handoffBytes))"
+            + ":mtpAccepted=\(show(t.mtpAccepted)):mtpDrafted=\(show(t.mtpDrafted)):prefillNs=\(show(t.prefillNanoseconds))"
     }
 
     private func fail(_ error: ClusterWorkerOwnerError) {
@@ -260,10 +336,11 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public var readiness: ClusterWorkerReady? { lock.withLock { fault == nil && !inputClosed ? readyValue : nil } }
     public var nativeCleanupObserved: Bool { lock.withLock { terminationValue != nil || (launchedAt == nil && fault != nil) } }
 
-    /// On this Mac's clock, never later than the worker's own deadline: the
-    /// worker started its lifetime after this process started the launch.
+    /// The rank lease this endpoint last granted, on this Mac's clock: never
+    /// later than the worker's own deadline, which counts from when it read
+    /// the launch or the renewal. It moves while the endpoint keeps the worker.
     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 {
-        lock.withLock { (launchedAt ?? DispatchTime.now().uptimeNanoseconds) + lifetimeNanoseconds }
+        lock.withLock { launchedAt == nil ? DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.ttlNanoseconds : leaseDeadline }
     }
 
     public func setInvalidationHandler(_ value: @escaping @Sendable () -> Void) {
@@ -278,14 +355,15 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     /// The launch line gave one reading of that clock, taken between this
     /// process starting the launch and reading the line, so the difference
     /// between the clocks is known to within that interval. The earlier bound
-    /// is used and the result is capped at the worker's own deadline.
+    /// is used. It is not capped by the worker's lease, which this endpoint
+    /// renews while the request runs.
     func workerDeadline(forLocal deadline: UInt64) throws -> UInt64 {
         try lock.withLock {
             guard let preamble, let preambleAt else { throw ClusterWorkerOwnerError.unavailable }
             let offset = Int64(bitPattern: preamble.uptimeNanoseconds) - Int64(bitPattern: preambleAt)
             let translated = Int64(bitPattern: deadline) + offset
             guard translated > 0 else { throw ClusterWorkerOwnerError.deadline }
-            return min(UInt64(translated), preamble.deadlineUptimeNanoseconds)
+            return UInt64(translated)
         }
     }
 
@@ -295,7 +373,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             translated = .reserve(.init(profileID: value.profileID, promptTokenIDs: value.promptTokenIDs,
                 stopTokenIDs: value.stopTokenIDs, outputCount: value.outputCount, chunkSize: value.chunkSize,
                 deadlineUptimeNanoseconds: try workerDeadline(forLocal: value.deadlineUptimeNanoseconds),
-                capacityLimitBytes: value.capacityLimitBytes))
+                capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, route: value.route))
         }
         try lock.withLock {
             guard launchedAt != nil, terminationValue == nil, fault == nil, !inputClosed else { throw ClusterWorkerOwnerError.closed }

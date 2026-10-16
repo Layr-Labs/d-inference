@@ -14,7 +14,7 @@ rank worker that links `DarkbloomClusterRuntime` is built separately, in
 | `DarkbloomClusterBootstrap` | Bounded private Unix socket between an owner and its actual direct child, with kernel peer identity, epoch/rank/sequence checks and deadlines. Adds the opt-in `nativeKeyPreludeV1` authorization round (closed packet header, phase state machine at both ends) that hands a confirmed X25519 transcript to the record transport. |
 
 | `DarkbloomClusterProcess` | Ownership of one local worker child: explicit environment, pipes, fence, reap, device lease and journal. |
-| `DarkbloomClusterRemote` | The owner service and the leader's endpoint to a remote owner over a pinned SSH channel, with the native key relay. |
+| `DarkbloomClusterRemote` | The owner service and the leader's endpoint to a remote owner over a pinned SSH channel, with the native key relay; the link control channel (authenticated, encrypted TCP per link edge over the Thunderbolt link, see `handoff/DESIGN-link-control-channel.md`). |
 | `DarkbloomClusterRuntime` | The two-stage Qwen layer pipeline: verified checkpoint and tensor loading, resident admission and lifecycle, generation driver, collective transport. Links MLX. |
 
 The control modules support macOS 14 and have no MLX dependency. The runtime
@@ -42,10 +42,12 @@ python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output <new-di
 bash libs/darkbloom-cluster/Tests/StageTransferChecks/run.sh
 bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
 bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
+bash libs/darkbloom-cluster/Tests/LinkControlChecks/run.sh
 bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
 bash libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh
 bash libs/darkbloom-cluster/Tests/DeadlineChecks/run.sh
 bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh
 ```
 
 Runtime tests (tensor verification, resident admission, generation and owned
@@ -67,3 +69,31 @@ These compile the actual sources with Swift 6 and warnings as errors in a
 temporary build directory and run deterministic local checks. They use no
 model, no GPU, no network peer, and no RDMA; they do not qualify cross-host
 execution.
+
+## Long prompts in a family adapter
+
+The protocol bounds one request at 32,768 context tokens (`ClusterWorkerLimits`).
+The 8,192-prompt, 128-output profile every adapter started with was a
+reservation, not a property of the models. A family takes long prompts in six
+steps, the way the dense Qwen models do:
+
+1. Limits: `QwenResidentContextLimits(declaredContextTokens:)` from the model's
+   own `max_position_embeddings`. A model on the Qwen resident runtime records
+   it as one row of `QwenDenseRegisteredSpecification.declaredContextTokensByModel`;
+   a model without a row keeps the reservation, its pinned state ceiling and
+   its admission.
+2. State ceiling: the family's own state estimate at `maximumContextTokens`,
+   computed from configuration geometry, not a pinned integer.
+3. Charge: each request's reserved bytes add one prefill frame's attention
+   transient, `QwenResidentPrefillTransient.bytes(geometry:stageHasAttention:chunkTokens:contextTokens:)`
+   (a sliding-window layer attends over its window, not the whole context).
+4. Load: `QwenResidentContextAdmission.largest(minimum:maximum:admits:)` finds
+   the largest context the host gate admits with the stage resident; the load
+   is refused only below one frame and one output, and every request is still
+   gated live when it is reserved and while it runs.
+5. Lifetime: none. A session has no fixed lifetime or request count; each
+   rank holds a renewed lease (`ClusterLeaseDeadline`), so a long prompt needs
+   no per-adapter ceiling (handoff/DESIGN-no-fixed-lifetime.md).
+6. Tools: a `QualificationLimits.declaredContextTokens` row and a measured
+   `QualificationTimeBudget` row, so the pair and solo budgets scale with the
+   prompt instead of staying sized for 8,192 tokens.

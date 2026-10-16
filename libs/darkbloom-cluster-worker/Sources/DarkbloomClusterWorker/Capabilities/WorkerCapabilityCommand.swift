@@ -33,8 +33,8 @@ enum WorkerCapabilityCommand {
         }
         let configuration = try WorkerCapabilityInput.read(request.configurationPath, maximumBytes: 1_048_576, deadline: deadline)
         let manifest = try WorkerCapabilityInput.read(request.manifestPath, maximumBytes: 4_194_304, deadline: deadline)
-        let capability = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
-                                                                    runtimeBinarySHA256: actual)
+        let capability = try ClusterResidentModelCatalog.describe(configuration: configuration, manifest: manifest,
+                                                                  runtimeBinarySHA256: actual)
         try write(ClusterRuntimeCapabilityCodec.encode(capability), deadline: deadline)
     }
 

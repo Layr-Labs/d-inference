@@ -158,16 +158,9 @@ struct NemotronSuperLocalHTTPAdmissionTests {
         let tracker = LocalResponseTracker()
         let held = SuperHTTPHeldTerminals()
         let baseline = await budget.outstandingReservedBytes()
-        // The bridge's terminal seam is one-shot: each held pump re-arms it
-        // for the next request before waiting.
-        let bridge = owner.bridge
-        @Sendable func holdEveryTerminal(_ usage: CBv2Usage) async {
-            await bridge._testInstallCancelledSettlementHooks(
-                beforeNativeTerminal: holdEveryTerminal, onSettlementWait: {})
-            await held.hold()
-        }
-        await bridge._testInstallCancelledSettlementHooks(
-            beforeNativeTerminal: holdEveryTerminal, onSettlementWait: {})
+        // Both requests can finish in one batched decode step, so hold every
+        // terminal with the persistent gate rather than a re-armed one-shot.
+        await owner.bridge._testInstallPersistentTerminalGate { _ in await held.hold() }
         let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
         do {
             try await superAdmissionApplication(hook: hook, token: token, tokenizer: tokenizer,

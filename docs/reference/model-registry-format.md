@@ -145,6 +145,31 @@ Response `200`:
 default when the request set none); the `*_usd` strings are USD per 1M tokens
 (`registerModelResponse`, `types.ModelPriceQuote`).
 
+## Nemotron Super
+
+The provider serves one Nemotron Super registration natively; its discovery and
+slot are explained in the [registry](../architecture/model-registry.md#nemotron-super-discovery)
+and [inference](../architecture/inference.md#managed-nemotron-super-slot) architecture.
+
+| Field | Value | Code |
+|---|---|---|
+| `model_id` | `nvidia-nemotron-3.5-super` (exact; no alias or other id is served) | `NemotronSuperServingPolicy.modelID` (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`) |
+| `version` | `2026-10-15-nvfp4-r1` | registration input |
+| Artifact | The complete NVIDIA NVFP4 checkpoint (revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`): 88 shards, the embedded MTP head in shard 88, plus the integrity files `ModelScanner.collectWeightFiles` selects. Published to R2 with `scripts/publish-model.sh`; no `hugging_face_artifact` | `NemotronSuperCheckpointPin` (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperCheckpointPin.swift`) |
+| `config.json` SHA-256 | `35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea`, `model_type` `nemotron_h_omni` | `NemotronSuperServingPolicy.configSHA256` |
+| `model.safetensors.index.json` SHA-256 | `c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741` | `NemotronSuperCheckpointPin.index` |
+| `chat_template.jinja` SHA-256 | `1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816` | `NemotronSuperPromptContract.templateSHA256` |
+| `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
+| `max_context_length` | `16384` | `NemotronSuperServingPolicy.contextTokens` |
+| `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
+| `min_ram_gb` | `192`, derived from the default LOAD footprint ([hardware support](../architecture/hardware-support.md#context)); only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
+| Input | text; tools, reasoning and `response_format`; no image input (the speculating owner refuses media) | `NemotronSuperSlotOwner.chatEngine` |
+
+Providers without this policy drop the artifact at scan, advertisement and
+prefetch publication, but the downloader has no architecture gate: a provider
+of an earlier release that receives it as a desired build downloads the
+weights before refusing to advertise them.
+
 ## Hugging Face download artifact
 
 `registerModelRequest.hugging_face_artifact` is an optional object stored on

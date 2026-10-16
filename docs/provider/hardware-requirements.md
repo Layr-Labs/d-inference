@@ -10,9 +10,12 @@ memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
 
-Nemotron Super VL has no qualified RAM-tier or serving recommendation. Its
-unregistered native builder is an internal qualification path; see
-[the inference architecture](../architecture/inference.md).
+Nemotron 3.5 Super (`nvidia-nemotron-3.5-super`) needs at least 192 GB of
+unified memory with its default eight-request speculating owner; 128 GB cannot
+admit the load. Only 256 GB (M3 Ultra) is measured. Plan about 75 GB of disk for
+its weights. The derivation is in
+[hardware support](../architecture/hardware-support.md#context); the slot is
+described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
 
 Native live inference is the default. Independent checkpoint compression can
 reduce encoded older-row storage, not the native serving allocation or measured

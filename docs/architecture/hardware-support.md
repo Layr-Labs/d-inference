@@ -17,6 +17,24 @@ checkpoint does not waive that policy. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`.
 
+The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
+claims, before allocation, the pinned checkpoint's installation quote with a
+2 GiB backend allowance (82,100,665,864 bytes), the embedded head's supplement
+(8,848,271,480 bytes) and `NemotronSuperServingPolicy.admissionKVBytes` of KV
+headroom (26 GiB for eight speculative requests), then reserves a 12 GiB
+owner-wide prefill lane until native retirement. Its default discovery
+footprint, 122.7 GiB, is that claim plus the lane. With the unmeasured 5.5 GiB
+activation reserve and 1 GiB minimum KV the load gate needs 129.2 GiB under the
+90% cap: at least 143.6 GiB (154 GB) of physical memory before macOS and other
+processes take any. A 128 GB Mac (115.2 GiB cap) cannot admit the default load;
+192 GB leaves 43.6 GiB under the cap. Only a 256 GB M3 Ultra is measured: load
+peak physical footprint 80.5 GB, MLX active 75.0 GB after load and 121.0 GB
+charged during a load at a 28 GiB grant. The registry floor derived from this is
+in the [registry reference](../reference/model-registry-format.md#nemotron-super).
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
+`provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
+`scripts/nemotron-qualification/validation-2026-10-15.json`.
+
 The provider is Apple-Silicon-only: the SwiftPM platform floor is declared by
 the packages described in
 [`components/mlx-swift.md#what-providercore-links`](components/mlx-swift.md#what-providercore-links),

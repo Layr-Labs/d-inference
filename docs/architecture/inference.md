@@ -31,10 +31,10 @@ drains its own requests; the owner mints one `localTextBinding` and drains it in
 and client prompt-cache keys are rejected, and text prefix reuse runs only when the owner has a
 checkpoint bank (below). The builder uses serial contiguous KV, bounded
 calibrated prefill, and no MTP unless the explicit opt-in below installs text
-speculation. These internal paths do not register a model or
-expose an HTTP route. `NemotronSuperLocalLoad` owns an unpublished load transaction,
-checks the pinned config, reserves the conservative SDK quote and preserves
-charges on native completion faults. `NemotronSuperPromptContract` renders the
+speculation. The provider installs this owner only through the
+[managed Super slot](#managed-nemotron-super-slot). `NemotronSuperLocalLoad` owns
+the one-shot load transaction, checks the pinned config, reserves the
+conservative SDK quote and preserves charges on native completion faults. `NemotronSuperPromptContract` renders the
 pinned template with reference `apply_chat_template` semantics: request-order tool
 schemas and tool-call arguments, Python `str`/`strip`/`json.dumps` filters, and the
 processor's `<img>`, one `<image>` per feature, `</img>` expansion. It rejects
@@ -102,7 +102,8 @@ application and standard JSON/SSE framing and defaults to absent. It serves text
 through the owner's `localTextBinding` and images through its image binding, admits
 the owner's configured number of requests and refuses another with `queueFull`
 (429) before any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
-it over the transaction's own owner. No production caller installs it.
+it over the transaction's own owner. Only the qualification runner installs it as
+a hook; the managed slot serves the same route through `engine(body:hasMedia:servesMedia:cacheScope:)`.
 `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (default `1`) sets how many requests
 the owner serves: `1` to `64` plain, `1` to `8` with rectangular speculation, one
 with serial speculation. Above one the plain builder serves
@@ -138,14 +139,17 @@ bank that does not fit fails the load and a retained native fault keeps it
 charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
 only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
-then submitted with prefix caching on and the local unscoped cache scope; image
-requests stay cold and never publish, and a speculating owner has no bank.
+then submitted with prefix caching on, partitioned by the request's cache scope
+(the hook's single local scope, or the managed slot's authenticated tenant
+scope); image requests stay cold and never publish, and a speculating owner has
+no bank.
 `UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
 `NemotronSuperLocalMTP` installs text speculation only when
-`DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction
+`DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (the hook's default is off; the
+managed slot's policy sets it). The load transaction
 adds the embedded head's header-derived payload and loader construction allowance
 to its single LOAD claim, loads the head in its own fenced construction epoch, and
 the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, up to the
@@ -169,6 +173,73 @@ rejection rollback and cancellation; serial verification cannot beat plain
 decode, and no full-model acceptance or speed is measured. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
 
+### Managed Nemotron Super slot
+
+The provider serves exactly one Super artifact, `NemotronSuperServingPolicy.modelID`
+(`nvidia-nemotron-3.5-super`): the complete pinned NVIDIA NVFP4 checkpoint, embedded
+MTP head included, discovered as described in the
+[model registry](model-registry.md#nemotron-super-discovery). It has no
+`ModelContainer`: its slot holds `ProviderModelContainer.nemotronSuper`, a
+`NemotronSuperSlotOwner` over the load transaction and its chat route. Generic
+factories (`ModelContainerLoading`, `EngineV2SlotFactory`), warm liveness
+rebuilds, the MTP upgrade and the standalone server refuse it.
+
+```mermaid
+flowchart LR
+    A["ensureModelLoaded<br/>gates + eviction"] --> B["re-slice gate<br/>grant for Super"]
+    B --> C["NemotronSuperLocalLoad<br/>LOAD claim, pinned shards"]
+    C --> D["owner: bridge, lane,<br/>grant check"]
+    D --> E["slot installed<br/>survivors regrown"]
+    F["coordinator / local<br/>chat request"] --> G["owner chat route<br/>pinned prompt, parsers"]
+    G --> D
+```
+
+`ensureModelLoaded` runs its ordinary selection, eviction and load gate on the
+discovery footprint, then hands the load to `ProviderLoop.loadNemotronSuperSlot`.
+Under the re-slice gate, held until installation, `resliceShrinkingForNewcomer`
+shrinks survivors and returns Super's grant; `NemotronSuperSlotLoader.pinnedCheckpoint`
+opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
+transaction. Its LOAD claim is the installation quote with a 2 GiB backend
+allowance, the head supplement with speculation, and
+`NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
+request's measured fixed bytes, rounded up (3 GiB with depth-3 speculation,
+0.5 GiB plain), plus 2 GiB and any prefix bank, never above the grant. The grant
+itself stays the engine's admission ceiling, re-sliced like every slot's; the
+builder still refuses a grant that cannot serve every configured request with
+`UnserviceableGrant`. After the post-build headroom guard the bridge is
+registered and the slot installed.
+
+`NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
+or `on` installs depth-3 rectangular speculation (`off` or `DARKBLOOM_CBV2_MTP=0`
+serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
+per-model entry is explicit, which then bounds it (at most eight with
+speculation). The depth, verification, prefill chunk and decode-step keys above
+keep an operator's value. The plain owner turns exact text prefix reuse on when
+the grant holds every request's fixed bytes beside the bank, unless the
+operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
+
+Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
+local-endpoint chat completions (`NemotronSuperLocalEndpointEngine`) run on the
+owner's chat route, not the generic engine: the pinned prompt contract, reasoning
+channel, tool and structured-output validation, cancellation and usage are the
+hook's. Coordinator text prefix reuse is partitioned by the authenticated cache
+scope and off without one; the slot emits no cache receipts, cached-token usage
+or prefix-cache capability. A cancelled stream bills delivered output and the
+reference prompt length. The slot advertises no media and refuses it, because
+the speculating owner cannot serve images and the default speculates. The
+generic local engine refuses Super; only chat completions serve it.
+
+`retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner
+(bindings, bridge, prefill lane, any bank, installation), then regrows
+survivors. A wedged slot is retired, never rebuilt. An owner whose native work
+did not retire keeps its weights in the fleet KV budget
+(`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
+restart. Sources:
+`provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperSlotOwner.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperCheckpoint.swift`,
+`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`.
 
 The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
 and retains its vision wrapper. The SDK validates signed-Hadamard metadata and

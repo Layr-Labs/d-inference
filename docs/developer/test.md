@@ -473,6 +473,17 @@ byte for byte and the final tensors bitwise; JPEG uses the bounds in the
 [image format reference](../reference/nemotron-super-image-formats.md).
 Regenerated fixtures must be byte-identical unless a pinned reference changes.
 
+The managed slot is covered by `NemotronSuperServingPolicyTests` (identity,
+discovery, load plan, footprint and capacity quote; CPU only) and
+`NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
+coordinator and local-endpoint requests, cancellation, admission refusal and
+retirement). Two gated cases need the pinned checkpoint:
+`NEMOTRON_SUPER_CHECKPOINT_DIR` alone checks its discovery and that the recorded
+LOAD constants equal the SDK quotes over every verified shard (hashes about
+75 GB, loads no weights); adding `DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full
+checkpoint (about 80 GB) through the production loader and serves one encrypted
+request. Run either only with exclusive GPU access.
+
 ## Related
 
 - [Build](build.md)

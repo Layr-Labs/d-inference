@@ -3,6 +3,7 @@ import Foundation
 import HTTPTypes
 import Hummingbird
 import HummingbirdTesting
+import MLX
 import MLXLMCommon
 @testable import MLXVLM
 import NIOCore
@@ -11,7 +12,9 @@ import Testing
 
 /// Live loopback HTTP through the opt-in image hook with the real decoder and
 /// the tiny synthetic owner. Every fixture here maps to the 32x32 patch grid
-/// that the tiny RADIO fixture's position table covers.
+/// that the tiny RADIO fixture's position table covers. MLX's peak counter is
+/// process-wide: run filtered when calibrating the peak measurement.
+@Suite(.serialized)
 struct NemotronSuperImageFormatHTTPTests {
     @Test(.timeLimit(.minutes(3))) func inlineImageFormatsServeAndInvalidMediaIsRejected() async throws {
         let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
@@ -100,5 +103,65 @@ struct NemotronSuperImageFormatHTTPTests {
         #expect(throws: NemotronSuperImageDecode.Failure.sizeLimit) {
             try NemotronSuperLocalImageBinding.encodedPlan(images + [oversize], contextLength: 1024)
         }
+    }
+
+    /// MLX peak growth for the largest admitted grid (2048x1664, 13312 patches)
+    /// through live HTTP must stay within the request's media reservation. The
+    /// fixture tower's unfused attention materializes a 13313x13313 score matrix.
+    @Test(.timeLimit(.minutes(3))) func largestAdmittedImagePeakStaysWithinMediaReservation() async throws {
+        let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+            channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
+        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: dimensions).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-image-largest-http",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let tokenizer = TokenizerHandle(SuperSyntheticImageTokenizer())
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: tokenizer, eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 4096, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
+        // A Sub-filtered gradient keeps the 2048x1664 PNG small on the wire.
+        let row = [UInt8(1)] + [UInt8](repeating: 1, count: 2048 * 3)
+        let image = SuperImageTestPNG.image(width: 2048, height: 1664, colorType: 2, depth: 8,
+                                            rows: [[UInt8]](repeating: row, count: 1664))
+        let plan = try NemotronSuperLocalImageBinding.encodedPlan([image], contextLength: 4096)
+        #expect(plan.grids.map(\.tokens) == [3328])
+        #expect(plan.totalBytes >= (try NemotronSuperLocalImageBinding.towerActivationBytes([(104, 128)])))
+        let value: [String: Any] = ["model": NemotronSuperLocalBinding.modelID, "stream": false,
+            "temperature": 0, "max_tokens": 2, "enable_thinking": false,
+            "messages": [["role": "user", "content": [["type": "text", "text": "fixture"],
+                ["type": "image_url", "image_url": ["url": "data:image/png;base64," + image.base64EncodedString()]]]]]]
+        let body = ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: value))
+        let app = makeLocalInferenceApplication(
+            config: .init(host: "127.0.0.1", port: 0, authToken: "synthetic-super-largest"),
+            defaultMaxTokens: 2, acquire: { requested in
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(requested)
+            }, tokenizerProvider: { _ in .init(tokenizer: tokenizer, modelType: "nemotron_h_omni") },
+            availableModels: { [] }, mtpSlots: { [] },
+            modelTypeProvider: { _ in "nemotron_h_omni" }, nemotronSuperImageHTTP: hook)
+        let headers: HTTPFields = [.contentType: "application/json",
+                                  .authorization: "Bearer synthetic-super-largest"]
+        try await app.test(.live) { client in
+            Memory.clearCache()
+            Memory.peakMemory = 0
+            let base = Memory.activeMemory
+            try await client.execute(uri: "/v1/chat/completions", method: .post,
+                headers: headers, body: body) { response in
+                #expect(response.status == .ok, "\(String(buffer: response.body))")
+            }
+            let peak = UInt64(max(0, Memory.peakMemory - base))
+            // The unfused fixture attention alone needs one 13313^2 float32 matrix.
+            #expect(peak >= 13313 * 13313 * 4)
+            #expect(peak <= plan.totalBytes, "MLX peak growth \(peak) above media reservation \(plan.totalBytes)")
+        }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 }

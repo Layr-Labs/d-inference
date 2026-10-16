@@ -225,7 +225,22 @@ actor NemotronSuperLocalImageBinding {
             guard !overflow else { throw Failure.capacity }
             total = next; features += featureBytes; grids.append(grid)
         }
-        return EncodedPlan(grids: grids, totalBytes: total, featureBytes: features)
+        let activation = try towerActivationBytes(grids.map { ($0.heightPatches, $0.widthPatches) })
+        let (charged, overflow) = total.addingReportingOverflow(activation)
+        guard !overflow else { throw Failure.capacity }
+        return EncodedPlan(grids: grids, totalBytes: charged, featureBytes: features)
+    }
+
+    /// Tower and projector working memory of the largest image: preparation
+    /// evaluates images one at a time. Owners install only the pinned Super VL
+    /// composition, so its derived bound applies; it is added to, not taken
+    /// from, the global activation reserve.
+    static func towerActivationBytes(_ grids: [(rows: Int, columns: Int)]) throws -> UInt64 {
+        let largest = grids.map {
+            NemotronSuperImageComposition.pinnedActivationBytes(patchRows: $0.rows, patchColumns: $0.columns)
+        }.max() ?? 0
+        guard largest < Int.max else { throw Failure.capacity }
+        return UInt64(largest)
     }
 
     func drain() async throws {
@@ -241,8 +256,8 @@ actor NemotronSuperLocalImageBinding {
         let featureBytes: Int
     }
 
-    /// Charges retained normalized inputs plus final float32 feature storage.
-    /// This is not a RADIO activation-floor estimate: the unchanged global
+    /// Charges retained normalized inputs, final float32 feature storage and
+    /// the largest image's derived tower activation bound. The unchanged global
     /// budget retains its conservative activation reserve. Bridge KV is separate.
     static func preparationQuote(_ input: Input, contextLength: Int) throws -> Quote {
         guard !input.promptTokens.isEmpty, input.promptTokens.count <= contextLength,
@@ -264,7 +279,13 @@ actor NemotronSuperLocalImageBinding {
             guard !byteOverflow, !sumOverflow else { throw Failure.capacity }
             total = next
         }
-        return Quote(totalBytes: total, featureBytes: features)
+        let patch = 16
+        let activation = try towerActivationBytes(input.normalizedImages.map {
+            (($0.dim(2) + patch - 1) / patch, ($0.dim(3) + patch - 1) / patch)
+        })
+        let (charged, chargeOverflow) = total.addingReportingOverflow(activation)
+        guard !chargeOverflow else { throw Failure.capacity }
+        return Quote(totalBytes: charged, featureBytes: features)
     }
 
     private static func execute(bridge: EngineV2Bridge,

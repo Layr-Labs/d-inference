@@ -50,7 +50,8 @@ struct NemotronSuperLocalImageBindingTests {
         let quote = try NemotronSuperLocalImageBinding.preparationQuote(
             .init(promptTokens: [1, 18, 18, 2], normalizedImages: [pixels]), contextLength: 64)
         #expect(quote.featureBytes == 2 * 4096 * 4)
-        let expectedBytes: UInt64 = 45_056
+        // Features and input (45,056) plus the pinned tower bound for 2x2 patches.
+        let expectedBytes: UInt64 = 45_056 + 85_232_640
         #expect(quote.totalBytes == expectedBytes)
     }
 

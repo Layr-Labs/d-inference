@@ -14,7 +14,7 @@ enum QwenResidentRequestExecution {
         ]), additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
             reserved.prefillAllowance?.extraHostBytes ?? 0, reserved.recordingCharge?.capture.extraHostBytes ?? 0,
             phaseSplit.extraHostBytes,
-        ]))
+        ]), onLoadedStage: true)
     }
 
     /// While the request runs: what it still needs, given that this process's

@@ -151,10 +151,20 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
         if register { list?.add(self) }
         lock.lock(); defer { lock.unlock() }
         let since = comparesWithFirstSample ? (baseline ?? .init(os)) : nil
-        let decision: QwenDenseStageLoadAdmission
+        var decision: QwenDenseStageLoadAdmission
         do {
             decision = try QwenDenseStageLoadPolicy.decide(os, requiredBytes: bytes, purpose: purpose,
                 now: now, since: since, floor: floor)
+            // Short only because the gate does not count file cache the kernel could drop: let the kernel drop it
+            // (`QwenDenseStageLoadReclaim`, stopped at the first sign of harm), then judge a fresh sample.
+            let short = decision.requiredBytes - decision.admissibleBytes
+            if !decision.admitted, !decision.stoppedByCompressionOrSwap, short > 0,
+               decision.fileCacheAboveReserveBytes - decision.countedReclaimableBytes >= short,
+               QwenDenseStageLoadReclaim.makeRoom(bytes: short + (512 << 20)) > 0 {
+                let again = try QwenDenseStageLoadResources.observeOS()
+                decision = try QwenDenseStageLoadPolicy.decide(again, requiredBytes: bytes, purpose: purpose,
+                    now: DispatchTime.now().uptimeNanoseconds, since: since, floor: floor)
+            }
         } catch {
             unjudged += 1; lastUnjudged = String(describing: error)
             throw error

@@ -101,7 +101,7 @@ extension QwenResidentRuntime {
                 throw ProbeError("Batch lane reservation exceeds its owner ceiling or every lane is taken")
             }
             let others = try laneBook.stateBytes()
-            try prefixCache.yieldingMemory { try allowance.requireLive(additionalNativeBytes: others) }
+            try prefixCache.yieldingMemory { try allowance.requireLive(additionalNativeBytes: others, onLoadedStage: true) }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, allowance: allowance,
                 deadline: value.deadlineUptimeNanoseconds, mode: .serving, recordingCharge: nil,
@@ -146,7 +146,7 @@ extension QwenResidentRuntime {
                                     let allowances = laneBook.allowances()
                                     if let first = allowances.first {
                                         let others = try QwenLongPrefillCheckedBytes.sum(allowances.dropFirst().map(\.stateBytes))
-                                        try prefixCache.yieldingMemory { try first.requireLive(additionalNativeBytes: others) }
+                                        try prefixCache.yieldingMemory { try first.requireLive(additionalNativeBytes: others, onLoadedStage: true) }
                                     }
                                     lastResourceCheck = DispatchTime.now().uptimeNanoseconds
                                 }

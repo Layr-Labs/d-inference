@@ -610,10 +610,11 @@ final class OnboardingLive: @unchecked Sendable {
         let words = plan.ranks.compactMap { rank -> String? in
             let mac = rank.local ? localName : peerName
             switch rank.fit {
-            case "now": return nil
-            // macOS would give it (files it keeps in memory), the gate does not count all of it yet: quitting an app
-            // frees memory the gate counts in full. A restart is said only when nothing else could free enough.
-            case "afterApplicationsRelease", "gateCountsLess": return "Quit apps on \(mac) first."
+            // The gate counts less than macOS would give (files it keeps in memory): the part's load lets the kernel
+            // drop that cache first (`QwenDenseStageLoadReclaim`), so it fits. A restart is said only when nothing
+            // else could free enough.
+            case "now", "gateCountsLess": return nil
+            case "afterApplicationsRelease": return "Quit apps on \(mac) first."
             case "never": return "\(mac) cannot hold its part at all."
             default: return "Restart \(mac) to free memory."
             }
@@ -626,8 +627,8 @@ final class OnboardingLive: @unchecked Sendable {
     /// The same words from a fit measured now.
     static func remedy(_ fit: ClusterPlacementFit, mac: String) -> String? {
         switch fit {
-        case .now: return nil
-        case .afterApplicationsRelease, .gateCountsLess: return "Quit apps on \(mac) first."
+        case .now, .gateCountsLess: return nil
+        case .afterApplicationsRelease: return "Quit apps on \(mac) first."
         case .afterRestart: return "Restart \(mac) to free memory."
         case .never: return "\(mac) cannot hold its part at all."
         }

@@ -141,7 +141,11 @@ only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
 then submitted with prefix caching on, partitioned by the request's cache scope
 (the hook's single local scope, or the managed slot's authenticated tenant
-scope); image requests stay cold and never publish. On the speculating owner
+scope). An image request with a cache scope is bound to an identity of its
+evaluated features and spans (`EngineV2VisionPrefill.PreparedSubmission.hybridPrefixIdentity`),
+hashed while its media charge still covers the copy, and reuses only within
+that identity: the same images at the same positions in a later turn. Without
+a scope it stays cold and never publishes. On the speculating owner
 the target is built with `exactPrefixCheckpoints` too and each checkpoint also
 holds the assistant's queued prompt history, so a restored request drafts from
 the same history as a cold one.

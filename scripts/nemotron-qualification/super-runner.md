@@ -149,8 +149,9 @@ the prefill chunk, so a request restores the deepest chunk boundary below its
 last prompt token that a previous text request published, and prompts shorter
 than one chunk restore nothing. On the speculating owner each checkpoint also
 holds the assistant's queued prompt history (8 KiB per token), so a restored
-request drafts from the same history as a cold one. Image requests never use
-it. `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
+request drafts from the same history as a cold one. An image request reuses
+only checkpoints of its own image identity (the same images at the same
+positions). `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
 reports the bank's `adoptions`, `tokens_saved`, `lookup_matches`, `misses`,
 `entries`, `evictions` and bytes (`null` without a bank); the HTTP usage's
 `cached_tokens` stays 0 on this route. `kv_grant.minimum_grant_bytes` includes

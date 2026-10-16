@@ -31,4 +31,27 @@ extension ClusterConsoleCheck {
         expect(!X.cableMoved(bound: first, current: nil), "no cable now: kept (it may come back on the same port)")
         expect(!X.cableMoved(bound: nil, current: moved), "no listener yet: nothing to move")
     }
+
+    /// `darkbloom` run from the PATH is the installer's link (`~/.darkbloom/bin/darkbloom` -> the app's executable). A
+    /// setup names the file itself as the owner, which the owner's start accepts; the link it refuses. Found on the
+    /// 2x M4 Max / M5 Max pair 2026-10-15 ("Installed local owner is unsafe or not executable"); failing first on
+    /// b34d13506, where the setup named the link.
+    static func ownerIsTheFileNotThePathLink() throws {
+        let root = scratch.appendingPathComponent("owner-path", isDirectory: true)
+        let macOS = root.appendingPathComponent("Darkbloom.app/Contents/MacOS", isDirectory: true)
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = macOS.appendingPathComponent("darkbloom")
+        try Data("#!/bin/sh\n".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        let link = bin.appendingPathComponent("darkbloom")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "../Darkbloom.app/Contents/MacOS/darkbloom")
+        let named = ClusterSetupMemberFacts.installedOwnerPath(link)
+        var information = stat()
+        expect(lstat(named, &information) == 0 && information.st_mode & S_IFMT == S_IFREG, "the setup names a regular file, not the link: \(named)")
+        expect(URL(fileURLWithPath: named).lastPathComponent == "darkbloom" && named.hasSuffix("Darkbloom.app/Contents/MacOS/darkbloom"),
+               "the file the link points at: \(named)")
+        expect(ClusterSetupMemberFacts.installedOwnerPath(file) == file.resolvingSymlinksInPath().path, "a path that is the file stays the file")
+    }
 }

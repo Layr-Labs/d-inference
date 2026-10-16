@@ -37,6 +37,13 @@ public struct ClusterSetupMemberFacts: Codable, Sendable, Equatable {
     /// The member ID a Mac gets from its pairing pin: the same on both Macs, no host or user name.
     public static func memberID(pin: String) -> String { "mac-" + String(pin.prefix(12)) }
 
+    /// The darkbloom a setup names as this Mac's owner: the file itself, never the link the installer puts on the
+    /// PATH (`~/.darkbloom/bin/darkbloom`). The owner's start refuses a symlink (`ClusterLocalOwnerConfiguration`), so
+    /// a setup made by `darkbloom` run from the PATH could never start its leader part.
+    public static func installedOwnerPath(_ executable: URL) -> String {
+        executable.resolvingSymlinksInPath().path
+    }
+
     func validate() throws {
         func plain(_ value: String, _ limit: Int = 1024) -> Bool {
             !value.isEmpty && value.utf8.count <= limit && !value.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }

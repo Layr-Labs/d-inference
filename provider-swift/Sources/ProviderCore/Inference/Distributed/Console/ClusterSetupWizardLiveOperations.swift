@@ -293,7 +293,7 @@ final class LiveContext: @unchecked Sendable {
         #if DEBUG
         if let wrapper = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_OWNER_EXECUTABLE"], wrapper.hasPrefix("/") { return wrapper }
         #endif
-        return executable.path
+        return ClusterSetupMemberFacts.installedOwnerPath(executable)
     }
 
     /// Starts answering the other Mac's wizard once this Mac has paired; a

@@ -117,6 +117,10 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             "emulated_mlx_limits": emulatedMLX])
 
         let budget = emulation?.budget(capFraction: capFraction) ?? GlobalKVCacheBudget(capFraction: capFraction)
+        // The provider's serving-set reserve for a lone Super slot (its
+        // measured activation floor), as the managed slot's budget holds it.
+        await budget.setActivationReserveBytes(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: [NemotronSuperServingPolicy.modelID]))
         if let emulation {
             let gate = emulation.loadGate(budget: budget)
             log.emit("emulation.load_gate", gate.json.asFields)

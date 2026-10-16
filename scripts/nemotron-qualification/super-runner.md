@@ -22,7 +22,7 @@ test runner, a release build) and it adds no file to `ProviderCore`. It uses
 
 | Mode | Load path | Admission |
 |---|---|---|
-| `--checkpoint DIR` | `NemotronSuperLocalLoad.load`: pinned config/index/shard identity, `NemotronSuperInstallation.requiredLoadBytes` quote, pending LOAD claim, fenced staging, `NemotronSuperLocalBridgeBuilder.make`, LOAD finish | the process `GlobalKVCacheBudget` with the provider's default cap and activation reserve |
+| `--checkpoint DIR` | `NemotronSuperLocalLoad.load`: pinned config/index/shard identity, `NemotronSuperInstallation.requiredLoadBytes` quote, pending LOAD claim, fenced staging, `NemotronSuperLocalBridgeBuilder.make`, LOAD finish | the process `GlobalKVCacheBudget` with the provider's default cap and the activation reserve the provider holds for a lone Super slot (its measured floor) |
 | `--synthetic` | the same steps in the same order on the tiny fixture (the transaction pins the real identity, so it cannot stage a fixture) | same |
 
 Isolation: the state directory must be new or empty; `HOME`, `TMPDIR`,

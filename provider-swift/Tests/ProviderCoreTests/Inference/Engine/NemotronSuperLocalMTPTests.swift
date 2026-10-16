@@ -78,23 +78,28 @@ struct NemotronSuperLocalMTPTests {
         #expect(try MTP.loadSupplementBytes(.init(payloadBytes: 3, constructionBytes: 4)) == 7)
     }
 
-    /// The shared factory serves the text target exactly as the ordinary
-    /// adapter: same layer kinds and capabilities plus MTP, and the same hard
-    /// calibrated prefill bound on its scheduler.
-    @Test func sharedFactoryRecognizesTheSpeculativeTextTarget() throws {
+    /// The shared factory serves both speculative targets like the ordinary
+    /// adapter: same layer kinds, the serial target's capabilities plus MTP,
+    /// and the same hard calibrated prefill bound on every scheduler.
+    @Test func sharedFactoryRecognizesTheSpeculativeTextTargets() throws {
         let fixture = try SuperMTPInstalledFixture().make()
         let model = try #require(fixture.installed.model)
         let adapter = NemotronSuperRecurrentAdapter(model)
         let target = NemotronSuperMTPTextTarget(model)
+        let capture = try NemotronSuperMTPCaptureTarget(capturing: model)
         let limit = try #require(adapter.calibratedPrefillTokenLimit)
-        #expect(EngineV2Factory.calibratedPrefillTokenLimit(model: target) == limit)
-        #expect(EngineV2Factory.cbv2LayerKinds(model: target) == adapter.cbv2LayerKinds)
+        for speculative in [target, capture] {
+            #expect(EngineV2Factory.calibratedPrefillTokenLimit(model: speculative) == limit)
+            #expect(EngineV2Factory.cbv2LayerKinds(model: speculative) == adapter.cbv2LayerKinds)
+            let resolved = try #require(EngineV2Factory.ProductionModelAdapter(model: speculative))
+            #expect(resolved.modelCapabilities.supportsMTP)
+        }
         let resolved = try #require(EngineV2Factory.ProductionModelAdapter(model: target))
         var capabilities = adapter.cbv2Capabilities
         #expect(!capabilities.supportsMTP)
         capabilities.supportsMTP = true
         #expect(resolved.modelCapabilities == capabilities)
-        for served in [adapter, target] as [any LanguageModel] {
+        for served in [adapter, target, capture] as [any LanguageModel] {
             let config = EngineV2Factory.productionSchedulerConfig(
                 maxConcurrentRequests: 1, model: served, environment: [:])
             #expect(config.prefillChunkSize <= limit && config.soloPrefillStripeTokens == nil)

@@ -13,8 +13,10 @@
   owner-wide prefill lane, and a refusal naming the minimum when the grant
   cannot serve every request. Defaults: depth-3 exact rectangular speculation
   for up to eight requests; `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves
-  the plain owner, which also reuses exact text prefixes when the grant holds
-  its bank, and an explicit `engine_v2_max_concurrent` bounds the width.
+  the plain owner, and an explicit `engine_v2_max_concurrent` bounds the width.
+  Either owner reuses exact prompt prefixes when the grant holds its bank; a
+  restored speculative request drafts from the same prompt history as a cold
+  one, and an image turn reuses only checkpoints of the same image features.
 - Coordinator and local-endpoint chat completions use the reference prompt
   template, reasoning channel, tool and structured-output validation,
   cancellation and usage of the owner. Prefix reuse is partitioned by the
@@ -31,9 +33,13 @@
   `<unk>`; non-finite image features fail the request.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
+- Opt-in paged attention KV (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged`): the
+  segmented native paged backend, charged by the engine's process-memory owner,
+  with the decode rows reserved for the owner's lifetime; it never falls back to
+  contiguous storage and keeps the text prefix bank off.
 - Serves 65,536 tokens of context, prompt plus output (was 16,384). The default
   speculating owner charges every request its draft history for the whole
-  window, so eight requests now claim 36 GiB of KV headroom (was 26 GiB); the
-  runner can select up to 262,144 tokens.
+  window, so eight requests now claim 36 GiB of KV headroom beside any prefix
+  bank (was 26 GiB); the runner can select up to 262,144 tokens.
 - Needs at least 192 GB of unified memory; only 256 GB is measured.
   Coordinator-side registration remains a separate step.

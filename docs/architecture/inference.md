@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -129,7 +129,7 @@ generations and any speculation charge, `requestWorkspaceBytes`: one
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
-`NemotronSuperLocalPrefixCache` gives the plain owner exact text prefix reuse when
+`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`: `PrefixCachePolicy.hybridConfig` sizes the SDK's
 resident recurrent checkpoint bank (`min(1 GiB, KV grant / 8)` unless
 `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` sets it), the backend carves it from the KV
@@ -141,12 +141,34 @@ only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
 then submitted with prefix caching on, partitioned by the request's cache scope
 (the hook's single local scope, or the managed slot's authenticated tenant
-scope); image requests stay cold and never publish, and a speculating owner has
-no bank.
+scope). An image request with a cache scope is bound to an identity of its
+evaluated features and spans (`EngineV2VisionPrefill.PreparedSubmission.hybridPrefixIdentity`),
+hashed while its media charge still covers the copy, and reuses only within
+that identity: the same images at the same positions in a later turn. Without
+a scope it stays cold and never publishes. On the speculating owner
+the target is built with `exactPrefixCheckpoints` too and each checkpoint also
+holds the assistant's queued prompt history, so a restored request drafts from
+the same history as a cold one.
 `UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
+`NemotronSuperLocalKVBackend` selects the attention KV storage:
+contiguous by default, or the segmented native paged backend with
+`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` (the adapter declares
+`supportsPagedKV` and `requiresNativePagedKV`; the pool takes the eight
+attention layers' observed BF16 types). An explicit paged selection never
+degrades: a paged construction failure fails the load. On paged storage the
+engine's process-memory owner charges pages and recurrent rows to the shared
+budget as they materialize and the bridge reserves no request bytes, so the
+owner reserves `requestWorkspaceBytes` for every configured request (the
+decode rows) from before the first request until native retirement, like the
+lane. The text prefix bank lives in the contiguous engine: the managed plan
+keeps it off on paged storage and an explicit
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1` with paged fails the load. Paged and
+contiguous attention reduce differently, so their logits agree within a
+stated tolerance rather than bit for bit; within paged storage, batched rows,
+captured speculation windows and rollback stay exact.
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (the hook's default is off; the
 managed slot's policy sets it). The load transaction
@@ -203,8 +225,8 @@ transaction. Its LOAD claim is the installation quote with a 2 GiB backend
 allowance, the head supplement with speculation, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (4.25 GiB with depth-3 speculation at
-the 65,536-token context, 0.5 GiB plain), plus 2 GiB and any prefix bank, never above the grant. The grant
-itself stays the engine's admission ceiling, re-sliced like every slot's; the
+the 65,536-token context, 0.5 GiB plain), plus 2 GiB and any prefix bank, never
+above the grant. The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
 registered and the slot installed.

@@ -5,8 +5,9 @@ import MLXLMServer
 import MLXVLM
 
 /// Dedicated owner image execution. No shared registry acquisition, native
-/// consumer lease, prefix identity or MTP state is manufactured; on a
-/// speculating owner the engine runs the request target-only.
+/// consumer lease or MTP state is manufactured; on a speculating owner the
+/// engine runs the request target-only. A prefix identity is derived only from
+/// the request's own evaluated features, and only with a cache scope.
 /// The load owner retains this actor and drains it before retiring its bridge.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
@@ -38,7 +39,8 @@ actor NemotronSuperLocalImageBinding {
                                     contextLength: contextLength)
     }
 
-    func run(request: ChatCompletionRequest, input: Input,
+    /// `cacheScope` partitions prefix reuse as for text (nil: none).
+    func run(request: ChatCompletionRequest, input: Input, cacheScope: String? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !closing else { throw Failure.closed }
         guard active == nil else { throw Failure.busy }
@@ -57,7 +59,7 @@ actor NemotronSuperLocalImageBinding {
             guard await gate.reserve(requestId: mediaReservationID, mediaDecodeBytes: quote.totalBytes, kvTokens: 0)
             else { throw Failure.capacity }
             try await Self.prepareAndExecute(owner: owner, makeInput: { _ in input }, featureBytes: quote.featureBytes,
-                request: request, requestID: id, onEvent: onEvent)
+                request: request, requestID: id, cacheScope: cacheScope, onEvent: onEvent)
         }
         try await settle(task, reservations: [mediaReservationID])
     }
@@ -66,7 +68,7 @@ actor NemotronSuperLocalImageBinding {
     /// with this exact Owner's verified template/tokenizer.
     /// The body supplies media and request together; no separate media identity,
     /// caller-provided token counts, or URL fetching can be substituted.
-    func runEncoded(body: Data, templateBytes: Data,
+    func runEncoded(body: Data, templateBytes: Data, cacheScope: String? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !closing else { throw Failure.closed }
         guard active == nil else { throw Failure.busy }
@@ -105,7 +107,8 @@ actor NemotronSuperLocalImageBinding {
                     throw Failure.capacity
                 }
                 return input
-            }, featureBytes: plan.featureBytes, request: parsed.request, requestID: id, onEvent: onEvent)
+            }, featureBytes: plan.featureBytes, request: parsed.request, requestID: id,
+                cacheScope: cacheScope, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
         try await settle(task, reservations: [ingressID, mediaID])
@@ -132,7 +135,7 @@ actor NemotronSuperLocalImageBinding {
 
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         makeInput: (NativeConstructionScope) throws -> Input, featureBytes: Int,
-        request: ChatCompletionRequest, requestID: String,
+        request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let construction = NativeConstructionScope()
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
@@ -144,6 +147,7 @@ actor NemotronSuperLocalImageBinding {
             activity.finish()
             try Task.checkCancellation()
             try await execute(bridge: owner.bridge, prepared: prepared,
+                cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
                 request: request, requestID: requestID, onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
@@ -300,15 +304,24 @@ actor NemotronSuperLocalImageBinding {
         return next
     }
 
+    /// With a `cacheScope` (the owner has a checkpoint bank), the request is
+    /// bound to an identity of its evaluated features and spans, hashed while
+    /// the media charge still covers the copy, and may restore only
+    /// checkpoints of that identity in that scope; without one it stays cold
+    /// and never publishes.
     private static func execute(bridge: EngineV2Bridge,
-        prepared: EngineV2VisionPrefill.PreparedSubmission, request: ChatCompletionRequest,
+        prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
+        request: ChatCompletionRequest,
         requestID: String, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
+        let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
-                request: request, requestId: requestID, cacheScope: "", cacheEnabled: false,
-                usageSignal: usage, multimodal: prepared.multimodalInput(), mediaKind: .image)
+                request: request, requestId: requestID, cacheScope: cacheScope ?? "",
+                cacheEnabled: identity != nil, usageSignal: usage,
+                multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
+                mediaKind: .image)
             for await event in stream {
                 if Task.isCancelled { break }
                 await onEvent(event)

@@ -138,8 +138,24 @@ serving. The speculative grant default does not scale with N: pass `--kv-capacit
 from the ready file's `kv_grant`, or from `suggested_kv_capacity_gib` after a
 `kv_grant_refused` load.
 
+KV storage is the same kind of switch: `--engine-env
+DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` stores the attention KV in the
+segmented native paged backend. Its pages and recurrent rows are charged by the
+engine's process-memory owner (reported in `unattributed_bytes`, not as `kv`
+rows) and the owner holds the decode rows as `decode_rows` from load to
+retirement. It refuses the prefix bank. The gated
+`NemotronSuperPagedLiveTests` (`DARKBLOOM_SUPER_PAGED_LIVE=1` and
+`NEMOTRON_SUPER_CHECKPOINT_DIR`, exclusive GPU) stages the pinned checkpoint
+once and compares paged against contiguous logits at every 2,048-token chunk
+end of a 16,000-token prompt and over 64 decode steps fed the contiguous
+choices. Paged prefill must be bitwise equal. Decode reduces differently, so a
+third, contiguous arm prefilled in 1,024-token chunks calibrates the trunk's
+own sensitivity: paged decode must stay within the larger of 0.1 and twice
+that arm's largest relative deviation, with at most the larger of 2 and twice
+its greedy disagreements. Every position's deviation is printed.
+
 Text prefix caching is the same kind of switch: `--engine-env
-DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the plain owner the SDK's resident
+DARKBLOOM_PREFIX_CACHE_MEMORY=1` gives the owner the SDK's resident
 recurrent checkpoint bank (`NemotronSuperLocalPrefixCache`), sized `min(1 GiB,
 KV grant / 8)` (512 MiB at the default 4 GiB grant: one entry of two 162.3 MiB
 checkpoints plus up to 16,384 tokens of KV) or by
@@ -147,8 +163,11 @@ checkpoints plus up to 16,384 tokens of KV) or by
 as `prefix_bank` from load to retirement. Checkpoints sit only at multiples of
 the prefill chunk, so a request restores the deepest chunk boundary below its
 last prompt token that a previous text request published, and prompts shorter
-than one chunk restore nothing. The speculating owner and image requests never
-use it. `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
+than one chunk restore nothing. On the speculating owner each checkpoint also
+holds the assistant's queued prompt history (8 KiB per token), so a restored
+request drafts from the same history as a cold one. An image request reuses
+only checkpoints of its own image identity (the same images at the same
+positions). `context.prefix_cache` in `GET /runner/status` and `GET /runner/memory`
 reports the bank's `adoptions`, `tokens_saved`, `lookup_matches`, `misses`,
 `entries`, `evictions` and bytes (`null` without a bank); the HTTP usage's
 `cached_tokens` stays 0 on this route. `kv_grant.minimum_grant_bytes` includes

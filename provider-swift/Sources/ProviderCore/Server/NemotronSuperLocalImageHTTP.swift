@@ -57,8 +57,8 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     }
 
     /// The engine for one immutable raw request body. `cacheScope` partitions
-    /// text prefix reuse (nil: none); the hook's single local operator shares
-    /// one partition. Image requests never reuse prefixes.
+    /// prefix reuse (nil: none); the hook's single local operator shares one
+    /// partition. Image requests reuse only within their image identity.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "") -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
@@ -100,8 +100,11 @@ private struct SuperHTTPEngine: MLXServerEngine {
             output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
             switch route {
             case .image(let images):
-                let body = self.body, template = self.template
-                execute = { onEvent in try await images.runEncoded(body: body, templateBytes: template, onEvent: onEvent) }
+                let body = self.body, template = self.template, cacheScope = self.cacheScope
+                execute = { onEvent in
+                    try await images.runEncoded(body: body, templateBytes: template,
+                                                cacheScope: cacheScope, onEvent: onEvent)
+                }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
                 let tokens = try plan.textPromptTokens(body: body, templateBytes: template,

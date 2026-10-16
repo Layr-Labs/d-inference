@@ -105,6 +105,17 @@ extension ProviderLoop {
             _ = await retireNativeMiMoOwner(modelID: modelId)
             return
         }
+        // The Super owner is never rebuilt warm: a confirmed wedge retires it.
+        if isNemotronSuperSlot(modelId) {
+            guard !modelsLoading.contains(modelId), !modelsUnloading.contains(modelId),
+                let bridge = modelSlots[modelId]?.engineV2,
+                await bridge.confirmedWedgeForRecovery(now: now),
+                modelSlots[modelId]?.engineV2 === bridge, autopilotCommand == nil else { return }
+            recordModelLoadError(model: modelId,
+                                 message: "Nemotron Super slot wedged; retired without a warm rebuild")
+            _ = await retireNemotronSuperSlot(modelId)
+            return
+        }
         guard nativeMiMoAllowsReclamation() else { return }
         guard let slot = modelSlots[modelId],
             !modelsUnloading.contains(modelId),

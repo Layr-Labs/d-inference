@@ -4,12 +4,16 @@ import MLXLMCommon
 import MLXLMServer
 import MLXVLM
 
-/// Dedicated unpublished-owner image execution. No shared registry acquisition,
-/// native consumer lease, prefix identity, MTP, or public route is manufactured.
+/// Dedicated owner image execution. No shared registry acquisition, native
+/// consumer lease or MTP state is manufactured; on a speculating owner the
+/// engine runs the request target-only. A prefix identity is derived only from
+/// the request's own evaluated features, and only with a cache scope.
 /// The load owner retains this actor and drains it before retiring its bridge.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, unsupportedCapability, invalidInput, capacity, retainedFault
+        /// The tower and projector produced a non-finite feature.
+        case invalidFeatures
     }
 
     /// Internal qualification input. The caller must transfer immutable arrays
@@ -35,11 +39,12 @@ actor NemotronSuperLocalImageBinding {
                                     contextLength: contextLength)
     }
 
-    func run(request: ChatCompletionRequest, input: Input,
+    /// `cacheScope` partitions prefix reuse as for text (nil: none).
+    func run(request: ChatCompletionRequest, input: Input, cacheScope: String? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !closing else { throw Failure.closed }
         guard active == nil else { throw Failure.busy }
-        guard request.model == NemotronSuperLocalBinding.modelID else { throw Failure.wrongModel }
+        guard request.model == owner.modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.tool_choice == nil, request.response_format == nil,
             request.logprobs != true, request.top_logprobs == nil, request.prompt_cache_key == nil
         else { throw Failure.unsupportedCapability }
@@ -54,7 +59,7 @@ actor NemotronSuperLocalImageBinding {
             guard await gate.reserve(requestId: mediaReservationID, mediaDecodeBytes: quote.totalBytes, kvTokens: 0)
             else { throw Failure.capacity }
             try await Self.prepareAndExecute(owner: owner, makeInput: { _ in input }, featureBytes: quote.featureBytes,
-                request: request, requestID: id, onEvent: onEvent)
+                request: request, requestID: id, cacheScope: cacheScope, onEvent: onEvent)
         }
         try await settle(task, reservations: [mediaReservationID])
     }
@@ -63,7 +68,7 @@ actor NemotronSuperLocalImageBinding {
     /// with this exact Owner's verified template/tokenizer.
     /// The body supplies media and request together; no separate media identity,
     /// caller-provided token counts, or URL fetching can be substituted.
-    func runEncoded(body: Data, templateBytes: Data,
+    func runEncoded(body: Data, templateBytes: Data, cacheScope: String? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !closing else { throw Failure.closed }
         guard active == nil else { throw Failure.busy }
@@ -76,7 +81,7 @@ actor NemotronSuperLocalImageBinding {
             // Before JSON/base64/header expansion, using the real shared ledger.
             guard await gate.reserve(requestId: ingressID, mediaDecodeBytes: headerBytes, kvTokens: 0)
             else { throw Failure.capacity }
-            let parsed = try Self.parseEncodedBody(body)
+            let parsed = try Self.parseEncodedBody(body, modelID: owner.modelID)
             let plan = try Self.encodedPlan(parsed.images, contextLength: gate.contextLength)
             let tokens = try owner.localImagePrompt(body: body, templateBytes: templateBytes,
                                                    featureCounts: plan.grids.map(\.tokens))
@@ -102,7 +107,8 @@ actor NemotronSuperLocalImageBinding {
                     throw Failure.capacity
                 }
                 return input
-            }, featureBytes: plan.featureBytes, request: parsed.request, requestID: id, onEvent: onEvent)
+            }, featureBytes: plan.featureBytes, request: parsed.request, requestID: id,
+                cacheScope: cacheScope, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
         try await settle(task, reservations: [ingressID, mediaID])
@@ -129,7 +135,7 @@ actor NemotronSuperLocalImageBinding {
 
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         makeInput: (NativeConstructionScope) throws -> Input, featureBytes: Int,
-        request: ChatCompletionRequest, requestID: String,
+        request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let construction = NativeConstructionScope()
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
@@ -141,6 +147,7 @@ actor NemotronSuperLocalImageBinding {
             activity.finish()
             try Task.checkCancellation()
             try await execute(bridge: owner.bridge, prepared: prepared,
+                cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
                 request: request, requestID: requestID, onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
@@ -176,7 +183,8 @@ actor NemotronSuperLocalImageBinding {
 
     /// Only call after encoded-header admission. Reuses existing inline decoder;
     /// a strict MIME/header gate excludes percent encoding and remote URLs.
-    static func parseEncodedBody(_ body: Data) throws -> EncodedBody {
+    static func parseEncodedBody(_ body: Data,
+                                 modelID: String = NemotronSuperLocalBinding.modelID) throws -> EncodedBody {
         struct Unsupported: Decodable {
             let logprobs: Bool?
             let top_logprobs: Int?
@@ -184,7 +192,7 @@ actor NemotronSuperLocalImageBinding {
         }
         let flags = try JSONDecoder().decode(Unsupported.self, from: body)
         let request = try ProviderLoop.decodeOpenAIRequest(body)
-        guard request.model == NemotronSuperLocalBinding.modelID else { throw Failure.wrongModel }
+        guard request.model == modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
               request.parallelToolCalls == nil, request.toolCallParser == nil, request.minP == nil,
               flags.logprobs != true, flags.top_logprobs == nil, flags.prompt_cache_key == nil
@@ -211,7 +219,8 @@ actor NemotronSuperLocalImageBinding {
     }
 
     static func encodedPlan(_ images: [Data], contextLength: Int) throws -> EncodedPlan {
-        guard !images.isEmpty, images.count <= 16, contextLength > 0, contextLength <= 16384 else {
+        guard !images.isEmpty, images.count <= 16, contextLength > 0,
+            contextLength <= NemotronSuperServingPolicy.maximumContextTokens else {
             throw Failure.invalidInput
         }
         var total: UInt64 = 0, features = 0, tokens = 0
@@ -264,7 +273,7 @@ actor NemotronSuperLocalImageBinding {
     /// budget retains its conservative activation reserve. Bridge KV is separate.
     static func preparationQuote(_ input: Input, contextLength: Int) throws -> Quote {
         guard !input.promptTokens.isEmpty, input.promptTokens.count <= contextLength,
-            contextLength > 0, contextLength <= 16384,
+            contextLength > 0, contextLength <= NemotronSuperServingPolicy.maximumContextTokens,
             input.promptTokens.allSatisfy({ (0..<131072).contains($0) }),
             !input.normalizedImages.isEmpty else { throw Failure.invalidInput }
         let visualTokens = input.promptTokens.filter { $0 == 18 }.count
@@ -295,15 +304,24 @@ actor NemotronSuperLocalImageBinding {
         return next
     }
 
+    /// With a `cacheScope` (the owner has a checkpoint bank), the request is
+    /// bound to an identity of its evaluated features and spans, hashed while
+    /// the media charge still covers the copy, and may restore only
+    /// checkpoints of that identity in that scope; without one it stays cold
+    /// and never publishes.
     private static func execute(bridge: EngineV2Bridge,
-        prepared: EngineV2VisionPrefill.PreparedSubmission, request: ChatCompletionRequest,
+        prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
+        request: ChatCompletionRequest,
         requestID: String, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
+        let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
-                request: request, requestId: requestID, cacheScope: "", cacheEnabled: false,
-                usageSignal: usage, multimodal: prepared.multimodalInput(), mediaKind: .image)
+                request: request, requestId: requestID, cacheScope: cacheScope ?? "",
+                cacheEnabled: identity != nil, usageSignal: usage,
+                multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
+                mediaKind: .image)
             for await event in stream {
                 if Task.isCancelled { break }
                 await onEvent(event)

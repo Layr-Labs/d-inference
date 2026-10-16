@@ -475,3 +475,19 @@ extension ProviderLoop {
         retiringModels.insert(modelId)
     }
 }
+
+extension ProviderLoop {
+    /// Test seam: the managed Super loader and its runtime-policy environment.
+    func setNemotronSuperSlotLoaderForTesting(_ loader: NemotronSuperSlotLoader,
+                                              environment: [String: String]) {
+        nemotronSuperSlotLoader = loader
+        nemotronSuperEnvironment = environment
+    }
+
+    /// Test seam: the managed Super owner of a resident slot.
+    func nemotronSuperOwnerForTesting(modelId: String) -> NemotronSuperSlotOwner? {
+        modelSlots[modelId]?.modelContainer.nemotronSuper
+    }
+
+    func nemotronSuperRetainedWeightBytesForTesting() -> UInt64 { nemotronSuperRetainedWeightBytes }
+}

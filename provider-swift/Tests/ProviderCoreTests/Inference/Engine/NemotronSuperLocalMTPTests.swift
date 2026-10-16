@@ -147,16 +147,70 @@ struct NemotronSuperLocalMTPTests {
 
     private func owner(_ fixture: SuperMTPInstalledFixture.Installation,
                        setting: NemotronSuperLocalMTP.Setting?,
-                       budget: GlobalKVCacheBudget, lease: PendingModelLoadLease)
+                       budget: GlobalKVCacheBudget, lease: PendingModelLoadLease,
+                       kvBytesCapacity: Int = 2 << 30, environment: [String: String] = [:])
         async throws -> NemotronSuperLocalBridgeBuilder.Owner {
         try await NemotronSuperLocalBridgeBuilder.make(installed: fixture.installed,
             tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
             sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
                 fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 16),
-            kvBytesCapacity: 2 << 30, kvBudget: budget, loadLease: lease,
+            kvBytesCapacity: kvBytesCapacity, kvBudget: budget, loadLease: lease,
             construction: fixture.construction,
             mtp: setting.map { .init(module: fixture.head, setting: $0) },
-            environment: [:])
+            environment: environment)
+    }
+
+    /// Text keeps speculating, token for token, while an image request
+    /// shares the owner's decode steps target-only; the image's tokens are
+    /// the same as when it runs alone.
+    @Test(.timeLimit(.minutes(3))) func speculativeTextStaysExactBesideATargetOnlyImage() async throws {
+        let fixture = try SuperMTPInstalledFixture().make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let bytes = fixture.installed.receipt.payloadBytes
+            + (try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote))
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-mtp-mixed",
+            weightBytes: UInt64(bytes), minimumKVBytes: 4 << 30))
+        let owner = try await owner(fixture, setting: .init(depth: 3, verification: .rectangularExact),
+            budget: budget, lease: lease, kvBytesCapacity: 4 << 30,
+            environment: [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "2"])
+        #expect(owner.speculates && owner.maximumLocalRequests == 2)
+        let prompt = [5, 9, 1, 4, 22, 7, 3, 8, 30]
+        let text = try await run(owner, prompt: prompt, maxTokens: 24)
+        let image = try await runImage(owner, maxTokens: 24)
+        #expect(text.errors.isEmpty && image.errors.isEmpty, "\(text.errors) \(image.errors)")
+        let ownedEngine = await owner.bridge.ownedEngine
+        let engine = try #require(ownedEngine as? EngineV2)
+        let alone = try #require(engine.mtpMetricsSnapshot())
+        #expect(alone.rounds > 0)
+        async let mixedText = run(owner, prompt: prompt, maxTokens: 24)
+        async let mixedImage = runImage(owner, maxTokens: 24)
+        let (textResult, imageResult) = try await (mixedText, mixedImage)
+        #expect(textResult.errors.isEmpty && imageResult.errors.isEmpty,
+            "\(textResult.errors) \(imageResult.errors)")
+        #expect(textResult.text == text.text && textResult.completions == text.completions)
+        #expect(imageResult.text == image.text && imageResult.completions == image.completions)
+        let mixed = try #require(engine.mtpMetricsSnapshot())
+        #expect(mixed.rounds > alone.rounds, "the text request kept speculating")
+        try await owner.closeAfterDrain()
+        #expect(fixture.residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// One direct image request on the owner's image binding: a single
+    /// visual token over a seeded normalized 4x4 image (one 2x2 patch group).
+    private func runImage(_ owner: NemotronSuperLocalBridgeBuilder.Owner, maxTokens: Int)
+        async throws -> (text: String, completions: [Int], errors: [String]) {
+        let images = try owner.localImageBinding()
+        let pixels = MLXRandom.normal([1, 1, 4, 4], key: MLXRandom.key(11))
+        let events = SuperMTPRun()
+        try await images.run(request: .init(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: maxTokens),
+            input: .init(promptTokens: [1, 18, 2], normalizedImages: [pixels])) {
+            await events.record($0)
+        }
+        return (await events.text, await events.completions, await events.errors)
     }
 
     private func run(_ owner: NemotronSuperLocalBridgeBuilder.Owner, prompt: [Int], maxTokens: Int)
@@ -179,7 +233,7 @@ struct NemotronSuperLocalMTPTests {
         (1, NemotronSuperLocalMTP.Setting.Verification.rectangularExact), (3, .rectangularExact),
         (1, .serial), (3, .serial),
     ])
-    func speculativeOwnerServesExactTextRefusesMediaAndRetires(
+    func speculativeOwnerServesExactTextAndTargetOnlyImagesThenRetires(
         depth: Int, verification: NemotronSuperLocalMTP.Setting.Verification
     ) async throws {
         let plainFixture = try SuperMTPInstalledFixture().make()
@@ -221,12 +275,16 @@ struct NemotronSuperLocalMTPTests {
         print("SYNTHETIC provider super-mtp depth=\(depth) \(verification) rounds=\(metrics.rounds) "
             + "drafted=\(metrics.draftedTokens) accepted=\(metrics.acceptedTokens) "
             + "emitted=\(metrics.emittedTokens)")
-        #expect(throws: NemotronSuperLocalBridgeBuilder.Failure.self) {
-            try speculative.localImageBinding()
-        }
-        #expect(throws: NemotronSuperLocalBridgeBuilder.Failure.self) {
-            try speculative.localImagePrompt(body: Data(), templateBytes: Data(), featureCounts: [1])
-        }
+        // An image request on the speculating owner runs target-only: the
+        // plain owner's tokens, and no round, draft or acceptance of its own.
+        let imageExpected = try await runImage(plain, maxTokens: 9)
+        let imageActual = try await runImage(speculative, maxTokens: 9)
+        #expect(imageExpected.errors.isEmpty && imageActual.errors.isEmpty, "\(imageActual.errors)")
+        #expect(!imageExpected.text.isEmpty && imageActual.text == imageExpected.text)
+        #expect(imageActual.completions == imageExpected.completions)
+        let afterImage = try #require(engine.mtpMetricsSnapshot())
+        #expect(afterImage.rounds == metrics.rounds && afterImage.draftedTokens == metrics.draftedTokens)
+        #expect(afterImage.acceptedTokens == metrics.acceptedTokens)
         try await plain.closeAfterDrain()
         try await speculative.closeAfterDrain()
         #expect(plainFixture.residency.snapshot.usedBytes == 0)

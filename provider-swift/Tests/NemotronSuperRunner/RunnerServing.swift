@@ -13,6 +13,26 @@ struct RunnerLoadSettings: Sendable {
     /// The only runtime-policy environment the engine sees (A/B switches).
     let engineEnvironment: [String: String]
     let verifyParallelism: Int
+    /// KV headroom the LOAD claim holds; nil claims the whole grant.
+    var admissionKVBytes: Int? = nil
+    /// `--emulate-physical-gib`; nil on this machine's own memory.
+    var emulation: RunnerMemoryEmulation? = nil
+
+    /// The managed slot's LOAD KV headroom under this grant
+    /// (`NemotronSuperServingPolicy.loadPlan`): every configured request's
+    /// fixed bytes, a speculating owner's round work at `contextTokens`, 2 GiB
+    /// and the owner's prefix bank, never above the grant.
+    static func managedAdmissionKVBytes(grantBytes: Int, environment: [String: String],
+                                        contextTokens: Int) -> Int {
+        let speculates = environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1"
+        let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
+            environment: environment, speculates: speculates)) ?? 1
+        let bank = NemotronSuperLocalPrefixCache.config(environment: environment, kvBytesCapacity: grantBytes,
+            requests: requests, speculates: speculates)?.maximumBytes ?? 0
+        return min(grantBytes,
+            NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: speculates,
+                environment: environment, contextTokens: contextTokens) + bank)
+    }
 
     /// The opt-in speculation the engine environment selects; the load
     /// transaction reads the same entries. nil is the plain arm.
@@ -29,7 +49,8 @@ struct RunnerLoadSettings: Sendable {
         case .serial: "serial"
         }
         return ["depth": .count(setting.depth), "verification": .string(verification),
-                "adaptive": .bool(setting.adaptive)]
+                "adaptive": .bool(setting.adaptive),
+                "depth_by_requests": setting.depthByRequests.map { .array($0.map { .count($0) }) } ?? .null]
     }
 
     /// The override may only raise the per-token reservation rate.
@@ -65,6 +86,10 @@ enum RunnerKVGrant {
             "fixed_request_bytes": (await bridge.maximumRequestOverheadBytes()).map { .bytes($0) } ?? .null,
             "requests": .count(requests),
             "serving_concurrency": .count(await bridge.effectiveServingConcurrency),
+            // Each request's shared reservation adds these per token of its
+            // prompt plus max_tokens (auxiliary: the assistant's history).
+            "kv_bytes_per_token": .bytes(await bridge.kvBytesPerToken),
+            "auxiliary_bytes_per_token": .bytes(await bridge.auxiliaryBytesPerToken),
         ]
     }
 

@@ -113,18 +113,30 @@ extension NemotronSuperLocalOwnerTests {
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
-        // Long enough that event callbacks observe the request still in flight.
         let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
             messages: [], temperature: 0, max_tokens: 12)
         let expected = try #require(await owner.bridge.requestReservationBytes(tokenCount: 15))
         #expect(expected >= workspace)
         let observed = SuperOwnerCharges()
-        try await owner.localTextBinding().run(request: request, promptTokens: [1, 2, 3]) { _ in
-            await observed.record(await budget.reservationBytesSnapshot())
+        // Hold the request before its native terminal, while its charge must
+        // still be held, so the in-flight charge is observed without racing
+        // event delivery; then let it retire.
+        let gate = SuperHTTPTerminalGate()
+        await owner.bridge._testInstallPersistentTerminalGate { _ in await gate.hold() }
+        let binding = try owner.localTextBinding()
+        let run = Task {
+            try await binding.run(request: request, promptTokens: [1, 2, 3]) { _ in
+                await observed.record(await budget.reservationBytesSnapshot())
+            }
         }
-        let rows = await observed.rows
-        #expect(rows.contains([expected, prefill].sorted()), "\(rows)")
-        #expect(rows.allSatisfy { $0.contains(prefill) })
+        try await superHTTPEventually("request held before its native terminal") { await gate.entered }
+        let inFlight = await budget.reservationBytesSnapshot().values.map { Int($0) }.sorted()
+        #expect(inFlight == [expected, prefill].sorted(), "\(inFlight)")
+        await gate.release()
+        try await run.value
+        await owner.bridge._testInstallPersistentTerminalGate(nil)
+        #expect(!(await gate.timedOut))
+        #expect(await observed.rows.allSatisfy { $0.contains(prefill) })
         #expect(await budget.reservationBytesSnapshot() == lane)
         try await owner.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)

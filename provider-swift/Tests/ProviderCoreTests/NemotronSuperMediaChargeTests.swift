@@ -93,11 +93,13 @@ struct NemotronSuperMediaChargeTests {
         #expect(Policy.mediaChargeBytes(imageCount: 0) == nil)
         #expect(Policy.mediaChargeBytes(imageCount: Policy.maximumImages + 1) == nil)
         #expect(Policy.mediaChargeBytes(imageCount: 1) == 3_888_385_020)
-        #expect(Policy.mediaChargeBytes(imageCount: 16) == 24_807_407_100)
-        // Visual tokens stop at the context: the fifth image adds only workspace and 3,072 tokens.
+        #expect(Policy.mediaChargeBytes(imageCount: 16) == 26_317_356_540)
+        // Sixteen largest grids (53,248 visual tokens) fit the served context,
+        // so every image adds its workspace and all 3,328 of its tokens.
+        #expect(16 * 3_328 < Policy.contextTokens)
         let four = try #require(Policy.mediaChargeBytes(imageCount: 4))
         let five = try #require(Policy.mediaChargeBytes(imageCount: 5))
-        #expect(five - four == Policy.maximumImageDecodeBytes + 3_072 * Policy.mediaBytesPerVisualToken)
+        #expect(five - four == Policy.maximumImageDecodeBytes + 3_328 * Policy.mediaBytesPerVisualToken)
         // Both of the binding's reservations for real bodies stay inside it.
         for count in [1, 4] {
             let images = Array(repeating: Self.jpeg(width: 2_048, height: 1_664), count: count)

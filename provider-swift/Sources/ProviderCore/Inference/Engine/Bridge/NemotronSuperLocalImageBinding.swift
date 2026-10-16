@@ -215,7 +215,8 @@ actor NemotronSuperLocalImageBinding {
     }
 
     static func encodedPlan(_ images: [Data], contextLength: Int) throws -> EncodedPlan {
-        guard !images.isEmpty, images.count <= 16, contextLength > 0, contextLength <= 16384 else {
+        guard !images.isEmpty, images.count <= 16, contextLength > 0,
+            contextLength <= NemotronSuperServingPolicy.maximumContextTokens else {
             throw Failure.invalidInput
         }
         var total: UInt64 = 0, features = 0, tokens = 0
@@ -268,7 +269,7 @@ actor NemotronSuperLocalImageBinding {
     /// budget retains its conservative activation reserve. Bridge KV is separate.
     static func preparationQuote(_ input: Input, contextLength: Int) throws -> Quote {
         guard !input.promptTokens.isEmpty, input.promptTokens.count <= contextLength,
-            contextLength > 0, contextLength <= 16384,
+            contextLength > 0, contextLength <= NemotronSuperServingPolicy.maximumContextTokens,
             input.promptTokens.allSatisfy({ (0..<131072).contains($0) }),
             !input.normalizedImages.isEmpty else { throw Failure.invalidInput }
         let visualTokens = input.promptTokens.filter { $0 == 18 }.count

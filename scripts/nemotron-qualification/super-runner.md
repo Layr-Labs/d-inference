@@ -73,7 +73,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--template FILE` | `<checkpoint>/chat_template.jinja` | pinned template; required with `--synthetic` |
 | `--preflight` | off | with `--checkpoint`: check identity, template, config, inventory and shard files without reading shards or touching the GPU; writes `<state>/runner-preflight.json` and exits |
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
-| `--max-context` | 16384 | builder maximum; prompt plus output must fit |
+| `--max-context` | 65536 | the managed slot's context; the builder accepts at most 262144; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
 | `--kv-capacity-gib` | 4; 12 with speculation; 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes` and `serving_concurrency`, and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |

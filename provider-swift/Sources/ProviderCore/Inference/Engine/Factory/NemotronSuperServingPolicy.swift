@@ -20,8 +20,18 @@ enum NemotronSuperServingPolicy {
     static let configSHA256 = "35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea"
     static var indexSHA256: String { NemotronSuperCheckpointPin.index }
 
-    /// Context window served; the bridge builder admits at most this.
-    static let contextTokens = 16_384
+    /// Context window the managed slot serves and advertises (prompt plus
+    /// output). The default speculating owner charges every request the
+    /// assistant's history for this whole window (about 30 KB per token), so
+    /// eight requests' LOAD claim grows with it: at 65,536 it is admitted on
+    /// 256 GB, at 131,072 it is refused (measured; see the managed slot in
+    /// `docs/architecture/inference.md`).
+    static let contextTokens = 65_536
+    /// Largest context the bridge builder and the image binding accept,
+    /// verified on the pinned checkpoint. The checkpoint's attention has no
+    /// positional encoding (`max_position_embeddings` 1,048,576); the bound
+    /// is what was measured correct and admitted on 256 GB.
+    static let maximumContextTokens = 262_144
     /// Explicit backend/allocator allowance added to the installation's LOAD
     /// quote. Unmeasured; the full-checkpoint load peaked 1.6 GB below the
     /// quote that includes it.
@@ -119,10 +129,11 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Fixed bytes one request reserves (recurrent state, request workspace,
-    /// any speculation charge), measured on the pinned checkpoint at 16,384
-    /// context and 2,048-token chunks and rounded up: 2,944,562,564 at depth 3,
-    /// 516,253,712 plain.
-    static let speculativeRequestBoundBytes = 3 << 30
+    /// any speculation charge), measured on the pinned checkpoint at the
+    /// 65,536-token `contextTokens` and 2,048-token chunks and rounded up:
+    /// 4,429,739,396 at depth 3, 516,253,712 plain. Only the speculation
+    /// charge grows with the context.
+    static let speculativeRequestBoundBytes = 17 << 28
     static let plainRequestBoundBytes = 1 << 29
 
     /// KV headroom the LOAD claim requires: every configured request's fixed

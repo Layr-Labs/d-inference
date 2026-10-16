@@ -4,7 +4,7 @@
   pinned NVIDIA NVFP4 checkpoint with its embedded MTP head. The registry id
   with an unpinned `config.json` or index is withheld; every other
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
-  the managed LOAD footprint plus one image request's media charge (126.3 GiB
+  the managed LOAD footprint plus one image request's media charge (136.3 GiB
   for the default configuration), and it advertises image input; capacity
   quotes for image probes charge their images.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
@@ -31,5 +31,9 @@
   `<unk>`; non-finite image features fail the request.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
+- Serves 65,536 tokens of context, prompt plus output (was 16,384). The default
+  speculating owner charges every request its draft history for the whole
+  window, so eight requests now claim 36 GiB of KV headroom (was 26 GiB); the
+  runner can select up to 262,144 tokens.
 - Needs at least 192 GB of unified memory; only 256 GB is measured.
   Coordinator-side registration remains a separate step.

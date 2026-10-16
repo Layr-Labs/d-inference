@@ -591,6 +591,8 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         }
         let parent = open(store.path, O_RDONLY | O_CLOEXEC)
         if parent >= 0 { _ = fsync(parent); close(parent) }
+        // Written with the cache off, but macOS may still keep the pages: the next load gate must not see them.
+        ClusterModelStore.dropCachedPages(folder: destination)
         return destination
     }
 

@@ -99,14 +99,23 @@ MTP tensors does not qualify execution.
 The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
 application and standard JSON/SSE framing and defaults to absent. It serves text
 through the owner's `localTextBinding` and images through its image binding, admits
-one request at a time and refuses a concurrent one with `queueFull` (429) before
-any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
+the owner's configured number of requests and refuses another with `queueFull`
+(429) before any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
 it over the transaction's own owner. No production caller installs it.
-Each bridge request reservation also carries
+`DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (`1` to `64`, default `1`; one with
+speculation) sets how many requests the plain owner serves; above one the
+builder serves `NemotronSuperRecurrentAdapter(_:maximumDecodeRows:decodeProducts:)`
+with `.rowExact`, so concurrent requests decode in one `[B, 1]` step bit-identical
+to their one-token decode while prompts and media prefill one request per
+forward. The hook admits that many requests and refuses the next with 429.
+Each bridge request reservation carries, beyond the engine's recurrent
+generations and any speculation charge, `requestWorkspaceBytes`:
 `NemotronHModel.modelOptGraphPrefillWorkspaceBytes(tokens:)` at the calibrated
-prefill limit as fixed request bytes: the graph path's explicit ModelOpt arrays
-for the largest chunk the engine may run (at most 2,048 tokens and 2 GiB). The
-builder refuses a KV grant that cannot hold that charge plus the minimum KV.
+prefill limit (the graph path's explicit ModelOpt arrays for the largest chunk,
+at most 2,048 tokens and 2 GiB) plus one `NemotronSuperDecodeCharge` decode row.
+The builder refuses a KV grant that cannot hold every configured request's
+fixed bytes plus the minimum KV with `UnserviceableGrant`, which names the grant,
+the smallest serviceable grant and the fixed bytes per request.
 
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction

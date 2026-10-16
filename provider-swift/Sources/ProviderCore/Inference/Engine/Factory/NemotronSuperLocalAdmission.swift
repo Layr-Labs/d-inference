@@ -1,0 +1,99 @@
+// Copyright © 2026 Eigen Labs.
+
+import Foundation
+import MLXLLM
+import MLXLMCommon
+import MLXVLM
+
+/// Concurrency and per-request admission of the unpublished Super owner.
+extension NemotronSuperLocalBridgeBuilder {
+    /// Runtime-policy key: requests the plain owner serves at once, `1`…`64`
+    /// (the rows of one batched text decode step). Default one. The
+    /// speculative owner serves one request.
+    static let maxConcurrentKey = "DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT"
+
+    /// A malformed value, or more than one request with speculation, fails the
+    /// load rather than silently changing the measured configuration.
+    static func concurrentRequests(environment: [String: String], speculates: Bool) throws -> Int {
+        guard let raw = environment[maxConcurrentKey]?.trimmingCharacters(in: .whitespaces) else {
+            return 1
+        }
+        guard let value = Int(raw), (1 ... NemotronSuperRecurrentAdapter.decodeRowLimit).contains(value),
+            value == 1 || !speculates
+        else { throw Failure.invalidConcurrency }
+        return value
+    }
+
+    /// Fixed bytes each request reserves beyond the engine's own (recurrent
+    /// generations and any speculation charge): the graph path's ModelOpt
+    /// workspace for the largest chunk the engine may run, plus one batched
+    /// decode row. Requests prefill as separate forwards that may share a
+    /// step, so every request carries a whole chunk. The eager reference keeps
+    /// its own bounded tiles and has neither quote.
+    static func requestWorkspaceBytes(_ language: NemotronHModel, prefillLimit: Int) throws -> Int {
+        let prefill = language.modelOptGraphPrefillWorkspaceBytes(tokens: prefillLimit) ?? 0
+        let row: Int
+        do {
+            // Only the row workspace is used; the KV element width does not enter it.
+            row = try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
+        } catch NemotronSuperDecodeCharge.Failure.unsupportedExecution {
+            row = 0
+        }
+        let (total, overflow) = prefill.addingReportingOverflow(row)
+        guard !overflow else { throw Failure.unsupportedSizing }
+        return total
+    }
+
+    /// The KV grant cannot serve the configured requests: the bridge carves
+    /// each request's fixed bytes (recurrent state, any speculation charge and
+    /// the request workspace) plus the minimum KV from it, and
+    /// `minimumGrantBytes` is the smallest grant that admits `requests` of them.
+    struct UnserviceableGrant: Error, Equatable, CustomStringConvertible {
+        let grantBytes: Int
+        let minimumGrantBytes: Int
+        let fixedRequestBytes: Int
+        let requests: Int
+
+        var description: String {
+            "KV grant of \(grantBytes) bytes is below the \(minimumGrantBytes)-byte minimum that serves "
+                + "\(requests) concurrent request(s) with \(fixedRequestBytes) fixed request bytes each"
+        }
+    }
+}
+
+extension EngineV2Factory.ProductionBuild {
+    /// The same build with `bytes` more fixed workspace in every request's
+    /// shared-budget reservation, admitted before submission and held until
+    /// the request retires.
+    func addingSuperRequestWorkspace(_ bytes: Int) throws -> Self {
+        let (total, overflow) = fixedRequestBytes.addingReportingOverflow(bytes)
+        guard bytes >= 0, !overflow, total < Int.max else {
+            throw NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing
+        }
+        return .init(engine: engine, fixedRequestBytes: total, kvBackendKind: kvBackendKind,
+            kvBackendFallbackReason: kvBackendFallbackReason, pagedPoolDType: pagedPoolDType,
+            usesProcessMemoryOwner: usesProcessMemoryOwner,
+            mtpAdmissionResolution: mtpAdmissionResolution,
+            legacyMTPBytesPerToken: legacyMTPBytesPerToken,
+            effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests,
+            kvQuantization: kvQuantization, kvCheckpointQuantization: kvCheckpointQuantization,
+            admissionWatermarkFraction: admissionWatermarkFraction)
+    }
+}
+
+extension EngineV2Bridge {
+    /// Smallest grant whose admission ceiling holds `requests` requests' fixed
+    /// bytes plus the minimum KV: the count `fixedWorkspaceConcurrencyLimit`
+    /// admits on this ordinary contiguous bridge. Int.max when unprovable.
+    func superMinimumGrantBytes(requests: Int) -> Int {
+        guard requests > 0, let overhead = maximumRequestOverheadBytes(),
+            let engine = ownedEngine as? EngineV2, let admissionWatermarkFraction
+        else { return Int.max }
+        let (fixed, overflow) = overhead.multipliedReportingOverflow(by: requests)
+        guard !overflow else { return Int.max }
+        return Self.minimumOrdinaryGrantBytes(fixedRequestBytes: fixed,
+            capacityBytes: engine.capacity().kvBytesCapacity,
+            admissibleCapacityBytes: engine.admissibleKVBytesCapacity,
+            watermarkFraction: admissionWatermarkFraction)
+    }
+}

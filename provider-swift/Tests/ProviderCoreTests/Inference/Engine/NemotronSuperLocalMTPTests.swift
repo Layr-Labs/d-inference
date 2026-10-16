@@ -105,6 +105,39 @@ struct NemotronSuperLocalMTPTests {
         fixture.installed.closeAfterRetirement()
     }
 
+    /// With speculation the refused grant's report includes the assistant's
+    /// bounded per-request charge, so its minimum exceeds the plain owner's.
+    @Test(.timeLimit(.minutes(2))) func speculativeGrantRefusalReportsTheAssistantCharge() async throws {
+        let grant = Int(UnifiedMemoryCap.minimumLoadKVBytes)
+        var refusals: [NemotronSuperLocalBridgeBuilder.UnserviceableGrant] = []
+        for setting in [nil, NemotronSuperLocalMTP.Setting(depth: 1)] {
+            let fixture = try SuperMTPInstalledFixture().make()
+            let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+                memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+            let bytes = fixture.installed.receipt.payloadBytes
+                + (try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote))
+            let lease = try #require(await budget.claimPendingLoad(requestID: "super-mtp-grant",
+                weightBytes: UInt64(bytes), minimumKVBytes: UInt64(grant)))
+            do {
+                _ = try await NemotronSuperLocalBridgeBuilder.make(installed: fixture.installed,
+                    tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
+                    sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
+                        fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 16),
+                    kvBytesCapacity: grant, kvBudget: budget, loadLease: lease,
+                    construction: fixture.construction,
+                    mtp: setting.map { .init(module: fixture.head, setting: $0) }, environment: [:])
+                Issue.record("a minimum-KV grant served")
+            } catch let refusal as NemotronSuperLocalBridgeBuilder.UnserviceableGrant {
+                refusals.append(refusal)
+            }
+            fixture.installed.closeAfterRetirement()
+            #expect(await budget.finishPendingLoad(lease))
+        }
+        let (plain, speculative) = (try #require(refusals.first), try #require(refusals.last))
+        #expect(refusals.count == 2 && speculative.fixedRequestBytes > plain.fixedRequestBytes)
+        #expect(speculative.minimumGrantBytes > plain.minimumGrantBytes)
+    }
+
     private func owner(_ fixture: SuperMTPInstalledFixture.Installation,
                        setting: NemotronSuperLocalMTP.Setting?,
                        budget: GlobalKVCacheBudget, lease: PendingModelLoadLease)

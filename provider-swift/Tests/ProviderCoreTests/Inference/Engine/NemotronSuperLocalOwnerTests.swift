@@ -70,7 +70,8 @@ struct NemotronSuperLocalOwnerTests {
 
 extension NemotronSuperLocalOwnerTests {
     private static func owner(kvBytesCapacity: Int = 2 << 30,
-        tokenizer: any MLXLMCommon.Tokenizer = SuperTokenTextTokenizer()) async throws
+        tokenizer: any MLXLMCommon.Tokenizer = SuperTokenTextTokenizer(),
+        environment: [String: String] = [:]) async throws
         -> (NemotronSuperLocalBridgeBuilder.Owner, NemotronSuperInstallation.Installed,
             NemotronSuperResidency, GlobalKVCacheBudget, PendingModelLoadLease) {
         let (installed, construction, residency) = try SuperInstalledFixture().make()
@@ -84,20 +85,23 @@ extension NemotronSuperLocalOwnerTests {
             sizing: .init(weightsBytes: installed.receipt.payloadBytes,
                 fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 2),
             kvBytesCapacity: kvBytesCapacity, kvBudget: budget, loadLease: lease,
-            construction: construction, environment: [:])
+            construction: construction, environment: environment)
         return (owner, installed, residency, budget, lease)
     }
 
     /// Each request's shared-budget charge carries the graph path's explicit
-    /// ModelOpt workspace for the largest chunk the engine may run, from
-    /// admission until the request retires.
+    /// ModelOpt workspace for the largest chunk the engine may run and one
+    /// batched decode row, from admission until the request retires.
     @Test(.timeLimit(.minutes(1)))
     func everyRequestChargeIncludesTheGraphPrefillWorkspace() async throws {
         let (owner, installed, residency, budget, lease) = try await Self.owner()
         let language = try #require(installed.model?.languageModel)
         let limit = try #require(language.calibratedPrefillTokenLimit)
-        let workspace = try #require(language.modelOptGraphPrefillWorkspaceBytes(tokens: limit))
-        #expect(workspace > 0)
+        let prefill = try #require(language.modelOptGraphPrefillWorkspaceBytes(tokens: limit))
+        let row = try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
+        let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(
+            language, prefillLimit: limit)
+        #expect(prefill > 0 && row > 0 && workspace == prefill + row)
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
@@ -118,11 +122,78 @@ extension NemotronSuperLocalOwnerTests {
     }
 
     /// A grant that cannot hold one request's fixed workspace plus the minimum
-    /// KV fails the build instead of publishing a zero-width owner.
-    @Test(.timeLimit(.minutes(1))) func unserviceableGrantFailsTheBuild() async throws {
-        await #expect(throws: NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing) {
-            _ = try await Self.owner(kvBytesCapacity: Int(UnifiedMemoryCap.minimumLoadKVBytes))
+    /// KV fails the build, naming the grant, the smallest serviceable grant and
+    /// the fixed request bytes, instead of publishing a zero-width owner. A
+    /// grant of that minimum serves.
+    @Test(.timeLimit(.minutes(1))) func unserviceableGrantFailsTheBuildWithTheMinimum() async throws {
+        let grant = Int(UnifiedMemoryCap.minimumLoadKVBytes)
+        var refusal: NemotronSuperLocalBridgeBuilder.UnserviceableGrant?
+        do { _ = try await Self.owner(kvBytesCapacity: grant) } catch let error as
+            NemotronSuperLocalBridgeBuilder.UnserviceableGrant { refusal = error }
+        let refused = try #require(refusal)
+        #expect(refused.grantBytes == grant && refused.minimumGrantBytes > grant && refused.requests == 1)
+        #expect(refused.fixedRequestBytes > 0
+            && refused.minimumGrantBytes >= grant + refused.fixedRequestBytes)
+        #expect("\(refused)".contains("\(refused.minimumGrantBytes)-byte minimum"))
+        let (owner, _, residency, budget, lease) = try await Self.owner(
+            kvBytesCapacity: refused.minimumGrantBytes)
+        #expect(await owner.bridge.effectiveServingConcurrency == 1)
+        #expect(await owner.bridge.maximumRequestOverheadBytes() == refused.fixedRequestBytes)
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+
+    /// Concurrency is the plain owner's explicit opt-in, bounded by the
+    /// adapter's decode rows; speculation keeps one request.
+    @Test func concurrencyIsAnExplicitBoundedOptIn() throws {
+        typealias Builder = NemotronSuperLocalBridgeBuilder
+        let key = Builder.maxConcurrentKey
+        #expect(try Builder.concurrentRequests(environment: [:], speculates: false) == 1)
+        #expect(try Builder.concurrentRequests(environment: [key: " 8 "], speculates: false) == 8)
+        #expect(try Builder.concurrentRequests(environment: [key: "1"], speculates: true) == 1)
+        for value in ["0", "65", "-1", "two", "", "2.5"] {
+            #expect(throws: Builder.Failure.invalidConcurrency) {
+                try Builder.concurrentRequests(environment: [key: value], speculates: false)
+            }
         }
+        #expect(throws: Builder.Failure.invalidConcurrency) {
+            try Builder.concurrentRequests(environment: [key: "2"], speculates: true)
+        }
+    }
+
+    /// A batched owner serves N requests through one row-exact adapter, charges
+    /// every request its recurrent generations plus the request workspace, and
+    /// needs a grant that holds all N; the refusal names that grant.
+    @Test(.timeLimit(.minutes(2))) func batchedOwnerChargesEveryRequestAndNeedsAGrantForAll() async throws {
+        let environment = [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "2"]
+        let grant = Int(UnifiedMemoryCap.minimumLoadKVBytes)
+        var refusal: NemotronSuperLocalBridgeBuilder.UnserviceableGrant?
+        do { _ = try await Self.owner(kvBytesCapacity: grant, environment: environment) } catch let error as
+            NemotronSuperLocalBridgeBuilder.UnserviceableGrant { refusal = error }
+        let refused = try #require(refusal)
+        #expect(refused.requests == 2 && refused.minimumGrantBytes >= grant + 2 * refused.fixedRequestBytes)
+        let (owner, installed, residency, budget, lease) = try await Self.owner(
+            kvBytesCapacity: refused.minimumGrantBytes, environment: environment)
+        #expect(owner.maximumLocalRequests == 2)
+        #expect(await owner.bridge.maxConcurrentRequests == 2)
+        #expect(await owner.bridge.effectiveServingConcurrency == 2)
+        let language = try #require(installed.model?.languageModel)
+        let charge = try language.superDecodeCharge(kvElementBytes: 2)
+        let ownedEngine = await owner.bridge.ownedEngine
+        let engine = try #require(ownedEngine as? EngineV2)
+        #expect(engine.resolvedFixedBytesPerRequest
+            == charge.recurrentGenerations * charge.recurrentBytesPerGeneration)
+        let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(
+            language, prefillLimit: try #require(language.calibratedPrefillTokenLimit))
+        #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
+        #expect(owner.admitLocalRequest() && owner.admitLocalRequest() && !owner.admitLocalRequest())
+        owner.finishLocalRequest()
+        #expect(owner.admitLocalRequest())
+        owner.finishLocalRequest(); owner.finishLocalRequest()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
     }
 
     /// The owner's image prompt carries the reference `<img>` (19), one

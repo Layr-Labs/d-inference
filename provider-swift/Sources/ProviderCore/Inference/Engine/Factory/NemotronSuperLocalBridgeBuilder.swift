@@ -14,6 +14,8 @@ enum NemotronSuperLocalBridgeBuilder {
         case unloaded, loadAdmissionLost, unsupportedSizing, retirementIncomplete
         /// Text speculation is installed; its target refuses media embeddings.
         case mediaWithSpeculation
+        /// `maxConcurrentKey` is malformed, or above one with speculation.
+        case invalidConcurrency
     }
 
     /// Must be retained by the slot owner while its bridge is reachable. Transfer
@@ -31,16 +33,19 @@ enum NemotronSuperLocalBridgeBuilder {
         private var textBinding: NemotronSuperLocalBinding?
         private var imageFaults: [(NativeConstructionScope, WholeMacUnboundedActivity)] = []
         private var quarantine: Owner?
-        private var localRequestAdmitted = false
+        private var localRequestsAdmitted = 0
         let speculates: Bool
+        /// Requests the bridge serves at once; one unless batched decode is on.
+        let maximumLocalRequests: Int
 
         fileprivate init(bridge: EngineV2Bridge, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
-                         speculates: Bool) {
+                         speculates: Bool, maximumLocalRequests: Int) {
             self.bridge = bridge
             self.installed = installed
             self.tokenizer = tokenizer; self.budget = budget; self.contextLength = contextLength
             self.speculates = speculates
+            self.maximumLocalRequests = maximumLocalRequests
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -83,18 +88,19 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// The bridge serves one request: admits one local HTTP request, text
-        /// or image, until `finishLocalRequest()`. Callers finish only after
-        /// the admitted work returned, which follows native retirement.
+        /// Admits a local HTTP request, text or image, while fewer than
+        /// `maximumLocalRequests` are admitted. Each admission is returned
+        /// once by `finishLocalRequest()`, only after its work returned, which
+        /// follows native retirement.
         func admitLocalRequest() -> Bool {
             lock.withLock {
-                guard !localRequestAdmitted else { return false }
-                localRequestAdmitted = true
+                guard localRequestsAdmitted < maximumLocalRequests else { return false }
+                localRequestsAdmitted += 1
                 return true
             }
         }
 
-        func finishLocalRequest() { lock.withLock { localRequestAdmitted = false } }
+        func finishLocalRequest() { lock.withLock { localRequestsAdmitted -= 1 } }
 
         private var acceptsLocalWork: Bool {
             lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }
@@ -226,74 +232,62 @@ enum NemotronSuperLocalBridgeBuilder {
               sizing.maxContextLength > 0, sizing.maxContextLength <= 16384,
               sizing.defaultMaxTokens > 0, sizing.defaultMaxTokens <= sizing.maxContextLength
         else { throw Failure.unsupportedSizing }
+        let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         try Task.checkCancellation()
         let bridge = try installed.withNativeSetup(construction: construction) { model in
             let language = model.languageModel
             guard let limit = language.calibratedPrefillTokenLimit, limit > 0 else {
                 throw Failure.unsupportedSizing
             }
-            // The graph path's explicit ModelOpt arrays for the largest chunk the
-            // engine may run (prefill, decode and verify rows are all at most
-            // `limit`). The eager reference keeps its own bounded tiles.
-            let prefillWorkspace = language.modelOptGraphPrefillWorkspaceBytes(tokens: limit) ?? 0
+            let workspace = try requestWorkspaceBytes(language, prefillLimit: limit)
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(
                     for: model, head: $0, maximumSequenceLength: sizing.maxContextLength)
             }
-            let target: any LanguageModel = speculation?.model ?? NemotronSuperRecurrentAdapter(model)
+            // Several requests share one row-exact [B, 1] decode step; prompts
+            // and media still prefill one request per forward.
+            let target: any LanguageModel = try speculation?.model
+                ?? (requests > 1
+                    ? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests,
+                        decodeProducts: .rowExact)
+                    : NemotronSuperRecurrentAdapter(model))
             return try EngineV2Factory.makeBridge(
                 modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
                 eosTokenIds: eosTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
-                maxConcurrentRequests: 1, advertisedContextTokens: sizing.maxContextLength,
+                maxConcurrentRequests: requests, advertisedContextTokens: sizing.maxContextLength,
                 runtimePolicyEnvironment: environment,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
                 makeEngine: {
                     try EngineV2Factory.makeProductionBuild(
                         model: target, modelID: NemotronSuperLocalBinding.modelID,
                         tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
-                        maxConcurrentRequests: 1, kvBudget: kvBudget,
+                        maxConcurrentRequests: requests, kvBudget: kvBudget,
                         mtpDrafter: speculation?.assistant,
                         mtpConfig: speculation?.config ?? CBv2MTPConfig(),
                         kvBackend: .contiguous, maxContextLength: sizing.maxContextLength,
                         environment: environment
-                    ).addingFixedRequestBytes(prefillWorkspace)
+                    ).addingSuperRequestWorkspace(workspace)
                 })
         }
-        // The prefill workspace is carved from the KV grant with each request's
-        // charge; a grant that cannot serve one request fails the load.
-        do { try await bridge.requireServiceableOrdinaryGrant() } catch {
+        // Fixed request bytes are carved from the KV grant with each request's
+        // charge; a grant that cannot serve every configured request fails the load.
+        if await bridge.effectiveServingConcurrency < requests {
+            let refusal = UnserviceableGrant(grantBytes: kvBytesCapacity,
+                minimumGrantBytes: await bridge.superMinimumGrantBytes(requests: requests),
+                fixedRequestBytes: await bridge.maximumRequestOverheadBytes() ?? Int.max,
+                requests: requests)
             await bridge.shutdown()
             guard await bridge.superLocalEngineRetired else { throw Failure.retirementIncomplete }
-            throw Failure.unsupportedSizing
+            throw refusal
         }
         // Prefix stores remain absent. Without speculation the dedicated image
-        // binding uses causal embeddings; recurrent execution stays serial/contiguous.
+        // binding uses causal embeddings; recurrent execution stays contiguous.
         return Owner(bridge: bridge, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
-                     speculates: mtp != nil)
+                     speculates: mtp != nil, maximumLocalRequests: requests)
     }
 }
 
 private extension EngineV2Bridge {
     var superLocalEngineRetired: Bool { ownedEngine == nil }
-}
-
-private extension EngineV2Factory.ProductionBuild {
-    /// The same build with `bytes` more fixed workspace in every request's
-    /// shared-budget reservation, admitted before submission and held until
-    /// the request retires.
-    func addingFixedRequestBytes(_ bytes: Int) throws -> Self {
-        let (total, overflow) = fixedRequestBytes.addingReportingOverflow(bytes)
-        guard bytes >= 0, !overflow, total < Int.max else {
-            throw NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing
-        }
-        return .init(engine: engine, fixedRequestBytes: total, kvBackendKind: kvBackendKind,
-            kvBackendFallbackReason: kvBackendFallbackReason, pagedPoolDType: pagedPoolDType,
-            usesProcessMemoryOwner: usesProcessMemoryOwner,
-            mtpAdmissionResolution: mtpAdmissionResolution,
-            legacyMTPBytesPerToken: legacyMTPBytesPerToken,
-            effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests,
-            kvQuantization: kvQuantization, kvCheckpointQuantization: kvCheckpointQuantization,
-            admissionWatermarkFraction: admissionWatermarkFraction)
-    }
 }

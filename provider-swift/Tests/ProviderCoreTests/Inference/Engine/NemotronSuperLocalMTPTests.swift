@@ -63,6 +63,27 @@ struct NemotronSuperLocalMTPTests {
         #expect(try MTP.loadSupplementBytes(.init(payloadBytes: 3, constructionBytes: 4)) == 7)
     }
 
+    /// The shared factory serves the text target exactly as the ordinary
+    /// adapter: same layer kinds and capabilities plus MTP, and the same hard
+    /// calibrated prefill bound on its scheduler.
+    @Test func sharedFactoryRecognizesTheSpeculativeTextTarget() throws {
+        let fixture = try SuperMTPInstalledFixture().make()
+        let model = try #require(fixture.installed.model)
+        let adapter = NemotronSuperRecurrentAdapter(model)
+        let target = NemotronSuperMTPTextTarget(model)
+        let limit = try #require(adapter.calibratedPrefillTokenLimit)
+        #expect(EngineV2Factory.calibratedPrefillTokenLimit(model: target) == limit)
+        #expect(EngineV2Factory.cbv2LayerKinds(model: target) == adapter.cbv2LayerKinds)
+        let resolved = try #require(EngineV2Factory.ProductionModelAdapter(model: target))
+        #expect(resolved.modelCapabilities.supportsMTP && !adapter.cbv2Capabilities.supportsMTP)
+        for model in [adapter, target] as [any LanguageModel] {
+            let config = EngineV2Factory.productionSchedulerConfig(
+                maxConcurrentRequests: 1, model: model, environment: [:])
+            #expect(config.prefillChunkSize <= limit && config.soloPrefillStripeTokens == nil)
+        }
+        fixture.installed.closeAfterRetirement()
+    }
+
     private func owner(_ fixture: SuperMTPInstalledFixture.Installation, depth: Int?,
                        budget: GlobalKVCacheBudget, lease: PendingModelLoadLease)
         async throws -> NemotronSuperLocalBridgeBuilder.Owner {

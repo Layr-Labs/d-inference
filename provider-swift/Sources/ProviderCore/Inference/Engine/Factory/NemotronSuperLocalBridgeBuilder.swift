@@ -217,11 +217,11 @@ enum NemotronSuperLocalBridgeBuilder {
             guard let limit = model.languageModel.calibratedPrefillTokenLimit, limit > 0 else {
                 throw Failure.unsupportedSizing
             }
-            let adapter = NemotronSuperRecurrentAdapter(model)
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(
                     for: model, head: $0, maximumSequenceLength: sizing.maxContextLength)
             }
+            let target: any LanguageModel = speculation?.model ?? NemotronSuperRecurrentAdapter(model)
             return try EngineV2Factory.makeBridge(
                 modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
                 eosTokenIds: eosTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
@@ -229,17 +229,12 @@ enum NemotronSuperLocalBridgeBuilder {
                 runtimePolicyEnvironment: environment,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
                 makeEngine: {
-                    if let speculation {
-                        return try NemotronSuperLocalMTP.makeProductionBuild(
-                            engine: speculation, policyModel: adapter,
-                            tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
-                            kvBudget: kvBudget, maxContextLength: sizing.maxContextLength,
-                            environment: environment)
-                    }
-                    return try EngineV2Factory.makeProductionBuild(
-                        model: adapter, modelID: NemotronSuperLocalBinding.modelID,
+                    try EngineV2Factory.makeProductionBuild(
+                        model: target, modelID: NemotronSuperLocalBinding.modelID,
                         tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
                         maxConcurrentRequests: 1, kvBudget: kvBudget,
+                        mtpDrafter: speculation?.assistant,
+                        mtpConfig: speculation?.config ?? CBv2MTPConfig(),
                         kvBackend: .contiguous, maxContextLength: sizing.maxContextLength,
                         environment: environment)
                 })

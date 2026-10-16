@@ -46,11 +46,9 @@ enum RunnerCheckpointLoad {
             log.emit("load.transaction", ["phase": .string(String(describing: await transaction.phase))])
             throw error
         }
-        let hook: NemotronSuperLocalImageHTTP?
+        let hook: NemotronSuperLocalImageHTTP
         do {
-            hook = try await transaction.runnerOwner().map {
-                try NemotronSuperLocalImageHTTP(owner: $0, templateBytes: templateBytes)
-            }
+            hook = try await transaction.localImageHTTP(templateBytes: templateBytes)
         } catch {
             // Nothing has been served; retire the loaded owner before failing.
             try? await transaction.closeAfterDrain()
@@ -60,12 +58,12 @@ enum RunnerCheckpointLoad {
             "mode": "checkpoint", "checkpoint_dir": .string(directory.path),
             "shards_verified": .count(shardCount), "load_quote_bytes": .bytes(quote),
             "checkpoint_tensor_bytes": .bytes(tensorBytes),
-            "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": .bool(hook != nil),
+            "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": true,
         ])
         return RunnerServing(bridge: bridge, tokenizer: tokenizer, imageHook: hook, identity: identity,
             retire: {
                 try await transaction.closeAfterDrain()
-                let residency = await transaction.runnerResidency()?.snapshot
+                let residency = await transaction.residencySnapshot
                 return ["transaction_phase": .string(String(describing: await transaction.phase)),
                         "installation_residency_used_bytes": residency.map { .bytes($0.usedBytes) } ?? .null]
             })

@@ -40,7 +40,7 @@ struct RunnerLoadSettings: Sendable {
 struct RunnerServing: Sendable {
     let bridge: EngineV2Bridge
     let tokenizer: TokenizerHandle
-    let imageHook: NemotronSuperLocalImageHTTP?
+    let imageHook: NemotronSuperLocalImageHTTP
     let identity: RunnerJSON
     /// Call only after HTTP admission closed and in-flight work drained.
     /// Returns facts for the retirement event; throws when ownership is retained.

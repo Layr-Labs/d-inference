@@ -102,9 +102,13 @@ file cache, and the receipt cannot tell which you had.
 
 Charge kinds: `load` (pending LOAD claim), `media_ingress` and `media` (the
 image binding's `-ingress`/`-media` reservations), `kv` (bridge request
-reservations), `ballast`. Per-reservation bytes and the loaded owner are read
-by reflection in `RunnerReflectedState.swift` until internal accessors exist;
-if that read fails, bytes are `null` or the image hook is disabled, never guessed.
+reservations, which include each request's fixed prefill workspace), `ballast`.
+Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
+the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
+(`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one
+request at a time: a concurrent request gets 429 before any response starts.
+With `DARKBLOOM_NEMOTRON_SUPER_MTP=1` in `--engine-env` the hook is text-only
+and image requests get 400.
 
 ## Shutdown
 
@@ -133,7 +137,7 @@ Defaults: contexts `short=128,medium=2048,long=15360` prompt tokens (fitted
 from the first request plus up to `--calibration-steps` one-token requests), images `512x512,1024x1024,2048x1536`,
 concurrency `1,2,4,8` with 2 requests per client, `max_tokens` 128, one warmup,
 three repetitions, seed 1234, `temperature` 0, `top_p` 1, `enable_thinking`
-false (the image hook requires it). `compare` refuses receipts with different
+false (`--thinking on|default` for the reasoning channel). `compare` refuses receipts with different
 workload settings, model identity or runner build configuration.
 
 | Metric | Definition |
@@ -145,7 +149,7 @@ workload settings, model identity or runner build configuration.
 | prefill tok/s | prompt tokens / TTFT (end-to-end lower bound) |
 | decode tok/s | (completion tokens - 1) / (last delta - first delta) |
 | e2e tok/s | completion tokens / request time |
-| concurrency | p50/p90/p99 latency and TTFT of successful requests, aggregate completion tokens / wall time, statuses (the owner admits one request at a time, so rejections are reported, not hidden) |
+| concurrency | p50/p90/p99 latency and TTFT of successful requests, aggregate completion tokens / wall time, statuses (the owner admits one request at a time, so 429 rejections are reported, not hidden) |
 
 The receipt records hardware, OS, thermal and memory pressure, git HEAD plus a
 hash of each checkout's diff and untracked files, the runner executable SHA-256

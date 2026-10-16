@@ -24,7 +24,7 @@ actor RunnerMemorySampler {
     private struct LiveCharge {
         let kind: RunnerChargeKind
         let openedAt: Duration
-        var maxBytes: UInt64?
+        var maxBytes: UInt64
         var maxFootprint: UInt64 = 0
         var maxMLXActive: UInt64 = 0
     }
@@ -134,7 +134,7 @@ actor RunnerMemorySampler {
         for row in rows {
             seen.insert(row.id)
             if var charge = live[row.id] {
-                if let bytes = row.bytes { charge.maxBytes = max(charge.maxBytes ?? 0, bytes) }
+                charge.maxBytes = max(charge.maxBytes, row.bytes)
                 charge.maxFootprint = max(charge.maxFootprint, footprint)
                 charge.maxMLXActive = max(charge.maxMLXActive, active)
                 live[row.id] = charge
@@ -142,14 +142,14 @@ actor RunnerMemorySampler {
                 live[row.id] = LiveCharge(kind: row.kind, openedAt: now, maxBytes: row.bytes,
                     maxFootprint: footprint, maxMLXActive: active)
                 log.emit("charge.opened", ["id": .string(row.id), "kind": .string(row.kind.rawValue),
-                    "bytes": .optional(row.bytes), "phys_footprint": .bytes(footprint),
+                    "bytes": .bytes(row.bytes), "phys_footprint": .bytes(footprint),
                     "mlx_active": .bytes(active)])
             }
         }
         for (id, charge) in live where !seen.contains(id) {
             live[id] = nil
             log.emit("charge.retired", ["id": .string(id), "kind": .string(charge.kind.rawValue),
-                "max_bytes": .optional(charge.maxBytes), "held_s": .seconds(now - charge.openedAt),
+                "max_bytes": .bytes(charge.maxBytes), "held_s": .seconds(now - charge.openedAt),
                 "max_phys_footprint_while_held": .bytes(charge.maxFootprint),
                 "max_mlx_active_while_held": .bytes(charge.maxMLXActive)])
         }
@@ -173,23 +173,21 @@ actor RunnerMemorySampler {
 
     private static func sums(_ rows: [RunnerChargeRow]) -> [RunnerChargeKind: UInt64] {
         rows.reduce(into: [:]) { totals, row in
-            if let bytes = row.bytes { totals[row.kind, default: 0] &+= bytes }
+            totals[row.kind, default: 0] &+= row.bytes
         }
     }
 
     /// `unattributed` is ledger charge outside these rows (e.g. native engine owners).
     private static func charges(_ rows: [RunnerChargeRow], ledgerCharged: UInt64) -> RunnerJSON {
-        let complete = rows.allSatisfy { $0.bytes != nil }
-        let attributed = rows.reduce(UInt64(0)) { $0 &+ ($1.bytes ?? 0) }
+        let attributed = rows.reduce(UInt64(0)) { $0 &+ $1.bytes }
         return .object([
-            "unattributed_bytes": complete && ledgerCharged >= attributed
+            "unattributed_bytes": ledgerCharged >= attributed
                 ? .bytes(ledgerCharged - attributed) : .null,
             "rows": .array(rows.map {
-                ["id": .string($0.id), "kind": .string($0.kind.rawValue), "bytes": .optional($0.bytes)]
+                ["id": .string($0.id), "kind": .string($0.kind.rawValue), "bytes": .bytes($0.bytes)]
             }),
             "by_kind": .object(Dictionary(uniqueKeysWithValues:
                 sums(rows).map { ($0.key.rawValue, RunnerJSON.bytes($0.value)) })),
-            "bytes_complete": .bool(complete),
         ])
     }
 

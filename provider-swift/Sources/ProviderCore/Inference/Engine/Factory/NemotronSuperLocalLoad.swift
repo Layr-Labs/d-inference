@@ -95,6 +95,16 @@ actor NemotronSuperLocalLoad {
                                          featureCounts: featureCounts)
     }
 
+    /// The opt-in HTTP hook over this transaction's own owner; text-only while
+    /// the owner speculates. The host drains it before `closeAfterDrain`.
+    func localImageHTTP(templateBytes: Data) throws -> NemotronSuperLocalImageHTTP {
+        guard phase == .ready, let owner else { throw Failure.invalidState }
+        return try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: templateBytes)
+    }
+
+    /// Read-only installation residency for diagnostics, kept after close.
+    var residencySnapshot: NemotronSuperResidency.Snapshot? { residency?.snapshot }
+
     /// Host must first close acquisition and drain all bindings. Concurrent close
     /// while loading is rejected; cancellation belongs to the load task's owner.
     func closeAfterDrain() async throws {

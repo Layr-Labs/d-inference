@@ -86,6 +86,9 @@ extension EngineV2SlotFactory {
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2ServingPreparation {
         switch container {
+        case .nemotronSuper:
+            // Built only by its own owner (`ProviderLoop+NemotronSuper`).
+            throw NemotronSuperSlotError.managedLoadRequired
         case .nativeMiMo(let target, let load):
             guard !isVLM, specDecPreparation.artifact == nil else { throw MiMoV26ServingLoadError.nativeOwnerMismatch }
             return .nativeMiMo(try await prepareNativeMiMo(container: target, load: load,
@@ -112,6 +115,8 @@ extension EngineV2SlotFactory {
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2ServingPreparation {
         switch container {
+        case .nemotronSuper:
+            throw NemotronSuperSlotError.managedLoadRequired
         case .nativeMiMo:
             // Refuse BEFORE any assistant/engine release. A retired cold permit
             // cannot authorize another setup generation or a hidden OFF rebuild.
@@ -158,6 +163,8 @@ extension EngineV2SlotFactory {
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity?.finish() }
         switch container {
+        case .nemotronSuper:
+            throw NemotronSuperSlotError.managedLoadRequired
         case .nativeMiMo(let target, let load):
             guard modelType == "mimo_v2", !isVLM, specDecPreparation.artifact == nil,
                 makeEngineOverride == nil else { throw MiMoV26ServingLoadError.nativeOwnerMismatch }

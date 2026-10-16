@@ -265,6 +265,10 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
+        // Super builds its own owner and speculates with its embedded head;
+        // neither the generic loaders nor the assistant funnel apply.
+        let managedSuper = NemotronSuperServingPolicy.isServingIdentity(
+            modelID: modelId, modelType: modelInfo.modelType)
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -273,7 +277,9 @@ extension ProviderLoop {
             nativeLoad = inspected
         } else { nativeLoad = nil }
         var mtpPreparation: SpecDecPreparation
-        if let nativeLoad {
+        if managedSuper {
+            mtpPreparation = SpecDecPreparation(artifact: nil, status: .disabled(.configDisabled, configured: false))
+        } else if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: loopConfig.config.backend.mtpMode,
                 externalPath: loopConfig.config.backend.mtpDrafterPath,
                 embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
@@ -425,6 +431,11 @@ extension ProviderLoop {
 
             // The accepted lease is the allocation permit. Advisory eviction and
             // assistant checks above cannot reserve process memory across awaits.
+            if managedSuper {
+                try await loadNemotronSuperSlot(modelID: modelId, directory: modelPath,
+                                                modelInfo: modelInfo, deviceActivity: deviceActivity)
+                return
+            }
             if let nativeLoad {
                 try await loadNativeMiMoSlot(modelID: modelId, directory: modelPath,
                                              load: nativeLoad, preparation: mtpPreparation)
@@ -954,6 +965,7 @@ extension ProviderLoop {
             || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
             return await retireNativeMiMoOwner(modelID: modelId)
         }
+        if isNemotronSuperSlot(modelId) { return await retireNemotronSuperSlot(modelId) }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
         // without extending it through a local. Explicit retirement can leave
@@ -1254,6 +1266,10 @@ extension ProviderLoop {
 
     internal func fastAdmissionReject(modelId: String) async -> Bool {
         if nativeMiMoRefusesRequest(modelId) { return true }
+        // A retained Super fault refuses every later Super load until restart.
+        if nemotronSuperRetainedWeightBytes > 0, modelSlots[modelId] == nil,
+            NemotronSuperServingPolicy.isServingIdentity(modelID: modelId,
+                modelType: advertisedModels[modelId]?.modelType) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the

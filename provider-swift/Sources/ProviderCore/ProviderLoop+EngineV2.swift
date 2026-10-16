@@ -169,7 +169,7 @@ extension ProviderLoop {
     /// One existing slot's re-slice bookkeeping: its sizing inputs, its
     /// engine grant BEFORE this re-slice (the restore point), and the
     /// bridge whose ceiling gets updated.
-    private struct ExistingSlotGrant {
+    fileprivate struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
         let minimumGrantBytes: Int
@@ -197,6 +197,9 @@ extension ProviderLoop {
             let (sum, overflow) = totalWeights.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
+        let (withRetainedSuper, superOverflow) = totalWeights.addingReportingOverflow(
+            nemotronSuperRetainedWeightBytes)
+        totalWeights = superOverflow ? .max : withRetainedSuper
         let physical = engineV2SlotHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
@@ -500,6 +503,64 @@ extension ProviderLoop {
             }
         }
         return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    /// A newcomer grant whose engine its own owner builds (the managed Super
+    /// load), with the restore point of every shrunk survivor.
+    struct NewcomerReslice {
+        let grantBytes: Int
+        fileprivate let existing: [ExistingSlotGrant]
+        fileprivate let targets: [String: Int]
+    }
+
+    /// Phase 1 of `resliceAndBuildEngineV2Bundle` for an owner-built engine:
+    /// refuse a slice leaving any slot below its floor, else shrink survivors
+    /// and return the newcomer's grant. CALLER HOLDS the re-slice gate through
+    /// installation and calls `completeNewcomerReslice` or, once a failed
+    /// newcomer's memory is released, `restoreNewcomerReslice`.
+    internal func resliceShrinkingForNewcomer(
+        modelId: String, weightBytes: Int, fp16KVBytesPerToken: Int, maxContextLength: Int
+    ) async throws -> NewcomerReslice {
+        let existing = await existingSlotGrants(excludingModelId: modelId)
+        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: weightBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: existing.map(\.slot),
+            newcomer: .init(modelId: modelId, fp16KVBytesPerToken: fp16KVBytesPerToken,
+                            maxContextLength: maxContextLength),
+            fleetKVBudgetBytes: fleetBudget)
+        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, minimumGrantBytes:
+            Dictionary(uniqueKeysWithValues: existing.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
+        else {
+            EngineV2Factory.emitRefusalTelemetry(modelId: modelId, reason: .resliceFloor, error: nil,
+                emitTelemetry: engineV2SlotHooks?.emitTelemetry)
+            throw InferenceError.modelLoadFailed("loading '\(modelId)' would leave a model below its "
+                + "serviceable KV grant (fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
+        }
+        for entry in existing {
+            if let target = targets[entry.slot.modelId], target < entry.previousGrant {
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+        return NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+    }
+
+    /// Phase 3 after the newcomer's slot is installed: grow-side targets.
+    internal func completeNewcomerReslice(_ reslice: NewcomerReslice) async {
+        for entry in reslice.existing {
+            if let target = reslice.targets[entry.slot.modelId], target > entry.previousGrant {
+                guard nativeMiMoAllowsReclamation() else { break }
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+    }
+
+    /// The newcomer failed and its memory is released (or retained in the
+    /// fleet budget): every survivor gets back its exact previous grant.
+    internal func restoreNewcomerReslice(_ reslice: NewcomerReslice) async {
+        for entry in reslice.existing {
+            guard nativeMiMoAllowsReclamation() else { break }
+            await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
+        }
     }
 
     /// Failure unwind AFTER a successful bridge build (the post-bridge

@@ -8,19 +8,25 @@ fi
 
 release_environment=${RELEASE_ENVIRONMENT:-prod}
 validation_only=${RELEASE_VALIDATION_ONLY:-false}
-# The event alone selects dev for a branch push; push events carry no inputs.
+# A master push publishes both a dev and a staging release (DBLM-771). The
+# caller routes one lane per environment and passes RELEASE_ENVIRONMENT; the
+# push event itself still carries no dispatch inputs, so a run with a missing or
+# prod environment on a branch push is a misconfiguration and must fail closed.
+# A push never selects prod, so the production signing identity stays tag-gated.
 if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF_TYPE:-}" = branch ]; then
   if [ "${GITHUB_REF:-}" != refs/heads/master ]; then
-    echo '::error::Branch pushes publish dev releases only from master' >&2
+    echo '::error::Branch pushes publish releases only from master' >&2
     exit 1
   fi
-  release_environment=dev
+  case "$release_environment" in
+    dev|staging) ;;
+    *) echo "::error::Branch pushes publish dev or staging only (got ${release_environment:-<empty>})" >&2; exit 1 ;;
+  esac
   validation_only=false
   RELEASE_VERSION_OVERRIDE=
 fi
-# staging is a third environment (DBLM-771). It is dispatch-only: no push or tag
-# trigger resolves to staging, so a master push still publishes exactly one dev
-# release. Auto-publishing staging on a master push is a deferred decision.
+# dev, prod and staging are the three environments (DBLM-771). prod requires a
+# source-matching tag; dev and staging come from a master push or a dispatch.
 case "$release_environment" in
   dev|prod|staging) ;;
   *) echo '::error::Release environment must be dev, prod or staging' >&2; exit 1 ;;

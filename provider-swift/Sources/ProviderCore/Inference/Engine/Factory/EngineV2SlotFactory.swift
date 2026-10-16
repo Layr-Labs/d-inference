@@ -587,6 +587,7 @@ enum EngineV2SlotFactory {
                 modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
             throw error
         }
+        await bridge.glm5NextNativeOwner?.startResidency()
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }

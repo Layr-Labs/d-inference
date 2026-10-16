@@ -26,12 +26,29 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
     let contractID: UUID
     /// The issued contract's permission, captured once; never a request flag.
     let servesPreparedCausalMedia: Bool
+    private let residency: GLM5NextWiredResidency?
 
     init(model: GLM5NextProtectedModel, resources: GLM5NextProtectedResources, engine: EngineV2) {
         binding = Binding(model: model, resources: resources, engine: engine)
         engineID = engine.nativeShutdownEngineID
         contractID = resources.resources.contract.id
         servesPreparedCausalMedia = resources.resources.contract.supportsPreparedCausalMedia
+        residency = GLM5NextWiredResidency.prepare(budget: resources.budget)
+    }
+
+    var residencyPhase: GLM5NextWiredResidency.Phase? { residency?.currentPhase }
+
+    /// After the bridge is bound and its grant is serviceable.
+    func startResidency() async {
+        guard lock.withLock({ bridge != nil && !closing && !retired }) else { return }
+        await residency?.start()
+    }
+
+    /// Only after proven retirement; an unproven close keeps the weights and
+    /// therefore their residency.
+    func endResidencyAfterRetirement() async {
+        guard lock.withLock({ retired }) else { return }
+        await residency?.end()
     }
 
     func bind(to bridge: EngineV2Bridge) throws {
@@ -110,7 +127,9 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
             return binding.engine
         }
         switch await engine.shutdownReportingNativeCompletion() {
-        case .quiescent(let receipt): try complete(receipt)
+        case .quiescent(let receipt):
+            try complete(receipt)
+            await endResidencyAfterRetirement()
         case .incomplete:
             retainFailure()
             throw GLM5NextManagedLoadError.retirementUnproven

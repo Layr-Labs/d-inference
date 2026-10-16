@@ -93,6 +93,7 @@ extension EngineV2Bridge {
         do {
             if ownedEngine == nil, case .quiescent(let receipt)? = nativeShutdownResult {
                 try owner.complete(receipt)
+                await owner.endResidencyAfterRetirement()
                 return
             }
             guard let actual = ownedEngine as? EngineV2 else { throw GLM5NextManagedLoadError.identityMismatch }
@@ -101,6 +102,7 @@ extension EngineV2Bridge {
             case .quiescent(let receipt): try owner.complete(receipt)
             case .incomplete: throw GLM5NextManagedLoadError.retirementUnproven
             }
+            await owner.endResidencyAfterRetirement()
         } catch {
             owner.retainFailure()
             GLM5NextLoadFaultState.retain([self])

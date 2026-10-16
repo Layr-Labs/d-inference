@@ -73,18 +73,21 @@ actor NemotronSuperLocalLoad {
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
         modelID: String = NemotronSuperLocalBinding.modelID,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) async throws -> EngineV2Bridge {
         try await load(staging: { try .pinned(configData: configData, source: source) },
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
             kvBytesCapacity: kvBytesCapacity, admissionKVBytes: admissionKVBytes,
-            backendAllowanceBytes: backendAllowanceBytes, modelID: modelID, environment: environment)
+            backendAllowanceBytes: backendAllowanceBytes, modelID: modelID, environment: environment,
+            physicalBytes: physicalBytes)
     }
 
     func load(staging makeStaging: () throws -> Staging,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
-        modelID: String, environment: [String: String]
+        modelID: String, environment: [String: String],
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) async throws -> EngineV2Bridge {
         guard phase == .idle else { throw Failure.invalidState }
         phase = .loading
@@ -104,7 +107,8 @@ actor NemotronSuperLocalLoad {
             if let headQuote { _ = try NemotronSuperLocalMTP.loadSupplementBytes(headQuote) }
             let shares = staging.pinned
                 ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: environment,
-                    kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil)
+                    kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil,
+                    physicalBytes: physicalBytes)
                 : nil
             let ownerBytes = (shares?.lane ?? 0) + (shares?.bank ?? 0)
             // The bank is part of the admission; the claim holds it once, as a share.
@@ -152,7 +156,7 @@ actor NemotronSuperLocalLoad {
                 tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity, admissionKVBytes: kvFloor, kvBudget: budget,
                 loadLease: claim, construction: construction, mtp: head, modelID: modelID,
-                environment: environment, leaseShares: shares)
+                environment: environment, physicalBytes: physicalBytes, leaseShares: shares)
             owner = built
             try Task.checkCancellation()
             // Installation/setup has fenced. The standard ledger now sees live

@@ -107,7 +107,7 @@ enum NemotronSuperServingPolicy {
     /// global kill switch, wins. The builder sizes the same bank from the same
     /// grant, requests and keys.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
-                         kvBytesCapacity: Int,
+                         kvBytesCapacity: Int, pinned: Bool = true,
                          physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
         let speculates = Self.speculates(mode: mode, environment: base)
         let requests = concurrentRequests(configured: configuredConcurrency, speculates: speculates)
@@ -129,13 +129,13 @@ enum NemotronSuperServingPolicy {
         if environment[flag] == nil, !paged,
             let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
                 kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
-                physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
+                pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
             kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates) + bank {
             environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
-            physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
+            pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
         return LoadPlan(environment: environment, speculates: speculates, requests: requests,
             prefixBankBytes: bank,
             admissionKVBytes: min(kvBytesCapacity,
@@ -190,14 +190,11 @@ enum NemotronSuperServingPolicy {
     static func defaultPrefixBankBytes(kvBytesCapacity: Int, requests: Int, speculates: Bool,
                                        environment: [String: String],
                                        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
-        var chunk = NemotronSuperLocalPrefill.defaultChunkTokens
-        if let raw = environment[NemotronSuperLocalPrefill.chunkKey]?.trimmingCharacters(in: .whitespaces) {
-            guard let value = Int(raw), (1 ... contextTokens).contains(value) else { return 0 }
-            chunk = value
-        }
-        guard kvBytesCapacity > 0, let media = mediaChargeBytes(imageCount: 1) else { return 0 }
+        guard let chunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: environment),
+            kvBytesCapacity > 0, let media = mediaChargeBytes(imageCount: 1)
+        else { return 0 }
         let admission = admissionKVBytes(requests: requests, speculates: speculates)
-        let lane = NemotronHModel.prefillActivationBoundBytes(tokens: chunk)
+        let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: chunk)
         let serving = kvBytesCapacity - admission - lane - Int(clamping: media)
         let claim = Int(clamping: pinnedLoadClaimBytes(speculates: speculates))
         let usable = Int(clamping: UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes))
@@ -251,8 +248,8 @@ enum NemotronSuperServingPolicy {
     /// and the load leaves room for an image. The prefix bank is not part of
     /// it: `loadPlan` enables the bank only when the grant also holds it.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
-        let lane = UInt64(NemotronHModel.prefillActivationBoundBytes(
-            tokens: NemotronSuperLocalPrefill.defaultChunkTokens))
+        let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(
+            chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens))
         let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))
         // Unreachable unless the binding refuses its own largest image; the
         // footprint then fails closed instead of advertising room it lacks.

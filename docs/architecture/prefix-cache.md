@@ -342,6 +342,11 @@ state to disk (`HybridPrefixCache.swift` / `resizeReservation`,
 `HybridCheckpointOwnership.swift`, `EngineV2.swift` / `updateKVBytesCapacity`,
 `Prefix/EngineV2+HybridPrefix.swift` / `hybridPrefixLookup`). Configurable limits are in
 [`../reference/configuration.md#resident-recurrent-prefix-cache`](../reference/configuration.md#resident-recurrent-prefix-cache).
+The bank budget is `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` when set. Otherwise a
+model policy may pass its own default (the pinned Nemotron Super owner sizes
+its bank from the KV grant and the machine, see [inference.md](inference.md)),
+and every other model gets the lesser of 1 GiB and an eighth of the grant
+(`PrefixCachePolicy.hybridConfig`).
 
 A persistent MTP assistant must implement `CBv2MTPPrefixCheckpointDrafter`.
 `Qwen35InlineMTPAssistant` captures the complete normalized trusted prompt

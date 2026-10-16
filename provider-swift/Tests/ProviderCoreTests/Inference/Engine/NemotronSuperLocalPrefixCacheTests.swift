@@ -296,7 +296,7 @@ struct NemotronSuperLocalPrefixCacheTests {
         let environment = [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank)]
         let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
             speculates: false)
-        #expect(shares == .init(lane: 12 << 30, bank: bank))
+        #expect(shares == .init(lane: 17 << 29, bank: bank))
         for short in [true, false] {
             let fixture = SuperMTPInstalledFixture()
             let base = try fixture.staging()

@@ -1,0 +1,962 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Darkbloom Consumer API",
+    "version": "2026-10-12",
+    "description": "Reviewed subset of the Darkbloom Consumer API: discover models, read public pricing, and request text chat completions. Other operations and advanced request features are outside this description. The Coordinator remains authoritative.",
+    "contact": {
+      "url": "https://darkbloom.ai/contact"
+    }
+  },
+  "externalDocs": {
+    "description": "Authoritative platform API reference and additional operations",
+    "url": "https://github.com/Layr-Labs/darkbloom-platform/blob/baca977134a63678ab12979038d3618901d852ee/docs/reference/api-contracts.md"
+  },
+  "servers": [
+    {
+      "url": "https://api.darkbloom.dev"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "x-source-repository": "https://github.com/Layr-Labs/darkbloom-platform",
+  "x-source-revision": "baca977134a63678ab12979038d3618901d852ee",
+  "paths": {
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "createChatCompletion",
+        "summary": "Create a text chat completion with a model selected from the authenticated catalog.",
+        "description": "Create a text chat completion using a model from the authenticated catalog. The Consumer API key must permit the model; paid fleet inference requires sufficient account funds. Omitted or zero output budgets use server defaults. Advanced tool, multimodal, routing and sealed-request behavior is described in the full platform contract. Streaming waits for first content before committing HTTP 200, so an earlier failure is still a JSON error with its real HTTP status.",
+        "responses": {
+          "200": {
+            "description": "Complete JSON response, or SSE stream when stream=true. A committed stream can still end with an in-band error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletion"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE text. After first content arrives, events carry data: followed by a JSON chat.completion.chunk and a blank line; the single space after data: is optional. Chunks carry deltas and echo the requested model id. Usage-only and terminal finish chunks follow content; usage is included only when supplied by the provider. Successful completion ends with exactly one data: [DONE] event. A failure after commit is a terminal data: {\"error\": {...}} event without [DONE], potentially preceded by metadata. No keepalive comments are sent. Before first content, failures retain their HTTP error status and application/json envelope. Callers own cancellation and their request deadlines."
+                },
+                "examples": {
+                  "success": {
+                    "summary": "Successful text stream",
+                    "value": "data: {\"id\":\"chatcmpl-example\",\"object\":\"chat.completion.chunk\",\"created\":1791849600,\"model\":\"<MODEL_ID_FROM_CATALOG>\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-example\",\"object\":\"chat.completion.chunk\",\"created\":1791849600,\"model\":\"<MODEL_ID_FROM_CATALOG>\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                  },
+                  "failure": {
+                    "summary": "Terminal failure after HTTP 200 was committed",
+                    "value": "data: {\"error\":{\"message\":\"Provider disconnected\",\"type\":\"provider_error\",\"code\":\"provider_error\"}}\n\n"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed. Send Authorization: Bearer <DARKBLOOM_API_KEY>.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request JSON, missing model or messages, malformed output budget, or unsupported n > 1.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient funds or quota. The error type is insufficient_funds for an insufficient balance or insufficient_quota for a per-key spend cap; both use code insufficient_quota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access forbidden, such as model_not_allowed for a key restriction.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested model not found (model_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Self-route conflict. Consult the full routing contract.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body or prompt exceeds an allowed size.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request: a tool-constraint schema cannot be compiled (invalid_request_error). See the full contract for model capability rejections, which can instead use 400 or 503.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit, admission or first-content deadline rejected the request; wait according to Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider failure, including invalid or oversized provider output.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No suitable capacity or model available (service_unavailable, provider_error or model_unavailable). Retry-After may be present; it is not guaranteed for every 503.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Provider or request timeout (timeout or provider_error).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Other Coordinator error. Pre-content errors remain JSON; post-commit stream errors use the SSE envelope described above.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TextChatRequest"
+              },
+              "example": {
+                "model": "<MODEL_ID_FROM_CATALOG>",
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Explain private inference in one sentence."
+                  }
+                ],
+                "max_completion_tokens": 128,
+                "stream": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "operationId": "listModels",
+        "summary": "List published Consumer models and current capacity metadata. Listings are not an availability guarantee.",
+        "description": "List Consumer models and current capacity metadata. Standard aliases hide their underlying builds by default. A model listing is not a guarantee of immediate availability. Self-route-only keys see owned live models; see the full platform reference for routing controls.",
+        "responses": {
+          "200": {
+            "description": "Published model catalog and current capacity metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed. Send Authorization: Bearer <DARKBLOOM_API_KEY>.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error while reading the model catalog.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "include_builds",
+            "in": "query",
+            "required": false,
+            "description": "Set to 1 to include the underlying concrete model builds hidden by standard aliases. Omit for the ordinary Consumer catalog.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/v1/models/{id}": {
+      "get": {
+        "operationId": "retrieveModel",
+        "summary": "Retrieve a model by its full model identifier.",
+        "description": "Retrieve a model by exact id, including an underlying build hidden from the default list. Self-route-only keys use owned live models, consistent with model listing.",
+        "responses": {
+          "200": {
+            "description": "Model metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Model"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed. Send Authorization: Bearer <DARKBLOOM_API_KEY>.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown model id (model_not_found), with param=model.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error while reading the model catalog.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Full model identifier from the authenticated catalog, including any slashes. Percent-encode path characters when constructing a URL, for example organization/model becomes organization%2Fmodel. The Coordinator accepts the entire trailing path as the id, including literal slash segments."
+          }
+        ]
+      }
+    },
+    "/v1/pricing": {
+      "get": {
+        "operationId": "listPricing",
+        "summary": "Read public platform prices and fallback rates.",
+        "description": "Read public platform price rows and effective fallback rates. Integer rates are micro-USD per one million tokens; formatted strings are USD per one million tokens. These units differ from the individual-token prices in model metadata. The source has no update timestamp; fetch again for current rates. Custom Provider pricing and routing context can affect applicable charges; consult the platform billing reference.",
+        "responses": {
+          "200": {
+            "description": "Current public platform price rows and fallback rates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Create a Consumer API key in https://console.darkbloom.dev/api-console. Keep the key secret. A valid Privy JWT is also accepted; Provider device tokens are not Consumer API keys. Paid fleet inference requires account funds and remains subject to key permissions and rate limits."
+      }
+    },
+    "schemas": {
+      "ModelPricing": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "USD per individual token for input tokens."
+          },
+          "completion": {
+            "type": "string",
+            "description": "USD per individual token for output tokens."
+          },
+          "image": {
+            "type": "string",
+            "description": "USD per image."
+          },
+          "request": {
+            "type": "string",
+            "description": "USD per request."
+          },
+          "input_cache_read": {
+            "type": "string",
+            "description": "USD per individual token for input served from the prefix cache."
+          }
+        },
+        "required": [
+          "prompt",
+          "completion",
+          "image",
+          "request",
+          "input_cache_read"
+        ]
+      },
+      "ModelAttestation": {
+        "type": "object",
+        "properties": {
+          "secure_enclave": {
+            "type": "boolean"
+          },
+          "sip_enabled": {
+            "type": "boolean"
+          },
+          "secure_boot": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "secure_enclave",
+          "sip_enabled",
+          "secure_boot"
+        ]
+      },
+      "ModelMetadata": {
+        "type": "object",
+        "properties": {
+          "model_type": {
+            "type": "string"
+          },
+          "quantization": {
+            "type": "string"
+          },
+          "provider_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "attested_providers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trust_level": {
+            "type": "string"
+          },
+          "routable_providers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "warm_providers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "can_accept": {
+            "type": "boolean"
+          },
+          "attestation": {
+            "$ref": "#/components/schemas/ModelAttestation"
+          },
+          "display_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_type",
+          "quantization",
+          "provider_count",
+          "attested_providers",
+          "trust_level",
+          "routable_providers",
+          "warm_providers",
+          "can_accept"
+        ]
+      },
+      "Model": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Use this exact identifier when requesting inference."
+          },
+          "object": {
+            "type": "string",
+            "enum": [
+              "model"
+            ]
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in seconds."
+          },
+          "owned_by": {
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ModelMetadata"
+          },
+          "name": {
+            "type": "string"
+          },
+          "hugging_face_id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "quantization": {
+            "type": "string"
+          },
+          "deprecation_date": {
+            "type": "string"
+          },
+          "input_modalities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_modalities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "supported_sampling_parameters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "supported_features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context_length": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_output_length": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ModelPricing"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "owned_by",
+          "metadata"
+        ]
+      },
+      "ModelList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "list"
+            ]
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ]
+      },
+      "PriceEntry": {
+        "type": "object",
+        "description": "Effective platform model rates. Cache-read rates include the default discount when no explicit rate is stored.",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "input_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Effective rate in micro-USD per one million tokens. For example 50000 is USD 0.05 per million tokens."
+          },
+          "input_usd": {
+            "type": "string",
+            "description": "Formatted USD per one million tokens, for example $0.0500."
+          },
+          "output_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Effective rate in micro-USD per one million tokens. For example 50000 is USD 0.05 per million tokens."
+          },
+          "output_usd": {
+            "type": "string",
+            "description": "Formatted USD per one million tokens, for example $0.0500."
+          },
+          "cache_read_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Effective rate in micro-USD per one million tokens. For example 50000 is USD 0.05 per million tokens."
+          },
+          "cache_read_usd": {
+            "type": "string",
+            "description": "Formatted USD per one million tokens, for example $0.0500."
+          }
+        },
+        "required": [
+          "model",
+          "input_price",
+          "input_usd",
+          "output_price",
+          "output_usd",
+          "cache_read_price",
+          "cache_read_usd"
+        ]
+      },
+      "PricingResponse": {
+        "type": "object",
+        "description": "Platform price rows and fallback rates. Does not contain a source update timestamp.",
+        "properties": {
+          "prices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceEntry"
+            }
+          },
+          "fallback_input_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Effective rate in micro-USD per one million tokens. For example 50000 is USD 0.05 per million tokens."
+          },
+          "fallback_input_usd": {
+            "type": "string",
+            "description": "Formatted USD per one million tokens, for example $0.0500."
+          },
+          "fallback_output_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Effective rate in micro-USD per one million tokens. For example 50000 is USD 0.05 per million tokens."
+          },
+          "fallback_output_usd": {
+            "type": "string",
+            "description": "Formatted USD per one million tokens, for example $0.0500."
+          },
+          "fallback_cache_read_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Effective rate in micro-USD per one million tokens. For example 50000 is USD 0.05 per million tokens."
+          },
+          "fallback_cache_read_usd": {
+            "type": "string",
+            "description": "Formatted USD per one million tokens, for example $0.0500."
+          }
+        },
+        "required": [
+          "prices",
+          "fallback_input_price",
+          "fallback_input_usd",
+          "fallback_output_price",
+          "fallback_output_usd",
+          "fallback_cache_read_price",
+          "fallback_cache_read_usd"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "Human-readable failure explanation."
+              },
+              "type": {
+                "type": "string",
+                "description": "Error category."
+              },
+              "code": {
+                "type": "string",
+                "description": "Machine-readable code; usually equals type, but may differ."
+              },
+              "param": {
+                "type": "string",
+                "description": "Related request parameter, when provided."
+              }
+            },
+            "required": [
+              "message",
+              "type",
+              "code"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "TextChatMessage": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "Message role, such as system, user or assistant."
+          },
+          "content": {
+            "type": "string",
+            "description": "Plain text message content. This description does not cover multimodal or tool message shapes."
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ]
+      },
+      "TextChatRequest": {
+        "type": "object",
+        "description": "Reviewed ordinary text chat subset. Other supported request fields may pass through, but tools, multimodal content, sealed transport and advanced routing are not specified here. Consult the full platform contract for those features. This schema is not a closed-world server validator.",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Use an exact id from the authenticated model catalog. Model availability and supported parameters vary."
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/TextChatMessage"
+            }
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "Request text/event-stream output when true; otherwise receive JSON."
+          },
+          "max_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "description": "Output token budget. Omitted, null or zero keeps server defaulting behavior. Positive values request that budget; negative or malformed values reject with 400. Model context and runtime limits still apply."
+          },
+          "max_completion_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "description": "Output token budget. Omitted, null or zero keeps server defaulting behavior. Positive values request that budget; negative or malformed values reject with 400. Model context and runtime limits still apply. A positive max_tokens takes precedence; otherwise a positive max_completion_tokens is mirrored to max_tokens. Prefer sending only one output budget field."
+          },
+          "temperature": {
+            "type": "number",
+            "description": "Sampling temperature, subject to the selected model runtime."
+          },
+          "top_p": {
+            "type": "number",
+            "description": "Nucleus sampling probability, subject to the selected model runtime."
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "Stop text, subject to the selected model runtime."
+          },
+          "n": {
+            "type": "integer",
+            "enum": [
+              1
+            ],
+            "description": "Only one completion choice is supported."
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ]
+      },
+      "TokenUsage": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "prompt_tokens_details": {
+            "type": "object",
+            "properties": {
+              "cached_tokens": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "cached_tokens"
+            ]
+          },
+          "completion_tokens_details": {
+            "type": "object",
+            "properties": {
+              "reasoning_tokens": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "reasoning_tokens"
+            ]
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ]
+      },
+      "AssistantMessage": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "reasoning_content": {
+            "type": "string"
+          },
+          "reasoning_details": {
+            "description": "Optional provider reasoning details; format is outside this subset."
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "description": "Optional provider tool calls; advanced tool contracts are outside this text subset."
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ]
+      },
+      "ChatChoice": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "$ref": "#/components/schemas/AssistantMessage"
+          },
+          "finish_reason": {
+            "type": "string",
+            "description": "Completion reason reported by the provider, corrected to length when the authoritative token budget was exhausted."
+          }
+        },
+        "required": [
+          "index",
+          "message",
+          "finish_reason"
+        ]
+      },
+      "ChatCompletion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string",
+            "enum": [
+              "chat.completion"
+            ]
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in seconds."
+          },
+          "model": {
+            "type": "string",
+            "description": "Echoes the requested model identifier, including an alias."
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatChoice"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/TokenUsage"
+          },
+          "se_signature": {
+            "type": "string",
+            "description": "Optional provider signature; see the full verification contract."
+          },
+          "response_hash": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Optional consumer-safe provider and verification metadata. Full metadata shape is outside this subset."
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ]
+      }
+    }
+  },
+  "x-reviewed-source-files": [
+    "docs/reference/api-contracts.md",
+    "coordinator/api/routes.go",
+    "coordinator/api/types/types.go",
+    "coordinator/api/httpx/json.go",
+    "coordinator/api/catalog/models_endpoints.go",
+    "coordinator/api/billing/pricing.go",
+    "coordinator/api/modelprice/price.go",
+    "coordinator/api/inference/consumer.go",
+    "coordinator/api/inference/request/output_budget_validation.go",
+    "coordinator/api/inference/response/chat_response.go",
+    "coordinator/api/inference/response/sse_response.go",
+    "coordinator/api/inference/response/chat_metadata_stream.go",
+    "coordinator/internal/inference/relay/consumer_stream.go",
+    "coordinator/internal/inference/providerwire/output_bound.go"
+  ]
+}

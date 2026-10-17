@@ -36,11 +36,11 @@ enum SSDPrefixCacheFactory {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
-    /// The SSD tier's OWN root: `<cacheDirectory>/darkbloom/kv3/<modelKey>`
-    /// with `modelKey = SHA256(modelId)[:12]` — stable across weight
+    /// The SSD tier's OWN root: `<cacheDirectory>/<encryptedCacheNamespace>/kv3/<modelKey>`
+    /// (`CacheStorage.root`, one namespace per build environment) with `modelKey = SHA256(modelId)[:12]` — stable across weight
     /// re-downloads (the metadata weightHash binding invalidates stale
     /// files).
     ///

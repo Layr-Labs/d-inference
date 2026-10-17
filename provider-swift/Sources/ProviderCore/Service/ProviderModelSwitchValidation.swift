@@ -58,7 +58,7 @@ public enum ProviderModelSwitchValidation {
             try ModelRuntimeRequirements.requireEligible(modelID: id, available: capabilities)
             guard let path = resolveSnapshot(id),
                   var model = ModelScanner.parseModelInfo(snapshotDir: path, modelName: id) else {
-                throw ModelSelectionFailure("Model '\(id)' is not downloaded or cannot be scanned. Use darkbloom models download first.")
+                throw ModelSelectionFailure("Model '\(id)' is not downloaded or cannot be scanned. Use \(BuildEnvironment.current.cliName) models download first.")
             }
             guard EngineV2SupportedModels.isSupported(model: model), model.templateRenderOK != false else {
                 throw ModelSelectionFailure("Model '\(id)' has an unsupported engine or a failing chat template.")

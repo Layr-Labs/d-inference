@@ -28,6 +28,10 @@ extension ProviderLoop {
         startupPreloadTask?.cancel()
         startupPreloadGateWaiter?.cancel()
         cancelLoadWaiters()
+        guard await stopAppAttestWorkerAndWait() else {
+            writeDaemonState()
+            return false
+        }
 
         // Give an owned load time to unwind, but do not let an unresponsive
         // loader hold a termination signal indefinitely. The load-install

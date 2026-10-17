@@ -147,8 +147,15 @@ public enum ServingPerformanceProfiles {
     /// against its exact verified assistant/configuration; arbitrary process
     /// tuning still cannot borrow a reviewed default curve.
     static func runtimeOverridesAreAbsent(_ environment: [String: String]) -> Bool {
-        !environment.keys.contains {
-            $0.hasPrefix("DARKBLOOM_CBV2_") || $0.hasPrefix("DARKBLOOM_QWEN4_")
+        !environment.keys.contains { key in
+            if key == EngineV2KVQuantizationPolicy.environmentKey {
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(environment[key] ?? "")) != .native
+            }
+            if key == EngineV2KVQuantizationPolicy.checkpointEnvironmentKey {
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(
+                    environment[key] ?? "", purpose: .checkpoint)) == nil
+            }
+            return key.hasPrefix("DARKBLOOM_CBV2_") || key.hasPrefix("DARKBLOOM_QWEN4_")
         }
     }
 
@@ -165,12 +172,34 @@ public enum ServingPerformanceProfiles {
         return Int(min(max(1, configured), UInt64(ceiling)))
     }
 
+    /// Automatic width without a reviewed profile. Models on the native `auto`
+    /// paged allowlist start at the legacy ceiling on M5 Pro, Max and Ultra:
+    /// production paged decode on those chips keeps adding aggregate
+    /// throughput through B=8, whereas the default of 4 came from a contiguous
+    /// M4 curve that flattened at B=4. The B=8 activation reserve already
+    /// covers this width, Low Power or thermal pressure returns the bridge to
+    /// the configured width, and the coordinator's per-model quality cap still
+    /// bounds admission. Models paged only by explicit selection or live
+    /// packed quantization keep the configured width.
+    static func automaticConcurrency(
+        configured: Int, modelID: String?, backend: EngineV2KVBackendKind,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)?
+    ) -> Int {
+        guard backend == .paged,
+            EngineV2KVBackendPolicy.preferredBackend(selection: .auto, modelID: modelID) == .paged,
+            let chipIdentity, chipIdentity.family == .m5,
+            [ChipTier.pro, .max, .ultra].contains(chipIdentity.tier)
+        else { return configured }
+        return max(configured, legacyMaximumConcurrency)
+    }
+
     /// Configured defaults and exact operator overrides, shared by status and
     /// doctor. Loaded-slot telemetry owns the final runtime/architecture cap.
     public static func summary(backend: BackendSettings) -> String {
         let configured = backend.engineV2MaxConcurrent
         let prefix = !backend.engineV2MaxConcurrentIsExplicit
-            ? "Automatic default; unknown profiles keep default \(BackendSettings.defaultEngineV2MaxConcurrent)" :
+            ? "Automatic default; unknown profiles keep default \(BackendSettings.defaultEngineV2MaxConcurrent)"
+                + " (\(legacyMaximumConcurrency) for automatically paged models on M5 Pro, Max and Ultra)" :
             "Default operator cap \(configured); unknown profiles keep cap \(concurrency(configured: configured))"
         let overrides = backend.engineV2MaxConcurrentByModel.sorted { $0.key < $1.key }.map { entry in
             let fallback = concurrency(configured: entry.value)

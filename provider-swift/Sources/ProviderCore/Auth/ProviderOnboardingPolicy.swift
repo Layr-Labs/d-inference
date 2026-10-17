@@ -11,9 +11,9 @@ public enum ProviderOnboardingPolicy {
 
     public static let appAttestGuidance =
         "macOS 27 or later uses App Attest without new Darkbloom MDM enrollment. "
-        + "Run `darkbloom login`, then `darkbloom start`, and check `darkbloom status`. "
+        + "Run `\(BuildEnvironment.current.cliName) login`, then `\(BuildEnvironment.current.cliName) start`, and check `\(BuildEnvironment.current.cliName) status`. "
         + "Serving starts only after the coordinator approves this connection. "
-        + "If approval is pending or unavailable, run `darkbloom doctor`; no MDM profile is needed for this setup path. "
+        + "If approval is pending or unavailable, run `\(BuildEnvironment.current.cliName) doctor`; no MDM profile is needed for this setup path. "
         + "Keep existing management profiles installed. To remove an existing Darkbloom profile, "
-        + "run `darkbloom unenroll` and choose App Attest once removal is approved."
+        + "run `\(BuildEnvironment.current.cliName) unenroll` and choose App Attest once removal is approved."
 }

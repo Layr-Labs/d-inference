@@ -46,6 +46,9 @@ public actor EngineV2BenchmarkSession {
     public nonisolated let rawEngine: EngineV2
     public nonisolated let effectiveMaxConcurrentRequests: Int
     public nonisolated let backend: String
+    public nonisolated let kvQuantization: EngineV2KVQuantizationSelection
+    public nonisolated let kvCheckpointQuantization: EngineV2KVQuantizationSelection
+    public nonisolated let checkpointBackendLayout: String?
     public nonisolated let backendFallback: String?
     private let bundle: ProviderEngineBundle
     private let budget: GlobalKVCacheBudget
@@ -79,6 +82,9 @@ public actor EngineV2BenchmarkSession {
         self.postBuildHeadroomBytes = postBuildHeadroomBytes
         self.rawEngine = engine
         self.backend = backend
+        self.kvQuantization = bundle.bridge.kvQuantization
+        self.kvCheckpointQuantization = bundle.bridge.kvCheckpointQuantization
+        self.checkpointBackendLayout = bundle.bridge.ssdHybridCheckpointStore?.config.backendLayout
         self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
         self.backendFallback = fallback
         self.memoryEnabled = memoryEnabled

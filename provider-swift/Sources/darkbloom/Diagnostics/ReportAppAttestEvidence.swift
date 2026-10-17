@@ -34,7 +34,7 @@ enum ReportAppAttestEvidence {
         guard getuid() == 0, let user = environment["SUDO_USER"], !user.isEmpty, user != "root",
               let entry = getpwnam(user), let dir = entry.pointee.pw_dir else { return nil }
         let home = URL(fileURLWithPath: String(cString: dir))
-        let darkbloom = home.appendingPathComponent(".darkbloom")
+        let darkbloom = BuildEnvironment.current.installDirectory(home: home)
         if environment["DARKBLOOM_STATE_FILE"] == nil {
             setenv("DARKBLOOM_STATE_FILE", darkbloom.appendingPathComponent("daemon-state.json").path, 1)
         }

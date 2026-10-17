@@ -121,7 +121,7 @@ struct SignedReleaseIdentityTests {
             expectedVersion: "0.8.11",
             dependencies: dependencies)
 
-        #expect(lock.withLock { calls } == ["Darkbloom.app:true"])
+        #expect(lock.withLock { calls } == ["\(BuildEnvironment.current.appBundleName):true"])
     }
 
     @Test("debug configuration cannot issue signed evidence")

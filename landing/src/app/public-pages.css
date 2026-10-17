@@ -1,0 +1,14 @@
+.public-page { min-height: 100vh; background: #0b41ff; color: white; }
+.public-document { width: min(100% - 64px, 1080px); margin: 0 auto; padding: 160px 0 100px; line-height: 1.65; }
+.public-document h1 { font-size: clamp(40px, 7vw, 80px); line-height: 1.05; margin: 0 0 32px; letter-spacing: -0.04em; }
+.public-document h2 { font-size: clamp(24px, 3vw, 36px); line-height: 1.2; margin: 48px 0 20px; }
+.public-document p { max-width: 80ch; margin: 16px 0; }
+.public-document a { text-decoration: underline; text-underline-offset: 4px; }
+.public-document pre { overflow-x: auto; padding: 24px; background: rgb(0 0 0 / 18%); border-radius: 8px; font-size: 14px; }
+.public-document code { overflow-wrap: anywhere; }
+.public-table-scroll { overflow-x: auto; }
+.public-document table { width: 100%; border-collapse: collapse; margin: 24px 0; text-align: left; }
+.public-document th, .public-document td { border-bottom: 1px solid rgb(255 255 255 / 30%); padding: 16px 20px 16px 0; vertical-align: top; }
+.public-document th { white-space: nowrap; }
+.public-document td:first-child { overflow-wrap: anywhere; min-width: 140px; }
+@media (max-width: 600px) { .public-document { width: calc(100% - 40px); padding-top: 130px; } .public-document pre { padding: 16px; } }

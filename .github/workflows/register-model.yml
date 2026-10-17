@@ -6,6 +6,11 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      publish_revision_only:
+        description: Publish and promote an uploaded revision without changing model metadata or prices
+        required: false
+        default: false
+        type: boolean
       model_id:
         description: Model ID, for example mlx-community/foo
         required: true
@@ -13,8 +18,8 @@ on:
         description: Manifest version
         required: true
       display_name:
-        description: Human-readable display name
-        required: true
+        description: Human-readable display name (required for registration)
+        required: false
       family:
         description: Model family
         required: false
@@ -24,8 +29,8 @@ on:
         required: false
         default: ''
       quantization:
-        description: Quantization
-        required: true
+        description: Quantization (required for registration)
+        required: false
       capabilities_csv:
         description: Comma-separated capabilities (OpenRouter features, e.g. tools,reasoning,json_mode). Leave empty and opt in per model to avoid overstating capabilities.
         required: false
@@ -35,14 +40,14 @@ on:
         required: false
         default: ""
       max_context_length:
-        description: Maximum context length
-        required: true
+        description: Maximum context length (required for registration)
+        required: false
       max_output_length:
-        description: Maximum output length
-        required: true
+        description: Maximum output length (required for registration)
+        required: false
       min_ram_gb:
-        description: Minimum RAM in GB
-        required: true
+        description: Minimum RAM in GB (required for registration)
+        required: false
       description:
         description: Model description
         required: false
@@ -52,7 +57,7 @@ on:
         required: false
         default: '{}'
       hugging_face_artifact_json:
-        description: Optional exact public HF artifact JSON (repo_id, full commit revision, optional path_prefix); null keeps R2 only.
+        description: Optional pinned public HF artifact JSON. Null clears it on registration; revision-only uses R2 for new versions and preserves the source on retries.
         required: false
         default: 'null'
       metadata_json:
@@ -60,19 +65,19 @@ on:
         required: false
         default: '{}'
       input_price:
-        description: Input price in micro-USD per 1M tokens (e.g. 15000 = $0.015)
-        required: true
+        description: Input price in micro-USD per 1M tokens (required for registration, e.g. 15000 = $0.015)
+        required: false
         type: number
       output_price:
-        description: Output price in micro-USD per 1M tokens (e.g. 70000 = $0.070)
-        required: true
+        description: Output price in micro-USD per 1M tokens (required for registration, e.g. 70000 = $0.070)
+        required: false
         type: number
       cache_read_price:
         description: Optional price for prompt tokens served from a provider's prefix cache (OpenRouter input_cache_read), micro-USD per 1M tokens, 0..input_price. Empty = half the input price, and clears any rate previously set for this model.
         required: false
         default: ''
       promote:
-        description: Promote this version after registration
+        description: Promote this version (must be true in revision-only mode)
         required: false
         default: false
         type: boolean
@@ -86,6 +91,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Build registration payload
+        if: ${{ !inputs.publish_revision_only }}
         env:
           MODEL_ID: ${{ inputs.model_id }}
           VERSION: ${{ inputs.version }}
@@ -107,6 +113,12 @@ jobs:
           OUTPUT_PRICE: ${{ inputs.output_price }}
           CACHE_READ_PRICE: ${{ inputs.cache_read_price }}
         run: |
+          for registration_field in DISPLAY_NAME QUANTIZATION MAX_CONTEXT_LENGTH MAX_OUTPUT_LENGTH MIN_RAM_GB INPUT_PRICE OUTPUT_PRICE; do
+            if [ -z "${!registration_field}" ]; then
+              echo "$registration_field is required for registration" >&2
+              exit 1
+            fi
+          done
           jq -n \
             --arg model_id "$MODEL_ID" \
             --arg version "$VERSION" \
@@ -142,6 +154,9 @@ jobs:
                     end
                 end;
 
+            if ([$max_context_length, $max_output_length, $min_ram_gb, $input_price, $output_price]
+                | all(type == "number" and . > 0 and . == floor)) then .
+            else error("registration limits, RAM and prices must be positive integers") end |
             {
               model_id: $model_id,
               version: $version,
@@ -166,14 +181,37 @@ jobs:
                | if $crp == "" then {} else {cache_read_price: ($crp | tonumber)} end)' > payload.json
           jq . payload.json
 
-      - name: Register model with coordinator
+      - name: Build revision-only payload
+        if: ${{ inputs.publish_revision_only }}
+        env:
+          VERSION: ${{ inputs.version }}
+          PROMOTE: ${{ inputs.promote }}
+          HUGGING_FACE_ARTIFACT_JSON: ${{ inputs.hugging_face_artifact_json }}
+        run: |
+          if [ "${PROMOTE:-false}" != "true" ]; then
+            echo "Revision-only publication promotes the revision; set promote=true to confirm" >&2
+            exit 1
+          fi
+          jq -n --arg version "$VERSION" \
+            --argjson hugging_face_artifact "${HUGGING_FACE_ARTIFACT_JSON:-null}" \
+            '{version: $version, hugging_face_artifact: $hugging_face_artifact}' > payload.json
+
+      - name: Publish model with coordinator
         env:
           COORDINATOR_URL: ${{ inputs.coordinator_url }}
           MODEL_REGISTRY_PUBLISHING_KEY: ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}
+          MODEL_ID: ${{ inputs.model_id }}
+          PUBLISH_REVISION_ONLY: ${{ inputs.publish_revision_only }}
         run: |
           test -n "$MODEL_REGISTRY_PUBLISHING_KEY"
+          if [ "$PUBLISH_REVISION_ONLY" = "true" ]; then
+            MODEL_PATH=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["MODEL_ID"], safe=""))')
+            ENDPOINT="/v1/admin/models/${MODEL_PATH}/publish-revision"
+          else
+            ENDPOINT="/v1/admin/models/register"
+          fi
           curl -fsS \
             -H "Authorization: Bearer ${MODEL_REGISTRY_PUBLISHING_KEY}" \
             -H "Content-Type: application/json" \
             --data @payload.json \
-            "${COORDINATOR_URL%/}/v1/admin/models/register"
+            "${COORDINATOR_URL%/}${ENDPOINT}"

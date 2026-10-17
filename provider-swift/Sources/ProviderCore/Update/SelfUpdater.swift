@@ -488,8 +488,11 @@ public struct SelfUpdater: Sendable {
                 arguments: ["xzf", downloadedFile.path, "-C", stagingRoot.path],
                 timeout: Self.artifactVerificationTimeout)
 
+            let identity = BuildEnvironment.current
             // Use the flat bin/ copies for hash verification (release hashes
-            // are computed from the flat verifier copies).
+            // are computed from the flat verifier copies). Their names are the
+            // coordinator's release-artifact contract and do not change for a
+            // dev build, whose app executable is darkbloom-dev.
             let flatDarkbloom = try requiredBundleFile(
                 names: ["bin/darkbloom"],
                 root: stagingRoot
@@ -510,38 +513,38 @@ public struct SelfUpdater: Sendable {
             // bin/ copies carry a bundle-contextual code signature that
             // fails codesign --verify when run standalone, causing macOS
             // to SIGKILL the process — they are verifier inputs only.
-            let extractedApp = stagingRoot.appendingPathComponent("Darkbloom.app")
+            let extractedApp = stagingRoot.appendingPathComponent(identity.appBundleName)
             guard fm.fileExists(atPath: extractedApp.path) else {
                 throw UpdateError.replaceFailed(
-                    "release bundle has no Darkbloom.app; flat-only bundles are no longer installable")
+                    "release bundle has no \(identity.appBundleName); flat-only bundles are no longer installable")
             }
             if let signaturePolicy = verification.codeSignaturePolicy {
                 let appDarkbloom = extractedApp
-                    .appendingPathComponent("Contents/MacOS/darkbloom")
+                    .appendingPathComponent("Contents/MacOS/\(identity.cliName)")
                 let appMetallib = extractedApp
                     .appendingPathComponent("Contents/MacOS/mlx.metallib")
                 if let binaryHash = release.binaryHash {
                     try verifyHash(
                         file: appDarkbloom,
                         expected: binaryHash,
-                        label: "Darkbloom.app darkbloom"
+                        label: "\(identity.appBundleName) \(identity.cliName)"
                     )
                 }
                 if let metallibHash = release.metallibHash {
                     try verifyHash(
                         file: appMetallib,
                         expected: metallibHash,
-                        label: "Darkbloom.app mlx.metallib"
+                        label: "\(identity.appBundleName) mlx.metallib"
                     )
                 }
                 try verifyCodeSignature(
                     file: appDarkbloom,
-                    label: "darkbloom",
+                    label: identity.cliName,
                     policy: signaturePolicy
                 )
                 try verifyCodeSignature(
                     file: extractedApp,
-                    label: "Darkbloom.app",
+                    label: identity.appBundleName,
                     deep: true,
                     policy: signaturePolicy
                 )
@@ -597,13 +600,13 @@ public struct SelfUpdater: Sendable {
                 let app = staged.extractedApp
                 try verifyCodeSignature(
                     file: app,
-                    label: "Darkbloom.app",
+                    label: BuildEnvironment.current.appBundleName,
                     deep: true
                 )
                 try FanHelperCapabilityVerifier.verify(
                     app: app,
                     executable: app.appendingPathComponent(
-                        "Contents/MacOS/darkbloom"
+                        "Contents/MacOS/\(BuildEnvironment.current.cliName)"
                     ),
                     signaturePolicy: .darkbloomProduction
                 )

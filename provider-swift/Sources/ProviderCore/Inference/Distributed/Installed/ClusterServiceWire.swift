@@ -56,6 +56,10 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// This Mac's record says the cluster serves locally only (`ClusterServingScope`); the leader sends the start again
     /// to a member whose answer differs from its own. Nil from an older build.
     public var localOnly: Bool? = nil
+    /// In the answer to a `status` command: the ports of `ClusterLocalServing.servingPorts` free on this Mac (those
+    /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
+    /// older build.
+    public var freePorts: [Int]? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String

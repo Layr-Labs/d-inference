@@ -82,6 +82,27 @@ public enum ClusterLocalServing {
         (preferred...(preferred + span)).first(where: isFree) ?? preferred
     }
 
+    /// The ports the cluster's API may take, on either Mac.
+    public static let servingPorts = 8000...8020
+
+    /// The ports of `servingPorts` no other program listens on (what a Mac's status reports as `freePorts`).
+    public static func freePorts(isFree: (Int) -> Bool = portIsFree) -> [Int] {
+        servingPorts.filter(isFree)
+    }
+
+    /// One port for the API on both Macs, so its address does not change with which Mac runs rank 0: `preferred` (the
+    /// port used last) while it is free on both, else the lowest free on both. When the other Mac does not say
+    /// (`peerFree` nil, an older build or no answer) or no port is free on both, this Mac's own choice: `preferred`
+    /// when free here, else the lowest free here, else 8000 (the start then says the port is taken).
+    public static func sharedPort(localFree: [Int], peerFree: [Int]?, preferred: Int? = nil) -> Int {
+        let both = peerFree.map { peer in localFree.filter(peer.contains) } ?? []
+        for candidates in [both, localFree] {
+            if let preferred, candidates.contains(preferred) { return preferred }
+            if let lowest = candidates.min() { return lowest }
+        }
+        return servingPorts.lowerBound
+    }
+
     /// No other program listens on `port` (IPv4, every address or loopback): a test bind as a server makes it, with
     /// `SO_REUSEADDR` so this Mac's own closed connections on the port do not count.
     public static func portIsFree(_ port: Int) -> Bool {

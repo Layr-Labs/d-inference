@@ -107,9 +107,10 @@ a marginal KV token charge
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFunnel.swift`,
 `GLM5NextLoadFunnel.kvBytesPerToken`).
 
-There is no qualified GLM5Next load profile or hardware tier. Its initial
-[native integration](../design/glm53-flash-native.md) retains the ordinary
-full-artifact load allowance and adds native construction/tokenizer transients
+GLM-5.3-Flash loads only on Apple M5 Max or M5 Ultra with at least 256 GiB
+(`GLM5NextHardwareRequirement`, runtime capability `glm5_next_v1`). Its
+[native integration](../design/glm53-flash-native.md) prices the raw source
+bytes plus native construction/tokenizer transients
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
 `GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
 unchanged. The activated expert count is not a resident-weight estimate.

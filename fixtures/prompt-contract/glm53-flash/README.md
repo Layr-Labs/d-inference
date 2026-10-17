@@ -32,9 +32,11 @@ reasoning; it does not disable newly generated reasoning or the prompt's open
 `<think>` suffix. Binary thinking controls are not aliases for this operation.
 
 Provider tests exercise the real shared pipeline and local chat decoder against
-all seven renders. The Rust-sidecar opt-in test accepts
-`GLM53_PROMPT_FIXTURE_DIR` pointing here and exercises its actual GLM normalizer
-and renderer against the same corpus. These source tests still require execution
+all seven renders. The platform's Rust sidecar vendors byte-identical copies of
+both templates, `goldens.json` and `LICENSE` under
+`coordinator/promptsidecar/tests/fixtures/glm53-flash/` and always exercises its
+actual GLM normalizer and renderer against them; update both copies together.
+These source tests still require execution
 in the parent-controlled build lane; the recorded Jinja2 reference pass alone is
 not Swift/Rust parity evidence.
 

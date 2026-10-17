@@ -237,7 +237,7 @@ connection, first.
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
-| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
 | `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |
@@ -441,7 +441,7 @@ routing on them.
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
-| `kv_bytes_per_token` | `int64` | `Int64` | opt | |
+| `kv_bytes_per_token` | `int64` | `Int64` | opt | Capacity price per reserved token (prompt + max output), excluding fixed per-request bytes; it divides `active_token_budget_max`. A GLM slot reports target KV plus native step scratch and embedded-MTP state per token; its capacity also excludes one step's setup |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
 | `kv_backend` | `*string` | `String?` | ptr | resolved KV kind `"paged"` or `"contiguous"`. **Nil = unknown** (pre-0.8.0 provider), never read as `contiguous`; a non-nil `""` still marshals as `"kv_backend":""` |
 | `kv_backend_fallback_reason` | `*string` | `String?` | ptr | why the slot is not on the requested backend: `kill_switch`, `"kernel_preflight: …"`, `"physical_capacity: …"`, `"ineligible: …"`, `"pool_construction_capacity: …"`. **Absent = did not degrade** (the opposite rule to `kv_backend`). Untrusted free text; `registry.KVBackendFallbackTag` ([coordinator/registry/kv_backend.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/kv_backend.go)) folds it to a bounded class before any metric tag |
@@ -1099,12 +1099,12 @@ identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
 
-#### Unregistered GLM native prompt contract
+#### GLM native prompt contract
 
-The local GLM candidate adds no WebSocket message or trusted caller field.
-`GLM5NextPromptPolicy` selects its text prompt rules only from the loaded model's
-`model_type`; caller model names cannot authorize the raw-schema path. The
-candidate remains unregistered and does not establish deployed platform support.
+GLM-5.3-Flash (catalog `glm-5.3-flash` and the local qualification download)
+adds no WebSocket message or trusted caller field. `GLM5NextPromptPolicy`
+selects its text prompt rules only from the loaded model's `model_type`; caller
+model names cannot authorize the raw-schema path.
 
 | Request-body control | Native text contract | Provider source |
 |---|---|---|
@@ -1119,8 +1119,8 @@ loaded-model check; capture alone grants no capability
 fixtures under `fixtures/prompt-contract/glm53-flash/` keep the official template
 as the golden authority and separately identify the `EigenLabs` artifact template
 recognized by `GLM5NextPromptPolicy.templateSHA256`; a LOAD with any other
-template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not repair the
-differing raw Vontra Q4 template or prove full HTTP/sidecar parity.
+template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not
+prove full HTTP/sidecar parity.
 See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`

@@ -16,6 +16,7 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
     private weak var bridge: EngineV2Bridge?
     private var closing = false
     private var retired = false
+    private var retainedFault = false
     #if DEBUG
         private var retirementRefusal: (@Sendable () throws -> Void)?
         func installRetirementRefusalForTesting(_ refusal: @escaping @Sendable () throws -> Void) {
@@ -82,11 +83,11 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
         }
     }
 
-    /// One close attempt per owner: a retained (unproven) close is never
-    /// re-driven by a later eviction, unload or shutdown.
+    /// A close may be re-driven on the same owner while its host consumers
+    /// drain, but a retained (unproven) close never is.
     func beginClosing(bridge: EngineV2Bridge, engine: EngineV2) throws {
         try lock.withLock {
-            guard !closing, !retired else { throw GLM5NextManagedLoadError.lifecycle }
+            guard !retainedFault, !retired else { throw GLM5NextManagedLoadError.lifecycle }
             guard self.bridge === bridge, binding?.engine === engine,
                 engine.nativeShutdownEngineID == engineID,
                 engine.nativeShutdownExecutionContractID == contractID
@@ -112,7 +113,10 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
     }
 
     func retainFailure() {
-        lock.withLock { closing = true }
+        lock.withLock {
+            closing = true
+            retainedFault = true
+        }
         GLM5NextLoadFaultState.retain([self])
     }
 
@@ -191,6 +195,24 @@ enum GLM5NextRetirement {
         let assistant = Int(clamping: bundle.assistantBytes)
         GLM5NextLoadFaultState.retain(owners, charging: bundle,
             residentBytes: GLM5NextLoadFaultState.residentBytes(claim, assistant))
+    }
+
+    /// After a quiescent SDK receipt, host pre-submit consumers of a closed
+    /// bridge are already cancelled and unwind on their own; their pending
+    /// result is retried, never treated as an unproven retirement. Any other
+    /// error (incomplete proof, identity mismatch) escapes unchanged.
+    static func drainingHostConsumers<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        _ attempt: () async throws -> T
+    ) async throws -> T {
+        var delay = Duration.milliseconds(5)
+        while true {
+            do { return try await attempt() } catch MiMoV26NativeBridgeShutdownError.pendingConsumers {
+                try await sleep(delay)
+                delay = min(delay * 2, .milliseconds(250))
+            }
+        }
     }
 
     static func beforeRelease(_ bridge: EngineV2Bridge) async throws {

@@ -197,7 +197,10 @@ final class GLM5NextManagedFixture {
         try .inspect(directory: directory, catalog: catalog, manifest: manifest)
     }
     func plan(replacingTemplate template: String) throws -> GLM5NextArtifactPlan {
-        try Data(template.utf8).write(to: directory.appendingPathComponent("chat_template.jinja"))
+        try plan(replacing: "chat_template.jinja", with: Data(template.utf8))
+    }
+    func plan(replacing name: String, with data: Data) throws -> GLM5NextArtifactPlan {
+        try data.write(to: directory.appendingPathComponent(name))
         var aggregate = SHA256()
         let files = try manifest.files.sorted(by: { $0.path < $1.path }).map { entry in
             let data = try Data(contentsOf: directory.appendingPathComponent(entry.path))
@@ -519,6 +522,29 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         #expect(await budget.finishPendingLoad(permit))
         await #expect(throws: GLM5NextManagedLoadError.self) {
             try await GLM5NextManagedLoad.adopting(plan: plan, budget: budget, permit: permit)
+        }
+    }
+
+    /// The published NVFP4 `config.json` is ~10 MB; the plan reads it up to the
+    /// native loader's 32 MiB bound and refuses anything larger.
+    @Test func planReadsNVFP4SizedConfigurationUpToTheNativeLoaderBound() throws {
+        let fixture = try GLM5NextManagedFixture()
+        let original = try Data(contentsOf: fixture.directory.appendingPathComponent("config.json"))
+        var config = try #require(try JSONSerialization.jsonObject(with: original) as? [String: Any])
+        // The strict decoder refuses unknown keys; this optional string is free-form.
+        func padded(toBytes target: Int) throws -> Data {
+            config["transformers_version"] = ""
+            let overhead = try JSONSerialization.data(withJSONObject: config, options: .sortedKeys).count
+            config["transformers_version"] = String(repeating: "x", count: target - overhead)
+            let data = try JSONSerialization.data(withJSONObject: config, options: .sortedKeys)
+            #expect(data.count == target)
+            return data
+        }
+        let limit = GLM5NextDiscoveryLoadFootprint.maximumConfigurationBytes
+        _ = try fixture.plan(replacing: "config.json", with: padded(toBytes: 10_023_646))
+        _ = try fixture.plan(replacing: "config.json", with: padded(toBytes: limit))
+        #expect(throws: GLM5NextManagedLoadError.self) {
+            try fixture.plan(replacing: "config.json", with: padded(toBytes: limit + 1))
         }
     }
 

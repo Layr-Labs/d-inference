@@ -1,5 +1,4 @@
 import Foundation
-import MLXLMCommon
 
 extension ProviderLoop {
     /// Coordinator-mode GLM preflight, before any reservation: hardware, the
@@ -7,9 +6,11 @@ extension ProviderLoop {
     /// identity and the scanner LOAD quotation.
     /// Catalog reads are bounded cache refreshes; a stale entry is refreshed
     /// once, never trusted.
-    func coordinatorGLM5NextPlan(modelId: String, modelInfo: ModelInfo, directory: URL) async throws
-        -> GLM5NextServingPlan
-    {
+    /// `restoringVerifiedSnapshot` is set only by a revision swap's rollback,
+    /// which reloads the snapshot whose live hash the provider already verified.
+    func coordinatorGLM5NextPlan(
+        modelId: String, modelInfo: ModelInfo, directory: URL, restoringVerifiedSnapshot: Bool = false
+    ) async throws -> GLM5NextServingPlan {
         if let refusal = GLM5NextHardwareRequirement.refusal(hardware: loopConfig.hardware) {
             throw GLM5NextManagedLoadError.metadata(refusal)
         }
@@ -27,20 +28,37 @@ extension ProviderLoop {
                     available: loopConfig.runtimeCapabilities)
             }
             return try GLM5NextCoordinatorServing.resolvePlan(
-                modelID: modelId, directory: directory, catalog: catalog)
+                modelID: modelId, directory: directory, catalog: catalog,
+                previouslyVerifiedAggregate: restoringVerifiedSnapshot ? liveModelHashes[modelId] : nil)
         }
-        let serving: GLM5NextServingPlan
-        do {
-            serving = try await resolve(forceRefresh: false)
-        } catch GLM5NextManagedLoadError.identityMismatch {
-            serving = try await resolve(forceRefresh: true)
-        } catch GLM5NextManagedLoadError.metadata {
-            serving = try await resolve(forceRefresh: true)
-        }
+        let serving = try await Self.resolvingWithOneCatalogRefresh(resolve(forceRefresh:))
         guard ModelScanner.glm5NextLoadQuotationIsCurrent(
             modelInfo, directory: serving.plan.weights.directory)
         else { throw GLM5NextManagedLoadError.admission }
         return serving
+    }
+
+    /// A stale or missing cached catalog entry is refreshed once; any other
+    /// refusal (hardware, capability, quotation) is final.
+    static func resolvingWithOneCatalogRefresh<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ resolve: (_ forceRefresh: Bool) async throws -> T
+    ) async throws -> T {
+        do {
+            return try await resolve(false)
+        } catch GLM5NextManagedLoadError.identityMismatch {
+            return try await resolve(true)
+        } catch GLM5NextManagedLoadError.metadata {
+            return try await resolve(true)
+        }
+    }
+
+    /// The bracketing load hashes must equal the manifest aggregate the plan
+    /// was resolved against.
+    static func requireGLM5NextLoadedArtifact(hash: String?, plan: GLM5NextArtifactPlan) throws {
+        guard hash == plan.weights.manifest.aggregateSHA256 else {
+            throw GLM5NextManagedLoadError.identityMismatch
+        }
     }
 
     /// The loaded tower must store exactly the configuration-derived rows the
@@ -54,12 +72,12 @@ extension ProviderLoop {
         else { throw GLM5NextManagedLoadError.identityMismatch }
     }
 
-    static func glm5NextFullContextRefusal(bundle: ProviderEngineBundle, context: Int) async -> String? {
-        let bridge = bundle.bridge
-        return GLM5NextCoordinatorServing.fullContextRefusal(
-            poolBytes: await bridge.kvBackendPoolBytes(),
-            watermarkFraction: bridge.admissionWatermarkFraction ?? AdmissionV2.Config().watermarkFraction,
-            stepSetupBytes: bundle.glm5NextStepSetupBytes, fixedRequestBytes: bridge.fixedRequestBytes,
+    /// The same admissible capacity (minus one step's setup) that request
+    /// admission uses must hold one request at the advertised bound.
+    static func glm5NextFullContextRefusal(bridge: EngineV2Bridge, context: Int) async -> String? {
+        GLM5NextCoordinatorServing.fullContextRefusal(
+            admissibleBytes: await bridge.admissionCapacityBytes(),
+            fixedRequestBytes: bridge.fixedRequestBytes,
             bytesPerToken: bridge.kvBytesPerToken, context: context)
     }
 }

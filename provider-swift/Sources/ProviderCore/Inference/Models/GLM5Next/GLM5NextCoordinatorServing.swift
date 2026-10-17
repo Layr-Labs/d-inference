@@ -38,22 +38,40 @@ enum GLM5NextCoordinatorServing {
     /// the revision receipt must carry both and its file digests must hash to
     /// that aggregate (`GLM5NextManifestSnapshot`); the admitted load then hashes
     /// every file against the same manifest. The template stays pinned.
-    static func resolvePlan(modelID: String, directory: URL, catalog: CatalogModel?) throws
-        -> GLM5NextServingPlan
-    {
+    ///
+    /// A revision rollback restores a snapshot the catalog no longer names.
+    /// `previouslyVerifiedAggregate` is the provider's own live hash for that
+    /// snapshot, already verified when it served; a receipt with exactly that
+    /// aggregate is pinned by it instead of the catalog version.
+    static func resolvePlan(
+        modelID: String, directory: URL, catalog: CatalogModel?,
+        previouslyVerifiedAggregate: String? = nil
+    ) throws -> GLM5NextServingPlan {
         guard modelID == catalogModelID else { throw GLM5NextManagedLoadError.identityMismatch }
-        guard let catalog, catalog.id == modelID, let version = catalog.version,
-            let aggregate = catalog.aggregateSHA256
+        guard let catalog, catalog.id == modelID, catalog.version != nil,
+            catalog.aggregateSHA256 != nil
         else {
             throw GLM5NextManagedLoadError.metadata(
                 "the coordinator catalog entry for \(modelID) is unavailable")
         }
         guard let manifest = ModelDownloader.revisionReceipt(at: directory),
-            manifest.modelID == modelID, manifest.version == version,
-            manifest.aggregateSHA256 == aggregate
+            manifest.modelID == modelID
         else { throw GLM5NextManagedLoadError.identityMismatch }
+        let identity: CatalogModel
+        if manifest.version == catalog.version, manifest.aggregateSHA256 == catalog.aggregateSHA256 {
+            identity = catalog
+        } else if let previouslyVerifiedAggregate,
+            previouslyVerifiedAggregate == manifest.aggregateSHA256
+        {
+            identity = CatalogModel(
+                id: modelID, s3Name: manifest.r2Prefix, displayName: catalog.displayName,
+                sizeGb: catalog.sizeGb, version: manifest.version, r2Prefix: manifest.r2Prefix,
+                aggregateSHA256: manifest.aggregateSHA256, maxContextLength: catalog.maxContextLength)
+        } else {
+            throw GLM5NextManagedLoadError.identityMismatch
+        }
         let context = try servedContextLength(catalogMaximum: catalog.maxContextLength)
-        let plan = try GLM5NextArtifactPlan.inspect(directory: directory, catalog: catalog, manifest: manifest)
+        let plan = try GLM5NextArtifactPlan.inspect(directory: directory, catalog: identity, manifest: manifest)
         try GLM5NextLocalQualification.requireShippedTemplate(plan)
         return .init(plan: plan, maximumContextLength: context)
     }
@@ -72,8 +90,8 @@ enum GLM5NextCoordinatorServing {
 
     /// Target DSA storage per token: every sparse layer keeps one FP32 row of
     /// the kv_lora_rank latent (no rotary part) plus index keys, pool gates and
-    /// a validity column. KDA layers carry fixed recurrent state instead, and
-    /// the embedded MTP layer's history is a fixed bound-priced request charge.
+    /// a validity column. KDA layers carry fixed recurrent state instead; the
+    /// embedded MTP layer is charged per reserved token by the engine.
     static func targetKVBytesPerToken(_ text: GLM5NextTextConfiguration) -> Int {
         let sparse = text.layerTypes.filter { $0 == .deepseekSparseAttention }.count
         return sparse * (text.kvLoraRank + 2 * text.indexHeadDim + 1) * 4
@@ -88,23 +106,18 @@ enum GLM5NextCoordinatorServing {
     }
 
     /// The advertised bound must be serveable alone, or the coordinator would
-    /// route requests this slot can never admit: one step's setup, the request's
-    /// fixed bytes and its per-token price at the bound within the admissible
-    /// capacity (pool minus the admission watermark).
+    /// route requests this slot can never admit. `admissibleBytes` is the
+    /// slot's request capacity after the admission watermark and one step's setup.
     static func fullContextRefusal(
-        poolBytes: UInt64, watermarkFraction: Double, stepSetupBytes: Int,
-        fixedRequestBytes: Int, bytesPerToken: Int, context: Int
+        admissibleBytes: Int, fixedRequestBytes: Int, bytesPerToken: Int, context: Int
     ) -> String? {
-        let pool = Int(clamping: poolBytes)
-        let admissible = pool - Int(Double(pool) * max(0, watermarkFraction))
         let (variable, variableOverflow) = bytesPerToken.multipliedReportingOverflow(by: context)
-        let (charges, chargesOverflow) = variable.addingReportingOverflow(fixedRequestBytes)
-        let (needed, neededOverflow) = charges.addingReportingOverflow(stepSetupBytes)
-        guard variableOverflow || chargesOverflow || neededOverflow || fixedRequestBytes < 0
-            || stepSetupBytes < 0 || bytesPerToken <= 0 || needed > admissible
+        let (needed, neededOverflow) = variable.addingReportingOverflow(fixedRequestBytes)
+        guard variableOverflow || neededOverflow || fixedRequestBytes < 0 || bytesPerToken <= 0
+            || needed > admissibleBytes
         else { return nil }
-        return "GLM admissible KV capacity of \(admissible) bytes cannot hold one \(context)-token "
-            + "request (step setup \(stepSetupBytes) + fixed \(fixedRequestBytes) bytes + "
+        return "GLM admissible capacity of \(admissibleBytes) bytes after one step's setup cannot "
+            + "hold one \(context)-token request (fixed \(fixedRequestBytes) bytes + "
             + "\(bytesPerToken) bytes/token)"
     }
 

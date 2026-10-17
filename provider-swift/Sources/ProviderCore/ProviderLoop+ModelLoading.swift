@@ -274,12 +274,18 @@ extension ProviderLoop {
         if GLM5NextPromptPolicy.applies(modelType: modelInfo.modelType) {
             do {
                 let serving = try await coordinatorGLM5NextPlan(
-                    modelId: modelId, modelInfo: modelInfo, directory: modelPath)
+                    modelId: modelId, modelInfo: modelInfo, directory: modelPath,
+                    restoringVerifiedSnapshot: revisionUpdate && revisionDirectory == nil
+                        && modelRevisionActivationID == modelId)
                 let preparation = try GLM5NextLoadFunnel.preparation(plan: serving.plan,
                     mode: loopConfig.config.backend.mtpMode,
                     externalPath: loopConfig.config.backend.mtpDrafterPath)
                 try GLM5NextLoadFunnel.requireNativeMTP(preparation)
                 (glmServing, glmPreparation) = (serving, preparation)
+            } catch let ineligible as ModelRuntimeIneligibleError {
+                // Keep the permanent-ineligibility marker intact for routing.
+                recordModelLoadError(model: modelId, message: ineligible.localizedDescription)
+                throw ineligible
             } catch {
                 let message = "Model '\(modelId)' (glm5_next) cannot load: "
                     + GLM5NextCoordinatorServing.describe(error)
@@ -363,9 +369,20 @@ extension ProviderLoop {
         }
         try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
         // A revision swap (`revisionUpdate`) holds this model's writer lease.
-        let glmOwnership = try glmPlan.map {
-            revisionUpdate ? try GLM5NextArtifactOwnership.borrowingCallerLease(plan: $0)
-                : try GLM5NextArtifactOwnership.acquire(plan: $0)
+        // Otherwise a download or verification holding it is transient: refuse
+        // retriably so routing moves on instead of failing the provider.
+        let glmOwnership: GLM5NextArtifactOwnership?
+        do {
+            glmOwnership = try glmPlan.map {
+                revisionUpdate
+                    ? try GLM5NextArtifactOwnership.borrowingCallerLease(
+                        plan: $0, heldForModelID: modelRevisionActivationID)
+                    : try GLM5NextArtifactOwnership.acquire(plan: $0)
+            }
+        } catch ModelCatalogError.downloadFailed {
+            let message = "Model '\(modelId)' is being downloaded or verified; retry after it finishes"
+            recordModelLoadError(model: modelId, message: message)
+            throw InferenceError.modelLoadFailed(message)
         }
         defer { glmOwnership?.release() }
         isLoadingAny = true
@@ -516,9 +533,7 @@ extension ProviderLoop {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
             if let glmPlan {
-                guard preLoadHash.hash == glmPlan.weights.manifest.aggregateSHA256 else {
-                    throw GLM5NextManagedLoadError.identityMismatch
-                }
+                try Self.requireGLM5NextLoadedArtifact(hash: preLoadHash.hash, plan: glmPlan)
                 try glmPlan.weights.recheck()
             }
 
@@ -574,8 +589,8 @@ extension ProviderLoop {
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
-                if let glmPlan, postLoadHash.hash != glmPlan.weights.manifest.aggregateSHA256 {
-                    throw GLM5NextManagedLoadError.identityMismatch
+                if let glmPlan {
+                    try Self.requireGLM5NextLoadedArtifact(hash: postLoadHash.hash, plan: glmPlan)
                 }
                 let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
@@ -764,13 +779,18 @@ extension ProviderLoop {
                 glmBundle = engineBundle
                 // Never publish (or rebuild into) an ownerless target-only GLM
                 // engine, nor one whose advertised bound cannot be admitted alone.
-                let refusal: String?
+                var refusal: String?
                 if await GLM5NextLoadFunnel.servesWithNativeOwner(engineBundle) {
                     refusal = await Self.glm5NextFullContextRefusal(
-                        bundle: engineBundle, context: glmServing.maximumContextLength)
+                        bridge: engineV2Bridge, context: glmServing.maximumContextLength)
                 } else {
                     refusal = GLM5NextCoordinatorServing.describe(GLM5NextManagedLoadError.nativeMTPRequired)
                 }
+                #if DEBUG
+                if let hook = glm5NextPublicationRefusalForTesting {
+                    refusal = await hook(engineV2Bridge) ?? refusal
+                }
+                #endif
                 if let refusal {
                     try await unwindHoldingResliceGate()
                     releaseResliceGate()

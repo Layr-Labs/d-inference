@@ -94,7 +94,11 @@ enum GLM5NextVisionBudget {
             3 * merged * UInt64(c.projectionIntermediateSize),
             2 * merged * UInt64(c.outHiddenSize),
         ]
-        return elements.reduce(0) { $0.addingReportingOverflow($1 * 4).partialValue }
+        return elements.reduce(0) { total, count in
+            let (bytes, multiplyOverflow) = count.multipliedReportingOverflow(by: 4)
+            let (sum, addOverflow) = total.addingReportingOverflow(bytes)
+            return multiplyOverflow || addOverflow ? .max : sum
+        }
     }
 
     static func mediaReservation(

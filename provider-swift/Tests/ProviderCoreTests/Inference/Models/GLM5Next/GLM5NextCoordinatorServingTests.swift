@@ -173,31 +173,105 @@ struct GLM5NextCoordinatorServingTests {
         #expect(!admits(4, setup: 11_016_754_072, capacity: 72_300_000_000))
     }
 
-    /// Calibrated 256 GiB arithmetic: one-row setup, the engine's fixed bytes
-    /// and (KV + scratch + MTP) per token at the bound within pool − watermark.
+    /// Publication uses the same admissible capacity as request admission
+    /// (pool − watermark − one step's setup): one request at the bound fits.
     @Test func advertisedBoundMustFitAlone() {
-        let setup = 5_589_138_629, fixed = 4_000_000_000, context = 262_144
+        let fixed = 4_000_000_000, context = 262_144
         let rate = 33_836 + 55_057 + 33_900
-        let needed = setup + fixed + rate * context
-        func refusal(_ admissible: Int) -> String? {
-            // pool − Int(pool × 0.05) == admissible for pool = admissible / 0.95 rounded up.
-            let pool = UInt64((Double(admissible) / 0.95).rounded(.up))
-            return GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: pool,
-                watermarkFraction: 0.05, stepSetupBytes: setup, fixedRequestBytes: fixed,
-                bytesPerToken: rate, context: context)
+        let needed = fixed + rate * context
+        #expect(GLM5NextCoordinatorServing.fullContextRefusal(admissibleBytes: needed,
+            fixedRequestBytes: fixed, bytesPerToken: rate, context: context) == nil)
+        let refusal = GLM5NextCoordinatorServing.fullContextRefusal(admissibleBytes: needed - 1,
+            fixedRequestBytes: fixed, bytesPerToken: rate, context: context)
+        #expect(refusal?.contains("cannot hold one 262144-token request") == true)
+        #expect(GLM5NextCoordinatorServing.fullContextRefusal(admissibleBytes: .max,
+            fixedRequestBytes: 1, bytesPerToken: .max, context: 2) != nil)
+        #expect(GLM5NextCoordinatorServing.fullContextRefusal(admissibleBytes: .max,
+            fixedRequestBytes: 0, bytesPerToken: 0, context: 1) != nil)
+    }
+
+    /// The bridge admits GLM requests against pool − watermark − setup, so
+    /// once held requests fill it, the engine's step (setup + scratch for every
+    /// held token) still fits the engine's admissible capacity beside their KV,
+    /// MTP and fixed bytes. Further requests are refused as committed capacity.
+    @Test func filledSlotStillLeavesRoomForAStep() {
+        let setup = 7_398_234_550, scratch = 55_057, kv = 33_836, mtp = 33_900
+        let fixed = 4_230_000_000, engineAdmissible = 53_960_000_000
+        let bridgeAdmissible = engineAdmissible - setup
+        let rate = kv + scratch + mtp
+        var committed = 0, tokens: [Int] = []
+        for request in [131_072, 32_768, 32_768, 5_120, 5_120, 131_072] {
+            switch EngineV2Bridge.glm5NextSlotAdmission(requestBytes: fixed + rate * request,
+                committedBytes: committed, admissibleBytes: bridgeAdmissible) {
+            case .admit(let bytes):
+                committed += bytes
+                tokens.append(request)
+            case .committed: continue
+            case .neverFits: Issue.record("request \(request) never fits")
+            }
         }
-        #expect(refusal(needed + 1_000) == nil)
-        #expect(refusal(needed - 1_000)?.contains("cannot hold one 262144-token request") == true)
-        #expect(GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: .max, watermarkFraction: 0.05,
-            stepSetupBytes: 0, fixedRequestBytes: 1, bytesPerToken: .max, context: 2) != nil)
-        #expect(GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: .max, watermarkFraction: 0.05,
-            stepSetupBytes: 0, fixedRequestBytes: 0, bytesPerToken: 0, context: 1) != nil)
-        #expect(GLM5NextCoordinatorServing.fullContextRefusal(poolBytes: .max, watermarkFraction: 0.05,
-            stepSetupBytes: -1, fixedRequestBytes: 0, bytesPerToken: 1, context: 1) != nil)
+        #expect(tokens.count >= 2 && tokens.count < 6)
+        let held = tokens.reduce(0, +)
+        let ledger = tokens.count * fixed + (kv + mtp) * held
+        #expect(ledger + setup + scratch * held <= engineAdmissible)
+        #expect(EngineV2Bridge.glm5NextSlotAdmission(requestBytes: bridgeAdmissible + 1,
+            committedBytes: 0, admissibleBytes: bridgeAdmissible) == .neverFits)
+        #expect(EngineV2Bridge.glm5NextSlotAdmission(requestBytes: nil,
+            committedBytes: 0, admissibleBytes: bridgeAdmissible) == .neverFits)
+        #expect(EngineV2Bridge.glm5NextSlotAdmission(requestBytes: 2,
+            committedBytes: .max, admissibleBytes: bridgeAdmissible) == .committed)
+    }
+
+    /// A closed bridge's pending host consumers are retried, never retained;
+    /// any other proof failure escapes unchanged.
+    @Test func pendingHostConsumersAreRetriedAfterQuiescence() async throws {
+        actor Attempts { var count = 0; func next() -> Int { count += 1; return count } }
+        let attempts = Attempts()
+        let value = try await GLM5NextRetirement.drainingHostConsumers(sleep: { _ in }) {
+            if await attempts.next() < 3 { throw MiMoV26NativeBridgeShutdownError.pendingConsumers }
+            return 7
+        }
+        #expect(value == 7)
+        #expect(await attempts.count == 3)
+        await #expect(throws: GLM5NextManagedLoadError.retirementUnproven) {
+            try await GLM5NextRetirement.drainingHostConsumers(sleep: { _ in }) { () async throws -> Int in
+                throw GLM5NextManagedLoadError.retirementUnproven
+            }
+        }
+    }
+
+    /// Only a stale or missing catalog identity is refreshed, exactly once.
+    @Test func staleCatalogIsRefreshedOnce() async throws {
+        actor Calls { var refreshes: [Bool] = []; func add(_ value: Bool) { refreshes.append(value) } }
+        let calls = Calls()
+        let value = try await ProviderLoop.resolvingWithOneCatalogRefresh { refresh -> Int in
+            await calls.add(refresh)
+            if !refresh { throw GLM5NextManagedLoadError.identityMismatch }
+            return 1
+        }
+        #expect(value == 1)
+        #expect(await calls.refreshes == [false, true])
+        let final = Calls()
+        await #expect(throws: GLM5NextManagedLoadError.admission) {
+            try await ProviderLoop.resolvingWithOneCatalogRefresh { refresh -> Int in
+                await final.add(refresh)
+                throw GLM5NextManagedLoadError.admission
+            }
+        }
+        #expect(await final.refreshes == [false])
+    }
+
+    @Test func mtpDisabledWithdrawsTheGLMCapability() {
+        let all: Set<ProviderRuntimeCapability> = [.appleM5, .mlxNAX, .glm5Next]
+        #expect(GLM5NextLocalServing.gatingCapabilities(all, mode: .off, processMTPEnabled: true)
+            == [.appleM5, .mlxNAX])
+        #expect(GLM5NextLocalServing.gatingCapabilities(all, mode: .auto, processMTPEnabled: false)
+            == [.appleM5, .mlxNAX])
+        #expect(GLM5NextLocalServing.gatingCapabilities(all, mode: .auto, processMTPEnabled: true) == all)
     }
 
     /// Catalog entry -> receipt manifest -> recomputed aggregate; an R2-only
-    /// entry names the native identity by catalog id and version.
+    /// entry names the native identity by catalog id and aggregate prefix.
     @Test func catalogRevisionResolvesTheManagedPlan() throws {
         let id = GLM5NextCoordinatorServing.catalogModelID
         let fixture = try GLM5NextManagedFixture(
@@ -212,7 +286,8 @@ struct GLM5NextCoordinatorServingTests {
             modelID: id, directory: fixture.directory, catalog: catalog)
         #expect(serving.maximumContextLength == 262_144)
         #expect(serving.plan.nativeIdentity.repository == id)
-        #expect(serving.plan.nativeIdentity.revision == fixture.manifest.version)
+        #expect(serving.plan.nativeIdentity.revision
+            == String(fixture.manifest.aggregateSHA256.prefix(40)))
         #expect(serving.plan.usesShippedPromptTemplate)
 
         let other = CatalogModel(id: id, s3Name: "x", displayName: "x", sizeGb: 1,
@@ -227,6 +302,19 @@ struct GLM5NextCoordinatorServingTests {
         #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
             try GLM5NextCoordinatorServing.resolvePlan(
                 modelID: GLM5NextLocalQualification.modelID, directory: fixture.directory, catalog: catalog)
+        }
+        // Rollback: the catalog names a newer revision, but the receipt carries
+        // the aggregate this provider already verified and served.
+        let newer = CatalogModel(id: id, s3Name: "x", displayName: "x", sizeGb: 1,
+            version: "newer", r2Prefix: "newer/prefix", aggregateSHA256: String(repeating: "1", count: 64),
+            maxContextLength: 131_072)
+        let restored = try GLM5NextCoordinatorServing.resolvePlan(modelID: id, directory: fixture.directory,
+            catalog: newer, previouslyVerifiedAggregate: fixture.manifest.aggregateSHA256)
+        #expect(restored.plan.weights.manifest.version == fixture.manifest.version)
+        #expect(restored.maximumContextLength == 131_072)
+        #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
+            try GLM5NextCoordinatorServing.resolvePlan(modelID: id, directory: fixture.directory,
+                catalog: newer, previouslyVerifiedAggregate: String(repeating: "2", count: 64))
         }
         try FileManager.default.removeItem(at: fixture.directory.appendingPathComponent(".darkbloom-manifest.json"))
         #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
@@ -244,7 +332,18 @@ struct GLM5NextCoordinatorServingTests {
             aggregateSHA256: fixture.manifest.aggregateSHA256)
         let plan = try GLM5NextCoordinatorServing.resolvePlan(
             modelID: catalog.id, directory: fixture.directory, catalog: catalog).plan
-        let borrowed = try GLM5NextArtifactOwnership.borrowingCallerLease(plan: plan)
+        #expect(throws: GLM5NextManagedLoadError.lifecycle) {
+            try GLM5NextArtifactOwnership.borrowingCallerLease(plan: plan, heldForModelID: nil)
+        }
+        #expect(throws: GLM5NextManagedLoadError.lifecycle) {
+            try GLM5NextArtifactOwnership.borrowingCallerLease(plan: plan, heldForModelID: "other")
+        }
+        #expect(throws: GLM5NextManagedLoadError.identityMismatch) {
+            try ProviderLoop.requireGLM5NextLoadedArtifact(hash: String(repeating: "0", count: 64), plan: plan)
+        }
+        try ProviderLoop.requireGLM5NextLoadedArtifact(hash: fixture.manifest.aggregateSHA256, plan: plan)
+        let borrowed = try GLM5NextArtifactOwnership.borrowingCallerLease(
+            plan: plan, heldForModelID: catalog.id)
         try borrowed.claim(plan: plan)
         #expect(throws: GLM5NextManagedLoadError.lifecycle) { try borrowed.claim(plan: plan) }
         borrowed.release()

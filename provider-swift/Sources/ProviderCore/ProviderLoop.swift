@@ -271,6 +271,11 @@ public actor ProviderLoop {
     /// container EOS snapshot, and the production CBv2 engine builder used
     /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
+    #if DEBUG
+    /// Replaces the GLM publication verdict so its unwind is testable without
+    /// an undersized real pool.
+    internal var glm5NextPublicationRefusalForTesting: (@Sendable (EngineV2Bridge) async -> String?)?
+    #endif
 
     /// Operator-configured hard cap on concurrent model slots
     /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the

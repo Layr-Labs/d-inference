@@ -74,9 +74,47 @@ extension EngineV2Bridge {
 
     var hasGLM5NextNativeOwner: Bool { glm5NextNativeOwner != nil }
 
-    /// Content-free marker for a GLM request whose reservation exceeds the
-    /// slot's whole pool; it rides the existing capacity rejection.
+    /// Content-free markers riding the existing capacity rejection: the
+    /// request exceeds the slot's admissible capacity, or held requests leave
+    /// it no room now.
     static let glm5NextExceedsSlotCapacity = "request_exceeds_slot_capacity"
+    static let glm5NextSlotCommitted = "slot_capacity_committed"
+
+    enum GLM5NextSlotAdmission: Equatable {
+        case admit(Int), neverFits, committed
+    }
+
+    /// `admissibleBytes` already excludes one step's setup.
+    nonisolated static func glm5NextSlotAdmission(
+        requestBytes: Int?, committedBytes: Int, admissibleBytes: Int
+    ) -> GLM5NextSlotAdmission {
+        guard let requestBytes, requestBytes >= 0, requestBytes <= admissibleBytes else {
+            return .neverFits
+        }
+        let (total, overflow) = committedBytes.addingReportingOverflow(requestBytes)
+        return overflow || total > admissibleBytes ? .committed : .admit(requestBytes)
+    }
+
+    /// Held GLM reservations: admitted requests at their reserved tokens, plus
+    /// any still between the gate and admission.
+    func glm5NextCommittedBytes() -> Int {
+        var total = 0
+        for bytes in glm5NextGateReservations.values {
+            let (sum, overflow) = total.addingReportingOverflow(bytes)
+            if overflow { return Int.max }
+            total = sum
+        }
+        for state in active.values {
+            let (tokens, overflow) = state.promptTokens.addingReportingOverflow(state.maxTokens)
+            guard !overflow, let bytes = requestReservationBytes(tokenCount: tokens) else { return Int.max }
+            let (sum, sumOverflow) = total.addingReportingOverflow(bytes)
+            if sumOverflow { return Int.max }
+            total = sum
+        }
+        return total
+    }
+
+    func installGLM5NextStepSetup(bytes: Int) { glm5NextStepSetupBytes = max(0, bytes) }
 
     /// The one GLM predicate for the process fault fence: an owned native
     /// bridge, or any bridge serving an exact GLM identity
@@ -102,7 +140,11 @@ extension EngineV2Bridge {
             }
             guard let actual = ownedEngine as? EngineV2 else { throw GLM5NextManagedLoadError.identityMismatch }
             try owner.beginClosing(bridge: self, engine: actual)
-            switch try await shutdownNativeConstruction(expectedEngine: actual, executionContractID: owner.contractID) {
+            let outcome = try await GLM5NextRetirement.drainingHostConsumers {
+                try await shutdownNativeConstruction(
+                    expectedEngine: actual, executionContractID: owner.contractID)
+            }
+            switch outcome {
             case .quiescent(let receipt): try owner.complete(receipt)
             case .incomplete: throw GLM5NextManagedLoadError.retirementUnproven
             }

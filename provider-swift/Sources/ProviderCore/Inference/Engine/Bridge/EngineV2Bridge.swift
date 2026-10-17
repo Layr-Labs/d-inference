@@ -52,6 +52,11 @@ public actor EngineV2Bridge {
     weak var nativeTransaction: MiMoV26NativeLoadTransaction?
     var nativeTransactionID: UUID?
     let glm5NextNativeOwner: GLM5NextNativeOperationOwner?
+    /// One GLM step's setup bytes. The engine charges step scratch from the
+    /// same ledger as requests, so request admission leaves this much free.
+    var glm5NextStepSetupBytes = 0
+    /// GLM requests between the capacity gate and `active`.
+    var glm5NextGateReservations: [String: Int] = [:]
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }

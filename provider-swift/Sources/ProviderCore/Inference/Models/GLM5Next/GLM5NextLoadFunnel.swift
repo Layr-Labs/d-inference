@@ -91,10 +91,11 @@ enum GLM5NextLoadFunnel {
     /// latent/index rows. KDA's three live generations remain a fixed per-request
     /// charge owned by EngineV2, not a marginal token charge or weight byte.
     /// The embedded MTP layer's latent/index history is likewise excluded from
-    /// this re-slice weight: `GLM5NextMTPExecution.memoryPlan` sizes it to the
-    /// explicit context bound (not to admitted tokens) and the engine's MTP
-    /// admission reserves those fixed buffers before use. Its drafter reports
-    /// zero `requestStateBytesPerToken`, so nothing is double-counted.
+    /// this re-slice weight: `GLM5NextMTPExecution.memoryPlan` prices it as a
+    /// fixed part plus bytes per reserved token, which the engine's MTP
+    /// admission reserves per request and the bridge adds to its rate
+    /// (`EngineV2MTPAdmissionCharges`). Its drafter reports zero
+    /// `requestStateBytesPerToken`, so nothing is double-counted.
     static func kvBytesPerToken(layerKinds: [CBv2LayerKind]) -> Int {
         layerKinds.filter { $0.sharesKVWithLayer == nil && $0.attention == .full }
             .reduce(0) { $0 + $1.kvHeads * ($1.headDim + $1.valueHeadDim) * 4 }
@@ -146,6 +147,19 @@ public enum GLM5NextLocalServing {
     ) -> Bool {
         !GLM5NextPromptPolicy.applies(modelType: model.modelType)
             || nativeMTPAvailable(mode: mode, modelID: model.id, processMTPEnabled: processMTPEnabled)
+    }
+
+    /// `glm5_next_v1` also requires the embedded MTP GLM serves through, so a
+    /// provider with MTP disabled is never routed, prefetched or sent a GLM
+    /// download it would refuse to load.
+    public static func gatingCapabilities(
+        _ capabilities: Set<ProviderRuntimeCapability>, mode: MTPMode,
+        processMTPEnabled: Bool = CBv2MTPConfig.envEnabled
+    ) -> Set<ProviderRuntimeCapability> {
+        guard capabilities.contains(.glm5Next), !nativeMTPAvailable(mode: mode,
+            modelID: GLM5NextCoordinatorServing.catalogModelID, processMTPEnabled: processMTPEnabled)
+        else { return capabilities }
+        return capabilities.subtracting([.glm5Next])
     }
 
     /// Splits out exact `glm5_next` models that cannot load under `mode`.

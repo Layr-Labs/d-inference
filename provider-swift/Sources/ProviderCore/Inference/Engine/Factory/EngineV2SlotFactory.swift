@@ -486,8 +486,7 @@ enum EngineV2SlotFactory {
         let glm5NextTarget = EngineV2Factory.glm5NextTarget(model: servingModel)
         var glm5NextStepSetupBytes = 0
         if glm5NextTarget != nil, let preparedBackend {
-            guard let scratch = try preparedBackend.glm5NextStepScratch(
-                maximumDraftTokens: mtpConfig.maxDraftTokens),
+            guard let scratch = try preparedBackend.glm5NextStepScratch(),
                 let rate = GLM5NextCoordinatorServing.requestBytesPerToken(
                     kvBytesPerToken: targetKVBytesPerToken,
                     stepScratchBytesPerToken: scratch.bytesPerContextToken)
@@ -597,6 +596,7 @@ enum EngineV2SlotFactory {
             prefixCacheStatus: prefixCacheStatus,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
+        await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)
 
         do {
             try await bridge.requireServiceableOrdinaryGrant()
@@ -640,8 +640,7 @@ enum EngineV2SlotFactory {
             assistant: assistantHandle,
             assistantBytes: mtpStatus.assistantBytes,
             mtpArtifact: prepared.mtpArtifact,
-            mtpStatus: mtpStatus,
-            glm5NextStepSetupBytes: glm5NextStepSetupBytes)
+            mtpStatus: mtpStatus)
     }
 
     /// Full-attention marginal KV rate used by shared request admission and

@@ -306,6 +306,9 @@ extension EngineV2Factory {
         if preparedBackend.kind == .contiguous {
             admissionConfig.layerElementBytes = preparedBackend.nativeLayerDTypes.map(\.size)
         }
+        if glmNative != nil {
+            admissionConfig.watermarkFraction = glm5NextAdmissionWatermarkFraction
+        }
         let steppable: any CBv2SteppableModel
         let cacheProvider: any CBv2LayerCacheProvider
         if let glmNative {

@@ -359,6 +359,14 @@ extension ProviderLoop {
         return bridge
     }
 
+    #if DEBUG
+    func setGLM5NextPublicationRefusalForTesting(
+        _ refusal: (@Sendable (EngineV2Bridge) async -> String?)?
+    ) {
+        glm5NextPublicationRefusalForTesting = refusal
+    }
+    #endif
+
     /// Test seam: swap the spec-dec funnel so lifecycle tests can gate the
     /// MTP preparation await deterministically.
     func setSpecDecFunnelForTesting(_ funnel: SpecDecArtifactFunnel) {

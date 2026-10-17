@@ -152,7 +152,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax` or `glm5_next_v1`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list `apple_m5` and `mlx_nax`. The provider and platform also require `apple_m5`, `mlx_nax` and `glm5_next_v1` for `glm-5.3-flash` whatever the row lists (`ModelRuntimeRequirements.glm5NextRequiredCapabilities`); platform sign-off on the catalog row is pending |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |

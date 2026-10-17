@@ -103,7 +103,7 @@ only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
 (`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
 version and aggregate, the revision receipt must match it and hash to that
 aggregate, and the admitted load hashes every file against the same manifest.
-An R2-only revision names its native identity by catalog id and version. The
+An R2-only revision names its native identity by catalog id and the first 40 hex digits of its aggregate. The
 reviewed shipped template remains mandatory. The enforced context is 262,144
 tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog
 `max_context_length` lowers it and a larger one refuses the load. A revision
@@ -148,8 +148,9 @@ the context limit, or the pool's whole token capacity when smaller
 price when that is smaller. Reads, writes and tables the step owner retains
 count for every DSA layer; a layer's temporaries (scores, pooled index planes,
 selections, gather blocks) count once, twice for overlap with a neighbour
-(`GLM5NextStepBytes`), which stays at least 1.6 times the step memory
-measured on the real artifact at 32K, 128K and 262K context. For 2,048-token
+(`GLM5NextStepBytes`). With FP32 sparse KV that price stays at least 1.5
+times every peak measured on the real artifact (1 to 4 rows, 512- and
+2,048-token steps, 32K to 261K context, MTP verification; smallest 1.57x). For 2,048-token
 steps at a 262,144-token context the setup is about 5.6, 7.4 and 11.0 GB for
 1, 2 and 4 rows, and the rate about 55 KB per context token
 (`GLM5NextStepPriceTests`). A refused activation names the native reason (for example
@@ -274,7 +275,7 @@ commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. Ambiguous
 string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
-The request-local [GLM prompt contract](../reference/protocol-messages.md#unregistered-glm-native-prompt-contract)
+The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other

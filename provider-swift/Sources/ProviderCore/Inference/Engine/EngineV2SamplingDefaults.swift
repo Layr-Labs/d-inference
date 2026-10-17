@@ -19,8 +19,9 @@
 //   are untouched.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
-//   and owned Bonsai 9B listings and the locally qualified GLM-5.3-Flash
-//   artifact honor their artifact defaults.
+//   and owned Bonsai 9B listings and the exact GLM-5.3-Flash identities (catalog
+//   `glm-5.3-flash` and the local qualification download) honor their artifact
+//   defaults.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.

@@ -94,15 +94,17 @@ extension EngineV2Factory {
     /// 256 GiB host, shared with KV). A prefill-sized paged row reads its
     /// latent history once per DSA layer instead of retaining ~46 MB of
     /// selected latents per query token. The price is a setup amount for the
-    /// step geometry (about 11 GB for 2,048-token steps and 4 rows) plus about
-    /// 55 KB per context token of each request (`GLM5NextStepScratch`), which
-    /// the engine charges for the history its pool can hold
-    /// (GLM5NextStepPriceTests).
+    /// step geometry plus a rate per context token of each request
+    /// (`GLM5NextStepScratch`), which the engine charges for the history its
+    /// pool can hold (GLM5NextStepPriceTests); the provider caps running rows
+    /// to what that check admits (`glm5NextActivatableRows`).
     static let glm5NextMaximumPrefillChunkTokens = 2048
     static let glm5NextMaximumStepTokens = 2048
     /// Narrows both GLM limits for a test whose small fixture context must
     /// still span a chunk boundary; it can never widen them.
+    #if DEBUG
     @TaskLocal static var glm5NextStepTokensForTesting: Int?
+    #endif
 
     /// Installs the GLM chunk and step limits, bounded by the context; the
     /// generic 512-token default chunk is not GLM's geometry. Solo stripes,
@@ -111,7 +113,11 @@ extension EngineV2Factory {
         -> CBv2SchedulerConfig
     {
         var scheduler = base
+        #if DEBUG
         let narrowed = max(1, glm5NextStepTokensForTesting ?? Int.max)
+        #else
+        let narrowed = Int.max
+        #endif
         scheduler.prefillChunkSize = min(context, glm5NextMaximumPrefillChunkTokens, narrowed)
         scheduler.maxBatchedTokensPerStep = min(context, glm5NextMaximumStepTokens, narrowed)
         scheduler.soloPrefillStripeTokens = nil

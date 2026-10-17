@@ -7,6 +7,9 @@ import Foundation
 /// architecture qualification: the managed loader still validates its complete
 /// native inventory and source identity before allocation.
 public enum GLM5NextDiscoveryLoadFootprint {
+    /// Matches the native loader's `GLM5NextArtifactLimits.maximumConfigBytes`;
+    /// a quantized artifact's per-module metadata makes `config.json` ~10 MB.
+    public static let maximumConfigurationBytes = 32 << 20
     public struct Header {
         public let tensors: [String: Any]
         public let fileBytes: UInt64
@@ -62,7 +65,7 @@ public enum GLM5NextDiscoveryLoadFootprint {
         configuration: Data, index: Data, files: [String: UInt64],
         readHeader: (String) -> Header?
     ) throws -> Estimate {
-        guard configuration.count <= 2 << 20, index.count <= 32 << 20,
+        guard configuration.count <= maximumConfigurationBytes, index.count <= 32 << 20,
             files.count <= 4096,
             let config = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
             config["model_type"] as? String == "glm5_next",

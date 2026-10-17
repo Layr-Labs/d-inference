@@ -10,8 +10,11 @@ extension ModelScanner {
         let root = snapshotDir.standardizedFileURL
         guard let files = GLM5NextDiscoveryInventory.files(at: root) else { return nil }
         // Reuse the existing regular-FD, bounded readers; no payload is read.
-        guard let config = Qwen4ExpMmapFootprint.boundedIndex(root.appendingPathComponent("config.json")),
-            let index = Qwen4ExpMmapFootprint.boundedIndex(root.appendingPathComponent("model.safetensors.index.json")),
+        guard let config = Qwen4ExpMmapFootprint.boundedIndex(
+                root.appendingPathComponent("config.json"),
+                maximumBytes: GLM5NextDiscoveryLoadFootprint.maximumConfigurationBytes),
+            let index = Qwen4ExpMmapFootprint.boundedIndex(
+                root.appendingPathComponent("model.safetensors.index.json"), maximumBytes: 32 << 20),
             let estimate = GLM5NextDiscoveryLoadFootprint.estimate(
                 configuration: config, index: index, files: files,
                 readHeader: { name in

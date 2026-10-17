@@ -25,7 +25,10 @@ least 256 GB of unified memory. The provider reports runtime capability
 `apple_m5` and `mlx_nax`, and every other Mac refuses the load with its chip
 and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host the
 post-load admission is about 56.8 GB: one 262,144-token request fits, and
-shorter requests run concurrently by their actual reserved tokens. The
+shorter requests run concurrently by their actual reserved tokens, at most two
+or three at once because the engine's step-scratch activation check caps
+running rows (`EngineV2Factory.glm5NextActivatableRows`). The provider also
+refuses GLM loads and prefetches when MTP is disabled. The
 [native implementation](../design/glm53-flash-native.md) does not reduce these
 memory safeguards.
 

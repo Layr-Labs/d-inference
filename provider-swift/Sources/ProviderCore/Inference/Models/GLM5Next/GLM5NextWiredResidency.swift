@@ -25,17 +25,34 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
             raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
-    enum Phase: Equatable, Sendable { case prepared, held, ended, unsupported }
+    enum Phase: Equatable, Sendable { case prepared, starting, held, ending, ended, unsupported }
 
-    private let ticket: WiredMemoryTicket
     private let policy: MiMoV26WiredResidency.Policy
+    private let policyEntry: UUID
+    private let startTicket: @Sendable () async -> Bool
+    private let endTicket: @Sendable () async -> Void
     private let lock = NSLock()
     private var phase = Phase.prepared
+    private var endRequested = false
 
-    private init(ceiling: Int, readCeiling: @escaping @Sendable () -> Int) {
-        policy = .shared
-        ticket = WiredMemoryTicket(size: ceiling, policy: policy, manager: .shared, kind: .active)
-        policy.register(ticket.id, ceiling: readCeiling)
+    /// Registers `policyEntry` with `policy`; the closures install and remove
+    /// the device ticket.
+    init(
+        policy: MiMoV26WiredResidency.Policy, policyEntry: UUID,
+        ceiling: @escaping @Sendable () -> Int,
+        startTicket: @escaping @Sendable () async -> Bool,
+        endTicket: @escaping @Sendable () async -> Void
+    ) {
+        self.policy = policy
+        self.policyEntry = policyEntry
+        self.startTicket = startTicket
+        self.endTicket = endTicket
+        policy.register(policyEntry, ceiling: ceiling)
+    }
+
+    /// Never started: nothing is wired, so only the policy entry is released.
+    deinit {
+        if phase == .prepared { policy.remove(policyEntry) }
     }
 
     /// Nil when disabled or when the host offers no positive safe ceiling.
@@ -55,39 +72,76 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
         }
         let ceiling = readCeiling()
         guard ceiling > 0 else { return nil }
-        return GLM5NextWiredResidency(ceiling: ceiling, readCeiling: readCeiling)
+        let policy = MiMoV26WiredResidency.Policy.shared
+        let ticket = WiredMemoryTicket(size: ceiling, policy: policy, manager: .shared, kind: .active)
+        return GLM5NextWiredResidency(
+            policy: policy, policyEntry: ticket.id, ceiling: readCeiling,
+            startTicket: {
+                do {
+                    try await Device.withDefaultDevice(.gpu) {
+                        try await withError { errors in
+                            _ = await ticket.start()
+                            try errors.check()
+                        }
+                    }
+                    return true
+                } catch { return false }
+            },
+            endTicket: {
+                _ = try? await Device.withDefaultDevice(.gpu) {
+                    try await withError { _ in _ = await ticket.end() }
+                }
+            })
     }
 
     var currentPhase: Phase { lock.withLock { phase } }
 
     /// Installs the ticket on the GPU device. An MLX refusal leaves the engine
-    /// serving without standing residency; it never fails the load.
+    /// serving without standing residency; it never fails the load. An `end`
+    /// that arrives meanwhile releases the ticket as soon as start returns.
     func start() async {
-        guard lock.withLock({ phase == .prepared }) else { return }
-        do {
-            try await Device.withDefaultDevice(.gpu) {
-                try await withError { errors in
-                    _ = await ticket.start()
-                    try errors.check()
-                }
+        guard lock.withLock({ () -> Bool in
+            guard phase == .prepared else { return false }
+            phase = .starting
+            return true
+        }) else { return }
+        let started = await startTicket()
+        let endNow = lock.withLock { () -> Bool in
+            if endRequested {
+                phase = .ending
+                return true
             }
-            lock.withLock { phase = .held }
-        } catch {
-            lock.withLock { phase = .unsupported }
+            phase = started ? .held : .unsupported
+            return false
         }
+        if endNow { await release() }
     }
 
     /// Called only after the engine's native retirement is proven.
     func end() async {
-        let held = lock.withLock { () -> Bool in
-            defer { if phase != .ended { phase = .ended } }
-            return phase == .held || phase == .unsupported
-        }
-        if held {
-            _ = try? await Device.withDefaultDevice(.gpu) {
-                try await withError { _ in _ = await ticket.end() }
+        let releaseNow = lock.withLock { () -> Bool in
+            switch phase {
+            case .prepared:
+                phase = .ended
+                policy.remove(policyEntry)
+                return false
+            case .starting:
+                endRequested = true
+                return false
+            case .held, .unsupported:
+                phase = .ending
+                return true
+            case .ending, .ended:
+                return false
             }
         }
-        policy.remove(ticket.id)
+        if releaseNow { await release() }
+    }
+
+    /// A failed start may still have registered with the manager; end both.
+    private func release() async {
+        await endTicket()
+        policy.remove(policyEntry)
+        lock.withLock { phase = .ended }
     }
 }

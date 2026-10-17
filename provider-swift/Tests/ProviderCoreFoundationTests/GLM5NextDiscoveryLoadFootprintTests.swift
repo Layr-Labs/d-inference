@@ -152,6 +152,24 @@ private struct GLMFootprintMetadata {
         #expect(try base.estimate(indexOverride: traversal) == nil)
     }
 
+    /// The published NVFP4 `config.json` is ~10 MB of per-module quantization
+    /// metadata; discovery accepts it up to the native loader's 32 MiB bound.
+    @Test func acceptsNVFP4SizedConfigurationUpToTheNativeLoaderBound() throws {
+        #expect(GLM5NextDiscoveryLoadFootprint.maximumConfigurationBytes == 32 << 20)
+        func padded(toBytes target: Int) throws -> GLMFootprintMetadata {
+            var fixture = GLMFootprintMetadata()
+            fixture.config["padding"] = ""
+            let overhead = try JSONSerialization.data(withJSONObject: fixture.config, options: .sortedKeys).count
+            fixture.config["padding"] = String(repeating: "x", count: target - overhead)
+            let size = try JSONSerialization.data(withJSONObject: fixture.config, options: .sortedKeys).count
+            #expect(size == target)
+            return fixture
+        }
+        #expect(try padded(toBytes: 10_023_646).estimate() != nil)
+        #expect(try padded(toBytes: GLM5NextDiscoveryLoadFootprint.maximumConfigurationBytes).estimate() != nil)
+        #expect(try padded(toBytes: GLM5NextDiscoveryLoadFootprint.maximumConfigurationBytes + 1).estimate() == nil)
+    }
+
     @Test func checkedArithmeticAndVerifiedRawProjection() throws {
         struct Raw: Decodable {
             let storedBytes, nonWeightBytes, largestTensorBytes, largestExpertBankBytes, visionBytes: UInt64

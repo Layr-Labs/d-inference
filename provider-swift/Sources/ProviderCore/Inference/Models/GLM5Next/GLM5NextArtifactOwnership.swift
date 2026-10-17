@@ -20,8 +20,14 @@ final class GLM5NextArtifactOwnership: @unchecked Sendable {
     }
 
     /// Revision activation already holds this model's writer lease for the
-    /// whole swap; flock does not nest, so borrow that fence instead.
-    static func borrowingCallerLease(plan: GLM5NextArtifactPlan) throws -> GLM5NextArtifactOwnership {
+    /// whole swap; flock does not nest, so borrow that fence instead. The
+    /// caller names the model whose activation holds it.
+    static func borrowingCallerLease(plan: GLM5NextArtifactPlan, heldForModelID: String?) throws
+        -> GLM5NextArtifactOwnership
+    {
+        guard heldForModelID == plan.weights.catalog.id else {
+            throw GLM5NextManagedLoadError.lifecycle
+        }
         try plan.weights.recheck()
         return .init(plan: plan, leases: [], fencedByCaller: true)
     }

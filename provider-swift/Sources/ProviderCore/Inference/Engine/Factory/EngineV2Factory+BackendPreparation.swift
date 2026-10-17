@@ -86,13 +86,15 @@ extension EngineV2Factory {
             self.glm5NextBudget = glm5NextBudget
         }
 
-        /// The GLM step price for the geometry the engine prices at activation;
-        /// nil for other backends or once the backend has been consumed.
-        func glm5NextStepScratch(maximumDraftTokens: Int) throws -> GLM5NextStepScratch? {
+        /// The GLM step price for the geometry the engine prices at activation,
+        /// at the protected model's resolved draft depth; nil for other
+        /// backends or once the backend has been consumed.
+        func glm5NextStepScratch() throws -> GLM5NextStepScratch? {
             try lock.withLock {
                 guard let paged = backend as? PagedKVBackend else { return nil }
                 return try EngineV2Factory.glm5NextStepScratch(
-                    paged, scheduler: schedulerConfig, maximumDraftTokens: maximumDraftTokens)
+                    paged, scheduler: schedulerConfig,
+                    maximumDraftTokens: EngineV2Factory.glm5NextDraftTokens(glm5NextModel))
             }
         }
 
@@ -263,7 +265,8 @@ extension EngineV2Factory {
             if let protected = model as? GLM5NextProtectedModel {
                 scheduler.maxConcurrentRequests = try glm5NextActivatableRows(
                     paged, scheduler: scheduler, layerKinds: layerKinds, context: context,
-                    capacityBytes: cappedCapacity, maximumScratchBytes: min(cappedCapacity, maximumBuffer))
+                    capacityBytes: cappedCapacity, maximumScratchBytes: min(cappedCapacity, maximumBuffer),
+                    maximumDraftTokens: glm5NextDraftTokens(protected))
                 guard let kvBudget, residentPrefixCache == nil, hybridPrefixCache == nil else {
                     throw EngineV2ProductionError.pagedUnavailable(
                         "GLM protected MTP requires the actual process budget; resident and hybrid prefixes are unsupported")
@@ -492,6 +495,16 @@ extension EngineV2Factory {
 }
 
 extension EngineV2Factory {
+    /// The GLM engine's admission watermark, shared by the activation row cap
+    /// and the engine's own admission configuration.
+    static let glm5NextAdmissionWatermarkFraction = AdmissionV2.Config().watermarkFraction
+
+    /// The draft depth `GLM5NextProtectedModel.resolvedMTPConfiguration` serves:
+    /// one for serial verification, the rectangular depth otherwise.
+    static func glm5NextDraftTokens(_ model: GLM5NextProtectedModel?) -> Int {
+        model?.execution.verification.depth ?? GLM5NextMTPVerification.maximumRectangularDepth
+    }
+
     /// One row's query per step, as the engine bounds it at activation: its
     /// prefill chunk or solo stripe, or an MTP verification of 1 + drafts.
     static func glm5NextStepScratch(
@@ -513,7 +526,7 @@ extension EngineV2Factory {
     /// its own refusal.
     static func glm5NextActivatableRows(
         _ paged: PagedKVBackend, scheduler: CBv2SchedulerConfig, layerKinds: [CBv2LayerKind],
-        context: Int, capacityBytes: Int, maximumScratchBytes: Int
+        context: Int, capacityBytes: Int, maximumScratchBytes: Int, maximumDraftTokens: Int
     ) throws -> Int {
         let tokenBytes = layerKinds.reduce(0) {
             $0 + ($1.headDim + $1.valueHeadDim) * DType.float32.size
@@ -523,13 +536,12 @@ extension EngineV2Factory {
             var candidate = scheduler
             candidate.maxConcurrentRequests = rows
             guard let scratch = try glm5NextStepScratch(
-                paged, scheduler: candidate,
-                maximumDraftTokens: GLM5NextMTPVerification.maximumRectangularDepth)
+                paged, scheduler: candidate, maximumDraftTokens: maximumDraftTokens)
             else { return rows }
             if glm5NextActivationAdmits(scratch, rows: rows, context: context,
                 capacityBytes: capacityBytes, tokenBytes: tokenBytes,
                 maximumScratchBytes: maximumScratchBytes,
-                watermarkFraction: AdmissionV2.Config().watermarkFraction)
+                watermarkFraction: glm5NextAdmissionWatermarkFraction)
             { break }
             rows -= 1
         }

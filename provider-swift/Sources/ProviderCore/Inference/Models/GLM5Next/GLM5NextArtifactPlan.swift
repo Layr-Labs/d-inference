@@ -236,22 +236,24 @@ struct GLM5NextArtifactPlan: Sendable {
                 "only indexed safetensors weights are supported")
         }
         // A Hugging Face source names the native identity; an R2-only catalog
-        // revision is named by its catalog id and version. Either way the file
-        // digests below, not this label, authenticate the bytes.
+        // revision is named by its catalog id and the first 40 hex digits of
+        // its manifest aggregate (the native reader's commit-shaped revision).
+        // Either way the file digests below, not this label, authenticate the bytes.
         let sourceRepository: String
         let sourceRevision: String
         if let source = catalog.huggingFaceArtifact {
             // Validates the exact repository/revision syntax without any I/O.
             _ = try source.downloadURL(for: "config.json")
             (sourceRepository, sourceRevision) = (source.repoID, source.revision)
-        } else if let version = catalog.version {
-            (sourceRepository, sourceRevision) = (catalog.id, version)
+        } else if catalog.version != nil {
+            (sourceRepository, sourceRevision) = (catalog.id, String(manifest.aggregateSHA256.prefix(40)))
         } else {
             throw GLM5NextManagedLoadError.invalidManifest
         }
         let config = try JSONDecoder().decode(
             GLM5NextConfiguration.self,
-            from: weights.readMetadata("config.json", maximumBytes: 2 << 20))
+            from: weights.readMetadata(
+                "config.json", maximumBytes: GLM5NextDiscoveryLoadFootprint.maximumConfigurationBytes))
         guard config.textConfig.hiddenLayers <= 512, config.textConfig.numNextNPredictLayers == 1,
             config.textConfig.nRoutedExperts <= 2048, config.visionConfig.depth <= 512,
             (config.textConfig.hiddenLayers + 1) * (config.textConfig.nRoutedExperts * 9 + 100)

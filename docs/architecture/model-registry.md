@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -18,6 +18,19 @@ Published metadata is not a loadability or quality certificate. Keep full LOAD
 quotations, native transient allowances, memory safeguards and post-load
 serviceability checks. Do not replace registry discovery with a hardcoded model
 catalog. Exact supported layouts and parameters belong in the [manifest reference](../reference/model-registry-format.md).
+
+### Uncached reads and writes
+
+`ModelDownloader.uncachedWrites` (default off; single-Mac downloads are
+unchanged) writes shards with the file cache off and computes the per-file and
+aggregate SHA-256 from uncached reads. The two-Mac cluster's catalog download
+sets it, so provisioning a model does not leave tens of GB in the Mac's file
+cache before a memory-gated load. `WeightHasher` reads weights for the
+provider's start-time hash with `F_NOCACHE` too (same digest; it falls back to
+the earlier readers when the uncached read fails). The cluster store clones an
+installed model with the catalog's exact published `manifest.json` bytes,
+because the cluster worker pins those bytes; see
+[two Macs as one provider](../provider/two-mac-cluster.md#models).
 
 ## Publication
 

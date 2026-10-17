@@ -18,6 +18,12 @@ MAX_ARCHIVE_BYTES = 2 << 30
 MAX_MEMBER_BYTES = 512 << 20
 MAX_TOTAL_BYTES = 2 << 30
 MAX_ARCHIVE_MEMBERS = 16_384
+# The cluster helpers the installed provider launches from
+# Darkbloom.app/Contents/Helpers (the default worker path of a cluster setup),
+# with the two files they load beside themselves.
+CLUSTER_HELPER_EXECUTABLES = ("darkbloom-cluster-worker", "darkbloom-cluster-plan")
+CLUSTER_HELPER_RESOURCES = ("mlx.metallib", "pagedattention.metal")
+SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "entitlements-cluster-worker.plist")
 
 
 PACKAGED_KEYS = ["cliName", "enclaveName", "appBundleName", "appDisplayName"]
@@ -94,21 +100,25 @@ def stage(arguments):
         shutil.copy2(arguments.bin / product, binaries / name)
     shutil.copy2(arguments.bin / "darkbloom-fan-helper", helpers / "darkbloom-fan-helper")
     shutil.copy2(arguments.metallib, binaries / "mlx.metallib")
+    stage_cluster_helpers(arguments.cluster_helpers, helpers)
     (resources / "fan-helper-v1").write_text("1\n")
     info = {
         "CFBundleIdentifier": APP_ID, "CFBundleExecutable": names["cliName"],
         "CFBundleName": names["appDisplayName"], "CFBundleVersion": arguments.version,
         "CFBundleShortVersionString": arguments.version,
         "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "14.0",
+        "NSLocalNetworkUsageDescription": "Darkbloom connects to the other Macs of your cluster over the "
+                                          "Thunderbolt link to serve models together.",
     }
     with (app / "Contents/Info.plist").open("wb") as output:
         plistlib.dump(info, output)
-    for name in ["entitlements.plist", "entitlements-enclave.plist"]:
+    for name in SIGNING_ENTITLEMENTS:
         shutil.copy2(arguments.source / "provider-swift" / name, root / "validation-inputs" / name)
     subprocess.run([
         "bash", str(Path(__file__).resolve().parent / "stage-swiftpm-resource-bundles.sh"),
         str(arguments.bin), str(app), str(root / "validation-inputs/resource-bundles.txt"),
     ], check=True)
+    check_cluster_helpers(app)
     source_sha = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=arguments.source, text=True).strip()
     submodules = subprocess.check_output(
@@ -150,11 +160,60 @@ def unpack(arguments):
     actual.pop("unsigned-files.json")
     if actual != manifest["files"]:
         raise ValueError("Unsigned artifact inventory changed")
-    check_info(arguments.output, arguments.version, recorded_packaging(manifest))
+    names = recorded_packaging(manifest)
+    check_info(arguments.output, arguments.version, names)
+    check_cluster_helpers(arguments.output / names["appBundleName"])
     tooling = Path(__file__).resolve().parent.parent
-    for name in ["entitlements.plist", "entitlements-enclave.plist"]:
+    for name in SIGNING_ENTITLEMENTS:
         if sha256(arguments.output / "validation-inputs" / name) != sha256(tooling / "provider-swift" / name):
             raise ValueError("Candidate signing entitlements differ from reviewed workflow tooling")
+
+
+def stage_cluster_helpers(source, helpers):
+    """Copies the built cluster helpers (scripts/build-cluster-helpers.sh) into Contents/Helpers."""
+    if source is None or not source.is_dir() or source.is_symlink():
+        raise ValueError("Cluster helpers directory is missing: build it with scripts/build-cluster-helpers.sh")
+    for name in CLUSTER_HELPER_EXECUTABLES + CLUSTER_HELPER_RESOURCES:
+        path = source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"Cluster helper is missing from the build: {name}")
+        destination = helpers / name
+        shutil.copyfile(path, destination)
+        destination.chmod(0o755 if name in CLUSTER_HELPER_EXECUTABLES else 0o644)
+
+
+def is_arm64_macho(path):
+    with path.open("rb") as source:
+        header = source.read(8)
+    # MH_MAGIC_64 (little-endian) and CPU_TYPE_ARM64.
+    return len(header) == 8 and header[:4] == bytes.fromhex("cffaedfe") and header[4:8] == bytes.fromhex("0c000001")
+
+
+def check_cluster_helpers(app):
+    """Fails unless Darkbloom.app carries both cluster helpers where the installed
+    provider looks for them, with the Metal library and paged-attention source
+    they load beside themselves, byte-identical to the app's own copies."""
+    helpers = app / "Contents/Helpers"
+    for name in CLUSTER_HELPER_EXECUTABLES + CLUSTER_HELPER_RESOURCES:
+        path = helpers / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Darkbloom.app/Contents/Helpers/{name} is missing: the release must ship the cluster helpers")
+    for name in CLUSTER_HELPER_EXECUTABLES:
+        path = helpers / name
+        if not is_arm64_macho(path):
+            raise ValueError(f"Darkbloom.app/Contents/Helpers/{name} is not an arm64 Mach-O executable")
+        if path.stat().st_mode & 0o111 != 0o111:
+            raise ValueError(f"Darkbloom.app/Contents/Helpers/{name} is not executable")
+    main_metallib = app / "Contents/MacOS/mlx.metallib"
+    if not main_metallib.is_file() or sha256(main_metallib) != sha256(helpers / "mlx.metallib"):
+        raise ValueError("The cluster helpers' mlx.metallib differs from Contents/MacOS/mlx.metallib")
+    paged = [path for path in sorted((app / "Contents/Resources").glob("*.bundle/pagedattention.metal")) if path.is_file()]
+    if len(paged) != 1 or sha256(paged[0]) != sha256(helpers / "pagedattention.metal"):
+        raise ValueError("The cluster helpers' pagedattention.metal differs from the app's resource bundle copy")
+
+
+def cluster_helpers(arguments):
+    check_cluster_helpers(arguments.app)
 
 
 def check_info(root, version, names):
@@ -222,6 +281,7 @@ def receipt(arguments):
     names = recorded_packaging(unsigned)
     check_info(root, unsigned["version"], names)
     app = root / names["appBundleName"]
+    check_cluster_helpers(app)
     (root / "bin").mkdir()
     # The flat verifier copies keep the product names for both identities.
     for product, name in executables(names):
@@ -243,6 +303,8 @@ def main():
     for name in ["source", "bin", "metallib", "output"]:
         stage_parser.add_argument("--" + name, type=Path, required=True)
     stage_parser.add_argument("--version", required=True)
+    stage_parser.add_argument("--cluster-helpers", type=Path, required=True,
+                              help="Output of scripts/build-cluster-helpers.sh")
     unpack_parser = commands.add_parser("unpack")
     for name in ["archive", "output"]:
         unpack_parser.add_argument("--" + name, type=Path, required=True)
@@ -252,12 +314,14 @@ def main():
     profile_parser.add_argument("--profile", type=Path, required=True)
     entitlements_parser = commands.add_parser("cli-entitlements")
     entitlements_parser.add_argument("--plist", type=Path, required=True)
+    helpers_parser = commands.add_parser("cluster-helpers")
+    helpers_parser.add_argument("--app", type=Path, required=True)
     receipt_parser = commands.add_parser("receipt")
     for name in ["output", "notary"]:
         receipt_parser.add_argument("--" + name, type=Path, required=True)
     arguments = parser.parse_args()
     {"stage": stage, "unpack": unpack, "profile": profile,
-     "cli-entitlements": cli_entitlements, "receipt": receipt}[arguments.command](arguments)
+     "cli-entitlements": cli_entitlements, "cluster-helpers": cluster_helpers, "receipt": receipt}[arguments.command](arguments)
 
 
 if __name__ == "__main__":

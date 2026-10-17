@@ -61,6 +61,12 @@ struct Status: AsyncParsableCommand {
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
+        if LaunchAgent.installedJobIsClusterMember(),
+           let supervisor = ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self,
+                                                         from: ClusterSupervisionFiles.statePath()) {
+            print(supervisor.summary(now: Date().timeIntervalSince1970))
+        }
+        for line in Self.clusterServiceLines() { print(line) }
         printDaemonStatus(config: config, models: snapshot.models)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is

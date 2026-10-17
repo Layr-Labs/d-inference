@@ -19,6 +19,8 @@ public enum CoordinatorClientCodec {
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
+        memberRegistrationNonce: String? = nil,
+        clusterResume: ClusterMembership.Resume? = nil,
         appAttestResumeNonce: String? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
@@ -59,9 +61,14 @@ public enum CoordinatorClientCodec {
         let candidateIDs = Set(config.autopilotInventory.map(\.id)).subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
         let servingModels = effectiveModels.filter { !candidateIDs.contains($0.id) }
         let constrainedModels = toolConstraintModelIDs(servingModels + inventory)
+        // A control-only cluster member publishes an EMPTY ordinary inventory
+        // (old coordinators cannot cold-route it) and carries its cluster
+        // inventory separately; the coordinator closes the connection on any
+        // role-field mismatch (darkbloom-platform coordinator/protocol/execution_role.go).
+        let memberMode = config.executionRole == .clusterMember
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
-            models: servingModels,
+            models: memberMode ? [] : servingModels,
             backend: config.backendName,
             version: version,
             publicKey: config.publicKey,
@@ -85,7 +92,12 @@ public enum CoordinatorClientCodec {
             appAttestResumeProtocol: appAttestResumeNonce == nil ? nil : 1,
             appAttestResumeNonce: appAttestResumeNonce,
             modelAutopilot: modelAutopilot,
-            autopilotInventory: inventory.isEmpty ? nil : inventory
+            autopilotInventory: inventory.isEmpty ? nil : inventory,
+            executionRole: config.executionRole,
+            memberRegistrationNonce: memberMode ? memberRegistrationNonce : nil,
+            clusterModels: memberMode ? servingModels : nil,
+            // A member away in its session's disconnect grace claims it here.
+            clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil
         ))
     }
 
@@ -104,6 +116,8 @@ public enum CoordinatorClientCodec {
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
+        memberRegistrationNonce: String? = nil,
+        clusterResume: ClusterMembership.Resume? = nil,
         appAttestResumeNonce: String? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
@@ -122,6 +136,8 @@ public enum CoordinatorClientCodec {
                 modelAutopilot: modelAutopilot,
                 ordinaryServingModelIDs: ordinaryServingModelIDs,
                 autopilotInventory: autopilotInventory,
+                memberRegistrationNonce: memberRegistrationNonce,
+                clusterResume: clusterResume,
                 appAttestResumeNonce: appAttestResumeNonce
             )
         )
@@ -142,7 +158,8 @@ public enum CoordinatorClientCodec {
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         idleUnloadMins: UInt64? = nil,
-        modelAutopilot: ModelAutopilotSnapshot? = nil
+        modelAutopilot: ModelAutopilotSnapshot? = nil,
+        clusterSession: ClusterSessionStatus? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -159,7 +176,8 @@ public enum CoordinatorClientCodec {
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             idleUnloadMins: idleUnloadMins,
-            modelAutopilot: modelAutopilot
+            modelAutopilot: modelAutopilot,
+            clusterSession: clusterSession
         ))
     }
 

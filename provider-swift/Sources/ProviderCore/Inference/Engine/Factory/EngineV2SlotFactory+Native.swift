@@ -100,6 +100,9 @@ extension EngineV2SlotFactory {
                 throw CBv2KVError.backendIneligible(reason: "Autoregressive assistant cannot bind to diffusion")
             }
             return .diffusion
+        case .clusterPair:
+            // The pair's owners hold the model; no local engine is built.
+            throw CBv2KVError.backendIneligible(reason: "A cluster pair slot has no local engine")
         }
     }
 
@@ -126,6 +129,9 @@ extension EngineV2SlotFactory {
                 throw CBv2KVError.backendIneligible(reason: "Invalid native diffusion recovery ownership")
             }
             return .diffusion
+        case .clusterPair:
+            // The pair's owners hold the model; no local engine is built.
+            throw CBv2KVError.backendIneligible(reason: "A cluster pair slot has no local engine")
         }
     }
 
@@ -253,6 +259,9 @@ extension EngineV2SlotFactory {
             await prepared.bridge.configureMTPStatus(status, metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
             return ProviderEngineBundle(bridge: prepared.bridge, assistant: nil, assistantBytes: 0,
                 mtpArtifact: nil, mtpStatus: status)
+        case .clusterPair:
+            // The pair's owners hold the model; no local engine is built.
+            throw CBv2KVError.backendIneligible(reason: "A cluster pair slot has no local engine")
         }
     }
 

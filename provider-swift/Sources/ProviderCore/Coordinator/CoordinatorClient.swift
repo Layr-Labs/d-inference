@@ -100,6 +100,41 @@ public actor CoordinatorClient {
     /// gate.
     internal var sessionRegistered = false
 
+    /// One connection's control-only member negotiation; created at connect
+    /// when `config.executionRole == .clusterMember` and discarded on every
+    /// reconnect. The nonce binds the acceptance to this exact connection.
+    var memberNegotiation: ClusterMemberNegotiation?
+    /// Set when member acceptance never arrives, arrives late, or is refused.
+    /// The reconnect loop exits instead of cycling an unacknowledged member.
+    internal var memberRoleFailure = false
+    /// The failure was the coordinator not knowing the role: it answered this
+    /// connection's registration as an ordinary provider's (`memberOrdinaryAnswer`)
+    /// and the negotiation window ended with the connection still open.
+    internal var memberRoleUnsupported = false
+    /// This connection's coordinator answered the member's registration with
+    /// an ordinary provider message (e.g. its desired builds) before any
+    /// acknowledgement. Reset with every connection's negotiation.
+    internal var memberOrdinaryAnswer = false
+    /// When a starting member's registration wait gives up (set by its
+    /// `ProviderLoop`); nil when nothing waits. Before it, a reconnect is
+    /// never scheduled past it (CoordinatorClient+MemberRegistration).
+    internal var memberRegistrationDeadline: ContinuousClock.Instant?
+    /// Why the latest connection attempt could not reach the coordinator at
+    /// all; nil once an attempt's transport was ready.
+    internal var memberUnreachableReason: String?
+    /// The reconnect the wait's deadline placed, and the end of its own
+    /// terms (handshake, then the connection's negotiation window).
+    internal var memberFinalAttemptUntil: ContinuousClock.Instant?
+    /// The end of the current attempt's own terms (its handshake's window,
+    /// then its connection's negotiation window); nil between attempts.
+    internal var memberAttemptUntil: ContinuousClock.Instant?
+
+    /// The member control installed before the first connection, and its
+    /// attachment to the current accepted connection. The attachment is nil
+    /// until this connection's acceptance and dropped at every boundary.
+    internal var nativePairMember: NativePairMemberControl?
+    internal var nativePairConnection: NativePairMemberConnection?
+
     private let shutdownFlag = ShutdownFlag()
 
     /// Fast, thread-safe shutdown visibility for connection tasks.
@@ -249,6 +284,7 @@ public actor CoordinatorClient {
     /// registration while `shutdownRequested` is still false). Fire-and-forget:
     /// the actor is not blocked waiting for the frame to flush.
     private func closeCurrentConnection() {
+        detachNativePairMember()
         guard let connection = nwConnection else { return }
         nwConnection = nil
         appAttestResumeNonce = nil

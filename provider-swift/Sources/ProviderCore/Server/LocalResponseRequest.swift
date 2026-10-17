@@ -5,7 +5,7 @@ import ProviderCoreFoundation
 /// bounded MiMo capsule sees additional native controls; other families keep
 /// the default service's prior template-control behavior.
 struct LocalResponseRequest: Decodable {
-    let request: OpenAIResponseRequest
+    var request: OpenAIResponseRequest
     let templateControls: ChatTemplateControls
 
     init(from decoder: any Decoder) throws {

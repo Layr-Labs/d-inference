@@ -12,7 +12,8 @@ extension EngineV2Bridge {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil,
-        logprobsChannel: EngineV2LogprobsChannel? = nil
+        logprobsChannel: EngineV2LogprobsChannel? = nil,
+        cacheEnabled: Bool = true
     ) async -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
             [
@@ -35,7 +36,7 @@ extension EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: "", logprobsChannel: logprobsChannel
+            cacheScope: "", cacheEnabled: cacheEnabled, logprobsChannel: logprobsChannel
         )
     }
 
@@ -123,8 +124,16 @@ extension EngineV2Bridge {
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptWork: PromptWork? = nil,
+        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
+        distributedRequestOrigin: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving
     ) async throws -> AsyncStream<GenerationEvent> {
+        // This is our frame-receipt clock when available, never an upstream wall
+        // timestamp. Local engines are unaffected by the distributed-only context.
+        let httpResponse = DistributedHTTPResponseScope.current
+        let distributedOrigin = DistributedRequestOrigin.earliest(
+            handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
+            now: ContinuousClock.now)
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
         // id is replaced with a fresh generated one (it could never correlate
@@ -229,7 +238,8 @@ extension EngineV2Bridge {
             samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
-            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
+            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
@@ -666,15 +676,39 @@ extension EngineV2Bridge {
                 ? deadlineProjectionBypassReason(
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
+        let distributed = engine as? DistributedCBv2Engine
+        let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
+                                                         firstTokenDeadline: firstContentDeadline?.instant)
         do {
+            let selectedContext = try originContext.map { original in
+                let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
+                return try distributedFirstTokenBudgetPolicy.map { policy in
+                    try policy.restricting(bounded, receivedAt: distributedOrigin,
+                                           inputTokenCount: promptTokens.count)
+                } ?? bounded
+            }
+            if let distributed, let selectedContext, let httpResponse {
+                // Actual token count and trusted origin have selected this
+                // absolute deadline. Bind before reserve/start; no fresh budget.
+                try httpResponse.bind(deadline: selectedContext.firstTokenDeadline) { [weak distributed] in
+                    // Never block a writer/timer on a synchronous engine queue.
+                    distributed?.queue.async { [weak distributed] in distributed?.cancel(cbv2Id) }
+                }
+            }
             if let admission = deadlineAdmission {
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
                 // cancel after commit and hide the generation-bound retirement
                 // handle needed to transfer resource ownership safely.
-                let result = try await engine.submit(
-                    engineRequest,
-                    firstTokenDeadline: admission)
+                let result: CBv2FirstTokenDeadlineResult
+                if let distributed, let selectedContext {
+                    result = try await distributed.submit(engineRequest, firstTokenDeadline: admission,
+                                                          deadlineContext: selectedContext)
+                } else {
+                    result = try await engine.submit(
+                        engineRequest,
+                        firstTokenDeadline: admission)
+                }
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
                     prefillEvidenceRecovery.admit(id)
@@ -788,6 +822,11 @@ extension EngineV2Bridge {
                     let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
+                } else if let distributed, let selectedContext {
+                    // Without a projected admission the engine still enforces
+                    // the origin-anchored deadlines selected above. A bare
+                    // submit would start a fresh budget with no first-token limit.
+                    events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
                 } else {
                     events = try engine.submit(engineRequest)
                 }
@@ -823,6 +862,7 @@ extension EngineV2Bridge {
                     }
                 }
             }
+            httpResponse?.applyPendingCancellation()
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
             prefillEvidenceRecovery.admit(id)
             // This exception proves acceptance but carries no projected work.
@@ -862,13 +902,27 @@ extension EngineV2Bridge {
                     usageSignal: usageSignal,
                     failure: Self.prefixCacheFailureClass(for: error))
             }
+            // A distributed first-token budget spent before admission is the
+            // same pre-content refusal as an unreachable coordinator deadline.
+            if error as? DistributedRequestDeadlineError == .firstTokenExpired {
+                throw PreContentDeadlineFailure.deadlineUnreachable
+            }
             if let failure = error as? PreContentDeadlineFailure { throw failure }
             if error is CancellationError { throw CancellationError() }
+            // A refused distributed admission has no native terminal for the
+            // HTTP writer to report. Throw the mapped error before response
+            // headers instead of returning a stream that can only abort.
+            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
+            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
+                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+                    EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile))
+            }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
+                for: error, distributedProfile: distributedProfile)))
             continuation.finish()
             return stream
         }
@@ -902,7 +956,8 @@ extension EngineV2Bridge {
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
-            nativeRetirement: nativeRetirement
+            nativeRetirement: nativeRetirement,
+            httpResponse: distributed == nil ? nil : httpResponse
         )
 
         let bridge = self

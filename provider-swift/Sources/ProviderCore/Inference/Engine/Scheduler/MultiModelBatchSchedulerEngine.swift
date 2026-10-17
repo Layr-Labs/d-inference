@@ -54,6 +54,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// infers architecture from the caller's requested name. The acquired
     /// model and its actual native audio binding are revalidated afterward.
     private let modelTypeProvider: (@Sendable (String) async -> String?)?
+    /// The local API's engine: a streamed think-tag request whose prompt tail opens no think block starts in content
+    /// mode (a model that writes `<think>` itself still switches to reasoning), instead of the parser's undecided state,
+    /// which holds the whole answer until a marker or the end. The coordinator path keeps its own rule.
+    private var seedsContentForUnknownPromptTail = false
     /// Listing closure used by `availableModels()` when the engine was
     /// constructed via the atomic-`acquire` init. Returns the set of
     /// model IDs that should appear in `/v1/models`.
@@ -227,12 +231,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         defaultMaxTokens: Int = 4096,
         templateControls: ChatTemplateControls = .init(),
         nativeLocalCacheScope: String? = nil,
-        modelTypeProvider: (@Sendable (String) async -> String?)? = nil
+        modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
+        seedsContentForUnknownPromptTail: Bool = false
     ) {
         self.measurementPurpose = .serving
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
         self.modelTypeProvider = modelTypeProvider
+        self.seedsContentForUnknownPromptTail = seedsContentForUnknownPromptTail
         self.availableModelsOverride = availableModels
         self.registryProvider = nil
         self.ensureLoaded = { _ in }
@@ -289,9 +295,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
     }
 
+    /// `seedsContentForUnknownPromptTail`'s seed: an empty closed think block (content mode) for a streamed
+    /// think-tag request; nil otherwise.
+    private func contentSeed(parser: ReasoningParserFormat?, stream: Bool?) -> String? {
+        guard seedsContentForUnknownPromptTail, stream == true, parser == .qwen3 || parser == .deepseekR1 else { return nil }
+        return ReasoningPromptProbe.thinkOpen + ReasoningPromptProbe.thinkClose
+    }
+
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        // Capture before acquisition and tokenization consume the budget.
+        // Preparation can run on another task, so the value is passed
+        // explicitly instead of being read from the task-local again.
+        let distributedRequestOrigin = DistributedRequestOrigin.current
         let templateControls = self.templateControls.resolvingPromptDate()
         // A local HTTP engine may be shared by concurrent Chat/Responses calls.
         // The fallback usage channel belongs to this request, never to the engine.
@@ -330,9 +347,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reserve) and is retained only for ProviderLoop where
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
+        let acquired = try await acquireForCompletion(modelId: request.model)
+        // Time spent in a cluster pair's request queue is not the pair's
+        // first-token or request budget: those start when the queue lets go.
+        let origin = acquired.queueExitedAt.map { exited in distributedRequestOrigin.map { max($0, exited) } ?? exited }
+            ?? distributedRequestOrigin
         return try await prepareAcquiredCompletion(
             request: request, templateControls: templateControls, requestUsage: requestUsage,
-            acquired: try await acquireForCompletion(modelId: request.model))
+            distributedRequestOrigin: origin, acquired: acquired)
     }
 
     /// Keep registry/acquisition snapshots out of the parent preparation frame.
@@ -369,11 +391,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     private func prepareAcquiredCompletion(
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
-        requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
+        requestUsage: EngineV2RequestUsageSignal,
+        distributedRequestOrigin: ContinuousClock.Instant?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         guard let lease = acquired.nativeConsumerLease else {
             return try await prepareCompletion(request: request, templateControls: templateControls,
-                requestUsage: requestUsage, acquired: consume acquired)
+                requestUsage: requestUsage, distributedRequestOrigin: distributedRequestOrigin,
+                acquired: consume acquired)
         }
         let releaseBox = acquired.releaseToken
         // A second token cannot adopt, abandon, fire or cancel a first token's
@@ -387,7 +411,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard let acquired = payload.take() else { throw NativeLocalConsumerOwnershipError.invalidBinding }
                     do {
                         return try await prepareCompletion(request: request, templateControls: templateControls,
-                            requestUsage: requestUsage, acquired: consume acquired)
+                            requestUsage: requestUsage, distributedRequestOrigin: distributedRequestOrigin,
+                            acquired: consume acquired)
                     } catch {
                         await releaseBox.fire()
                         throw error
@@ -412,7 +437,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     private func prepareCompletion(
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
-        requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
+        requestUsage: EngineV2RequestUsageSignal,
+        distributedRequestOrigin: ContinuousClock.Instant?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         let tokenizer = acquired.tokenizer
         let modelType = acquired.modelType
@@ -686,6 +712,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation,
                         promptWork: promptWork,
+                        distributedRequestOrigin: distributedRequestOrigin,
                         measurementPurpose: measurementPurpose
                     )
                     do {
@@ -703,7 +730,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-                    )
+                    ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
                     try checkFirstContentDeadline()
                     return try await makeDeadlineCheckedEventStream(
                         upstream: upstream,
@@ -823,7 +850,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             stream: request.stream,
             promptTokens: promptTokens,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-        )
+        ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
         do {
             try checkFirstContentDeadline()
         } catch {
@@ -906,6 +933,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     serviceReservationID: serviceReservationID,
                     serviceReservation: serviceReservation,
                     promptWork: promptWork,
+                    distributedRequestOrigin: distributedRequestOrigin,
                     measurementPurpose: measurementPurpose
                 )
                 do {

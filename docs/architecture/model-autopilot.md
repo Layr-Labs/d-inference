@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Provider Autopilot offers explicitly consented cached models to an external
 controller. Interest or shadow enrollment does not authorize live control,
@@ -25,6 +25,12 @@ Failed or expired control cannot manufacture ownership of accepted work.
 Cancellation, disconnect and shutdown must preserve native retirement and
 restore ordinary serving eligibility only through the existing lifecycle.
 Files already on disk are not evidence that a model can load safely.
+
+A control-only cluster member never participates, whatever consent its saved
+configuration records: `autopilotConsented` is false in that role, so it
+advertises no participation, and `consumeClusterMemberEvent` drops a control
+lease or command that arrives anyway. The coordinator does not send one either;
+that guard is in `Layr-Labs/darkbloom-platform`.
 
 ## External Policy
 

@@ -4,6 +4,7 @@
 // router fixes BasicRequestContext's 2 MiB limit, so these routes collect and
 // decode here, then use the same MLXOpenAIService and response framing.
 
+import NIOCore
 import Foundation
 import Hummingbird
 import MLXLMServer
@@ -26,16 +27,29 @@ where Inner.Context == BasicRequestContext {
     public let inner: Inner
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
+    let distributedResponses: (any DistributedHTTPResponseProviding)?
+    /// The reasoning parser a request that names none is served with, by its model's type (see
+    /// `makeLocalInferenceApplication`); nil: the request's own. Without it the local API returned Gemma's thought
+    /// channel and GPT-OSS's Harmony markers in `content`, on a single Mac and on a cluster alike.
+    let reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
+    /// What `previous_response_id` continues; the fork's typed Responses request does not carry the field.
+    let responseConversations: LocalResponseConversationStore
 
     init(
         inner: Inner,
         service: MLXOpenAIService,
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
-        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil
+        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
+        distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
+        reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil,
+        responseConversations: LocalResponseConversationStore = LocalResponseConversationStore()
     ) {
+        self.reasoningParserFor = reasoningParserFor
+        self.responseConversations = responseConversations
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
+        self.distributedResponses = distributedResponses
     }
 
     /// The POST paths that carry inline media and need the raised ceiling.
@@ -49,6 +63,11 @@ where Inner.Context == BasicRequestContext {
 
     static func isResponsesCreationPath(_ path: String) -> Bool {
         path == "/v1/responses" || path == "/responses"
+    }
+
+    func resolveReasoningParser(_ item: inout LocalChatRequest) async {
+        guard item.request.reasoningParser == nil, let reasoningParserFor else { return }
+        item.request.reasoningParser = await reasoningParserFor(item.request.model)
     }
 
     public func respond(to request: Request, context: Context) async throws -> Response {
@@ -78,16 +97,44 @@ where Inner.Context == BasicRequestContext {
         }
 
         if isResponses {
-            let item: LocalResponseRequest
-            switch decodeBody(LocalResponseRequest.self, from: buffer) {
+            var body = buffer
+            var inputItems: Data?
+            switch LocalResponseConversation.prepare(
+                body: Data(buffer: buffer), conversation: responseConversations.conversation(for:)) {
+            case .opaque:
+                break
+            case .prepared(let rewritten, let items):
+                if let rewritten { body = ByteBuffer(data: rewritten) }
+                inputItems = items
+            case .previousResponseNotFound:
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest, message: "previous_response_id not found",
+                    code: "previous_response_not_found")
+            }
+            var item: LocalResponseRequest
+            switch decodeBody(LocalResponseRequest.self, from: body) {
             case .success(let decoded): item = decoded
             case .failure(let badRequest): return badRequest
             }
+            // The same opt-out the service's own response store honours.
+            if item.request.store == false { inputItems = nil }
+            if item.request.reasoning?.parser == nil, let reasoningParserFor,
+               let parser = await reasoningParserFor(item.request.model) {
+                var reasoning = item.request.reasoning ?? OpenAIResponseReasoningOptions()
+                reasoning.parser = parser
+                item.request.reasoning = reasoning
+            }
             let responseService = serviceForTemplateControls(item.templateControls)
             if item.request.stream == true {
-                return Self.sseResponse(try await responseService.streamResponseFrames(request: item.request))
+                let frames = try await responseService.streamResponseFrames(request: item.request)
+                guard let inputItems else { return Self.sseResponse(frames) }
+                return Self.sseResponse(responseConversations.recording(frames, inputItems: inputItems))
             }
-            return try Self.jsonResponse(try await responseService.createResponse(request: item.request))
+            let response = try await responseService.createResponse(request: item.request)
+            if let inputItems {
+                responseConversations.record(responseID: response.id, output: response.output, inputItems: inputItems)
+            }
+            return try Self.jsonResponse(response)
         }
 
         if isBatch {
@@ -100,7 +147,8 @@ where Inner.Context == BasicRequestContext {
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
             responses.reserveCapacity(requests.count)
-            for item in requests {
+            for var item in requests {
+                await resolveReasoningParser(&item)
                 responses.append(
                     try await serviceForTemplateControls(item.templateControls)
                         .createChatCompletion(request: item.request))
@@ -108,16 +156,41 @@ where Inner.Context == BasicRequestContext {
             return try Self.jsonResponse(responses)
         }
 
-        let item: LocalChatRequest
+        var item: LocalChatRequest
         switch decodeBody(LocalChatRequest.self, from: buffer) {
         case .success(let decoded): item = decoded
         case .failure(let badRequest): return badRequest
         }
+        await resolveReasoningParser(&item)
         let requestService = serviceForTemplateControls(item.templateControls)
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
         if item.request.stream == true {
+            if let distributedResponses {
+                let response = try distributedResponses.begin()
+                do {
+                    guard let channel = LocalHTTPConnectionScope.current else {
+                        throw MultiModelBatchSchedulerEngineError.requestRejected("Missing local connection observation")
+                    }
+                    // A full close is definitive. Input half-close alone is
+                    // allowed; the serialized SSE writer probes for write loss.
+                    channel.closeFuture.whenComplete { [weak response] _ in
+                        guard let response else { return }
+                        // Delivery is impossible after a full close. This ends
+                        // only the HTTP hold; engine/lease retirement stays held.
+                        response.disconnect(); response.finish()
+                    }
+                    if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
+                    let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
+                        try await requestService.streamChatCompletionFrames(
+                            request: item.request, frameGenerationErrors: true)
+                    }
+                    return DistributedHTTPEventStream.response(frames, control: response)
+                } catch {
+                    response.disconnect(); response.finish(); throw error
+                }
+            }
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
             return Self.sseResponse(frames)

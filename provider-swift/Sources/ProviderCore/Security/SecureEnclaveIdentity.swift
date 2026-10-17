@@ -136,6 +136,29 @@ public final class SecureEnclaveIdentity: @unchecked Sendable {
         SecureEnclave.isAvailable
     }
 
+    #if DEBUG
+    /// DEBUG builds only: a test rig whose unsigned binary lacks the signed
+    /// build's keychain entitlement keeps its Secure Enclave key's opaque
+    /// handle in a private file (`DARKBLOOM_DEBUG_SE_KEY_FILE`), so a cluster
+    /// member keeps one pin across process starts. The key never leaves the
+    /// Secure Enclave and the handle is usable only on this Mac. A release
+    /// build uses the keychain-backed persistent key and has no such path.
+    init(dataRepresentation: Data) throws {
+        self.privateKey = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: dataRepresentation)
+        self.publicKey = self.privateKey.publicKey
+    }
+
+    static func debugPersisted(at path: String) throws -> SecureEnclaveIdentity {
+        if let data = FileManager.default.contents(atPath: path) { return try SecureEnclaveIdentity(dataRepresentation: data) }
+        let identity = try SecureEnclaveIdentity()
+        guard FileManager.default.createFile(atPath: path, contents: identity.privateKey.dataRepresentation,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return identity
+    }
+    #endif
+
     // MARK: - Ephemeral Startup
 
     /// Create a fresh provider signing identity for this process launch.

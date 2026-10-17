@@ -43,6 +43,7 @@ extension ProviderLoop {
     /// `.started` status is queued; the download runs on a low-priority task and
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        if isClusterMember { rejectClusterMemberPrefetch(modelId, send: send); return }
         guard autopilotAllowsModel(modelId) else {
             send.send(.prefetchModelStatus(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "model_not_selected"))
             return

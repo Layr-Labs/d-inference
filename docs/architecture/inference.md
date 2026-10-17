@@ -1082,6 +1082,42 @@ serializes SSE frames; the provider encrypts and sends them back over the
 coordinator connection. This integration does not start a local HTTP endpoint
 or change consumer/OpenRouter routing.
 
+### Two-Mac cluster stages (experimental)
+
+A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
+runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
+installed owner, driven over the owner-authenticated link control channel, with
+activations and KV hand-offs crossing the cable only on the encrypted,
+authenticated data plane (JACCL over RDMA). The stage runtimes reuse the CBv2
+engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
+stage's KV pool (`CBv2StageKVHost`, native precision; the prefill mirror is on
+only for one-request hosts) on the paged chain of
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift`
+(pinned to the paged-engine branch; the mirror refuses quantized KV layers).
+Placement is derived at run time from both Macs' device profiles, measured
+speed records and the model's own configuration
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/`); a pair serves a
+model only on the chip and numerics classes its qualification records granted
+(`libs/darkbloom-cluster-worker/`). Provider-side membership, onboarding,
+pairing, model provisioning, control leadership and the installed session live
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/`. The user
+procedure is [two Macs as one provider](../provider/two-mac-cluster.md):
+`darkbloom cluster` on each Mac, pick a model, done. The onboarding
+(`Onboarding/ClusterOnboardingFlow.swift`, pure; `ClusterOnboardingLive.swift`)
+shows the adopted plan as one deployment line (`ClusterOnboardingDeployment`:
+the plan's mode in words, each Mac's layers or tensor-parallel share), lists
+the choices that fit in free memory first and measures the fit again before
+the start, and never offers a model whose pair-serving grant refuses the pair.
+After a Darkbloom update changes a Mac's worker digest, the control leader's
+cluster service re-plans and re-adopts the same model by itself
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). The stage memory
+gate's two fixed margins (the admissible floor, 6 GiB, and the loading
+headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
+below that they are the same share of the observed Mac's memory, never under
+2 and 1.5 GiB (`QwenDenseStageLoadPolicy.minimumAdmissibleBytes(physicalMemoryBytes:)`),
+so a smaller Mac takes the share it can hold instead of none. Every load and
+request is still checked against that Mac's memory at that moment.
+
 ## Invariants
 
 1. Only `model_type`s accepted by `EngineV2SupportedModels.isSupported` are
@@ -1135,6 +1171,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | `Tools` | Schema normalization and constrained generation (`ToolSchemaNormalization`, `ToolConstraintFactory`). |
 | `Streaming` | Reasoning/tool output routing, logprobs and usage (`NativeToolStreamRouter`, `StreamedGenerationUsage` in `Streaming/UsageAccounting.swift`). |
 | `Vision` | Media decoding, feature preparation and memory gates (`MediaIngest`, `VisionMemoryGate`). |
+| `Distributed` | Two-Mac cluster (experimental): onboarding, pairing, link control, model provisioning, derived control leadership and failover, installed sessions and diagnostics (`ClusterService`, `ClusterControlNode`, `ClusterModelProvisionResponder`). |
 
 | Concern | File / symbol |
 |---|---|

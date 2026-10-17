@@ -99,9 +99,10 @@ public enum DarkbloomMDMRemoval {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = showErrors ? FileHandle.standardError : FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
+        let childExit = ProcessExitObserver()
+        do { try childExit.run(process) } catch { return nil }
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        childExit.wait()
         guard process.terminationStatus == 0 else { return nil }
         return data
     }

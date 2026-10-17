@@ -229,15 +229,16 @@ public func verifyBundleSignature() throws {
     process.standardOutput = FileHandle.nullDevice
     process.standardError = errPipe
 
+    let childExit = ProcessExitObserver()
     do {
-        try process.run()
+        try childExit.run(process)
     } catch {
         logger.warning("Could not verify bundle signature: \(error)")
         return // Don't fail if codesign isn't available
     }
     // Drain the captured stream before waiting; stdout is deliberately discarded.
     let data = errPipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
+    childExit.wait()
 
     if process.terminationStatus == 0 {
         logger.info("App bundle signature valid")

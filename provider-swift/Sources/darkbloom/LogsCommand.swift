@@ -126,13 +126,14 @@ struct Logs: AsyncParsableCommand {
         process.standardError = FileHandle.standardError
         process.standardInput = FileHandle.standardInput
 
+        let childExit = ProcessExitObserver()
         do {
-            try process.run()
+            try childExit.run(process)
         } catch {
             printError("failed to run log: \(error.localizedDescription)")
             throw ExitCode.failure
         }
-        process.waitUntilExit()
+        childExit.wait()
 
         // Mirror `--last` alone: if the historical `log show` failed (e.g. a
         // malformed duration), surface its exit status instead of silently

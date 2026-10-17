@@ -141,7 +141,9 @@ func makeLocalInferenceApplication(
         distributedResponses: distributedResponses,
         // Both the single-Mac and the cluster API: a request naming no parser gets its model's, as the coordinator
         // path resolves it; a model of unknown type keeps the request's own.
-        reasoningParserFor: reasoningParserFor)
+        reasoningParserFor: reasoningParserFor,
+        // Like the response store above: one per application, so both serve modes continue conversations alike.
+        responseConversations: LocalResponseConversationStore())
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).

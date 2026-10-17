@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -128,7 +128,7 @@ the upstream `MLXLMServer` router
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
-| POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
+| POST | `/v1/responses`, `/responses` | Responses API, in-memory store; `previous_response_id` continues a conversation this process served unless it was sent with `"store": false` (bounded store, `LocalResponseConversationStore` in `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift`); an unknown ID returns 400 with code `previous_response_not_found` |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
 | POST | `/tokenize`, `/detokenize`, `/apply-template` | Tokenizer utilities |
 | POST | `/v1/embeddings`, `/embeddings`, `/embedding` | Registered upstream; the provider configures no embedding model, so they return an OpenAI error envelope with code `embeddings_not_configured` |

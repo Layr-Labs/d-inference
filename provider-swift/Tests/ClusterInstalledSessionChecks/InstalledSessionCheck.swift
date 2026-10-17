@@ -160,6 +160,27 @@ final class EndpointBox: @unchecked Sendable {
         try require(ClusterLocalServing.servingPort(isFree:{$0 != 8000 && $0 != 8001})==8002,"the next free port not taken")
         try require(ClusterLocalServing.servingPort(isFree:{_ in false})==8000,"no free port: 8000 (the start then says it is taken)")
 
+        // One port on both Macs (2026-10-16: oMLX on the M5 Max's 8000 put the API on 8000 or 8001 by which Mac was rank 0).
+        let all=Array(ClusterLocalServing.servingPorts)
+        let no8000=all.filter{$0 != 8000}
+        try require(ClusterLocalServing.freePorts(isFree:{$0 != 8000 && $0 != 8005})==all.filter{$0 != 8000 && $0 != 8005},"free ports misread")
+        try require(ClusterLocalServing.freePorts(isFree:{_ in false}).isEmpty && all.first==8000 && all.last==8020,"the serving ports are not 8000 to 8020")
+        try require(ClusterLocalServing.sharedPort(localFree:all,peerFree:all)==8000,"8000 not taken when free on both")
+        try require(ClusterLocalServing.sharedPort(localFree:all,peerFree:no8000)==8001,"8000 taken on the other Mac: not 8001 here")
+        try require(ClusterLocalServing.sharedPort(localFree:no8000,peerFree:all)==8001,"8000 taken here: not 8001")
+        try require(ClusterLocalServing.sharedPort(localFree:all.filter{$0 != 8001},peerFree:no8000)==8002,"not the lowest port free on both")
+        try require(ClusterLocalServing.sharedPort(localFree:all,peerFree:all,preferred:8001)==8001,"a port free on both not kept")
+        try require(ClusterLocalServing.sharedPort(localFree:all,peerFree:all.filter{$0 != 8001},preferred:8001)==8000,"a kept port taken on the other Mac not left")
+        try require(ClusterLocalServing.sharedPort(localFree:no8000,peerFree:nil)==8001,"an older Mac's status: not this Mac's own choice")
+        try require(ClusterLocalServing.sharedPort(localFree:all,peerFree:nil,preferred:8003)==8003,"an older Mac's status: the kept port not kept")
+        try require(ClusterLocalServing.sharedPort(localFree:[8000],peerFree:[8001])==8000,"nothing free on both: not this Mac's own choice")
+        try require(ClusterLocalServing.sharedPort(localFree:no8000,peerFree:[],preferred:8000)==8001,"nothing free on the other Mac: a port taken here")
+        try require(ClusterLocalServing.sharedPort(localFree:[],peerFree:all)==8000,"nothing free here: not 8000")
+        var withPorts=status; withPorts.freePorts=[8001,8002]
+        let decodedPorts=try JSONDecoder().decode(ClusterServiceStatus.self,from:JSONEncoder().encode(withPorts)).freePorts
+        try require(decodedPorts==[8001,8002],"free ports do not round-trip")
+        try require(status.freePorts==nil,"an older Mac's status read as free ports")
+
         // The relay on the Mac that is not rank 0 (2026-10-16): bytes pass both ways, the reply ends when the API
         // closes, and a stopped relay gives its port back.
         let api=socket(AF_INET,SOCK_STREAM,0)

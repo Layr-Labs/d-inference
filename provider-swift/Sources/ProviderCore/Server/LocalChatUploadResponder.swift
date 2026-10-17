@@ -32,6 +32,8 @@ where Inner.Context == BasicRequestContext {
     /// `makeLocalInferenceApplication`); nil: the request's own. Without it the local API returned Gemma's thought
     /// channel and GPT-OSS's Harmony markers in `content`, on a single Mac and on a cluster alike.
     let reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
+    /// What `previous_response_id` continues; the fork's typed Responses request does not carry the field.
+    let responseConversations: LocalResponseConversationStore
 
     init(
         inner: Inner,
@@ -39,9 +41,11 @@ where Inner.Context == BasicRequestContext {
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
         distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
-        reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil
+        reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil,
+        responseConversations: LocalResponseConversationStore = LocalResponseConversationStore()
     ) {
         self.reasoningParserFor = reasoningParserFor
+        self.responseConversations = responseConversations
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
@@ -93,11 +97,27 @@ where Inner.Context == BasicRequestContext {
         }
 
         if isResponses {
+            var body = buffer
+            var inputItems: Data?
+            switch LocalResponseConversation.prepare(
+                body: Data(buffer: buffer), conversation: responseConversations.conversation(for:)) {
+            case .opaque:
+                break
+            case .prepared(let rewritten, let items):
+                if let rewritten { body = ByteBuffer(data: rewritten) }
+                inputItems = items
+            case .previousResponseNotFound:
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest, message: "previous_response_id not found",
+                    code: "previous_response_not_found")
+            }
             var item: LocalResponseRequest
-            switch decodeBody(LocalResponseRequest.self, from: buffer) {
+            switch decodeBody(LocalResponseRequest.self, from: body) {
             case .success(let decoded): item = decoded
             case .failure(let badRequest): return badRequest
             }
+            // The same opt-out the service's own response store honours.
+            if item.request.store == false { inputItems = nil }
             if item.request.reasoning?.parser == nil, let reasoningParserFor,
                let parser = await reasoningParserFor(item.request.model) {
                 var reasoning = item.request.reasoning ?? OpenAIResponseReasoningOptions()
@@ -106,9 +126,15 @@ where Inner.Context == BasicRequestContext {
             }
             let responseService = serviceForTemplateControls(item.templateControls)
             if item.request.stream == true {
-                return Self.sseResponse(try await responseService.streamResponseFrames(request: item.request))
+                let frames = try await responseService.streamResponseFrames(request: item.request)
+                guard let inputItems else { return Self.sseResponse(frames) }
+                return Self.sseResponse(responseConversations.recording(frames, inputItems: inputItems))
             }
-            return try Self.jsonResponse(try await responseService.createResponse(request: item.request))
+            let response = try await responseService.createResponse(request: item.request)
+            if let inputItems {
+                responseConversations.record(responseID: response.id, output: response.output, inputItems: inputItems)
+            }
+            return try Self.jsonResponse(response)
         }
 
         if isBatch {

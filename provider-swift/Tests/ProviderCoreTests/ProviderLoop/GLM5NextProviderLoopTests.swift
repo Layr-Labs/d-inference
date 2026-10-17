@@ -139,6 +139,50 @@ struct GLM5NextProviderLoopTests {
         }
     }
 
+    /// Cancelling the unload while a consumer is parked does not abandon the
+    /// proven-idle retirement or retain a fault: it completes once the
+    /// consumer unwinds, and GLM loads again.
+    @Test func cancelledUnloadStillCompletesRetirement() async throws {
+        try await GLM5NextProviderLoopHost.with { loop, fixture in
+            let id = GLM5NextProviderLoopHost.modelID
+            try await GLM5NextProviderLoopHost.load(loop, fixture)
+            let bridge = try #require(await loop.slotBridgeForTesting(modelId: id))
+            let gate = PreSubmitGate()
+            await bridge._testInstallPreSubmitGate { await gate.park() }
+            let submission = Task {
+                let stream = await bridge.submitTokenized(
+                    promptTokens: Array(repeating: 3, count: 32),
+                    request: .init(model: id, messages: [], temperature: 0, max_tokens: 4),
+                    requestId: "cancelled-unload", cacheScope: "tenant", cacheEnabled: false,
+                    usageSignal: EngineV2RequestUsageSignal())
+                for await _ in stream {}
+            }
+            #expect(await modelLoadingWaitUntil { await gate.hasArrived })
+
+            let unloaded = PreSubmitGate()
+            let unload = Task {
+                let result = await loop.unloadModel(id)
+                await unloaded.release()
+                return result
+            }
+            try await Task.sleep(for: .milliseconds(200))
+            unload.cancel()
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(!(await unloaded.isReleased))
+            #expect(!GLM5NextLoadFaultState.isRetained)
+            await gate.release()
+            #expect(await unload.value)
+            await submission.value
+
+            #expect(!GLM5NextLoadFaultState.isRetained)
+            #expect(await loop.modelLoadingResidentIDs().isEmpty)
+            #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+            try await GLM5NextProviderLoopHost.load(loop, fixture)
+            #expect(await loop.modelLoadingResidentIDs() == [id])
+            #expect(await loop.unloadModel(id))
+        }
+    }
+
     /// A refused publication unwinds the built slot and returns the pending
     /// lease, artifact ownership and load gate; nothing is retained.
     @Test func fullContextRefusalUnwindsCleanly() async throws {

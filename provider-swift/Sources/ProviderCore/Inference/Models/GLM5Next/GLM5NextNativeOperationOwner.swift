@@ -46,7 +46,7 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
     }
 
     /// Only after proven retirement; an unproven close keeps the weights and
-    /// therefore their residency.
+    /// therefore their residency. Idempotent (`GLM5NextWiredResidency.end`).
     func endResidencyAfterRetirement() async {
         guard lock.withLock({ retired }) else { return }
         await residency?.end()
@@ -101,6 +101,8 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
         #endif
     }
 
+    /// Idempotent: concurrent re-drives of one closing owner may each complete
+    /// it with the same cached bridge receipt.
     func complete(_ receipt: CBv2NativeShutdownReceipt) throws {
         try lock.withLock {
             guard receipt.engineID == engineID, receipt.executionContractID == contractID,
@@ -201,15 +203,23 @@ enum GLM5NextRetirement {
     /// bridge are already cancelled and unwind on their own; their pending
     /// result is retried, never treated as an unproven retirement. Any other
     /// error (incomplete proof, identity mismatch) escapes unchanged.
+    ///
+    /// The wait outlives a cancelled caller, as MiMo's registry-driven retry
+    /// does: the bridge is already closed and cannot return to service, and
+    /// every caller (unload, eviction, upgrade, recovery, unwind) treats any
+    /// retirement error as unproven and retains it. Abandoning a proven-idle
+    /// retirement on cancellation would therefore disable GLM until restart.
     static func drainingHostConsumers<T>(
         isolation: isolated (any Actor)? = #isolation,
-        sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        sleep: (Duration) async -> Void = { delay in
+            await Task.detached { try? await Task.sleep(for: delay) }.value
+        },
         _ attempt: () async throws -> T
     ) async throws -> T {
         var delay = Duration.milliseconds(5)
         while true {
             do { return try await attempt() } catch MiMoV26NativeBridgeShutdownError.pendingConsumers {
-                try await sleep(delay)
+                await sleep(delay)
                 delay = min(delay * 2, .milliseconds(250))
             }
         }

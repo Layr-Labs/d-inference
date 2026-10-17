@@ -275,7 +275,8 @@ struct GLM5NextArtifactPlan: Sendable {
         }
         let index = try JSONDecoder().decode(
             Index.self,
-            from: weights.readMetadata("model.safetensors.index.json", maximumBytes: 32 << 20))
+            from: weights.readMetadata(
+                "model.safetensors.index.json", maximumBytes: GLM5NextDiscoveryLoadFootprint.maximumIndexBytes))
         let storage = try Self.qualifiedStorage(config)
         let schema = try GLM5NextWeightInventory.expectedTensors(
             configuration: config,

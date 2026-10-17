@@ -140,6 +140,15 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
+The unregistered GLM prototype defines
+`native-paged-glm5next-full-state-v1`: asymmetric latent/index/gate/validity rows
+plus exact FP32 convolution and recurrent state. The provider store recognizes
+that format, but the protected native binding, MTP serialization and encrypted
+restore qualification remain separate gates. It is not permission to emit
+durable-ready routing evidence
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/GLM5NextCompleteCheckpointLayout.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
+See the [GLM integration gates](../design/glm53-flash-native.md).
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.

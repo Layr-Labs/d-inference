@@ -66,6 +66,45 @@ struct ModelLoadRefusalTests {
         #expect(await loop.modelLoadingInFlightIDs().isEmpty)
     }
 
+    @Test("coordinator mode refuses GLM on unqualified hardware before any reservation")
+    func coordinatorModeRefusesGLM() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let id = "test/glm5-next"
+        let directory = try sandbox.makeSnapshot("glm", config: #"{"model_type":"glm5_next"}"#)
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
+        await loop.advertiseBypassingSupportedSetForTesting(
+            ModelLoadingFixtures.model(id, modelType: "glm5_next"))
+
+        do {
+            try await loop.ensureModelLoaded(modelId: id, revisionDirectory: directory)
+            Issue.record("expected coordinator-mode GLM to be refused")
+        } catch let InferenceError.modelLoadFailed(message) {
+            #expect(message.contains("requires Apple M5 Max or M5 Ultra with at least 256 GB"))
+            #expect(message.contains("this Mac is M4 Max with 64 GB"))
+        }
+        #expect(await loop.modelLoadingInFlightIDs().isEmpty)
+        #expect(await loop.modelLoadingIsLoadingAny() == false)
+        #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+    }
+
+    @Test("the GLM catalog build is permanently ineligible without glm5_next_v1")
+    func coordinatorModeRefusesGLMWithoutCapability() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let id = GLM5NextCoordinatorServing.catalogModelID
+        let directory = try sandbox.makeSnapshot("glm-catalog", config: #"{"model_type":"glm5_next"}"#)
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
+        await loop.advertiseBypassingSupportedSetForTesting(
+            ModelLoadingFixtures.model(id, modelType: "glm5_next"))
+
+        await #expect(throws: ModelRuntimeIneligibleError.self) {
+            try await loop.ensureModelLoaded(modelId: id, revisionDirectory: directory)
+        }
+        #expect(await loop.modelLoadingIsLoadingAny() == false)
+        #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+    }
+
     @Test("a resident model returns at once and keeps its bridge")
     func residentModelReturnsAtOnce() async throws {
         let sandbox = try ModelLoadingSandbox()

@@ -262,6 +262,27 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // GLM prices each request by its reserved tokens beside one step's
+        // setup. Refuse as capacity, so routing moves on, a request that can
+        // never fit or that would leave a step no room once all held requests
+        // run; the engine charges step scratch from the same ledger.
+        if glm5NextNativeOwner != nil {
+            let decision = Self.glm5NextSlotAdmission(
+                requestBytes: requestReservationBytes(tokenCount: worstCaseTokens),
+                committedBytes: glm5NextCommittedBytes(),
+                admissibleBytes: admissionCapacityBytes())
+            guard case .admit(let bytes) = decision else {
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+                continuation.yield(.error(
+                    "token_budget_exhausted: "
+                        + (decision == .neverFits ? Self.glm5NextExceedsSlotCapacity : Self.glm5NextSlotCommitted)
+                        + " (\(worstCaseTokens) reserved tokens)"))
+                continuation.finish()
+                return stream
+            }
+            glm5NextGateReservations[id] = bytes
+        }
+        defer { glm5NextGateReservations.removeValue(forKey: id) }
 
         // Prefer resident pages when they save at least as much prefill as
         // the durable tier. A shorter memory hit must not hide a longer SSD
@@ -436,6 +457,8 @@ extension EngineV2Bridge {
                 engine: actual, bridge: self, budget: kvBudget)
         } else { completePrefixOwnsRequestCharge = false }
         let nativePagedOwnsRequestCharge: Bool
+        // GLM's separate operation owner validates its actual process owner at
+        // both admission checks. It must not masquerade as a MiMo transaction.
         if let actual = ownedEngine as? EngineV2, let kvBudget,
            let transaction = nativeTransaction, nativeTransactionID == transaction.id {
             nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(

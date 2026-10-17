@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -68,6 +68,221 @@ Slot construction carries the engine's immutable admission watermark into the
 bridge so future load and reserve-raise checks can preserve a serviceable total
 grant. These [workspace-aware floors](hardware-support.md#kv-slot-grants) do not
 lower the activation reserve or replace actual per-request byte admission.
+
+### GLM5Next implementation boundary
+
+`glm5_next` is in the production supported set only as the exact catalog build
+`glm-5.3-flash` (`EngineV2SupportedModels`, `GLM5NextCoordinatorServing`). The native SDK has an
+unregistered `GLM5NextTextModel`, trained `GLM5NextMTP`, vision tower and
+`GLM5NextModel` wrapper. `GLM5NextArtifactLoader` validates the pinned file
+inventory and reads bounded tensor ranges instead of materializing a second
+whole-model dictionary. Provider integration uses a model-bound
+`GLM5NextNativeOperationOwner` for protected MTP bridge admission; it does not
+borrow a MiMo transaction or bypass its checks. Shutdown consumes the actual
+native engine/contract receipt before releasing the root or growing survivor
+grants. Missing ownership or unproven completion refuses work and retains the
+affected owners. Synthetic tests do not establish full-model output parity or
+full-artifact qualification. Source lives under
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/` and
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/`. See the
+[in-progress integration contract](../design/glm53-flash-native.md) for the
+required paged, complete-prefix and trained-MTP gates.
+
+An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
+can admit the exact pinned local artifact into standalone discovery without
+changing coordinator advertisement. The local selection cannot bypass managed
+loading, native ownership, memory admission or backend requirements.
+
+Coordinator-connected mode serves only catalog model `glm-5.3-flash`, delivered
+through the ordinary model-revision download, through the same managed load
+(`ProviderLoop.coordinatorGLM5NextPlan`, `GLM5NextCoordinatorServing.resolvePlan`).
+Before any reservation it requires Apple M5 Max or M5 Ultra with at least
+256 GiB (`GLM5NextHardwareRequirement`; the provider reports `glm5_next_v1`
+only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
+(`ModelRuntimeRequirements`), the native step-scratch price
+(`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
+version and aggregate, the revision receipt must match it and hash to that
+aggregate, and the admitted load hashes every file against the same manifest.
+An R2-only revision names its native identity by catalog id and the first 40 hex digits of its aggregate. The
+reviewed shipped template remains mandatory. The enforced context is 262,144
+tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog
+`max_context_length` lowers it and a larger one refuses the load. A revision
+swap borrows the activation's writer lease
+(`GLM5NextArtifactOwnership.borrowingCallerLease`). GLM MTP is on under the default `mtp_mode = "auto"`;
+local startup skips GLM only when `mtp_mode = "off"` or the `DARKBLOOM_CBV2_MTP`
+kill switch disables MTP (`GLM5NextLocalServing`).
+A GLM slot is published only when its bundle and engine report
+MTP active and the bridge carries the native operation owner; disabled MTP, the
+kill switch, the assistant re-slice floor, post-build headroom fallback and
+wedge recovery never rebuild GLM target-only, because target-only GLM has no
+checked completion receipt. `prepareProductionBackend` also refuses a
+target-only GLM engine for serving construction; only benchmarks build one.
+
+Every GLM load fixes `GLM5NextExecutionPolicy.serving` on the target and its
+embedded MTP layer (`GLM5NextManagedLoad.executionPolicy`); the reference
+per-token KDA and selection graphs exceed MLX's Metal resource limit at real
+prompt lengths. Routed-expert prefill on Neural-Accelerator GPUs runs the NAX
+expert kernel for affine 4-bit and NVFP4 banks (`RoutedExperts.fusedDecodeNAXPrefill`;
+other GPUs keep MLX's sorted gather), and prefill chunks past position 2,048 run the
+native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). The policy is part of the encrypted checkpoint storage identity
+(`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
+engine prices one worst-case step at setup and stays inactive when it exceeds
+the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
+with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
+selection row per query, retained until the step fence (about 46 MB per query
+across 11 DSA layers). A longer row whose selection rows would read at least
+its history instead reads its whole latent plane once per layer through
+the page table and runs the contiguous arithmetic over it
+(`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),
+so its retained reads are bounded by the history, not the chunk. The GLM
+scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
+and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
+`glm5NextServingScheduler`). The price splits into setup bytes for the step
+geometry and a rate per context token of each request, which covers the
+request's index metadata reads, pooled index planes, latent reads and page
+tables in both its step and the chained decode successor
+(`GLM5NextStepScratch`, `PagedKVBackend.glm5NextStepScratch`). The setup check
+charges that rate for the most history the step's rows can hold: every row at
+the context limit, or the pool's whole token capacity when smaller
+(`GLM5NextPagedModelBinding.validateStepEnvelope`), or the all-rows-at-context
+price when that is smaller. Reads, writes and tables the step owner retains
+count for every DSA layer; a layer's temporaries (scores, pooled index planes,
+selections, gather blocks) count once, twice for overlap with a neighbour
+(`GLM5NextStepBytes`). With FP32 sparse KV that price stays at least 1.5
+times every peak measured on the real artifact (1 to 4 rows, 512- and
+2,048-token steps, 32K to 261K context, MTP verification; smallest 1.57x). For 2,048-token
+steps at a 262,144-token context the setup is about 5.6, 7.4 and 11.0 GB for
+1, 2 and 4 rows, and the rate about 55 KB per context token
+(`GLM5NextStepPriceTests`). A refused activation names the native reason (for example
+`capacityExhausted(needed:available:)`) and the step geometry in the load error
+(`EngineV2Factory.glm5NextActivationRefusal`).
+
+Automatic KV selection resolves paged for every GLM target; an explicit
+contiguous selection, the paged kill switch or the crash-loop guard refuses the
+GLM load rather than degrading (`EngineV2Factory.prepareProductionBackend`).
+GLM request memory is per reserved token (prompt + max output) plus fixed
+request charges. Target KV is 33,836 bytes per token: each of the 11 DSA layers
+stores one FP32 row of the 512-wide latent (no rotary part) plus 128 index-key,
+128 pool-gate and one validity column; a full 262,144-token request stores
+8,869,904,384 bytes. The 34 KDA layers carry fixed recurrent state
+(155,975,680 bytes per generation, three live generations). The embedded MTP
+layer stores 3,074 bytes of history per token; its serving plan charges
+33,900 bytes per reserved token across its resident, working and host copies
+plus a fixed part (`GLM5NextMTPExecution.memoryPlan`,
+`EngineV2.resolvedAuxiliaryBytesPerToken`). Native step scratch splits into a
+setup envelope and a price per context token (`PagedKVBackend.glm5NextStepScratch`).
+The bridge prices and reports `kv_bytes_per_token` = target KV + step scratch
++ MTP per token (`EngineV2SlotFactory`, `EngineV2MTPAdmissionCharges`) beside the
+engine's fixed request bytes; that rate drives `active_token_budget_max`, the
+oversized-request refusal and the publication check. It is not a second
+reservation, so step scratch is never charged twice: a paged GLM bridge makes no
+shared-budget claim of its own (`EngineV2Bridge.submitTokenized` reserves only
+for contiguous slots). One ledger, the engine's `AdmissionV2` bound to the GLM
+process-memory owner, charges each request's target KV, MTP state and fixed
+bytes at admission, and charges each step's scratch as a transient reservation
+when the step is built (`PagedKVBackend` step work, `AdmissionV2.reserveTransient`).
+Admission does not yet pre-reserve the per-token scratch, so a full ledger
+refuses the step rather than the request; that native change is deferred. Coordinator publication requires the slot pool to
+hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`),
+and a request whose reservation exceeds the whole pool is refused as
+`token_budget_exhausted: request_exceeds_slot_capacity` instead of queueing.
+The engine's activation check prices step scratch for every row at the full
+context against the same capacity, so the protected scheduler's running-row
+cap is the largest value that check admits
+(`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
+2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
+context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
+so a 56.8 GB grant runs two or three rows; four need about 72.4 GB, because pool
+tokens and the admissible ceiling derive from the same capacity. Publication
+also charges one step's setup and the admission watermark
+(`GLM5NextCoordinatorServing.fullContextRefusal`).
+
+Request concurrency follows `engine_v2_max_concurrent` (default 4, at most 8
+without a reviewed profile); GLM adds no width-1 pin, and native step pricing
+and per-request admission bound what runs together. The protected profile is
+rectangular MTP verification: each round drafts up to three proposals with the
+trained MTP layer (proposals after the first reuse step 0's sparse selection) and
+verifies them in one captured target forward over the window, whose KDA layers
+stage every position's recurrent state so any accepted prefix commits without a
+repair forward. An adaptive controller picks the depth (0 to 3) from measured
+cost and acceptance; sampled requests speculate through exact target-prefix
+acceptance. The window runs the batched multi-token kernels, so greedy output is
+not token-identical to target-only decode (near-ties can flip). The speculative
+batch is 1, and the profile composes with the complete-prefix store
+(`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
+`DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
+serial-target single-proposal profile
+(`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
+one-partial-prefill default. The bridge advertises the enforced
+context, so an over-length request is refused with 400 before native admission,
+and an omitted `max_tokens` defaults to half the bound. Omitted sampling fields
+use the artifact's `generation_config.json` (`EngineV2SamplingDefaults`).
+
+GLM images use ordinary causal token positions: the text tower has no
+positional encoding, so a submission carries causal spans and no position
+state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
+The original request is normalized by the GLM prompt policy exactly as text is,
+with symbolic image parts, and the processor expands each `<|image|>` to its
+feature count (16 to 8000 per image). Every placement is validated before tower
+work; the tower then runs one image at a time with MLX fused attention on the
+GPU (`GLM5NextVisionAttentionKernel.automatic`; query-tiled elsewhere), so no
+frame-square score tensor is allocated, and every evaluation checks the scoped
+MLX fault box. The reservation below still prices the tiled working set. The scheduler's `VisionMemoryGate` reservation adds the
+processor's prepared-pixel cap, the tower working set of a full 32,000-patch
+frame and every image at its token cap (`GLM5NextVisionBudget.mediaReservation`).
+Processor refusals are deterministic 400s; tower and MLX faults keep the
+retriable refusal. Media requests are excluded from prefix lookup and capture
+(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images, and
+they decode without MTP speculation. A GLM slot serves images only when its
+engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the
+embedded-MTP native engine issues that permission, so image rows prefill and
+decode target-only next to speculating text rows. Video is refused with 400.
+
+An unproven retirement, including one during a post-build unwind, retains the
+bridge, newcomer, artifact ownership, pending-load lease, loading marker and
+device activity. It never refunds the lease, clears the cache or regrows
+survivors for that load. Retained GLM faults quarantine GLM work and grant
+growth, but do not quarantine MiMo or other families. Their unpublished weight
+and KV bytes are charged into every fleet KV budget, so other families' new and
+regrown grants cannot reuse that memory. Allocator-cache trimming only frees
+unowned cached allocations and is not native-retirement proof. Local `/metrics`
+reports the retained-fault state, retained owner-object count and charged bytes
+(`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`
+refuses a second close attempt, so a retained close is never re-driven.
+
+Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
+the selected local tokenizer using the provider's actual GLM defaults,
+reasoning controls and tool/history normalization. The generic template check
+also remains mandatory; neither check repairs or substitutes a template.
+These boundaries are implemented in
+`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/` and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+NativeLifecycle.swift`.
+
+Raw same-directory GLM discovery uses a
+[complete header-derived LOAD quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation),
+including full expert-bank, vision, MTP and tokenizer accounting plus a
+measured residual above raw source bytes instead of disk × 1.2. This does not
+enable the native serving path. The local selection refuses a separate
+tokenizer, which this raw quote does not cover, and the provider has no
+tokenizer-composition load path; the resolved source
+must pass the scanner recheck and the managed native loader's independent
+validation before allocation.
+
+The low-level `glm5` tool parser uses the official XML framing with
+schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
+suffix until EOS so quoted XML delimiters and a later malformed call cannot
+commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
+returns the original text through the existing parser-failure path. Ambiguous
+string unions and unsupported indirect schemas are not inferred. This parser
+does not implement constrained decoding or advertise function calling.
+The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
+also preserves original schema values only after a trusted loaded-model check.
+`GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
+template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
+unpatched. It is the official template with numeric attribute access written as
+`[0]` subscripts; the official hash remains the golden rendering authority and
+fails the load-time render check. See the [build boundary](../developer/build.md).
 
 ## Mechanism
 

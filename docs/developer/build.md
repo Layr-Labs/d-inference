@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -58,6 +58,12 @@ separately identified template that writes those accesses as `[0]` subscripts.
 Its derivation and equivalence evidence are in
 `fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
 rewrite another artifact's template to hide the parser limitation.
+
+The SSD test working-volume selector is runtime-only fixture configuration;
+it does not change the provider cache or Swift/native build inputs. Rebuild
+provider test products after fixture-source changes before using `--skip-build`,
+then apply the optional directory override at execution time as documented in
+[SSD test working volume](test.md#ssd-test-working-volume).
 
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the

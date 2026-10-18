@@ -31,6 +31,32 @@ native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
 
+### SSD test working volume
+
+Fixtures that call `SSDTestDirectory.parent()` use Foundation's resolved temporary
+directory unless `DARKBLOOM_SSD_TEST_TMPDIR` selects another test working volume.
+The shared SSD-prefix fixtures and bridge fixtures that require successful
+cache donations honor this selector. It does not configure the provider cache
+or change the process-wide `TMPDIR`.
+
+When the default volume lacks the free space required for real cache writes,
+create a task-owned directory on a suitable volume and pass its canonical,
+absolute path to the test runner. The parent directory must already exist and
+be writable. Empty, relative, missing, file and symlink paths are rejected;
+selection or directory-creation errors fail fixture setup instead of falling
+back silently.
+
+```bash
+mkdir -p "/Volumes/Test Scratch/darkbloom-tests"
+DARKBLOOM_SSD_TEST_TMPDIR="/Volumes/Test Scratch/darkbloom-tests" make provider-test
+```
+
+Leave the variable unset for the normal temporary directory. The production
+free-space checks, write limits, assertions and cleanup still apply. Raw-codec
+fixtures that do not call the selector keep their existing temporary paths.
+Rebuild changed test products before using `--skip-build`; see the
+[build guide](build.md#build).
+
 ### GLM5Next prerequisite tests
 
 Provider ownership regressions are in `GLM5NextManagedKernelTests`. In a fresh,

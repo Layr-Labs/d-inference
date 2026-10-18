@@ -16,6 +16,9 @@ import Darwin
 
     static func main() {
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(120); defer { alarm(0) }
+        terminalPresentationFallbacks()
+        failedTestDoesNotClaimSetupSuccess()
+        modelPresentationPreservesEveryFamilyAndBlocker()
         pairingStateMachine()
         leaderFromScratch()
         forcedModeNoticeOnTheSetupScreen()
@@ -72,6 +75,72 @@ import Darwin
     }
 
     // MARK: - State machine
+
+    static func terminalPresentationFallbacks() {
+        let color = ["TERM": "xterm-256color"]
+        expect(ClusterOnboardingTerminal.supportsColor(inputIsTerminal: true, outputIsTerminal: true,
+            environment: color), "interactive terminal can emphasize headings")
+        for flags in [(false, true), (true, false), (false, false)] {
+            expect(!ClusterOnboardingTerminal.supportsColor(inputIsTerminal: flags.0, outputIsTerminal: flags.1,
+                environment: color), "redirected input or output stays plain")
+        }
+        for environment in [[String: String](), ["TERM": "dumb"], ["TERM": ""],
+                            ["TERM": "xterm", "NO_COLOR": ""], ["TERM": "xterm", "CLICOLOR": "0"]] {
+            expect(!ClusterOnboardingTerminal.supportsColor(inputIsTerminal: true, outputIsTerminal: true,
+                environment: environment), "plain terminal preference is respected")
+        }
+        var input: [Int32] = [-1, -1], output: [Int32] = [-1, -1]
+        guard pipe(&input) == 0 else { expect(false, "input pipe"); return }
+        defer { for fd in input { Darwin.close(fd) } }
+        guard pipe(&output) == 0 else { expect(false, "output pipe"); return }
+        defer { for fd in output { Darwin.close(fd) } }
+        let terminal = ClusterOnboardingTerminal(input: input[0], output: output[1], environment: color)
+        terminal.heading("Choose a model")
+        let keys = Array("12\u{08}3\n".utf8)
+        _ = keys.withUnsafeBytes { Darwin.write(input[1], $0.baseAddress, $0.count) }
+        expect(terminal.line(prompt: "Number: ") == "13", "plain input keeps line editing semantics")
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        let count = Darwin.read(output[0], &buffer, buffer.count)
+        let text = String(decoding: buffer.prefix(max(0, count)), as: UTF8.self)
+        expect(text == "\nChoose a model\nNumber: \n", "pipe output has no colors, backspaces or echoed input: \(text)")
+    }
+
+    static func failedTestDoesNotClaimSetupSuccess() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder,
+            resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+            pairEvents: [], pairResult: .failed([]), testResult: .failure(.init(["Test response timed out."]))))
+        expect(run.waitFor("Choose a model"), "failed test: choose model")
+        run.type("\r")
+        expect(run.waitFor("press n to stop here."), "failed test: start countdown")
+        run.type("\r")
+        expect(run.finish() == 1, "failed test returns failure")
+        expect(run.text.contains("Setup saved, but the test request failed."), "failure is explicit")
+        expect(run.text.contains("retry the test with t"), "failure has a next action")
+        expect(!run.text.contains("Done."), "failed response never reports setup success")
+        expect(recorder.all.suffix(3) == ["serve", "waitReady", "testRequest"], "readiness and actual test still run")
+    }
+
+    static func modelPresentationPreservesEveryFamilyAndBlocker() {
+        let recorder = Recorder()
+        let choices: [ClusterOnboardingModelChoice] = [
+            .init(title: "MiMo", lines: ["Fits these Macs"], blocker: nil),
+            .init(title: "GLM", lines: [], blocker: "Not qualified for this cluster"),
+        ]
+        let run = TerminalRun(operations(recorder,
+            resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+            pairEvents: [], pairResult: .failed([]), choices: choices))
+        expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "every family uses the existing choice flow")
+        expect(run.text.contains("  1. MiMo"), "offered MiMo remains selectable")
+        expect(run.text.contains("Enter selects MiMo."), "default names the actual first choice")
+        expect(run.text.contains("GLM: Not qualified for this cluster"), "qualification blocker remains visible")
+        expect(!run.text.contains("  2. GLM"), "blocked GLM is not selectable")
+        run.type("\r")
+        expect(run.waitFor("Starting MiMo on both Macs"), "default preserves the selected model")
+        run.type("n")
+        expect(run.finish() == 0, "stopping before start stays available")
+        expect(!recorder.all.contains("adopt 0") && !recorder.all.contains("serve"), "presentation does not bypass start checks")
+    }
 
     static func pairingStateMachine() {
         var machine = ClusterOnboardingPairing()
@@ -137,6 +206,7 @@ import Darwin
                            recheck: String? = nil,
                            afterRestart: String? = nil,
                            developerNotice: String? = nil,
+                           testResult: Result<[String], ClusterOnboardingFailure> = .success(["\"Red, Blue, Green\" (6 tokens, first token 0.61 s)"]),
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "Apple M3 Ultra, 256 GB", port: 8000,
                                deployment: "Serving Qwen3.5-9B across both Macs: pipeline, M3 Ultra 16 layers / M5 Ultra 16 layers"))) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
@@ -194,7 +264,7 @@ import Darwin
                 recorder.note("waitReady"); progress("1 of 2 parts ready"); usleep(50_000); progress("2 of 2 parts ready")
                 return readyResult
             },
-            testRequest: { recorder.note("testRequest"); return .success(["\"Red, Blue, Green\" (6 tokens, first token 0.61 s)"]) },
+            testRequest: { recorder.note("testRequest"); return testResult },
             status: { recorder.note("status"); return ["Serving Qwen3.5-9B across both Macs: pipeline, M3 Ultra 16 layers / M5 Ultra 16 layers.",
                                                        "API at http://localhost:8000 on Apple M3 Ultra, 256 GB (2 of 2 parts ready)."] },
             stop: { recorder.note("stop"); return .success(["Both Macs stopped serving."]) },
@@ -247,7 +317,7 @@ import Darwin
             }
             let slaveFD = secondary
             Thread.detachNewThread { [self] in
-                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD)
+                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: ["NO_COLOR": "1"])
                 let code = ClusterOnboardingDriver.run(operations, console: console, request: request)
                 console.restore()
                 usleep(100_000)
@@ -308,6 +378,11 @@ import Darwin
         expect(text.contains(ClusterOnboardingDriver.localNetworkLine), "leader: the Local Network prompt is announced")
         expect(text.contains("Working out the fastest way to split each model across both Macs…"), "leader: the planning line")
         expect(!text.contains("which one decodes"), "leader: no phase-split wording in the planning line")
+        let stages = ["1 / 5  Connect the Macs", "2 / 5  Pair securely", "3 / 5  Choose a model", "4 / 5  Start the model", "5 / 5  Test a response"]
+        let positions = stages.compactMap { text.range(of: $0)?.lowerBound }
+        expect(positions.count == stages.count && positions == positions.sorted(), "setup stages stay in order")
+        expect(text.contains("Enter selects Qwen3.5-9B. Choose another model by number."), "default choice is explicit")
+        expect(!text.contains("\u{1B}"), "NO_COLOR transcript has no terminal escapes")
         expect(run.keys == 2, "leader: two keys (y, enter), got \(run.keys)")
         expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0", "serve",
             "waitReady", "testRequest"], "leader: operations in order: \(recorder.all)")
@@ -456,7 +531,7 @@ import Darwin
     static func memberAgain() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: memberResume(), pairEvents: [], pairResult: .failed([])))
-        expect(run.waitFor("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to check both Macs released their memory."),
+        expect(run.waitFor("Enter  Leave setup unchanged"),
                "member again: the same menu as the leader")
         let text = run.text
         expect(text.contains("This Mac is a member of the cluster led by Apple M3 Ultra, 256 GB."), "member again: who leads")
@@ -474,7 +549,7 @@ import Darwin
     static func memberChangesModel() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: memberResume(), pairEvents: [], pairResult: .failed([])))
-        expect(run.waitFor("v to check both Macs released their memory."), "member model change: menu")
+        expect(run.waitFor("v  Check both Macs released their memory"), "member model change: menu")
         run.type("m")
         expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "member model change: the leader's choices")
         run.type("2\r")
@@ -489,7 +564,7 @@ import Darwin
     static func memberVerifiesTeardown() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: memberResume(serving: false), pairEvents: [], pairResult: .failed([])))
-        expect(run.waitFor("Not serving. Press m to choose a model and serve, v to check both Macs released their memory, enter to leave it as it is."), "teardown: menu when stopped")
+        expect(run.waitFor("Not serving. Press m to choose a model and serve; enter to leave."), "teardown: menu when stopped")
         run.type("v")
         expect(run.finish() == 0, "teardown: exit 0")
         expect(run.text.contains("  Apple M5 Ultra, 256 GB: nothing left running"), "teardown: each Mac's summary")
@@ -500,7 +575,7 @@ import Darwin
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
             pairEvents: [], pairResult: .failed([])))
-        expect(run.waitFor("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to check both Macs released their memory."), "leader again: the menu")
+        expect(run.waitFor("Enter  Leave setup unchanged"), "leader again: the menu")
         run.type("t")
         expect(run.finish() == 0, "leader again: test request")
         expect(recorder.all == ["ensureService", "status", "testRequest"], "leader again: no pairing, no plan: \(recorder.all)")
@@ -808,7 +883,7 @@ import Darwin
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.5-9B"),
             pairEvents: [], pairResult: .failed([])))
-        expect(run.waitFor("Not serving. Press m to choose a model and serve, v to check both Macs released their memory, enter to leave it as it is."),
+        expect(run.waitFor("Not serving. Press m to choose a model and serve; enter to leave."),
                "stopped leader: the menu with v")
         run.type("v")
         expect(run.finish() == 0, "stopped leader: teardown checked")

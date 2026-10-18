@@ -579,12 +579,18 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
 /// The keys and lines the onboarding reads, and where it writes.
 public protocol ClusterOnboardingConsole: AnyObject {
     func say(_ line: String)
+    func heading(_ title: String)
     /// One key, or nil when `milliseconds` passed with none. "\r" is enter.
     func key(milliseconds: Int) -> Character?
     /// A line typed after `prompt` (echoed as typed), or nil when the input closed.
     func line(prompt: String) -> String?
     /// The input is closed: nothing more can be asked.
     var closed: Bool { get }
+}
+
+public extension ClusterOnboardingConsole {
+    /// Scrollable sections also work in transcripts and non-terminal consoles.
+    func heading(_ title: String) { say(""); say(title) }
 }
 
 /// Runs the onboarding on a console with the operations given; returns the exit status.
@@ -618,8 +624,9 @@ public enum ClusterOnboardingDriver {
     /// No pairing yet: checks, then find a waiting leader or become one.
     static func onboard(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                         request: ClusterOnboardingRequest = .init()) -> Int32 {
-        console.say("Darkbloom cluster setup")
-        console.say("")
+        console.heading("Darkbloom cluster setup")
+        console.say("Connect / Pair / Choose / Start / Test")
+        console.heading("1 / 5  Connect the Macs")
         console.say("Checking this Mac's Thunderbolt cable…")
         var link = checkLink(operations, console)
         if !link.ready, link.ports.count > 1 {
@@ -645,7 +652,7 @@ public enum ClusterOnboardingDriver {
             console.say("The cable is not ready yet, so pairing waits. Run `darkbloom cluster` again when the step above is done.")
             return max(link.exitCode, 1)
         }
-        console.say("")
+        console.heading("2 / 5  Pair securely")
         let events = ClusterOnboardingMailbox<ClusterOnboardingPairEvent>()
         let outcome = ClusterOnboardingMailbox<ClusterOnboardingPairResult>()
         Thread.detachNewThread { outcome.post(operations.pair { events.post($0) }) }
@@ -742,6 +749,7 @@ public enum ClusterOnboardingDriver {
             }
             if wanted != resume.scope { return changeScope(to: wanted, resume, operations, console) }
         }
+        console.heading("Cluster status")
         for line in operations.status() { console.say("  " + line) }
         // A cable moved to a port that was never set up: the one thing to do first (2026-10-16, Thunderbolt 1).
         if let port = resume.unsetCablePort {
@@ -749,10 +757,12 @@ public enum ClusterOnboardingDriver {
             console.say("Press f to set it up (macOS asks for your password once).")
         }
         if resume.serving {
-            console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to check both Macs released their memory.")
+            console.say("Enter  Leave setup unchanged")
+            console.say("t  Test a response    m  Change model    s  Stop serving")
         } else {
-            console.say("Not serving. Press m to choose a model and serve, v to check both Macs released their memory, enter to leave it as it is.")
+            console.say("Not serving. Press m to choose a model and serve; enter to leave.")
         }
+        console.say("v  Check both Macs released their memory")
         // The other way to serve, one key: `l` serves locally only, `p` through Darkbloom again (kept until changed).
         console.say(resume.scope.isLocalOnly ? "This cluster serves locally only (no coordinator); press p to serve through Darkbloom instead."
                                              : "Press l to serve locally only (no coordinator).")
@@ -830,7 +840,7 @@ public enum ClusterOnboardingDriver {
     /// control leader first (`darkbloom cluster local`); `model` names the choice so the list is not asked.
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil) -> Int32 {
-        console.say("")
+        console.heading("3 / 5  Choose a model")
         console.say("Reading both Macs over the cable…")
         let notes = ClusterOnboardingMailbox<String>()
         let reached = operations.reachMembers { notes.post($0) }
@@ -895,6 +905,10 @@ public enum ClusterOnboardingDriver {
                 console.say("No model on the list is named \(model); choose one by its number.")
             }
         }
+        if chosen == nil {
+            console.say("")
+            console.say("Enter selects \(choices[open[0]].title). Choose another model by number.")
+        }
         while chosen == nil {
             guard let typed = console.line(prompt: "Choose a model [1-\(open.count), enter = 1]: ") else { return 1 }
             let text = typed.trimmingCharacters(in: .whitespaces)
@@ -937,6 +951,7 @@ public enum ClusterOnboardingDriver {
                 }
             }
         }
+        console.heading("4 / 5  Start the model")
         console.say(scope.isLocalOnly
             ? "Options: always on (each Mac starts its part again by itself); \(scope.line.prefix(1).lowercased() + scope.line.dropFirst())."
             : "Options: always on (each Mac starts its part again by itself); public serving through Darkbloom is off in this build.")
@@ -986,9 +1001,14 @@ public enum ClusterOnboardingDriver {
         }
         console.say("Starting both Macs' parts and loading the model…")
         guard awaitReady(title: choice.title, operations, console) else { return 1 }
-        let tested = test(operations, console)
+        let tested = test(operations, console, setup: true)
         console.say("")
-        console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
+        if tested {
+            console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
+        } else {
+            console.say("Setup saved, but the test request failed.")
+            console.say("Run `darkbloom cluster` to check status and retry the test with t.")
+        }
         console.say("Nothing else is needed on the other Mac." + (operations.afterRestart().map { " " + $0 } ?? ""))
         return tested ? 0 : 1
     }
@@ -1127,7 +1147,8 @@ public enum ClusterOnboardingDriver {
         }
     }
 
-    static func test(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
+    static func test(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole, setup: Bool = false) -> Bool {
+        console.heading(setup ? "5 / 5  Test a response" : "Test a response")
         console.say("Sending one test request…")
         switch operations.testRequest() {
         case .success(let lines):

@@ -9,6 +9,8 @@ import Darwin
 public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private let input: Int32
     private let output: Int32
+    private let usesColor: Bool
+    private let echoesInput: Bool
     private var saved = termios()
     private var configured = false
     public private(set) var closed = false
@@ -17,8 +19,11 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     nonisolated(unsafe) private static var restoreInput: Int32 = -1
     nonisolated(unsafe) private static var restoreMode = termios()
 
-    public init(input: Int32, output: Int32) {
+    public init(input: Int32, output: Int32, environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.input = input; self.output = output
+        echoesInput = isatty(input) == 1 && isatty(output) == 1
+        usesColor = Self.supportsColor(inputIsTerminal: isatty(input) == 1,
+            outputIsTerminal: isatty(output) == 1, environment: environment)
         guard isatty(input) == 1, tcgetattr(input, &saved) == 0 else { return }
         var mode = saved
         mode.c_lflag &= ~tcflag_t(ICANON | ECHO)
@@ -52,6 +57,20 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
 
     public func say(_ line: String) {
         write(line + "\n")
+    }
+
+    static func supportsColor(inputIsTerminal: Bool, outputIsTerminal: Bool,
+                              environment: [String: String]) -> Bool {
+        inputIsTerminal && outputIsTerminal && environment["NO_COLOR"] == nil
+            && environment["CLICOLOR"] != "0"
+            && environment["TERM"].map { !$0.isEmpty && $0 != "dumb" } == true
+    }
+
+    public func heading(_ title: String) {
+        say("")
+        // No cursor movement or screen clearing: trust codes and recovery steps
+        // stay in scrollback. Color never carries status by itself.
+        say(usesColor ? "\u{1B}[1;36m" + title + "\u{1B}[0m" : title)
     }
 
     private func write(_ text: String) {
@@ -98,13 +117,16 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
                 write("\n")
                 return typed
             case "\u{7F}", "\u{08}":
-                if !typed.isEmpty { typed.removeLast(); write("\u{08} \u{08}") }
+                if !typed.isEmpty {
+                    typed.removeLast()
+                    if echoesInput && configured { write("\u{08} \u{08}") }
+                }
             case "\u{1B}":
                 continue
             default:
                 guard key.isASCII, !key.isNewline, let value = key.asciiValue, value >= 0x20, typed.count < 16 else { continue }
                 typed.append(key)
-                write(String(key))
+                if echoesInput && configured { write(String(key)) }
             }
         }
     }

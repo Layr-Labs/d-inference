@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -30,6 +30,15 @@ over the cable and starts it; you never go back to the other Mac. Which Mac
 handles commands afterwards is worked out by the cluster itself (see
 [If a Mac goes away](#if-a-mac-goes-away)).
 
+The screen follows five stages: **Connect**, **Pair**, **Choose**, **Start** and
+**Test**. The model list names the choice that Enter selects and explains why
+any unavailable model cannot be selected. Headings use color on supported
+terminals; `NO_COLOR` and redirected output remain plain text.
+
+Setup reports completion only after the test response succeeds. If that request
+fails, the saved setup remains available: run `darkbloom cluster`, check its
+status, and press `t` to retry the response.
+
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also
 decode as speculative rounds across the pipeline, and does by default where its
@@ -45,7 +54,7 @@ placement both with and without the rounds.
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
-| 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval, only the first time ("Darkbloom needs network access for the cluster cable") |
+| 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
 | 3 | — | The other Mac says **"Paired with <leader>. Continue on <leader>."** Its cluster service now runs; nothing else is ever asked there. macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
 | 4 | the leader | It shows both Macs' hardware and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share and the expected speed. Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
@@ -246,8 +255,11 @@ cluster setup after a Darkbloom update.").
   stops before any prompt. Turn the cluster port off under System Settings →
   General → Sharing → Internet Sharing → “To devices using”, then run
   `darkbloom cluster` again.
-- **The cable moved to another Thunderbolt port**: nothing to do. Each Mac's
-  cluster service notices the new port within a few seconds and answers there.
+- **The cable moved to another Thunderbolt port**: an already configured port
+  is reused without another configuration prompt. For a port not yet configured,
+  run `darkbloom cluster` and press `f` when offered; macOS asks for administrator
+  approval to configure that port. Recovery RDMA enablement and Local Network
+  privacy permission remain separate steps.
 - **A part keeps ending the same way**: after three identical ends the screen
   says it and offers `d`; both Macs keep trying by themselves.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and

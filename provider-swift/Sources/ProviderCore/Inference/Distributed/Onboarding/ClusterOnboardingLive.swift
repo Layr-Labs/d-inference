@@ -59,6 +59,8 @@ final class OnboardingLive: @unchecked Sendable {
     private var respond: (@Sendable (Bool) -> Void)?
     private var pendingAnswer: Bool?
     private var peerReport: ClusterSetupReport?
+    private var peerReportMemberID: String?
+    private let readPairing: @Sendable () throws -> ClusterSetupLinkExchange.Pairing?
     private var choices: [(folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)] = []
     /// Choices that are catalog models no Mac has yet (by choice index).
     private var catalogChoices: [Int: CatalogModel] = [:]
@@ -75,12 +77,24 @@ final class OnboardingLive: @unchecked Sendable {
     /// "this Mac", or this Mac's name in an answer shown on another member.
     var here: String { lock.withLock { answeringForward } ? ownName : "this Mac" }
 
-    init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings) {
+    init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings,
+         readPairing: @escaping @Sendable () throws -> ClusterSetupLinkExchange.Pairing? = { try ClusterSetupLinkExchange.pairing() }) {
         self.context = context; self.store = store; self.settings = settings
+        self.readPairing = readPairing
     }
 
     var leadership: ClusterOnboardingLeadership? { (try? store.readRecord())?.leadership }
-    var peerName: String { leadership?.peerName ?? "the other Mac" }
+    var peerName: String {
+        let fresh = lock.withLock { (peerReport, peerReportMemberID) }
+        if let report = fresh.0, let memberID = fresh.1,
+           let pairing = try? readPairing(), pairing.peerMemberID == memberID {
+            let chip = report.mac.chip.unicodeScalars.filter { $0.value >= 0x20 && $0.value < 0x7F }
+                .map(String.init).joined()
+            let gigabytes = report.mac.physicalMemoryBytes >> 30
+            return String("\(chip.isEmpty ? "Mac" : chip), \(gigabytes) GB".prefix(ClusterPairingPolicy.maximumNameBytes))
+        }
+        return leadership?.peerName ?? "the other Mac"
+    }
 
     /// The active cable port when Darkbloom has not set it up (its own network service with the fixed address).
     static func unsetCablePort(_ report: ClusterLinkReadinessReport) -> String? {
@@ -92,16 +106,16 @@ final class OnboardingLive: @unchecked Sendable {
 
     func resume() -> ClusterOnboardingResume {
         guard let leadership, let role = ClusterOnboardingRole(rawValue: leadership.role),
-              let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin else { return .init() }
+              let pairing = try? readPairing(), pairing.peerPin == leadership.peerPin else { return .init() }
         // After onboarding the role is the derived control leadership, not who drove the screens.
         let record = try? store.readRecord()
         guard let claim = record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) else {
-            var resume = ClusterOnboardingResume(role: role, peerName: leadership.peerName, serving: leadership.serving, modelName: leadership.modelName)
+            var resume = ClusterOnboardingResume(role: role, peerName: peerName, serving: leadership.serving, modelName: leadership.modelName)
             resume.scope = leadership.scope
             return resume
         }
         let leads = claim.leaderID == pairing.localMemberID
-        var resume = ClusterOnboardingResume(role: leads ? .leader : .member, peerName: leadership.peerName, serving: leadership.serving,
+        var resume = ClusterOnboardingResume(role: leads ? .leader : .member, peerName: peerName, serving: leadership.serving,
                                              modelName: leadership.modelName)
         resume.unsetCablePort = Self.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink())
         resume.scope = leadership.scope
@@ -510,7 +524,7 @@ final class OnboardingLive: @unchecked Sendable {
             }
         }
         let (peer, seconds) = reached!
-        lock.withLock { peerReport = peer }
+        rememberPeerReport(peer, memberID: context.peerFacts?.memberID)
         say("\(peerName) answered over the cable in \(String(format: "%.1f", seconds)) s.")
         let local = context.snapshot().local
         func machine(_ report: ClusterSetupReport, name: String, leads: Bool, memberID: String?, here: Bool) -> ClusterOnboardingMachine {
@@ -521,6 +535,22 @@ final class OnboardingLive: @unchecked Sendable {
         return .success([machine(local, name: ClusterPairingProvider.displayName(chipName: local.mac.chip), leads: true,
                                  memberID: pairing?.localMemberID, here: true),
                          machine(peer, name: peerName, leads: false, memberID: pairing?.peerMemberID, here: false)])
+    }
+
+    /// Reports enter here only after the setup exchange has authenticated the peer.
+    /// Keep its member identity with the display facts so another pairing cannot reuse them.
+    func rememberPeerReport(_ report: ClusterSetupReport, memberID: String?) {
+        lock.withLock {
+            peerReport = report
+            peerReportMemberID = memberID
+        }
+    }
+
+    func planShares(_ ranks: [ClusterSetupPlanSummary.Rank], localName: String) -> [ClusterOnboardingDeployment.Share] {
+        ranks.sorted { $0.rank < $1.rank }.map { rank in
+            .init(name: rank.local ? localName : peerName, layers: rank.endLayer - rank.firstLayer,
+                  weightsBytes: rank.weightsBytes)
+        }
     }
 
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
@@ -563,10 +593,7 @@ final class OnboardingLive: @unchecked Sendable {
                 }
                 let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer, localName: localName)
                 // One line: size, how it is split (the planner's choice), each Mac's share, the expected speed.
-                let shares = plan.ranks.sorted { $0.rank < $1.rank }.map { rank in
-                    ClusterOnboardingDeployment.Share(name: rank.local ? localName : peerName, layers: rank.endLayer - rank.firstLayer,
-                                                      weightsBytes: rank.weightsBytes)
-                }
+                let shares = planShares(plan.ranks, localName: localName)
                 let speed = plan.absolute ? "about \(Int(plan.decodeTokensPerSecond.rounded())) tokens/s\(plan.measured ? "" : " (estimate)")" : nil
                 let line = ClusterOnboardingDeployment.choiceLine(size: gigabytes, mode: plan.mode, shares: shares, speed: speed)
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: shares)
@@ -652,7 +679,10 @@ final class OnboardingLive: @unchecked Sendable {
         let localName = ClusterPairingProvider.displayName(chipName: local.chip)
         let localProfile = local.profile
         var peerProfile: ClusterDeviceProfile?
-        if case .reached(let report, _) = context.reachPeer() { lock.withLock { peerReport = report }; peerProfile = report.mac.profile }
+        if case .reached(let report, _) = context.reachPeer() {
+            rememberPeerReport(report, memberID: context.peerFacts?.memberID)
+            peerProfile = report.mac.profile
+        }
         let words = plan.ranks.compactMap { rank -> String? in
             guard let profile = rank.local ? localProfile : peerProfile else { return nil }
             return Self.remedy(profile.memory.fit(rank.needBytes), mac: rank.local ? localName : peerName)

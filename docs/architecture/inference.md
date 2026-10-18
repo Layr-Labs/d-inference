@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -20,6 +20,16 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2DiffusionVisionPrefill.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/Gemma4TurnStructure.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`.
+
+## Cluster setup presentation
+
+`ClusterOnboardingDriver` presents connection, pairing, model choice, startup
+and a test response as five stages. Completion requires the test response to
+succeed; a failed response retains the saved setup for a later retry.
+`OnboardingLive` uses fresh peer display facts only while their authenticated
+member identity matches the current pairing. These labels do not rewrite saved
+serving intent or change model eligibility and placement. See the
+[guided two-Mac setup](../provider/two-mac-cluster.md) for operator steps.
 
 ## Context
 

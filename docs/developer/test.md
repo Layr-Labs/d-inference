@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-18
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -486,3 +486,19 @@ unavailable hardware honestly. Local validation does not authorize deployment.
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)
 - [Provider release](../operations/provider-release.md)
+
+## Cluster onboarding UI checks
+
+Run `bash provider-swift/Tests/ClusterOnboardingChecks/run.sh` from the repository
+root for model-free pseudo-terminal checks of setup stages, menu selection,
+failed test responses, terminal restoration and plain output. Set
+`ONBOARDING_TRANSCRIPTS` to a private output directory to retain screen text.
+The harness compiles only the onboarding flow, terminal and scripted operations;
+it does not configure a network port, start a service or load a model.
+
+`ClusterOnboardingPeerLabelTests` checks the live adapter with injected pairing
+facts: fresh authenticated peer labels replace saved display names, changed
+peer identity refuses reuse, and saved serving intent remains unchanged. Run
+that filter with the provider test setup described above. These checks do not
+prove macOS authorization, Recovery changes, TCC approval or installed-service
+behavior.

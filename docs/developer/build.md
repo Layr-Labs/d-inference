@@ -65,6 +65,13 @@ provider test products after fixture-source changes before using `--skip-build`,
 then apply the optional directory override at execution time as documented in
 [SSD test working volume](test.md#ssd-test-working-volume).
 
+MiMo tool-schema regression checks require a rebuilt provider test product after
+source changes. Reuse only an inactive, owned scratch directory with the selected
+public gitlinks and locked package graph; record the resulting test executable
+identity before any `--skip-build` selection. The [focused fixture recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+uses metadata and scripted generation, not a substitute native runtime or a
+binary copied from a different dependency composition.
+
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
 [checkpoint-storage gates](test.md#native-inference-checkpoint-storage-qualification);

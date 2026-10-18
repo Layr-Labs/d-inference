@@ -28,6 +28,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
     // Included in synthesized equality: refusal evidence cannot be erased by
     // comparing only the permissively decoded legacy control fields.
     var rawMiMoControls = MiMoV26RawControlEvidence()
+    var rawMiMoTools = MiMoV26ToolEvidence()
     var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
 
     public init(
@@ -48,6 +49,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
         var copy = Self(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
               preserveThinking: preserveThinking, clearThinking: clearThinking, promptDate: date)
         copy.rawMiMoControls = rawMiMoControls
+        copy.rawMiMoTools = rawMiMoTools
         copy.rawGLM5Controls = rawGLM5Controls
         return copy
     }

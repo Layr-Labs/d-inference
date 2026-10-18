@@ -30,6 +30,7 @@ extension ChatTemplateControls: Decodable {
             clearThinking: clearThinking,
             promptDate: (try? values.decode(String.self, forKey: .promptDate)).flatMap(PromptRenderDate.init))
         rawMiMoControls = MiMoV26RawControlEvidence.capture(from: decoder, surface: .chat)
+        rawMiMoTools = MiMoV26ToolEvidence(from: decoder)
         rawGLM5Controls = GLM5NextPromptPolicy.RawControls.capture(from: decoder)
     }
 }

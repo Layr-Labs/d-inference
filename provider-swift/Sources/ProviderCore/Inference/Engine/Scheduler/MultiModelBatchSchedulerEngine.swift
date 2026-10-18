@@ -414,6 +414,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
         requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        var request = request
         let tokenizer = acquired.tokenizer
         let modelType = acquired.modelType
         let releaseBox = acquired.releaseToken
@@ -432,6 +433,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
+            request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
             if modelType == "mimo_v2" {
                 try MiMoV26TemplateFix.validateRequest(request)

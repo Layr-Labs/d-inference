@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1098,6 +1098,20 @@ coordinator retains the fallback deadline for candidates without matching
 identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
+
+#### MiMo Chat tool-schema preservation
+
+The decrypted Chat body adds no envelope field or schema-metadata trust grant.
+Loaded exact `mimo_v2` selects restoration of the original typed tool declarations;
+caller model names do not select this behavior. The public fixture is a fixed
+provider contract, not evidence of a deployed platform implementation.
+
+| Boundary | Contract | Provider source |
+|---|---|---|
+| Original tools | Preserve typeless enums and Boolean property schemas before native rendering, serving, recount and benchmark preparation. Other loaded families retain existing normalization. | `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift` (`restoring`); [native inference](../architecture/inference.md#native-mimo-v26-candidate) |
+| Hosted-tool fallback | Share the existing function-object/string-name structural filter. Malformed retained declarations still fail SDK decoding; unsupported hosted entries follow existing ingress repair. | `provider-swift/Sources/ProviderCore/InboundChatNormalization.swift` (`isRepresentableTool`); `MiMoV26ToolEvidence.OriginalTool` |
+| Reserved metadata | Reject client-authored reserved schema metadata before tool-choice handling, including `none`. No new caller trust or forced-tool capability follows from capture. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`rejectReservedSchemaMetadata`); `MiMoV26ToolEvidence.restoring` |
+| Public regression | Two newly authored reproductions exercise exact provider/local prompt IDs through scripted generation. Historical external-corpus and live platform qualification remain separate. | `fixtures/prompt-contract/mimo-v26-schema-parity-v1.json`; [fixture procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions) |
 
 #### GLM native prompt contract
 

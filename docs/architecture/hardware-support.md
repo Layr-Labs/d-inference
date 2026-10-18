@@ -239,6 +239,16 @@ standalone server runs the same sequence in
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
   refuses work.
 
+### MiMo prompt recount
+
+For exact `mimo_v2`, `ProviderLoop.promptTokenFloor` restores captured original
+tool schemas before the shared native tokenization path. The floor therefore
+counts the schema rendered by serving rather than the model-blind normalized
+schema (`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
+This changes prompt-count correctness, not the load allowance, activation
+reserve, KV byte rate or ownership gates below. See the
+[native MiMo prompt contract](inference.md#native-mimo-v26-candidate).
+
 ### KV slot grants
 
 The fleet KV budget is the effective unified-memory cap minus all resident

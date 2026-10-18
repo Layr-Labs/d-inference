@@ -22,8 +22,9 @@ enum ProviderPromptContractPipeline {
         if MiMoV26TemplateFix.applies(to: .init(modelType: modelType)) {
             try MiMoV26TemplateFix.validateRawControls(body)
         }
-        let request = try ProviderLoop.decodeOpenAIRequest(body, modelType: modelType)
+        let decodedRequest = try ProviderLoop.decodeOpenAIRequest(body, modelType: modelType)
         let templateControls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+        let request = try templateControls.rawMiMoTools.restoring(decodedRequest, modelType: modelType)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         return try tokenize(
             prepared: prepared,

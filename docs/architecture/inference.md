@@ -1171,6 +1171,32 @@ native frontend then resamples and mixes. The decoder honors one container trim,
 including AAC priming, and validates contiguous output timing and the complete
 presented sample count. Multiple tracks, gaps and retiming remain refused.
 
+Native MiMo preserves original function-tool schemas across model-blind provider
+and local Chat ingress. `MiMoV26ToolEvidence` captures typed declarations beside
+`ChatTemplateControls`; after the loaded model resolves to exact `mimo_v2`,
+`restoring` replaces normalized tools before tool-choice preparation in serving,
+provider-body tokenization, prompt recount and benchmark rendering. Typeless
+enums and Boolean property schemas consequently reach the native template with
+their original values. Other model families keep their existing normalization.
+
+Capture shares `InboundChatNormalization.isRepresentableTool` with ingress
+repair: entries with a function object or string name are retained for SDK
+decoding, while unrepresentable hosted entries follow the existing fallback.
+Malformed retained declarations fail. Client-supplied reserved schema metadata
+is rejected before tool-choice handling, including `none`; restoring original
+schemas grants no tool, media or memory-admission bypass. The bounded raw-control
+refusal capsule remains separate from the typed tool declarations.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift`
+(`MiMoV26ToolEvidence.restoring`),
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
+(`tokenizeProviderBody`),
+`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`
+(`promptTokenFloor`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
+(`benchmarkPrompt`). See the [schema regression procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the public fixture boundary.
+
 MiMo accepts the Boolean `chat_template_kwargs.thinking` alias used by OpenRouter.
 `reasoning.enabled` takes precedence, followed by top-level `enable_thinking`,
 kwargs `enable_thinking`, then kwargs `thinking`. Every supplied value is type

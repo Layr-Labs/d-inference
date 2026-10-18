@@ -236,6 +236,17 @@ unprovisioned general run can fail rather than skip. Run these separately in the
 native lane; they verify refusal before native ownership, not successful FP32
 serving.
 
+#### MiMo tool-schema parity
+
+After building the current provider test product, use the
+[tool-schema ingress regression recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the five schema regressions, adjacent prompt/decode suites and nine current
+consumer cases. Required focused selections reject zero tests and any skip.
+The optional historical two-case corpus runs separately and cannot supply a
+passing result when absent. These metadata-only, scripted-generation checks
+exercise real provider preparation but do not load a model or prove live
+platform parity.
+
 #### Separate native and audio qualification
 
 Ordinary fixtures use symmetric 128-context geometry; the separate complete-prefix

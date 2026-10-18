@@ -40,10 +40,12 @@ struct LocalChatRequestTests {
         // fields are invalid for GLM and the original tools are retained.
         let glm = try decoder.decode(GLM5NextPromptPolicy.RawControls.self, from: data)
         #expect(glm.invalid && glm.hasOriginalTools)
-        #expect(local.templateControls == ChatTemplateControls(
+        var expected = ChatTemplateControls(
             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
             promptDate: try #require(local.templateControls.promptDate))
-            .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm))
+            .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm)
+        expected.rawMiMoTools = try decoder.decode(MiMoV26ToolEvidence.self, from: data)
+        #expect(local.templateControls == expected)
         #expect(local.request.reasoning?.enabled == true)
         #expect(local.request.streamOptions?.includeUsage == true)
         #expect(local.request.streamOptions?.continuousUsageStats == true)

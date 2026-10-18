@@ -139,7 +139,8 @@ extension ProviderLoop {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) -> Int {
-        guard let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
+        guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
+            let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
         if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType) {
             return (try? ProviderPromptContractPipeline.tokenize(
                 prepared: prepared, request: request, tokenizer: tokenizer.inner,

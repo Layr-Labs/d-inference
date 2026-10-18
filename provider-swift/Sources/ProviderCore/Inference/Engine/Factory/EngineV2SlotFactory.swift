@@ -606,7 +606,14 @@ enum EngineV2SlotFactory {
                 modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
             throw error
         }
-        await bridge.glm5NextNativeOwner?.startResidency()
+        do {
+            try await bridge.glm5NextNativeOwner?.startResidency()
+        } catch {
+            // The owner retains its model/resources; retain the actual bridge
+            // as well so a failed start cannot escape as a published bundle.
+            GLM5NextLoadFaultState.retain([bridge])
+            throw GLM5NextManagedLoadError.retirementUnproven
+        }
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }

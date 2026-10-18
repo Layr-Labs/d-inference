@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -59,6 +59,15 @@ No test manufactures a positive native completion receipt. See
 `provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextLocalLoadPolicyTests.swift`
 and `provider-swift/Tests/ProviderCoreTests/Inference/Engine/EngineV2ProductionWiringTests.swift`.
 
+`GLM5NextResidencyIntegrationTests` exercises the actual factory, bridge and
+native owner with tiny model fixtures. Reserve the exclusive GPU lane, set
+`DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST=1`, and run its selector in a fresh process
+for each `DARKBLOOM_TEST_GLM_RESIDENCY_INTEGRATION` value: `start-fault`,
+`complete-success` and `end-fault`. The fault cases intentionally retain native
+roots until exit. They verify that pending or failed residency settlement keeps
+the bridge's KV claim and activity guards; successful concurrent completion
+releases ownership once. Do not enable these flags on the full test suite.
+
 After building the SDK test product and staging its source-matched Metal
 library, run the initial configuration and mathematical-reference suites from
 `libs/mlx-swift-lm/` under the exclusive native test lease:
@@ -86,6 +95,15 @@ unpatched pinned Swift-Jinja. It must match every official-template golden byte
 for byte, including list-shaped tool results that reach each rewritten `[0]`
 access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
 only the shipped template is recognized and passes the load-time render check.
+
+`fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
+`minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
+`GLM5NextPromptPolicyTests` checks those fixed bytes through the shipped
+renderer. No image is fetched or processed, so these vectors do not qualify
+native vision. The fixture metadata's `media: false` is an evidence limit, not
+a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
+suffix rejection, including a valid call followed by malformed output, before
+fallback text or partial calls can escape.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`

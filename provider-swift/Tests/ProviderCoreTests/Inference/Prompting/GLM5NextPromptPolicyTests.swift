@@ -119,6 +119,36 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
+    @Test func additionalEffortAndImageMarkerGoldensMatchOfficial() throws {
+        let corpus = try JSONDecoder().decode(Corpus.self,
+            from: Data(contentsOf: fixtures.appendingPathComponent("additional-goldens.json")))
+        #expect(corpus.templateSHA256 == Self.officialTemplateSHA256)
+        #expect(Set(corpus.cases.map(\.id)) == ["minimal", "medium", "xhigh", "image"])
+        let template = try shippedTemplate()
+        for fixture in corpus.cases {
+            let body = try JSONEncoder().encode(fixture.request)
+            var values: [String: Jinja.Value] = ["add_generation_prompt": .boolean(true)]
+            if fixture.id == "image" {
+                // Renderer-only marker evidence: no image fetch or native owner.
+                // The text-only ingress must continue refusing this request.
+                #expect(throws: (any Error).self) { try normalized(body) }
+                let request = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                values["messages"] = try .init(any: try #require(request["messages"]))
+                values["reasoning_effort"] = .string("max")
+                values["clear_thinking"] = .boolean(false)
+            } else {
+                let input = try normalized(body)
+                #expect(MLXLMCommon.JSONValue.object((input.additionalContext ?? [:]).mapValues { .from($0) })
+                    == fixture.expectedContext)
+                values["messages"] = try .init(any: input.messages)
+                for (key, value) in input.additionalContext ?? [:] { values[key] = try .init(any: value) }
+            }
+            let rendered = try template.render(values)
+            #expect(Data(rendered.utf8) == Data(fixture.rendered.utf8), "\(fixture.id)")
+            #expect(sha(Data(rendered.utf8)) == fixture.renderedSHA256, "\(fixture.id)")
+        }
+    }
+
     /// The goldens hold only string tool results. These list-shaped results
     /// reach all four rewritten `[0]` accesses; the expected bytes are the
     /// official template's Jinja2 3.1.6 render of each shape.

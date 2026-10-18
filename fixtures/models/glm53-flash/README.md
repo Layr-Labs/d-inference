@@ -39,7 +39,7 @@ block and the sidecar would duplicate those weights.
 `load-footprint.json` is the compact projection of all 43 retained Q4 headers
 and raw-snapshot integrity-file sizes at the same revision. It tests checked
 LOAD arithmetic without embedding the full tensor-name inventory. The exact
-same-directory result is 222,714,752,471 bytes, not a rounded GiB constant.
+same-directory result is 192,045,833,503 bytes, not a rounded GiB constant.
 The optional `GLM53_RAW_HEADER_FIXTURE_DIR` test also runs the production
 projection over the retained full header/index fixture; neither test reads
 weight payloads or establishes model qualification.

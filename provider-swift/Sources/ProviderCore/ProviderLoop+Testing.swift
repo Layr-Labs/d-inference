@@ -22,11 +22,13 @@ extension ProviderLoop {
     /// Test seam: whether a model id is currently advertised.
     func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
 
+    #if DEBUG
     /// Test seam: advertise a model the supported-set filter would drop, to
     /// exercise `ensureModelLoaded`'s own refusals behind that filter.
     func advertiseBypassingSupportedSetForTesting(_ model: ModelInfo) {
         advertisedModels[model.id] = model
     }
+    #endif
 
     func advertisedModelWeightHashForTesting(_ id: String) -> String? {
         advertisedModels[id]?.weightHash

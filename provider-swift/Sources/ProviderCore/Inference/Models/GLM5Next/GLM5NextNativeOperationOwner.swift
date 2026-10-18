@@ -18,6 +18,15 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
     private var retired = false
     private var retainedFault = false
     #if DEBUG
+        // Task-local injection preserves real factory/bridge/resource ownership.
+        // Fault tests run in separate processes; no global quarantine reset exists.
+        @TaskLocal static var residencyForTesting: GLM5NextWiredResidency?
+        @TaskLocal static var observeConstructionForTesting: (@Sendable (GLM5NextNativeOperationOwner) -> Void)?
+        private var completionsInFlight = 0
+        var completionsInFlightForTesting: Int { lock.withLock { completionsInFlight } }
+        var hasBindingForTesting: Bool { lock.withLock { binding != nil } }
+        var bridgeForTesting: EngineV2Bridge? { lock.withLock { bridge } }
+        var modelForTesting: AnyObject? { lock.withLock { binding?.model.root } }
         private var retirementRefusal: (@Sendable () throws -> Void)?
         func installRetirementRefusalForTesting(_ refusal: @escaping @Sendable () throws -> Void) {
             lock.withLock { retirementRefusal = refusal }
@@ -34,22 +43,42 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
         engineID = engine.nativeShutdownEngineID
         contractID = resources.resources.contract.id
         servesPreparedCausalMedia = resources.resources.contract.supportsPreparedCausalMedia
-        residency = GLM5NextWiredResidency.prepare(budget: resources.budget)
+        #if DEBUG
+            residency = Self.residencyForTesting ?? GLM5NextWiredResidency.prepare(budget: resources.budget)
+            Self.observeConstructionForTesting?(self)
+        #else
+            residency = GLM5NextWiredResidency.prepare(budget: resources.budget)
+        #endif
     }
 
     var residencyPhase: GLM5NextWiredResidency.Phase? { residency?.currentPhase }
 
-    /// After the bridge is bound and its grant is serviceable.
-    func startResidency() async {
-        guard lock.withLock({ bridge != nil && !closing && !retired }) else { return }
+    /// Publication requires a settled start; a backend fault is not evidence
+    /// that standing residency was unsupported or never applied.
+    func startResidency() async throws {
+        guard lock.withLock({ bridge != nil && !closing && !retired && !retainedFault }) else {
+            throw GLM5NextManagedLoadError.lifecycle
+        }
         await residency?.start()
+        await residency?.waitForSettlement()
+        guard residency == nil || residency?.currentPhase == .held,
+            lock.withLock({ !closing && !retired && !retainedFault }) else {
+            retainFailure()
+            throw GLM5NextManagedLoadError.retirementUnproven
+        }
     }
 
-    /// Only after proven retirement; an unproven close keeps the weights and
-    /// therefore their residency. Idempotent (`GLM5NextWiredResidency.end`).
-    func endResidencyAfterRetirement() async {
-        guard lock.withLock({ retired }) else { return }
-        await residency?.end()
+    private func endResidency() async throws {
+        guard let residency else { return }
+        var result = await residency.end()
+        if result == .pendingStart || result == .pendingEnd {
+            await residency.waitForSettlement()
+            result = await residency.end()
+        }
+        guard result == .ended else {
+            retainFailure()
+            throw GLM5NextManagedLoadError.retirementUnproven
+        }
     }
 
     func bind(to bridge: EngineV2Bridge) throws {
@@ -103,12 +132,24 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
 
     /// Idempotent: concurrent re-drives of one closing owner may each complete
     /// it with the same cached bridge receipt.
-    func complete(_ receipt: CBv2NativeShutdownReceipt) throws {
+    func complete(_ receipt: CBv2NativeShutdownReceipt) async throws {
         try lock.withLock {
             guard receipt.engineID == engineID, receipt.executionContractID == contractID,
                 receipt.generation == 1
             else { throw GLM5NextManagedLoadError.identityMismatch }
+            guard !retainedFault else { throw GLM5NextManagedLoadError.retirementUnproven }
             closing = true
+            #if DEBUG
+                completionsInFlight += 1
+            #endif
+        }
+        #if DEBUG
+            defer { lock.withLock { completionsInFlight -= 1 } }
+        #endif
+        // Keep the actual model/resources until both proofs are available.
+        try await endResidency()
+        try lock.withLock {
+            guard !retainedFault else { throw GLM5NextManagedLoadError.retirementUnproven }
             retired = true
             binding = nil
         }
@@ -134,8 +175,7 @@ public final class GLM5NextNativeOperationOwner: @unchecked Sendable {
         }
         switch await engine.shutdownReportingNativeCompletion() {
         case .quiescent(let receipt):
-            try complete(receipt)
-            await endResidencyAfterRetirement()
+            try await complete(receipt)
         case .incomplete:
             retainFailure()
             throw GLM5NextManagedLoadError.retirementUnproven

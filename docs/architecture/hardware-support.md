@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -114,6 +114,13 @@ bytes plus native construction/tokenizer transients
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
 `GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
 unchanged. The activated expert count is not a resident-weight estimate.
+Standing GLM wired residency is optional only when disabled or unsupported
+before ticket creation (macOS 15 or later with Metal 3 support). A backend
+start/end fault is unproven application or restoration, not unsupported
+hardware: the provider retains the actual owner and policy entry and refuses
+GLM publication or clean retirement until restart. Pending operations are joined
+before settlement; no timeout or cancellation is restoration proof
+(`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
 
 `GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
 `GLM5NextArtifactLoadRoots` retires individual expert sources only after the

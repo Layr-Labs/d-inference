@@ -1342,11 +1342,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 let toolCalls = toolHandler?.finish() ?? []
-                if nativeMiMoChannels, (toolHandler?.parseFailureCount ?? 0) > 0 {
+                do {
+                    try router.checkNativeToolFailure()
+                } catch {
                     await releaseBox.fire()
-                    continuation.finish(throwing: prepared.mode.requiresInferenceConstraint
-                        ? MultiModelBatchSchedulerEngineError.toolChoiceViolation("native MiMo tool output is invalid")
-                        : MultiModelBatchSchedulerEngineError.generationFailed("native MiMo tool output is invalid"))
+                    continuation.finish(throwing: error)
                     return
                 }
                 if prepared.mode == .auto,
@@ -1437,10 +1437,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         cancelUpstream: @escaping @Sendable () async -> Void,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        reasoningPrefix: String? = nil
+        reasoningPrefix: String? = nil,
+        toolHandler: BatchedToolStreamHandler? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
-            toolHandler: nil, prepared: prepared, releaseBox: releaseBox,
+            toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: EngineV2RequestUsageSignal(), reasoningPrefix: reasoningPrefix)
     }
     #endif

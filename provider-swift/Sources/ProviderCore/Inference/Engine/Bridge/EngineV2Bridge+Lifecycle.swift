@@ -3,8 +3,15 @@
 import Foundation
 import MLXLMCommon
 import ProviderCoreFoundation
+#if canImport(os)
+import os
+#endif
 
 extension EngineV2Bridge {
+    #if canImport(os)
+    private static let lifecycleLogger = Logger(
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2_lifecycle")
+    #endif
     // MARK: - Cancel / shutdown
 
     /// Cancel by provider request-id. Prompt per the v2 contract: the
@@ -138,7 +145,15 @@ extension EngineV2Bridge {
     /// await the engine drain.
     public func shutdown() async {
         if glm5NextNativeOwner != nil {
-            try? await shutdownGLM5NextReportingCompletion()
+            do {
+                try await shutdownGLM5NextReportingCompletion()
+            } catch {
+                // Void compatibility cannot return an error, but must not
+                // silently imply clean retirement. Never log the caught payload.
+                #if canImport(os)
+                Self.lifecycleLogger.error("GLM native retirement unproven; resources retained until restart")
+                #endif
+            }
             return
         }
         if nativeShutdownClosed, ownedEngine == nil { return }

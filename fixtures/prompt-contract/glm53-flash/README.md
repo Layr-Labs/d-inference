@@ -45,3 +45,14 @@ selection. Media still requires a verified native wrapper; the reasoning-control
 resolver itself has no unconditional family-wide media prohibition. Strict tool
 decoding, forced tool choice and JSON output modes remain explicit refusals until
 their real enforcement is qualified.
+
+The `metadata.json` `claims` flags describe only what this fixture corpus proves.
+In particular, `media: false` means these vectors do not qualify media rendering
+or execution; it is not a runtime GLM media-support prohibition. Runtime support
+is governed by the managed native wrapper and its independently qualified gates.
+
+`additional-goldens.json` covers the `minimal` → `low`, `medium` → `high` and
+`xhigh` → `max` effort aliases through provider normalization, plus an image
+marker through the shipped renderer alone. The image case does not fetch or
+process media and does not qualify native vision. Jinja2 3.1.6 renders the pinned
+official and shipped sources identically for these four cases.

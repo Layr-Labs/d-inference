@@ -176,7 +176,7 @@ final class MiMoV26WiredResidency: @unchecked Sendable {
             ceiling: readCeiling, policy: .shared, manager: .shared, policyOnlyTest: false))
     }
 
-    private static var platformSupported: Bool {
+    static var platformSupported: Bool {
         #if os(macOS) && canImport(Metal)
         guard #available(macOS 15, *), let device = MTLCreateSystemDefaultDevice() else { return false }
         return device.supportsFamily(.metal3)

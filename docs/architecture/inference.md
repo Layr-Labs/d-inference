@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-18
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -81,7 +81,16 @@ whole-model dictionary. Provider integration uses a model-bound
 borrow a MiMo transaction or bypass its checks. Shutdown consumes the actual
 native engine/contract receipt before releasing the root or growing survivor
 grants. Missing ownership or unproven completion refuses work and retains the
-affected owners. Synthetic tests do not establish full-model output parity or
+affected owners. Standing wired residency checks platform support before
+creating a ticket. Once a backend start or end has been attempted, a fault
+retains the ticket, policy registration and actual native owner until process
+restart. Factory publication requires a settled successful start; shutdown joins
+pending ticket work and requires successful end before releasing the owner's
+model/resources. The bridge also retains its engine, nonzero KV claim and activity
+guards until that settlement succeeds; a failed end keeps the unpublished
+retirement charge instead of reporting zero capacity. A native quiescence receipt alone cannot settle a failed
+residency operation (`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
+Synthetic tests do not establish full-model output parity or
 full-artifact qualification. Source lives under
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/` and
 `libs/mlx-swift-lm/Libraries/MLXVLM/Models/`. See the
@@ -1408,3 +1417,11 @@ Both exact identifiers use `Bonsai9BModelPolicy`. The copy preserves publisher
 weights and runtime metadata, including the sidecar layer-count declaration.
 Artifact copying does not grant catalog or hosted-serving qualification.
 No family-name or substring alias is accepted.
+
+GLM tool output uses the SDK GLM parser to validate the complete tool suffix at
+end of stream. Malformed suffixes fail before residual text or any parsed call is
+published, including when a valid call precedes the malformed suffix. Auto mode
+returns a generation error. Forced-mode output validation maps failure to tool
+noncompliance (422), but public GLM required/named admission remains unsupported;
+this defense does not advertise constrained decoding. Void bridge shutdown logs
+a fixed retirement-failure diagnostic without including the caught error payload.

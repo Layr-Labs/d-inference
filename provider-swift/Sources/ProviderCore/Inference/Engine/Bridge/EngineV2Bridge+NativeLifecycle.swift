@@ -133,9 +133,9 @@ extension EngineV2Bridge {
     func shutdownGLM5NextReportingCompletion() async throws {
         guard let owner = glm5NextNativeOwner else { throw GLM5NextManagedLoadError.managedLoadRequired }
         do {
-            if ownedEngine == nil, case .quiescent(let receipt)? = nativeShutdownResult {
-                try owner.complete(receipt)
-                await owner.endResidencyAfterRetirement()
+            if case .quiescent(let receipt)? = nativeShutdownResult {
+                try await owner.complete(receipt)
+                releaseNativeConstructionOwnership()
                 return
             }
             guard let actual = ownedEngine as? EngineV2 else { throw GLM5NextManagedLoadError.identityMismatch }
@@ -145,10 +145,11 @@ extension EngineV2Bridge {
                     expectedEngine: actual, executionContractID: owner.contractID)
             }
             switch outcome {
-            case .quiescent(let receipt): try owner.complete(receipt)
+            case .quiescent(let receipt):
+                try await owner.complete(receipt)
+                releaseNativeConstructionOwnership()
             case .incomplete: throw GLM5NextManagedLoadError.retirementUnproven
             }
-            await owner.endResidencyAfterRetirement()
         } catch {
             owner.retainFailure()
             GLM5NextLoadFaultState.retain([self])
@@ -241,13 +242,20 @@ extension EngineV2Bridge {
         prefixCacheStatsTask = nil
         slotPostureTask = nil
         nativeShutdownTasks.removeAll()
+        // GLM retains its engine, capacity claim and activity guards until the
+        // owner also proves residency settlement. SDK quiescence alone cannot
+        // authorize a refund; a failed end keeps these roots until process exit.
+        if glm5NextNativeOwner == nil { releaseNativeConstructionOwnership() }
+        nativeShutdownResult = outcome
+        return outcome
+    }
+
+    private func releaseNativeConstructionOwnership() {
         ownedEngine = nil
         nativeShutdownActivity?.finish()
         nativeShutdownActivity = nil
         deadlinePostureMonitoring?.finish()
         deadlinePostureMonitoring = nil
-        nativeShutdownResult = outcome
-        return outcome
     }
 
     private var nativeHostConsumersHaveFinished: Bool {

@@ -30,11 +30,12 @@ struct GLM5NextWiredResidencyTests {
         let lock = NSLock()
         var starts = 0, ends = 0
         var gate: CheckedContinuation<Void, Never>?
+        var endGate: CheckedContinuation<Void, Never>?
     }
 
     private func makeResidency(
         policy: MiMoV26WiredResidency.Policy, ticket: Ticket, startSucceeds: Bool = true,
-        holdStart: Bool = false
+        holdStart: Bool = false, endSucceeds: Bool = true, holdEnd: Bool = false
     ) -> GLM5NextWiredResidency {
         GLM5NextWiredResidency(
             policy: policy, policyEntry: UUID(), ceiling: { 1 },
@@ -47,7 +48,15 @@ struct GLM5NextWiredResidencyTests {
                 ticket.lock.withLock { ticket.starts += 1 }
                 return startSucceeds
             },
-            endTicket: { ticket.lock.withLock { ticket.ends += 1 } })
+            endTicket: {
+                ticket.lock.withLock { ticket.ends += 1 }
+                if holdEnd {
+                    await withCheckedContinuation { continuation in
+                        ticket.lock.withLock { ticket.endGate = continuation }
+                    }
+                }
+                return endSucceeds
+            })
     }
 
     /// An isolated policy instance: the shared production policy is untouched.
@@ -66,9 +75,9 @@ struct GLM5NextWiredResidencyTests {
 
         let refused = makeResidency(policy: policy, ticket: Ticket(), startSucceeds: false)
         await refused.start()
-        #expect(refused.currentPhase == .unsupported)
+        #expect(refused.currentPhase == .retainedFault)
         await refused.end()
-        #expect(refused.currentPhase == .ended && policy.registeredCount == 0)
+        #expect(refused.currentPhase == .retainedFault && policy.registeredCount == 1)
     }
 
     /// `end` during `start` never leaves a ticket held once start returns.
@@ -79,7 +88,7 @@ struct GLM5NextWiredResidencyTests {
         let starting = Task { await residency.start() }
         while ticket.lock.withLock({ ticket.gate == nil }) { await Task.yield() }
         #expect(residency.currentPhase == .starting)
-        await residency.end()
+        #expect(await residency.end() == .pendingStart)
         #expect(residency.currentPhase == .starting && ticket.ends == 0)
         ticket.lock.withLock { ticket.gate }?.resume()
         await starting.value
@@ -94,6 +103,81 @@ struct GLM5NextWiredResidencyTests {
             #expect(policy.registeredCount == 1 && residency.currentPhase == .prepared)
         }
         #expect(policy.registeredCount == 0)
+    }
+
+    @Test func failedStartCannotReleaseAnUnprovenTicket() async {
+        let policy = MiMoV26WiredResidency.Policy()
+        let ticket = Ticket()
+        let residency = makeResidency(policy: policy, ticket: ticket, startSucceeds: false)
+        await residency.start()
+        await residency.end()
+        await residency.end()
+        #expect(residency.currentPhase != .ended)
+        #expect(policy.registeredCount == 1)
+        #expect(ticket.starts == 1 && ticket.ends == 0)
+    }
+
+    @Test func failedStartWithPendingEndRetainsRegistration() async {
+        let policy = MiMoV26WiredResidency.Policy()
+        let ticket = Ticket()
+        let residency = makeResidency(
+            policy: policy, ticket: ticket, startSucceeds: false, holdStart: true)
+        let starting = Task { await residency.start() }
+        while ticket.lock.withLock({ ticket.gate == nil }) { await Task.yield() }
+        await residency.end()
+        ticket.lock.withLock { ticket.gate }?.resume()
+        await starting.value
+        #expect(residency.currentPhase != .ended)
+        #expect(policy.registeredCount == 1)
+        #expect(ticket.starts == 1 && ticket.ends == 0)
+    }
+
+    @Test func endFaultRetainsTicketAndPolicyWithoutRetry() async {
+        let policy = MiMoV26WiredResidency.Policy()
+        let ticket = Ticket()
+        let residency = makeResidency(policy: policy, ticket: ticket, endSucceeds: false)
+        await residency.start()
+        #expect(await residency.end() == .retainedFault)
+        #expect(await residency.end() == .retainedFault)
+        await residency.start()
+        #expect(residency.currentPhase == .retainedFault)
+        #expect(policy.registeredCount == 1)
+        #expect(ticket.starts == 1 && ticket.ends == 1)
+    }
+
+    @Test func concurrentEndCannotClaimCompletionBeforeBackendReturns() async {
+        let policy = MiMoV26WiredResidency.Policy()
+        let ticket = Ticket()
+        let residency = makeResidency(policy: policy, ticket: ticket, holdEnd: true)
+        await residency.start()
+        let ending = Task { await residency.end() }
+        while ticket.lock.withLock({ ticket.endGate == nil }) { await Task.yield() }
+        #expect(await residency.end() == .pendingEnd)
+        #expect(residency.currentPhase == .ending && policy.registeredCount == 1)
+        ticket.lock.withLock { ticket.endGate }?.resume()
+        await residency.waitForSettlement()
+        #expect(await ending.value == .ended)
+        #expect(await residency.end() == .ended)
+        #expect(ticket.starts == 1 && ticket.ends == 1 && policy.registeredCount == 0)
+    }
+
+    @Test func pendingEndFaultNeverBecomesCleanRetirement() async {
+        let policy = MiMoV26WiredResidency.Policy()
+        let ticket = Ticket()
+        let residency = makeResidency(
+            policy: policy, ticket: ticket, holdStart: true, endSucceeds: false, holdEnd: true)
+        let starting = Task { await residency.start() }
+        while ticket.lock.withLock({ ticket.gate == nil }) { await Task.yield() }
+        #expect(await residency.end() == .pendingStart)
+        ticket.lock.withLock { ticket.gate }?.resume()
+        while ticket.lock.withLock({ ticket.endGate == nil }) { await Task.yield() }
+        #expect(await residency.end() == .pendingEnd)
+        #expect(policy.registeredCount == 1)
+        ticket.lock.withLock { ticket.endGate }?.resume()
+        await residency.waitForSettlement()
+        await starting.value
+        #expect(await residency.end() == .retainedFault)
+        #expect(policy.registeredCount == 1 && ticket.starts == 1 && ticket.ends == 1)
     }
 
     /// A real ticket on the GPU and the shared policy: exclusive GPU lane only.

@@ -5,7 +5,7 @@ import MLX
 /// model-memory permit or a promise that specific buffers are wired.
 ///
 /// Without a standing residency set every command buffer must make the
-/// ~165 GiB NVFP4 payload resident again. On a 256 GiB host prefill then runs
+/// large NVFP4 payload resident again. On a 256 GiB host prefill then runs
 /// at a quarter of its speed (measured 263–367 versus 1,246 tok/s for
 /// 512-token chunks on an M5 Ultra); decode is unaffected. The wired-memory
 /// ticket requests the shared safe ceiling, not the payload size: the residency
@@ -25,15 +25,17 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
             raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
-    enum Phase: Equatable, Sendable { case prepared, starting, held, ending, ended, unsupported }
+    enum Phase: Equatable, Sendable { case prepared, starting, held, ending, ended, retainedFault }
+    enum EndResult: Equatable, Sendable { case ended, pendingStart, pendingEnd, retainedFault }
 
     private let policy: MiMoV26WiredResidency.Policy
     private let policyEntry: UUID
     private let startTicket: @Sendable () async -> Bool
-    private let endTicket: @Sendable () async -> Void
+    private let endTicket: @Sendable () async -> Bool
     private let lock = NSLock()
     private var phase = Phase.prepared
     private var endRequested = false
+    private var settlementWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Registers `policyEntry` with `policy`; the closures install and remove
     /// the device ticket.
@@ -41,7 +43,7 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
         policy: MiMoV26WiredResidency.Policy, policyEntry: UUID,
         ceiling: @escaping @Sendable () -> Int,
         startTicket: @escaping @Sendable () async -> Bool,
-        endTicket: @escaping @Sendable () async -> Void
+        endTicket: @escaping @Sendable () async -> Bool
     ) {
         self.policy = policy
         self.policyEntry = policyEntry
@@ -59,7 +61,7 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
     static func prepare(
         budget: GlobalKVCacheBudget, enabled: Bool = isEnabled()
     ) -> GLM5NextWiredResidency? {
-        guard enabled,
+        guard enabled, MiMoV26WiredResidency.platformSupported,
             let recommended = try? withError({ GPU.maxRecommendedWorkingSetBytes() }),
             recommended > 0
         else { return nil }
@@ -88,17 +90,22 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
                 } catch { return false }
             },
             endTicket: {
-                _ = try? await Device.withDefaultDevice(.gpu) {
-                    try await withError { _ in _ = await ticket.end() }
-                }
+                do {
+                    try await Device.withDefaultDevice(.gpu) {
+                        try await withError { errors in
+                            _ = await ticket.end()
+                            try errors.check()
+                        }
+                    }
+                    return true
+                } catch { return false }
             })
     }
 
     var currentPhase: Phase { lock.withLock { phase } }
 
-    /// Installs the ticket on the GPU device. An MLX refusal leaves the engine
-    /// serving without standing residency; it never fails the load. An `end`
-    /// that arrives meanwhile releases the ticket as soon as start returns.
+    /// A start fault may follow manager registration. Keep the ticket and
+    /// policy entry until process retirement instead of claiming it was absent.
     func start() async {
         guard lock.withLock({ () -> Bool in
             guard phase == .prepared else { return false }
@@ -107,41 +114,77 @@ final class GLM5NextWiredResidency: @unchecked Sendable {
         }) else { return }
         let started = await startTicket()
         let endNow = lock.withLock { () -> Bool in
+            guard started else {
+                phase = .retainedFault
+                return false
+            }
             if endRequested {
                 phase = .ending
                 return true
             }
-            phase = started ? .held : .unsupported
+            phase = .held
             return false
         }
         if endNow { await release() }
+        resumeSettlementWaiters()
     }
 
-    /// Called only after the engine's native retirement is proven.
-    func end() async {
-        let releaseNow = lock.withLock { () -> Bool in
+    /// Pending work and backend faults never authorize a clean retirement.
+    @discardableResult
+    func end() async -> EndResult {
+        let result = lock.withLock { () -> EndResult? in
             switch phase {
             case .prepared:
                 phase = .ended
                 policy.remove(policyEntry)
-                return false
+                return .ended
             case .starting:
                 endRequested = true
-                return false
-            case .held, .unsupported:
+                return .pendingStart
+            case .held:
                 phase = .ending
-                return true
-            case .ending, .ended:
-                return false
+                return nil
+            case .ending: return .pendingEnd
+            case .ended: return .ended
+            case .retainedFault: return .retainedFault
             }
         }
-        if releaseNow { await release() }
+        if let result { return result }
+        return await release()
     }
 
-    /// A failed start may still have registered with the manager; end both.
-    private func release() async {
-        await endTicket()
+    /// Join actual backend work, including work initiated by another caller.
+    /// Cancellation does not manufacture proof that a ticket was restored.
+    func waitForSettlement() async {
+        await withCheckedContinuation { continuation in
+            let waiting = lock.withLock {
+                guard phase == .starting || phase == .ending else { return false }
+                settlementWaiters.append(continuation)
+                return true
+            }
+            if !waiting { continuation.resume() }
+        }
+    }
+
+    private func resumeSettlementWaiters() {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            guard phase != .starting && phase != .ending else { return [] }
+            defer { settlementWaiters.removeAll() }
+            return settlementWaiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    @discardableResult
+    private func release() async -> EndResult {
+        guard await endTicket() else {
+            lock.withLock { phase = .retainedFault }
+            resumeSettlementWaiters()
+            return .retainedFault
+        }
         policy.remove(policyEntry)
         lock.withLock { phase = .ended }
+        resumeSettlementWaiters()
+        return .ended
     }
 }

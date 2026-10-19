@@ -23,7 +23,68 @@ struct GLM5NextServingMetadataTests {
         let files = try spec.runtimeFiles(manifest: file("manifest.json"))
         #expect(files.count == 37 && files.keys.filter { $0.hasSuffix(".safetensors") && $0 != "model.safetensors.index.json" }.count == 35)
         let profile = try spec.profile()
-        #expect(profile.maximumContextTokens == 32_768 && profile.maximumChunkTokens == 2048)
+        #expect(profile.maximumContextTokens == 65_536 && profile.maximumChunkTokens == 2048)
+    }
+
+    @Test func actualMetadataAdmitsFullOutputAndQuotesTheExpandedContextOnBothRanks() throws {
+        typealias Budget = GLM5NextRequestStateBudget
+        let configuration = try file("config.json"), manifest = try file("manifest.json")
+        let spec = try GLM5NextRegisteredSpecification.specification(configuration: configuration)
+        let descriptor = try spec.descriptor(configuration: configuration, manifest: manifest, cut: 22)
+        let inventory = try descriptor.inspectInventory(directory: directory)
+        let scope = Budget.Scope(maximumContextTokens: 65_536, maximumPromptTokens: 32_768,
+            maximumOutputTokens: 32_768, maximumChunkTokens: 2048)
+        let previous = Budget.Scope(maximumContextTokens: 32_768, maximumPromptTokens: 32_767,
+            maximumOutputTokens: 4096, maximumChunkTokens: 2048)
+        let environment = GLM5NextRequestStateBudgetTests.environment
+        let workspace = try GLM5NextRequestStateBudgetTests.workspace(inventory, scope: scope, policy: .serving)
+        let document = try JSONEncoder().encode(workspace)
+        let identity = ClusterWorkerIdentity(membershipEpoch: UUID(), modelID: descriptor.modelID,
+            artifactSHA256: descriptor.artifactAggregateSHA256,
+            configurationSHA256: sha256(configuration),
+            peers: [.init(id: "first", buildSHA256: String(repeating: "a", count: 64)),
+                    .init(id: "last", buildSHA256: String(repeating: "b", count: 64))])
+        let now: UInt64 = 1000
+        for rank in 0...1 {
+            func quote(_ value: Budget.Scope) throws -> Budget {
+                try Budget.estimate(inventory: inventory, layers: rank == 0 ? 0..<22 : 22..<45,
+                    rank: rank, scope: value, executionPolicy: .serving,
+                    executionEnvironmentSHA256: environment, workspace: workspace,
+                    transport: GLM5NextResidentResourceEnvelope.transportTerms,
+                    maximumBufferBytes: Int.max, allocationBound: { $0 }, hostAllocationBound: { $0 })
+            }
+            let old = try quote(previous), expanded = try quote(scope)
+            #expect(expanded.dsaCapacityTokens == 2 * old.dsaCapacityTokens)
+            #expect(expanded.dsaTransactionBytes > old.dsaTransactionBytes)
+            #expect(expanded.tokenHostBytes == 2 * 65_536 * MemoryLayout<Int>.stride)
+            #expect(expanded.tokenHostBytes == 2 * old.tokenHostBytes)
+            #expect(expanded.boundaryBytes == old.boundaryBytes && expanded.kdaTransactionBytes == old.kdaTransactionBytes)
+            #expect(expanded.reservedBytes > old.reservedBytes)
+            // Explicit synthetic capacity/evidence validates admission structure, not measured device fit.
+            let resources = try GLM5NextResidentResourceEnvelope(descriptor: descriptor, inventory: inventory,
+                rank: rank, loadCapacityBytes: Int.max, requestCapacityBytes: expanded.reservedBytes,
+                executionEnvironmentSHA256: environment, workspaceEvidence: document,
+                authenticateWorkspace: { #expect($0 == document) },
+                requireExecutionEnvironment: { #expect($0 == environment) }, hostAllocationBound: { $0 })
+            let admission = try GLM5NextResidentAdmission(configuration: .init(identity: identity,
+                modelDirectory: directory, rank: rank, stageCut: 22,
+                deadlineUptimeNanoseconds: now + 1_000_000), descriptor: descriptor, resources: resources, now: now)
+            func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
+                .init(profileID: descriptor.profile.identifier, promptTokenIDs: Array(repeating: 1, count: prompt),
+                    stopTokenIDs: [], outputCount: output, chunkSize: 2048,
+                    deadlineUptimeNanoseconds: now + 1000, capacityLimitBytes: expanded.reservedBytes, sampling: nil)
+            }
+            let request = try admission.request(reservation(prompt: 32_768, output: 32_768), id: UUID(), now: now)
+            #expect(request.maximumTokens == 65_536 && request.outputCount == 32_768)
+            #expect(request.prefillFrameCount == 16)
+            #expect(try admission.request(reservation(prompt: 1, output: 32_768), id: UUID(), now: now).maximumTokens == 32_769)
+            #expect(throws: (any Error).self) {
+                _ = try admission.request(reservation(prompt: 1, output: 32_769), id: UUID(), now: now)
+            }
+            #expect(throws: (any Error).self) {
+                _ = try admission.request(reservation(prompt: 32_769, output: 1), id: UUID(), now: now)
+            }
+        }
     }
 
     /// Each advertised partition's Plan hash is the one the loaded contract
@@ -82,8 +143,8 @@ struct GLM5NextServingMetadataTests {
         let metadata = try GLM5NextArtifactMetadata.read(directory: directory)
         let inventory = metadata.inventory
         func scope(_ chunk: Int) -> Budget.Scope {
-            .init(maximumContextTokens: 32_768, maximumPromptTokens: 32_767,
-                maximumOutputTokens: 4096, maximumChunkTokens: chunk)
+            .init(maximumContextTokens: 65_536, maximumPromptTokens: 32_768,
+                maximumOutputTokens: 32_768, maximumChunkTokens: chunk)
         }
         func quote(_ chunk: Int, rank: Int, workspaceChunk: Int, maximumBuffer: Int = Int.max) throws -> Budget {
             try Budget.estimate(inventory: inventory, layers: rank == 0 ? 0..<13 : 13..<45,
@@ -140,9 +201,18 @@ struct GLM5NextServingMetadataTests {
         }
         let devices = try [device("larger", physicalGiB: 256, availableGiB: 145),
                            device("smaller", physicalGiB: 128, availableGiB: 64)]
-        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout)
+        // Earlier free-memory observation genuinely fails the expanded fixed LOAD scope.
+        let tight = try ClusterPlacementPlanner.plan(devices: devices, layout: layout)
+        #expect(tight.chosen == nil)
+        // Synthetic applications-released case, same hardware and reserves;
+        // these free-memory figures are not observations of the live pair.
+        let roomy = try [device("larger", physicalGiB: 256, availableGiB: 220),
+                         device("smaller", physicalGiB: 128, availableGiB: 100)]
+        let result = try ClusterPlacementPlanner.plan(devices: roomy, layout: layout)
         let chosen = try #require(result.chosen)
-        #expect(layout.maximumPromptTokens + layout.maximumOutputTokens == 32_768)
+        #expect(layout.maximumPromptTokens == 32_768 && layout.maximumOutputTokens == 32_768)
+        #expect(layout.maximumContextTokens == 65_536)
+        #expect(result.promptTokens == 32_768 && result.outputTokens == 32_768)
         #expect(layout.maximumChunkTokens == 2048)
         #expect(chosen.mode == .pipeline && chosen.ranks.count == 2)
         #expect(chosen.possible)
@@ -162,7 +232,7 @@ struct GLM5NextServingMetadataTests {
                 rank: rank, buildSHA256: String(repeating: "b", count: 64))
             let budget = try envelope.budget(descriptor: descriptor)
             #expect(budget.workspaceNativeBytes == GLM5NextServingResources.workspaceNativeBytes)
-            #expect(budget.scope.maximumContextTokens == 32_768)
+            #expect(budget.scope.maximumContextTokens == 65_536)
             #expect(envelope.requestCapacityBytes == budget.reservedBytes)
             #expect(envelope.loadCapacityBytes >= envelope.requestCapacityBytes)
         }

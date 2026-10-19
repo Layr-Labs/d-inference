@@ -50,6 +50,31 @@ struct DistributedHTTPDeliveryLifecycleTests {
         #expect(response.isComplete && !responses.hasActiveResponse && response.terminal == nil)
     }
 
+    @Test func full32KOutputReachesTheClientWithoutHittingTheOldByteLimit() async throws {
+        let count = 32_768
+        let control = DistributedHTTPResponse(), capture = HTTPDeliveryCapture()
+        try control.bind(deadline: nil, cancel: capture.cancel)
+        control.recordTerminal(.init(promptTokens: 16, completionTokens: count, cause: nil))
+        let frame = try ServerSentEventEncoder.encode(OpenAIChatCompletionChunk(
+            id: "chatcmpl-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            model: "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
+            choices: [.init(index: 0, delta: .init(role: nil, content: "",
+                reasoningContent: " example", toolCalls: nil), finishReason: nil)],
+            usage: nil, created: 1_792_440_000))
+        #expect(frame.utf8.count * count > 8_388_608)
+        let finish = try httpDeliveryFrame(finish: "length")
+        let stream = AsyncThrowingStream<String, Error> { continuation in
+            for _ in 0..<count { continuation.yield(frame) }
+            continuation.yield(finish); continuation.yield(ServerSentEventEncoder.done)
+            continuation.finish()
+        }
+        try await DistributedHTTPEventStream.response(stream, control: control)
+            .body.write(HTTPDeliveryWriter(capture: capture))
+        #expect(capture.values.filter { $0 == frame }.count == count)
+        #expect(Array(capture.values.suffix(2)) == [finish, ServerSentEventEncoder.done])
+        #expect(capture.finishCount == 1 && capture.cancelCount == 0 && control.isComplete)
+    }
+
     @Test func frameAndTotalBoundsCancelWithoutInventingUsage() async throws {
         #expect(throws: DistributedHTTPEventStream.Failure.outputLimit) {
             _ = try DistributedHTTPEventStream.isVisibleContent(String(repeating: "x", count: DistributedHTTPEventStream.maximumFrameBytes + 1))
@@ -58,7 +83,7 @@ struct DistributedHTTPDeliveryLifecycleTests {
         try control.bind(deadline: nil, cancel: capture.cancel)
         let frame = try httpDeliveryFrame(content: String(repeating: "x", count: 1_000_000))
         let stream = AsyncThrowingStream<String, Error> { continuation in
-            for _ in 0..<9 { continuation.yield(frame) }; continuation.finish()
+            for _ in 0...(DistributedHTTPEventStream.maximumStreamBytes / frame.utf8.count) { continuation.yield(frame) }; continuation.finish()
         }
         let response = DistributedHTTPEventStream.response(stream, control: control)
         do { try await response.body.write(HTTPDeliveryWriter(capture: capture)); Issue.record("Output limit accepted") }

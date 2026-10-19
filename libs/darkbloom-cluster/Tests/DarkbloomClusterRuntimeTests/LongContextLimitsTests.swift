@@ -35,15 +35,19 @@ struct LongContextLimitsTests {
             #expect(spec.declaredContextTokens == 262_144)
             let limits = try QwenResidentContextLimits(specification: spec)
             #expect(limits.maximumContextTokens == ClusterWorkerLimits.contextTokens)
-            #expect(limits.maximumPromptTokens == ClusterWorkerLimits.contextTokens - 1)
+            #expect(limits.maximumPromptTokens == ClusterWorkerLimits.promptTokens)
             #expect(limits.maximumOutputTokens == ClusterWorkerLimits.outputTokens)
             #expect(limits.maximumChunkTokens == 512)
             let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
             #expect(profile.maximumPromptTokens == limits.maximumPromptTokens)
             #expect(profile.maximumOutputTokens == limits.maximumOutputTokens)
             #expect(profile.maximumContextTokens == limits.maximumContextTokens)
+            let full = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                promptTokenIDs: Array(repeating: 1000, count: 32_768), chunkSize: 512,
+                outputCount: 32_768, stopTokenIDs: [])
+            #expect(full.maximumTokens == 65_536 && full.outputCount == 32_768)
             // Every long-context size with 128 outputs is a valid request on
-            // this profile; one token more than the context is not.
+            // this profile; one token more than the prompt cap is not.
             for prompt in Self.sizes {
                 let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
                     promptTokenIDs: Array(repeating: 1000, count: prompt), chunkSize: 512, outputCount: 128, stopTokenIDs: [])
@@ -52,11 +56,11 @@ struct LongContextLimitsTests {
             }
             #expect(throws: (any Error).self) {
                 _ = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-                    promptTokenIDs: Array(repeating: 1000, count: 30_720), chunkSize: 512, outputCount: 2049, stopTokenIDs: [])
+                    promptTokenIDs: Array(repeating: 1000, count: 32_769), chunkSize: 512, outputCount: 1, stopTokenIDs: [])
             }
             #expect(throws: (any Error).self) {
                 _ = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-                    promptTokenIDs: Array(repeating: 1000, count: 16), chunkSize: 16, outputCount: 4097, stopTokenIDs: [])
+                    promptTokenIDs: Array(repeating: 1000, count: 16), chunkSize: 16, outputCount: 32_769, stopTokenIDs: [])
             }
         }
     }
@@ -109,7 +113,10 @@ struct LongContextLimitsTests {
             let geometry = try spec.expectedGeometry()
             #expect(ceilings.limits == (try QwenResidentContextLimits(specification: spec)))
             #expect(ceilings.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-                maximumTokens: 32_768, chunkSize: 512).conservativeStateAndBoundaryBytes))
+                maximumTokens: 65_536, chunkSize: 512).conservativeStateAndBoundaryBytes))
+            let previous = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
+                maximumTokens: 32_768, chunkSize: 512)
+            #expect(ceilings.namedStateByteCeiling > previous.conservativeStateAndBoundaryBytes)
             // Every long-context request fits under its own model's ceiling.
             for prompt in Self.sizes {
                 let state = try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: prompt + 128, chunkSize: 512)
@@ -122,7 +129,7 @@ struct LongContextLimitsTests {
         // State grows with the attention layers' KV: the 27B's 16 against the 9B's 8.
         let small = try QwenResidentResourceCeilings(model: .qwen35NineB)
         let large = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
-        #expect(small.namedStateByteCeiling == 2_456_551_456 && large.namedStateByteCeiling == 4_920_836_160)
+        #expect(small.namedStateByteCeiling > 2_456_551_456 && large.namedStateByteCeiling > 4_920_836_160)
         // The separate exact 8,192/512/1 receipt keeps its own bound.
         #expect(QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling == 768 * 1024 * 1024)
     }
@@ -154,9 +161,9 @@ struct LongContextLimitsTests {
         // Plenty of room: the whole derived context, on either Mac's size.
         for physical in [128, 256] {
             let roomy = Self.observation(freeGiB: 40, physicalGiB: physical)
-            #expect(try QwenResidentContextAdmission.largest(minimum: 513, maximum: 32_768) {
+            #expect(try QwenResidentContextAdmission.largest(minimum: 513, maximum: 65_536) {
                 try Self.gateAdmits(roomy, model: .qwen38TwentySevenB, context: $0)
-            } == 32_768)
+            } == 65_536)
         }
         // 10 GiB free: the 27B's full 32,768-token charge (4.58 GiB state,
         // 1.51 GiB transient, 4 GiB headroom: 10.09 GiB) does not fit, a

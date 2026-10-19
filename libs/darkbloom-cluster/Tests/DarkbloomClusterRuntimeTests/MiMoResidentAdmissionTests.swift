@@ -104,8 +104,8 @@ struct MiMoResidentAdmissionTests {
         let profile = try spec.profile()
         #expect(profile.identifier == spec.profileID && profile.hiddenSize == 4096 && profile.vocabularySize == 152_576)
         // Derived from the declared 1,048,576 positions, capped by the protocol.
-        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512
-            && profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
+        #expect(profile.maximumPromptTokens == 32_768 && profile.maximumChunkTokens == 512
+            && profile.maximumOutputTokens == 32_768 && profile.maximumContextTokens == 65_536)
     }
 
     @Test func theProfileAdmitsExactlyTheRegisteredMetadata() throws {
@@ -227,9 +227,9 @@ struct MiMoResidentAdmissionTests {
         #expect(zero.workspaceBytes == 64 * 512 * 8448 * 4)
         #expect(zero.reservedBytes < 2 * Self.gib && one.reservedBytes < 2 * Self.gib)
         #expect(try budget(0..<32, rank: 0, tokens: 64, chunk: 64).reservedBytes < zero.reservedBytes)
-        // The ledger takes the derived context (32,768) and nothing beyond it.
-        #expect(try budget(0..<32, rank: 0, tokens: 32_768).reservedBytes > zero.reservedBytes)
-        for (tokens, chunk) in [(0, 1), (32_769, 512), (100, 0), (100, 513)] {
+        // The ledger takes the derived context (65,536) and nothing beyond it.
+        #expect(try budget(0..<32, rank: 0, tokens: 65_536).reservedBytes > zero.reservedBytes)
+        for (tokens, chunk) in [(0, 1), (65_537, 512), (100, 0), (100, 513)] {
             #expect(throws: (any Error).self) { _ = try budget(0..<32, rank: 0, tokens: tokens, chunk: chunk) }
         }
         #expect(throws: (any Error).self) { _ = try budget(0..<49, rank: 0) }
@@ -316,8 +316,8 @@ struct MiMoResidentAdmissionTests {
         let request = try admission.request(reservation(), id: UUID(), now: Self.now)
         #expect(request.promptCount == 3 && request.outputCount == 4 && request.stopTokenIDs == [151_643, 151_645, 151_672])
         for bad in [reservation(profile: "registered_qwen35_9b_greedy_generation_v1"), reservation(prompt: [152_576]),
-                    reservation(prompt: []), reservation(stops: [5, 4]), reservation(output: 4097), reservation(chunk: 513),
-                    reservation(deadline: Self.now), reservation(prompt: Array(repeating: 1, count: 32_768))] {
+                    reservation(prompt: []), reservation(stops: [5, 4]), reservation(output: 32_769), reservation(chunk: 513),
+                    reservation(deadline: Self.now), reservation(prompt: Array(repeating: 1, count: 32_769))] {
             #expect(throws: (any Error).self) { _ = try admission.request(bad, id: UUID(), now: Self.now) }
         }
     }

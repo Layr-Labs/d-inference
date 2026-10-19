@@ -216,6 +216,18 @@ installed artifact, not from a per-model table:
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 
+### Response length
+
+Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
+within a 65,536-token combined ceiling. Each model's declared context and both
+ranks' live memory admission may reduce that budget. Omitting `max_tokens` on the local endpoint uses the full
+allowance, clamped to the model and remaining context; an explicit
+`max_tokens: 32768` requests the same allowance. A model can finish earlier
+at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
+requests that exceed the admitted combined context are refused before generation.
+After updating, let the normal cluster setup refresh both worker capabilities
+and the derived request deadline before serving.
+
 ### GLM candidate setup
 
 For the current registered GLM artifact, a new automatically derived setup uses

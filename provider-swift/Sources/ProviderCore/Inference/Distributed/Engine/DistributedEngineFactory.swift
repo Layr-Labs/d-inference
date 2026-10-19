@@ -5,8 +5,9 @@ import DarkbloomClusterProtocol
 /// Explicit opt-in only. The caller starts and verifies its owner and supplies
 /// a tokenizer; these factories never load a local model container or weights.
 public enum DistributedEngineFactory {
-    /// The single-Mac product's output default (`slotDefaultMaxTokens`).
-    public static let defaultOutputTokens = 4096
+    /// The cluster output allowance; the bridge also clamps it to the model's
+    /// advertised output maximum and the request's remaining context.
+    public static let defaultOutputTokens = ClusterWorkerLimits.outputTokens
 
     public static func makeBridge(
         owner: any DistributedResidentExecutionOwner,
@@ -50,7 +51,7 @@ public enum DistributedEngineFactory {
         // request and advertises the frontiers both peers hold.
         // Product parity: the artifact's sampling defaults for the families
         // the product honours them for (legacy greedy defaults otherwise);
-        // an omitted `max_tokens` is the product's 4,096 (the pair's output
+        // an omitted `max_tokens` is the product's 32,768 (the pair's output
         // limit), cut to the context left after the prompt.
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)

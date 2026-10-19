@@ -9,7 +9,7 @@ usage: product_tokens.py --binary APP/darkbloom --work DIR --config provider.tom
 Standard library only. The request is the benchmark harness's: temperature 0,
 top_p 1, thinking disabled through chat_template_kwargs.
 """
-import argparse, http.client, json, os, signal, subprocess, sys, time
+import argparse, http.client, json, os, signal, subprocess, time
 from pathlib import Path
 
 parser = argparse.ArgumentParser()

@@ -241,7 +241,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
 /// one prefill frame's attention transient.
 /// The request every family's placement is planned and fitted for: the earlier
 /// reservation (8,192 prompt, 128 output, 8,320 context, chunks of 512), capped
-/// by the family's own profile, not the profile's derived limits (up to 32,768
+/// by the family's own profile, not the profile's derived limits (up to 65,536
 /// context). A placement that fits now holds the model and such a request; each
 /// rank then admits the largest context its Mac holds at load and gates every
 /// longer request live. Planning memory and time for a longer planned request

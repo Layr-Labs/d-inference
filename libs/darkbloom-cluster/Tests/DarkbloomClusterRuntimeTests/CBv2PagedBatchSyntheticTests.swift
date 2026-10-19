@@ -23,13 +23,13 @@ struct CBv2PagedBatchSyntheticTests {
     static let outputs = 6
     static let chunk = 8
 
-    static func configuration() throws -> Data {
+    static func configuration(maximumPositions: Int = 4096) throws -> Data {
         try JSONSerialization.data(withJSONObject: [
             "model_type": "qwen3_5_text", "vocab_size": vocabulary, "hidden_size": 128, "intermediate_size": 256,
             "num_hidden_layers": 8, "full_attention_interval": 4, "head_dim": 64,
             "num_attention_heads": 4, "num_key_value_heads": 2, "linear_conv_kernel_dim": 4,
             "linear_key_head_dim": 32, "linear_num_key_heads": 2, "linear_num_value_heads": 4, "linear_value_head_dim": 32,
-            "max_position_embeddings": 4096, "rms_norm_eps": 1e-6, "tie_word_embeddings": false,
+            "max_position_embeddings": maximumPositions, "rms_norm_eps": 1e-6, "tie_word_embeddings": false,
             "rope_theta": 10_000_000, "partial_rotary_factor": 0.25, "attention_bias": false,
             "mtp_num_hidden_layers": 0,
         ] as [String: Any], options: [.sortedKeys])
@@ -156,6 +156,40 @@ struct CBv2PagedBatchSyntheticTests {
             }
         }
         #expect(paged.isDrained && contiguous.isDrained)
+    }
+
+    @Test func fullContextGeometryAndOwnedStateKeepProtocolAndDeclaredBounds() throws {
+        // Construct only the tiny model's geometry; no forward pass or long prefill.
+        let data = try Self.configuration(maximumPositions: 131_072)
+        let model = Qwen35TextModel(try JSONDecoder().decode(Qwen35TextConfiguration.self, from: data))
+        func geometry(_ tokens: Int, configuration: Data? = nil) throws -> CBv2RequestGeometry {
+            try .init(model: model, family: .qwen35,
+                feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(model), layerCount: 8,
+                vocabularySize: Self.vocabulary, configurationData: configuration ?? data, maximumTokens: tokens)
+        }
+        let g = try geometry(65_536)
+        let state = try CBv2OwnedRequestState(geometry: g, promptCount: 32_768, outputCount: 32_768)
+        #expect(state.maximumTokens == 65_536 && state.committedTokens == 0)
+        try state.retire()
+        #expect(throws: (any Error).self) { _ = try geometry(65_537) }
+        #expect(throws: (any Error).self) {
+            _ = try CBv2OwnedRequestState(geometry: g, promptCount: 1, outputCount: 32_769)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try CBv2OwnedRequestState(geometry: g, promptCount: 32_769, outputCount: 1)
+        }
+        // The original fixture still declares only 4K; raising the protocol must not widen it.
+        _ = try geometry(4096, configuration: Self.configuration())
+        #expect(throws: (any Error).self) {
+            _ = try geometry(4097, configuration: Self.configuration())
+        }
+        let host = try CBv2StageKVHost(model: model, kind: .contiguous, lanes: 1,
+            maximumTokensPerRequest: 65_536, maximumChunkTokens: Self.chunk)
+        #expect(host.maximumTokensPerRequest == 65_536 && host.isDrained)
+        #expect(throws: (any Error).self) {
+            _ = try CBv2StageKVHost(model: model, kind: .contiguous, lanes: 1,
+                maximumTokensPerRequest: 65_537, maximumChunkTokens: Self.chunk)
+        }
     }
 
     @Test func hostRefusesALaneBeyondItsCapacityAndReleasesOnRetire() throws {

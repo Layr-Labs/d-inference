@@ -90,8 +90,8 @@ struct ResidentAdmissionTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: try Self.specification())
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
         // Derived from the protocol bounds and the declared 262,144-token context.
-        #expect(profile.maximumContextTokens == 32_768 && profile.maximumOutputTokens == 4096)
-        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumContextTokens == 65_536 && profile.maximumOutputTokens == 32_768)
+        #expect(profile.maximumPromptTokens == 32_768 && profile.maximumChunkTokens == 512)
         #expect(profile.fingerprint.count == 64)
     }
 

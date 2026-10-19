@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLLM
@@ -97,7 +98,7 @@ final class CBv2StageKVHost {
     /// their own per-request contiguous geometry.
     init(model: any LanguageModel, kind: ClusterStageKVBackendKind, lanes: Int,
          maximumTokensPerRequest: Int, maximumChunkTokens: Int) throws {
-        guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= 32_768,
+        guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= ClusterWorkerLimits.contextTokens,
               maximumChunkTokens > 0 else {
             throw ProbeError("Stage KV host needs 1...8 lanes and a bounded request length")
         }

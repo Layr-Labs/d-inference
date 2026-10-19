@@ -69,8 +69,8 @@ struct ResidentAdmissionBonsaiTests {
         #expect(profile.identifier == packed.profileID && profile.hiddenSize == 5120)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "float32")
         // Derived from the declared 262,144 positions and the protocol (`QwenResidentContextLimits`).
-        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
+        #expect(profile.maximumPromptTokens == 32_768 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 32_768 && profile.maximumContextTokens == 65_536)
         let large = try QwenResidentAdapterDefinition.profile(specification: F.specification(.qwen38TwentySevenB))
         #expect(profile.fingerprint != large.fingerprint)
         // No pinned content inventory: a stage of this model cannot be received from a peer.
@@ -83,8 +83,10 @@ struct ResidentAdmissionBonsaiTests {
         // Above the legacy 8 GiB bound the 9B is admitted under, by 18.7 MiB.
         #expect(packed.maximumManifestPayloadBytes > LocalCorrectnessStorage.maximumManifestPayloadBytes)
         // The 27B's geometry, and a formula that already counts four bytes per state element.
-        // At the earlier reservation the pinned figure; at the derived 32,768-token context the 27B's own ceiling.
-        #expect(packed.maximumNamedStateBytes == 1_616_248_896 && packed.namedStateByteCeiling == 4_920_836_160)
+        // At the earlier reservation the pinned figure; at the derived 65,536-token context the 27B's own ceiling.
+        let dense = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
+        #expect(packed.maximumNamedStateBytes == 1_616_248_896)
+        #expect(packed.namedStateByteCeiling == dense.namedStateByteCeiling)
         let spec = try F.specification()
         #expect(try spec.expectedGeometry() == F.specification(.qwen38TwentySevenB).expectedGeometry())
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(), maximumTokens: 8193, chunkSize: 512)

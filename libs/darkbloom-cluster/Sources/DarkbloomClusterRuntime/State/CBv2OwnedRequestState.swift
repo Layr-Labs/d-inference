@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import MLX
 import MLXLMCommon
 
@@ -29,8 +30,8 @@ final class CBv2OwnedRequestState {
     let maximumTokens: Int
 
     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int) throws {
-        guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
-            promptCount <= 32_768 - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
+        guard (1...ClusterWorkerLimits.promptTokens).contains(promptCount), (1...ClusterWorkerLimits.outputTokens).contains(outputCount),
+            promptCount <= ClusterWorkerLimits.contextTokens - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
         let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
         let rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
@@ -67,8 +68,8 @@ final class CBv2OwnedRequestState {
          attention: [Int: (keys: MLXArray, values: MLXArray)],
          slidingTails: [Int: (keys: MLXArray, values: MLXArray)] = [:],
          recurrent adopted: [Int: (conv: MLXArray, ssm: MLXArray)]) throws {
-        guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
-            promptCount <= 32_768 - outputCount, (1...(promptCount + outputCount)).contains(committed),
+        guard (1...ClusterWorkerLimits.promptTokens).contains(promptCount), (1...ClusterWorkerLimits.outputTokens).contains(outputCount),
+            promptCount <= ClusterWorkerLimits.contextTokens - outputCount, (1...(promptCount + outputCount)).contains(committed),
             attention.count + slidingTails.count == geometry.kinds.count,
             adopted.count == geometry.recurrent.layers.count else {
             throw ProbeError("CBv2 adopted state exceeds the bounded request context or its layer coverage differs")

@@ -46,15 +46,10 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         imageCandidate ? specification.supportedGenerationModes.filter { [.pipeline,.pipelineCompactDecode,.pipelineMTP].contains($0) } : specification.supportedGenerationModes
     }
     var prefillSchedules: [ClusterPrefillSchedule] { specification.supportedPrefillSchedules }
-    /// The request a placement is planned and fitted for: the longest the
-    /// profile serves (its context, derived from the configuration's declared
-    /// positions), less the planned output. Each rank charges only its own
-    /// layers' state (no every-rank charge), so a placement planned for the
-    /// whole context holds every request the product admits, and the plan,
-    /// the capability and the served limit name one figure (was 8,192: the
-    /// earlier reservation, while the capability said 32,767).
-    var maximumPromptTokens: Int { max(1, profile.maximumContextTokens - maximumOutputTokens) }
-    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    /// Fit the full admitted prompt/output envelope, matching per-rank LOAD
+    /// state. Measured request mixes may still refine performance predictions.
+    var maximumPromptTokens: Int { profile.maximumPromptTokens }
+    var maximumOutputTokens: Int { profile.maximumOutputTokens }
     var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { specification.hidden * MiMoRequestStateBudget.activationBytes }
 

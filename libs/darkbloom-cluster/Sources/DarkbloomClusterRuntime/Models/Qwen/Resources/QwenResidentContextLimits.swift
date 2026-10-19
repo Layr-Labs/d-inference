@@ -10,7 +10,8 @@ import Foundation
 ///
 /// 8,192 prompt tokens was the earlier reservation of every profile, not a
 /// property of the models: the registered dense Qwen models declare 262,144
-/// positions, so their bound here is the protocol's 32,768-token context.
+/// positions, so their bound here is the protocol's 65,536-token context
+/// (up to 32,768 prompt tokens and 32,768 output tokens).
 struct QwenResidentContextLimits: Equatable, Encodable {
     /// Prefill frames are at most this long; the attention transient and the
     /// boundary arrays are priced for one frame of it.

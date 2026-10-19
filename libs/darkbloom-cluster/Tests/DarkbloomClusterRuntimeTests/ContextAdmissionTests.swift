@@ -19,7 +19,7 @@ struct ContextAdmissionTests {
     @Test func limitsAreTheProtocolBoundsCutToTheDeclaredContext() throws {
         let declared = try QwenResidentContextLimits(declaredContextTokens: 262_144)
         #expect(declared.maximumContextTokens == ClusterWorkerLimits.contextTokens)
-        #expect(declared.maximumPromptTokens == ClusterWorkerLimits.contextTokens - 1)
+        #expect(declared.maximumPromptTokens == ClusterWorkerLimits.promptTokens)
         #expect(declared.maximumOutputTokens == ClusterWorkerLimits.outputTokens)
         #expect(declared.maximumChunkTokens == QwenResidentContextLimits.chunkTokens)
         // A model that declares less is held to it, not to the protocol.
@@ -31,6 +31,24 @@ struct ContextAdmissionTests {
         }
         #expect(QwenResidentContextAdmission.minimumContextTokens(limits: declared) == 513)
         #expect(QwenResidentContextAdmission.minimumContextTokens(limits: try QwenResidentContextLimits(declaredContextTokens: 300)) == 300)
+    }
+
+    @Test func shortDeclaredContextStillConstrainsTheCombinedRequest() throws {
+        let limits = try QwenResidentContextLimits(declaredContextTokens: 4096)
+        let profile = try QwenLayerStageGenerationProfile(identifier: "short-context-regression",
+            vocabularySize: 64, hiddenSize: 16, activationDType: "bfloat16",
+            maximumPromptTokens: limits.maximumPromptTokens, maximumChunkTokens: limits.maximumChunkTokens,
+            maximumOutputTokens: limits.maximumOutputTokens, maximumContextTokens: limits.maximumContextTokens)
+        func request(_ output: Int) throws -> QwenLayerStageGenerationRequest {
+            try .init(profile: profile, requestID: UUID(), promptTokenIDs: [1], chunkSize: 1,
+                outputCount: output, stopTokenIDs: [])
+        }
+        #expect(try request(4095).maximumTokens == 4096)
+        #expect(throws: (any Error).self) { _ = try request(4096) }
+        #expect(throws: (any Error).self) {
+            _ = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                promptTokenIDs: [1, 2], chunkSize: 2, outputCount: 4095, stopTokenIDs: [])
+        }
     }
 
     @Test func theAttentionTransientIsOneFrameAtTheFullContext() throws {

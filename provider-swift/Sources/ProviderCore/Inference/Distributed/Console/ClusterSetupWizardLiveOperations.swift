@@ -722,9 +722,9 @@ final class LiveContext: @unchecked Sendable {
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = LocalEndpoint.token(forPort: port) { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        // Greedy and without a thinking phase, so the few tokens asked for are the answer itself.
-        let body: [String: Any] = ["model": model, "messages": [["role": "user", "content": text]], "max_tokens": maxTokens,
-                                   "stream": true, "temperature": 0, "stream_options": ["include_usage": true], "enable_thinking": false]
+        // Keep the generic probe free of family-specific thinking controls.
+        // Reasoning-only output is handled below when the token budget ends.
+        let body = ClusterSetupProbeRequest.body(model: model, text: text, maxTokens: maxTokens)
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let prepared = request
         blockingWizard {
@@ -752,7 +752,7 @@ final class LiveContext: @unchecked Sendable {
                     if let tokens = chunk.completionTokens { usage = tokens }
                     if chunk.done { break }
                 }
-                // GPT-OSS reasons first and `enable_thinking` does not stop it: the test's few tokens may all be thinking.
+                // Reasoning models may spend the test's few tokens entirely on thinking.
                 if !answered, first != nil { events(.text("(still thinking when the test's \(maxTokens) tokens ran out)")) }
                 let end = DispatchTime.now().uptimeNanoseconds
                 let tokens = usage ?? chunks

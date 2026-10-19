@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-19
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -98,6 +98,46 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 ([`prefix-cache.md`](prefix-cache.md)).
 
 ### Load gate (`ModelLoadAdmission`)
+
+GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage
+layer charges `(headDim + valueHeadDim) * kvHeads * 4` bytes per token, not the
+generic symmetric FP16 estimate. KDA remains a separate fixed request charge
+including the engine's three-generation reservation; it is neither a weight nor
+a marginal KV token charge
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFunnel.swift`,
+`GLM5NextLoadFunnel.kvBytesPerToken`).
+
+GLM-5.3-Flash loads only on Apple M5 Max or M5 Ultra with at least 256 GiB
+(`GLM5NextHardwareRequirement`, runtime capability `glm5_next_v1`). Its
+[native integration](../design/glm53-flash-native.md) prices the raw source
+bytes plus native construction/tokenizer transients
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
+`GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
+unchanged. The activated expert count is not a resident-weight estimate.
+Standing GLM wired residency is optional only when disabled or unsupported
+before ticket creation (macOS 15 or later with Metal 3 support). A backend
+start/end fault is unproven application or restoration, not unsupported
+hardware: the provider retains the actual owner and policy entry and refuses
+GLM publication or clean retirement until restart. Pending operations are joined
+before settlement; no timeout or cancellation is restoration proof
+(`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
+
+`GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
+`GLM5NextArtifactLoadRoots` retires individual expert sources only after the
+packed bank's checked evaluation, then retains completed modules instead of a
+parallel weight dictionary. A failed cleanup fence retains these roots, the
+pending permit, writer ownership and activity; it is not permission to clear
+the allocator cache or regrow survivor grants. The owner and native reader live
+in `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextConstructionOwner.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextArtifactLoader.swift`.
+
+The raw same-directory [discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
+now carries that complete allowance into scanner-based memory consumers.
+`ModelScanner.glm5NextLoadEstimate` refuses malformed profiles instead of
+falling back to the generic disk × 1.2, and prices only the tokenizer shipped in
+the snapshot. It remains a metadata
+bound, not native validation, a hardware qualification or permission to bypass
+the actual managed-load reservation and post-load guards.
 
 ```text
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
@@ -304,6 +344,14 @@ constructing EngineV2. Its bridge skips duplicate per-request reservations;
 contiguous slots retain their existing provider reservation path. Recurrent and
 MTP auxiliary state stays charged without materialization credit. Current load
 and provider headroom readers use the same shared ledger.
+An admitted MTP context is bound to one request generation. Both ordinary
+release and native reservation detachment retire that context immediately;
+reusing the request ID cannot revive it. Target retirement and outstanding
+assistant allocation leases then release their separate portions of the
+original prepaid charge, in either order
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`,
+`detachReservation`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/AdmittedMTPBinding.swift`).
 Native segmented allocation reserves an allocator-owned upper bound for each
 new backing before construction, including rounding and permitted cached-buffer
 reuse. After evaluating and draining the captured allocation stream, the fresh
@@ -443,3 +491,44 @@ Provider full-load quotations, measured activation floors and reported capacity 
 - [routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md) — coordinator servability predictor
 - [`components/mlx-swift.md`](components/mlx-swift.md) — the pinned MLX stack and the SwiftPM platform floor
 - [`../design/activation-reserve-overhaul-plan.md`](../design/activation-reserve-overhaul-plan.md) — the plan that introduced per-model floors
+
+## Cluster serving and idle sleep
+
+Cluster members use process-owned macOS power assertions while serving. The
+[lifetime and retry rules](inference.md#cluster-serving-and-idle-sleep) apply
+on every supported chip; explicit sleep and lid closure remain OS decisions.
+
+## Finite GLM control evidence
+
+The [finite paired-control retirement](inference.md#finite-glm-paired-control-retirement)
+path preserves native owner retirement and resource accounting. Its encrypted
+loopback CPU regression exercises control and process lifetime with synthetic
+report values; it establishes no model, GPU, RDMA, hardware-capacity or serving
+qualification. The dispatch summary explicitly keeps `servingGrant` and
+`qualifiesMaximumEnvelope` false
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationDispatch.swift`,
+`execute`).
+
+## Automatic placement from exact resource quotes
+
+The GLM finite-calibration scanner uses the current load-gate sample, allocator active/cache usage, maximum buffer bound and independent native/host authorization ceilings. Available unified memory excludes the larger of the load gate's headroom and the authorized OS headroom. The exact full-construction and request peaks remain overlapped in the reservation. A structural cut is feasible only if both rank quotes fit all their bounds; no layer count, device name or memory ratio grants admission.
+
+Snapshots are short-lived observations. The signed quotation worker resamples current bounds before returning its selected quote, and later live load/request gates remain unchanged. A feasible snapshot is neither a memory-calibration pass nor proof of measured fastest throughput. See [the shared placement decision](inference.md#exact-quote-placement).
+
+## GLM cluster image accounting
+
+The explicit `ClusterGLMImageCandidate.profileID` assigns the native vision tower
+to rank 0. Ordinary text layouts and LOAD quotes exclude these image allocations;
+the candidate alone enables them through its bound runtime profile.
+`GLM5NextStageLoadResources` derives its source allocations from the verified
+inventory and charges three additional vision allocation copies for construction
+and layout aliases. `GLM5NextImageBudget` adds per-rank encoded-wire ownership and
+rank-0 pixel/patch/feature, bounded tiled attention, embedding splice and
+conservative native scratch to text state; these charges are additive. Planner
+work includes tower construction and conservatively charges the larger media
+workspace on every rank. Admission still checks current OS/native capacity.
+These bounds are not measured image qualification or a new hardware minimum.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextStageLoadResources.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextImageBudget.swift`, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`.

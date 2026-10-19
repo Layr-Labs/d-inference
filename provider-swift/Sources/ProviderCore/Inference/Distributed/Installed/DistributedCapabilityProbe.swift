@@ -12,6 +12,7 @@ enum DistributedCapabilityProbe {
         try executable.requireUnchanged()
         let arguments = ["--describe-runtime", "--config", plan.configurationURL.path,
             "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256]
+            + (!plan.capability.hasPrivateImages ? [] : [ClusterMiMoImageCandidate.runtimeProfileArgument,plan.capability.profile.id])
         let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline)
         // A record this build cannot read is a mixed install, and is said so;
         // one it can read but that differs is a worker changed since setup.

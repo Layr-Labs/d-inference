@@ -12,7 +12,9 @@ protocol LayerStageFrameForwarding: AnyObject {
     /// The request-state geometry of this stage alone, with fresh, empty caches.
     func layerStageRequestGeometry(maximumTokens: Int) throws -> CBv2RequestGeometry
 
-    /// One frame. `tokens` is `[1, n]`. The producer stage (rank 0) gets no
+    /// One frame. `tokens` is `[1, n]`, or `[B, 1]` for a decode frame of B
+    /// batch-lane requests (each row at its own frontier in the caches),
+    /// whose outputs then carry B rows. The producer stage (rank 0) gets no
     /// residual and returns every row's residual, `[1, n, hidden]`, in the
     /// stage's activation dtype. The consumer stage (rank 1) gets the
     /// producer's rows and returns the last position's logits `[1, vocabulary]`,

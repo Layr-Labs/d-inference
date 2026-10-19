@@ -98,6 +98,9 @@ public enum ClusterRequestRoutingBasis {
     /// leaves every request on the pair as placed, which is always qualified.
     static func make(plan: DistributedInstalledPlan, homeDirectory: URL, deadline: UInt64,
                      environment: [String: String] = ProcessInfo.processInfo.environment) -> Outcome {
+        guard !plan.capability.hasPrivateImages else {
+            return .init(routing:nil,note:"private image candidate: every request uses the bound native two-rank pipeline")
+        }
         let configuration = plan.configuration
         let mode = configuration.selectedGenerationMode
         guard mode.isPhaseSplit else {

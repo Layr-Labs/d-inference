@@ -157,6 +157,7 @@ func qwenStagePrefixScope(_ agreement: QwenLayerStageGenerationAgreement) -> Str
     let d = agreement.descriptor
     return [d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256, d.sourceConfigurationSHA256,
             d.numericalPolicySHA256, d.profileFingerprint, "chunk=\(agreement.request.chunkSize)"].joined(separator: "|")
+        + (agreement.request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? "")
 }
 
 /// The same scope before the agreement exists (at reservation), from the
@@ -166,4 +167,5 @@ func qwenStagePrefixScope(source: QwenLayerStageWireSourceIdentity, numericalPol
     [source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
      source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint,
      "chunk=\(request.chunkSize)"].joined(separator: "|")
+        + (request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? "")
 }

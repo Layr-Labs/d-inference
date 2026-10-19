@@ -69,7 +69,8 @@ extension ClusterPlacementFlow {
         let localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["device", "--json", "--index"], deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
         let layout = try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
-            arguments: ["layout", "--model-dir", local.modelDirectory, "--json"], deadline: deadline,
+            arguments: ["layout", "--model-dir", local.modelDirectory, "--json"]
+                + ClusterMiMoPrivateImagePolicy.profileArguments(capability), deadline: deadline,
             maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))
         let peerProfile: ClusterDeviceProfile
         if let file = inputs.peerProfile {

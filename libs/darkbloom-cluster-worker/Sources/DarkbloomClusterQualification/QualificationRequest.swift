@@ -157,6 +157,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
               supportedCuts: Array(1...47),
               hasRecordingRuntime: false),
         gemma4("registered_gemma4_26b_qat_4bit"), gemma4("registered_gemma4_26b"), gemma4("registered_gemma4_26b_8bit"),
+        // GLM-5.3-Flash: every layer boundary; rank 1 writes MiMo-format step lines.
+        .init(modelID: "registered_glm53_flash", profileID: "registered_glm53_flash_greedy_generation_v1",
+              supportedCuts: Array(1...44), vocabularySize: 154_880, hasRecordingRuntime: false),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }

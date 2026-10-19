@@ -29,11 +29,6 @@ public struct ClusterPlacementPolicy: Sendable {
     /// A Mac alone is reported "as fast" when its predicted request time is
     /// within this share of the chosen placement's.
     public var tieTolerance = 0.03
-    /// A placement whose tightest rank keeps less than this share of its need
-    /// in reserve is ranked after every placement that keeps more, inside its
-    /// tier: memory that moves a little between planning and loading would
-    /// refuse it.
-    public var comfortableHeadroomShare = 0.10
     /// The runtime executes two ranges.
     public var maximumRanges = 2
     public var maximumCandidates = 200_000
@@ -52,12 +47,6 @@ public struct ClusterPlacementPolicy: Sendable {
     /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
     /// layout's planned request). Nil uses the layout's.
     public var requestChargeEveryRankBytes: Int?
-    /// For a requested context: among the placements of the first tier that
-    /// are predicted within `tieTolerance` of the fastest, the one whose
-    /// tightest rank keeps the largest share of its need in reserve comes
-    /// first. With the devices' live admissible memory in their profiles,
-    /// that keeps less on the Mac with less room, at no material cost in time.
-    public var preferHeadroomWithinTies = false
     /// The placement shapes the model's qualification records allow, when
     /// they restrict shapes (the shapes a cross-cable check diverged at on
     /// those chips): called with a candidate's chip names in rank order
@@ -122,6 +111,9 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     /// One prefill frame's attention transient at the reference request,
     /// included in `requestNeedBytes`. Nil in a result written before it was priced.
     public let transientBytes: Int?
+    /// `ClusterDeviceProfile.hardwareFits`: the hardware can hold this range.
+    /// Nil in a result written before it was recorded (read as `fit.possible`).
+    public var hardwareFits: Bool? = nil
 }
 
 public struct ClusterPlacementPrediction: Codable, Equatable, Sendable {
@@ -146,7 +138,12 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     /// but the gate counts less, 2 applications must release memory, 3 only
     /// a restart would do, 4 never.
     public let tier: Int
-    public var possible: Bool { tier < 4 }
+    /// Every rank's hardware can hold its range, or its load gate admits it
+    /// now: the at-rest ceiling assumes the kernel's file-cache minimum, which
+    /// can sit below what a Mac admits now, and a split that loads now is never
+    /// impossible (owner, 2026-10-19). `tier` reports what the Macs' memory
+    /// allows right now (the load gate still decides).
+    public var possible: Bool { ranks.allSatisfy { $0.fit.tier == 0 || ($0.hardwareFits ?? $0.fit.possible) } }
     public let withinGPUWorkingSet: Bool
     /// Smallest share of admissible memory left over on any rank; negative
     /// when a rank does not fit now.
@@ -359,8 +356,8 @@ public enum ClusterPlacementPlanner {
                        candidate.cuts, candidate.mode)
             }
         } ?? admitted
-        let ranked = context.holdingTensorParallelToItsMargin(context.preferringHeadroom(
-            context.ordered(qualified.filter(\.possible), regime: policy.regime), regime: policy.regime), regime: policy.regime)
+        let ranked = context.holdingTensorParallelToItsMargin(
+            context.ordered(qualified.filter(\.possible), regime: policy.regime), regime: policy.regime)
         if let forced = policy.forcedMode, ranked.isEmpty {
             throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
                 + (admitted.contains(where: \.possible)
@@ -668,14 +665,15 @@ public enum ClusterPlacementPlanner {
                 let moving = last ? earlier.reduce(0) { $0 + $1.stateBytes(tokens: prompt) } : own.stateBytes(tokens: prompt)
                 extra += 2 * moving
             }
-            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + memory.loadingHeadroomBytes)
+            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
             let need = max(loadNeed, held + requestNeed)
             return .init(rank: rank, device: device.label, firstLayer: own.layers.lowerBound, endLayer: own.layers.upperBound,
                 weightsBytes: held, loadNeedBytes: loadNeed, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: held, largestTensorBytes: largest),
                 withinGPUWorkingSet: held + state + work + extra + transient <= device.profile.residentCapacityBytes,
-                transientBytes: transient)
+                transientBytes: transient,
+                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: held, largestTensorBytes: largest))
         }
 
         /// The load gate's largest ask while loading `parts` in turn (each
@@ -759,7 +757,7 @@ public enum ClusterPlacementPlanner {
                     extra += 2 * layout.maximumChunkTokens * layout.boundaryBytesPerToken
                 }
             }
-            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + memory.loadingHeadroomBytes)
+            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
             let need = max(load.need, load.held + requestNeed)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
@@ -767,7 +765,9 @@ public enum ClusterPlacementPlanner {
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest),
                 withinGPUWorkingSet: load.held + state + work + extra + transient <= device.profile.residentCapacityBytes,
-                transientBytes: transient)
+                transientBytes: transient,
+                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: load.held,
+                    largestTensorBytes: load.largest))
         }
 
         /// `policy.tensorParallelMargin`: a tensor-parallel candidate stays
@@ -776,9 +776,7 @@ public enum ClusterPlacementPlanner {
         /// right after that candidate.
         func holdingTensorParallelToItsMargin(_ ordered: [ClusterPlacementCandidate],
                                               regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
-            func group(_ c: ClusterPlacementCandidate) -> Int {
-                c.tier * 4 + (c.withinGPUWorkingSet ? 0 : 2) + (c.tier == 0 && c.smallestHeadroomShare < policy.comfortableHeadroomShare ? 1 : 0)
-            }
+            func group(_ c: ClusterPlacementCandidate) -> Int { hardwareGroup(c) }
             guard let otherIndex = ordered.firstIndex(where: { !$0.mode.usesTensorParallelDecode }) else { return ordered }
             let other = ordered[otherIndex]
             let limit = other.prediction(regime).requestSeconds * (1 - policy.tensorParallelMargin)
@@ -976,65 +974,37 @@ public enum ClusterPlacementPlanner {
             }
         }
 
-        /// Best first: tier; then inside the GPU working set; then, among
-        /// placements that fit now, those with comfortable headroom; among
-        /// placements that do not, the fewest Macs asked for memory and the
-        /// least asked; then predicted request time on the route the router would
-    /// take (`routedSeconds`: a phase split's decoding member alone when it is
-    /// faster). Equal times are broken
+        /// The hardware holds every range, then inside the GPU working set,
+        /// then the load gate admits every rank now. Speed ranks within a
+        /// group: a faster split that needs applications closed first is chosen
+        /// only when no split starts on the Macs as they are, so the pair starts
+        /// at the fastest split that loads instead of refusing (owner, 2026-10-19).
+        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int {
+            (c.possible ? 0 : 4) + (c.withinGPUWorkingSet ? 0 : 2) + (c.tier == 0 ? 0 : 1)
+        }
+
+        /// Best first: the hardware group; then predicted request time on the
+        /// route the router would take (`routedSeconds`: a phase split's
+        /// decoding member alone when it is faster). Equal times are broken
         /// first by the model's speculative head (`headRank`: on a decoding
         /// Mac that prefers it, then no head, then the head on a Mac that
-        /// prefers plain decode), then by the larger smallest headroom, the lower cut, the
-        /// devices' labels in rank order and the mode's place in the layout.
-        /// The head comes before headroom: the phase split's last rank holds
-        /// every layer, so headroom first would always pass the head over,
-        /// against the product's default on one Mac. Nothing depends on the
-        /// order the devices were given in, so the result is the same
-        /// whichever Mac asks.
+        /// prefers plain decode), then by the lower cut, the devices' labels
+        /// in rank order and the mode's place in the layout. Nothing depends
+        /// on the order the devices were given in, so the result is the same
+        /// whichever Mac asks with the same samples.
         func ordered(_ candidates: [ClusterPlacementCandidate], regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
-            func group(_ c: ClusterPlacementCandidate) -> Int {
-                let tight = c.tier == 0 && c.smallestHeadroomShare < policy.comfortableHeadroomShare
-                return c.tier * 4 + (c.withinGPUWorkingSet ? 0 : 2) + (tight ? 1 : 0)
-            }
             // The route the router would take for this request (`routedSeconds`).
             func time(_ c: ClusterPlacementCandidate) -> Double { c.routedSeconds(regime) }
-            // Among placements that do not pass the gate now, the one that asks
-            // the fewest Macs for memory comes first, then the one that asks
-            // for the least, in whole GiB so that rounding does not decide.
-            func waiting(_ c: ClusterPlacementCandidate) -> Int { c.ranks.filter { $0.fit != .now }.count }
-            func short(_ c: ClusterPlacementCandidate) -> Int {
-                c.ranks.reduce(0) { $0 + max(0, $1.needBytes - $1.admissibleNowBytes) } / 1_073_741_824
-            }
             return candidates.sorted { a, b in
-                if group(a) != group(b) { return group(a) < group(b) }
-                if waiting(a) != waiting(b) { return waiting(a) < waiting(b) }
-                if short(a) != short(b) { return short(a) < short(b) }
+                if hardwareGroup(a) != hardwareGroup(b) { return hardwareGroup(a) < hardwareGroup(b) }
                 if time(a) != time(b) { return time(a) < time(b) }
                 let ha = headRank(a, regime), hb = headRank(b, regime)
                 if ha != hb { return ha < hb }
-                if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
                 if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }
                 let la = a.ranks.map(\.device), lb = b.ranks.map(\.device)
                 if la != lb { return la.lexicographicallyPrecedes(lb) }
                 return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
             }
-        }
-
-        /// `policy.preferHeadroomWithinTies`: the leading placements of the
-        /// first group predicted within the tie tolerance of the fastest, by
-        /// the largest smallest headroom share, then time; the rest as ordered.
-        func preferringHeadroom(_ ordered: [ClusterPlacementCandidate],
-                                regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
-            guard policy.preferHeadroomWithinTies, let first = ordered.first, first.tier == 0 else { return ordered }
-            let fastest = ordered.filter { $0.tier == 0 }.map { $0.routedSeconds(regime) }.min() ?? 0
-            let limit = fastest * (1 + policy.tieTolerance)
-            let close = ordered.filter { $0.tier == 0 && $0.withinGPUWorkingSet && $0.routedSeconds(regime) <= limit }
-            guard close.count > 1 else { return ordered }
-            let preferred = close.sorted { a, b in
-                if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
-                return a.routedSeconds(regime) < b.routedSeconds(regime)
-            }
-            return preferred + ordered.filter { candidate in !close.contains(candidate) }
         }
 
         /// One Mac holding the whole model, with the model's head where that

@@ -97,7 +97,42 @@ public struct ClusterOnboardingRequest: Sendable, Equatable {
     /// A model id or title to choose without the list (`darkbloom cluster local <model>`).
     public var model: String?
 
-    public init(scope: ClusterServingScope? = nil, model: String? = nil) { self.scope = scope; self.model = model }
+    /// Explicit private qualification only; never promotes the default text profile.
+    public var privateMiMoImageQualification: Bool
+    public var privateGLMImageQualification: Bool
+    public var privateImageQualification: Bool { privateMiMoImageQualification || privateGLMImageQualification }
+    public static let privateGLMModelID = "glm-5.3-flash"
+    public static let privateMiMoModelID = "mimo-v2.6-flash-mopd"
+
+    public init(scope: ClusterServingScope? = nil, model: String? = nil, privateMiMoImageQualification: Bool = false, privateGLMImageQualification: Bool = false) {
+        self.scope = scope; self.model = model; self.privateMiMoImageQualification = privateMiMoImageQualification
+        self.privateGLMImageQualification = privateGLMImageQualification
+    }
+
+    /// Pure validation shared by CLI and driver, with no runtime/module dependency.
+    public var privateQualificationInputRefusal: String? {
+        guard !(privateGLMImageQualification && privateMiMoImageQualification) else { return "Select one private image candidate." }
+        if privateGLMImageQualification {
+            guard scope?.isLocalOnly == true, model == Self.privateGLMModelID else {
+                return "Private GLM image qualification requires cluster local with the explicit model id \(Self.privateGLMModelID)."
+            }
+            return nil
+        }
+        guard privateMiMoImageQualification else { return nil }
+        guard scope?.isLocalOnly == true, model == Self.privateMiMoModelID else {
+            return "Private MiMo image qualification requires cluster local with the explicit model id \(Self.privateMiMoModelID)."
+        }
+        return nil
+    }
+
+    public func privateQualificationRefusal(role: ClusterOnboardingRole?) -> String? {
+        if let invalid = privateQualificationInputRefusal { return invalid }
+        guard privateImageQualification else { return nil }
+        guard role == .leader else {
+            return "Run private image qualification on the already paired current control leader; this selection is not forwarded."
+        }
+        return nil
+    }
 }
 
 /// What `darkbloom cluster` finds on this Mac when it starts.
@@ -598,6 +633,16 @@ public enum ClusterOnboardingDriver {
     public static func run(_ operations: ClusterOnboardingOperations, console: ClusterOnboardingConsole,
                            request: ClusterOnboardingRequest = .init()) -> Int32 {
         let resume = operations.resume()
+        if let refusal = request.privateQualificationRefusal(role: resume.role) {
+            console.say(refusal)
+            return 1
+        }
+        if request.privateGLMImageQualification {
+            console.say("Private unqualified GLM PNG candidate selected; image qualification and public admission remain open.")
+        }
+        if request.privateMiMoImageQualification {
+            console.say("Private unqualified MiMo PNG candidate selected; actual image and all applicable modality gates remain open.")
+        }
         switch resume.role {
         case .member: return member(resume, operations, console, request: request)
         case .leader: return leader(resume, operations, console, justPaired: false, request: request)

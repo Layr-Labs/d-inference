@@ -8,6 +8,8 @@ import Foundation
 public enum ClusterPlacementTool {
     public static let usage = """
         usage:
+          darkbloom-cluster-plan glm-calibration-candidates --input FILE [--speed FILE ...]
+              Exact local finite-calibration cut quotes from current device bounds; no model load or serving authority.
           darkbloom-cluster-plan device [--json] [--index]
               What this Mac detects about itself, and what its load gate would admit now. `--index`
               adds the model-free speed index (about a second of GPU work), which relates two Macs'
@@ -15,7 +17,7 @@ public enum ClusterPlacementTool {
           darkbloom-cluster-plan index
               A model-free speed index of this Mac as JSON: about a second of GPU work, no model.
               An experiment; see the design. Needs the Metal library beside the binary.
-          darkbloom-cluster-plan layout --model-dir DIR [--json]
+          darkbloom-cluster-plan layout --model-dir DIR [--json] [--runtime-profile PROFILE]
               What an artifact is made of, from its tensor headers and config.json.
           darkbloom-cluster-plan plan (--model-dir DIR | --layout FILE)
                                       [--local LABEL] --peer LABEL=PROFILE.json [--peer LABEL=PROFILE.json ...]
@@ -68,12 +70,24 @@ public enum ClusterPlacementTool {
 
     /// Runs one subcommand and returns what it prints.
     public static func run(_ arguments: [String], sampleDevice: () throws -> ClusterDeviceProfile,
+                           glmCandidates: (Data, [ClusterSpeedMeasurement], ClusterDeviceProfile) throws -> String = { _, _, _ in
+                               throw ProbeError("This build has no GLM calibration candidate scanner")
+                           },
                            measureIndex: () throws -> ClusterDeviceIndex = {
                                throw ProbeError("This build has no device index benchmark")
                            }) throws -> String {
         guard let command = arguments.first else { throw ProbeError(usage) }
         let rest = Array(arguments.dropFirst())
         switch command {
+        case "glm-calibration-candidates":
+            let parsed = try Arguments(rest, flags: [], options: ["--input", "--speed"])
+            guard let input = try parsed.one("--input") else { throw ProbeError("GLM candidates need --input") }
+            let measurements = try (parsed.values["--speed"] ?? []).map {
+                let value = try JSONDecoder().decode(ClusterSpeedMeasurement.self, from: read($0, maximumBytes: 65_536))
+                try value.validate()
+                return value
+            }
+            return try glmCandidates(read(input, maximumBytes: 256 << 10), measurements, sampleDevice())
         case "device":
             let parsed = try Arguments(rest, flags: ["--json", "--index"], options: [])
             var profile = try sampleDevice()
@@ -90,9 +104,10 @@ public enum ClusterPlacementTool {
             _ = try Arguments(rest, flags: [], options: [])
             return try json(try measureIndex())
         case "layout":
-            let parsed = try Arguments(rest, flags: ["--json"], options: ["--model-dir"])
+            let parsed = try Arguments(rest, flags: ["--json"], options: ["--model-dir","--runtime-profile"])
             guard let directory = try parsed.one("--model-dir") else { throw ProbeError("layout needs --model-dir\n" + usage) }
-            let layout = try ClusterPlacementArtifact.layout(directory: URL(fileURLWithPath: directory, isDirectory: true))
+            let layout = try ClusterPlacementArtifact.layout(directory: URL(fileURLWithPath: directory, isDirectory: true),
+                runtimeProfile: parsed.one("--runtime-profile"))
             if parsed.flags.contains("--json") { return String(decoding: try layout.encoded(), as: UTF8.self) }
             return ClusterPlacementExplanation.layout(layout).joined(separator: "\n")
         case "plan":
@@ -138,15 +153,13 @@ public enum ClusterPlacementTool {
         policy.promptTokens = try parsed.integer("--prompt-tokens")
         policy.outputTokens = try parsed.integer("--output-tokens")
         // A requested context beyond the layout's planned request: plan it at
-        // that context (the family's charge there), keeping the placement
-        // with the most room on its tightest Mac among the equally fast.
+        // that context (the family's charge there).
         let requested = (policy.promptTokens ?? layout.maximumPromptTokens) + (policy.outputTokens ?? layout.maximumOutputTokens)
         if requested > layout.maximumContextTokens, let directory = try parsed.one("--model-dir"),
            let answer = try ClusterPlacementArtifact.requestedContext(directory: URL(fileURLWithPath: directory, isDirectory: true),
                contextTokens: requested) {
             policy.largestContextTokens = answer.largest
             policy.requestChargeEveryRankBytes = answer.charge
-            policy.preferHeadroomWithinTies = true
         }
         if let alternatives = try parsed.integer("--alternatives") { policy.alternatives = min(alternatives, 256) }
         policy.leader = try parsed.one("--leader")

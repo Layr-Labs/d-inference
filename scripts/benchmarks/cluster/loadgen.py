@@ -83,7 +83,7 @@ STANDARD_USAGE_KEYS = {"prompt_tokens", "completion_tokens", "total_tokens"}
 LIMITATIONS = [
     "Times are on the client's monotonic clock unless a field is under server.*.",
     "client_prefill_tps divides prompt tokens by time to first token, so it includes HTTP, "
-    "templating, tokenization, queueing and the first sampled token.",
+    + "templating, tokenization, queueing and the first sampled token.",
     "client_decode_tps is an estimate: one streamed frame can carry more than one token.",
     "Percentiles are nearest-rank; with few samples read min and max as well.",
     "Prompt sizes are matched by whole words; the per-request record has the server's count.",

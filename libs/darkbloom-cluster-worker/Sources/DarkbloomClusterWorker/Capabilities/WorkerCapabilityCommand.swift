@@ -8,13 +8,21 @@ import Foundation
 enum WorkerCapabilityCommand {
     struct Arguments {
         let configurationPath: String, manifestPath: String, expectedExecutableSHA256: String
+        let runtimeProfile: String?
         init(_ values: [String]) throws {
-            guard values.count == 7, values[0] == "--describe-runtime",
+            guard [7,9].contains(values.count), values[0] == "--describe-runtime",
                   values[1] == "--config", values[3] == "--manifest", values[5] == "--expected-executable-sha256",
                   values[6].utf8.count == 64, values[6].utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
                   [values[2], values[4]].allSatisfy({ $0.hasPrefix("/") && !$0.utf8.contains(0) && $0.utf8.count <= 4096 }) else {
                 throw WorkerCapabilityError.invalid("Expected --describe-runtime --config PATH --manifest PATH --expected-executable-sha256 SHA256")
             }
+            if values.count == 9 {
+                guard values[7] == ClusterMiMoImageCandidate.runtimeProfileArgument,
+                      [ClusterMiMoImageCandidate.profileID, ClusterGLMImageCandidate.profileID].contains(values[8]) else {
+                    throw WorkerCapabilityError.invalid("Unknown private metadata runtime profile")
+                }
+                runtimeProfile = values[8]
+            } else { runtimeProfile = nil }
             configurationPath = values[2]; manifestPath = values[4]; expectedExecutableSHA256 = values[6]
         }
     }
@@ -31,10 +39,11 @@ enum WorkerCapabilityCommand {
         guard actual == request.expectedExecutableSHA256 else {
             throw WorkerCapabilityError.invalid("Installed executable bytes differ from the expected binary SHA-256")
         }
-        let configuration = try WorkerCapabilityInput.read(request.configurationPath, maximumBytes: 1_048_576, deadline: deadline)
+        let configuration = try WorkerCapabilityInput.read(request.configurationPath,
+            maximumBytes: ClusterResidentModelCatalog.maximumConfigurationBytes, deadline: deadline)
         let manifest = try WorkerCapabilityInput.read(request.manifestPath, maximumBytes: 4_194_304, deadline: deadline)
         let capability = try ClusterResidentModelCatalog.describe(configuration: configuration, manifest: manifest,
-                                                                  runtimeBinarySHA256: actual)
+                                                                  runtimeBinarySHA256: actual,runtimeProfile:request.runtimeProfile)
         try write(ClusterRuntimeCapabilityCodec.encode(capability), deadline: deadline)
     }
 

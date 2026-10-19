@@ -22,10 +22,11 @@ struct WorkerConfiguration {
     let speculativeTerms: QwenMTPTerms?
     /// `--qualification-switches yes`: the explicit test flag without which a
     /// qualification switch in the environment stops the worker at startup.
-    /// An installed owner never passes it.
+    /// A private unqualified media owner passes it with its exact profile.
     let qualificationSwitchesPermitted: Bool
     /// Which adapter executes the registered model `--model-id` names.
-    let family: ClusterResidentModelCatalog.Family
+    let family: ClusterResidentModelCatalog.Family?
+    let glmQualificationDocument: String?
     /// The rank lease (S03). `--deadline-uptime-nanoseconds` is its first
     /// deadline, at most one lease grant away; the owner renews it on the
     /// control pipe while it keeps this worker. There is no fixed lifetime.
@@ -56,7 +57,7 @@ struct WorkerConfiguration {
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
             "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane",
-            "--prefix-ssd-key", "--tensor-shares"]
+            "--prefix-ssd-key", "--tensor-shares", "--glm-qualification", "--runtime-profile"]
         let bootstrapCounts = [0, WorkerBootstrapConfiguration.names.count, WorkerBootstrapConfiguration.names.count + 1]
         let counts = bootstrapCounts.map { names.count + $0 }.flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
@@ -84,13 +85,53 @@ struct WorkerConfiguration {
             return value
         }
         let rank = try integer("--rank"), cut = try integer("--stage-cut")
-        // The closed catalog of every adapter: an ID outside it has no entry.
-        guard let registered = ClusterResidentModelCatalog.entry(runtimeModelID: fields["--model-id"]!) else {
-            throw WorkerFailure.invalid("Worker requires a registered model ID")
+        let qualificationDocument = fields["--glm-qualification"]
+        let registered = ClusterResidentModelCatalog.entry(runtimeModelID: fields["--model-id"]!)
+        if let path = qualificationDocument {
+            let components = path.split(separator: "/", omittingEmptySubsequences: false)
+            guard fields["--model-id"] == GLM5NextWorkerQualification.modelID,
+                  fields["--qualification-switches"] == "yes", fields["--keep-warm"] == "off",
+                  fields["--data-plane"] == ClusterWorkerDataPlaneTrust.argument,
+                  fields["--generation-mode"] == nil || fields["--generation-mode"] == ClusterGenerationMode.pipeline.rawValue,
+                  fields["--prefill-schedule"] == nil || fields["--prefill-schedule"] == ClusterPrefillSchedule.serial.rawValue,
+                  fields["--prefix-ssd-key"] == nil, fields["--mtp-depth"] == nil,
+                  fields["--tensor-shares"] == nil, fields["--evidence-directory"] == nil,
+                  path.hasPrefix("/"), components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  !path.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
+                throw WorkerFailure.invalid("Private GLM requires explicit qualification, encrypted pipeline, serial prefill, keep-warm off and a normalized evidence path; MTP/prefix/batch/recording are unsupported")
+            }
+        } else if registered == nil {
+            throw WorkerFailure.invalid("Worker requires a registered model ID or explicit private GLM qualification")
         }
+        if fields["--runtime-profile"] == ClusterGLMImageCandidate.profileID {
+            try ClusterGLMImageCandidate.validateSource(profileID: fields["--runtime-profile"]!,
+                modelID: fields["--model-id"]!, artifact: fields["--artifact-sha256"]!,
+                configuration: fields["--configuration-sha256"]!)
+            guard fields["--qualification-switches"] == "yes", fields["--data-plane"] == ClusterWorkerDataPlaneTrust.argument,
+                  fields["--startup-deadline-uptime-nanoseconds"] != nil, qualificationDocument == nil,
+                  fields["--evidence-directory"] == nil, fields["--mtp-depth"] == nil, fields["--tensor-shares"] == nil,
+                  fields["--generation-mode"] == nil || fields["--generation-mode"] == ClusterGenerationMode.pipeline.rawValue else {
+                throw WorkerFailure.invalid("GLM image candidate requires explicit qualification, startup guard and encrypted serial pipeline")
+            }
+        } else if let profile = fields[ClusterMiMoImageCandidate.runtimeProfileArgument] {
+            guard profile == ClusterMiMoImageCandidate.profileID,
+                  fields["--model-id"] == ClusterMiMoImageCandidate.runtimeModelID,
+                  fields["--artifact-sha256"] == ClusterMiMoImageCandidate.artifactSHA256,
+                  fields["--configuration-sha256"] == ClusterMiMoImageCandidate.configurationSHA256,
+                  fields["--qualification-switches"] == "yes",
+                  fields["--data-plane"] == ClusterWorkerDataPlaneTrust.argument,
+                  qualificationDocument == nil,
+                  fields["--startup-deadline-uptime-nanoseconds"] != nil,
+                  fields["--evidence-directory"] == nil,
+                  [nil,ClusterGenerationMode.pipeline.rawValue,ClusterGenerationMode.pipelineCompactDecode.rawValue,
+                    ClusterGenerationMode.pipelineMTP.rawValue].contains(fields["--generation-mode"]) else {
+                throw WorkerFailure.invalid("MiMo image candidate requires exact artifact/profile, explicit qualification, startup guard and encrypted pipeline")
+            }
+        }
+        glmQualificationDocument = qualificationDocument
         let lifetime = ClusterWorkerLease.maximumNanoseconds
         guard (0...1).contains(rank), fields["--model-dir"]!.hasPrefix("/"),
-              registered.supportedCuts.contains(cut),
+              (qualificationDocument != nil ? (1..<45).contains(cut) : registered?.supportedCuts.contains(cut) == true),
               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
               epoch.uuidString.lowercased() == fields["--membership-epoch"],
               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
@@ -98,7 +139,7 @@ struct WorkerConfiguration {
               deadline > now, deadline - now <= lifetime else {
             throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a first lease deadline at most \(lifetime / 1_000_000_000) seconds away")
         }
-        family = registered.family
+        family = registered?.family
         lease = ClusterLeaseDeadline(uptimeNanoseconds: deadline)
         switch fields["--data-plane"] {
         case nil: dataPlaneEncrypted = false
@@ -122,7 +163,7 @@ struct WorkerConfiguration {
         // unknown or unsupported mode never falls back to the pipeline.
         if let text = fields["--generation-mode"] {
             guard let mode = ClusterGenerationMode(rawValue: text),
-                  registered.supportedGenerationModes.contains(mode) else {
+                  (qualificationDocument != nil ? mode == .pipeline : registered?.supportedGenerationModes.contains(mode) == true) else {
                 throw WorkerFailure.invalid("Worker generation mode must be one the registered model lists: "
                     + ClusterGenerationMode.allCases.map(\.rawValue).joined(separator: ", "))
             }
@@ -177,6 +218,7 @@ struct WorkerConfiguration {
             artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
             modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
             deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
-            prefillSchedule: prefillSchedule, lease: lease)
+            prefillSchedule: prefillSchedule, lease: lease,runtimeProfile:fields[ClusterMiMoImageCandidate.runtimeProfileArgument],
+            startupDeadlineUptimeNanoseconds: startupDeadlineUptimeNanoseconds)
     }
 }

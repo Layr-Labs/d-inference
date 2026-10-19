@@ -29,9 +29,23 @@ extension Cluster {
         @Option(help: ArgumentHelp("Developer: absolute path of this Mac's cluster worker, when it is not the installed one.", visibility: .hidden))
         var worker: String?
 
+        @Flag(name: .customLong("private-mimo-image-qualification"),
+              help: ArgumentHelp("Private, unqualified PNG candidate on the already paired control leader; exact MiMo model id required.", visibility: .hidden))
+        var privateMiMoImageQualification = false
+
+        @Flag(name: .customLong("private-glm-image-qualification"),
+              help: "Select the unqualified GLM PNG candidate on the paired local leader; exact GLM model id required.")
+        var privateGLMImageQualification = false
+
+        var onboardingRequest: ClusterOnboardingRequest {
+            .init(scope: .localOnly(bind: bind ?? ClusterServingScope.localOnlyDefaultBind), model: model,
+                  privateMiMoImageQualification: privateMiMoImageQualification, privateGLMImageQualification: privateGLMImageQualification)
+        }
+
         static let needsTerminalLine = "Run `darkbloom cluster local` in a Terminal window on this Mac."
 
         func validate() throws {
+            if let refusal = onboardingRequest.privateQualificationInputRefusal { throw ValidationError(refusal) }
             for path in [configOptions.config, modelDir, worker].compactMap({ $0 }) {
                 guard path.hasPrefix("/"), !path.contains("\0") else { throw ValidationError("`darkbloom cluster local` takes absolute paths.") }
             }
@@ -51,7 +65,7 @@ extension Cluster {
                 throw ExitCode.failure
             }
             try await Cluster.Setup.runOnboarding(config: configOptions.config, modelDir: modelDir, worker: worker,
-                request: .init(scope: .localOnly(bind: bind ?? ClusterServingScope.localOnlyDefaultBind), model: model))
+                request: onboardingRequest)
         }
     }
 }

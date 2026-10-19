@@ -472,3 +472,11 @@ both.
   `--uptime-nanoseconds` prints the clock worker deadlines are expressed in.
 - Neither a worker build nor a pipe fixture qualifies remote ownership, model
   correctness, external TTFT, or production serving.
+
+### Private GLM calibration
+
+See [the calibration contract](GLM-CALIBRATION.md) for authenticated cold-text
+experiments, separate native/host authorization and process-exit-only completion.
+The [native backing-cap proposal](GLM-NATIVE-CAP-PROPOSAL.md) specifies the pending
+core/C/Swift SPI required before real calibration can execute. Neither document
+registers GLM or qualifies an installed pair.

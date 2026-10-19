@@ -59,19 +59,26 @@ final class CBv2OwnedRequestState {
     /// local model geometry, copies the attention rows into rows this backend
     /// owns, and validates the result as a committed frontier. Attention arrays
     /// are keyed by the compact stage's own layer index, as recurrent ones are.
+    /// `slidingTails`: each sliding-window layer's retained window at the
+    /// frontier (its last `min(committed, window)` positions, oldest first),
+    /// in place of a whole-history row.
     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int,
          adoptingCommittedTokens committed: Int,
          attention: [Int: (keys: MLXArray, values: MLXArray)],
+         slidingTails: [Int: (keys: MLXArray, values: MLXArray)] = [:],
          recurrent adopted: [Int: (conv: MLXArray, ssm: MLXArray)]) throws {
         guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
             promptCount <= 32_768 - outputCount, (1...(promptCount + outputCount)).contains(committed),
-            attention.count == geometry.kinds.count, adopted.count == geometry.recurrent.layers.count else {
+            attention.count + slidingTails.count == geometry.kinds.count,
+            adopted.count == geometry.recurrent.layers.count else {
             throw ProbeError("CBv2 adopted state exceeds the bounded request context or its layer coverage differs")
         }
         var prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
         for kind in geometry.kinds {
-            let shape = [1, kind.kvHeads, committed, kind.headDim]
-            guard let layer = kind.modelLayerIndex, let pair = attention[layer],
+            let shape = [1, kind.kvHeads, kind.retainedTokens(atFrontier: committed), kind.headDim]
+            let source: [Int: (keys: MLXArray, values: MLXArray)]
+            if case .slidingWindow = kind.attention { source = slidingTails } else { source = attention }
+            guard let layer = kind.modelLayerIndex, let pair = source[layer],
                 pair.keys.shape == shape, pair.values.shape == shape,
                 pair.keys.dtype == geometry.kvDType, pair.values.dtype == geometry.kvDType else {
                 throw ProbeError("CBv2 adopted KV shape/dtype differs from local model geometry")
@@ -89,15 +96,37 @@ final class CBv2OwnedRequestState {
         }
         let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
-        // Full attention only: the backend's own direct plan (paged writes the
-        // arrays into fresh pages; contiguous copies them into its rows).
-        let rows = try backend.makeSequenceState(adopting: prefix, layerKinds: geometry.kinds,
-            maxLength: promptCount + outputCount)
+        let rows: [CBv2SequenceKV?]
+        if slidingTails.isEmpty {
+            // Full attention only: the backend's own direct plan (paged writes the
+            // arrays into fresh pages; contiguous copies them into its rows).
+            rows = try backend.makeSequenceState(adopting: prefix, layerKinds: geometry.kinds,
+                maxLength: promptCount + outputCount)
+        } else {
+            // A sliding row keeps only its window: fresh rows, each full row
+            // written whole, each sliding row moved to its tail's first position
+            // and written there, so ring slots, offset and oldest retained
+            // position are what the original frames left.
+            rows = try backend.makeSequenceState(layerKinds: geometry.kinds, promptLength: promptCount,
+                maxLength: promptCount + outputCount)
+            guard rows.count == geometry.kinds.count, rows.allSatisfy({ $0 != nil }) else {
+                backend.release(rows)
+                throw ProbeError("CBv2 adopted sliding state lacks a row per layer")
+            }
+            for (row, pair) in zip(rows, prefix) {
+                guard let row, let pair else { continue }
+                let first = committed - pair.keys.dim(2)
+                if first > 0 { row.fastForward(to: first) }
+                _ = row.update(keys: pair.keys, values: pair.values)
+            }
+        }
         let recurrent: CBv2RecurrentRequestState
         do { recurrent = try CBv2RecurrentRequestState(spec: geometry.recurrent, adoptedCommitted: layers) }
         catch { backend.release(rows); throw error }
         guard rows.count == geometry.kinds.count,
-            rows.allSatisfy({ $0?.absoluteOffset == committed && $0?.retainedCount == committed }),
+            zip(rows, geometry.kinds).allSatisfy({ row, kind in
+                row?.absoluteOffset == committed && row?.retainedCount == kind.retainedTokens(atFrontier: committed)
+            }),
             geometry.host != nil || geometry.caches.allSatisfy({ $0.rows.isEmpty }),
             Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? []) == Set(geometry.recurrent.modelLayerIndices),
             !recurrent.isReleased else {

@@ -10,6 +10,7 @@ struct MiMoResidentSource {
     let profile: MiMoRegisteredModelProfile
     let plan: MiMoLayerStagePlan
     /// The text tensors by indexed name.
+    var mediaDescriptors: [String: TensorDescriptor] = [:]
     let descriptors: [String: TensorDescriptor]
     let tensors: [QwenStageSourceTensor]
     let mappings: [MiMoLayerStagePlan.Parameter]
@@ -81,7 +82,7 @@ func prepareMiMoResidentSource(directory: URL, configuration: Data, manifest: Da
     }
     try checkpoint.checkUnchanged()
     try check()
-    return MiMoResidentSource(checkpoint: checkpoint, profile: profile, plan: plan, descriptors: descriptors,
+    return MiMoResidentSource(checkpoint: checkpoint, profile: profile, plan: plan, mediaDescriptors: indexed.filter { $0.key.hasPrefix("vision_tower.") }, descriptors: descriptors,
         tensors: tensors, mappings: mappings, sourceTensorManifestSHA256: sha256(try canonicalJSONData(tensors)),
         sourceParameterLayoutSHA256: qwenStageLayout(tensors.map { "\($0.sourceName):\($0.loadedDType):\($0.shape)" }))
 }

@@ -6,8 +6,12 @@ usage: product_compare.py TOKENIZER.json PRODUCT.json TEXT_FILE_NAME REFERENCE.j
 import json, sys
 from tokenizers import Tokenizer
 tok = Tokenizer.from_file(sys.argv[1])
-product = next(r for r in json.load(open(sys.argv[2]))["requests"] if r["text_file"] == sys.argv[3])
-ref = json.load(open(sys.argv[4])); ev = ref["evidence"]; ids = ev["selectedTokenIDs"]; stops = set(ref["identity"]["stopTokenIDs"])
+with open(sys.argv[2]) as handle:
+    product_data = json.load(handle)
+product = next(r for r in product_data["requests"] if r["text_file"] == sys.argv[3])
+with open(sys.argv[4]) as handle:
+    ref = json.load(handle)
+ev = ref["evidence"]; ids = ev["selectedTokenIDs"]; stops = set(ref["identity"]["stopTokenIDs"])
 ref_ids = ids[:-1] if ids and ids[-1] in stops else ids
 prod_ids = tok.encode(product["content"], add_special_tokens=False).ids
 usage = product["usage"] or {}

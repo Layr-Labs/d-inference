@@ -530,6 +530,10 @@ public struct PairConfiguration: Sendable {
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")
         let evidence = recording ? " --evidence-directory \"$RUN/evidence\"" : ""
+        // GLM's load holds a bounded startup wait across both ranks, which a
+        // leased worker accepts only with a fixed startup deadline on its own clock.
+        let startup = request.modelID == "registered_glm53_flash"
+            ? " --startup-deadline-uptime-nanoseconds \"$((NOW + \(UInt64(startupSeconds) * 1_000_000_000)))\"" : ""
         return """
         set -eu
         umask 077
@@ -544,7 +548,7 @@ public struct PairConfiguration: Sendable {
         trap '' INT HUP
         echo "\(PairLaunchPreamble.marker) pid=$$ uptime=$NOW deadline=$DEADLINE" >&2
         exec /usr/bin/env -i \(fixed) JACCL_IBV_DEVICES="$RUN/devices.json" "$W" \
-        \(arguments.map(Self.quoted).joined(separator: " ")) --deadline-uptime-nanoseconds "$DEADLINE"\(evidence)
+        \(arguments.map(Self.quoted).joined(separator: " ")) --deadline-uptime-nanoseconds "$DEADLINE"\(startup)\(evidence)
         """
     }
 }

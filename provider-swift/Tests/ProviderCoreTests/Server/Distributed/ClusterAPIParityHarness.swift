@@ -627,7 +627,7 @@ func parityRun(_ family: ParityFamily) async throws -> [String] {
             // once this one retired (the engine published its terminal).
             let end = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < end {
-                let held = await cluster.host.pin != nil
+                let held = await !cluster.host.pins.isEmpty
                 let queued = await !cluster.host.waiting.isEmpty
                 if !held && !queued { break }
                 try await Task.sleep(for: .milliseconds(2))

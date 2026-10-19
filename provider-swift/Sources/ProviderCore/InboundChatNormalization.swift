@@ -180,10 +180,15 @@ enum InboundChatNormalization {
     /// — i.e. it has a `function` object or a top-level `name` (with
     /// optional `parameters`/`input_schema`). Hosted tools (`web_search`,
     /// `file_search`, …) and `{"type":"custom", ...}` tools have neither.
+    /// Shared with raw-schema capture. Keep this structural rule independent of
+    /// the tool's type spelling; the SDK owns decoding retained declarations.
+    static func isRepresentableTool(functionIsObject: Bool, nameIsString: Bool) -> Bool {
+        functionIsObject || nameIsString
+    }
+
     private static func isRepresentableTool(_ value: Any) -> Bool {
         guard let tool = value as? [String: Any] else { return false }
-        if tool["function"] is [String: Any] { return true }
-        if tool["name"] is String { return true }
-        return false
+        return isRepresentableTool(functionIsObject: tool["function"] is [String: Any],
+            nameIsString: tool["name"] is String)
     }
 }

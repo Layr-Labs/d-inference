@@ -9,7 +9,7 @@ public enum ClusterWorkerCodec {
         var value = envelope(frame.membershipEpoch, frame.sequence, frame.requestID)
         switch frame.command {
         case .reserve(let r):
-            value["kind"] = "reserve"; value["reservation"] = reservation(r)
+            value["kind"] = "reserve"; value["reservation"] = try reservation(r)
         case .start: value["kind"] = "start"
         case .tokenDecision(let ordinal, let decision):
             value["kind"] = "tokenDecision"; value["ordinal"] = ordinal; value["decision"] = decision.rawValue
@@ -209,7 +209,7 @@ public enum ClusterWorkerCodec {
         try r.finish()
         return value
     }
-    private static func reservation(_ r: ClusterWorkerReservation) -> [String: Any] {
+    private static func reservation(_ r: ClusterWorkerReservation) throws -> [String: Any] {
         var value: [String: Any] = ["profileID": r.profileID, "promptTokenIDs": r.promptTokenIDs, "stopTokenIDs": r.stopTokenIDs,
          "outputCount": r.outputCount, "chunkSize": r.chunkSize,
          "deadlineUptimeNanoseconds": NSNumber(value: r.deadlineUptimeNanoseconds), "capacityLimitBytes": r.capacityLimitBytes]
@@ -217,6 +217,18 @@ public enum ClusterWorkerCodec {
         if let sampling = r.sampling { value["sampling"] = ClusterWorkerSamplingCodec.encode(sampling) }
         // The pair as placed has no field at all either.
         if let route = r.route { value["route"] = route.rawValue }
+        if let media = r.stillImages {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let bytes = try encoder.encode(media)
+            try workerRequire(bytes.count <= ClusterStillImages.maximumEnvelopeBytes, "Still-image envelope exceeds bound")
+            value["stillImages"] = bytes.base64EncodedString()
+        }
+        if let media = r.mimoImages {
+            let encoder = JSONEncoder();encoder.outputFormatting = [.sortedKeys,.withoutEscapingSlashes]
+            let bytes = try encoder.encode(media)
+            try workerRequire(bytes.count <= 135_000,"MiMo envelope exceeds bound")
+            value["mimoImages"] = bytes.base64EncodedString()
+        }
         return value
     }
     private static func reservation(_ object: [String: Any]) throws -> ClusterWorkerReservation {
@@ -227,10 +239,28 @@ public enum ClusterWorkerCodec {
             guard let value = ClusterWorkerRoute(rawValue: try r.string("route")) else { throw ClusterWorkerProtocolError.invalid("Unknown request route") }
             route = value
         }
+        let stillImages: ClusterStillImages?
+        if r.values["stillImages"] != nil {
+            let encoded = try r.string("stillImages")
+            guard encoded.utf8.count <= 180_000, let bytes = Data(base64Encoded: encoded),
+                  bytes.count <= ClusterStillImages.maximumEnvelopeBytes else {
+                throw ClusterWorkerProtocolError.invalid("Still-image envelope exceeds bound")
+            }
+            stillImages = try ClusterStillImages.decodeBounded(bytes)
+        } else { stillImages = nil }
+        let media: ClusterMiMoImages?
+        if r.values["mimoImages"] != nil {
+            let encoded = try r.string("mimoImages")
+            guard encoded.utf8.count <= 180_000,
+                  let bytes = Data(base64Encoded: encoded), bytes.count <= 135_000 else {
+                throw ClusterWorkerProtocolError.invalid("MiMo envelope exceeds bound")
+            }
+            media = try ClusterMiMoImages.decodeBounded(bytes)
+        } else { media = nil }
         let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: r.ints("promptTokenIDs"),
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
             deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
-            sampling: sampling, route: route)
+            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages)
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {

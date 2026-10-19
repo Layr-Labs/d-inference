@@ -39,6 +39,7 @@ struct PrefixCachePolicyTests {
         "nvidia-nemotron-3.5-lightning-4bit-r1",
         "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
         "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b",
+        "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp", "glm-5.3-flash",
     ])
     func releaseArtifactsDefaultSSD(modelID: String) {
         for value in [nil, "", "   "] as [String?] {
@@ -67,6 +68,8 @@ struct PrefixCachePolicyTests {
         "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit-other",
         "ternary-bonsai-2-27b-other", "TERNARY-BONSAI-2-27B",
         " ternary-bonsai-2-27b", "ternary-bonsai-2-27b ", "arbitrary/Bonsai",
+        "EigenLabs/GLM-5.3-Flash-MLX-4bit", "eigenlabs/glm-5.3-flash-mlx-4bit-mtp",
+        "GLM-5.3-Flash", " glm-5.3-flash",
     ])
     func otherArtifactsRequireExplicitSSDOptIn(modelID: String) {
         for value in [nil, "", "   ", "0", "false", "junk"] as [String?] {

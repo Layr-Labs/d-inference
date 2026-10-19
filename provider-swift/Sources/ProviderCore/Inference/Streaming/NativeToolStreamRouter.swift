@@ -76,9 +76,13 @@ struct NativeToolStreamRouter {
             ? .toolChoiceViolation(message) : .generationFailed(message)
     }
 
-    private func checkNativeToolFailure() throws {
-        guard nativeMiMoChannels, (handler?.parseFailureCount ?? 0) > 0 else { return }
-        let message = "native MiMo tool output is invalid"
+    /// Also called after the SDK EOS flush, before residual text or any call
+    /// is published. GLM validates the entire retained suffix only at EOS.
+    func checkNativeToolFailure() throws {
+        guard nativeMiMoChannels || handler?.format == .glm5,
+            (handler?.parseFailureCount ?? 0) > 0 else { return }
+        let message = handler?.format == .glm5
+            ? "native GLM tool output is invalid" : "native MiMo tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 // Tokenization, cache staging, and engine submission.
 
 import Foundation
@@ -55,6 +56,8 @@ extension EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -73,6 +76,8 @@ extension EngineV2Bridge {
                 logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 multimodal: multimodal,
+                mimoClusterImages: mimoClusterImages,
+                clusterStillImages: clusterStillImages,
                 positionState: positionState,
                 hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
@@ -112,6 +117,8 @@ extension EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -128,6 +135,24 @@ extension EngineV2Bridge {
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving
     ) async throws -> AsyncStream<GenerationEvent> {
+        if let clusterStillImages {
+            guard mimoClusterImages == nil, multimodal == nil,
+                  let binding = try clusterGLMImageIngress() else { throw DistributedEngineError.refused(.mediaUnsupported) }
+            let media = try ClusterStillImages.decodeBounded(clusterStillImages), c = binding.ingress.configuration
+            guard media.configurationSHA256 == binding.ingress.configurationSHA256 else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
+                startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
+        }
+        let imageBoundCacheScope: String
+        if let mimoClusterImages {
+            let media = try ClusterMiMoImages.decodeBounded(mimoClusterImages)
+            try media.validate(prompt:promptTokens)
+            imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
+        } else { imageBoundCacheScope = cacheScope }
+        // Never manufacture an authenticated scope from an image digest.
+        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && (mimoClusterImages == nil || !cacheScope.isEmpty)
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
@@ -231,8 +256,8 @@ extension EngineV2Bridge {
             request: request,
             defaultMaxTokens: defaultMaxTokens,
             stopTokenIds: stopTokenIds,
-            cacheScope: cacheScope,
-            cacheEnabled: cacheEnabled,
+            cacheScope: imageBoundCacheScope,
+            cacheEnabled: imageCacheEnabled,
             multimodal: multimodal,
             tokenConstraint: tokenConstraint,
             samplingDefaults: samplingDefaults,
@@ -241,6 +266,8 @@ extension EngineV2Bridge {
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
             defaultMaxTokensContextLimit: defaultMaxTokensContextLimit
         )
+        cbv2Request.mimoClusterImages = mimoClusterImages
+        cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
@@ -272,6 +299,27 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // GLM prices each request by its reserved tokens beside one step's
+        // setup. Refuse as capacity, so routing moves on, a request that can
+        // never fit or that would leave a step no room once all held requests
+        // run; the engine charges step scratch from the same ledger.
+        if glm5NextNativeOwner != nil {
+            let decision = Self.glm5NextSlotAdmission(
+                requestBytes: requestReservationBytes(tokenCount: worstCaseTokens),
+                committedBytes: glm5NextCommittedBytes(),
+                admissibleBytes: admissionCapacityBytes())
+            guard case .admit(let bytes) = decision else {
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+                continuation.yield(.error(
+                    "token_budget_exhausted: "
+                        + (decision == .neverFits ? Self.glm5NextExceedsSlotCapacity : Self.glm5NextSlotCommitted)
+                        + " (\(worstCaseTokens) reserved tokens)"))
+                continuation.finish()
+                return stream
+            }
+            glm5NextGateReservations[id] = bytes
+        }
+        defer { glm5NextGateReservations.removeValue(forKey: id) }
 
         // Prefer resident pages when they save at least as much prefill as
         // the durable tier. A shorter memory hit must not hide a longer SSD
@@ -291,7 +339,7 @@ extension EngineV2Bridge {
             throw MultiModelBatchSchedulerEngineError.generationFailed("Native block engine configuration is invalid")
         }
         let residentPrefixCandidate: CBv2ResidentPrefixCandidate? =
-            cacheEnabled && multimodal == nil
+            imageCacheEnabled && multimodal == nil
             ? ownedEngine?.residentPrefixCandidate(for: cbv2Request) : nil
         if residentPrefixCandidate != nil {
             usageSignal?.recordResidentPrefixCandidate()
@@ -308,7 +356,7 @@ extension EngineV2Bridge {
             && multimodal != nil && hybridPrefixIdentity != nil
             && cbv2Request.positionState == nil && ssdHybridCheckpointStore != nil
         let mediaHybridCacheEligible = qwen4MediaCacheEligible || nativeMediaCacheEligible
-        if cacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
+        if imageCacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
             let receiptID = mintPrefixCacheReceiptID()
@@ -334,7 +382,7 @@ extension EngineV2Bridge {
                 store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
-                let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)
+                let proof = evidence.promptProof(tokens: promptTokens, scope: imageBoundCacheScope)
             {
                 usageSignal.recordResidentPrompt(proof)
                 evidence.register(receiptID: receiptID, signal: usageSignal)
@@ -361,7 +409,7 @@ extension EngineV2Bridge {
         var ssdStaged = false
         var ssdReuseAttempted = false
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
-        if !cacheEnabled {
+        if !imageCacheEnabled {
             usageSignal?.recordCacheDisabled(tier: prefixCacheFallbackTier)
         } else if multimodal != nil, !mediaHybridCacheEligible {
             usageSignal?.finalizeLookup(
@@ -401,14 +449,14 @@ extension EngineV2Bridge {
         } else if let ssd = ssdPrefixCache, let prefixCacheReceiptID,
             residentPrefixCandidate == nil
                 || ssd.estimatedPrefillTokensSaved(
-                    promptTokens: promptTokens, cacheScope: cacheScope)
+                    promptTokens: promptTokens, cacheScope: imageBoundCacheScope)
                     > (residentPrefixCandidate?.prefillTokensSaved ?? 0)
         {
             let stageStart = SuspendingClock.now
             let stageResult = await ssd.stage(
                 requestID: prefixCacheReceiptID,
                 promptTokens: promptTokens,
-                cacheScope: cacheScope)
+                cacheScope: imageBoundCacheScope)
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
             ssdReuseAttempted = stageResult.staged
@@ -446,6 +494,8 @@ extension EngineV2Bridge {
                 engine: actual, bridge: self, budget: kvBudget)
         } else { completePrefixOwnsRequestCharge = false }
         let nativePagedOwnsRequestCharge: Bool
+        // GLM's separate operation owner validates its actual process owner at
+        // both admission checks. It must not masquerade as a MiMo transaction.
         if let actual = ownedEngine as? EngineV2, let kvBudget,
            let transaction = nativeTransaction, nativeTransactionID == transaction.id {
             nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(

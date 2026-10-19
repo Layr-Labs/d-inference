@@ -199,7 +199,8 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
 
 /// The owner's rule, checked without the planner's own enumeration: a model
 /// is refused exactly when no order, cut and mode is possible, and the
-/// chosen placement is never in a worse tier than one that exists.
+/// chosen placement is the fastest the hardware holds. Live memory never
+/// moves it (owner, 2026-10-18): the same Macs at rest get the same split.
 func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout,
                _ checks: PlacementChecks, policy: ClusterPlacementPolicy = .init()) throws -> ClusterPlacementResult {
     let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
@@ -208,8 +209,16 @@ func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: Cl
     let aloneHolds = result.alone.contains { $0.fit.possible }
     checks.require("\(name): a division is chosen exactly when one is possible (\(possible.count) of \(all.count) are), and the model is refused exactly when none is and no Mac holds it alone",
         (result.chosen == nil) == possible.isEmpty && (result.refusal != nil) == (possible.isEmpty && !aloneHolds))
+    // The fastest split that loads now; only when none does, the fastest the hardware holds (owner, 2026-10-19).
+    let loadsNow = possible.filter { $0.tier == 0 && $0.withinGPUWorkingSet == (result.chosen?.withinGPUWorkingSet ?? true) }
+    if !loadsNow.isEmpty {
+        checks.require("\(name): a split loads now, so the chosen split is one that does", result.chosen?.tier == 0)
+    }
     if let chosen = result.chosen {
-        checks.require("\(name): the chosen placement is in the best tier that exists", chosen.tier == possible.map(\.tier).min())
+        let best = possible.filter { $0.withinGPUWorkingSet == chosen.withinGPUWorkingSet && ($0.tier == 0) == (chosen.tier == 0) }
+        checks.require("\(name): the chosen placement is one the hardware holds, and none in its group is predicted faster",
+            chosen.possible && (chosen.withinGPUWorkingSet || !possible.contains(where: \.withinGPUWorkingSet))
+                && best.allSatisfy { $0.routedSeconds(result.regime) >= chosen.routedSeconds(result.regime) })
         checks.require("\(name): the chosen placement is one of the enumerated ones", all.contains(chosen))
         // MTP on by default where it pays: a chosen phase split runs the
         // model's head exactly when its decoding Mac prefers the head.
@@ -240,10 +249,11 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         }
     }
 
-    // 16 + 64: the even cut does not fit the small Mac; a smaller share does.
-    // At the earlier reference request (8,192 prompt, 128 output): at the
-    // model's largest (32,767 and 4,096) the whole model's state charged to
-    // either rank alone leaves a 16 GiB Mac too little for any share now.
+    // 16 + 64: the even cut needs more than a 16 GiB Mac admits at rest (its
+    // unwired memory less the kernel's file-cache minimum, 8.5 GiB here); a
+    // smaller share does not. At the earlier reference request (8,192
+    // prompt, 128 output): at the model's largest (32,767 and 4,096) the whole
+    // model's state charged to either rank alone leaves a 16 GiB Mac too little.
     do {
         let devices = [try SyntheticMac.idle(16).device("small"), try SyntheticMac.idle(64).device("large")]
         var reference = ClusterPlacementPolicy(); reference.promptTokens = 8192; reference.outputTokens = 128
@@ -251,25 +261,32 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let even = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [32], mode: .pipeline, prefillSchedule: .oneChunkLookahead,
                                                         layout: big, policy: reference)
         checks.require("16 + 64: the even cut does not fit the 16 GiB Mac now", even.tier > 0)
-        checks.require("16 + 64: placed now, with the small Mac holding the smaller share",
-            result.chosen?.tier == 0 && share(result.chosen!, of: "small") < share(result.chosen!, of: "large")
-                && result.chosen!.ranks.allSatisfy { $0.fit == .now })
+        checks.require("16 + 64: the small Mac holds the smaller share, within what it admits now, and it is placed now",
+            share(result.chosen!, of: "small") < share(result.chosen!, of: "large")
+                && result.chosen!.ranks.allSatisfy { $0.fit == .now }
+                && result.chosen!.ranks.first(where: { $0.device == "small" })!.needBytes <= devices[0].profile.memory.admissibleNowBytes)
         checks.require("16 + 64: the small Mac is not asked to hold the whole model for a phase split",
             !(result.chosen!.mode.isPhaseSplit && result.chosen!.ranks.last!.device == "small"))
         let nineResult = try checkRule("16 + 64, 9B", devices, nine, checks)
         checks.require("16 + 64, 9B: placed now", nineResult.chosen?.tier == 0)
     }
 
-    // 64 + 512 and the 173 GB model: one order, and only the cut that leaves the small Mac least.
+    // 64 + 512 and the 173 GB model: even the highest admitted cut leaves the
+    // small Mac more than the 38.7 GiB it admits at rest.
     do {
         let devices = [try SyntheticMac.idle(64).device("small"), try SyntheticMac.idle(512).device("large")]
         let result = try checkRule("64 + 512, surveyed 173 GB model", devices, mimo, checks)
-        checks.require("64 + 512: placed now with the large Mac first and the highest admitted cut",
-            result.chosen?.tier == 0 && result.chosen?.ranks.first?.device == "large" && result.chosen?.cut == 34)
+        // No admitted cut is within the small Mac's at-rest ceiling, but an idle small Mac admits a
+        // share now, so the model is divided at a cut that loads now (owner, 2026-10-19).
+        checks.require("64 + 512: divided at a cut both Macs load now; not refused, and the large Mac could hold it alone",
+            result.chosen?.ranks.allSatisfy { $0.fit == .now } == true && result.refusal == nil
+                && result.alone.first { $0.device == "large" }?.fit == .now)
+        checks.require("64 + 512: the output names the chosen placement",
+            ClusterPlacementExplanation.describe(result, devices: devices, layout: mimo).joined(separator: "\n").contains("Chosen placement"))
         let smallFirst = try everyPlacement(devices, mimo, cuts: mimo.admittedCuts).filter { $0.ranks.first?.device == "small" }
         let smallFirstAnywhere = try everyPlacement(devices, mimo, cuts: mimo.structuralCuts).filter { $0.ranks.first?.device == "small" }
         checks.require("64 + 512: the small Mac cannot be first at any admitted cut, and could be at a cut the plan could make",
-            smallFirst.allSatisfy { !$0.possible } && smallFirstAnywhere.contains { $0.tier == 0 } && result.bestStructural != nil)
+            smallFirst.allSatisfy { !$0.possible } && smallFirstAnywhere.contains(where: \.possible) && result.bestStructural != nil)
         _ = try checkRule("64 + 512, 27B", devices, big, checks)
     }
 
@@ -281,32 +298,46 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
             checks.require("128 + 256, \(name): placed now", result.chosen?.tier == 0)
         }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: mimo)
-        // With nothing known about speed the even cut ties in both orders; the tie
-        // goes to the order that leaves the smaller Mac more room.
-        checks.require("128 + 256, surveyed model: the 128 GiB Mac holds the smaller share and cannot hold the model alone",
-            (result.chosen.map { c in c.ranks.first { $0.device == "b" }!.weightsBytes < c.ranks.first { $0.device == "a" }!.weightsBytes } ?? false)
-                && result.alone.first { $0.device == "b" }?.fit.possible == false
-                && result.alone.first { $0.device == "a" }?.fit == .now)
+        // The even cut's half needs 85 GiB: more than the 128 GiB Mac admits at rest (78 GiB),
+        // within what the idle Mac admits now, so it may hold up to the even share (owner, 2026-10-19).
+        let layers = result.chosen.map { c in c.ranks.map { (device: $0.device, count: $0.endLayer - $0.firstLayer) } }
+        let held = (b: layers?.first { $0.device == "b" }?.count ?? .max, a: layers?.first { $0.device == "a" }?.count ?? 0)
+        checks.require("128 + 256, surveyed model: the 128 GiB Mac holds no more layers than the even cut gives it (b \(held.b), a \(held.a))",
+            held.b <= held.a)
+        checks.require("128 + 256, surveyed model: both ranks load now", result.chosen?.ranks.allSatisfy { $0.fit == .now } ?? false)
+        checks.require("128 + 256, surveyed model: the 128 GiB Mac cannot hold the model alone, the 256 GiB Mac can now",
+            result.alone.first { $0.device == "b" }?.fit.possible == false && result.alone.first { $0.device == "a" }?.fit == .now)
     }
 
     // A tiny and a huge Mac.
     do {
-        let devices = [try SyntheticMac.idle(8).device("tiny"), try SyntheticMac.idle(512).device("huge")]
-        let result = try checkRule("8 + 512, 27B", devices, big, checks)
-        // The margins scale with the Mac (owner 2026-10-15: shard whatever is possible), so the tiny Mac now takes the
+        // An 8 GiB Mac admits 3.8 GiB at rest, less than the smallest share needs: no division, and the
+        // model is not refused, because the huge Mac holds it alone.
+        let eight = [try SyntheticMac.idle(8).device("tiny"), try SyntheticMac.idle(512).device("huge")]
+        let alone = try checkRule("8 + 512, 27B", eight, big, checks)
+        checks.require("8 + 512: no share is within what the 8 GiB Mac admits at rest; not refused, the huge Mac holds it alone",
+            alone.chosen == nil && alone.refusal == nil && alone.alone.first { $0.device == "huge" }?.fit == .now)
+        checks.require("8 + 512: the output says one Mac holds the model alone",
+            ClusterPlacementExplanation.describe(alone, devices: eight, layout: big).joined(separator: "\n").contains("huge alone needs"))
+        let devices = [try SyntheticMac.idle(12).device("tiny"), try SyntheticMac.idle(512).device("huge")]
+        let result = try checkRule("12 + 512, 27B", devices, big, checks)
+        // The margins scale with the Mac (owner 2026-10-15: shard whatever is possible), so a 12 GiB Mac takes the
         // smallest share; the huge Mac could still hold the model alone.
         let layers = { (c: ClusterPlacementCandidate, d: String) in c.ranks.first { $0.device == d }.map { $0.endLayer - $0.firstLayer } ?? 0 }
-        checks.require("8 + 512: divided, the tiny Mac holding the smaller share",
+        checks.require("12 + 512: divided, the tiny Mac holding the smaller share",
             result.chosen.map { layers($0, "tiny") >= 1 && layers($0, "tiny") < layers($0, "huge") } ?? false)
-        checks.require("8 + 512: the huge Mac could still hold it alone", result.alone.first { $0.device == "huge" }?.fit == .now)
-        // A small Mac that is nearly full: no division, and the model is not refused, because the huge Mac holds it alone.
-        let full = [try SyntheticMac(physicalGiB: 8, freeGiB: 0.4, inactiveCacheGiB: 0.2, wiredGiB: 3).device("tiny"),
+        checks.require("12 + 512: the huge Mac could still hold it alone", result.alone.first { $0.device == "huge" }?.fit == .now)
+        // A small Mac that is nearly full (its wired memory as at rest): divided as at rest, its rank reporting
+        // that it does not fit as it runs now.
+        let full = [try SyntheticMac(physicalGiB: 12, freeGiB: 0.4, inactiveCacheGiB: 0.2, wiredGiB: 2.5).device("tiny"),
                     try SyntheticMac.idle(512).device("huge")]
-        let crowded = try checkRule("8 (nearly full) + 512, 27B", full, big, checks)
-        checks.require("8 (nearly full) + 512: no division is possible, since the smallest share is more than the tiny Mac has; the model is not refused, because the huge Mac holds it alone",
-            crowded.chosen == nil && crowded.refusal == nil && crowded.alone.first { $0.device == "huge" }?.fit == .now)
-        checks.require("8 (nearly full) + 512: the output says one Mac holds the model alone",
-            ClusterPlacementExplanation.describe(crowded, devices: full, layout: big).joined(separator: "\n").contains("huge alone needs"))
+        let crowded = try checkRule("12 (nearly full) + 512, 27B", full, big, checks)
+        checks.require("12 (nearly full) + 512: divided as the idle pair is, the tiny Mac's rank saying it does not fit now; not refused",
+            crowded.chosen?.cuts == result.chosen?.cuts && crowded.chosen?.ranks.map(\.device) == result.chosen?.ranks.map(\.device)
+                && crowded.refusal == nil && (crowded.chosen?.ranks.first { $0.device == "tiny" }?.fit.tier ?? 0) > 0
+                && crowded.alone.first { $0.device == "huge" }?.fit == .now)
+        checks.require("12 (nearly full) + 512: the output still says what each Mac alone needs",
+            ClusterPlacementExplanation.describe(crowded, devices: full, layout: big).joined(separator: "\n").contains("Each Mac alone, for comparison\n  tiny: needs"))
     }
 
     // A model larger than the pair.
@@ -326,12 +357,13 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         checks.require("96 + 64: refused although the weights alone would fit, because each load needs its headroom", closeResult.chosen == nil)
     }
 
-    // A model that fits one way round only: its head is larger than the small Mac.
+    // A model that fits one way round only: its head is larger than the small Mac (and within
+    // the 38.7 GiB the large one admits at rest).
     do {
         var family = SyntheticFamily(layerCount: 8, admittedCuts: Array(1..<8))
         family.generationModes = [.pipeline]
         let layout = try ClusterModelLayoutBuilder.build(family: family,
-            tensors: SyntheticFamily.tensors(layerBytes: Array(repeating: gib / 2, count: 8), embed: gib / 2, head: 40 * gib, largestTensor: gib / 2),
+            tensors: SyntheticFamily.tensors(layerBytes: Array(repeating: gib / 2, count: 8), embed: gib / 2, head: 30 * gib, largestTensor: gib / 2),
             artifactSHA256: "", configurationSHA256: "")
         for labels in [["small", "large"], ["large", "small"]] {
             let devices = try labels.map { try SyntheticMac.idle($0 == "small" ? 16 : 64).device($0) }
@@ -348,10 +380,10 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let small = try checkRule("cache-heavy 128 + 256, 27B", devices, big, checks)
         checks.require("cache-heavy pair, 27B: placed now on counted file cache", small.chosen?.tier == 0)
         let large = try checkRule("cache-heavy 128 + 256, surveyed 173 GB model", devices, mimo, checks)
-        // The 256 GiB Mac's share is within its free pages and unprotected cache; the 128 GiB
-        // Mac's is not, since the kernel keeps 45 GiB of its 90 GiB of cache.
+        // The cut chosen at rest. The 256 GiB Mac's share is within its free pages and unprotected
+        // cache; the 128 GiB Mac's is not, since the kernel keeps 45 GiB of its 90 GiB of cache.
         checks.require("cache-heavy pair, 173 GB model: not refused; each rank says what is in its way, and they differ",
-            large.refusal == nil && large.chosen?.tier == 2
+            large.refusal == nil && large.chosen?.cut == 28 && large.chosen?.tier == 2
                 && { if case .gateCountsLess = large.chosen!.ranks[0].fit { return true } else { return false } }()
                 && { if case .afterApplicationsRelease = large.chosen!.ranks[1].fit { return true } else { return false } }())
         let text = ClusterPlacementExplanation.describe(large, devices: devices, layout: mimo).joined(separator: "\n")
@@ -384,13 +416,18 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         checks.require("wired by a program: the ordinary Mac's answer keeps its usual words",
             lines.contains { $0.contains("a: needs") && !$0.contains("running program") })
         let both = [try busy.device("a"), try SyntheticMac(physicalGiB: 256, freeGiB: 4, inactiveCacheGiB: 4, wiredGiB: 230).device("b")]
-        let refused = try checkRule("two Macs whose memory a program holds wired, surveyed 173 GB model", both, mimo, checks)
-        let refusedText = ClusterPlacementExplanation.describe(refused, devices: both, layout: mimo).joined(separator: "\n")
-        checks.require("wired by a program on both: refused, and the refusal says stopping the program changes the answer",
-            refused.chosen == nil && refusedText.contains("stopping that program changes the answer") && !refusedText.contains("whatever is freed"))
+        // Both: the hardware holds the even cut, so it is chosen as at rest and each rank says what is wired.
+        let wired = try checkRule("two Macs whose memory a program holds wired, surveyed 173 GB model", both, mimo, checks)
+        let wiredLines = ClusterPlacementExplanation.describe(wired, devices: both, layout: mimo)
+        checks.require("wired by a program on both: not refused; every rank says stopping the program gives it back",
+            wired.refusal == nil && wired.chosen?.cut == 24
+                && wiredLines.filter { $0.contains("Rank ") && $0.contains("stopping that program gives it back") }.count == 2
+                && !wiredLines.joined(separator: "\n").contains("whatever is freed"))
     }
 
-    // Nothing passes the gate now: the plan asks one Mac for memory rather than two.
+    // Nothing passes the gate now: the split is still the one the hardware and speed choose, and
+    // each rank reports what the gate would say (owner, 2026-10-18: no longer the cut that asks the
+    // fewest Macs for memory).
     do {
         // The large Mac admits 87 GiB and the small one 44: no cut of the 173 GB model fits both now.
         let devices = [try SyntheticMac(physicalGiB: 256, freeGiB: 87, inactiveCacheGiB: 60, wiredGiB: 10).device("a"),
@@ -402,14 +439,17 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
                 embed: Int(0.60 * Double(gib)), head: Int(0.61 * Double(gib)), largestTensor: gib),
             artifactSHA256: "", configurationSHA256: "")
         let result = try checkRule("87 and 44 GiB admissible, 173 GB model, cuts 24 to 44", devices, wide, checks)
-        checks.require("when nothing passes now, the chosen cut is one the small Mac already fits, so only one Mac is asked for memory",
-            result.refusal == nil && (result.chosen?.tier ?? 0) > 0 && result.chosen?.ranks.first { $0.device == "b" }?.fit == .now
-                && result.chosen?.ranks.filter { $0.fit != .now }.count == 1)
-        // The same pair once the large Mac is free: the lowest cut the small Mac fits comfortably.
+        checks.require("when nothing passes now, the cut chosen at rest is still chosen and the small Mac's rank says what is in its way",
+            result.refusal == nil && result.chosen?.cut == 28 && result.chosen?.ranks.first?.device == "a"
+                && (result.chosen?.tier ?? 0) > 0 && result.chosen?.ranks.first { $0.device == "b" }?.fit.possible == true
+                && result.chosen?.ranks.first { $0.device == "b" }?.fit != .now)
+        // The same pair once the large Mac is free: a cut now loads on both, so the split moves to the
+        // fastest that does instead of waiting on the small Mac's applications (owner, 2026-10-19).
         let quiet = [try SyntheticMac(physicalGiB: 256, freeGiB: 180, inactiveCacheGiB: 60, wiredGiB: 10).device("a"), devices[1]]
         let later = try checkRule("180 and 44 GiB admissible, 173 GB model, cuts 24 to 44", quiet, wide, checks)
-        checks.require("once the large Mac is free the placement fits now at the cut the small Mac's memory allows",
-            later.chosen?.tier == 0 && [38, 40].contains(later.chosen?.cut ?? 0) && later.chosen?.ranks.first?.device == "a")
+        checks.require("once the large Mac is free the split moves to the fastest cut that loads now on both Macs",
+            later.chosen?.tier == 0 && later.chosen?.cuts != result.chosen?.cuts
+                && later.chosen?.ranks.allSatisfy { $0.fit == .now } == true)
     }
 
     // Other programs hold the memory.
@@ -448,8 +488,8 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     var stranger = policy; stranger.leader = "neither"
     checks.require("a leader the pair does not have leaves no division, and each Mac alone is still offered",
         try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: stranger).chosen == nil)
-    // Headroom is a floor, not a goal: a tight placement is passed over for a
-    // comfortable one, and among comfortable ones the faster wins.
+    // Live headroom is not a goal either (owner, 2026-10-18): a Mac with little
+    // in reserve at the fastest cut keeps the fastest cut; the gate decides at load.
     do {
         // A fast Mac that admits 8% more than its share needs at the fastest cut.
         let need16 = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [16], mode: .pipeline,
@@ -459,8 +499,9 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
         let tight = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: policy)
         let at16 = try ClusterPlacementPlanner.evaluate(devices: pair, cuts: [16], mode: .pipeline,
             prefillSchedule: .oneChunkLookahead, layout: big, policy: policy)
-        checks.require("a cut that fits with under a tenth in reserve is passed over for the next one that fits comfortably",
-            at16.tier == 0 && at16.smallestHeadroomShare < 0.10 && tight.chosen?.cut == 20 && (tight.chosen?.smallestHeadroomShare ?? 0) >= 0.10)
+        checks.require("a cut that fits with under a tenth in reserve is kept: the same cut and order as for the idle pair",
+            at16.tier == 0 && at16.smallestHeadroomShare < 0.10 && tight.chosen?.cuts == result.chosen?.cuts
+                && tight.chosen?.ranks.map(\.device) == result.chosen?.ranks.map(\.device))
     }
     // What each Mac holds, in one line, with the Mac's own size beside it.
     let holding = result.chosen.map { ClusterPlacementExplanation.holdings($0, devices: devices) } ?? ""
@@ -625,47 +666,44 @@ func checkProfiles(_ checks: PlacementChecks) throws {
     }
 }
 
-/// Round-2 fix: a placement is planned for the requested context with the
-/// devices' live admissible memory, and among the equally fast placements the
-/// one that keeps the most room on its tightest Mac is chosen, so the Mac with
-/// less admissible memory holds less.
+/// A placement is planned for the requested context, and the split is chosen
+/// from hardware and measured speed alone (owner, 2026-10-18): the same Macs
+/// get the same split whether one of them is idle or busy with applications.
 func checkRequestedContext(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
-    // Mac A idle; Mac B with desktop applications holding most of its memory,
-    // and 15 % faster at prefill, so the fastest cut gives it more layers.
+    // Mac B 15 % faster at prefill, so the fastest cut gives it more layers.
     func speed(_ prefill: Double) -> ClusterDeviceSpeed {
         .init(source: .measured, absolute: true, rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: 27),
             sustained: nil, hashBytesPerSecond: 2e9, materializeBytesPerSecond: 4e9, explanation: "constructed")
     }
     let a = try SyntheticMac.idle(256).device("a", speed: speed(1000))
-    let b = try SyntheticMac(physicalGiB: 128, freeGiB: 22, inactiveCacheGiB: 10).device("b", speed: speed(1150))
+    let idle = try SyntheticMac.idle(128).device("b", speed: speed(1150))
+    // The same Mac with desktop applications holding most of its memory, too much for its share now.
+    let busy = try SyntheticMac(physicalGiB: 128, freeGiB: 10, inactiveCacheGiB: 4).device("b", speed: speed(1150))
     var policy = ClusterPlacementPolicy()
     policy.leader = "a"; policy.promptTokens = 20_480; policy.outputTokens = 128; policy.modes = [.pipeline]
     var refused = false
-    do { _ = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy) } catch { refused = true }
+    do { _ = try ClusterPlacementPlanner.plan(devices: [a, busy], layout: big, policy: policy) } catch { refused = true }
     checks.require("requested context: a 20,480-token request beyond the layout's planned one needs the family's charge", refused)
     // The family's every-rank charge grows with the context (KV of every attention layer).
     policy.largestContextTokens = 32_768
     policy.requestChargeEveryRankBytes = big.requestChargeEveryRankBytes * 20_608 / big.maximumContextTokens
-    let plain = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy)
-    policy.preferHeadroomWithinTies = true
-    let preferring = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy)
-    let reservation = try ClusterPlacementPlanner.evaluate(devices: [a, b], cuts: [32], mode: .pipeline,
+    let atRest = try ClusterPlacementPlanner.plan(devices: [a, idle], layout: big, policy: policy)
+    let whileBusy = try ClusterPlacementPlanner.plan(devices: [a, busy], layout: big, policy: policy)
+    let reservation = try ClusterPlacementPlanner.evaluate(devices: [a, busy], cuts: [32], mode: .pipeline,
         prefillSchedule: .oneChunkLookahead, layout: big)
-    let atContext = try ClusterPlacementPlanner.evaluate(devices: [a, b], cuts: [32], mode: .pipeline,
+    let atContext = try ClusterPlacementPlanner.evaluate(devices: [a, busy], cuts: [32], mode: .pipeline,
         prefillSchedule: .oneChunkLookahead, layout: big, policy: policy)
     checks.require("requested context: a rank's request need is priced at the requested context",
         atContext.ranks[1].requestNeedBytes > reservation.ranks[1].requestNeedBytes)
     func share(_ c: ClusterPlacementCandidate?, _ label: String) -> Int {
         c?.ranks.first { $0.device == label }.map { $0.endLayer - $0.firstLayer } ?? -1
     }
-    let fastest = plain.chosen.map { $0.prediction(.rested).requestSeconds } ?? 0
-    checks.require("requested context: placed now for the requested context", plain.chosen?.tier == 0 && preferring.chosen?.tier == 0)
-    checks.require("requested context: the preferred placement keeps more room on its tightest Mac",
-        (preferring.chosen?.smallestHeadroomShare ?? -1) >= (plain.chosen?.smallestHeadroomShare ?? 0))
-    checks.require("requested context: the fastest placement gives the faster, tighter Mac more layers",
-        share(plain.chosen, "b") > share(plain.chosen, "a"))
-    checks.require("requested context: preferring room, the Mac with less admissible memory holds less than it would",
-        share(preferring.chosen, "b") < share(plain.chosen, "b"))
-    checks.require("requested context: at no material cost in time (within the tie tolerance)",
-        (preferring.chosen?.prediction(.rested).requestSeconds ?? .infinity) <= fastest * (1 + policy.tieTolerance) + 1e-9)
+    checks.require("requested context: the fastest placement gives the faster Mac more layers",
+        share(atRest.chosen, "b") > share(atRest.chosen, "a"))
+    checks.require("requested context: live memory does not move the split",
+        atRest.chosen?.cuts == whileBusy.chosen?.cuts && atRest.chosen?.mode == whileBusy.chosen?.mode
+            && atRest.chosen?.ranks.map(\.device) == whileBusy.chosen?.ranks.map(\.device))
+    checks.require("requested context: the busy Mac's live memory is still reported",
+        atRest.chosen?.tier == 0 && (whileBusy.chosen?.tier ?? 0) > 0
+            && whileBusy.chosen?.ranks.first { $0.device == "b" }?.fit != .now && whileBusy.chosen?.ranks.first { $0.device == "b" }?.hardwareFits == true)
 }

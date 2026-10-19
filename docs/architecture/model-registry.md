@@ -19,6 +19,12 @@ quotations, native transient allowances, memory safeguards and post-load
 serviceability checks. Do not replace registry discovery with a hardcoded model
 catalog. Exact supported layouts and parameters belong in the [manifest reference](../reference/model-registry-format.md).
 
+The [raw GLM discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
+uses bounded headers and non-weight file sizes, not a successful-download
+receipt. A malformed GLM inventory has no generic loadable discovery fallback;
+only the tokenizer shipped in the snapshot is supported. These checks do not
+replace catalog/source identity or native pre-allocation validation.
+
 ### Uncached reads and writes
 
 `ModelDownloader.uncachedWrites` (default off; single-Mac downloads are

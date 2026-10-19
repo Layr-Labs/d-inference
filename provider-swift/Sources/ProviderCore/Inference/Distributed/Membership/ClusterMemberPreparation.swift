@@ -27,6 +27,7 @@ public struct ClusterMemberPreparation: Sendable {
         return try withExtendedLifetime(gate) {
             let validation = try DistributedInstalledValidation.validate(reference: reference,
                 paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+            try ClusterMiMoPrivateImagePolicy.requireCoordinatorEligible(validation.plan.capability)
             try validation.plan.requireLocalRankGranted(chipClass: localChipClass)
             let installed = validation.model
             guard var model = ModelScanner.parseModelInfo(snapshotDir: installed.directory,

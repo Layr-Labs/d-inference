@@ -191,6 +191,9 @@ final class OnboardingLive: @unchecked Sendable {
                 if !forwards { return local() }
                 continue
             }
+            if context.settings.privateImageQualification {
+                return .failure(.init("Control leadership moved; rerun private image qualification on the current leader. The selection was not forwarded."))
+            }
             forwarding?()
             switch forwardReply(request, seconds: seconds) {
             case .success(let reply) where reply.failed && reply.notLeader == true: moved = .init(reply.lines)
@@ -580,13 +583,19 @@ final class OnboardingLive: @unchecked Sendable {
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
             // The catalog, fetched once: each model is shown by its display name (its id when the catalog has none or
             // does not answer), and the catalog's downloadable models are offered below.
-            let catalogAll = fetchCatalog()
+            // Private qualification only uses the already-present immutable artifact.
+            let catalogAll = context.settings.privateImageQualification ? [] : fetchCatalog()
             let names = Dictionary(catalogAll.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+            // A folder whose manifest id is not a catalog id (an EigenLabs repository id) holds that catalog entry's
+            // bytes when its aggregate is the entry's: it is shown by that entry's name.
+            let namesByArtifact = Dictionary(catalogAll.compactMap { model in model.aggregateSHA256.map { ($0, model.displayName) } },
+                                             uniquingKeysWith: { first, _ in first })
             var keys = [(folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)]()
             let choices = options.map { option -> ClusterOnboardingModelChoice in
                 let gigabytes = String(format: "%.1f GB", Double(option.model.totalBytes) / 1e9)
                 let modelID = option.model.modelID
-                let title = ClusterOnboardingDeployment.title(modelID: modelID, displayNames: names)
+                let title = ClusterOnboardingDeployment.title(modelID: modelID, displayNames: names[modelID] == nil
+                    ? namesByArtifact[option.model.artifactSHA256].map { [modelID: $0] } ?? [:] : names)
                 guard let plan = option.plan else {
                     keys.append((option.model.folder, "", modelID, [], nil, nil))
                     return .init(title: title, lines: [], blocker: option.blocker ?? "Not offered on these Macs.", modelID: modelID)
@@ -604,7 +613,9 @@ final class OnboardingLive: @unchecked Sendable {
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
                 // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet.
                 return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []),
-                             blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID, publicTraffic: plan.publicTraffic)
+                             blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID,
+                             publicTraffic: context.settings.privateImageQualification
+                                ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?))]()
@@ -615,7 +626,8 @@ final class OnboardingLive: @unchecked Sendable {
             // Models only the other Mac has: it copies them here over the cable, then this Mac plans them. Only those a
             // pair may serve with this build (its qualification records), so nobody waits for bytes these Macs could not serve.
             var offered = options.map(\.model)
-            for model in peer.models where !offered.contains(where: { $0.sameEntry(model) })
+            for model in peer.models where !context.settings.privateImageQualification
+                && !offered.contains(where: { $0.sameEntry(model) })
                 && ClusterModelCopyTrust.servableArtifacts.contains(model.artifactSHA256) {
                 held.insert(model.artifactSHA256)
                 offered.append(model)

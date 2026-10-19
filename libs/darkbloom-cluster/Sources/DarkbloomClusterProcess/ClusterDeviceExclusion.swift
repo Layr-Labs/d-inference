@@ -99,6 +99,26 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
         }
     }
 
+    /// Rechecks the canonical name of this retained kernel exclusion and its
+    /// own journal. This neither acquires another scope nor resolves ownership.
+    @_spi(OwnerService) public func requireHeldNativeOwnership() throws {
+        try lock.withLock {
+            guard !resolved else { throw ClusterDeviceExclusionError.invalid("Device scope was retired") }
+            try requireSameFile()
+            if recorded {
+                guard let recordedBytes else {
+                    throw ClusterDeviceExclusionError.invalid("Partial journal remains unresolved")
+                }
+                try requireContents(recordedBytes)
+            } else {
+                var current = stat()
+                guard fstat(descriptor, &current) == 0, current.st_size == 0 else {
+                    throw ClusterDeviceExclusionError.invalid("Unrecorded device scope changed")
+                }
+            }
+        }
+    }
+
     private func requireContents(_ expected: Data) throws {
         var information = stat()
         guard fstat(descriptor, &information) == 0, information.st_size == expected.count else {

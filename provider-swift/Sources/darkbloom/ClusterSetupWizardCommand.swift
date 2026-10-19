@@ -95,14 +95,24 @@ extension Cluster.Setup {
             soloArguments: ["start", "--local"] + (config.map { ["--config", $0] } ?? []))
     }
 
+    /// Pure CLI-to-live-settings binding, before creating stores, services or children.
+    static func onboardingSettings(config: String?, modelDir: String?, worker: String?, request: ClusterOnboardingRequest)
+        throws -> ClusterOnboardingOperations.LiveSettings {
+        if let refusal = request.privateQualificationInputRefusal { throw ValidationError(refusal) }
+        var service = try Self.serviceSettings(config: config, modelDir: modelDir, worker: worker)
+        service.wizard.privateMiMoImageQualification = request.privateMiMoImageQualification
+        service.wizard.privateGLMImageQualification = request.privateGLMImageQualification
+        let arguments = ["cluster", "service"] + (config.map { ["--config", $0] } ?? [])
+            + (worker.map { ["--worker", $0] } ?? [])
+        return .init(service: service, serviceArguments: arguments)
+    }
+
     /// Bare `darkbloom cluster` on a terminal: the leader-first onboarding (`darkbloom cluster local` asks it for
     /// local-only serving). Run again, it shows where this Mac stands and the next step.
     static func runOnboarding(config: String?, modelDir: String?, worker: String?, request: ClusterOnboardingRequest) async throws {
         Darkbloom.ensureLogging()
-        let service = try Self.serviceSettings(config: config, modelDir: modelDir, worker: worker)
-        let serviceArguments = ["cluster", "service"] + (config.map { ["--config", $0] } ?? [])
-            + (worker.map { ["--worker", $0] } ?? [])
-        let operations = try ClusterOnboardingOperations.live(.init(service: service, serviceArguments: serviceArguments))
+        let settings = try onboardingSettings(config: config, modelDir: modelDir, worker: worker, request: request)
+        let operations = try ClusterOnboardingOperations.live(settings)
         let instance: ClusterConsoleInstanceLock
         do { instance = try ClusterConsoleInstanceLock.acquire() } catch let held as ClusterConsoleInstanceLock.Held {
             fputs(held.description + "\n", stderr)

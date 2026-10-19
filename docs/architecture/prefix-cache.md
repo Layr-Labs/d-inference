@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-19
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -126,6 +126,31 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### Unregistered GLM sparse-state candidate
+
+`GLM5NextPagedSparseState` owns aligned latent, index-key, pool-gate, validity
+and position history in the native candidate. Its checkpoint includes partial
+pages; opt-in `PagedImmutableSnapshot` ownership requires copy-on-write before
+successor writes. The contiguous transaction owner is a separate baseline, not
+proof of paged execution
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/GLM5Next/GLM5NextPagedSparseState.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedImmutableSnapshot.swift`).
+
+The prototype full-state codec adds the distinct
+`native-paged-glm5next-full-state-v1` layout, preserving the asymmetric payload
+and exact convolution/recurrence state
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
+Its existence does not add a qualified provider cache capability. Complete reuse
+still requires one accepted frontier across sparse pages, convolution/recurrence
+and trained MTP, charged import/export ownership, the protected native binding,
+and a verified encrypted restore path. For the locally selected
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`, SSD eligibility defaults on
+(`PrefixCachePolicy.isGLM5NextDefaultModel`) and binds the protected tuple's
+full-state store; `DARKBLOOM_PREFIX_CACHE=0` opts out. GLM remains outside the
+registered coordinator serving models; see the
+[integration gates](../design/glm53-flash-native.md). Existing families' opt-in
+and recovery policies above are unchanged.
 
 ### MiMo complete state
 
@@ -854,3 +879,17 @@ rules applied to these signals.
 - [`inference.md`](inference.md) — the request path this cache sits in
 - [`hardware-support.md`](hardware-support.md) — the KV budget the grants come from
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/kv-cache-lookup-shadowing.md`](../design/kv-cache-lookup-shadowing.md) — superseded design records
+
+## GLM cluster image prefix isolation
+
+The bounded GLM cluster still-image slice always offers a disabled prefix cache
+on both ranks. It neither restores nor captures image prompt state. The full
+encoded-media/config/span commitment participates in the bilateral generation
+request identity, while authenticated cache scope remains caller-owned. This
+keeps token-identical prompts with different pixels from sharing native state;
+text prefix behavior is unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift`
+(`agreeGLM5NextStagePrefixPlan`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`).

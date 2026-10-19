@@ -23,7 +23,8 @@ struct MemberContractFixture {
     let prepareUnix: Int64
     let expiresUnix: Int64
 
-    init(lifetimeSeconds: Int64 = 12, preparationSeconds: Int64 = 5) throws {
+    init(lifetimeSeconds: Int64 = 12, preparationSeconds: Int64 = 5,
+         schedule: ClusterNativePrefillSchedule = .oneChunkLookahead) throws {
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
         prepareUnix = now + preparationSeconds * 1_000_000_000
         expiresUnix = now + lifetimeSeconds * 1_000_000_000
@@ -39,7 +40,7 @@ struct MemberContractFixture {
         }
         func string(_ text: String) { let bytes = Data(text.utf8); integer(UInt32(bytes.count)); p.append(bytes) }
         string("explicit-cpu-contract-only"); string("fixture-model"); integer(UInt64(11))
-        hashes.forEach { p.append($0) }; p.append(contentsOf: [1, 1, 2])
+        hashes.forEach { p.append($0) }; p.append(contentsOf: [1, 1, schedule.rawValue])
         integer(UInt32(4136)); integer(UInt32(4096)); integer(UInt64(64)); integer(UInt64(262144))
         integer(UInt64(now + 3_600_000_000_000)); integer(UInt32(1)); string("Apple M4")
         policy = p
@@ -47,7 +48,7 @@ struct MemberContractFixture {
             membershipTranscriptSHA256: memberDigest("fixture-membership"),
             approvedNativeBindingSHA256: Data(SHA256.hash(data: p)), planSHA256: hashes[0], artifactSHA256: hashes[1],
             nativeRuntimeSHA256: hashes[2], capabilitySHA256: hashes[5], resourcePolicySHA256: hashes[6], profileSHA256: hashes[7],
-            schedule: .oneChunkLookahead, maximumTransportFrameBytes: 4136,
+            schedule: schedule, maximumTransportFrameBytes: 4136,
             limits: .init(maximumPlaintextBytes: 4096, maximumRecordsPerDirection: 64, maximumCumulativePlaintextBytesPerDirection: 262144))
         starts = try (0..<2).map { rank in try .init(common: common, rank: rank, ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID()) }
         var installed: [NativePairMemberInstallation] = []
@@ -136,14 +137,17 @@ struct NativePairMemberContractTests {
         oversized.append(0)
         #expect(throws: NativePairMemberError.self) { _ = try NativePairMemberPolicy(oversized) }
         // A start whose common disagrees with the approved policy is refused.
+        guard case .servingV1(let serving) = fixture.starts[0].common.permission else {
+            Issue.record("Serving fixture lost its permission"); return
+        }
         let wrongCommon = try ClusterNativeAuthorizationCommon(epoch: fixture.starts[0].common.epoch,
             membershipGeneration: 7, nativePolicyGeneration: 12,
             membershipTranscriptSHA256: fixture.starts[0].common.membershipTranscriptSHA256,
-            approvedNativeBindingSHA256: fixture.starts[0].common.approvedNativeBindingSHA256,
+            approvedNativeBindingSHA256: serving.approvedNativeBindingSHA256,
             planSHA256: fixture.starts[0].common.planSHA256, artifactSHA256: fixture.starts[0].common.artifactSHA256,
-            nativeRuntimeSHA256: fixture.starts[0].common.nativeRuntimeSHA256,
-            capabilitySHA256: fixture.starts[0].common.capabilitySHA256,
-            resourcePolicySHA256: fixture.starts[0].common.resourcePolicySHA256,
+            nativeRuntimeSHA256: serving.nativeRuntimeSHA256,
+            capabilitySHA256: serving.capabilitySHA256,
+            resourcePolicySHA256: serving.resourcePolicySHA256,
             profileSHA256: fixture.starts[0].common.profileSHA256,
             schedule: .oneChunkLookahead, maximumTransportFrameBytes: 4136, limits: fixture.starts[0].common.limits)
         let other = try ClusterNativeAuthorizationStart(common: wrongCommon, rank: 0,
@@ -153,6 +157,26 @@ struct NativePairMemberContractTests {
         let (parsedPolicy, parsedStart) = try NativePairMemberPolicy.preparation(fixture.preparationPayload(0))
         #expect(parsedPolicy.bytes == fixture.policy && parsedStart.rank == 0)
         #expect(throws: NativePairMemberError.self) { _ = try NativePairMemberPolicy.preparation(Data([1, 2, 3])) }
+    }
+
+    @Test func finiteCalibrationCannotSatisfyAnOrdinaryServingPolicy() throws {
+        let fixture = try MemberContractFixture(schedule: .serial)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let policy = try NativePairMemberPolicy(fixture.policy)
+        try policy.require(fixture.starts[0])
+        let c = fixture.starts[0].common
+        let finite = try ClusterNativeAuthorizationCommon(finiteCalibrationRequestID: UUID(),
+            expiresUnixSeconds: Int64(Date().timeIntervalSince1970) + 60,
+            epoch: c.epoch, membershipGeneration: c.membershipGeneration,
+            membershipTranscriptSHA256: c.membershipTranscriptSHA256,
+            planSHA256: c.planSHA256, artifactSHA256: c.artifactSHA256, profileSHA256: c.profileSHA256,
+            rank0AuthorizationSHA256: memberDigest("finite-rank-0"),
+            rank1AuthorizationSHA256: memberDigest("finite-rank-1"),
+            maximumTransportFrameBytes: c.maximumTransportFrameBytes, limits: c.limits)
+        #expect(policy.schedule == finite.schedule.rawValue) // Purpose is the refusal, with the schedule matched.
+        let start = try ClusterNativeAuthorizationStart(common: finite, rank: 0,
+            ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID())
+        #expect(throws: NativePairMemberError.self) { try policy.require(start) }
     }
 
     @Test func installationRejectsMismatchedPins() throws {

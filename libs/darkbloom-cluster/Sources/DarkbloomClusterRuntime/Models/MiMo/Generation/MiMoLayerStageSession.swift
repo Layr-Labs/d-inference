@@ -19,6 +19,7 @@ final class MiMoLayerStageSession {
     let identity: QwenLayerStageSessionIdentity
     let request: QwenLayerStageGenerationRequest
     private let stage: LoadedMiMoLayerStage
+    private var imageFeatures: MiMoStageImageFeatures?
     private let hiddenSize: Int
     private let producerStageFingerprint: String
     private var caches: [KVCache]?
@@ -36,9 +37,9 @@ final class MiMoLayerStageSession {
     private(set) var steps: [MiMoStepEvidence] = []
     /// The model's global layer index of each local cache, in local order.
     let globalLayers: [Int]
-    /// This request's prompt-prefix capture (`MiMoStagePrefixCapture`); nil
+    /// This request's prompt-prefix capture (`ClusterStagePrefixCapture.mimo`); nil
     /// when the prefix cache is off or the plan split no final token.
-    var prefixCapture: MiMoStagePrefixCapture?
+    var prefixCapture: ClusterStagePrefixCapture?
     /// Stage 1 of `pipeline_mtp_v1`: told every committed prompt chunk's
     /// tokens and the post-final-norm rows the stage computed for them, after
     /// the chunk committed (the speculative head's history).
@@ -117,7 +118,7 @@ final class MiMoLayerStageSession {
         caches = fresh
         identity = .init(stageIndex: stage.stageIndex, requestFingerprint: request.fingerprint,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
-            storageCommitmentSHA256: receipt.storageCommitmentSHA256,
+            storageCommitmentSHA256: stage.storageCommitmentSHA256,
             bf16ConversionEnabled: receipt.bf16ConversionEnabled,
             sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
             constructionConfigurationSHA256: receipt.constructionConfigurationSHA256,
@@ -168,7 +169,18 @@ final class MiMoLayerStageSession {
                 let last = stage.layerCount - 1
                 let residual: MLXArray = try {
                     let input = MLXArray(tokens.map(Int32.init)).reshaped([1, count])
-                    let output = try stage.model.forward(inputIDs: input, cache: caches, captureLayers: [last])
+                    let output: MiMoV26TextOutput
+                    if let media = request.mimoImages, frame.phase == .prefill {
+                        guard let vision = stage.vision else { throw ProbeError("MiMo image stage has no owned tower") }
+                        if imageFeatures == nil {
+                            imageFeatures = MiMoStageImageFeatures(media:media)
+                            try imageFeatures!.prepare(owner:vision,check:checked)
+                        }
+                        let embeddings = try imageFeatures!.embeddings(tokens:tokens,offset:frame.tokenOffset,model:stage.model)
+                        output = try stage.model.forward(embeddings:embeddings,cache:caches,captureLayers:[last])
+                    } else {
+                        output = try stage.model.forward(inputIDs:input,cache:caches,captureLayers:[last])
+                    }
                     guard let value = output.layerFeatures[last] else {
                         throw ProbeError("MiMo stage 0 produced no residual after its last layer")
                     }
@@ -471,6 +483,7 @@ final class MiMoLayerStageSession {
         try MLX.withError { error in
             Stream.gpu.synchronize(); Stream.cpu.synchronize()
             caches = nil
+            imageFeatures = nil
             try error.check()
         }
         isClosed = true

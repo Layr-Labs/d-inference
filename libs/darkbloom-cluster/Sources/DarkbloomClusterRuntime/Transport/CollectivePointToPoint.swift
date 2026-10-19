@@ -1,12 +1,12 @@
 import Cmlx
 import Foundation
-import MLX
+@_spi(Execution) import MLX
 
 /// Synchronous raw-byte shim for a strictly serialized, two-rank worker.
 /// No caller may evaluate another MLX graph concurrently with these methods.
-/// They check actual C evaluation/synchronization statuses; MLX's public Swift
-/// eval/synchronize wrappers discard those statuses and their evalLock is private.
-/// The lock below serializes shim calls only, not arbitrary model work.
+/// They check actual C evaluation/synchronization statuses under MLX's shared
+/// evaluation lock. The lock below additionally serializes whole shim calls;
+/// it does not make concurrent model graph construction safe.
 /// `check` must only check/throw; it must not dispatch model/transport work.
 /// A blocking backend operation still requires an independent process deadline.
 public enum CollectivePointToPoint {
@@ -80,6 +80,13 @@ public enum CollectivePointToPoint {
                                    check: () throws -> Void) throws -> Data {
         let geometry = try CollectivePointToPointShape(shape: input.shape, dtype: input.dtype,
             maximumBytes: maximumBytes)
+        return try copyCompletedBytes(input, geometry: geometry, check: check)
+    }
+
+    /// Whole-array copy for an explicitly admitted encrypted record sequence.
+    /// Raw network transfers continue to construct their own 16 MiB geometry.
+    static func copyCompletedBytes(_ input: MLXArray, geometry: CollectivePointToPointShape,
+                                   check: () throws -> Void) throws -> Data {
         operationLock.lock(); defer { operationLock.unlock() }
         return try MLX.withError { error in
             func checked() throws { try error.check(); try check(); try error.check() }
@@ -102,12 +109,19 @@ public enum CollectivePointToPoint {
                                          maximumBytes: Int, check: () throws -> Void) throws -> MLXArray {
         let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype,
             maximumBytes: maximumBytes)
+        return try materializeCompletedBytes(bytes, geometry: geometry, check: check)
+    }
+
+    /// The authenticated caller supplies the admitted geometry only after all
+    /// records have opened; no raw frame limit or ownership check is relaxed.
+    static func materializeCompletedBytes(_ bytes: Data, geometry: CollectivePointToPointShape,
+                                         check: () throws -> Void) throws -> MLXArray {
         guard bytes.count == geometry.byteCount else { throw ProbeError("Native reconstruction byte count differs") }
         operationLock.lock(); defer { operationLock.unlock() }
         return try MLX.withError { error in
             func checked() throws { try error.check(); try check(); try error.check() }
             try checked()
-            let array = MLXArray(bytes, shape, dtype: dtype)
+            let array = MLXArray(bytes, geometry.shape, dtype: geometry.dtype)
             try checked()
             try complete(array, communication: .cpu, gpu: .gpu, check: checked)
             try geometry.validateOwnedReceive(array)
@@ -144,12 +158,14 @@ public enum CollectivePointToPoint {
 
     private static func complete(_ array: MLXArray, communication: StreamOrDevice,
                                  gpu: StreamOrDevice, check: () throws -> Void) throws {
-        try requireSuccess(mlx_array_eval(array.ctx), operation: "evaluation", check: check)
-        try requireSuccess(mlx_synchronize(communication.ctx), operation: "CPU completion", check: check)
-        // Producer tensors can originate on the model GPU stream. Waiting for its
-        // completion handlers also removes transient references before ownership
-        // inspection. This correctness fence is intentionally not a TPS policy.
-        try requireSuccess(mlx_synchronize(gpu.ctx), operation: "GPU completion", check: check)
+        try withSerializedEvaluation {
+            try requireSuccess(mlx_array_eval(array.ctx), operation: "evaluation", check: check)
+            try requireSuccess(mlx_synchronize(communication.ctx), operation: "CPU completion", check: check)
+            // Producer tensors can originate on the model GPU stream. Waiting for its
+            // completion handlers also removes transient references before ownership
+            // inspection. This correctness fence is intentionally not a TPS policy.
+            try requireSuccess(mlx_synchronize(gpu.ctx), operation: "GPU completion", check: check)
+        }
     }
 
     private static func requireSuccess(_ status: Int32, operation: String,

@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 import DarkbloomClusterProcess
+import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 @testable import ProviderCore
 
@@ -11,18 +12,24 @@ final class RecordingServingHost: NativePairMemberServingHost, @unchecked Sendab
     private let lock = NSLock()
     private var starts: [NativePairMemberServingStart] = []
     private var stops: [UUID] = []
+    private var completedStops: [UUID] = []
     private var framesAtFirstStop: [String]?
     let failServe: Bool
     /// When set, a failing serve waits for one signal first (the pair's
     /// readiness wait), so it fails after the owner's native launch.
     let failAfter: DispatchSemaphore?
+    /// Holds all stop calls until the test permits retirement to finish.
+    let finishStopAfter: DispatchGroup?
     let mock: MockCoordinator
-    init(mock: MockCoordinator, failServe: Bool = false, failAfter: DispatchSemaphore? = nil) {
+    init(mock: MockCoordinator, failServe: Bool = false, failAfter: DispatchSemaphore? = nil,
+         finishStopAfter: DispatchGroup? = nil) {
         self.mock = mock; self.failServe = failServe; self.failAfter = failAfter
+        self.finishStopAfter = finishStopAfter
     }
 
     var served: [NativePairMemberServingStart] { lock.withLock { starts } }
     var stopped: [UUID] { lock.withLock { stops } }
+    var finishedStopping: [UUID] { lock.withLock { completedStops } }
     var framesWhenStopped: [String]? { lock.withLock { framesAtFirstStop } }
 
     func serveCommittedStart(_ start: NativePairMemberServingStart) async throws {
@@ -38,8 +45,15 @@ final class RecordingServingHost: NativePairMemberServingHost, @unchecked Sendab
     func stopServingCommittedStart(epoch: UUID) async {
         let frames = mock.snapshot().nativePairs.map(\.type)
         lock.withLock { stops.append(epoch); if framesAtFirstStop == nil { framesAtFirstStop = frames } }
-        // A retirement takes time; the receipt must wait for it.
-        try? await Task.sleep(for: .milliseconds(200))
+        if let finishStopAfter {
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                finishStopAfter.notify(queue: .global()) { done.resume() }
+            }
+        } else {
+            // A retirement takes time; the receipt must wait for it.
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        lock.withLock { completedStops.append(epoch) }
     }
 }
 
@@ -216,39 +230,67 @@ struct NativePairMemberServingTests {
         } catch { await peer.close(); throw error }
     }
 
-    /// Probe, not a requirement of this slice: a cancel that lands right after
-    /// the owner's launch, before its native child reached the key exchange
-    /// (here a host that fails at once). Observed 2026-10-11: the member
-    /// quarantined without a receipt (the production host fails only after
-    /// the pair's readiness wait). Recorded as a known, possibly intermittent
-    /// issue of the member session's early cancellation.
-    @Test func aCancelRightAfterTheLaunchProbe() async throws {
+    /// An immediate host failure needs no binding or coordinator cancel:
+    /// the session cancels, retires its real owner and child, then waits for
+    /// the host to finish stopping before it sends a release receipt.
+    @Test func anImmediatelyFailingHostCancelsAndReleasesAfterRetirement() async throws {
         let fixture = try NativePairMemberFixture(), peer = MemberFixturePeer(installation: fixture.installations[0])
-        peer.control.servingHost = RecordingServingHost(mock: peer.mock, failServe: true)
+        let stopGate = DispatchGroup()
+        stopGate.enter()
+        let host = RecordingServingHost(mock: peer.mock, failServe: true, finishStopAfter: stopGate)
+        // The control's host reference is weak; the test owns it through cleanup.
+        peer.control.servingHost = host
+        var stopsReleased = false
+        func releaseStops() {
+            guard !stopsReleased else { return }
+            stopsReleased = true; stopGate.leave()
+        }
+        defer { releaseStops(); withExtendedLifetime((fixture, host)) {} }
         do {
             try await peer.connect()
             try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
             _ = try await peer.wait("native_pair_prepared")
             try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
-            // The same known issue can end the session before any cancel is sent (the owner is invalidated before the
-            // prelude completes): on every run of 2026-10-16 (M4 Max, CI) no native_pair_cancel arrived within 8 s.
-            var cancelled = false
-            await withKnownIssue("an early cancel can end the member session before it sends a cancel", isIntermittent: true) {
-                _ = try await peer.wait("native_pair_cancel")
-                cancelled = true
+            let cancellation = try await peer.wait("native_pair_cancel")
+            #expect(Data(base64Encoded: cancellation.payload) == Data([68, 66, 78, 67, 1]))
+            let served = try #require(host.served.first)
+            #expect(host.served.count == 1 && served.rank == 0)
+            #expect(served.start.canonicalBytes == fixture.starts[0].canonicalBytes)
+            let epoch = fixture.starts[0].common.epoch
+            let owner = try #require(served.endpoint as? any ClusterOwnedWorkerEndpoint)
+            let ownerReleased = await owner.waitUntilOwnerReleased(
+                deadline: DispatchTime.now().uptimeNanoseconds + 8_000_000_000)
+            try #require(ownerReleased, "the real owner must exit with its authenticated release acknowledgement")
+            try fixture.requireRetired(0, confirmed: false)
+            try await memberFixtureWaitUntil { host.stopped.contains(epoch) }
+            // Native retirement alone cannot publish a receipt while host
+            // retirement is held. No test teardown has cancelled the session.
+            let prematureRelease = try await peer.mock.waitForSnapshot(timeout: .milliseconds(200)) {
+                $0.nativePairs.contains { $0.type == "native_pair_owner_released" }
             }
-            guard cancelled else { await peer.close(); return }
-            // Longer than the ordinary 8 s wait: tells a slow cleanup from a
-            // member that never releases.
-            let began = ContinuousClock.now
-            while ContinuousClock.now - began < .seconds(45),
-                  !peer.mock.snapshot().nativePairs.contains(where: { $0.type == "native_pair_owner_released" }) {
-                try await Task.sleep(for: .milliseconds(50))
-            }
-            let released = peer.mock.snapshot().nativePairs.contains { $0.type == "native_pair_owner_released" }
-            print("s09-probe: released \(released) after \(ContinuousClock.now - began), control \(peer.control.status), frames \(peer.mock.snapshot().nativePairs.map(\.type))")
-            withKnownIssue("an early cancel can quarantine the member", isIntermittent: true) { #expect(released) }
-            await peer.close()
-        } catch { await peer.close(); throw error }
+            #expect(prematureRelease == nil)
+            #expect(host.finishedStopping.isEmpty)
+            releaseStops()
+            let release = try await peer.wait("native_pair_owner_released")
+            var expected = Data([68, 66, 78, 82, 1])
+            expected.append(contentsOf: SHA256.hash(data: fixture.starts[0].canonicalBytes))
+            expected.append(contentsOf: [1, 1, 1])
+            #expect(Data(base64Encoded: release.payload) == expected)
+            #expect(release.epoch == cancellation.epoch && release.generation == cancellation.generation)
+            #expect(release.sequence > cancellation.sequence)
+            #expect(host.finishedStopping.contains(epoch))
+            #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)
+            #expect(peer.context.isLive)
+            let frames = peer.mock.snapshot().nativePairs.map(\.type)
+            #expect(frames.first == "native_pair_prepared" && frames.last == "native_pair_owner_released")
+            #expect(frames.filter { $0 == "native_pair_cancel" }.count == 1)
+            #expect(frames.filter { $0 == "native_pair_owner_released" }.count == 1)
+            #expect(!frames.contains("native_pair_confirmation"))
+            await peer.closeAfterJoiningSession()
+        } catch {
+            releaseStops()
+            await peer.closeAfterJoiningSession()
+            throw error
+        }
     }
 }

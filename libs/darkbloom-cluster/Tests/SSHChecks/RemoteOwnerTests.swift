@@ -3,7 +3,7 @@ import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 @_spi(OwnerService) import DarkbloomClusterProcess
-@testable import DarkbloomClusterRemote
+@_spi(OwnerService) @testable import DarkbloomClusterRemote
 
 func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw ClusterOwnerStateError.invalid(message) }

@@ -4,11 +4,15 @@ import Foundation
 /// Process-local configuration. Build/peer labels are supplied bindings, not
 /// native attestation. The enclosing worker must impose a hard process deadline.
 public struct QwenResidentLoadConfiguration: Sendable {
+    public let runtimeProfile: String?
     public let identity: ClusterWorkerIdentity
     public let modelDirectory: URL
     public let rank: Int
     public let stageCut: Int
     public let deadlineUptimeNanoseconds: UInt64
+    /// The enclosing worker's fixed startup deadline, separate from its first
+    /// renewable lease. Startup progress never renews this bound.
+    public let startupDeadlineUptimeNanoseconds: UInt64?
     public let allocatorPolicy: QwenResidentAllocatorPolicy
     public let prefillSchedule: ClusterPrefillSchedule
     /// The worker's renewable rank lease (S03), or nil for a bounded tool run.
@@ -21,13 +25,36 @@ public struct QwenResidentLoadConfiguration: Sendable {
                 stageCut: Int, deadlineUptimeNanoseconds: UInt64,
                 allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged,
                 prefillSchedule: ClusterPrefillSchedule = .serial,
-                lease: ClusterLeaseDeadline? = nil) {
+                lease: ClusterLeaseDeadline? = nil, runtimeProfile: String? = nil,
+                startupDeadlineUptimeNanoseconds: UInt64? = nil) {
+        self.runtimeProfile = runtimeProfile
         self.identity = identity; self.modelDirectory = modelDirectory
         self.rank = rank; self.stageCut = stageCut
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+        self.startupDeadlineUptimeNanoseconds = startupDeadlineUptimeNanoseconds
         self.allocatorPolicy = allocatorPolicy
         self.prefillSchedule = prefillSchedule
         self.lease = lease
+    }
+
+    /// Resolve a fixed startup bound without treating a renewable first lease
+    /// as a load lifetime, or extending an unleased tool's fixed lifetime.
+    func startupWaitDeadline(now: UInt64) throws -> UInt64 {
+        let selected: UInt64
+        if let startupDeadlineUptimeNanoseconds {
+            selected = lease == nil
+                ? min(startupDeadlineUptimeNanoseconds, deadlineUptimeNanoseconds)
+                : startupDeadlineUptimeNanoseconds
+        } else {
+            guard lease == nil else {
+                throw ProbeError("A leased native startup requires its fixed startup deadline")
+            }
+            selected = deadlineUptimeNanoseconds
+        }
+        guard selected > now, selected - now <= ClusterWorkerLimits.deadlineNanoseconds else {
+            throw ProbeError("Native startup deadline is expired or outside the protocol bound")
+        }
+        return selected
     }
 
     /// The deadline now: the lease's when leased, else the fixed one.
@@ -98,6 +125,9 @@ struct QwenResidentAdmission {
         plan = try QwenLayerStagePlan(configuration: configBytes,
             ranges: [0..<configuration.stageCut, configuration.stageCut..<spec.layers], activeMTP: false)
         profile = try QwenResidentAdapterDefinition.profile(specification: spec)
+        guard configuration.runtimeProfile == nil || configuration.runtimeProfile == profile.identifier else {
+            throw ProbeError("Runtime profile does not match the native text adapter")
+        }
         // Recalculate the existing named-state formula at the generation cap;
         // never relabel the separate exact 8192/512/output1 admission receipt.
         let maximum = try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
@@ -114,6 +144,7 @@ struct QwenResidentAdmission {
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
+        guard value.mimoImages == nil else { throw ProbeError("Encoded MiMo images cannot enter a foreign model") }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
             sampling: value.sampling, route: value.route)

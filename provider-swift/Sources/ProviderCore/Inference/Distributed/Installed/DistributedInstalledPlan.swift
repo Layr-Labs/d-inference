@@ -41,11 +41,14 @@ struct DistributedInstalledPlan: Sendable {
         // MiMo's contract is the product's defaults with no `DARKBLOOM_MIMO_*`
         // switch (`MiMoArithmeticEnvironment`): nothing beyond the three values.
         .mimoV26LayerStage: [:],
+        .mimoV26ImageCandidate: [:],
         // GPT-OSS and Gemma 4: the pair driver's own values for the same
         // adapters (`QualificationRequest.registeredModels`), which their
         // cross-cable checks ran under.
         .gptossLayerStage: [:],
         .gemma4LayerStage: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
+        // GLM-5.3-Flash: the pair driver's own (empty) values its cross-cable check ran under.
+        .glm5NextLayerStage: [:],
     ]
 
     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
@@ -54,8 +57,11 @@ struct DistributedInstalledPlan: Sendable {
         // below this point (owner, session, member registration) can start
         // one. Records never refuse the owner's serving; the public grant
         // rests only on records of the installed artifact.
-        serving = try ClusterPairServingGrants.ownerServing(runtimeModelID: capability.runtimeModelID,
+        let observedServing = try ClusterPairServingGrants.ownerServing(runtimeModelID: capability.runtimeModelID,
             publicModelID: configuration.publicModelID, artifactSHA256: capability.artifactSHA256)
+        // Text qualifications never become an image candidate's public grant.
+        serving = !capability.hasPrivateImages ? observedServing : .init(runtimeModelID:capability.runtimeModelID,
+            publicGrant:nil,records:observedServing.records)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
         (budgets, budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition, artifactBytes: nil)
         try capability.requireSupport(for: configuration.selectedPrefillSchedule)
@@ -157,6 +163,9 @@ struct DistributedInstalledPlan: Sendable {
         // mismatch). A setup in a phase-split mode keeps one request at a time.
         if let lanes = batchLanes(ownerEnvironment), lanes > 1 {
             environment[Self.batchLanesSwitch] = String(lanes)
+            if let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID), Self.contiguousLaneAdapters.contains(adapter) {
+                environment[Self.kvBackendSwitch] = "contiguous"
+            }
         }
         // Diagnosis only: the stages' KV storage (paged unless contiguous is named).
         if let value = ownerEnvironment[Self.kvBackendSwitch]?.lowercased(), ["paged", "contiguous"].contains(value) {
@@ -188,13 +197,38 @@ struct DistributedInstalledPlan: Sendable {
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
     static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
 
-    /// The owner's batch lanes, 1...8, in the pipeline mode; nil when unset,
-    /// out of range or in a phase-split mode (one lane).
+    /// The pair's batch lanes in the pipeline mode: `defaultBatchLanes` for a
+    /// family whose workers serve lanes, unless the owner's environment names
+    /// 1...8 (1 serves one request at a time). Nil in a phase-split or
+    /// speculative mode, with media, or for a family whose workers serve one
+    /// request at a time, so no worker is asked for lanes it refuses. Both
+    /// owners derive it from the same saved setup; the installed owner runs
+    /// with a fixed environment, so the default is what a user's pair serves.
     func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
-        guard configuration.selectedGenerationMode == .pipeline, let raw = environment[Self.batchLanesSwitch],
-              let value = Int(raw), (1...8).contains(value) else { return nil }
+        guard !capability.hasPrivateImages, configuration.selectedGenerationMode == .pipeline,
+              let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID), Self.laneAdapters.contains(adapter) else {
+            return nil
+        }
+        guard let raw = environment[Self.batchLanesSwitch] else { return Self.defaultBatchLanes }
+        guard let value = Int(raw), (1...8).contains(value) else { return nil }
         return value
     }
+
+    /// Concurrent requests a lane-serving pair batches by default. Both
+    /// owners serve them (`ClusterOwnerLeaseState.lanes`), and the leader's
+    /// session, bridge and local API admit as many; more requests wait in the
+    /// API's queue. One until a lane can join a batch that is already
+    /// decoding: measured on the pair (Qwen 3.5 35B A3B, 2026-10-19), two
+    /// requests that start together batch at 1.7x one's aggregate, but a
+    /// request that arrives while another decodes, or a third at once, ends
+    /// the pair.
+    static let defaultBatchLanes = 1
+
+    /// The adapters whose workers serve batch lanes (`CBv2StageKVHost.supports`).
+    static let laneAdapters: Set<ClusterRuntimeAdapter> = [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,
+                                                           .gemma4LayerStage]
+    /// Lanes whose stages keep contiguous KV storage (sliding-window rings).
+    static let contiguousLaneAdapters: Set<ClusterRuntimeAdapter> = [.gemma4LayerStage]
 
     private func baseNativeEnvironment(matrix: URL) -> [String: String] {
         ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
@@ -228,6 +262,7 @@ struct DistributedInstalledPlan: Sendable {
               attachment?.profile == bootstrap.ownerProfile else {
             throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
         }
+        let mediaArguments = try ClusterMiMoPrivateImagePolicy.launchArguments(capability,keyed:dataPlane,startupGuard:startupDeadline != nil)
         let id = binding.identity
         return ["--model-dir", localPeer.modelDirectory, "--rank", String(binding.rank),
             "--stage-cut", String(partition.stages[0].sourceLayerEnd),
@@ -242,6 +277,7 @@ struct DistributedInstalledPlan: Sendable {
             + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
             + (dataPlane ? ["--data-plane", ClusterWorkerDataPlaneTrust.argument] : [])
             + (prefixSSDKey ? ["--prefix-ssd-key", ClusterWorkerPrefixSSDKey.argument] : [])
+            + mediaArguments
             + (attachment?.workerArguments ?? [])
     }
 }

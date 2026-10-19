@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-19
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -204,6 +204,23 @@ installed artifact, not from a per-model table:
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 
+### GLM candidate setup
+
+For the current registered GLM artifact, a new automatically derived setup uses
+its 2048-token candidate chunk limit when both the model layout and installed
+worker admit it. The plan reports when no matching long-prompt measurement is
+available. A short historical pass remains evidence of its original request;
+it does not qualify the larger chunk or establish its speed. The candidate's
+[transport and workspace qualification](../architecture/inference.md#glm-cluster-prefill-bounds)
+remains required, with image and MTP qualification separate.
+
+After a Darkbloom update changes the worker identity, the existing update path
+replans and adopts the setup on both Macs. Derived limits follow the installed
+layout and capability; saved explicit diagnostic limits remain in effect.
+Verify the adopted plan and both members' readiness before serving. No new
+manual configuration edit is required. See the
+[configuration readers](../reference/configuration.md#automatic-cluster-chunk-policy).
+
 ## If a Mac goes away
 
 The cluster keeps itself running. When one Mac goes away (turned off, asleep,
@@ -212,6 +229,23 @@ in that time, the cluster re-forms with nothing to do. After that, a Mac that
 can hold the model alone serves it alone until the other Mac is back, and
 `darkbloom cluster` on it says so. Commands typed on either Mac keep working:
 they are handled by whichever Mac runs the cluster now.
+
+## How the split is chosen
+
+The split is worked out from each Mac's hardware and measured speed only: what
+is cached or running when you plan never moves it. A Mac is given a share only
+when its whole need fits its GPU working set and what its memory can give a
+model with every app closed (macOS keeps part of the memory as file cache that
+no model can use). If a Mac's apps hold memory the chosen share needs, the
+screen says "Quit apps on … first" instead of picking a slower split.
+
+## Prompt prefixes on the pair
+
+Both Macs keep the prompt prefixes of every model family, in memory and in the
+encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
+after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
+sliding-window layer's window at every kept frontier; GLM-5.3-Flash keeps its
+attention history once per prompt and its linear-attention state per frontier.
 
 ## MiMo V2.6 Flash on the pair
 

@@ -39,6 +39,7 @@ public struct QualificationLimits: Equatable, Sendable {
         "registered_gemma4_26b_8bit": 262_144,
         "registered_gpt_oss_20b": 131_072,
         "registered_mimo_v26_flash_mopd": 1_048_576,
+        "registered_glm53_flash": 1_048_576,
     ]
 
     /// The runtime's derivation: protocol bounds, cut to the declared context;

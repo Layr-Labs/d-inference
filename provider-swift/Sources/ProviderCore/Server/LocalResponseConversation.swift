@@ -26,10 +26,13 @@ enum LocalResponseConversation {
         guard var object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               var items = inputItems(object["input"])
         else { return .opaque }
-        guard let previousID = object["previous_response_id"] as? String else {
+        guard let previousValue = object["previous_response_id"], !(previousValue is NSNull) else {
             guard let inputItems = encoded(items) else { return .opaque }
             return .prepared(body: nil, inputItems: inputItems)
         }
+        // The typed SDK request ignores this field. Reuse the responder's early
+        // 400 refusal for non-null values that cannot name a stored response.
+        guard let previousID = previousValue as? String else { return .previousResponseNotFound }
         guard let stored = conversation(previousID),
               let earlier = (try? JSONSerialization.jsonObject(with: stored)) as? [Any]
         else { return .previousResponseNotFound }

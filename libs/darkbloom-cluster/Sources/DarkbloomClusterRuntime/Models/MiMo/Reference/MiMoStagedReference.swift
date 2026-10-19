@@ -77,7 +77,7 @@ public enum MiMoStagedReference {
         var stages: [LoadedMiMoLayerStage] = []
         weak var retired0: Module?
         weak var retired1: Module?
-        var wired: MiMoStageResidency?
+        var wired: ClusterStageResidency?
         return try MLX.withError { nativeError in
             func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
             func settle() throws { Stream.gpu.synchronize(); Stream.cpu.synchronize(); try nativeError.check() }
@@ -105,7 +105,7 @@ public enum MiMoStagedReference {
                 }
                 try allowances[0].requireLive(); try allowances[1].requireLive()
                 if keepsResidency {
-                    wired = try MiMoStageResidency(bytes: loadedBytes[0] + loadedBytes[1]
+                    wired = try ClusterStageResidency(bytes: loadedBytes[0] + loadedBytes[1]
                         + allowances[0].reservedBytes + allowances[1].reservedBytes)
                 }
                 let active = Memory.snapshot().activeMemory

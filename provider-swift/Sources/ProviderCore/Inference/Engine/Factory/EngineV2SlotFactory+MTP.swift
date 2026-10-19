@@ -1,4 +1,5 @@
 import Foundation
+import MLXLLM
 import MLXLMCommon
 import MLXVLM
 
@@ -21,8 +22,13 @@ struct EngineV2PreparedModel: @unchecked Sendable {
 
     var assistantBytes: UInt64 { mtpStatus.assistantBytes }
 
-    func fallingBack(_ reason: MTPFallbackReason) -> Self {
-        Self(
+    /// GLM has no target-only serving fallback: its embedded-MTP engine carries
+    /// the only checked native completion receipt.
+    func fallingBack(_ reason: MTPFallbackReason) throws -> Self {
+        guard !(servingModel is GLM5NextProtectedModel) else {
+            throw GLM5NextManagedLoadError.nativeMTPRequired
+        }
+        return Self(
             snapshot: snapshot,
             servingModel: servingModel,
             assistant: nil,
@@ -53,6 +59,9 @@ extension EngineV2SlotFactory {
     ) throws -> any LanguageModel {
         guard !(snapshot.model is MiMoV26LoadedModel) else {
             throw MiMoV26ServingLoadError.managedLoadRequired
+        }
+        if snapshot.model is GLM5NextModel {
+            return try EngineV2Factory.directServingModel(model: snapshot.model, isVLM: isVLM)
         }
         guard isVLM else { return snapshot.model }
         if snapshot.model is MLXVLM.Qwen4Exp || snapshot.model is MLXVLM.PrismHadamardQwen35 {
@@ -121,6 +130,7 @@ extension EngineV2SlotFactory {
         modelDirectory: URL? = nil,
         container: ModelContainer,
         specDecPreparation: SpecDecPreparation,
+        maximumContextLength: Int? = nil,
         assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
@@ -134,6 +144,33 @@ extension EngineV2SlotFactory {
             snapshot: snapshot,
             emitTelemetry: emitTelemetry,
             logInfo: logInfo)
+
+        if let root = snapshot.model as? GLM5NextModel {
+            guard specDecPreparation.artifact == nil else {
+                throw GLM5NextManagedLoadError.metadata("GLM uses the loaded trained MTP partition, not an assistant download")
+            }
+            guard specDecPreparation.status.configured, specDecPreparation.status.reason == nil else {
+                return .init(snapshot: snapshot, servingModel: servingModel, assistant: nil,
+                    mtpStatus: specDecPreparation.status, mtpArtifact: nil)
+            }
+            guard CBv2MTPConfig.envEnabled else {
+                return .init(snapshot: snapshot, servingModel: servingModel, assistant: nil,
+                    mtpStatus: specDecPreparation.status.fallingBack(.killSwitchDisabled), mtpArtifact: nil)
+            }
+            guard root.mtp != nil else {
+                return .init(snapshot: snapshot, servingModel: servingModel, assistant: nil,
+                    mtpStatus: specDecPreparation.status.fallingBack(.metadataMissing), mtpArtifact: nil)
+            }
+            let bound = try GLM5NextExecutionBound.require(maximumContextLength,
+                modelMaximum: root.configuration.textConfig.maxPositionEmbeddings)
+            let protected = try GLM5NextProtectedModel(root: root, maximumContextLength: bound)
+            let handle = ProviderMTPAssistantHandle(owner: protected.execution, drafter: protected.assistant)
+            handle.bind(sourceTarget: root, servingTarget: protected)
+            // Embedded weights were charged with the full root; no second
+            // assistant residency or sidecar artifact may be added here.
+            return .init(snapshot: snapshot, servingModel: protected, assistant: handle,
+                mtpStatus: glm5NextInlineStatus(root: root, active: true), mtpArtifact: nil)
+        }
 
         var assistant: ProviderMTPAssistantHandle?
         var mtpStatus = specDecPreparation.status
@@ -198,6 +235,13 @@ extension EngineV2SlotFactory {
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2PreparedModel {
         let snapshot = await modelSnapshot(container: container)
+
+        if snapshot.model is GLM5NextModel {
+            // A native profile is one-shot and bound to its original backend,
+            // and target-only GLM has no checked completion receipt. Recovery
+            // must unload through the native owner, never rebuild in place.
+            throw GLM5NextManagedLoadError.nativeMTPRequired
+        }
 
         var fallbackStatus = previousStatus.active
             ? previousStatus.fallingBack(.engineInactive) : previousStatus

@@ -460,9 +460,24 @@ private func requireGenerationSource(loaded: LoadedQwenLayerStage, plan: QwenLay
     // Reuse the actual transport's limit before readiness or request-state
     // construction. The session separately checks this profile's hidden width
     // against the loaded configuration before it constructs native state.
-    _ = try CollectivePointToPointShape(
-        shape: [1, min(agreement.request.chunkSize, agreement.request.promptCount), agreement.request.profile.hiddenSize],
-        dtype: loaded.activationDType, maximumBytes: CollectivePointToPointShape.hardByteLimit)
+    _ = try qwenGenerationBoundaryGeometry(request: agreement.request, dtype: loaded.activationDType)
+}
+
+/// The largest actual prefill boundary, admitted before readiness/native state.
+/// The local profile supplies every residual dimension, including GLM's streams;
+/// neither the peer's header nor a flattened width can lower this byte charge.
+func qwenGenerationBoundaryGeometry(request: QwenLayerStageGenerationRequest,
+                                    dtype: DType, authenticatedChunking: Bool = false) throws -> CollectivePointToPointShape {
+    guard String(describing: dtype) == request.profile.activationDType else {
+        throw ProbeError("Generation boundary dtype differs from its admitted profile")
+    }
+    let shape = request.profile.boundaryShape(tokenCount: min(request.chunkSize, request.promptCount))
+    if authenticatedChunking {
+        return try .authenticatedArray(shape: shape, dtype: dtype,
+            maximumBytes: CollectivePointToPointShape.authenticatedArrayByteLimit)
+    }
+    return try CollectivePointToPointShape(shape: shape,
+        dtype: dtype, maximumBytes: CollectivePointToPointShape.hardByteLimit)
 }
 
 private func runGenerationFrame(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
@@ -609,18 +624,14 @@ private struct QwenStagePrefixPlanOutcome {
 /// unless all agree, both ranks discard what they restored and prefill from
 /// zero. Both exchanges run whether or not a cache exists, so the two ranks
 /// always take the same steps.
-/// A stage whose every attention row holds all committed tokens. A sliding
-/// layer (Gemma 4) keeps only a ring of its window, so its rows at a prompt
-/// frontier are not a prefix of the request's rows and cannot be captured or
-/// restored: such a stage offers nothing and asks for no split, which turns
-/// reuse off for both ranks (one rank off is enough).
+/// A stage whose rows the prefix tiers can keep: full rows as a prefix of the
+/// deepest copy, sliding-window rows (Gemma 4) as their own window at each
+/// frontier (`QwenLayerStageSession.capturePrefix`). A stage that reports no
+/// geometry offers nothing and asks for no split, which turns reuse off for
+/// both ranks (one rank off is enough).
 func qwenStageAdmitsPrefixCapture(_ loaded: LoadedQwenLayerStage) -> Bool {
     guard let forwarding = loaded.model as? any LayerStageFrameForwarding else { return true }
-    guard let geometry = try? forwarding.layerStageRequestGeometry(maximumTokens: 1) else { return false }
-    return geometry.kinds.allSatisfy { kind in
-        if case .full = kind.attention { return true }
-        return false
-    }
+    return (try? forwarding.layerStageRequestGeometry(maximumTokens: 1)) != nil
 }
 
 private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: LoadedQwenLayerStage,

@@ -36,9 +36,16 @@ struct LocalChatRequestTests {
         let local = try decoder.decode(LocalChatRequest.self, from: data)
         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
         #expect(local.request == upstream)
-        #expect(local.templateControls == ChatTemplateControls(
+        // GLM refusal evidence travels with the controls: binary thinking
+        // fields are invalid for GLM and the original tools are retained.
+        let glm = try decoder.decode(GLM5NextPromptPolicy.RawControls.self, from: data)
+        #expect(glm.invalid && glm.hasOriginalTools)
+        var expected = ChatTemplateControls(
             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
-            promptDate: try #require(local.templateControls.promptDate)).withRawMiMoControls(evidence(invalid: true)))
+            promptDate: try #require(local.templateControls.promptDate))
+            .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm)
+        expected.rawMiMoTools = try decoder.decode(MiMoV26ToolEvidence.self, from: data)
+        #expect(local.templateControls == expected)
         #expect(local.request.reasoning?.enabled == true)
         #expect(local.request.streamOptions?.includeUsage == true)
         #expect(local.request.streamOptions?.continuousUsageStats == true)
@@ -61,7 +68,11 @@ struct LocalChatRequestTests {
     func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool) throws {
         let data = Data((#"{"model":"test/qwen","messages":[],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
-        let complete = expected.withRawMiMoControls(evidence(invalid: invalid))
+        let glm = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: data)
+        // Every fragment carries a binary thinking control (`enable_thinking`
+        // or `reasoning.enabled`), which GLM refuses.
+        #expect(glm.invalid)
+        let complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
         #expect(local.templateControls.rawMiMoControls.invalid == invalid)
@@ -80,10 +91,13 @@ struct LocalChatRequestTests {
         let local = try decoder.decode([LocalChatRequest].self, from: data)
         let upstream = try decoder.decode([OpenAIChatCompletionRequest].self, from: data)
         #expect(local.map(\.request) == upstream)
+        let glm = try decoder.decode([GLM5NextPromptPolicy.RawControls].self, from: data)
+        #expect(glm.map(\.invalid) == [true, false, true])
         let expected = [
-            ChatTemplateControls(enableThinking: false),
-            ChatTemplateControls(),
-            ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true)),
+            ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0]),
+            ChatTemplateControls().withRawGLM5Controls(glm[1]),
+            ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true))
+                .withRawGLM5Controls(glm[2]),
         ]
         for (item, controls) in zip(local, expected) {
             #expect(item.templateControls == controls.withPromptDate(try #require(item.templateControls.promptDate)))

@@ -36,6 +36,10 @@ extension ClusterSetupOperations {
         /// The open wizard answers the other Mac's wizard over the link. Off where this Mac's cluster
         /// service answers instead (the onboarding, the service itself): one answering process per Mac.
         public var answersOverLink = true
+        /// In-memory selection from the private local CLI; never a serving grant.
+        public var privateMiMoImageQualification = false
+        public var privateGLMImageQualification = false
+        public var privateImageQualification: Bool { privateMiMoImageQualification || privateGLMImageQualification }
 
         public init(providerConfiguration: URL, darkbloomExecutable: URL, sessionArguments: [String],
                     pair: ClusterSetupRecord.Pair?, dryRun: Bool, version: String) {
@@ -424,8 +428,10 @@ final class LiveContext: @unchecked Sendable {
         let link = ClusterLinkReadinessProbe.inspectLocalLink()
         if settings.derivedPlacement, let store = modelsDirectory() {
             // `darkbloom cluster` needs no model folder: the models single-Mac Darkbloom installed are cloned into the
-            // cluster's store (no new blocks), so both the leader and its members list them by digest.
-            for installed in ClusterProductModelStore.installed() {
+            // cluster's store (no new blocks), so both the leader and its members list them by digest. Only the
+            // artifacts a pair may serve, as the onboarding clones: any other activated folder stays out of the store.
+            for installed in ClusterProductModelStore.installed()
+            where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
                 _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store), providerConfiguration: configuration,
                                                                         accepts: workerAcceptsManifest)
             }
@@ -527,12 +533,27 @@ final class LiveContext: @unchecked Sendable {
         }
         let parent = URL(fileURLWithPath: local.modelDirectory).deletingLastPathComponent()
         let models: [ClusterSetupLocalModel]
-        do { models = try ClusterSetupModelFolders.list(parent: parent) } catch {
+        do {
+            // One row per catalog entry: two folders of the same entry (a catalog download beside a copy) are one
+            // model to the person choosing, and the setup's own folder is the one kept.
+            let current = URL(fileURLWithPath: local.modelDirectory).lastPathComponent
+            let folders = try ClusterSetupModelFolders.list(parent: parent).sorted { ($0.folder == current ? 0 : 1) < ($1.folder == current ? 0 : 1) }
+            models = folders.reduce(into: [ClusterSetupLocalModel]()) { kept, model in
+                if !kept.contains(where: { $0.sameEntry(model) }) { kept.append(model) }
+            }.sorted { $0.folder < $1.folder }
+        } catch {
             return .failed("the model folders could not be listed: \(clean(ClusterConsoleText.bounded(error)))")
         }
-        let readings = models.map { model -> ClusterSetupPlanning.ModelReading in
+        let readings = models.filter {
+            settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
+                : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
+        }.map { model -> ClusterSetupPlanning.ModelReading in
             let directory = parent.appendingPathComponent(model.folder)
-            let layoutArguments = ["layout", "--model-dir", directory.path, "--json"]
+            let probes = settings.privateGLMImageQualification
+                ? ClusterGLMOnboardingSelection.probeArguments(directory: directory, expectedWorkerSHA256: local.runtimeBinarySHA256)
+                : ClusterMiMoOnboardingSelection.probeArguments(directory: directory,
+                expectedWorkerSHA256: local.runtimeBinarySHA256, qualifying: settings.privateMiMoImageQualification)
+            let layoutArguments = probes.layout
             let layout: Result<ClusterModelLayout, ClusterSetupFailure>
             do {
                 layout = .success(try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool, arguments: layoutArguments,
@@ -541,13 +562,14 @@ final class LiveContext: @unchecked Sendable {
                 layout = .failure(ClusterSetupFailure(toolError(executable: tool, arguments: layoutArguments, fallback: error)))
             }
             let worker = URL(fileURLWithPath: local.workerExecutable)
-            let describe = ["--describe-runtime", "--config", directory.appendingPathComponent("config.json").path,
-                            "--manifest", directory.appendingPathComponent("manifest.json").path,
-                            "--expected-executable-sha256", local.runtimeBinarySHA256]
+            let describe = probes.capability
             let capability: Result<(record: ClusterRuntimeCapability, data: Data, sha256: String), ClusterSetupFailure>
             do {
                 let data = try DistributedCapabilityProbe.run(executable: worker, arguments: describe, deadline: deadline())
-                capability = .success((try ClusterCapabilityRecord.decode(data, writtenBy: "the worker"), data, ClusterConfigurationCodec.sha256(data)))
+                let record = try ClusterCapabilityRecord.decode(data, writtenBy: "the worker")
+                if settings.privateGLMImageQualification { try ClusterGLMOnboardingSelection.requireCandidate(record) }
+                else { try ClusterMiMoOnboardingSelection.requireCandidate(record, qualifying: settings.privateMiMoImageQualification) }
+                capability = .success((record, data, ClusterConfigurationCodec.sha256(data)))
             } catch {
                 capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, fallback: error)))
             }
@@ -565,7 +587,7 @@ final class LiveContext: @unchecked Sendable {
             leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
-            peerMayReceive: settings.derivedPlacement)
+            peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)
@@ -608,6 +630,10 @@ final class LiveContext: @unchecked Sendable {
             return .init(succeeded: false, lines: ["The plan did not give both Macs a setup."])
         }
         do {
+            // Recheck the exact described capability before any setup is saved or sent.
+            let record = try ClusterCapabilityRecord.decode(capability.data, writtenBy: "the worker")
+            if settings.privateGLMImageQualification { try ClusterGLMOnboardingSelection.requireCandidate(record) }
+                else { try ClusterMiMoOnboardingSelection.requireCandidate(record, qualifying: settings.privateMiMoImageQualification) }
             // The setups and the record are kept where the wizard keeps its own files, owner-only.
             let directory = store.paths.directory.appendingPathComponent("plan-" + ClusterConsoleText.timestamp().replacingOccurrences(of: ":", with: ""), isDirectory: true)
             try ClusterConfigurationFiles.ensureDirectory(store.paths.directory, create: true, privateMode: true)

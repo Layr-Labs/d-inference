@@ -108,4 +108,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   "$task_root/Sources/DarkbloomClusterProcess/ClusterDeviceExclusion.swift" \
   "$task_root/Tests/ProcessChecks/DeviceExclusionCheck.swift" -o "$task_build/device-exclusion-check"
 "$task_build/device-exclusion-check"
-printf '%s\n' '{"passed":true,"providerPipeContract":"actual-provider-sources","networkUsed":false}'
+# Swift Testing calibration ownership checks are not a canonical Package.swift
+# test target. Run the complete CPU closure and retain its failure receipts.
+python3 -B "$task_root/Tests/ProcessChecks/run-calibration-tests.py"
+printf '%s\n' '{"passed":true,"providerPipeContract":"actual-provider-sources","calibrationSwiftTesting":true,"networkUsed":false}'

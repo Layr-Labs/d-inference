@@ -2,8 +2,9 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
 import Foundation
 
-/// Native methods belong to one executor. Only cancel is called by the control
-/// reader. A fake implementation can exercise orchestration without model IO.
+/// Native methods belong to one executor. Cancellation and unstarted-lane
+/// withdrawal may run on the control reader and must be thread-safe, with no
+/// native work. A fake implementation exercises orchestration without model IO.
 protocol WorkerRuntime: AnyObject, Sendable {
     var readiness: ClusterWorkerReady? { get }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int
@@ -37,6 +38,9 @@ protocol WorkerRuntime: AnyObject, Sendable {
     func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int
     func startLane(_ id: UUID) throws
     func cancelLane(_ id: UUID)
+    /// Thread-safe, no native work. True when `id` was reserved but not started
+    /// and its reservation is given back. The caller must not have accepted start.
+    func withdrawLane(_ id: UUID) -> Bool
     var hasStartedLanes: Bool { get }
     func serveBatch(host: QwenBatchServingHost) throws
 }
@@ -54,6 +58,7 @@ extension WorkerRuntime {
     }
     func startLane(_ id: UUID) throws { throw WorkerFailure.invalid("This runtime serves one request at a time") }
     func cancelLane(_ id: UUID) {}
+    func withdrawLane(_ id: UUID) -> Bool { false }
     var hasStartedLanes: Bool { false }
     func serveBatch(host: QwenBatchServingHost) throws {
         throw WorkerFailure.invalid("This runtime serves one request at a time")

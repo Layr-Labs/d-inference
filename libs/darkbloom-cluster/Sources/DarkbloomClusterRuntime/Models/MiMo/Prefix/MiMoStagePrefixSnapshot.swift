@@ -157,78 +157,23 @@ enum MiMoStagePrefixSnapshot {
     }
 }
 
-/// One request's prefix capture on one MiMo stage: the frontiers it was asked
-/// to keep, what it kept within its limit, and the copies. The sliding tails
-/// are captured at every kept frontier; the full-attention rows once, at the
-/// deepest (the split frontier), and shallower frontiers view a prefix of
-/// that copy, exactly as the dense stage session keeps its attention copy.
-final class MiMoStagePrefixCapture {
-    /// Prompt frontiers at which this request may keep its state (grid
-    /// multiples of the stride and the split frontier `promptCount - 1`).
-    let frontiers: Set<Int>
-    /// Most bytes this request's captures may hold together (its charge).
-    var limitBytes: Int?
-    var maximumFrontiers = Int.max
-    /// Measured at the first capture frontier; decides what is kept.
-    private(set) var cost: QwenStagePrefixCaptureCost?
-    private var kept: Set<Int>?
-    private(set) var withdrawn = false
-    private var sliding: [Int: [Int: (keys: MLXArray, values: MLXArray)]] = [:]
-    private var deepest: (committed: Int, layers: [Int: (keys: MLXArray, values: MLXArray)])?
-    /// Frontiers not captured because a ring was rotated there.
-    private(set) var skipped: [Int] = []
-
-    init(frontiers: Set<Int>) { self.frontiers = frontiers }
-
-    /// After the frame that committed `frontier` (`caches` are the request's).
-    func capture(at frontier: Int, caches: [KVCache], globalLayers: [Int]) throws {
-        guard frontiers.contains(frontier), !withdrawn else { return }
-        guard let state = try MiMoStagePrefixSnapshot.capture(caches: caches, globalLayers: globalLayers,
-                                                              frontier: frontier) else {
-            skipped.append(frontier); return
-        }
-        let planned = frontiers.sorted()
-        if kept == nil {
-            let rows = state.full.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+extension ClusterStagePrefixCapture {
+    /// One request's prefix capture on one MiMo stage: the full-attention rows
+    /// are its shared copy and each sliding layer's tail a frontier's own pair
+    /// (keys in `conv`, values in `ssm`). A frontier where a ring was rotated
+    /// is skipped.
+    static func mimo(frontiers: Set<Int>) -> ClusterStagePrefixCapture {
+        ClusterStagePrefixCapture(frontiers: frontiers) { caches, globalLayers, frontier in
+            guard let state = try MiMoStagePrefixSnapshot.capture(caches: caches, globalLayers: globalLayers,
+                                                                  frontier: frontier) else { return nil }
             // Every frontier is charged a full window per sliding layer: a tail
             // taken before the prompt filled the window is shorter than every
             // later one, and this cost also stands for the stage's later
             // requests (`QwenStagePrefixCache.record`: the first one stands).
             let tails = try MiMoStagePrefixSnapshot.windowTailBytes(state.sliding, caches: caches,
                                                                      globalLayers: globalLayers)
-            let measured = QwenStagePrefixCaptureCost(attentionBytesPerToken: (rows + frontier - 1) / frontier,
-                recurrentBytesPerFrontier: tails, historyBytesPerToken: 0)
-            cost = measured
-            kept = measured.kept(planned, limit: limitBytes ?? Int.max, maximum: maximumFrontiers)
-        }
-        guard kept?.contains(frontier) == true else { return }
-        sliding[frontier] = state.sliding
-        if frontier == planned.last { deepest = (frontier, state.full) }
-    }
-
-    /// The kept frontiers' states, ascending. Empty unless the deepest was
-    /// reached (a request that never reached its split frontier keeps nothing).
-    func states() -> [QwenStagePrefixState] {
-        guard let deepest, !withdrawn else { return [] }
-        return sliding.keys.sorted().compactMap { frontier in
-            guard frontier <= deepest.committed, let tails = sliding[frontier] else { return nil }
-            let rows = deepest.layers.mapValues { pair -> (keys: MLXArray, values: MLXArray) in
-                frontier == deepest.committed ? pair
-                    : (keys: pair.keys[0..., 0..., 0..<frontier, 0...], values: pair.values[0..., 0..., 0..<frontier, 0...])
-            }
-            return QwenStagePrefixState(committedTokens: frontier, attention: rows,
-                recurrent: tails.mapValues { (conv: $0.keys, ssm: $0.values) })
+            return (shared: state.full, own: state.sliding.mapValues { (conv: $0.keys, ssm: $0.values) },
+                    ownChargeBytes: tails)
         }
     }
-
-    /// Bytes of the full-attention copy the kept states view together.
-    var sharedBytes: Int { deepest?.layers.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes } ?? 0 }
-
-    /// Whether this request keeps its prompt: the deepest frontier was captured.
-    var keepsPrompt: Bool { !withdrawn && deepest != nil }
-
-    /// The running check withdrew this capture: let go of it, capture no more.
-    func withdraw() { withdrawn = true; sliding.removeAll(); deepest = nil }
-
-    func discard() { sliding.removeAll(); deepest = nil; kept = nil }
 }

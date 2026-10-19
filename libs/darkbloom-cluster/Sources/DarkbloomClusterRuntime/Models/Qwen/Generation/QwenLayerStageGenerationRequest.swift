@@ -16,21 +16,31 @@ struct QwenLayerStageGenerationProfile: Equatable, Encodable {
     /// the activation dtype. Nil for every model whose head returns its
     /// activation dtype, and then it is in neither the fingerprint nor the encoding.
     let logitsDType: String?
+    /// Nil retains the existing [B,T,H] wire encoding and fingerprint. GLM's
+    /// four residual streams cross intact as [B,T,4,H], before any final norm.
+    let residualStreams: Int?
     let fingerprint: String
 
     /// The dtype of the row a token is selected from and a recording captures.
     var selectedRowDType: String { logitsDType ?? activationDType }
+    var boundaryElementsPerToken: Int { hiddenSize * (residualStreams ?? 1) }
+
+    func boundaryShape(tokenCount: Int) -> [Int] {
+        if let residualStreams { return [1, tokenCount, residualStreams, hiddenSize] }
+        return [1, tokenCount, hiddenSize]
+    }
 
     init(identifier: String, vocabularySize: Int, hiddenSize: Int, activationDType: String,
          maximumPromptTokens: Int, maximumChunkTokens: Int, maximumOutputTokens: Int,
-         maximumContextTokens: Int, logitsDType: String? = nil) throws {
+         maximumContextTokens: Int, logitsDType: String? = nil, residualStreams: Int? = nil) throws {
         guard !identifier.isEmpty, identifier.utf8.count <= 128,
               identifier.utf8.allSatisfy({ (33...126).contains($0) }),
               (1...262_144).contains(vocabularySize), (1...8192).contains(hiddenSize),
               (1...32_768).contains(maximumPromptTokens),
               (1...maximumPromptTokens).contains(maximumChunkTokens),
               (1...4096).contains(maximumOutputTokens),
-              (maximumPromptTokens...32_768).contains(maximumContextTokens) else {
+              (maximumPromptTokens...32_768).contains(maximumContextTokens),
+              residualStreams == nil || residualStreams == 4 else {
             throw ProbeError("Generation profile exceeds native software bounds")
         }
         _ = try qwenStageWireElementBytes(activationDType)
@@ -41,6 +51,7 @@ struct QwenLayerStageGenerationProfile: Equatable, Encodable {
             _ = try qwenStageWireElementBytes(logitsDType)
         }
         self.logitsDType = logitsDType
+        self.residualStreams = residualStreams
         self.identifier = identifier; self.vocabularySize = vocabularySize
         self.hiddenSize = hiddenSize; self.activationDType = activationDType
         self.maximumPromptTokens = maximumPromptTokens; self.maximumChunkTokens = maximumChunkTokens
@@ -51,6 +62,7 @@ struct QwenLayerStageGenerationProfile: Equatable, Encodable {
             String(maximumOutputTokens), String(maximumContextTokens),
         ]
         if let logitsDType { fields.append("logits=" + logitsDType) }
+        if let residualStreams { fields.append("streams=\(residualStreams)") }
         fingerprint = sha256(Data(fields.joined(separator: "|").utf8))
     }
 }
@@ -59,6 +71,8 @@ struct QwenLayerStageGenerationRequest: Equatable {
     let profile: QwenLayerStageGenerationProfile
     let requestID: UUID
     let promptTokenIDs: [Int]
+    let mimoImages: ClusterMiMoImages?
+    let stillImages: ClusterStillImages?
     let stopTokenIDs: Set<Int>
     let chunkSize: Int
     let outputCount: Int
@@ -90,7 +104,13 @@ struct QwenLayerStageGenerationRequest: Equatable {
 
     init(profile: QwenLayerStageGenerationProfile, requestID: UUID, promptTokenIDs: [Int],
          chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>,
-         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil) throws {
+         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil) throws {
+        try mimoImages?.validate(prompt:promptTokenIDs)
+        try stillImages?.validateStructure(promptCount: promptTokenIDs.count)
+        guard stillImages == nil || (mimoImages == nil && route == nil
+            && profile.identifier == ClusterStillImages.glmProfileID) else { throw ProbeError("Foreign still-image request") }
+        self.stillImages = stillImages
+        self.mimoImages = mimoImages
         guard (1...profile.maximumPromptTokens).contains(promptTokenIDs.count),
               (1...profile.maximumChunkTokens).contains(chunkSize),
               (1...profile.maximumOutputTokens).contains(outputCount),
@@ -121,6 +141,10 @@ struct QwenLayerStageGenerationRequest: Equatable {
         // A request the pair serves as placed keeps its fingerprint.
         decodingRankAlone = route == .decodingRankAlone
         if let route { fields.append("route=" + route.rawValue) }
+        // Bind actual request pixels and owned positions before the bilateral
+        // request agreement. Absent media preserves every legacy hash byte.
+        if let mimoImages { fields.append("mimo-images=" + mimoImages.fingerprint) }
+        if let stillImages { fields.append("still-images=" + stillImages.fingerprint) }
         fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 

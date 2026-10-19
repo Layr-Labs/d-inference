@@ -92,13 +92,33 @@ final class CBv2StageKVHost {
 
     static let segmentBytes = 64 << 20
 
-    /// Builds the host for a dense or routed-expert Qwen 3.5 stage. Other
-    /// families keep their own per-request contiguous geometry.
+    /// Builds the host for a dense or routed-expert Qwen 3.5 stage, or the
+    /// contiguous host of a Gemma 4 stage's batch lanes. Other families keep
+    /// their own per-request contiguous geometry.
     init(model: any LanguageModel, kind: ClusterStageKVBackendKind, lanes: Int,
          maximumTokensPerRequest: Int, maximumChunkTokens: Int) throws {
         guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= 32_768,
               maximumChunkTokens > 0 else {
             throw ProbeError("Stage KV host needs 1...8 lanes and a bounded request length")
+        }
+        if let gemma = model as? Gemma4LayerStageModel {
+            // Its sliding rings are kept contiguous: the paged pool's windowed
+            // rows are not qualified for the cluster yet.
+            guard kind == .contiguous else {
+                throw ProbeError("Gemma stage batch lanes keep contiguous KV storage (\(ClusterStageKVBackendKind.environmentName)=contiguous)")
+            }
+            let geometry = try gemma.layerStageRequestGeometry(maximumTokens: maximumTokensPerRequest)
+            let capacity = try QwenLongPrefillCheckedBytes.sum([
+                QwenLongPrefillCheckedBytes.product([geometry.kvCapacityBytes, lanes]), Self.segmentBytes])
+            let caches: [any CBv2AttendingLayerCache] = geometry.kinds.enumerated().map {
+                CBv2LayerCache(layerIndex: $0.offset, kind: $0.element)
+            }
+            self.kind = kind; layerKinds = geometry.kinds
+            backend = CBv2ContiguousKVBackend(config: .init(bytesCapacity: capacity, kvDType: geometry.kvDType))
+            self.caches = caches; bank = CBv2LayerCacheBank(caches: caches)
+            kvDType = geometry.kvDType; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
+            capacityBytes = capacity
+            return
         }
         let kinds: [CBv2LayerKind]
         if let model = model as? Qwen35TextModel { kinds = model.cbv2LayerKinds }
@@ -215,9 +235,11 @@ extension CBv2StageKVHost {
         })
     }
 
-    /// True for the stage models whose request geometry takes a host.
-    static func supports(_ model: any LanguageModel) -> Bool {
-        (model is Qwen35TextModel || model is Qwen35Model) && !(model is any LayerStageFrameForwarding)
+    /// True for the stage models whose request geometry takes a host: the
+    /// Qwen 3.5 stages always, a Gemma 4 stage for its batch lanes.
+    static func supports(_ model: any LanguageModel, lanes: Int) -> Bool {
+        if model is Gemma4LayerStageModel { return lanes > 1 }
+        return (model is Qwen35TextModel || model is Qwen35Model) && !(model is any LayerStageFrameForwarding)
             && !(model is NemotronHModel)
     }
 
@@ -227,7 +249,7 @@ extension CBv2StageKVHost {
     static func install(on stage: LoadedQwenLayerStage, kind: ClusterStageKVBackendKind, lanes: Int,
                         maximumTokensPerRequest: Int, maximumChunkTokens: Int) throws -> CBv2StageKVHost? {
         guard stage.kvHost.host == nil else { throw ProbeError("Stage KV host is already installed") }
-        guard supports(stage.model) else { return nil }
+        guard supports(stage.model, lanes: lanes) else { return nil }
         let host = try CBv2StageKVHost(model: stage.model, kind: kind, lanes: lanes,
             maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
         stage.kvHost.host = host

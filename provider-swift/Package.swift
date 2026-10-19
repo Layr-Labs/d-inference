@@ -310,6 +310,9 @@ let package = Package(
                 "ProviderCore",
                 "ProviderBenchmark",
                 "cluster-member-fixture-child",
+                // Exercise the actual pure capability producer in image-policy tests.
+                // The normal provider target continues to exclude this runtime.
+                .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),

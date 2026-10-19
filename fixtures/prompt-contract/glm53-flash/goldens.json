@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "template_sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+  "reference_renderer": "Jinja2 3.1.6, UTF-8 sorted object inputs and compact sorted-key tojson. Render bytes only, not tokenizer/native-model qualification.",
+  "cases": [
+    {
+      "id": "plain-default",
+      "request": {"model":"fixture-glm5-not-registered","messages":[{"role":"user","content":"Hello."}]},
+      "expected_context": {"reasoning_effort":"max","clear_thinking":false},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Hello.<|assistant|><think>",
+      "rendered_sha256": "85d476f0c24fc0fcdac8c88956c61431328128c308d69bc831cbdf51ae69ceae"
+    },
+    {
+      "id": "low-unicode-escapes",
+      "request": {"model":"fixture-glm5-not-registered","messages":[{"role":"system","content":"Keep literal text."},{"role":"user","content":"雪 é \"quotes\" \\path\nnext"}],"reasoning_effort":"low"},
+      "expected_context": {"reasoning_effort":"low","clear_thinking":false},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Low<|system|>Keep literal text.<|user|>雪 é \"quotes\" \\path\nnext<|assistant|><think>",
+      "rendered_sha256": "23831680b49f50c1519beaecdeb8a110f620054e6f7c70896c443bee514bfb2f"
+    },
+    {
+      "id": "nested-effort-precedence",
+      "request": {"model":"fixture-glm5-not-registered","messages":[{"role":"user","content":"Which effort?"}],"reasoning_effort":"low","reasoning":{"effort":"high"},"chat_template_kwargs":{"reasoning_effort":"max"}},
+      "expected_context": {"reasoning_effort":"high","clear_thinking":false},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Which effort?<|assistant|><think>",
+      "rendered_sha256": "5d588659b50ed5fbb15ff7535f3409d206324db671e89a6ea0eb351ced99e73e"
+    },
+    {
+      "id": "preserve-historical-reasoning",
+      "request": {"model":"fixture-glm5-not-registered","messages":[{"role":"user","content":"Old question."},{"role":"assistant","content":"Old answer.","reasoning_content":"Historical reasoning."},{"role":"user","content":"New question."}],"clear_thinking":false},
+      "expected_context": {"reasoning_effort":"max","clear_thinking":false},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Old question.<|assistant|><think>Historical reasoning.</think>Old answer.<|user|>New question.<|assistant|><think>",
+      "rendered_sha256": "0b6dc68b16a4db833cc80869ae8e4ada74a80b0d688eff5ab32a9319806e8b88"
+    },
+    {
+      "id": "clear-historical-reasoning",
+      "request": {"model":"fixture-glm5-not-registered","messages":[{"role":"user","content":"Old question."},{"role":"assistant","content":"Old answer.","reasoning_content":"Historical reasoning."},{"role":"user","content":"New question."}],"clear_thinking":true},
+      "expected_context": {"reasoning_effort":"max","clear_thinking":true},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Old question.<|assistant|><think></think>Old answer.<|user|>New question.<|assistant|><think>",
+      "rendered_sha256": "e5503dabfb56ec069cde603890c45c3b023515423d083fd208798a62231f68f7"
+    },
+    {
+      "id": "typed-values-parallel-results",
+      "request": {
+        "model":"fixture-glm5-not-registered",
+        "messages":[
+          {"role":"user","content":"Call both."},
+          {"role":"assistant","content":"","reasoning_content":"Current reasoning.","tool_calls":[
+            {"id":"call_a","type":"function","function":{"name":"f","arguments":"{\"nil\":null,\"boolean\":false,\"integer\":9007199254740993,\"literal\":\"null\",\"nested\":[null,true,1,{\"text\":\"雪 é \\\"q\\\" \\\\\"}]}"}},
+            {"id":"call_b","type":"function","function":{"name":"ping","arguments":"{}"}}
+          ]},
+          {"role":"tool","tool_call_id":"call_b","content":"B result"},
+          {"role":"tool","tool_call_id":"call_a","content":"A result"},
+          {"role":"user","content":"Continue."}
+        ],
+        "parallel_tool_calls":true,
+        "tools":[
+          {"type":"function","function":{"name":"f","strict":false,"parameters":{"type":"object","properties":{"nil":{"type":"null"},"boolean":{"type":"boolean"},"integer":{"type":"integer"},"literal":{"type":"string"},"nested":{"type":"array","items":{"anyOf":[{"type":"null"},{"type":"boolean"},{"type":"integer"},{"type":"object"}]}}}}}},
+          {"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}
+        ]
+      },
+      "expected_context": {"reasoning_effort":"max","clear_thinking":false},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"f\", \"parameters\": {\"properties\":{\"boolean\":{\"type\":\"boolean\"},\"integer\":{\"type\":\"integer\"},\"literal\":{\"type\":\"string\"},\"nested\":{\"items\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"boolean\"},{\"type\":\"integer\"},{\"type\":\"object\"}]},\"type\":\"array\"},\"nil\":{\"type\":\"null\"}},\"type\":\"object\"}}\n{\"name\": \"ping\", \"parameters\": {\"properties\":{},\"type\":\"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>Call both.<|assistant|><think>Current reasoning.</think><tool_call>f<arg_key>boolean</arg_key><arg_value>false</arg_value><arg_key>integer</arg_key><arg_value>9007199254740993</arg_value><arg_key>literal</arg_key><arg_value>null</arg_value><arg_key>nested</arg_key><arg_value>[null,true,1,{\"text\":\"雪 é \\\"q\\\" \\\\\"}]</arg_value><arg_key>nil</arg_key><arg_value>null</arg_value></tool_call><tool_call>ping</tool_call><|observation|><tool_response>A result</tool_response><tool_response>B result</tool_response><|user|>Continue.<|assistant|><think>",
+      "rendered_sha256": "620a0ba416bc8b2ec034561756d1c11f1ed4c796c6091657b87e527b71213e0c"
+    },
+    {
+      "id": "clear-keeps-current-turn-reasoning",
+      "request": {"model":"fixture-glm5-not-registered","messages":[{"role":"user","content":"Ping."},{"role":"assistant","content":"","reasoning_content":"Current reasoning.","tool_calls":[{"id":"call_b","type":"function","function":{"name":"ping","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_b","content":"Pong."}],"chat_template_kwargs":{"clear_thinking":true},"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}]},
+      "expected_context": {"reasoning_effort":"max","clear_thinking":true},
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"ping\", \"parameters\": {\"properties\":{},\"type\":\"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>Ping.<|assistant|><think>Current reasoning.</think><tool_call>ping</tool_call><|observation|><tool_response>Pong.</tool_response><|assistant|><think>",
+      "rendered_sha256": "7266f9d3261ff7782d9de8fc0c3f27a75a5dfce088c6499eaaa991a26c06e69f"
+    }
+  ]
+}

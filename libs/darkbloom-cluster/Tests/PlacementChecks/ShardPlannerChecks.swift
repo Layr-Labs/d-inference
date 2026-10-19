@@ -240,7 +240,8 @@ private func checkShardRules(_ big: ClusterModelLayout, _ checks: PlacementCheck
     checks.require("shards: predicted faster but not executed by a runtime that lists no tensor-parallel mode: tensor parallel says so and the pipeline serves",
         option(today, .tensorParallel)?.verdict == .notExecutedByRuntime && today.chosen?.mode != .tensorParallel)
     let mimo = try surveyedMiMoLayout()
-    let mimoDevices = [try SyntheticMac.idle(128).device("a", chip: "Apple M2 Ultra"), try SyntheticMac.idle(128).device("b", chip: "Apple M2 Ultra")]
+    // Two 192 GB Macs: two 128 GB Macs admit 156 GiB at rest together, less than the 173 GB model needs.
+    let mimoDevices = [try SyntheticMac.idle(192).device("a", chip: "Apple M2 Ultra"), try SyntheticMac.idle(192).device("b", chip: "Apple M2 Ultra")]
     let mimoPlan = try ClusterPlacementPlanner.plan(devices: mimoDevices, layout: mimo, policy: shardPolicy())
     checks.require("shards: a model whose adapter lacks tensor parallel (the surveyed MiMo) gets the pipeline and says why",
         mimoPlan.chosen.map { $0.mode == .pipeline || $0.mode == .pipelineCompactDecode } == true

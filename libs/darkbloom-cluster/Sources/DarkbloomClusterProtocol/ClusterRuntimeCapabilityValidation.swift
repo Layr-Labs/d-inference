@@ -19,6 +19,24 @@ enum ClusterRuntimeCapabilityValidation {
         try workerRequire(value.supportedGenerationModes.first == .pipeline
             && value.supportedGenerationModes == ClusterGenerationMode.allCases.filter(value.supportedGenerationModes.contains),
             "Missing, duplicate or unordered generation modes")
+        let imageCandidate = adapter == .mimoV26ImageCandidate
+        try workerRequire(imageCandidate == (value.media != nil),"Candidate adapter requires its closed media contract")
+        if imageCandidate {
+            try ClusterMiMoImageCandidate.validateSource(profileID:value.profile.id,modelID:value.runtimeModelID,
+                artifact:value.artifactSHA256,configuration:value.configurationSHA256,manifest:value.manifestSHA256)
+            try workerRequire(value.supportedGenerationModes.allSatisfy {
+                [.pipeline,.pipelineCompactDecode,.pipelineMTP].contains($0)
+            },"MiMo candidate runs only the two-rank pipeline")
+        }
+        let glmImage = adapter == .glm5NextLayerStage && value.profile.id == ClusterGLMImageCandidate.profileID
+        try workerRequire(glmImage == (value.glmImages != nil) && !(value.media != nil && value.glmImages != nil),
+            "GLM private profile requires its own explicit media contract")
+        if glmImage {
+            try ClusterGLMImageCandidate.validateSource(profileID: value.profile.id, modelID: value.runtimeModelID,
+                artifact: value.artifactSHA256, configuration: value.configurationSHA256, manifest: value.manifestSHA256)
+            try workerRequire(value.supportedGenerationModes == [.pipeline] && value.supportedPrefillSchedules == [.serial],
+                "GLM image candidate requires the serial pipeline")
+        }
         let p = value.profile
         try workerRequire((1...ClusterWorkerLimits.vocabularySize).contains(p.vocabularySize)
             && (1...ClusterWorkerLimits.promptTokens).contains(p.maximumPromptTokens)

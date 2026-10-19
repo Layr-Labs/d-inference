@@ -13,10 +13,11 @@ extension NativePairMemberPolicy {
     /// always compares its own fixed plan.
     func require(_ start: ClusterNativeAuthorizationStart, plan: Data? = nil) throws {
         let c = start.common
+        guard case .servingV1(let serving) = c.permission else { throw NativePairMemberError.binding }
         let expectedPlan = cluster == nil ? hashes[0] : (plan ?? c.planSHA256)
-        guard c.nativePolicyGeneration == generation, c.approvedNativeBindingSHA256 == Data(SHA256.hash(data: bytes)),
-              [c.planSHA256, c.artifactSHA256, c.nativeRuntimeSHA256, c.capabilitySHA256,
-               c.resourcePolicySHA256, c.profileSHA256] == [expectedPlan, hashes[1], hashes[2], hashes[5], hashes[6], hashes[7]],
+        guard serving.nativePolicyGeneration == generation, serving.approvedNativeBindingSHA256 == Data(SHA256.hash(data: bytes)),
+              [c.planSHA256, c.artifactSHA256, serving.nativeRuntimeSHA256, serving.capabilitySHA256,
+               serving.resourcePolicySHA256, c.profileSHA256] == [expectedPlan, hashes[1], hashes[2], hashes[5], hashes[6], hashes[7]],
               c.schedule.rawValue == schedule, c.maximumTransportFrameBytes == Int(maximumFrame),
               c.limits.maximumPlaintextBytes == Int(maximumPlaintext), c.limits.maximumRecordsPerDirection == maximumRecords,
               c.limits.maximumCumulativePlaintextBytesPerDirection == maximumCumulative else { throw NativePairMemberError.binding }

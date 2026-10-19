@@ -23,8 +23,8 @@ extension DistributedLocalServer {
         return .init(schema: ClusterLiveStatus.schemaName, nonce: try ClusterStatusCodec.nonce(nonce),
             binding: observation.binding, authenticationConfigured: !(config.authToken ?? "").isEmpty,
             hostPhase: phase.rawValue, session: observation, boundPort: port,
-            acquisitions: pin == nil ? 0 : 1, failed: failed, ready: ready,
-            admissionAvailable: ready && pin == nil && admission?.valid == true
+            acquisitions: generation.pins.count, failed: failed, ready: ready,
+            admissionAvailable: ready && generation.pins.count < generation.capacity && admission?.valid == true
                 && admission?.activeRequest == false && admission?.draining == false,
             quarantined: phase == .quarantined || observation.phase == "quarantined")
     }
@@ -51,8 +51,8 @@ extension DistributedLocalServer {
         guard modelID == binding.publicModelID else {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
         }
-        // A single pipeline has one acquisition; further requests wait for it
-        // in arrival order, in a bounded queue (`DistributedRequestQueue`).
+        // The pipeline takes as many acquisitions as the pair has lanes; further
+        // requests wait in arrival order, in a bounded queue (`DistributedRequestQueue`).
         let target = generation
         guard servable(target) else {
             throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
@@ -80,21 +80,24 @@ extension DistributedLocalServer {
             && target.session.status == .ready && !target.session.httpSessionInvalid
     }
 
-    /// Nothing holds the pipeline: no acquisition, both ranks admit, and the
-    /// engine has retired the previous request.
-    private func idle(_ target: DistributedLocalServerGeneration) async -> Bool {
-        guard target.pin == nil, target.session.httpAdmissionAvailable, let bridge = target.entry?.engineV2Bridge else {
+    /// The pipeline has a free lane: fewer acquisitions than lanes, both ranks
+    /// admit (the pair is busy only when every lane is taken), and the engine
+    /// runs fewer requests than lanes (a retired one has left it).
+    private func hasRoom(_ target: DistributedLocalServerGeneration) async -> Bool {
+        guard target.pins.count < target.capacity, target.session.httpAdmissionAvailable,
+              let bridge = target.entry?.engineV2Bridge else {
             return false
         }
-        return await bridge.activeRequestCount() == 0
+        return await bridge.activeRequestCount() < target.capacity
     }
 
     /// Returns this request's acquisition once it is the oldest waiter and the
     /// pipeline is idle. The pin is taken here, with no suspension after the
     /// last check, so no later arrival can pass a waiter.
     private func waitForTurn(_ target: DistributedLocalServerGeneration) async throws -> (UUID, queued: Bool) {
-        func take() -> UUID { let id = UUID(); target.pin = id; return id }
-        if waiting.isEmpty, await idle(target), waiting.isEmpty, target.pin == nil, servable(target) {
+        func take() -> UUID { let id = UUID(); target.pins.insert(id); return id }
+        func free() -> Bool { target.pins.count < target.capacity }
+        if waiting.isEmpty, await hasRoom(target), waiting.isEmpty, free(), servable(target) {
             return (take(), false)
         }
         guard waiting.count < DistributedRequestQueue.maximumWaiting else {
@@ -111,7 +114,7 @@ extension DistributedLocalServer {
             guard servable(target) else {
                 throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
             }
-            if waiting.first == ticket, await idle(target), waiting.first == ticket, target.pin == nil, servable(target) {
+            if waiting.first == ticket, await hasRoom(target), waiting.first == ticket, free(), servable(target) {
                 return (take(), true)
             }
             guard ContinuousClock.now < ceiling else {
@@ -122,8 +125,7 @@ extension DistributedLocalServer {
     }
 
     func release(_ id: UUID, generation target: DistributedLocalServerGeneration) {
-        guard target.pin == id else { return }
-        target.pin = nil
+        guard target.pins.remove(id) != nil, target.pins.isEmpty else { return }
         let waiters = target.pinWaiters; target.pinWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
     }

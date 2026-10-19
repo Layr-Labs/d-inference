@@ -78,6 +78,8 @@ public enum DistributedInstalledOwner {
         let plan = prepared.plan, features = prepared.validation.workerFeatures
         try prepared.requireUnchanged()
         try features.requireProgressGuard()
+        try features.requireMiMoImageCandidate(required:plan.capability.media != nil)
+        try features.requireGLMImageCandidate(required: plan.capability.glmImages != nil)
         // The prefix-SSD tier's key goes to the rank only on its input; a
         // worker that cannot take it there is refused before anything starts.
         let prefixSSDKey = plan.nativePrefixSSDKey()
@@ -92,6 +94,8 @@ public enum DistributedInstalledOwner {
             authorizeNativeStart: plan.bootstrap.ownerProfile?.carriesNativeStart == true
                 ? try plan.configuration.nativeMember.map { try memberAuthorizer(plan: plan, attachment: $0) }
                     ?? DistributedInstalledNativeStart.authorizer(plan: plan) : nil,
+            // The worker's batch lanes, from the same plan its environment carries.
+            lanes: plan.batchLanes() ?? 1,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
             }, native: { binding, deadline, attachment, dataPlaneTrust in

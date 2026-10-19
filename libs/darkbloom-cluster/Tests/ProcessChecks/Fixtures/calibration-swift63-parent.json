@@ -1,0 +1,29 @@
+{
+  "description": "Exact bounded parent CPU transport-gate log; supplied for regression against optional Swift Testing suite-count aggregate. No native/model/serving evidence.",
+  "recordedUTC": "2026-10-18T07:21:29.537923+00:00",
+  "logSHA256": "844bdb9a6483e73e8806ff815d557a4d8b7eb5af59a5b4ed58ff27d42eac5636",
+  "logBytes": 6349,
+  "aggregate": "\u2714 Test run with 18 tests in 1 suite passed after 6.070 seconds.",
+  "expectedMethods": {
+    "reportBeforeExitIsNotSuccessAndCredentialPrecedesRenewals": 1,
+    "promptAndDecodeFrontierIsBoundedByContextNotOutputLimit": 3,
+    "malformedOrOutOfContextFrontierCannotComplete": 8,
+    "frontierSeventeenIsProvisionalUntilActualExitWithinSelectedProfile": 1,
+    "outOfProfileFrontierIsRefusedDespiteContextHeadroom": 2,
+    "normalizedConfigurationDiffersFromRawFileIdentity": 1,
+    "rawConfigurationDigestCannotSubstituteForNormalizedDigest": 1,
+    "malformedExpectedNormalizedDigestRefusedBeforeLaunch": 1,
+    "eofFromLiveChildIsNotExitProof": 1,
+    "cooperativeCancelClosesInputAndCannotReturnSuccess": 1,
+    "fixedDeadlineWinsOverRenewalsAndSignalsRequireActualExit": 1,
+    "invalidOrBlockedPipesRetireBoundedly": 6,
+    "reportBindingAndSafetyFlagsRefused": 7,
+    "launchFailureIsNotObservedChildExit": 1,
+    "bootstrapUsesConcreteChildAndRefusesCrossedBinding": 1,
+    "refusedBootstrapReplyCancelsChildAndJoinsActualExit": 1,
+    "bootstrapOwnerSurvivesCallerDropUntilActualExit": 1,
+    "cancellingCompletedBootstrapStillCancelsLiveExperiment": 1
+  },
+  "expectedMethodsDerivedFromCanonicalSHA256": "cf0bad6e1987b7584ea9f1131afc4b2da6aa9dde13057e4a507d18ec0841de0d",
+  "expectedMethodsNote": "Current guarded test declarations; only scratch cleanup changed after original parent run, all18 methods39 argument counts unchanged. This field does not claim original log compiled the later guard."
+}

@@ -93,6 +93,22 @@ struct SyntheticMac {
     func device(_ label: String, speed: ClusterDeviceSpeed = .assumedEqual, chip: String = "Synthetic") throws -> ClusterPlacementDevice {
         .init(label: label, profile: try profile(chip: chip), speed: speed)
     }
+
+    /// The same devices at rest: each one's hardware, chip and speed as given,
+    /// its memory sampled as an idle Mac of its size reports it.
+    static func atRest(_ devices: [ClusterPlacementDevice]) throws -> [ClusterPlacementDevice] {
+        try devices.map { device in
+            let p = device.profile
+            let idle = SyntheticMac.idle(Double(p.physicalMemoryBytes) / Double(gib))
+            var profile = try ClusterDeviceProfile(chip: p.chip, performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores,
+                gpuCores: p.gpuCores, osVersion: p.osVersion, osBuild: p.osBuild, physicalMemoryBytes: p.physicalMemoryBytes,
+                gpuRecommendedWorkingSetBytes: p.gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
+                allocatorLimitBytes: p.allocatorLimitBytes, memory: .gate(idle.observation, now: now), power: p.power,
+                wiredLimitBytes: p.wiredLimitBytes)
+            profile.speedIndex = p.speedIndex
+            return .init(label: device.label, profile: profile, speed: device.speed)
+        }
+    }
 }
 
 /// A made-up family: uniform layers, a cut after every layer.

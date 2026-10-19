@@ -32,7 +32,8 @@ def pick(summary, field, statistic="p50"):
 
 
 def catalog(path):
-    models = json.load(open(path, encoding="utf-8"))
+    with open(path, encoding="utf-8") as handle:
+        models = json.load(handle)
     print("| Model id | Version | Type / family | Quantization | Size GB | Files | Min RAM GB | Needs | "
           "Artifact aggregate SHA-256 |")
     print("|---|---|---|---|---:|---:|---:|---|---|")
@@ -47,7 +48,9 @@ def catalog(path):
 def labelled(arguments):
     for argument in arguments:
         label, _, path = argument.partition("=")
-        yield label, json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            report = json.load(handle)
+        yield label, report
 
 
 def cells(arguments):
@@ -122,7 +125,8 @@ def matrix(arguments):
 
     def load(path):
         try:
-            return json.load(open(path, encoding="utf-8"))
+            with open(path, encoding="utf-8") as handle:
+                return json.load(handle)
         except (OSError, ValueError):
             return None
 

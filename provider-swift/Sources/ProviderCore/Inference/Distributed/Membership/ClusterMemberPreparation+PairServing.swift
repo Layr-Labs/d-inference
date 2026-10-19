@@ -30,6 +30,7 @@ extension ClusterMemberPreparation {
         follower: @escaping @Sendable (NativePairMemberServingStart, ClusterOwnerBootstrapRelay?) throws -> any ClusterWorkerEndpoint
     ) async throws -> ClusterPairServingContext {
         let plan = validation.plan, installed = validation.model
+        try ClusterMiMoPrivateImagePolicy.requireCoordinatorEligible(plan.capability)
         guard plan.configuration.localRank == 0 else {
             throw ClusterConfigurationError.invalid("Only the plan's rank-0 member serves the pair")
         }

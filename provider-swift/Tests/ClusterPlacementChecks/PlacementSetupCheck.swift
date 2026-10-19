@@ -782,9 +782,10 @@ import Foundation
             require("a plan from relative speeds only never ends a request by a guess",
                 ClusterPlacementRequestLimits.requestTimeoutSeconds(result: relative, chosen: chosenRelative, maximumPromptTokens: 8192, maximumOutputTokens: 128).seconds == 3600)
         }
-        func run(_ model: String, chunk: Int, _ outcome: [String] = ["divergedAtNearTie"]) -> ClusterPairQualificationRecord {
-            .init(runtimeModelID: model, artifactSHA256: hash("a"), ranks: [.init(rank: 0, chip: "Apple M2 Max", operatingSystem: nil), .init(rank: 1, chip: "Apple M2 Max", operatingSystem: nil)],
-                cuts: [8], generationMode: "pipeline_v1", prefillSchedule: "serial_v1", chunkTokens: chunk, promptTokens: 64, outputTokens: 8, transport: "jaccl",
+        func run(_ model: String, chunk: Int, _ outcome: [String] = ["divergedAtNearTie"],
+                 prompt: Int? = nil, artifact: String? = nil) -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: model, artifactSHA256: artifact ?? hash("a"), ranks: [.init(rank: 0, chip: "Apple M2 Max", operatingSystem: nil), .init(rank: 1, chip: "Apple M2 Max", operatingSystem: nil)],
+                cuts: [8], generationMode: "pipeline_v1", prefillSchedule: "serial_v1", chunkTokens: chunk, promptTokens: prompt ?? max(64, chunk), outputTokens: 8, transport: "jaccl",
                 pairReportSHA256: hash("b"), pairReportCreatedUTC: "t", comparisons: outcome.map { .init(referenceChip: nil, verdict: $0, firstDivergenceIndex: nil,
                 gapInULPs: nil, nearTieThresholdULPs: 4, allowed: []) }, producer: "check")
         }
@@ -793,6 +794,58 @@ import Foundation
             ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m", layoutMaximum: 2048, capabilityMaximum: 1024, records: chunkRecords).tokens == 256
             && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "other", layoutMaximum: 2048, capabilityMaximum: 1024, records: chunkRecords).tokens == 1024
             && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "registered_qwen35_9b", layoutMaximum: 512, capabilityMaximum: 512).tokens == 512)
+        let shortOnly = [run("m", chunk: 512, prompt: 52)]
+        let shortChoice = ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+            layoutMaximum: 2048, capabilityMaximum: 2048, records: shortOnly)
+        require("a passing 52-token prompt cannot select its unexercised 512-token chunk cap",
+            shortOnly[0].isConsistent && shortOnly[0].outcome == .passed
+            && shortChoice.tokens == 2048 && shortChoice.basis.contains("largest supported chunk")
+            && shortChoice.basis.contains("no matching long-prompt measurement"))
+        let exercised512 = [run("m", chunk: 512, prompt: 1024)] + shortOnly + shortOnly
+        require("one real full-chunk-capable passing prompt preserves512 over repeated short hints",
+            ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 2048, capabilityMaximum: 2048, records: exercised512).tokens == 512)
+        require("the prompt-equals-chunk boundary is eligible, without proving actual frame geometry",
+            ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 2048, capabilityMaximum: 2048,
+                records: [run("m", chunk: 512, prompt: 512)]).tokens == 512)
+        require("fallbacks and record choices stay within both capability and layout caps",
+            ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 2048, capabilityMaximum: 256, records: exercised512).tokens == 256
+            && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 128, capabilityMaximum: 2048, records: exercised512).tokens == 128)
+        require("failed full prompts do not set a chunk preference and larger eligible ties still win",
+            ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 2048, capabilityMaximum: 2048,
+                records: [run("m", chunk: 512, ["diverged"])]).tokens == 2048
+            && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 2048, capabilityMaximum: 2048,
+                records: [run("m", chunk: 512), run("m", chunk: 1024)]).tokens == 1024)
+        let artifactRecords = [run("m", chunk: 512, artifact: hash("b")),
+                               run("m", chunk: 512, artifact: hash("b")),
+                               run("m", chunk: 1024, artifact: hash("a"))]
+        require("an installed artifact ignores another artifact's more frequent chunk hint",
+            ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m", artifactSHA256: hash("a"),
+                layoutMaximum: 2048, capabilityMaximum: 2048, records: artifactRecords).tokens == 1024)
+        let absentArtifact = ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+            artifactSHA256: hash("c"), layoutMaximum: 2048, capabilityMaximum: 2048,
+            records: artifactRecords)
+        require("a missing matching artifact falls back honestly while omitted identity stays compatible",
+            absentArtifact.tokens == 2048 && absentArtifact.basis.contains("largest supported chunk")
+            && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m",
+                layoutMaximum: 2048, capabilityMaximum: 2048, records: artifactRecords).tokens == 512)
+        let bundledShortGLM = ClusterPairServingGrants.records.first(where: {
+            $0.runtimeModelID == "registered_glm53_flash" && $0.promptTokens == 52 && $0.chunkTokens == 512
+        })
+        require("the real bundled short GLM fixture exists", bundledShortGLM != nil)
+        if let shortGLM = bundledShortGLM {
+            let selected = ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: shortGLM.runtimeModelID,
+                artifactSHA256: shortGLM.artifactSHA256, layoutMaximum: 2048, capabilityMaximum: 2048,
+                records: [shortGLM])
+            require("the real bundled short GLM pass stays a passing record without forcing512",
+                shortGLM.isConsistent && shortGLM.outcome == .passed && selected.tokens == 2048
+                && selected.basis.contains("largest supported chunk") && selected.basis.contains("no matching long-prompt measurement"))
+        }
         // The guided flow asks for derived limits (zero) and gets setups that carry them.
         let derivedObject = descriptionObject.merging(["chunkTokens": 0, "requestTimeoutSeconds": 0]) { $1 }
         let derivedDescription = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: derivedObject))

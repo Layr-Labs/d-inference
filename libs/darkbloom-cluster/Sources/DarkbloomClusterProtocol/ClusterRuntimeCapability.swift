@@ -21,8 +21,14 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// MiMo V2.6 text as a two-stage layer pipeline on the product's own text
     /// class: full and sliding-window attention, routed MXFP4 experts.
     case mimoV26LayerStage = "mimo-v26-layer-stage"
+    /// Private, unqualified image candidate; never selected by the text row.
+    case mimoV26ImageCandidate = "mimo-v26-rank0-image-candidate"
     /// Gemma 4 26B as two stages of the product's own decoder layers.
     case gemma4LayerStage = "gemma4-layer-stage"
+    /// GLM-5.3-Flash text as a two-stage layer pipeline on the SDK's GLM5Next
+    /// class: linear and DeepSeek sparse attention, routed NVFP4 experts and a
+    /// four-stream residual that crosses the boundary whole.
+    case glm5NextLayerStage = "glm5-next-layer-stage"
     public var version: Int { 1 }
     /// The adapter's original pair: the first row of `registeredProfiles`.
     public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
@@ -46,11 +52,16 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             [("registered_nemotron35_lightning", "registered_nemotron35_lightning_greedy_generation_v1")]
         case .mimoV26LayerStage:
             [("registered_mimo_v26_flash_mopd", "registered_mimo_v26_flash_mopd_greedy_generation_v1")]
+        case .mimoV26ImageCandidate:
+            [(ClusterMiMoImageCandidate.runtimeModelID,ClusterMiMoImageCandidate.profileID)]
         case .gemma4LayerStage:
             // One row per catalog entry of Gemma 4 26B; the last two are one artifact.
             [("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1"),
              ("registered_gemma4_26b", "registered_gemma4_26b_greedy_generation_v1"),
              ("registered_gemma4_26b_8bit", "registered_gemma4_26b_8bit_greedy_generation_v1")]
+        case .glm5NextLayerStage:
+            [(ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.textProfileID),
+             (ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.profileID)]
         }
     }
     /// The one arithmetic policy a capability of this adapter may name. An
@@ -63,8 +74,9 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         case .qwen35PrismHadamard: "qwen_cbv2_query128_tf32_prism_hadamard_f32_v1"
         case .gptossLayerStage: "gpt_oss_ordinary_cache_split_experts_bf16_defaults_v1"
         case .nemotronH: "nemotron_h_cbv2_query128_bf16_tf32_default_v1"
-        case .mimoV26LayerStage: "mimo_v26_text_ordinary_cache_bf16_defaults_v1"
+        case .mimoV26LayerStage, .mimoV26ImageCandidate: "mimo_v26_text_ordinary_cache_bf16_defaults_v1"
         case .gemma4LayerStage: "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
+        case .glm5NextLayerStage: "glm5_next_nvfp4_hybrid_serving_v1"
         }
     }
     /// The adapter that registers a runtime model, or nil for an unregistered ID.
@@ -130,7 +142,10 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     /// first; a runtime that executes nothing else advertises only that.
     public let supportedGenerationModes: [ClusterGenerationMode]
     public let selectionPolicy = "greedy"
-    public let modality = "text"
+    public let media: ClusterMiMoImageCandidate?
+    public let glmImages: ClusterGLMImageCandidate?
+    public var hasPrivateImages: Bool { media != nil || glmImages != nil }
+    public var modality: String { hasPrivateImages ? "text_image_candidate" : "text" }
     public let stopPolicy = "selectedTokenIDs"
     /// "off", or the one speculative scheme a runtime may advertise: the
     /// decoding rank of a phase split drafts with the model's own head and
@@ -145,7 +160,9 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
                 arithmeticPolicySHA256: String,
                 supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
-                supportedGenerationModes: [ClusterGenerationMode] = [.pipeline]) throws {
+                supportedGenerationModes: [ClusterGenerationMode] = [.pipeline],
+                media: ClusterMiMoImageCandidate? = nil, glmImages: ClusterGLMImageCandidate? = nil) throws {
+        self.media = media; self.glmImages = glmImages
         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256

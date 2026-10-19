@@ -57,7 +57,8 @@ extension ClusterConsoleCheck {
             ClusterRuntimeAdapter.allCases.flatMap { adapter in
                 adapter.registeredProfiles.map { "\(adapter.rawValue) v\(adapter.version) \($0.runtimeModelID) \($0.profileID)" }
             }, "admitted models are not the adapters' registered pairs")
-        expect(listed.count >= 2 && Set(listed.map(\.runtimeModelID)).count == listed.count,
+        // A model may register more than one profile (MiMo's image candidate); each model/profile pair is listed once.
+        expect(listed.count >= 2 && Set(listed.map { "\($0.runtimeModelID) \($0.profileID)" }).count == listed.count,
             "the listing has \(listed.count) entries; the catalog registers the 9B and the 27B")
         // Read against the source too: a model named there in any other way would be missing here.
         let adapter = try String(contentsOf: adapterSource, encoding: .utf8)
@@ -65,7 +66,8 @@ extension ClusterConsoleCheck {
         let named = Set(literal.matches(in: adapter, range: NSRange(adapter.startIndex..., in: adapter)).compactMap {
             Range($0.range(at: 1), in: adapter).map { String(adapter[$0]) }
         })
-        expectEqual(named.symmetricDifference(Set(listed.flatMap { [$0.runtimeModelID, $0.profileID] })).sorted(), [],
+        // Every literal there is listed; a profile named through a constant (`ClusterMiMoImageCandidate`) is listed too.
+        expectEqual(named.subtracting(Set(listed.flatMap { [$0.runtimeModelID, $0.profileID] })).sorted(), [],
             "ClusterRuntimeAdapter names a model or profile that ClusterRuntimeAdapter.admittedModels does not list")
     }
 }

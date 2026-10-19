@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import DarkbloomClusterRemote
 import DarkbloomClusterProcess
+import DarkbloomClusterSecurity
 
 /// One acting `darkbloom cluster` command at a time on this Mac, across processes (the command typed here, a command
 /// forwarded to this Mac's cluster service), and never while the service hands leadership over: an exclusive flock on
@@ -67,8 +68,13 @@ public final class ClusterService: @unchecked Sendable {
     let settings: Settings
     let context: LiveContext
     let store: ClusterSetupStore
+    let pairingStore: ClusterPairingStore
+    private let recoveryGraceSeconds: Double
     let lock = NSLock()
     private var child: Process?
+    /// A previous service's part can outlive the cleanup deadline. Keep its identity
+    /// published and reserve its memory until that exact process exits.
+    private var leftoverPart: RecordedPart?
     private var childSetup: String?
     private var childStarted = Date.distantPast
     private var childStartedAt: Double?
@@ -126,13 +132,21 @@ public final class ClusterService: @unchecked Sendable {
     lazy var controlLive: OnboardingLive = OnboardingLive(context: context, store: store,
         settings: .init(service: settings, serviceArguments: []))
 
-    public init(settings: Settings) throws {
+    public convenience init(settings: Settings) throws {
+        try self.init(settings: settings, paths: ClusterUserPaths())
+    }
+
+    /// Internal composition of the service's existing stores. Public callers keep
+    /// the canonical user namespace and the normal recovery deadline.
+    init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300) {
+        precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
+        self.recoveryGraceSeconds = recoveryGraceSeconds
+        pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
         wizard.answersOverLink = false
         self.settings = Settings(wizard: wizard, leaderArguments: settings.leaderArguments, followerArguments: settings.followerArguments,
             soloArguments: settings.soloArguments)
-        let paths = try ClusterUserPaths()
         store = ClusterSetupStore(paths: .init(paths: paths))
         context = LiveContext(paths: paths, store: store, settings: wizard,
             clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
@@ -141,8 +155,15 @@ public final class ClusterService: @unchecked Sendable {
     // MARK: - Files
 
     public static func paths() throws -> (lock: URL, pid: URL, log: URL, rankLog: URL) {
-        let directory = ClusterSetupPaths(paths: try ClusterUserPaths()).directory
-        return (directory.appendingPathComponent("service.lock"), directory.appendingPathComponent("service.pid"),
+        files(in: ClusterSetupPaths(paths: try ClusterUserPaths()).directory)
+    }
+
+    private var serviceFiles: (lock: URL, pid: URL, log: URL, rankLog: URL) {
+        Self.files(in: store.paths.directory)
+    }
+
+    private static func files(in directory: URL) -> (lock: URL, pid: URL, log: URL, rankLog: URL) {
+        (directory.appendingPathComponent("service.lock"), directory.appendingPathComponent("service.pid"),
                 directory.appendingPathComponent("service.log"), directory.appendingPathComponent("rank.log"))
     }
 
@@ -192,7 +213,9 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Runs until `stop` is signalled; returns false when a rank had to be left running.
     public func run(stop: DispatchSemaphore, say: @escaping @Sendable (String) -> Void) throws -> Bool {
-        let files = try Self.paths()
+        let power = ClusterServicePowerAssertions()
+        defer { power.release() }
+        let files = serviceFiles
         try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
         let fd = open(files.lock.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw ClusterOnboardingFailure("the service lock cannot be opened") }
@@ -201,12 +224,15 @@ public final class ClusterService: @unchecked Sendable {
         try? Data("\(getpid())\n".utf8).write(to: files.pid, options: .atomic)
         defer { unlink(files.pid.path) }
         say("started (pid \(getpid()))")
+        refreshPowerAssertions(power)
         // A part a previous run of this service started and left running (that run ended without stopping it, e.g.
         // killed): stopped before anything starts, or it would hold the model's memory and the serving port forever.
-        if let previous = Self.published(), previous.servicePID != getpid(), let left = Self.recordedPart(previous) {
+        if let previous = Self.published(in: store.paths.directory), previous.servicePID != getpid(), let left = Self.recordedPart(previous) {
+            lock.withLock { leftoverPart = left }
+            power.update(savedServing: nil, partRunning: true, relayRunning: false)
             say("this Mac's \(left.solo ? "solo server" : "part") from the previous service run is still running (pid \(left.pid)): stopping it first")
-            say(Self.stopLeftover(left, seconds: 300) ? "the previous run's \(left.solo ? "solo server" : "part") stopped"
-                : "the previous run's \(left.solo ? "solo server" : "part") is still releasing after 300 s")
+            say(Self.stopLeftover(left, seconds: recoveryGraceSeconds) ? "the previous run's \(left.solo ? "solo server" : "part") stopped"
+                : "the previous run's \(left.solo ? "solo server" : "part") is still releasing after \(Int(recoveryGraceSeconds)) s")
         }
         let ticker = DispatchSemaphore(value: 0)
         var stopped = false
@@ -229,9 +255,11 @@ public final class ClusterService: @unchecked Sendable {
         }
         while !stopped {
             autoreleasepool {
+                refreshPowerAssertions(power)
                 ensureResponder(say: say)
                 supervise(say: say)
                 relayTick(say: say)
+                refreshPowerAssertions(power)
                 syncMembers(say: say)
                 checkForUpdate(say: say)
                 publish()
@@ -244,9 +272,28 @@ public final class ClusterService: @unchecked Sendable {
         lock.withLock { () -> ClusterLocalRelay? in defer { relay = nil }; return relay }?.stop()
         lock.withLock { responder }?.stop()
         lock.withLock { controlResponder }?.stop()
-        let clean = stopChild(say: say, seconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds))
+        let childClean = stopChild(say: say, seconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds))
+        let leftoverClean = leftover().map { Self.stopLeftover($0, seconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds)) } ?? true
+        let clean = childClean && leftoverClean
+        publish()
         say(clean ? "stopped" : "stopped with this Mac's part still releasing")
         return clean
+    }
+
+    private func refreshPowerAssertions(_ power: ClusterServicePowerAssertions) {
+        let savedServing = (try? store.readRecord()).map { $0.leadership?.serving ?? false }
+        let leftoverRunning = leftover() != nil
+        let active = lock.withLock {
+            (part: child?.isRunning == true, relay: relay.map { !$0.isStopped } ?? false)
+        }
+        power.update(savedServing: savedServing, partRunning: active.part || leftoverRunning, relayRunning: active.relay)
+    }
+
+    private func leftover() -> RecordedPart? {
+        lock.withLock {
+            leftoverPart = Self.runningPart(leftoverPart)
+            return leftoverPart
+        }
     }
 
     /// How often a listener looks for the cable on another port: a cable moved to another Thunderbolt port (or a port
@@ -278,7 +325,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
             }
         }
-        guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
+        guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore),
               let selection = try? context.linkSelection() else { return }
         let context = self.context, store = self.store
         // A model the leader copies here over the cable lands in this Mac's model store, verified file by file.
@@ -329,8 +376,8 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The pin of the Mac whose cache settings this Mac applies: the paired Mac while this Mac follows it, else nil
     /// (this Mac's own settings). Keyed by control, not by who drove the onboarding.
-    static func followedLeaderPin(record: ClusterSetupRecord?) -> String? {
-        guard let record, let pairing = try? ClusterSetupLinkExchange.pairing(), followsPeer(record: record, pairing: pairing) else { return nil }
+    static func followedLeaderPin(record: ClusterSetupRecord?, pairingStore: ClusterPairingStore = .default()) -> String? {
+        guard let record, let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), followsPeer(record: record, pairing: pairing) else { return nil }
         return pairing.peerPin
     }
 
@@ -428,10 +475,10 @@ public final class ClusterService: @unchecked Sendable {
             relayAsking = true; relayAsked = Date(); return true
         }
         guard begin else { return }
-        let context = self.context
+        let context = self.context, pairingStore = self.pairingStore
         Thread.detachNewThread { [weak self] in
             defer { self?.lock.withLock { self?.relayAsking = false } }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(), let selection = try? context.linkSelection(),
+            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
                   let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
                   let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                       body: body, seconds: 5).reply,
@@ -447,12 +494,12 @@ public final class ClusterService: @unchecked Sendable {
     /// The ports the other Mac has free (its status's `freePorts`), asked on a thread of its own and waited for at most
     /// `seconds`; nil when it does not answer in time or its build does not say.
     private func peerFreePorts(seconds: Double) -> [Int]? {
-        let context = self.context
+        let context = self.context, pairingStore = self.pairingStore
         let answered = ClusterOnboardingMailbox<[Int]>()
         let done = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
             defer { done.signal() }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(), let selection = try? context.linkSelection(),
+            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
                   let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
                   let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                       body: body, seconds: seconds).reply,
@@ -488,10 +535,10 @@ public final class ClusterService: @unchecked Sendable {
             return true
         }
         guard begin else { return }
-        let context = self.context
+        let context = self.context, pairingStore = self.pairingStore
         Thread.detachNewThread { [weak self] in
             defer { self?.lock.withLock { self?.syncing = false } }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin,
+            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), pairing.peerPin == leadership.peerPin,
                   let selection = try? context.linkSelection() else { return }
             let claim = self?.lock.withLock { self?.control?.claim }
             func send(_ command: ClusterServiceCommand, seconds: Double) -> ClusterServiceStatus? {
@@ -657,19 +704,22 @@ public final class ClusterService: @unchecked Sendable {
     /// cluster stopped, or the service gone, it is left over: verify-teardown counts it, a new service run stops it.
     public struct RecordedPart: Equatable, Sendable { public var pid: Int32; public var startedAt: Double; public var solo: Bool }
 
+    static func runningPart(_ part: RecordedPart?) -> RecordedPart? {
+        guard let part, let now = ClusterProcessTable.startTime(of: part.pid), abs(now - part.startedAt) < 0.001 else { return nil }
+        return part
+    }
+
     static func recordedPart(_ status: ClusterServiceStatus?) -> RecordedPart? {
-        guard let child = status?.child, child.running, let pid = child.pid, let startedAt = child.startedAt,
-              let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return nil }
-        return .init(pid: pid, startedAt: startedAt, solo: child.solo == true)
+        guard let child = status?.child, child.running, let pid = child.pid, let startedAt = child.startedAt else { return nil }
+        return runningPart(.init(pid: pid, startedAt: startedAt, solo: child.solo == true))
     }
 
     /// SIGTERM, repeated every `stopResendSeconds`, never SIGKILL (a rank releases its model itself), and only while the
     /// process is still the recorded one.
     static func stopLeftover(_ part: RecordedPart, seconds: Double) -> Bool {
-        func same() -> Bool { ClusterProcessTable.startTime(of: part.pid).map { abs($0 - part.startedAt) < 0.001 } ?? false }
         let started = Date()
         var sent = -1
-        while same() {
+        while runningPart(part) != nil {
             guard Date().timeIntervalSince(started) < seconds else { return false }
             let due = Int(Date().timeIntervalSince(started) / stopResendSeconds)
             if due > sent { sent = due; kill(part.pid, SIGTERM) }
@@ -737,6 +787,7 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     public func status() -> ClusterServiceStatus {
+        let oldPart = leftover()
         let record = try? store.readRecord()
         let saved = context.savedConfiguration()
         let configuration = saved.configuration
@@ -753,18 +804,19 @@ public final class ClusterService: @unchecked Sendable {
             var value = ClusterServiceStatus(role: record?.leadership?.role, serving: record?.leadership?.serving ?? false,
                 modelName: record?.leadership?.modelName, sessionLeader: leads, localRank: configuration?.localRank,
                 setup: reference.map { String($0.sha256.prefix(12)) },
-                child: .init(running: child?.isRunning ?? false, starts: starts, lastEnd: lastEnd,
-                    restartInSeconds: child == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
-                    lastError: child?.isRunning == true ? nil : Self.lastError(),
-                    pid: child?.isRunning == true ? child?.processIdentifier : nil,
-                    startedAt: child?.isRunning == true ? childStartedAt : nil,
-                    solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : nil,
-                    notice: child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice() : nil),
+                child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
+                    restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
+                    lastError: child?.isRunning == true ? nil : Self.lastError(in: serviceFiles.rankLog),
+                    pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
+                    startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
+                    solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
+                    notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
+                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil),
                 session: session,
                 // What this Mac applied from the Mac it follows (by control, not by who drove the onboarding):
                 // keyed by onboarding role, a Mac that drove it and then followed reported nothing, and the
                 // leader sent its settings again every 15 s.
-                cacheSync: Self.followedLeaderPin(record: record).flatMap { cacheStore.digest(leaderPin: $0) },
+                cacheSync: Self.followedLeaderPin(record: record, pairingStore: pairingStore).flatMap { cacheStore.digest(leaderPin: $0) },
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
@@ -827,7 +879,11 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The last "Error:" line of this Mac's part's log, bounded; nil when there is none.
     public static func lastError() -> String? {
-        guard let log = try? paths().rankLog, let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
+        (try? paths().rankLog).flatMap { lastError(in: $0) }
+    }
+
+    private static func lastError(in log: URL) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
@@ -838,7 +894,11 @@ public final class ClusterService: @unchecked Sendable {
 
     /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.
     public static func servingNotice() -> String? {
-        guard let log = try? paths().rankLog, let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
+        (try? paths().rankLog).flatMap { servingNotice(in: $0) }
+    }
+
+    private static func servingNotice(in log: URL) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
@@ -847,15 +907,20 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Kept beside the lock each tick, so `darkbloom cluster` on this Mac reads it without the link.
     private func publish() {
-        guard let file = try? Self.paths().pid.deletingLastPathComponent().appendingPathComponent("service-status.json"),
-              let data = try? JSONEncoder().encode(status()) else { return }
+        let file = store.paths.directory.appendingPathComponent("service-status.json")
+        guard let data = try? JSONEncoder().encode(status()) else { return }
         try? data.write(to: file, options: .atomic)
     }
 
     /// The status the running service last published on this Mac.
     public static func published() -> ClusterServiceStatus? {
-        guard let file = try? paths().pid.deletingLastPathComponent().appendingPathComponent("service-status.json"),
-              let data = try? Data(contentsOf: file) else { return nil }
+        guard let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
+        return published(in: directory)
+    }
+
+    private static func published(in directory: URL) -> ClusterServiceStatus? {
+        let file = directory.appendingPathComponent("service-status.json")
+        guard let data = try? Data(contentsOf: file) else { return nil }
         return try? JSONDecoder().decode(ClusterServiceStatus.self, from: data)
     }
 
@@ -871,6 +936,8 @@ public final class ClusterService: @unchecked Sendable {
     // MARK: - This Mac's part
 
     private func supervise(say: @escaping @Sendable (String) -> Void) {
+        // A cleanup timeout is not permission to load a second model beside the old one.
+        guard leftover() == nil else { return }
         // A record that cannot be read is not "the leader stopped serving" (F17: a service out of descriptors stopped its
         // part on the failed read): this Mac's part is kept as it is, and the failure is said once, until a read works.
         let record: ClusterSetupRecord
@@ -997,10 +1064,9 @@ public final class ClusterService: @unchecked Sendable {
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments
         process.standardInput = FileHandle.nullDevice
-        if let log = try? Self.paths().rankLog {
-            if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
-            if let handle = try? FileHandle(forWritingTo: log) { handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
-        }
+        let log = serviceFiles.rankLog
+        if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+        if let handle = try? FileHandle(forWritingTo: log) { handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
             lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key }

@@ -103,7 +103,7 @@ extension ClusterService {
             lock.withLock { controlResponder }?.stop()
             lock.withLock { controlResponder = nil }
         }
-        guard lock.withLock({ controlResponder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
+        guard lock.withLock({ controlResponder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore),
               let selection = try? context.linkSelection() else { return }
         do {
             let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection,
@@ -186,7 +186,7 @@ extension ClusterService {
     }
 
     func controlTick(say: @escaping @Sendable (String) -> Void) {
-        guard let pairing = try? ClusterSetupLinkExchange.pairing() else { return }
+        guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore) else { return }
         ensureControl(pairing: pairing)
         let record = try? store.readRecord()
         let local = localControlMember(pairing: pairing, record: record)

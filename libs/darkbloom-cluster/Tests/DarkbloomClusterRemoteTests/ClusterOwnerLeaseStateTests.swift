@@ -339,4 +339,61 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
             XCTAssertTrue(state.requiresNativeFence)
         }
     }
+
+    /// A lane owner (the pair's batch lanes) holds as many requests as it has
+    /// lanes, each with its own reservation, start, retirement and release,
+    /// and refuses one more; one lane keeps refusing a second reservation.
+    func testLanesHoldOneRequestPerLaneEachWithItsOwnLifecycle() throws {
+        var state = try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 1000, lanes: 2)
+        try state.beginNativeLaunch(child, now: 101)
+        try state.observeNativeStarted(child)
+        try state.observeReady(readiness(state.binding), launchID: child, now: 102)
+        let first = UUID(), second = UUID()
+        _ = try send(.reserve(requestID: first, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &state)
+        try state.observeAdmitted(requestID: first, reservedBytes: 60)
+        _ = try send(.start(requestID: first), to: &state, now: 111)
+        XCTAssertTrue(state.status.ready)
+        XCTAssertEqual(try send(.reserve(requestID: second, capacityLimitBytes: 70, remainingNanoseconds: 500), to: &state, now: 112),
+                       .forwardReserve(second, localDeadlineUptimeNanoseconds: 612))
+        XCTAssertFalse(state.status.ready)
+        XCTAssertEqual(state.status.chargedRequestBytes, 130)
+        XCTAssertEqual(Set(state.activeRequestIDs), [first, second])
+        // Every lane taken: a third reservation is refused.
+        var full = state
+        XCTAssertThrowsError(try send(.reserve(requestID: UUID(), capacityLimitBytes: 10, remainingNanoseconds: 10), to: &full, now: 113))
+        try state.observeAdmitted(requestID: second, reservedBytes: 50)
+        _ = try send(.start(requestID: second), to: &state, now: 113)
+        // The first lane retires and is released while the second still runs.
+        try state.observeRetired(requestID: first, retirement: .clean)
+        _ = try send(.release(requestID: first), to: &state, now: 114)
+        try state.observeRequestResourcesReleased(requestID: first)
+        XCTAssertEqual(state.activeRequestIDs, [second])
+        XCTAssertEqual(state.status.chargedRequestBytes, 50)
+        XCTAssertTrue(state.status.ready)
+        XCTAssertThrowsError(try send(.shutdown, to: &state, now: 115))
+        try state.observeRetired(requestID: second, retirement: .clean)
+        var ended = state
+        _ = try send(.release(requestID: second), to: &ended, now: 116)
+        try ended.observeRequestResourcesReleased(requestID: second)
+        XCTAssertEqual(try send(.shutdown, to: &ended, now: 117), .sendShutdown)
+        // A worker that exits with a lane still held keeps it charged until released.
+        try state.observeNativeTerminal(launchID: child, termination: .exited(status: 1))
+        XCTAssertFalse(state.canReleaseDeviceLease)
+        _ = try send(.release(requestID: second), to: &state, now: 118)
+        try state.observeRequestResourcesReleased(requestID: second)
+        XCTAssertTrue(state.canReleaseDeviceLease)
+        XCTAssertThrowsError(try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 1000, lanes: 9))
+    }
+
+    /// One lane's deadline passing quarantines the owner, as a single request's does.
+    func testAnyLaneDeadlineQuarantines() throws {
+        var state = try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 1000, lanes: 2)
+        try state.beginNativeLaunch(child, now: 101)
+        try state.observeNativeStarted(child)
+        try state.observeReady(readiness(state.binding), launchID: child, now: 102)
+        _ = try send(.reserve(requestID: UUID(), capacityLimitBytes: 10, remainingNanoseconds: 500), to: &state, now: 110)
+        _ = try send(.reserve(requestID: UUID(), capacityLimitBytes: 10, remainingNanoseconds: 50), to: &state, now: 111)
+        try state.observeTime(170)
+        XCTAssertTrue(state.quarantined)
+    }
 }

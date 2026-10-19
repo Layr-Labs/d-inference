@@ -19,7 +19,9 @@
 //   are untouched.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
-//   and owned Bonsai 9B listings honor their artifact defaults.
+//   and owned Bonsai 9B listings and the exact GLM-5.3-Flash identities (catalog
+//   `glm-5.3-flash` and the local qualification download) honor their artifact
+//   defaults.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -66,9 +68,14 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// Family gate. Explicit admission per model onboarding; sharing the
     /// `model_type` is not enough (Nano and Lightning share `nemotron_h`).
     static func honorsArtifactDefaults(modelId: String, modelType: String?) -> Bool {
-        Bonsai9BModelPolicy.matches(modelId: modelId, modelType: modelType)
-            || (modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
-                && EngineV2SupportedModels.isNemotron35ListingModelID(modelId))
+        if Bonsai9BModelPolicy.matches(modelId: modelId, modelType: modelType) {
+            return true
+        }
+        switch modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "nemotron_h": return EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
+        case "glm5_next": return GLM5NextCoordinatorServing.isManagedModelID(modelId)
+        default: return false
+        }
     }
 
     /// Resolve once at slot construction. `.legacy` when the gate is off,

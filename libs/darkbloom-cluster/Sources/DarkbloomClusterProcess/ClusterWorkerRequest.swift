@@ -53,7 +53,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 deadlineUptimeNanoseconds: reservation.deadlineUptimeNanoseconds,
                 capacityLimitBytes: min(capacity, reservation.capacityLimitBytes - bytes),
                 // Both ranks get the request's sampling (the selecting rank draws with it) and its route.
-                sampling: reservation.sampling, route: reservation.route)
+                sampling: reservation.sampling, route: reservation.route, mimoImages: reservation.mimoImages, stillImages: reservation.stillImages)
             try lock.withLock {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
                 try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
@@ -102,7 +102,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         for index in 0..<2 where state.submitted[index] == .admitted {
             do {
                 try owner.workers[index].sendWorkerCommand(.cancel(.callerCancelled), requestID: requestID, deadline: deadline)
-                let value = try owner.workers[index].receiveWorkerEvent(until: deadline)
+                // Routed with lanes: another lane's events stay with that lane.
+                let value = try owner.receive(rank: index, requestID: requestID, until: deadline)
                 guard value.requestID == requestID, value.event == .retired(.cancelled) else { return false }
             } catch { return false }
         }

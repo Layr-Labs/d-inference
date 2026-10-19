@@ -193,7 +193,7 @@ extension ClusterPlacementPlanner {
     /// Three or more members: every ordered grouping of all members into
     /// pipeline stages of one member or of a rank count the family's plan
     /// divides by (at least one such group), at every admitted cut set;
-    /// the best by tier, then predicted request time. Model-free: no runtime
+    /// the best by hardware fit, then predicted request time. Model-free: no runtime
     /// executes it, so it is reported and never chosen.
     static func tensorPipelineOption(context: Context) -> ClusterShardOption {
         let layout = context.layout, devices = context.devices
@@ -224,7 +224,8 @@ extension ClusterPlacementPlanner {
             }
         }
         let orders = permutations(Array(devices.indices))
-        var best: (option: ClusterShardOption, tier: Int, time: Double)?
+        // Chosen by hardware and predicted time; `tier` only reports live memory.
+        var best: (option: ClusterShardOption, group: Int, time: Double)?
         for shape in shapes {
             var seen = Set<[[Int]]>()
             let cutSets = context.cutSets(layout.admittedCuts, shape.count - 1)
@@ -235,17 +236,18 @@ extension ClusterPlacementPlanner {
                 for cuts in cutSets {
                     let evaluated = evaluateTensorPipeline(context: context, stages: stages, cuts: cuts, reduction: reduction)
                     let time = evaluated.prediction.requestSeconds
-                    if best == nil || evaluated.tier < best!.tier || (evaluated.tier == best!.tier && time < best!.time) {
+                    let group = evaluated.hardwareFits ? 0 : 4
+                    if best == nil || group < best!.group || (group == best!.group && time < best!.time) {
                         best = (.init(kind: .tensorPipeline, verdict: .notExecutedByRuntime, reason: "", mode: nil, cuts: cuts, shares: nil,
                             stages: stages.map { $0.map { devices[$0].label } }, members: evaluated.members, prediction: evaluated.prediction),
-                            evaluated.tier, time)
+                            group, time)
                     }
                 }
             }
         }
         guard let best else { return refuse(.doesNotFit, "no grouping of these members into stages has an admitted cut") }
         let o = best.option
-        guard best.tier < 4 else {
+        guard best.group < 4 else {
             return .init(kind: o.kind, verdict: .doesNotFit, reason: "no grouping of these members fits", mode: nil, cuts: o.cuts,
                 shares: nil, stages: o.stages, members: o.members, prediction: o.prediction)
         }
@@ -261,12 +263,12 @@ extension ClusterPlacementPlanner {
     /// the pipeline's step is the stages' sum (prefill: the slowest stage sets
     /// the pace, one chunk passes through the rest).
     static func evaluateTensorPipeline(context: Context, stages: [[Int]], cuts: [Int], reduction: ClusterReductionCost)
-        -> (members: [ClusterShardOption.Member], tier: Int, prediction: ClusterPlacementPrediction) {
+        -> (members: [ClusterShardOption.Member], tier: Int, hardwareFits: Bool, prediction: ClusterPlacementPrediction) {
         let layout = context.layout, tp = layout.tensorParallel!, regime = context.policy.regime
         let bounds = [0] + cuts + [layout.layerCount]
         let total = layout.layers.reduce(0.0) { $0 + $1.cost }
         let context_ = context.prompt + context.outputs, chunk = min(layout.maximumChunkTokens, context.prompt)
-        var members: [ClusterShardOption.Member] = [], tier = 0, decode: [Double] = [], prefill: [Double] = [], measured = true
+        var members: [ClusterShardOption.Member] = [], tier = 0, hardwareFits = true, decode: [Double] = [], prefill: [Double] = [], measured = true
         for (index, stage) in stages.enumerated() {
             let range = layout.range(bounds[index]..<bounds[index + 1])
             let k = stage.count, share = range.cost / total
@@ -300,10 +302,13 @@ extension ClusterPlacementPlanner {
                 let state = max(context.policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context_),
                                 part(range.stateBytes(tokens: context_)))
                 let request = max(memory.minimumAdmissibleBytes, state + part(range.requestWorkBytes)
-                    + part(range.transientBytes(chunk: chunk, context: context_)) + memory.loadingHeadroomBytes)
+                    + part(range.transientBytes(chunk: chunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
+                    + memory.loadingHeadroomBytes)
                 let need = max(load.need, load.held + request)
                 let fit = device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
                 tier = max(tier, fit.tier)
+                hardwareFits = hardwareFits
+                    && device.profile.hardwareFits(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
                 members.append(.init(device: device.label, firstLayer: range.layers.lowerBound, endLayer: range.layers.upperBound,
                     share: k > 1 ? 1 / Double(k) : nil, weightsBytes: load.held, needBytes: need, tier: fit.tier))
                 let split = ClusterDecodeSplit(rates: rates)
@@ -320,7 +325,7 @@ extension ClusterPlacementPlanner {
         let first = Double(context.prompt) * slowest + Double(chunk) * (sum - slowest)
             + Double(chunks * (stages.count - 1)) * context.link.perChunkSeconds
         let step = decode.reduce(0, +) + (context.link.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? 0)
-        return (members, tier, .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
+        return (members, tier, hardwareFits, .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
             prefillTokensPerSecond: Double(context.prompt) / first, decodeTokensPerSecond: 1 / step,
             requestSeconds: first + Double(max(0, context.outputs - 1)) * step))
     }

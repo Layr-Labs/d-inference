@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-17
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -9,6 +9,13 @@ Each Mac of a cluster runs an ordinary background service, the way a solo
 `darkbloom start` runs: it starts at login, waits for the Thunderbolt link,
 restarts this Mac's part after a failure with backoff, and asks for macOS
 permissions once.
+
+The service prevents idle system sleep while a serving deployment is saved,
+including while it waits for a peer, and until its child and relay stop. It
+releases the assertions when serving stops or the service exits. This does not
+override explicit sleep, shutdown, or closing a laptop lid on battery.
+`ClusterServicePowerAssertions` owns these assertions on the supervision thread
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/`.
 
 ## The cluster service starts at login (`darkbloom cluster`)
 

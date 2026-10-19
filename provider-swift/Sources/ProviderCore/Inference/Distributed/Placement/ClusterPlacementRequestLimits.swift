@@ -22,19 +22,30 @@ public enum ClusterPlacementRequestLimits {
         public init() {}
     }
 
-    /// The prefill chunk: the one the model's passing qualification records
-    /// ran at (the most common, the larger on a tie), so the served
-    /// computation is the qualified one; without a record, the largest chunk
-    /// the model and the worker admit. Never above either limit.
-    public static func chunkTokens(runtimeModelID: String, layoutMaximum: Int, capabilityMaximum: Int,
+    /// A chunk preference from passing records whose prompts were at least
+    /// their configured chunk (most common, larger on a tie). A short prompt
+    /// does not exercise its chunk cap. Artifact identity narrows the hint when
+    /// supplied; nil preserves model-only callers. Neither this preference nor
+    /// the largest-admitted fallback grants traffic or qualifies speed/current
+    /// binaries. Actual exercised frame geometry is not recorded here.
+    public static func chunkTokens(runtimeModelID: String, artifactSHA256: String? = nil,
+                                   layoutMaximum: Int, capabilityMaximum: Int,
                                    records: [ClusterPairQualificationRecord] = ClusterPairServingGrants.records) -> (tokens: Int, basis: String) {
         let limit = max(1, min(layoutMaximum, capabilityMaximum))
-        let runs = records.filter { $0.runtimeModelID == runtimeModelID && $0.isConsistent && $0.outcome == .passed && $0.chunkTokens <= limit }
+        let artifact = artifactSHA256.map {
+            ClusterPairServingGrants.qualifyingArtifact(for: $0, runtimeModelID: runtimeModelID)
+        }
+        let runs = records.filter {
+            $0.runtimeModelID == runtimeModelID
+                && (artifact == nil || $0.artifactSHA256 == artifact)
+                && $0.isConsistent && $0.outcome == .passed
+                && $0.chunkTokens <= limit && $0.promptTokens >= $0.chunkTokens
+        }
         let counts = Dictionary(grouping: runs, by: \.chunkTokens).mapValues(\.count)
         if let chosen = counts.max(by: { ($0.value, $0.key) < ($1.value, $1.key) }) {
-            return (chosen.key, "\(chosen.key) prompt tokens a frame: the chunk \(chosen.value) passing qualification run\(chosen.value == 1 ? "" : "s") of this model used")
+            return (chosen.key, "\(chosen.key) prompt tokens a frame: preferred by \(chosen.value) passing run\(chosen.value == 1 ? "" : "s") with prompts at least that long")
         }
-        return (limit, "\(limit) prompt tokens a frame: the largest the model and the worker admit (no qualification run of this model to follow)")
+        return (limit, "\(limit) prompt tokens a frame: largest supported chunk; no matching long-prompt measurement is available")
     }
 
     /// The request deadline: the chosen placement's predicted time for the

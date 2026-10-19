@@ -115,8 +115,13 @@ final class QwenLayerStageSession {
               request.profile.activationDType == receipt.embeddingActivationDType else {
             throw ProbeError("Generation profile differs from the actual loaded stage geometry/dtype")
         }
-        let geometry = try (stage.model as? any LayerStageFrameForwarding)?
+        var forwarded = try (stage.model as? any LayerStageFrameForwarding)?
             .layerStageRequestGeometry(maximumTokens: request.maximumTokens)
+        // A Gemma stage serving batch lanes attends through its KV host.
+        if let value = forwarded, stage.model is Gemma4LayerStageModel, let host = stage.kvHost.host {
+            forwarded = try CBv2RequestGeometry(gemma4Stage: value, host: host, maximumTokens: request.maximumTokens)
+        }
+        let geometry = try forwarded
             ?? CBv2RequestGeometry(model: stage.model, family: .qwen35,
                 feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(stage.model),
                 layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
@@ -144,9 +149,19 @@ final class QwenLayerStageSession {
             self.schedule = handoff ? try QwenLayerStageGenerationSchedule(request: request,
                 adoptedCommittedTokens: adopting.committedTokens) : QwenLayerStageGenerationSchedule(request: request)
             self.state = try MLX.withError { error in
+                // A sliding layer's kept window rides in the recurrent slots
+                // (`capturePrefix`): give it back to its row, not to recurrent
+                // state. A hand-off carries every row as attention.
+                let sliding = handoff ? [] : Set(geometry.kinds.compactMap { kind -> Int? in
+                    if case .slidingWindow = kind.attention { return kind.modelLayerIndex }
+                    return nil
+                })
+                let kept = try localized(adopting.recurrent)
                 let value = try CBv2OwnedRequestState(geometry: geometry, promptCount: request.promptCount,
                     outputCount: request.outputCount, adoptingCommittedTokens: adopting.committedTokens,
-                    attention: try localized(adopting.attention), recurrent: try localized(adopting.recurrent))
+                    attention: try localized(adopting.attention),
+                    slidingTails: kept.filter { sliding.contains($0.key) }.mapValues { (keys: $0.conv, values: $0.ssm) },
+                    recurrent: kept.filter { !sliding.contains($0.key) })
                 try error.check()
                 return value
             }
@@ -420,28 +435,48 @@ final class QwenLayerStageSession {
             recurrent[index] = (conv: conv, ssm: ssm)
         }
         var rows: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        // A sliding-window row (Gemma 4) holds only its window, oldest first:
+        // its state at a frontier is its own, kept per frontier in the
+        // recurrent slots (keys, values), as MiMo keeps a ring's tail.
+        var tails: [Int: (keys: MLXArray, values: MLXArray)] = [:], windowBytes = 0
         for (position, optionalRow) in state.rows.enumerated() {
-            guard let row = optionalRow, let local = state.geometry.kinds[position].modelLayerIndex,
+            let kind = state.geometry.kinds[position]
+            guard let row = optionalRow, let local = kind.modelLayerIndex,
                   let index = global[local] else { throw ProbeError("Prefix capture lacks an attention row") }
             let snapshot = row.snapshot()
-            guard snapshot.offset == frontier, snapshot.keys.dim(2) == frontier else {
+            let retained = kind.retainedTokens(atFrontier: frontier)
+            guard snapshot.offset == frontier, snapshot.keys.dim(2) == retained, retained > 0 else {
                 throw ProbeError("Prefix capture attention frontier differs")
             }
-            rows[index] = (keys: snapshot.keys, values: snapshot.values)
+            if case .slidingWindow(let window) = kind.attention {
+                tails[index] = (keys: snapshot.keys, values: snapshot.values)
+                // Every frontier is charged a full window: a tail taken before
+                // the prompt filled it is shorter than every later one.
+                let perPosition = (snapshot.keys.nbytes + snapshot.values.nbytes + retained - 1) / retained
+                windowBytes = try QwenLongPrefillCheckedBytes.sum([windowBytes,
+                    try QwenLongPrefillCheckedBytes.product([perPosition, window])])
+            } else {
+                rows[index] = (keys: snapshot.keys, values: snapshot.values)
+            }
         }
         let planned = prefixCaptureFrontiers.sorted()
         if prefixKept == nil {
             // Logical sizes: the compact size of what would be kept.
             let attention = rows.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
             let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: (attention + frontier - 1) / frontier,
-                recurrentBytesPerFrontier: recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes },
+                recurrentBytesPerFrontier: recurrent.values.reduce(windowBytes) { $0 + $1.conv.nbytes + $1.ssm.nbytes },
                 historyBytesPerToken: prefixHistoryBytesPerToken)
             prefixCaptureCost = cost
             prefixKept = cost.kept(planned, limit: prefixCaptureLimitBytes ?? Int.max,
                 maximum: prefixCaptureMaximumFrontiers)
         }
         guard prefixKept?.contains(frontier) == true else { return }
-        let compact = recurrent.mapValues { (conv: contiguous($0.conv), ssm: contiguous($0.ssm)) }
+        var compact = recurrent.mapValues { (conv: contiguous($0.conv), ssm: contiguous($0.ssm)) }
+        for (index, tail) in tails {
+            // Own copies: the ring takes later tokens in place.
+            let one = MLXArray(1).asType(tail.keys.dtype)
+            compact[index] = (conv: tail.keys * one, ssm: tail.values * one)
+        }
         eval(compact.values.flatMap { [$0.conv, $0.ssm] })
         capturedRecurrent[frontier] = compact
         guard frontier == planned.last else { return }
@@ -637,6 +672,12 @@ extension QwenLayerStageSession {
                 let input = MLXArray(tokens.map(Int32.init)).reshaped([rows, 1])
                 let output = try CBv2OwnedRequestState.runBatch(sessions.map(\.state), tokenCount: 1, check: checked,
                     forward: { caches, evaluations in
+                        // A stage that runs its own frames takes the rows as
+                        // one `[B, 1]` decode frame.
+                        if let forwarding = first.stage.model as? any LayerStageFrameForwarding {
+                            return forwarding.layerStageForward(tokens: input, residual: residual, caches: caches,
+                                frame: frames[0])
+                        }
                         if stageIndex == 0 {
                             let native = first.stage.model as! any CBv2RecurrentMTPForwardable
                             return native.cbv2ForwardWithHidden(input, caches: caches.map { $0 as! any KVCache },

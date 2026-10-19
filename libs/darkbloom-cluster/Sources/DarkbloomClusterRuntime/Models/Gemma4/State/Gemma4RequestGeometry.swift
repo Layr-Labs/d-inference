@@ -48,4 +48,16 @@ extension CBv2RequestGeometry {
         // Every Gemma layer owns attention state.
         layerCount = kinds.count
     }
+
+    /// This geometry on a stage's KV host (its batch lanes): the host's caches
+    /// and backend, which were built for exactly these layers.
+    init(gemma4Stage geometry: CBv2RequestGeometry, host: CBv2StageKVHost, maximumTokens: Int) throws {
+        guard host.layerKinds == geometry.kinds, host.caches.count == geometry.kinds.count,
+              host.kvDType == geometry.kvDType, maximumTokens <= host.maximumTokensPerRequest else {
+            throw ProbeError("Stage KV host differs from this Gemma stage's layers or request bound")
+        }
+        kinds = geometry.kinds; caches = host.caches; recurrent = geometry.recurrent
+        kvDType = geometry.kvDType; kvCapacityBytes = geometry.kvCapacityBytes
+        layerCount = geometry.layerCount; self.host = host
+    }
 }

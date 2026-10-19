@@ -45,10 +45,11 @@ let package = Package(
             .product(name: "MLX", package: "mlx-swift"),
             .product(name: "MLXNN", package: "mlx-swift"),
             .product(name: "MLXLLM", package: "mlx-swift-lm"),
+            .product(name: "MLXVLM", package: "mlx-swift-lm"),
             .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             .product(name: "Cmlx", package: "mlx-swift"),
         ]),
-        .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime", "DarkbloomClusterProtocol"]),
+        .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime", "DarkbloomClusterProtocol", "DarkbloomClusterPlacement"]),
         // Transport discovery + contract check (single process). Run manually:
         //   swift run cluster-loopback-check
         .executableTarget(name: "cluster-loopback-check", dependencies: [

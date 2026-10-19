@@ -44,6 +44,8 @@ public enum ClusterRuntimeCapabilityCodec {
         if value.supportedGenerationModes != [.pipeline] {
             object["supportedGenerationModes"] = value.supportedGenerationModes.map(\.rawValue)
         }
+        if value.media != nil { object["media"] = ClusterMiMoImageCandidate.fields }
+        if value.glmImages != nil { object["glmImages"] = ClusterGLMImageCandidate.fields }
         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
         data.append(10); return data
@@ -102,13 +104,15 @@ public enum ClusterRuntimeCapabilityCodec {
                 return value
             }
         } else { modes = [.pipeline] }
+        let media = r.values["media"] == nil ? nil : try ClusterMiMoImageCandidate.decode(r.object("media"))
+        let glmImages = r.values["glmImages"] == nil ? nil : try ClusterGLMImageCandidate.decode(r.object("glmImages"))
         let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
             adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
             arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), supportedPrefillSchedules: schedules,
-            supportedGenerationModes: modes)
+            supportedGenerationModes: modes,media:media,glmImages:glmImages)
         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
             && r.int("maxActiveRequests") == value.maxActiveRequests

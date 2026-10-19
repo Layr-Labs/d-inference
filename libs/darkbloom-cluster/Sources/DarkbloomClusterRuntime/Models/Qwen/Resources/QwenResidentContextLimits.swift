@@ -26,15 +26,16 @@ struct QwenResidentContextLimits: Equatable, Encodable {
     let maximumOutputTokens: Int
     let maximumChunkTokens: Int
 
-    init(declaredContextTokens declared: Int) throws {
-        guard declared >= 2, declared <= 1_048_576 else {
+    init(declaredContextTokens declared: Int, prefillChunkTokens: Int = Self.chunkTokens) throws {
+        guard declared >= 2, declared <= 1_048_576,
+              (1...ClusterWorkerLimits.promptTokens).contains(prefillChunkTokens) else {
             throw QwenDenseProfileError("Declared model context is outside the bounded metadata scope")
         }
         declaredContextTokens = declared
         maximumContextTokens = min(ClusterWorkerLimits.contextTokens, declared)
         maximumPromptTokens = min(ClusterWorkerLimits.promptTokens, maximumContextTokens - 1)
         maximumOutputTokens = min(ClusterWorkerLimits.outputTokens, maximumContextTokens - 1)
-        maximumChunkTokens = min(Self.chunkTokens, maximumPromptTokens)
+        maximumChunkTokens = min(prefillChunkTokens, maximumPromptTokens)
     }
 
     /// The earlier fixed profile every model had (8,192 prompt, 128 output,

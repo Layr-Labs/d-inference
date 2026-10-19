@@ -31,7 +31,7 @@ public actor DistributedLocalServer {
     // Existing test/read-only host views refer to the retained current generation.
     var session: any DistributedLocalServerSession { generation.session }
     var entry: MultiModelBatchSchedulerEngine.ModelRegistryEntry? { generation.entry }
-    var pin: UUID? { generation.pin }
+    var pins: Set<UUID> { generation.pins }
     var responses: DistributedHTTPResponses { generation.responses }
 
     public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
@@ -60,7 +60,7 @@ public actor DistributedLocalServer {
 
     public var status: DistributedLocalServerStatus {
         .init(phase: phase, publicModelID: binding.publicModelID,
-              boundPort: boundPort, acquisitions: generation.pin == nil ? 0 : 1,
+              boundPort: boundPort, acquisitions: generation.pins.count,
               session: generation.session.status, failed: failed)
     }
 

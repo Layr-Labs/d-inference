@@ -545,7 +545,8 @@ final class QualificationRequestTests: XCTestCase {
                        ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
                         "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
                         "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
-                        "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit"])
+                        "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit",
+                        "registered_glm53_flash"])
         // A model with routed experts adds its route to the three common variables; the others add nothing.
         XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))
@@ -565,6 +566,12 @@ final class QualificationRequestTests: XCTestCase {
         let mimoRow = try XCTUnwrap(QualificationRequest.registeredModel(mimo.modelID))
         XCTAssertFalse(mimoRow.hasRecordingRuntime)
         XCTAssertEqual(QualificationRequest.registeredModel(large.modelID)?.hasRecordingRuntime, true)
+        // GLM retains its own profile, every layer boundary, and no recording runtime.
+        let glm = try make("registered_glm53_flash")
+        XCTAssertEqual(glm.profileID, "registered_glm53_flash_greedy_generation_v1")
+        XCTAssertEqual(glm.supportedCuts, Array(1...44))
+        XCTAssertFalse(try XCTUnwrap(QualificationRequest.registeredModel(glm.modelID)).hasRecordingRuntime)
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try glm.encoded()), glm)
         // A Gemma request carries its own vocabulary and its two serving values; a Qwen request keeps the Qwen bound.
         let source = QualificationPromptSource(kind: "tokenIDs", description: "test")
         let gemma = try QualificationRequest(requestID: UUID(), promptTokenIDs: [2, 262_143], chunkSize: 2, outputCount: 4,

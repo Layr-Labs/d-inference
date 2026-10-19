@@ -16,6 +16,7 @@ import Darwin
 
     static func main() {
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(120); defer { alarm(0) }
+        privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()
         terminalPresentationFallbacks()
         failedTestDoesNotClaimSetupSuccess()
         modelPresentationPreservesEveryFamilyAndBlocker()
@@ -286,6 +287,34 @@ import Darwin
                 recorder.note(scope.bind.map { "setScope local \($0)" } ?? "setScope public")
                 return .success([scope.isLocalOnly ? "Saved: this cluster serves locally only." : "Saved: this cluster serves through Darkbloom."])
             })
+    }
+
+    static func privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac() {
+        let request = ClusterOnboardingRequest(scope: .localOnly(bind: "127.0.0.1"),
+            model: ClusterOnboardingRequest.privateMiMoModelID, privateMiMoImageQualification: true)
+        for role in [Optional<ClusterOnboardingRole>.none, .member] {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, resume: .init(role: role), pairEvents: [], pairResult: .failed([])), request: request)
+            expect(run.finish() == 1, "private qualification refuses an unpaired/member Mac")
+            expect(recorder.all.isEmpty, "no pair/service/plan/adopt/start action occurs on refusal")
+            expect(run.text.contains("already paired current control leader"), "refusal names the supported route")
+        }
+        var invalid = request; invalid.scope = .publicServing
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader), pairEvents: [], pairResult: .failed([])), request: invalid)
+        expect(run.finish() == 1 && recorder.all.isEmpty, "public scope cannot trigger private setup actions")
+        // The real driver still reaches normal planning on the supported leader.
+        // Stop at its existing countdown: no synthetic Ready or model success.
+        let leaderRecorder = Recorder()
+        let choice = ClusterOnboardingModelChoice(title: "MiMo private PNG", lines: ["private qualification"], blocker: nil,
+            modelID: ClusterOnboardingRequest.privateMiMoModelID)
+        let leader = TerminalRun(operations(leaderRecorder, resume: .init(role: .leader), pairEvents: [], pairResult: .failed([]),
+            choices: [choice]), request: request)
+        expect(leader.waitFor("Starting MiMo private PNG on both Macs"), "leader reaches the normal plan/choose/start countdown")
+        leader.type("n")
+        expect(leader.finish() == 0, "qualification can be cancelled before adoption/start")
+        expect(leaderRecorder.all.contains("planModels"), "leader uses normal planning")
+        expect(!leaderRecorder.all.contains("adopt 0") && !leaderRecorder.all.contains("serve"), "cancelled draft creates no saved plan or Ready")
     }
 
     /// One driver run on a pseudo-terminal: the keys are typed only once the text before them is on screen.

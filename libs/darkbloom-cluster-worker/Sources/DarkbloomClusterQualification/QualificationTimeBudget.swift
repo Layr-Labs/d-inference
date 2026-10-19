@@ -73,6 +73,9 @@ public struct QualificationTimeBudget: Equatable, Sendable {
             attentionDoublingTokens: 32_768),
         "registered_gpt_oss_20b": .init(slowestPrefillTokensPerSecond: 1000, slowestDecodeTokensPerSecond: 50,
             attentionDoublingTokens: 32_768),
+        // GLM-5.3-Flash: not yet measured; deliberately slow rates (longer timeouts).
+        "registered_glm53_flash": .init(slowestPrefillTokensPerSecond: 100, slowestDecodeTokensPerSecond: 5,
+            attentionDoublingTokens: 32_768),
         "registered_mimo_v26_flash_mopd": .init(slowestPrefillTokensPerSecond: 250, slowestDecodeTokensPerSecond: 20,
             attentionDoublingTokens: 32_768),
     ]

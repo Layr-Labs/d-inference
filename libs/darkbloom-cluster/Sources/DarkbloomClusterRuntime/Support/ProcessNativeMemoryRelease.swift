@@ -30,7 +30,7 @@ public enum ProcessNativeMemoryRelease {
     }
 }
 
-/// A standing MLX wired limit for a loaded stage, as `MiMoStageResidency` on
+/// A standing MLX wired limit for a loaded stage, as `ClusterStageResidency` on
 /// work/mimo and the product's `MiMoV26WiredResidency` keep for MiMo.
 ///
 /// Qualification only for the dense Qwen stages: S00 measures whether they

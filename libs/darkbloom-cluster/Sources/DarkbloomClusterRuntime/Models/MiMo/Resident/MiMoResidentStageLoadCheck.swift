@@ -92,10 +92,10 @@ public enum MiMoResidentStageLoadCheck {
         let allowance = try MiMoResidentRequestAllowance.derive(specification: specification, plan: stage.plan,
             rank: stage.stageIndex, maximumTokens: probe.prefillTokens + probe.decodeSteps,
             chunkSize: probe.prefillTokens)
-        var residency: MiMoStageResidency?
+        var residency: ClusterStageResidency?
         if probe.residency {
             Stream.gpu.synchronize(); Stream.cpu.synchronize()
-            residency = try MiMoStageResidency(bytes: stage.receipt.loadedTensorBytes + allowance.reservedBytes)
+            residency = try ClusterStageResidency(bytes: stage.receipt.loadedTensorBytes + allowance.reservedBytes)
         }
         defer { try? residency?.end() }
         let caches = stage.model.newCache()
@@ -208,7 +208,7 @@ public enum MiMoResidentStageLoadCheck {
                     return os.wiredPages * os.pageSizeBytes
                 }
                 let before = Memory.snapshot().activeMemory
-                let wiredBefore = try systemWired(), limitBefore = MiMoStageResidency.current
+                let wiredBefore = try systemWired(), limitBefore = ClusterStageResidency.current
                 let started = DispatchTime.now().uptimeNanoseconds
                 var verified = started
                 try autoreleasepool {
@@ -265,7 +265,7 @@ public enum MiMoResidentStageLoadCheck {
                     modelReleased: retired == nil,
                     systemWiredBytesBefore: wiredBefore, systemWiredBytesLoaded: wiredLoaded,
                     systemWiredBytesAfterRelease: wiredAfter, systemWiredSettleSeconds: wiredSettle,
-                    wiredLimitBytesBefore: limitBefore, wiredLimitBytesAfterRelease: MiMoStageResidency.current,
+                    wiredLimitBytesBefore: limitBefore, wiredLimitBytesAfterRelease: ClusterStageResidency.current,
                     verifySeconds: Double(verified - started) / 1e9, loadSeconds: Double(finished - verified) / 1e9,
                     heldSeconds: holdSeconds == 0 ? 0 : held, arithmeticContract: arithmetic.contract,
                     probe: probed, resourceAdmission: .current)

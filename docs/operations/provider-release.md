@@ -95,6 +95,15 @@ documents the release key/CDN contract; a missing CDN configuration returns
 contracts and are not evidence that a live deployment implements the latest
 automatic-registration semantics.
 
+## Archive Extraction Permissions
+
+Installer and self-update archive extraction use a child-local `umask 022` so
+ordinary release modes, including the fan helper's required `0755`, survive a
+provider started with `umask 077`. The caller's private-state mask is unchanged.
+Hash, signature, runtime-capability and atomic replacement checks still run;
+extraction does not enable tar's full-permissions or unsafe-path options.
+Coordinate the platform-served installer snapshot separately before publication.
+
 ## Steps
 
 ### 1. Check Source And Artifact Version

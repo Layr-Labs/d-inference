@@ -10,7 +10,11 @@ public enum ClusterResidentModelCatalog {
     /// The runtime that executes a family's models. `qwenDense` is the
     /// layer-stage resident runtime: the Qwen catalog (dense, routed-expert,
     /// Prism and Nemotron rows) and Gemma 4 through its own layer-stage seam.
-    public enum Family: String, Sendable { case qwenDense, gptoss, mimoV26 }
+    public enum Family: String, Sendable { case qwenDense, gptoss, mimoV26, glm5Next }
+
+    /// The largest `config.json` any family reads: GLM NVFP4 declares
+    /// per-expert packing in about 10 MiB. Each family's pins still decide.
+    public static let maximumConfigurationBytes = GLM5NextRegisteredSpecification.maximumConfigurationBytes
 
     public struct Entry: Equatable, Sendable {
         public let family: Family
@@ -66,8 +70,18 @@ public enum ClusterResidentModelCatalog {
             configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
     }
 
+    private static func entry(_ specification: GLM5NextRegisteredSpecification) -> Entry? {
+        guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: specification.model.rawValue) else { return nil }
+        return .init(family: .glm5Next, adapterID: adapter.rawValue,
+            runtimeModelID: specification.model.rawValue, profileID: specification.profileID,
+            layerCount: specification.layers, supportedCuts: specification.supportedCuts,
+            supportedPrefillSchedules: specification.supportedPrefillSchedules,
+            supportedGenerationModes: specification.supportedGenerationModes,
+            configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
+    }
+
     /// Each family's models in its own catalog order: the Qwen catalog first,
-    /// then GPT-OSS, MiMo and Gemma 4.
+    /// then GPT-OSS, MiMo, Gemma 4 and GLM.
     public static var all: [Entry] {
         QwenDenseRegisteredSpecification.all.compactMap { specification in
             QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: specification.model.rawValue)
@@ -75,6 +89,7 @@ public enum ClusterResidentModelCatalog {
         } + GPTOSSResidentCapabilityMetadata.registeredModels.compactMap { entry($0) }
           + MiMoRegisteredSpecification.all.compactMap { entry($0) }
           + Gemma4RegisteredSpecification.all.compactMap { entry($0) }
+          + GLM5NextRegisteredSpecification.all.compactMap { entry($0) }
     }
 
     /// One line per registered model of every family and the cuts it may be
@@ -94,7 +109,7 @@ public enum ClusterResidentModelCatalog {
     /// the first of them; `describe` tells them apart by the manifest.
     public static func entry(configuration: Data) throws -> Entry {
         let digest = sha256(configuration)
-        guard (1...1_048_576).contains(configuration.count),
+        guard (1...maximumConfigurationBytes).contains(configuration.count),
               let value = all.first(where: { $0.configurationSHA256 == digest }) else {
             throw ProbeError("The configuration is not a registered resident model's")
         }
@@ -103,10 +118,28 @@ public enum ClusterResidentModelCatalog {
 
     /// The capability record of whichever registered model the bytes belong to.
     public static func describe(configuration: Data, manifest: Data,
-                                runtimeBinarySHA256: String) throws -> ClusterRuntimeCapability {
+                                runtimeBinarySHA256: String, runtimeProfile: String? = nil) throws -> ClusterRuntimeCapability {
+        if let runtimeProfile, runtimeProfile != ClusterMiMoImageCandidate.profileID
+            && runtimeProfile != ClusterGLMImageCandidate.profileID {
+            guard try entry(configuration:configuration).profileID == runtimeProfile else {
+                throw ProbeError("Runtime profile does not belong to this registered artifact")
+            }
+        }
+        if runtimeProfile == ClusterMiMoImageCandidate.profileID {
+            return try MiMoResidentCapabilityMetadata.describe(configuration:configuration,manifest:manifest,
+                runtimeBinarySHA256:runtimeBinarySHA256,imageCandidate:true)
+        }
+        if runtimeProfile == ClusterGLMImageCandidate.profileID {
+            return try GLM5NextResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
+                runtimeBinarySHA256: runtimeBinarySHA256, imageCandidate: true)
+        }
         // MiMo's bytes are known by their pin, GPT-OSS's by its own catalog.
         // Every other input is the dense producer's to describe or to refuse,
         // in its own words as before.
+        if GLM5NextRegisteredSpecification.handles(configuration: configuration) {
+            return try GLM5NextResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
+                                                                   runtimeBinarySHA256: runtimeBinarySHA256)
+        }
         if (try? MiMoRegisteredSpecification.specification(configuration: configuration)) != nil {
             return try MiMoResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
                                                                runtimeBinarySHA256: runtimeBinarySHA256)

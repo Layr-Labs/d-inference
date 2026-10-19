@@ -8,6 +8,15 @@ import Foundation
     static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--glm-calibration-quote" {
+                try GLM5NextCalibrationQuoteCommand.run(arguments: Array(arguments.dropFirst()))
+                Darwin.exit(0)
+            }
+            if arguments.first == "--glm-calibrate" {
+                try GLM5NextCalibrationCommand.run(arguments: Array(arguments.dropFirst()))
+                // Observations never prove retirement or permit process reuse.
+                ProcessForcedExit.finish(status: 0, reason: "glm-calibration-process-exit-only")
+            }
             if arguments.first == "--describe-runtime" {
                 try WorkerCapabilityCommand.run(arguments: arguments)
                 Darwin.exit(0)
@@ -97,11 +106,16 @@ import Foundation
             let attachment = try configuration.bootstrap?.attach(epoch: configuration.load.identity.membershipEpoch,
                 rank: configuration.load.rank)
             let runtime: any WorkerRuntime
-            if configuration.family == .gptoss {
+            if let document = configuration.glmQualificationDocument {
+                guard let dataPlane else { throw WorkerFailure.invalid("GLM qualification requires authenticated data plane") }
+                runtime = try GLM5NextWorkerRuntime(configuration: configuration, document: document,
+                    credential: dataPlane, attachment: attachment)
+            } else if configuration.family == .gptoss {
                 runtime = try GPTOSSWorkerRuntime(configuration.load, attachment: attachment,
                     evidenceDirectory: configuration.evidenceDirectory,
                     generationMode: configuration.generationMode, qualification: qualification, dataPlane: dataPlane)
             } else {
+                guard let family = configuration.family else { throw WorkerFailure.invalid("Missing registered model family") }
                 guard configuration.family == .qwenDense || configuration.evidenceDirectory == nil else {
                     throw WorkerFailure.invalid("Only the dense adapter has a recording runtime; run this model without --evidence-directory")
                 }
@@ -109,7 +123,7 @@ import Foundation
                     try RecordingWorkerRuntime(configuration.load, attachment: attachment, evidenceDirectory: $0,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
-                } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, attachment: attachment,
+                } ?? NativeWorkerRuntime(configuration.load, family: family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey,
                         tensorShares: configuration.tensorShares)

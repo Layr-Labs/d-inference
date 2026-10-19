@@ -40,7 +40,7 @@ struct MiMoSpeculativeDecode {
 /// With `prefixCache`, both ranks first agree a prompt-prefix plan before the
 /// first forward (`agreeMiMoStagePrefixPlan`): reuse the deepest frontier both
 /// hold, restored on both or neither, and keep this prompt's frontiers once
-/// both ranks retired cleanly (`storeMiMoStagePrefix`).
+/// both ranks retired cleanly (`storeClusterStagePrefix`).
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
     agreement unplannedAgreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
     prefixCache requestedPrefixCache: QwenStagePrefixCache? = nil, speculative: MiMoSpeculativeDecode? = nil,
@@ -69,7 +69,7 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 agreement: unplannedAgreement, collective: collective, recordsSteps: recordsSteps, check: checked)
             let agreement = planned.agreement
             let session: MiMoLayerStageSession? = planned.session
-            let captureLimit = beginMiMoStagePrefixCapture(cache: prefixCache, session: planned.session)
+            let captureLimit = beginClusterStagePrefixCapture(cache: prefixCache, capture: planned.session.prefixCapture)
             defer { prefixCache?.endCapture() }
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport: QwenLayerStageGenerationTransport
@@ -195,8 +195,8 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                let stored = storeMiMoStagePrefix(cache: prefixCache, session: owned, agreement: agreement,
-                    rank: collective.rank, captureLimit: captureLimit)
+                let stored = storeClusterStagePrefix(cache: prefixCache, capture: owned.prefixCapture, agreement: agreement,
+                    rank: collective.rank, captureLimit: captureLimit, family: "mimo", skippedKey: "skipped_rotated")
                 var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,

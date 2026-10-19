@@ -394,8 +394,9 @@ import Foundation
         }
         if let steps = fields["--mimo-step-evidence"]?.first {
             guard steps == "on" else { throw Failure("--mimo-step-evidence takes only the value on") }
-            guard configuration.request.modelID == "registered_mimo_v26_flash_mopd" else {
-                throw Failure("--mimo-step-evidence is for the MiMo row only")
+            // MiMo's step lines; the GLM row writes the same evidence format.
+            guard ["registered_mimo_v26_flash_mopd", "registered_glm53_flash"].contains(configuration.request.modelID) else {
+                throw Failure("--mimo-step-evidence is for the MiMo and GLM rows only")
             }
             configuration.mimoStepEvidence = true
         }

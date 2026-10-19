@@ -74,9 +74,9 @@ it('rejects an unsigned preview backend before executing it or updating it', asy
   const runtime = await fixture(ready);
   const backend = new Backend(true, runtime);
   await backend.connect();
-  // macOS codesign rejects the unsigned fixture; CI's Linux runner has no codesign (ENOENT, which
-  // reads as a missing runtime). Either way the backend must refuse it without executing it.
-  expect(backend.current.state).toBe(process.platform === 'darwin' ? 'error' : 'missing');
+  // macOS codesign rejects the unsigned fixture; CI's Linux runner has no codesign at all. Either
+  // way the binary exists, so it is an untrusted runtime (an error), never a missing install.
+  expect(backend.current.state).toBe('error');
   await expect(readFile(path.join(runtime.directory, 'connection.json'))).rejects.toThrow();
   await expect(backend.install('unused')).rejects.toThrow('Rebuild the local preview');
 });

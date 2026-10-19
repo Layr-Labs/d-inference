@@ -60,6 +60,15 @@ const until = (backend: Backend, test: (status: DesktopStatus) => boolean) =>
     };
     backend.on('status', listener);
   });
+// The watch loop's reconnect may still be awaiting real file-system I/O when the fake clock
+// advances, so its next 5 s wait can be scheduled after an advance. Keep advancing until it exits.
+const stopWatching = async (backend: Backend, watching: Promise<void>) => {
+  backend.stop();
+  let done = false;
+  void watching.then(() => (done = true));
+  while (!done) await vi.advanceTimersByTimeAsync(5_000);
+  await watching;
+};
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -97,9 +106,7 @@ describe('install on click', () => {
     expect(seen.some((status) => status.state === 'installing')).toBe(false);
     expect(spawned.calls).toBe(0);
     expect(await runs()).toBe(0);
-    backend.stop();
-    await vi.advanceTimersByTimeAsync(5_000);
-    await watching;
+    await stopWatching(backend, watching);
   });
 
   it('installs once the user clicks, with plain progress, while the watch loop waits', async () => {
@@ -138,9 +145,7 @@ describe('install on click', () => {
     expect(await runs()).toBe(1);
     expect(spawned.calls).toBe(1);
     expect(backend.current.state).toBe('missing');
-    backend.stop();
-    await vi.advanceTimersByTimeAsync(5_000);
-    await watching;
+    await stopWatching(backend, watching);
   });
 
   it('installs a missing CLI in the signed preview, but never updates one', async () => {

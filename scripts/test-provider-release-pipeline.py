@@ -313,6 +313,21 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("cache-hit", gate)
         self.assertNotIn("continue-on-error:", gate)
 
+    def test_image_http_fixtures_reach_the_full_sdk_test_process(self):
+        marker = '- name: Prepare MiMo image HTTP fixtures\n'
+        self.assertIn(marker, ACTION)
+        fixture = ACTION.split(marker, 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", fixture)
+        self.assertIn('python3 scripts/prepare-mimo-image-http-fixtures.py', fixture)
+        self.assertIn('--github-env "$GITHUB_ENV"', fixture)
+        self.assertNotIn('cache-hit', fixture)
+        self.assertNotIn('continue-on-error:', fixture)
+        self.assertLess(ACTION.index(marker), ACTION.index('- name: Test provider with release SDK\n'))
+        # GitHub applies this environment file to the following step, not its writer.
+        test = ACTION.split('- name: Test provider with release SDK\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('-- ../scripts/run-provider-tests.sh', test)
+        self.assertNotIn('MiMoImageHTTPIngressTests', test)
+
     def test_qwen_resource_regression_runs_without_a_cache_hit_bypass(self):
         step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn('python3 scripts/test-qwen4-packaged-resources.py', step)

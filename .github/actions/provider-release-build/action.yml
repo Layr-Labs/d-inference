@@ -172,6 +172,12 @@ runs:
         while IFS= read -r macos; do
           cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
         done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
+    - name: Prepare MiMo image HTTP fixtures
+      if: inputs.lane == 'qualification'
+      shell: bash
+      run: |
+        python3 scripts/prepare-mimo-image-http-fixtures.py \
+          --output "$RUNNER_TEMP/mimo-sdk-image-http-fixtures" --github-env "$GITHUB_ENV"
     - name: Test provider with release SDK
       if: inputs.lane == 'qualification'
       shell: bash

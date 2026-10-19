@@ -181,11 +181,18 @@ inputs from the repository root in fresh directories:
 - `scripts/prepare-mimo-prompt-fixtures.py` downloads four hash-pinned public
   metadata files, not trained model weights or the genuine audio codec. These
   inputs require no private model or credentials.
+- `scripts/prepare-mimo-image-http-fixtures.py` downloads hash-pinned metadata
+  and creates deterministic PNGs for actual HTTP image ingress. Both ordinary
+  provider CI and SDK release qualification prepare these before the full suite;
+  GitHub applies the emitted environment variables to the following test step.
 
 ```bash
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-test-fixtures.XXXXXX")"
 python3 -B scripts/prepare-mimo-provider-fixtures.py --output "$FIXTURE_ROOT/provider"
 python3 -B scripts/prepare-mimo-prompt-fixtures.py --output "$FIXTURE_ROOT/prompt"
+python3 -B scripts/prepare-mimo-image-http-fixtures.py --output "$FIXTURE_ROOT/image-http" --github-env "$FIXTURE_ROOT/image-http.env"
+export MIMO_CLUSTER_IMAGE_METADATA_DIR="$FIXTURE_ROOT/image-http"
+export MIMO_CLUSTER_IMAGE_ASSET_DIR="$FIXTURE_ROOT/image-http"
 export MIMO_V26_SERIAL_LOAD_FIXTURES="$FIXTURE_ROOT/provider"
 export MIMO_V26_WIRED_METADATA_FIXTURE="$FIXTURE_ROOT/provider/tiny-bf16"
 export MIMO_PROMPT_ARTIFACT_DIRECTORY="$FIXTURE_ROOT/prompt"

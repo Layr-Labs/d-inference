@@ -479,6 +479,8 @@ Mac's Bonjour (`.local`) URL (`Local.networkURL`).
 
 ### `darkbloom cluster local`
 
+The setup response check uses the model's default reasoning controls. It does not send a binary thinking override; if its token budget ends during reasoning, it reports that the model is still thinking. This is a liveness check, not an answer-quality benchmark. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift` and `ClusterSetupWizardLiveOperations.prompt`.
+
 ```bash
 darkbloom cluster local [<model>] [--bind <address>]
 ```

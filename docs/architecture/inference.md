@@ -11,6 +11,14 @@ legacy engine and no subprocess. For the memory model see
 The [native block adapter](native-block-inference.md) reuses this bridge boundary
 for committed diffusion output and explicit native-container slot ownership.
 
+The cluster setup liveness probe uses the same request validation as ordinary
+chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
+override, so each model’s prompt policy remains authoritative.
+`ClusterSetupWizardLiveOperations.prompt` recognizes reasoning-stream chunks
+even when the short probe ends before answer text. This does not relax GLM
+validation or qualify answer quality. Source:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift`.
+
 Native DiffusionGemma also retains image/video assets on tool-result turns.
 `EngineV2VisionPrefill.prepareDiffusionUserInput` validates tool history and
 orders typed results by their actual call IDs before media decoding, using

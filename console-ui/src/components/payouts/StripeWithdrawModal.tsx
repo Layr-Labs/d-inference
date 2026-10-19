@@ -124,6 +124,7 @@ export function StripeWithdrawModal({
         </div>
       </div>
 
+      <p className="text-xs text-text-tertiary mb-4">If payout funding is low, your earnings are reserved and your withdrawal retries automatically when funding is available.</p>
       <div className="flex gap-3">
         <button
           onClick={onCancel}

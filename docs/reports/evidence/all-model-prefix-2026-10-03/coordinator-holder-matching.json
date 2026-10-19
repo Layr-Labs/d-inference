@@ -1,0 +1,359 @@
+{
+  "window": {
+    "start_utc": "2026-10-03T21:17:28.308677+00:00",
+    "end_utc": "2026-10-03T21:17:51.687552+00:00"
+  },
+  "completed_processes": 80,
+  "failures": 0,
+  "parity": "Complete hint maps and CacheOpportunity equal before every timed process; no changed selection, proof or observation semantics.",
+  "aggregation": "Median of four independent process mean ns/op; not pooled latency percentiles.",
+  "decision": "Qualify bounded query-local grouping for production integration; preserve append-all after 8 compatibility groups per provider or 256 tracked providers.",
+  "limits": [
+    "Synthetic stress fixtures respect 16 holders per bucket; not measured production density.",
+    "CPU routing query cost only; does not establish native TPS, production cache-hit rate or TTFT gains.",
+    "Bytes/op are cumulative allocated bytes, not RSS.",
+    "Expiry timestamp frozen identically in both arms; validation and bucket sweep code unchanged."
+  ],
+  "cells": [
+    {
+      "cell": "cold/208-boundaries",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 112058.5,
+          "bytes_per_op": 224462.5,
+          "allocs_per_op": 3745.0,
+          "run_ns_per_op": [
+            111885.0,
+            112232.0,
+            111000.0,
+            113194.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 112156.0,
+          "bytes_per_op": 224460.0,
+          "allocs_per_op": 3745.0,
+          "run_ns_per_op": [
+            110687.0,
+            111845.0,
+            112467.0,
+            112889.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": 0.08700812522031143,
+        "bytes_per_op": -0.0011137717881637421,
+        "allocs_per_op": 0.0
+      },
+      "delta_ns_per_op": 97.5
+    },
+    {
+      "cell": "sparse/64-boundaries/4-holders",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 37206.0,
+          "bytes_per_op": 73001.5,
+          "allocs_per_op": 1166.0,
+          "run_ns_per_op": [
+            37948.0,
+            37243.0,
+            36049.0,
+            37169.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 38190.0,
+          "bytes_per_op": 73442.0,
+          "allocs_per_op": 1172.0,
+          "run_ns_per_op": [
+            36527.0,
+            37743.0,
+            38637.0,
+            38816.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": 2.6447347202064098,
+        "bytes_per_op": 0.6034122586522139,
+        "allocs_per_op": 0.5145797598627766
+      },
+      "delta_ns_per_op": 984.0
+    },
+    {
+      "cell": "dense/208-boundaries/16-holders/2-tiers",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 1739781.0,
+          "bytes_per_op": 8554788.5,
+          "allocs_per_op": 3807.0,
+          "run_ns_per_op": [
+            1737216.0,
+            1734298.0,
+            1742346.0,
+            1763725.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 996755.0,
+          "bytes_per_op": 256537.0,
+          "allocs_per_op": 3834.0,
+          "run_ns_per_op": [
+            983101.0,
+            998501.0,
+            995009.0,
+            1128596.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": -42.708018997793395,
+        "bytes_per_op": -97.00124672865962,
+        "allocs_per_op": 0.7092198581560183
+      },
+      "delta_ns_per_op": -743026.0
+    },
+    {
+      "cell": "dense/781-boundaries/16-holders/2-tiers",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 7574180.0,
+          "bytes_per_op": 41082646.5,
+          "allocs_per_op": 14127.0,
+          "run_ns_per_op": [
+            7503497.0,
+            7365017.0,
+            7644863.0,
+            8385746.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 4076879.0,
+          "bytes_per_op": 876320.0,
+          "allocs_per_op": 14148.0,
+          "run_ns_per_op": [
+            3920518.0,
+            3887950.0,
+            4233240.0,
+            4388377.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": -46.17398847135927,
+        "bytes_per_op": -97.86693391332518,
+        "allocs_per_op": 0.14865151836906954
+      },
+      "delta_ns_per_op": -3497301.0
+    },
+    {
+      "cell": "dense/208-boundaries/invalid-deep-epoch",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 1817409.0,
+          "bytes_per_op": 8554815.5,
+          "allocs_per_op": 3807.0,
+          "run_ns_per_op": [
+            2091449.0,
+            1725489.0,
+            1896778.0,
+            1738040.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 1137235.0,
+          "bytes_per_op": 276121.0,
+          "allocs_per_op": 3851.0,
+          "run_ns_per_op": [
+            1234861.0,
+            1107787.0,
+            1132508.0,
+            1141962.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": -37.42547769929608,
+        "bytes_per_op": -96.7723324950725,
+        "allocs_per_op": 1.1557656947727812
+      },
+      "delta_ns_per_op": -680174.0
+    },
+    {
+      "cell": "churn/208-boundaries/distinct-epochs",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 2129554.0,
+          "bytes_per_op": 8549850.5,
+          "allocs_per_op": 3785.0,
+          "run_ns_per_op": [
+            2712118.0,
+            1817809.0,
+            2098675.0,
+            2160433.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 2091119.0,
+          "bytes_per_op": 8554399.0,
+          "allocs_per_op": 3856.0,
+          "run_ns_per_op": [
+            2427493.0,
+            2006202.0,
+            1814120.0,
+            2176036.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": -1.804838008334142,
+        "bytes_per_op": 0.05319976062738707,
+        "allocs_per_op": 1.8758256274768792
+      },
+      "delta_ns_per_op": -38435.0
+    },
+    {
+      "cell": "churn/208-boundaries/distinct-pointers",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 1619083.5,
+          "bytes_per_op": 8549893.0,
+          "allocs_per_op": 3785.0,
+          "run_ns_per_op": [
+            2077118.0,
+            1601535.0,
+            1626530.0,
+            1611637.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 1659210.0,
+          "bytes_per_op": 8554396.5,
+          "allocs_per_op": 3856.0,
+          "run_ns_per_op": [
+            1962914.0,
+            1596072.0,
+            1664058.0,
+            1654362.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": 2.4783465460552323,
+        "bytes_per_op": 0.05267317380464043,
+        "allocs_per_op": 1.8758256274768792
+      },
+      "delta_ns_per_op": 40126.5
+    },
+    {
+      "cell": "churn/208-boundaries/distinct-measurements",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 2133512.0,
+          "bytes_per_op": 8549907.5,
+          "allocs_per_op": 3785.0,
+          "run_ns_per_op": [
+            2575556.0,
+            2133653.0,
+            2122505.0,
+            2133371.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 2168336.5,
+          "bytes_per_op": 8554407.5,
+          "allocs_per_op": 3856.0,
+          "run_ns_per_op": [
+            2310846.0,
+            2178101.0,
+            2136327.0,
+            2158572.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": 1.6322617355796432,
+        "bytes_per_op": 0.05263214835951047,
+        "allocs_per_op": 1.8758256274768792
+      },
+      "delta_ns_per_op": 34824.5
+    },
+    {
+      "cell": "churn/208-boundaries/128-providers",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 1028700.0,
+          "bytes_per_op": 3541453.5,
+          "allocs_per_op": 4040.0,
+          "run_ns_per_op": [
+            1111682.0,
+            1008390.0,
+            1013633.0,
+            1043767.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 634937.0,
+          "bytes_per_op": 410173.0,
+          "allocs_per_op": 4174.0,
+          "run_ns_per_op": [
+            656332.0,
+            682664.0,
+            613542.0,
+            612567.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": -38.27772917274229,
+        "bytes_per_op": -88.41794760258746,
+        "allocs_per_op": 3.3168316831683198
+      },
+      "delta_ns_per_op": -393763.0
+    },
+    {
+      "cell": "churn/208-boundaries/3328-distinct-providers",
+      "repeats_per_arm": 4,
+      "arms": {
+        "materialize_all": {
+          "ns_per_op": 1868991.5,
+          "bytes_per_op": 5386001.0,
+          "allocs_per_op": 10476.0,
+          "run_ns_per_op": [
+            1918530.0,
+            2000779.0,
+            1819453.0,
+            1730178.0
+          ]
+        },
+        "compatibility_groups": {
+          "ns_per_op": 1895554.5,
+          "bytes_per_op": 5431003.0,
+          "allocs_per_op": 10747.0,
+          "run_ns_per_op": [
+            2035833.0,
+            2065969.0,
+            1749248.0,
+            1755276.0
+          ]
+        }
+      },
+      "delta_percent": {
+        "ns_per_op": 1.4212477691846193,
+        "bytes_per_op": 0.835536421177796,
+        "allocs_per_op": 2.5868652157311933
+      },
+      "delta_ns_per_op": 26563.0
+    }
+  ]
+}

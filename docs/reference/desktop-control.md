@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-18
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -127,8 +127,9 @@ Local session settlement backfill remains separate (`DesktopAccountCredential`, 
 All money and token counters in the insights response cross the boundary as decimal strings. The renderer
 uses `BigInt` for totals, shares, averages, milestones, and CSV serialization;
 only normalized chart geometry and abbreviated labels use floating point.
-The [HTTP contract](api-contracts.md#desktop-earnings-insights) defines data scope,
-retention and the distinction between running work and settled inference.
+The platform coordinator's [account earnings contract](https://github.com/Layr-Labs/darkbloom-platform/blob/d7c836b71c77b09dc3fcfa9590c9307a4f2c3a55/docs/reference/api-contracts.md#account-earnings-response)
+(pinned at [darkbloom-platform#23](https://github.com/Layr-Labs/darkbloom-platform/pull/23))
+defines data scope, retention and the distinction between running work and settled inference.
 
 ### Hardware load
 
@@ -293,9 +294,14 @@ owned fleet instead (`refreshUsageHistoryIfNeeded`). Operation waiters consume
 state events, falling back to a state read after ten seconds of stream silence
 (`desktop-app/src/renderer/actions.ts`, `submitAction`).
 
-The earlier `/v1/provider/desktop`, `/v1/provider/desktop/insights`, and
-`/v1/releases/desktop` routes remain compatibility surfaces. The app no longer
-requests them (`DesktopBackend.readRemoteResource`).
+The coordinator, now maintained in
+[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform), has no
+`/v1/provider/desktop`, `/v1/provider/desktop/insights`, or `/v1/releases/desktop`
+route. The app requests only the existing account, public and release reads
+(`DesktopBackend.readRemoteResource`); the desktop account bearer is accepted
+only on `GET /v1/me/providers`, `GET /v1/me/summary`,
+`GET /v1/provider/account-earnings` and its own `DELETE /v1/device/token`
+([device-code flow](https://github.com/Layr-Labs/darkbloom-platform/blob/d7c836b71c77b09dc3fcfa9590c9307a4f2c3a55/docs/reference/api-contracts.md#device-code-flow-5)).
 
 ## Lifetime and updates
 

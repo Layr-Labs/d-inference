@@ -92,7 +92,16 @@ enum KVBackendPosture {
         guard slot.loadError == nil else {
             return "\(slot.model): \(backendPhrase(slot))"
         }
+        let precision = precisionPhrase(slot)
         return "\(slot.model): \(backendPhrase(slot)) | \(mtpPhrase(slot))"
+            + (precision.isEmpty ? "" : " | \(precision)")
+    }
+
+    static func precisionPhrase(_ slot: DaemonState.SlotPosture) -> String {
+        guard let live = slot.kvQuantization else { return "" }
+        let checkpoint = slot.kvCheckpointQuantization ?? "off"
+        return "live_kv=\(live) checkpoint_kv=\(checkpoint)"
+            + (slot.checkpointBackendLayout.map { " layout=\($0)" } ?? "")
     }
 
     /// Resolved backend, always paired with the request it was resolved
@@ -238,7 +247,7 @@ enum KVPostureDiagnosis {
                     status: .fail,
                     detail: "daemon is running but its state file has not been rewritten for "
                         + "\(ageText) (expected every ~\(Int(period))s) — it is wedged; "
-                        + "check `darkbloom logs`, then `darkbloom stop && darkbloom start`"))
+                        + "check `\(BuildEnvironment.current.cliName) logs`, then `\(BuildEnvironment.current.cliName) stop && \(BuildEnvironment.current.cliName) start`"))
         } else if age > staleAfter {
             out.append(
                 DoctorCheck(
@@ -306,9 +315,14 @@ enum KVPostureDiagnosis {
     ) -> DoctorCheck {
         let explicit = slots.filter { $0.kvBackendRequested != "auto" }
         let unproven = configured.unprovenRequests(provenBy: explicit)
+        func describe(_ slot: DaemonState.SlotPosture) -> String {
+            let precision = KVBackendPosture.precisionPhrase(slot)
+            return "\(slot.model)=\(slot.kvBackend ?? "none")"
+                + (precision.isEmpty ? "" : " (\(precision))")
+        }
         let summary = slots.isEmpty
             ? "no models loaded"
-            : slots.map { "\($0.model)=\($0.kvBackend ?? "none")" }.joined(separator: ", ")
+            : slots.map(describe).joined(separator: ", ")
 
         var failures: [String] = []
         var honoured: [String] = []
@@ -321,7 +335,7 @@ enum KVPostureDiagnosis {
                         + "is serving nothing for that model (\(error))")
             } else if let got = slot.kvBackend {
                 if got == want {
-                    honoured.append("\(slot.model)=\(got)")
+                    honoured.append(describe(slot))
                 } else {
                     failures.append(
                         "\(slot.model): \(want) requested but serving \(got)")

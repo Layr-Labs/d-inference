@@ -23,6 +23,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let nowSeconds: @Sendable () -> Int64
         let diskBudgetBytes: @Sendable () -> Int
         let maintainWholeRoot: @Sendable () -> Void
+        // Monotonic, stage-local deadline clock. Default preserves first-attempt
+        // timing; injected clocks keep retry boundary tests deterministic.
+        var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }
     }
 
     public let identity: CBv2CompleteCheckpointIdentity
@@ -64,6 +67,10 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!
 
+    // Pauses the real durable writer at the rename/duplicate-validation boundary.
+    // Invoked outside store.lock, while the exact-file commit lease is held.
+    var beforeWriteIndexForTesting: (@Sendable (URL, Bool) -> Void)?
+
     final class ReadyReceipt {
         let callback: @Sendable (PrefixCacheReadyResult) -> Void
         let hashes: [Data]
@@ -81,6 +88,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
 
     init(config: Config, kekKey: SymmetricKey, kvBudget: GlobalKVCacheBudget?,
          diskBudget: SSDDiskBudget = .shared, maxWriteBytesPerDay: Int, usesEphemeralKey: Bool = true,
+         writeBudget: SSDWriteBudget? = nil,
          donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
          writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         self.config = config
@@ -92,12 +100,16 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.diskBudget = diskBudget
         self.donationRecorder = donationRecorder
         self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay,
-            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction, nowSeconds: writeNowSeconds)
+            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
+            writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: 1,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
-            consume: { [weak self] job in self?.write(job) ?? job.finish([]) })
+            consume: { [weak self] job in
+                guard let self else { job.finish([]); return }
+                await self.write(job)
+            })
         diskBudget.register(self)
     }
 
@@ -225,11 +237,14 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         return result
     }
 
-    func hashes(tokens: [Int], scope: String) -> [Data] {
+    func hashes(tokens: [Int], scope: String, maximumBlocks: Int? = nil) -> [Data] {
         let hasher = CBv2BlockHasher(blockSize: PrefixCachePolicy.blockSize,
                                     promptContractID: identity.promptContractID, scopeID: scope)
         let maximum = config.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
             ? tokens.count / PrefixCachePolicy.blockSize : hasher.maxLookupBlocks(tokenCount: tokens.count)
-        return hasher.chainHashes(tokens: tokens, maxBlocks: maximum)
+        // A donation may need only an earlier checkpoint. The original backend
+        // maximum still governs lookup and aligned-final endpoint semantics.
+        let boundedMaximum = maximumBlocks.map { min(maximum, max(0, $0)) } ?? maximum
+        return hasher.chainHashes(tokens: tokens, maxBlocks: boundedMaximum)
     }
 }

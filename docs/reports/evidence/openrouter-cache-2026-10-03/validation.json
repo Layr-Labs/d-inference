@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "status": "passed",
+  "recorded_attempts": 1073,
+  "matrix_successes": 885,
+  "matrix_hits": 163,
+  "arithmetic_verified_long_outputs": 222,
+  "cold_control_hits": 0,
+  "evidence_file_digests_verified": 7,
+  "runtime_secret_occurrences": 0,
+  "fields_explicitly_allowlisted": true
+}

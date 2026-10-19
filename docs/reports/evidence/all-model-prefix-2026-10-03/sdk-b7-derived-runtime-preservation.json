@@ -1,0 +1,19 @@
+{
+  "status": "pass",
+  "curatedUTC": "2026-10-04T02:28:57.456828+00:00",
+  "SDKHead": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+  "startedUTC": "2026-10-04T02:25:33.532108+00:00",
+  "endedUTC": "2026-10-04T02:25:57.154760+00:00",
+  "scope": "Only the task-owned integration SDK derived build tree was retired after B7 full tests and DocC closed successfully; source, pins and prior proofs were retained.",
+  "inventoriedRuntimeFileCount": 52,
+  "includesAdjacentPackageResourcesAndRuntimeProducts": true,
+  "generatedSymbolsExcluded": true,
+  "reopenedEveryInventoriedRuntimeByteVerified": true,
+  "runtimeArchiveSHA256": "f2e8bc4d6f7a3ce3d13009c8cd66aacdbb85f0c19004347bf465ebe9983762c3",
+  "portableRuntimeClosureClaimed": false,
+  "externalPrerequisites": "Original SDK source/fixtures and installed OS/Xcode frameworks remain required.",
+  "observedFreeBytesDelta": 3546660864,
+  "observedFreeBytesDeltaExclusivelyAttributedToCleanup": false,
+  "testOrPerformanceQualificationTransferred": false,
+  "privacy": "Aggregate source/runtime preservation fields only; no private paths, process identifiers or raw output."
+}

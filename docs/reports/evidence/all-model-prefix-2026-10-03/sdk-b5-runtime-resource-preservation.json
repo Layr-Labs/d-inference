@@ -1,0 +1,27 @@
+{
+  "status": "pass_generated_metadata_retirement_only",
+  "testedSDKHead": "357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+  "currentCleanSDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+  "startedUTC": "2026-10-04T01:54:35.668244+00:00",
+  "endedUTC": "2026-10-04T01:55:00.192709+00:00",
+  "scope": "Only owned integration debug generated dSYMs/index/ModuleCache retired; build/runtime/resources/source retained.",
+  "preservedArchive": {
+    "archiveSHA256": "76842d9bfecd831f87c2be5b1c38cccf2a18db0134c03bd79649d8ea7ea4f626",
+    "inventoriedRuntimeFiles": 52,
+    "runtimeRoots": 17,
+    "includesAdjacentCommonAndTestPackageResourceBundles": true,
+    "includesAdjacentPackageResourcesAndRuntimeProducts": true,
+    "everyInventoriedRuntimeByteReopenedVerified": true,
+    "generatedSymbolsExcluded": true,
+    "portableRuntimeClosureClaimed": false,
+    "externalPrerequisites": "Original SDK source/fixtures and installed OS/Xcode frameworks remain required."
+  },
+  "runtimeResourcesUnchangedAfterCleanup": true,
+  "freeBeforeBytes": 15621693440,
+  "freeAfterBytes": 17611902976,
+  "observedFreeBytesDelta": 1990209536,
+  "diskDeltaIsObservedNotExclusiveReclaim": true,
+  "B6TestPassClaimed": false,
+  "B5OverallGreenClaimed": false,
+  "privacy": "Source/archive aggregates only; no raw private receipt paths, process/account/provider identifiers or generated outputs."
+}

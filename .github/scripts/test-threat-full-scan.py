@@ -14,7 +14,7 @@ from threat_review.client import GitHub, ReviewUnavailable, ScanTimeout, SourceB
 from threat_review.review import prepare, review, validate_findings
 from threat_review.report import render
 from threat_review.source import Sources, complete_files
-from threat_review.scan import units
+from threat_review.scan import UNIT_SIZE, units
 
 
 class SourceTests(unittest.TestCase):
@@ -178,6 +178,22 @@ class SourceTests(unittest.TestCase):
 
 
 class ScanTests(unittest.TestCase):
+    def assert_source_text(self, source, field, expected, capacity=UNIT_SIZE):
+        reconstructed, number = [], 1
+        for unit in source:
+            if unit.get("kind") != field:
+                continue
+            self.assertEqual(unit["text_format"], "number | source")
+            self.assertEqual(unit["start_line"], number)
+            self.assertTrue(unit["text"])
+            self.assertLessEqual(len(unit["text"]), capacity)
+            for line in unit["text"].splitlines(keepends=True):
+                prefix, raw = line.split(" | ", 1)
+                self.assertEqual(prefix, str(number))
+                reconstructed.append(raw)
+                number += 1
+        self.assertEqual("".join(reconstructed), expected)
+
     def large_files(self):
         text = "".join(f"safe line {number}\n" for number in range(15000)) + "allowAll()\n"
         return [{"filename": "coordinator/auth.go", "status": "added", "source_complete": True,
@@ -199,11 +215,108 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(findings, [finding])
         self.assertFalse(limits)
         source = [unit for call in calls if call["stage"] == "source" for unit in call["units"]]
-        for field in ("patch", "head_text"):
-            reconstructed = "".join(unit["text"] for unit in source if unit.get("kind") == field)
-            self.assertEqual(reconstructed, files[0][field])
+        reconstructed = "".join(unit["text"] for unit in source if unit.get("kind") == "patch")
+        self.assertEqual(reconstructed, files[0]["patch"])
+        self.assert_source_text(source, "head_text", files[0]["head_text"])
         self.assertGreater(len([call for call in calls if call["stage"] == "source"]), 2)
         self.assertEqual(calls[-1]["stage"], "integration")
+
+    def test_numbered_chunks_preserve_source_coordinates_line_endings_and_patch(self):
+        record = {"file": "coordinator/auth.go", "status": "modified",
+                  "base_text": "base | λ\r\n\r\n9 | source\n" * 4 + "base tail",
+                  "head_text": "head | 😀\n\n42 | original\r\n" * 5 + "head tail",
+                  "patch": "@@ -8,2 +9,2 @@\r\n-old | λ\r\n+new | 😀\r\n \r\n\\ No newline at end of file"}
+        with patch("threat_review.scan.UNIT_SIZE", 32):
+            source = units([record])
+        metadata = {"file": record["file"], "status": record["status"]}
+        self.assertEqual(source[0], {"id": "0", "metadata": metadata})
+        self.assertEqual([unit["id"] for unit in source], [str(i) for i in range(len(source))])
+        for field in ("base_text", "head_text"):
+            self.assertGreater(len([unit for unit in source if unit.get("kind") == field]), 1)
+            self.assert_source_text(source, field, record[field], capacity=32)
+        patches = [unit for unit in source if unit.get("kind") == "patch"]
+        self.assertGreater(len(patches), 1)
+        self.assertEqual("".join(unit["text"] for unit in patches), record["patch"])
+        next_line = 1
+        for unit in patches:
+            self.assertEqual(unit["start_line"], next_line)
+            self.assertNotIn("text_format", unit)
+            next_line += len(unit["text"].splitlines())
+        for unit in source:
+            self.assertEqual(unit["metadata"], metadata)
+            self.assertLessEqual(len(unit.get("text", "")), 32)
+
+    def test_source_prefix_counts_toward_chunk_and_single_line_capacity(self):
+        for field in ("base_text", "head_text"):
+            with self.subTest(field=field), patch("threat_review.scan.UNIT_SIZE", 12):
+                # Both raw lines fit together, but their annotations require two units.
+                text = "abc\nwxyz"
+                source = units([{"file": "exact-fit", field: text}])
+                self.assert_source_text(source, field, text, capacity=12)
+                self.assertEqual([unit["text"] for unit in source[1:]], ["1 | abc\n", "2 | wxyz"])
+                # An annotated line at exactly the limit is accepted, including its ending.
+                text = "x" * 7 + "\n" + "y" * 8
+                source = units([{"file": "exact-fit", field: text}])
+                self.assert_source_text(source, field, text, capacity=12)
+                self.assertEqual([len(unit["text"]) for unit in source[1:]], [12, 12])
+                # Raw lines fit; only the prefix (including an extra digit at 10) overflows.
+                for text in ("x" * 9, "a\n" * 9 + "x" * 8):
+                    with self.subTest(text=text), self.assertRaisesRegex(ReviewUnavailable, "line exceeds batch capacity"):
+                        units([{"file": "too-long", field: text}])
+                patch_units = units([{"file": "patch-only", "patch": "x" * 12}])
+                self.assertEqual(patch_units[1]["text"], "x" * 12)
+                self.assertNotIn("text_format", patch_units[1])
+
+    def test_final_annotated_source_lines_survive_review_and_render(self):
+        file = dict(fixtures.FILES[0], source_complete=True, patch="",
+                    base_text="checkAuth()\r\n\r\n" * 6 + "base tail | λ",
+                    head_text="allowAll()\n\n" * 7 + "head tail | 😀")
+        expected = [dict(fixtures.FINDING, side="base", line=13),
+                    dict(fixtures.FINDING, side="head", line=15)]
+        calls = []
+        def transport(url, key, body):
+            request = json.loads(body["messages"][1]["content"])
+            calls.append(request)
+            if request["stage"] == "source":
+                found = []
+                for finding in expected:
+                    field = finding["side"] + "_text"
+                    final_line = f'{finding["line"]} | {file[field].splitlines()[-1]}'
+                    if any(unit.get("kind") == field and
+                           final_line in unit["text"].splitlines() for unit in request["units"]):
+                        found.append(finding)
+            else:
+                found = [finding for unit in request["units"] for finding in unit["findings"]]
+            return fixtures.completion(found, body=body)
+        with patch("threat_review.scan.UNIT_SIZE", 32):
+            findings, evidence, limits = review(fixtures.THREAT, [file], "key", transport=transport)
+        self.assertEqual(findings, expected)
+        self.assertFalse(limits)
+        self.assertEqual(calls[-1]["stage"], "integration")
+        source = [unit for call in calls if call["stage"] == "source" for unit in call["units"]]
+        for side, last in (("base", 13), ("head", 15)):
+            self.assert_source_text(source, side + "_text", file[side + "_text"], capacity=32)
+            self.assertEqual(evidence[file["filename"]]["lines"][side], set(range(1, last + 1)))
+        body = render("example/repo", fixtures.HEAD, fixtures.BASE, "model", findings, evidence, limits)
+        self.assertIn(f'/blob/{fixtures.BASE}/{file["filename"]}#L13', body)
+        self.assertIn(f'/blob/{fixtures.HEAD}/{file["filename"]}#L15', body)
+
+    def test_nonexistent_next_source_line_is_rejected_in_source_and_integration(self):
+        file = dict(fixtures.FILES[0], source_complete=True, patch="",
+                    base_text="checkAuth()\r\n\r\nbase tail",
+                    head_text="allowAll()\n\nhead | λ\nhead tail")
+        for side, next_line in (("base", 4), ("head", 5)):
+            for stage in ("source", "integration"):
+                with self.subTest(side=side, stage=stage):
+                    calls = []
+                    def transport(url, key, body):
+                        request = json.loads(body["messages"][1]["content"])
+                        calls.append(request["stage"])
+                        findings = [dict(fixtures.FINDING, side=side, line=next_line)] if request["stage"] == stage else []
+                        return fixtures.completion(findings, body=body)
+                    with self.assertRaisesRegex(ReviewUnavailable, "line outside the reviewed evidence"):
+                        review(fixtures.THREAT, [file], "key", transport=transport)
+                    self.assertEqual(calls, ["source"] if stage == "source" else ["source", "integration"])
 
     def test_integration_pass_can_discover_cross_file_finding(self):
         calls = []
@@ -224,7 +337,7 @@ class ScanTests(unittest.TestCase):
 
     def test_same_count_smaller_summaries_get_another_integration_pass(self):
         file = dict(fixtures.FILES[0], source_complete=True, patch="", base_text="",
-                    head_text="safe\n" * 16000)
+                    head_text=("safe" * 199 + "\n") * 100)
         verbose = [dict(fixtures.FINDING, title=f"Candidate {i}", detail="x" * 1600) for i in range(24)]
         calls = []
         def transport(url, key, body):
@@ -240,7 +353,7 @@ class ScanTests(unittest.TestCase):
 
     def test_same_count_nonshrinking_summaries_stop_as_incomplete(self):
         file = dict(fixtures.FILES[0], source_complete=True, patch="", base_text="",
-                    head_text="safe\n" * 16000)
+                    head_text=("safe" * 199 + "\n") * 100)
         for grows in (False, True):
             with self.subTest(grows=grows):
                 calls = []
@@ -290,6 +403,11 @@ class ScanTests(unittest.TestCase):
         findings, evidence, limits = review(fixtures.THREAT, [file], "key", transport=transport)
         self.assertEqual(findings, [finding])
         self.assertFalse(limits)
+        self.assertEqual(requests[0]["units"], [{"id": "0", "metadata": {
+            "file": "empty", "status": "modified", "previous_filename": None,
+            "metadata_citation_sides": ["base", "head"],
+            "base_mode": "100644", "head_mode": "100755",
+        }}])
         metadata = requests[0]["units"][0]["metadata"]
         self.assertEqual(metadata["head_mode"], "100755")
         self.assertEqual(metadata["metadata_citation_sides"], ["base", "head"])

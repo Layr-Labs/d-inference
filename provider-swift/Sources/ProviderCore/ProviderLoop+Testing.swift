@@ -120,6 +120,12 @@ extension ProviderLoop {
         daemonStateFileOverride = url
     }
 
+    /// Test seam: run `run()` against a mock coordinator without the OOM
+    /// marker, the shared SSD cache root, or the APNs bridge.
+    func setServeUsesHostServicesForTesting(_ enabled: Bool) {
+        serveUsesHostServices = enabled
+    }
+
     /// Test seam: toggle the persistence gate independently of the path
     /// override (pins the "inert unless serving" guard).
     func setLoadedModelsPersistenceEnabledForTesting(_ enabled: Bool) {

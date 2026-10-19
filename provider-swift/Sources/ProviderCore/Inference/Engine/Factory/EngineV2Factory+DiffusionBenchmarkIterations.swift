@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXLMCommon
 import MLXVLM
 import ProviderCoreFoundation
@@ -40,9 +41,24 @@ extension EngineV2Factory {
                 request.nativeReservationBytes = bytes
             }
             do {
+                let preRequestActive = Memory.activeMemory
+                var peakInUse = 0, peakReserved = 0
+                var peakCommitted: Int?, peakLivePages: Int?
+                func observeCapacity() {
+                    let capacity = engine.capacity()
+                    peakInUse = max(peakInUse, capacity.kvBytesInUse)
+                    peakReserved = max(peakReserved, capacity.kvBytesReserved)
+                    if let pages = capacity.pagedStorage {
+                        peakCommitted = max(peakCommitted ?? 0, pages.committedBytes)
+                        peakLivePages = max(peakLivePages ?? 0, pages.livePageBytes)
+                    }
+                }
+                observeCapacity()
+                Memory.peakMemory = 0
                 let stream = try engine.submit(request)
                 var ids = [Int](), text = "", usage: CBv2Usage?, reason: CBv2FinishReason?
                 for await event in stream {
+                    observeCapacity()
                     switch event {
                     case .delta(let chunk, let tokens, _): text += chunk; ids += tokens
                     case .finished(let finish, let counts): reason = finish; usage = counts
@@ -61,7 +77,13 @@ extension EngineV2Factory {
                 }
                 if reason == .stop, let last = ids.last, stopTokens.contains(last) { ids.removeLast() }
                 let sample = DiffusionGemmaBenchmarkIteration(tokenIDs: ids, text: text, usage: usage,
-                    totalMilliseconds: diffusionMilliseconds(ContinuousClock.now - start))
+                    totalMilliseconds: diffusionMilliseconds(ContinuousClock.now - start),
+                    promptTokenIDs: prepared.tokens, renderDate: prepared.renderDate,
+                    preRequestActiveMemoryBytes: preRequestActive,
+                    peakMLXMemoryBytes: Memory.peakMemory,
+                    peakObservedKVBytesInUse: peakInUse, peakObservedKVBytesReserved: peakReserved,
+                    peakObservedPagedCommittedBytes: peakCommitted,
+                    peakObservedPagedLivePageBytes: peakLivePages)
                 try routeProbe.end(iteration: index)
                 await budget.release(requestID: reservationID)
                 results.append(sample)

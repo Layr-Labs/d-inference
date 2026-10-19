@@ -1,0 +1,65 @@
+{
+  "status": "pass",
+  "startedUTC": "2026-10-03T23:13:12.132231+00:00",
+  "endedUTC": "2026-10-03T23:15:40.615763+00:00",
+  "compiler": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+  "beforeBinarySHA256": "be7de1376ebfdd218f620b1975a8ab26b162f5bb1ad00e8098fe3fdeb8becd71",
+  "afterBinarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+  "sourceRestoredExactly": true,
+  "sourceUnchanged": true,
+  "candidateSourceSHA256": {
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+DonationHash.swift": "1403c80717bf36c2c4f4bbb821a390071f101e48e7c48086ef8f95458ee9b82f",
+    "provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+DemandedCheckpoint.swift": "b3e805594561a36c5287e8e3b78c3d868916cf9cd04723754e9bde69d244c959"
+  },
+  "controlledSourceSHA256": {
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+DonationHash.swift": "9b1636c9f4bf6a2a27f2c1d596afc16654aa7de55a0f19f455e380c0a1fa68f3",
+    "provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+DemandedCheckpoint.swift": "f492a48c006b007a9793692a2677170c31c59e06fbf9e02f5ecdf939a0da22ac"
+  },
+  "checks": [
+    {
+      "name": "controlled bounded-hash and exact Nem gate before",
+      "framework": "Swift Testing",
+      "test_cases": 11,
+      "suites": 2,
+      "passing_cases": 8,
+      "failing_cases": 3,
+      "assertion_failures": 17,
+      "assertion_subsets": {
+        "qualified_nem_gate": 4,
+        "bounded_hash_chain_counts": 13
+      },
+      "seconds": 0.135,
+      "exit_code": 1,
+      "scope": "Only the bounded hash helper and exact Nemotron serving branch are removed; all other candidate source remains present. Endpoints/tags are still checked against the legacy hash. No full native model execution."
+    },
+    {
+      "name": "restored bounded-hash and exact Nem gate plus harness host",
+      "framework": "Swift Testing",
+      "test_cases": 33,
+      "suites": 10,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.175,
+      "exit_code": 0,
+      "scope": "All prior22 harness checks plus6 bounded hash and5 exact Nem policy cases. This is a separate invocation, not a sum of all historical test populations."
+    },
+    {
+      "name": "real encrypted SSD lifecycle and identity after bounded hashing",
+      "framework": "Swift Testing",
+      "test_cases": 32,
+      "suites": 7,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 2.091,
+      "exit_code": 0,
+      "scope": "Actual SSD lifecycle, duplicate authentication, lookup, demand/write priority, fleet-repeat cap, native diffusion store and exact-position keys. Does not establish model TTFT, fsync durability or a fleet hit rate."
+    }
+  ],
+  "beforeBuildSeconds": 89.84297195903491,
+  "afterBuildSeconds": 21.310148750024382,
+  "beforeMetalStagingSeconds": 10.995295708999038,
+  "afterMetalStagingSeconds": 9.617073583998717,
+  "qualification": "Host gates and real encrypted SSD semantics only. Actual post-gate Nem production output/runtime verification remains a separate cohort.",
+  "privacy": "No local paths, prompt/output content, raw IDs, provider/account identities or raw logs."
+}

@@ -1,6 +1,7 @@
 import Foundation
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 enum ProviderMTPAssistantLoadError: Error, CustomStringConvertible {
     case targetIncompatible(String)
@@ -39,6 +40,14 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
         artifact: SpecDecArtifact,
         target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
+        if let prism = target as? MLXVLM.PrismHadamardQwen35 {
+            do {
+                let assistant = try prism.loadValidated9BMTPAssistant(from: artifact.directory)
+                return ProviderMTPAssistantHandle(owner: assistant, drafter: assistant)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+        }
         if target is Qwen35TextModel || target is Qwen35Model {
             do {
                 let assistant = try Qwen35InlineMTPAssistant.load(

@@ -1,111 +1,58 @@
-# Find and organize code
+# Repository Ownership And Navigation
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-13
 
-Use this guide to find the code behind a behavior and place new files beside
-their owners. Start from the subsystem, then search for the request, command,
-type, or test name you are investigating.
+Use this map to find the provider/native owner before changing code. Centralized
+backend and web-application development belongs to a different repository.
 
-## Prerequisites
+## Workspace
 
-Run the commands below from the repository root with `rg` installed.
-Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
+Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
+checkouts. Never nest them. Check remotes, branch and the full diff before pushing.
+New backend, Rust sidecar, console and admin code must never be uploaded here.
+The existing console snapshot and its build/test/hosting configuration remain
+local; this retention does not change the platform's development ownership.
 
-## Steps
+For coordinator diagnosis or changes, fetch the platform's current default
+branch and read its `AGENTS.md` and relevant implementation. Old d-inference
+copies and immutable evidence links do not describe the latest coordinator.
 
-### 1. Choose the owning subsystem
-
-| Behavior | Start here |
+| Concern | Owner |
 |---|---|
-| API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
-| Prompt accounting and planning | `coordinator/api/promptwork/`; thin HTTP adapter in `coordinator/api/prompt_work.go` |
-| Pure deadline calibration | `coordinator/registry/firstcontent/`; runtime adapters remain in `coordinator/registry/` |
-| Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
-| Autopilot admin HTTP contract | `coordinator/api/autopilot/`; parent API adapter supplies authorization and dependencies |
-| Autopilot demand, placement and donor coverage | `coordinator/registry/autopilot/`; the registry adapter owns live sessions, reservations and transport |
-| Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
-| Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
-| Autopilot runtime and operator controls | `ProviderCore/Autopilot/`, `ProviderCore/Protocol/Autopilot/`, and `darkbloom/Autopilot/` under `provider-swift/Sources/`; startup is in `darkbloom/Start/` |
-| Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |
-| Console, operations dashboard, landing page | `console-ui/src/`, `admin-ui/src/`, `landing/` |
-| System tests and shared inputs | `e2e/`, `fixtures/`; lifecycle harness in `e2e/testbed/` |
-| Build, install, release, deploy | `Makefile`, `scripts/`, `.github/workflows/`, `deploy/` |
+| Provider CLI and device-local HTTP APIs | `provider-swift/Sources/darkbloom/`, `provider-swift/Sources/ProviderCore/` |
+| Manifest discovery, hashing and publication foundation | `provider-swift/Sources/ProviderCoreFoundation/`, `provider-swift/Sources/darkbloom-publish/` |
+| Native execution, kernels and model families | `libs/mlx-swift/`, `libs/mlx-swift-lm/`, `libs/mlx/` |
+| Provider and native regression coverage | `provider-swift/Tests/`, SDK test targets |
+| Marketing app, including local API routes | `landing/` |
+| Retained console snapshot and existing tooling | `console-ui/`; [architecture](../architecture/components/console-ui.md), new development owned by the platform |
+| Shared JSON fixtures used by console tests | `coordinator/tests/protocol/testdata/paged_footprint_wire.json`, `coordinator/tests/protocol/testdata/process_memory_wire.json`; no backend implementation |
+| Coordinator, private integration, consumer console and admin | [Current platform source](https://github.com/Layr-Labs/darkbloom-platform) |
+| Backend contracts and deployment runbooks | [Current platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/master/docs) |
 
-The dependency repositories are Git submodules under `libs/`, declared in
-`.gitmodules`. The [docs index](../README.md) separates current instructions
-from historical designs and reports.
+## Moving A Boundary
 
-### 2. Search filenames, then symbols
+Preserve cohesive ownership and explicit dependencies. Check all resource readers,
+test fixture paths, native package manifests, script callers and docs before a
+move. Use domain names, not ticket or work-wave labels. Public golden vectors
+stay public fixed-input contracts; private qualification must not become a
+required checkout for provider builds. Coordinate wire, telemetry, model/load
+quotations and release identity across repositories without copying implementations.
 
-Find likely files before searching their contents:
+## Deployment Authority
 
-```bash
-rg --files coordinator/api -g '*attest*'
-rg --files provider-swift/Sources provider-swift/Tests -g '*PrefixCache*'
-rg --files console-ui/src -g '*Auth*' -g '*auth*'
-```
+Source ownership does not grant deployment authority. Infrastructure, hosting
+and traffic changes require specific human approval. Registering an approved
+release/model through an external API remains supported; building, testing or
+deploying the backend here does not.
 
-Then find the implementation and its callers or tests:
-
-```bash
-rg -n 'recordRequestOutcome|classifyOutcomeByCode' coordinator/api
-rg -n 'StatusCanonical' provider-swift/Sources provider-swift/Tests coordinator/attestation
-```
-
-Scope runtime searches to source and test directories. Search `docs/reports/`
-separately when you need measurements or the state at a historical commit.
-
-### 3. Name and place files by responsibility
-
-Group a feature's independent logic and tests in its own directory. For example,
-`coordinator/api/autopilot/` owns its HTTP validation and response tests.
-`coordinator/registry/autopilot/` owns pure policy and demand tests; it imports no registry
-or live-provider types. The registry captures detached values and retains session
-identity beside them before revalidating a plan. Go methods that need registry,
-HTTP-server or store receivers stay in their owning package as integration files.
-Swift sources and tests use matching `Autopilot/` feature folders within their
-existing targets; the CLI entry point delegates to enrollment, policy, status and
-configuration files.
-
-Use the feature followed by the behavior: `code_attest_reuse_policy_test.go`
-groups the attestation reuse policy cases, and `stripe_transfer_reversal_test.go`
-groups transfer reversal cases. A shared fixture belongs in a domain-specific
-helper file, such as `coordinator/api/attestation_helpers_test.go`
-(`testStatusSignature`).
-
-Split unrelated test collections by the contracts they verify. Work-wave,
-priority, and ticket labels belong in commit history. Meaningful protocol,
-engine, model, and fixture-version identifiers belong in names when they
-distinguish supported behavior.
-
-Keep Go tests beside their owning package: a new directory creates a new Go
-package and may change access to unexported code. Within a SwiftPM target or UI
-feature, use folders for cohesive subsystems. Keep small, already focused
-targets flat. Put a fixture beside its users; use a shared helper location when
-several subsystems actually need it.
-
-### 4. Check consumers before moving a file
-
-Search the old full path and basename across tracked source, scripts, CI,
-and current docs. Check relative imports, source-relative fixture lookups,
-symlink destinations, build source lists, generated entrypoints, and command
-paths. Preserve exported APIs and test names when only changing organization.
-
-Historical reports, release notes, and frozen design bodies retain the paths
-from their original source snapshots; follow [the docs rules](../AGENTS.md).
-Public script entrypoints and release lookup paths need a compatibility plan
-before renaming.
-
-## Verify
-
-Compare the original and moved files, account for every declaration, and
-confirm that test discovery still includes the same cases. Run the affected
-tests, build or typecheck where imports or source membership changed, and run
-`make docs-check` after updating current links. A path move must still load
-the same fixture bytes and preserve the same test selection.
+Before removal, local docs mixed provider and backend instructions. After
+removal, native/provider and retained-console docs stay local and platform details have immutable
+external references. Frozen records are retained unchanged or retired with
+their inbound dependency closure; [historical references](historical-references.md)
+explain their original source.
 
 ## Related
 
 - [Build](build.md)
 - [Test](test.md)
-- [Repository structure and contribution rules](../../AGENTS.md)
+- [Contribution rules](../../CONTRIBUTING.md)

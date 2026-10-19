@@ -6,11 +6,32 @@
 /// 3. Provider polls `/v1/device/token` until the user approves (or the code expires).
 /// 4. On approval, the coordinator returns an auth token which is saved to `~/.darkbloom/auth_token`.
 
+import CryptoKit
 import Foundation
 
 // MARK: - Token Storage
 
 public enum AuthTokenStore: Sendable {
+
+    private struct Issuer: Codable {
+        let tokenHash: String
+        let coordinatorURL: String
+    }
+
+    private static func issuerPath() -> URL { tokenPath().appendingPathExtension("issuer.json") }
+
+    public static func issuer(for token: String) -> String? {
+        guard let file = try? FileHandle(forReadingFrom: issuerPath()) else { return nil }
+        defer { try? file.close() }
+        guard let data = try? file.read(upToCount: 8193), data.count <= 8192,
+              let issuer = try? JSONDecoder().decode(Issuer.self, from: data),
+              issuer.tokenHash == tokenHash(token) else { return nil }
+        return issuer.coordinatorURL
+    }
+
+    private static func tokenHash(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Path to the canonical stored auth token. Test harnesses can override this with
     /// DARKBLOOM_AUTH_TOKEN_PATH to avoid touching the user's login state.
@@ -22,7 +43,7 @@ public enum AuthTokenStore: Sendable {
     }
 
     private static func canonicalTokenPath(home: URL) -> URL {
-        home.appendingPathComponent(".darkbloom").appendingPathComponent("auth_token")
+        BuildEnvironment.current.installDirectory(home: home).appendingPathComponent("auth_token")
     }
 
     private static func tokenPathOverride() -> String? {
@@ -55,20 +76,41 @@ public enum AuthTokenStore: Sendable {
     }
 
     /// Save an auth token to disk with restricted permissions (owner read/write only).
-    public static func save(_ token: String) throws {
+    public static func save(_ token: String, coordinatorURL: String? = nil) throws {
         let path = tokenPath()
         let dir = path.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: dir,
             withIntermediateDirectories: true
         )
-        try token.write(to: path, atomically: true, encoding: .utf8)
-
-        // Restrict to owner read/write (0600).
         let attributes: [FileAttributeKey: Any] = [
             .posixPermissions: 0o600
         ]
-        try FileManager.default.setAttributes(attributes, ofItemAtPath: path.path)
+        let issuerFile = issuerPath()
+        var written: [URL] = []
+        do {
+            try token.write(to: path, atomically: true, encoding: .utf8)
+            written.append(path)
+            try FileManager.default.setAttributes(attributes, ofItemAtPath: path.path)
+            if let coordinatorURL {
+                let issuer = Issuer(tokenHash: tokenHash(token), coordinatorURL: coordinatorURL)
+                try JSONEncoder().encode(issuer).write(to: issuerFile, options: .atomic)
+                written.append(issuerFile)
+                try FileManager.default.setAttributes(attributes, ofItemAtPath: issuerFile.path)
+            } else if FileManager.default.fileExists(atPath: issuerFile.path) {
+                try FileManager.default.removeItem(at: issuerFile)
+            }
+        } catch {
+            // A failed login must not leave a token that blocks the next attempt.
+            // Only remove files this save wrote, not an unexpected path occupant.
+            let saveError = error
+            var rollbackError: Error?
+            for file in written {
+                do { try FileManager.default.removeItem(at: file) }
+                catch { if rollbackError == nil { rollbackError = error } }
+            }
+            throw rollbackError ?? saveError
+        }
     }
 
     /// Delete the auth token file.
@@ -76,6 +118,10 @@ public enum AuthTokenStore: Sendable {
         let path = tokenPath()
         if FileManager.default.fileExists(atPath: path.path) {
             try FileManager.default.removeItem(at: path)
+        }
+        let issuerFile = issuerPath()
+        if FileManager.default.fileExists(atPath: issuerFile.path) {
+            try FileManager.default.removeItem(at: issuerFile)
         }
     }
 }
@@ -93,13 +139,13 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
     public var description: String {
         switch self {
         case .alreadyLoggedIn(let prefix):
-            return "Already logged in (token: \(prefix)...). Run 'darkbloom logout' first to unlink."
+            return "Already logged in (token: \(prefix)...). Run '\(BuildEnvironment.current.cliName) logout' first to unlink."
         case .coordinatorUnreachable(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .deviceCodeRequestFailed(let detail):
             return "Failed to get device code: \(detail)"
         case .deviceCodeExpired:
-            return "Device code expired. Run 'darkbloom login' again."
+            return "Device code expired. Run '\(BuildEnvironment.current.cliName) login' again."
         case .authorizationFailed(let detail):
             return "Authorization failed: \(detail)"
         case .invalidResponse(let detail):

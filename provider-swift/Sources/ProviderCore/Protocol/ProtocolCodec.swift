@@ -23,6 +23,9 @@ public enum ProviderProtocolCodec {
     }
 
     public static func decodeProviderMessage(from data: Data) throws -> ProviderMessage {
+        if try containsAppAttestResumeType(data) {
+            try AppAttestResumeWire.validateMessage(data, action: "response")
+        }
         var message = try JSONDecoder().decode(ProviderMessage.self, from: data)
 
         if case .register(var register) = message,
@@ -55,7 +58,10 @@ public enum ProviderProtocolCodec {
     }
 
     public static func decodeCoordinatorMessage(from data: Data) throws -> CoordinatorMessage {
-        try JSONDecoder().decode(CoordinatorMessage.self, from: data)
+        if try containsAppAttestResumeType(data) {
+            try AppAttestResumeWire.validateMessage(data, action: "challenge")
+        }
+        return try JSONDecoder().decode(CoordinatorMessage.self, from: data)
     }
 
     public static func decodeCoordinatorMessage(from string: String) throws -> CoordinatorMessage {
@@ -63,6 +69,74 @@ public enum ProviderProtocolCodec {
             throw ProtocolCodecError.nonUTF8Input
         }
         return try decodeCoordinatorMessage(from: data)
+    }
+
+    /// Select the strict control-message gate without decoding/copying a large
+    /// inference payload. Any matching top-level type wins, including duplicates;
+    /// the strict validator or Codable still owns all syntax/schema validation.
+    private static func containsAppAttestResumeType(_ data: Data) throws -> Bool {
+        try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            // JSON starts with ASCII or a BOM. Reject UTF-16/32 before Foundation
+            // can transcode it and bypass this UTF-8 discriminator scan.
+            guard !bytes.prefix(4).contains(0),
+                  !bytes.starts(with: [0xFE, 0xFF]), !bytes.starts(with: [0xFF, 0xFE]) else {
+                throw ProtocolCodecError.nonUTF8Input
+            }
+            var index = bytes.starts(with: [0xEF, 0xBB, 0xBF]) ? 3 : 0
+            func whitespace() {
+                while index < bytes.count, [9, 10, 13, 32].contains(bytes[index]) { index += 1 }
+            }
+            func stringRange() -> Range<Int>? {
+                guard index < bytes.count, bytes[index] == 34 else { return nil }
+                let start = index
+                index += 1
+                while index < bytes.count {
+                    let byte = bytes[index]
+                    index += 1
+                    if byte == 34 { return start..<index }
+                    if byte == 92 { index += 1 }
+                }
+                return nil
+            }
+            func matches(_ range: Range<Int>?, _ expected: String) -> Bool {
+                // Each ASCII character can occupy at most six bytes as \uXXXX.
+                guard let range, range.count <= expected.utf8.count * 6 + 2 else { return false }
+                return (try? JSONDecoder().decode(String.self, from: Data(bytes[range]))) == expected
+            }
+
+            whitespace()
+            guard index < bytes.count, bytes[index] == 123 else { return false }
+            index += 1
+            while index < bytes.count {
+                whitespace()
+                guard let key = stringRange() else { return false }
+                whitespace()
+                guard index < bytes.count, bytes[index] == 58 else { return false }
+                index += 1
+                whitespace()
+                if matches(key, "type"), matches(stringRange(), "app_attest_resume") { return true }
+
+                // Skip arbitrary values with constant storage, even at hostile nesting depths.
+                var depth = 0
+                while index < bytes.count {
+                    let byte = bytes[index]
+                    if byte == 34 {
+                        guard stringRange() != nil else { return false }
+                        continue
+                    }
+                    if byte == 123 || byte == 91 { depth += 1 }
+                    if byte == 125 || byte == 93 {
+                        if depth == 0 { break }
+                        depth -= 1
+                    }
+                    if byte == 44, depth == 0 { break }
+                    index += 1
+                }
+                guard index < bytes.count, bytes[index] == 44 else { return false }
+                index += 1
+            }
+            return false
+        }
     }
 
     /// Shared encoder for every outbound message, cached to avoid a fresh
@@ -126,6 +200,8 @@ public enum ProviderProtocolCodec {
         try appendIfPresent(register.apnsDeviceToken, key: "apns_device_token", to: &fields)
         try appendIfPresent(register.apnsEnvironment, key: "apns_environment", to: &fields)
         try appendIfPresent(register.appAttestProtocol, key: "app_attest_protocol", to: &fields)
+        try appendIfPresent(register.appAttestResumeProtocol, key: "app_attest_resume_protocol", to: &fields)
+        try appendIfPresent(register.appAttestResumeNonce, key: "app_attest_resume_nonce", to: &fields)
         if let version = register.prefixCacheProtocol, version != 0 {
             try fields.append(("prefix_cache_protocol", encodeValue(version)))
         }

@@ -43,14 +43,14 @@ public enum VersionDiagnostic {
             return Diagnostic(
                 section: .version, name: "minimum version", level: .fail,
                 message: "running \(current); the coordinator requires ≥ \(minimum). You will not be trusted until you update.",
-                fix: "`darkbloom update` (or enable `auto_update` in provider.toml).")
+                fix: "`\(BuildEnvironment.current.cliName) update` (or enable `auto_update` in provider.toml).")
         }
         if let latest, !latest.isEmpty, parse(latest) != nil, parse(current) != nil,
            compare(current, latest) < 0 {
             return Diagnostic(
                 section: .version, name: "up to date", level: .warn,
                 message: "running \(current); latest is \(latest).",
-                fix: "`darkbloom update` to pick up fixes.")
+                fix: "`\(BuildEnvironment.current.cliName) update` to pick up fixes.")
         }
         return Diagnostic(
             section: .version, name: "up to date", level: .pass,

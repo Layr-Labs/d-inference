@@ -3,6 +3,7 @@
 // are prepared before cache construction so reuse follows the backend served.
 
 import Foundation
+import MLXLLM
 import MLXLMCommon
 
 /// Construction failures reported by the factory's refusal telemetry.
@@ -55,6 +56,7 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
+        checkpointQuantization: EngineV2KVQuantizationSelection? = nil,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any CBv2Engine {
@@ -73,6 +75,7 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             kvBackend: kvBackend,
+            checkpointQuantization: checkpointQuantization,
             maxContextLength: maxContextLength,
             environment: environment
         ).engine
@@ -83,6 +86,8 @@ extension EngineV2Factory {
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
+        /// The same immutable watermark supplied to the SDK admission config.
+        public let admissionWatermarkFraction: Double?
         public let kvBackendKind: EngineV2KVBackendKind
         /// Policy override or automatic degradation; explicit paged failures throw.
         public let kvBackendFallbackReason: String?
@@ -98,6 +103,10 @@ extension EngineV2Factory {
         /// Actual configured scheduler cap after serving and architecture policy.
         /// Zero only for scripted/test builds without construction metadata.
         public let effectiveMaxConcurrentRequests: Int
+        /// Resolved physical attention precision; SDK-owned MiMo stays native.
+        public let kvQuantization: EngineV2KVQuantizationSelection
+        /// Effective complete-checkpoint encoding, independent of live precision.
+        public let kvCheckpointQuantization: EngineV2KVQuantizationSelection
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -114,10 +123,14 @@ extension EngineV2Factory {
             usesProcessMemoryOwner: Bool = false,
             mtpAdmissionResolution: CBv2MTPAdmissionResolution? = nil,
             legacyMTPBytesPerToken: Int = 0,
-            effectiveMaxConcurrentRequests: Int = 0
+            effectiveMaxConcurrentRequests: Int = 0,
+            kvQuantization: EngineV2KVQuantizationSelection = .native,
+            kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
+            admissionWatermarkFraction: Double? = nil
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
+            self.admissionWatermarkFraction = admissionWatermarkFraction
             self.kvBackendKind = kvBackendKind
             self.kvBackendFallbackReason = kvBackendFallbackReason
             self.pagedPoolDType = pagedPoolDType
@@ -125,6 +138,8 @@ extension EngineV2Factory {
             self.mtpAdmissionResolution = mtpAdmissionResolution
             self.legacyMTPBytesPerToken = legacyMTPBytesPerToken
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
+            self.kvQuantization = kvQuantization
+            self.kvCheckpointQuantization = kvCheckpointQuantization
         }
     }
 
@@ -146,6 +161,7 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
+        checkpointQuantization: EngineV2KVQuantizationSelection? = nil,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
@@ -162,17 +178,35 @@ extension EngineV2Factory {
             residentPrefixCache: residentPrefixCache,
             hybridPrefixCache: mtpDrafter == nil || mtpDrafter is any CBv2MTPPrefixCheckpointDrafter
                 ? hybridPrefixCache : nil,
+            nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
+                layerKinds: (model as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
+                gemmaAssistantActive: mtpDrafter != nil && mtpConfig.effectiveEnabled),
             pagedPreflightOverride: pagedPreflightOverride)
+        let storageQuantization: PagedKVQuantizationConfig?
+        if completePrefixCache != nil {
+            let requested = try checkpointQuantization ?? EngineV2KVQuantizationPolicy.resolve(
+                modelType: nil, modelID: modelID ?? "", environment: environment, purpose: .checkpoint)
+            storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
+                requested.configuration, layerKinds: preparedBackend.layerKinds,
+                layerDTypes: preparedBackend.nativeLayerDTypes,
+                pagedConfig: preparedBackend.pagedPoolConfig,
+                hasAssistantState: mtpDrafter is any CBv2MTPPrefixCheckpointCoding
+                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter)
+        } else {
+            storageQuantization = nil
+        }
         return try assembleProductionBuild(
             model: model,
             tokenizer: tokenizer,
             prefixCache: prefixCache,
             completePrefixCache: completePrefixCache,
+            checkpointQuantization: storageQuantization,
             maxConcurrentRequests: maxConcurrentRequests,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             preparedBackend: preparedBackend,
-            kvBudget: kvBudget)
+            kvBudget: kvBudget,
+            constructionPurpose: constructionPurpose)
     }
 
     /// Consume the prepared resources exactly once. Preserve the scheduler config
@@ -182,11 +216,14 @@ extension EngineV2Factory {
         tokenizer: any MLXLMCommon.Tokenizer,
         prefixCache: (any CBv2PrefixCache)?,
         completePrefixCache: (any CBv2CompletePrefixCache)? = nil,
+        checkpointQuantization: PagedKVQuantizationConfig? = nil,
         maxConcurrentRequests: Int,
         mtpDrafter: (any CBv2MTPDrafter)?,
         mtpConfig: CBv2MTPConfig,
         preparedBackend: ProductionBackendPreparation,
-        kvBudget: GlobalKVCacheBudget? = nil
+        kvBudget: GlobalKVCacheBudget? = nil,
+        constructionPurpose: ConstructionPurpose = .serving,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
     ) throws -> ProductionBuild {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
@@ -202,6 +239,13 @@ extension EngineV2Factory {
             effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled
                 || preparedBackend.hybridPrefixCache != nil
                 || completePrefixCache != nil
+        schedulerConfig.demandedShortCheckpointMinimumTokens = demandedShortCheckpointMinimumTokens(
+            model: model, backend: preparedBackend.kind, store: completePrefixCache,
+            constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
+        schedulerConfig.demandedCheckpointPartitionIncludesLongPrompts =
+            benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
+                model: model, backend: preparedBackend.kind, store: completePrefixCache,
+                constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
         let processOwner: EngineProcessMemoryOwner?
         if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required
@@ -219,6 +263,11 @@ extension EngineV2Factory {
         } else {
             processOwner = nil
         }
+        var admissionConfig = try (backend as? PagedKVBackend)?.pool.admissionStorageConfig(
+            AdmissionV2.Config()) ?? AdmissionV2.Config()
+        if preparedBackend.kind == .contiguous {
+            admissionConfig.layerElementBytes = preparedBackend.nativeLayerDTypes.map(\.size)
+        }
         let engine = EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: preparedBackend.layerKinds,
@@ -229,9 +278,12 @@ extension EngineV2Factory {
             schedulerConfig: schedulerConfig,
             loopConfig: CBv2EngineLoopConfig(
                 useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
+            admissionConfig: admissionConfig,
             prefixCache: effectivePrefixCache,
             hybridPrefixCache: preparedBackend.hybridPrefixCache,
             completePrefixCache: completePrefixCache,
+            checkpointQuantization: checkpointQuantization,
+            completeCheckpointKVDTypes: preparedBackend.nativeLayerDTypes,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             processMemoryOwner: processOwner)
@@ -250,6 +302,12 @@ extension EngineV2Factory {
             usesProcessMemoryOwner: processOwner != nil,
             mtpAdmissionResolution: engine.resolvedMTPAdmission,
             legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0,
-            effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests)
+            effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests,
+            kvQuantization: preparedBackend.kvQuantization,
+            kvCheckpointQuantization: engine.completePrefixCache == nil ? .native
+                : checkpointQuantization.flatMap { configuration in
+                    EngineV2KVQuantizationSelection.allCases.first { $0.configuration == configuration }
+                } ?? preparedBackend.kvQuantization,
+            admissionWatermarkFraction: admissionConfig.watermarkFraction)
     }
 }

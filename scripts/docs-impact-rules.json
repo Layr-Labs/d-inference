@@ -1,8 +1,7 @@
 {
   "version": 1,
   "ignore_patterns": [
-    "**/*_test.go",
-    "**/Tests/**",
+    "**/Tests/**/*.swift",
     "**/*.test.ts",
     "**/*.test.tsx",
     "**/*.spec.ts",
@@ -10,118 +9,94 @@
   ],
   "rules": [
     {
-      "name": "HTTP and API contracts",
-      "source_patterns": [
-        "coordinator/api/server.go",
-        "coordinator/api/types/**",
-        "coordinator/api/*handler*.go"
-      ],
-      "docs_any_of": [
-        "docs/reference/api-contracts.md"
-      ]
+      "name": "provider protocol",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Protocol/**", "provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/**"],
+      "docs_any_of": ["docs/reference/protocol-messages.md"]
     },
     {
-      "name": "telemetry",
-      "source_patterns": [
-        "coordinator/telemetry/**",
-        "coordinator/datadog/**",
-        "coordinator/api/*telemetry*.go",
-        "coordinator/api/*metrics*.go",
-        "provider-swift/Sources/ProviderCore/Telemetry/**",
-        "console-ui/src/lib/telemetry*"
-      ],
-      "docs_any_of": [
-        "docs/reference/telemetry-inventory.md",
-        "docs/reference/telemetry-schema.md",
-        "docs/architecture/telemetry.md"
-      ]
+      "name": "provider telemetry",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Telemetry/**", "provider-swift/Sources/ProviderCore/Protocol/*Profile*", "provider-swift/Sources/ProviderCore/Protocol/Telemetry*", "console-ui/src/lib/telemetry-types.ts"],
+      "docs_any_of": ["docs/reference/telemetry-schema.md", "docs/architecture/telemetry.md"]
     },
     {
-      "name": "protocol messages",
-      "source_patterns": [
-        "coordinator/protocol/**",
-        "provider-swift/Sources/ProviderCore/Protocol/**"
-      ],
-      "docs_any_of": [
-        "docs/reference/protocol-messages.md"
-      ]
+      "name": "provider configuration",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Config/**", "provider-swift/Sources/darkbloom/**"],
+      "docs_any_of": ["docs/reference/configuration.md", "docs/provider/cli-reference.md"]
     },
     {
-      "name": "warm-pool and scheduling",
-      "source_patterns": [
-        "coordinator/registry/warm_pool*.go",
-        "coordinator/registry/scheduler.go",
-        "coordinator/registry/model_loading.go",
-        "coordinator/registry/model_commands.go",
-        "coordinator/api/warm_pool*.go"
-      ],
-      "docs_any_of": [
-        "docs/architecture/scheduling.md",
-        "docs/architecture/routing.md"
-      ]
+      "name": "native inference",
+      "source_patterns": ["libs/**", "provider-swift/Sources/ProviderCore/Inference/**", "provider-swift/Sources/ProviderCore/MiMo/**"],
+      "docs_any_of": ["docs/architecture/inference.md", "docs/architecture/native-block-inference.md"]
     },
     {
-      "name": "configuration",
-      "source_patterns": [
-        "coordinator/config/**",
-        "coordinator/env/**",
-        "coordinator/registry/config.go",
-        "coordinator/registry/autopilot_config.go",
-        "provider-swift/Sources/ProviderCore/Config/**",
-        "coordinator/registry/autopilot/config.go"
-      ],
-      "docs_any_of": [
-        "docs/reference/configuration.md"
-      ]
-    },
-    {
-      "name": "storage schema",
-      "source_patterns": [
-        "coordinator/store/postgres.go",
-        "coordinator/store/*migration*.go",
-        "coordinator/store/migrations/**"
-      ],
-      "docs_any_of": [
-        "docs/architecture/storage.md"
-      ]
-    },
-    {
-      "name": "provider release",
-      "source_patterns": [
-        ".github/workflows/release-swift.yml",
-        "scripts/install.sh",
-        "provider-swift/Sources/ProviderCore/ProviderCore.swift"
-      ],
-      "docs_any_of": [
-        "docs/operations/provider-release.md"
-      ]
-    },
-    {
-      "name": "model autopilot",
-      "source_patterns": [
-        "coordinator/registry/autopilot/**",
-        "coordinator/registry/autopilot*.go",
-        "coordinator/api/autopilot*.go",
-        "coordinator/api/autopilot/**",
-        "provider-swift/Sources/ProviderCore/Autopilot/**",
-        "provider-swift/Sources/darkbloom/Autopilot/**",
-        "provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift"
-      ],
-      "docs_any_of": [
-        "docs/architecture/model-autopilot.md",
-        "docs/operations/model-autopilot.md"
-      ]
+      "name": "provider memory and capacity",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Inference/Memory/**", "provider-swift/Sources/ProviderCore/Inference/Performance/**", "scripts/serving_performance/**"],
+      "docs_any_of": ["docs/architecture/hardware-support.md", "docs/developer/serving-performance-qualification.md"]
     },
     {
       "name": "provider SSD prefix cache",
-      "source_patterns": [
-        "provider-swift/Sources/ProviderCore/KVCacheSSD/**",
-        "provider-swift/Sources/ProviderCore/Inference/PrefixCache/**"
-      ],
-      "docs_any_of": [
-        "docs/reference/ssd-kv-cache.md",
-        "docs/architecture/prefix-cache.md"
-      ]
+      "source_patterns": ["provider-swift/Sources/ProviderCore/KVCacheSSD/**", "provider-swift/Sources/ProviderCore/Inference/PrefixCache/**"],
+      "docs_any_of": ["docs/reference/ssd-kv-cache.md", "docs/architecture/prefix-cache.md"]
+    },
+    {
+      "name": "cache storage privacy",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/KVCacheSSD/Cache*", "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift", "provider-swift/Sources/ProviderCore/KVCacheSSD/*Key*", "provider-swift/Sources/ProviderCore/KVCacheSSD/*WriteBudget*", "provider-swift/Sources/ProviderCore/Config/CacheSettings.swift", "provider-swift/Sources/darkbloom/Cache/**"],
+      "docs_any_of": ["docs/provider/cache-storage.md", "docs/architecture/security/encryption.md"]
+    },
+    {
+      "name": "provider privacy and trust",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Security/**", "provider-swift/Sources/ProviderCore/Crypto/**", "provider-swift/Sources/ProviderAppAttest/**", "scripts/prepare-app-attest-entitlements.py", "provider-swift/entitlements*.plist"],
+      "docs_any_of": ["docs/architecture/security/encryption.md", "docs/architecture/security/attestation.md", "docs/architecture/security/identity-binding.md", "docs/architecture/security/provider-trust.md", "docs/provider/attestation.md", "docs/threat-model.yaml"]
+    },
+    {
+      "name": "provider model manifests",
+      "source_patterns": ["provider-swift/Sources/ProviderCoreFoundation/**", "provider-swift/Sources/ProviderCore/Models/**", "provider-swift/Sources/darkbloom-publish/**", "scripts/publish-model*", "scripts/preposition-rollback-build.sh"],
+      "docs_any_of": ["docs/reference/model-registry-format.md", "docs/architecture/model-registry.md", "docs/operations/model-migration.md", "docs/operations/model-revisions.md"]
+    },
+    {
+      "name": "provider release",
+      "source_patterns": [".github/workflows/release-swift.yml", ".github/workflows/release-provider.yml", ".github/workflows/release-dev-branch.yml", ".github/workflows/provider-release*.yml", ".github/workflows/provider-signing-validation.yml", ".github/actions/provider-release-build/**", "provider-swift/Sources/ProviderCore/ProviderCore.swift", "scripts/install.sh", "scripts/admin.sh", "scripts/check-release-version.sh", "scripts/resolve-provider-release.sh", "scripts/provider-release*", "scripts/provider_release*", "scripts/provider-signing-validation.py", "scripts/prepare-provider-release-toolchain.sh", "scripts/test-release-dev-branch.py"],
+      "docs_any_of": ["docs/operations/provider-release.md"]
+    },
+    {
+      "name": "provider Autopilot",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Autopilot/**", "provider-swift/Sources/darkbloom/Autopilot/**", "provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift"],
+      "docs_any_of": ["docs/architecture/model-autopilot.md"]
+    },
+    {
+      "name": "provider local API",
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Server/**", "provider-swift/Sources/darkbloom/Local*"],
+      "docs_any_of": ["docs/provider/direct-mode.md", "docs/reference/protocol-messages.md"]
+    },
+    {
+      "name": "public fixtures and qualification",
+      "source_patterns": ["fixtures/**", "provider-swift/Tests/ProviderCoreTests/Fixtures/**", "scripts/verify*prompt*", "scripts/prepare-prompt-fixtures.py", "scripts/prepare-mimo*", "scripts/generate*prompt*", "scripts/qualify*", "provider-swift/Tests/test_protocol_fixture_resources.py"],
+      "docs_any_of": ["docs/developer/test.md", "docs/developer/mimo-prompt-fixtures.md", "docs/developer/serving-performance-qualification.md"]
+    },
+    {
+      "name": "build and test tooling",
+      "source_patterns": ["Makefile", "mise.toml", ".githooks/**", ".github/dependabot.yml", ".github/workflows/ci.yml", ".github/workflows/component-changes.yml", ".github/actions/provider-ci-build/**", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
+      "docs_any_of": ["docs/developer/build.md", "docs/developer/test.md"]
+    },
+    {
+      "name": "landing",
+      "source_patterns": ["landing/src/**", "landing/package*.json", "landing/next.config.*", "landing/vercel.json", ".github/workflows/landing.yml"],
+      "docs_any_of": ["landing/README.md", "docs/developer/build.md", "docs/developer/test.md"]
+    },
+    {
+      "name": "retained console",
+      "source_patterns": ["console-ui/src/**", "console-ui/package*.json", "console-ui/next.config.*", "console-ui/tsconfig.json", "console-ui/vercel.json"],
+      "docs_any_of": ["docs/architecture/components/console-ui.md", "docs/reference/configuration.md"]
+    },
+    {
+      "name": "console protocol fixtures",
+      "source_patterns": ["coordinator/tests/protocol/testdata/paged_footprint_wire.json", "coordinator/tests/protocol/testdata/process_memory_wire.json"],
+      "docs_any_of": ["docs/developer/test.md", "docs/reference/protocol-messages.md"]
+    },
+    {
+      "name": "repository ownership",
+      "source_patterns": ["AGENTS.md", "CONTRIBUTING.md", ".agents/skills/darkbloom-contributor/**"],
+      "docs_any_of": ["docs/developer/navigation.md"]
     }
   ]
 }

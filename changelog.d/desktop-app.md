@@ -1,0 +1,7 @@
+### macOS desktop app
+
+- Add a fresh Electron frontend (`desktop-app/`) using the landing brand: onboarding, Home, My Macs (Overview, Models, Cooling, Stats, Settings), Studio, Earnings, Leaderboard, Updates and Help. Closing the window keeps menu-bar access and provider activity; at login it starts hidden. GUI updates use only a feed configured at build time (`DARKBLOOM_DESKTOP_UPDATE_URL`), never provider releases.
+- Keep Electron on the same `darkbloom` CLI backend. Swift owns coordinator requests, shared caches, browser account sign-in and sign-out, catalog refresh, Autopilot enrollment, pinning and model operations; the renderer only sends validated actions over the authenticated loopback API.
+- Make Models Autopilot-first with manual selection on runtimes without Autopilot, keep-in-memory controls, download progress and bounded pin capacity. Recommendations rank compatible models by seven-day network inference earnings; personal earnings stay separate.
+- Show account earnings (daily charts, model and Mac breakdowns, exact CSV copying, separate inference and base-reward income), live per-model request activity, settled-token milestones, and a This Mac chip view lit by measured load. Unavailable values are shown as unavailable rather than zero.
+- Add isolated control-API tests, frontend journey tests, desktop packaging and CI. Public distribution remains subject to signed-runtime, update-feed and notarization qualification.

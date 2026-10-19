@@ -3,11 +3,14 @@ import Foundation
 struct DeviceLoginClient {
     let session: URLSession
     let openBrowser: @Sendable (String) -> Void
-    let saveProviderToken: @Sendable (String) throws -> Void
+    /// Persists a provider token with the coordinator URL that issued it.
+    let saveProviderToken: @Sendable (String, String) throws -> Void
 
     init(session: URLSession = .shared,
          openBrowser: @escaping @Sendable (String) -> Void = Self.openSystemBrowser,
-         saveProviderToken: @escaping @Sendable (String) throws -> Void = AuthTokenStore.save) {
+         saveProviderToken: @escaping @Sendable (String, String) throws -> Void = { token, issuer in
+             try AuthTokenStore.save(token, coordinatorURL: issuer)
+         }) {
         self.session = session
         self.openBrowser = openBrowser
         self.saveProviderToken = saveProviderToken
@@ -95,8 +98,9 @@ struct DeviceLoginClient {
             tokenRequest.httpBody = body
 
             let tokenData: Data
+            let tokenResponse: URLResponse
             do {
-                (tokenData, _) = try await session.data(for: tokenRequest)
+                (tokenData, tokenResponse) = try await session.data(for: tokenRequest)
             } catch {
                 // Network error -- retry on next tick.
                 onPollTick?()
@@ -122,7 +126,12 @@ struct DeviceLoginClient {
                     throw DeviceAuthError.invalidResponse("authorized but no token in response")
                 }
                 try scope.validate(token: token, purpose: tokenResp.purpose)
-                if scope == .provider { try saveProviderToken(token) }
+                if scope == .provider {
+                    guard let issuer = tokenResponse.url else {
+                        throw DeviceAuthError.invalidResponse("authorized response has no issuer URL")
+                    }
+                    try saveProviderToken(token, issuer.absoluteString)
+                }
                 return token
 
             default:

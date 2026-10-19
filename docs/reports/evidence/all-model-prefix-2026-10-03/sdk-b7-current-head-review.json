@@ -1,0 +1,35 @@
+{
+  "status": "current_head_sticky_review_completed_CI_in_progress",
+  "curatedUTC": "2026-10-04T02:47:56.569043+00:00",
+  "observedUTC": "2026-10-04T02:43:37.066555+00:00",
+  "PR": "https://github.com/Layr-Labs/mlx-swift-lm/pull/289",
+  "head": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+  "review": {
+    "type": "Codex Code Review sticky summary",
+    "status": "Completed",
+    "completedUTC": "2026-10-04T02:42:06.116582Z",
+    "reviewedCommitShort": "a2c400f",
+    "reviewedCommitMatchesExactPublishedHeadPrefix": true,
+    "summaryURL": "https://github.com/Layr-Labs/mlx-swift-lm/pull/289#issuecomment-5967983247",
+    "formalAPIReviewEntries": 4,
+    "formalAPIReviewEntriesForCurrentHead": 0,
+    "scope": "The current-head sticky status proves review completion; formal API reviews remain historical. It does not prove exhaustive review coverage or a new formal approval."
+  },
+  "reviewThreads": {
+    "observedThreads": 2,
+    "unresolved": 0,
+    "completePaginationSnapshot": true
+  },
+  "commitSignatures": {
+    "count": 20,
+    "allGitHubVerified": true,
+    "allReasonsValid": true
+  },
+  "CI": {
+    "successfulChecks": 5,
+    "inProgressChecks": 1,
+    "completeGreenClaimed": false,
+    "inProgressName": "Build and test"
+  },
+  "privacy": "Public PR/head/review-status aggregate only; no reviewer/account identities, private paths, comment contents or raw logs."
+}

@@ -51,7 +51,7 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
             return PrefixCacheConstructionStatus(
                 state: .error, reason: .diskUnavailable)
         case .keyUnavailable, .ephemeralKeyUnavailable, .blockContractMismatch,
-            .epochUnavailable, .promptContractUnavailable:
+            .epochUnavailable, .promptContractUnavailable, .writeBudgetUnavailable:
             return PrefixCacheConstructionStatus(
                 state: .error, reason: .cacheInitFailed)
         }

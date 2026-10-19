@@ -17,7 +17,14 @@ enum SSDHybridCheckpointStoreFactory {
             PromptContractIdentity.blockSize == UInt32(PrefixCachePolicy.blockSize),
             backendLayout == CBv2CompleteCheckpointManifest.layout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedLayout
-                || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                || backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.quantizedHistoricalLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricMTPLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
@@ -35,6 +42,9 @@ enum SSDHybridCheckpointStoreFactory {
         let key = namespace(modelId: modelId, identity: identity, backendLayout: backendLayout)
         let root = wholeRoot.appendingPathComponent(String(key), isDirectory: true)
         do {
+            if SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) == nil {
+                try CacheStorage.validateSelection()
+            }
             try SSDBlockStore.prepareModelRoot(dedicatedRoot: wholeRoot, modelRoot: root)
             let material = try await SSDPrefixCacheFactory.loadKeyMaterial(
                 environment: environment, persistentTestNamespace: persistentTestNamespace)
@@ -55,6 +65,11 @@ enum SSDHybridCheckpointStoreFactory {
                 _ = SSDWholeRootMaintainer.shared.maintain(root: wholeRoot, ttlSeconds: ttl,
                     nowSeconds: Int64(Date().timeIntervalSince1970), budgetBytes: budget())
             }
+            let maxWriteBytesPerDay = SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment)
+            let writeBudget = try CacheStorage.makeWriteBudget(
+                maxWriteBytesPerDay: maxWriteBytesPerDay,
+                payloadRoot: wholeRoot,
+                isolated: SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil)
             let cache = SSDHybridCheckpointStore(config: .init(
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
                 nativePrefillChunkSize: nativePrefillChunkSize,
@@ -65,8 +80,9 @@ enum SSDHybridCheckpointStoreFactory {
                 ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
                 nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,
                 maintainWholeRoot: maintain), kekKey: material.key, kvBudget: kvBudget,
-                maxWriteBytesPerDay: SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment),
-                usesEphemeralKey: material.ephemeral)
+                maxWriteBytesPerDay: maxWriteBytesPerDay,
+                usesEphemeralKey: material.ephemeral,
+                writeBudget: writeBudget)
             await Task.detached(priority: .utility) {
                 cache.scanOnDisk()
                 maintain()

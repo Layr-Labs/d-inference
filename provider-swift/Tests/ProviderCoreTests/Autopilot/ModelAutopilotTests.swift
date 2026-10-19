@@ -141,6 +141,40 @@ struct ModelAutopilotTests {
 
 @Suite("ModelAutopilot runtime")
 struct ModelAutopilotRuntimeTests {
+    @Test(arguments: [false, true], [false, true])
+    func initialRegistrationReportsSavedConsent(enabled: Bool, consentRecorded: Bool) async throws {
+        let loop = try await autopilotTestLoop(enabled: enabled, activeControl: false,
+            consentRecorded: consentRecorded)
+        await loop.publishModelAutopilotSnapshot()
+        let snapshot = try #require(await loop.state.modelAutopilot)
+        #expect(snapshot.consentEnabled == (enabled && consentRecorded))
+        #expect(snapshot.enabled == (enabled && consentRecorded))
+        #expect(snapshot.active == false)
+        #expect(snapshot.sessionId == nil)
+
+        let config = await loop.loopConfig
+        let data = try CoordinatorClientCodec.encodeRegistration(from: .init(
+            url: config.coordinatorURL, hardware: config.hardware, models: config.models,
+            backendName: "mlx-swift"), modelAutopilot: snapshot)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedSnapshot = try #require(object["model_autopilot"] as? [String: Any])
+        #expect(encodedSnapshot["consent_enabled"] as? Bool == (enabled && consentRecorded))
+        guard case .register(let registration) = try ProviderProtocolCodec.decodeProviderMessage(from: data) else {
+            Issue.record("Expected registration message")
+            return
+        }
+        #expect(registration.modelAutopilot == snapshot)
+    }
+
+    @Test func privateOnlyReadinessDoesNotChangeSavedConsent() async throws {
+        let loop = try await autopilotTestLoop(enabled: true, activeControl: false, privateOnly: true)
+        await loop.publishModelAutopilotSnapshot()
+        #expect(await loop.autopilotSettings.hasConsent)
+        #expect(await loop.state.modelAutopilot?.consentEnabled == true)
+        #expect(await loop.state.modelAutopilot?.enabled == false)
+        #expect(await loop.state.modelAutopilot?.active == false)
+    }
+
     @Test func unconsentedCommandsNeverStartAndDuplicateIsIdempotent() async throws {
         let loop = try await autopilotTestLoop(enabled: false), recorder = AutopilotRecorder()
         let command = ModelAutopilotCommand(commandId: "denied", loadModelId: "uncached",

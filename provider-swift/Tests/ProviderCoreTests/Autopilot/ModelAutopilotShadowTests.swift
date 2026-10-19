@@ -80,11 +80,15 @@ struct ModelAutopilotShadowTests {
         #expect(await loop.autopilotControl?.observeOnly == true)
         #expect(await loop.state.modelAutopilot?.observeOnly == true)
         #expect(await loop.state.modelAutopilot?.active == false)
+        #expect(await loop.state.modelAutopilot?.consentEnabled == true)
+        #expect(await loop.state.modelAutopilot?.enabled == true)
         await loop.expireShadowControlForTesting()
         await loop.capacityRefreshTick()
         #expect(await loop.autopilotControl == nil)
         #expect(await loop.autopilotPhase == "waiting")
         #expect(await loop.state.modelAutopilot?.observeOnly == false)
+        #expect(await loop.state.modelAutopilot?.consentEnabled == true)
+        #expect(await loop.state.modelAutopilot?.enabled == true)
         #expect(await loop.idleMonitorTask != nil)
         await loop.idleMonitorTask?.cancel()
     }
@@ -121,6 +125,9 @@ struct ModelAutopilotShadowTests {
         #expect(await loop.modelAutopilotEnabled == false)
         #expect(await loop.autopilotManagesResidency)
         #expect(await loop.autopilotProtectsPins)
+        #expect(await loop.state.modelAutopilot?.consentEnabled == true)
+        #expect(await loop.state.modelAutopilot?.enabled == true)
+        #expect(await loop.state.modelAutopilot?.paused == true)
         #expect(await loop.idleMonitorTask == nil)
     }
 }

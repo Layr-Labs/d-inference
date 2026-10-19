@@ -71,8 +71,13 @@ public enum ThroughputSweep {
         kvBackend: EngineV2KVBackendSelection = .auto,
         gemmaOptimizations: GemmaOptimizationSettings,
         hardware: HardwareInfo,
-        efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency
+        efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency,
+        checkpointQuantizationConfig: String = "balanced"
     ) async throws -> ThroughputSweepReport {
+        let checkpointQuantization = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: ModelBenchmark.decodedModelType(
+                from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))),
+            global: checkpointQuantizationConfig, modelID: modelID, purpose: .checkpoint)
         // This entry point loads the factory directly, without the serving
         // scheduler that normally installs these limits. Use the same bounded
         // allocator cache before any model allocation: long-prompt shape churn
@@ -128,7 +133,8 @@ public enum ThroughputSweep {
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            kvBackend: kvBackend
+            kvBackend: kvBackend,
+            checkpointQuantization: checkpointQuantization
         )
         let decode = decodeOutcome.samples
 
@@ -280,7 +286,8 @@ public enum ThroughputSweep {
     /// refuses. `requestedBatchSizes` versus `unmeasuredCells` is that
     /// partial case — invisible in `resolvedBackends`, which stays non-empty
     /// as long as ANY cell built.
-    private struct DecodeOutcome {
+    /// Internal, not private, so unit tests pin it without a GPU.
+    struct DecodeOutcome {
         var samples: [ThroughputSweepReport.DecodeSample] = []
         /// Distinct resolved-backend descriptors, in first-seen order. EMPTY
         /// means no cell ever built an engine.
@@ -341,7 +348,8 @@ public enum ThroughputSweep {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection
     ) async throws -> DecodeOutcome {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
         guard !sizes.isEmpty else { return DecodeOutcome() }
@@ -363,7 +371,8 @@ public enum ThroughputSweep {
                 container: container, modelID: modelID, baseTokens: baseTokens,
                 batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                 weightBytes: weightBytes, isVLM: isVLM,
-                modelDirectory: modelDirectory, kvBackend: kvBackend)
+                modelDirectory: modelDirectory, kvBackend: kvBackend,
+                checkpointQuantization: checkpointQuantization)
             return (warmUp.constructionFailure, warmUp.submitFailure)
         }
 
@@ -373,7 +382,8 @@ public enum ThroughputSweep {
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                     weightBytes: weightBytes, isVLM: isVLM,
-                    modelDirectory: modelDirectory, kvBackend: kvBackend)
+                    modelDirectory: modelDirectory, kvBackend: kvBackend,
+                    checkpointQuantization: checkpointQuantization)
                 if outcome.record(resolved), let resolved {
                     log("  engine resolved kv backend: \(resolved)")
                 }
@@ -436,7 +446,8 @@ public enum ThroughputSweep {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection
     ) async -> (
         totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
         constructionFailure: String?, submitFailure: String?,
@@ -476,7 +487,8 @@ public enum ThroughputSweep {
                     maxConcurrentRequests: max(batchSize, 1),
                     constructionPurpose: .benchmark,
                     kvBudget: BenchmarkMemoryBudget.shared,
-                    kvBackend: kvBackend)
+                    kvBackend: kvBackend,
+                    checkpointQuantization: checkpointQuantization)
                 return EngineParts(
                     engine: build.engine,
                     resolvedBackend: build.resolvedKVBackendDescriptor,
@@ -665,7 +677,8 @@ public enum ThroughputSweep {
         return nil
     }
 
-    private static func makeNotes(
+    /// Internal, not private, so unit tests pin it without a GPU.
+    static func makeNotes(
         hardware: HardwareInfo,
         efficiency: Double,
         derived: ThroughputSweepReport.Derived,

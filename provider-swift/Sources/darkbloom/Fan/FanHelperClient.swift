@@ -17,6 +17,10 @@ enum FanHelperClientError: Error, CustomStringConvertible {
 }
 
 struct FanHelperClient {
+    /// Production uses the helper's launchd service. Tests use a name that
+    /// no service registers.
+    var machServiceName: String = FanIPC.machServiceName
+
     func status() throws -> FanServiceStatus {
         try request { proxy, reply in
             proxy.status(withReply: reply)
@@ -36,7 +40,7 @@ struct FanHelperClient {
         ) -> Void
     ) throws -> Reply {
         let connection = NSXPCConnection(
-            machServiceName: FanIPC.machServiceName,
+            machServiceName: machServiceName,
             options: .privileged
         )
         connection.remoteObjectInterface = NSXPCInterface(

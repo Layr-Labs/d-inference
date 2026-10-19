@@ -4,18 +4,18 @@ import { Sparkles } from "lucide-react";
 import { MIN_PROVIDER_MEMORY_GB } from "./providerReadiness";
 import { SmallModelsInterest } from "./SmallModelsInterest";
 import type { EarningsCalculator } from "./useEarningsCalculator";
+import type { InterestAuth } from "./useSmallModelsInterest";
 
 export function ProductionReadinessNotice({
   calc,
   authenticated,
   ready,
   login,
+  accountId,
+  getAccessToken,
 }: {
   calc: EarningsCalculator;
-  authenticated: boolean;
-  ready: boolean;
-  login: () => void;
-}) {
+} & InterestAuth) {
   return (
     <div className="mb-6 rounded-xl border border-accent-brand/20 bg-accent-brand-dim p-6 sm:p-8">
       <div className="flex items-start gap-3">
@@ -40,6 +40,8 @@ export function ProductionReadinessNotice({
             authenticated={authenticated}
             ready={ready}
             login={login}
+          accountId={accountId}
+          getAccessToken={getAccessToken}
             variant="production-readiness"
           />
         </div>

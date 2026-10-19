@@ -6,7 +6,7 @@ import type { MyBackendCapacity } from "@/app/providers/types";
 
 it("reads coherent process ownership from the canonical heartbeat fixture", () => {
   const wire = JSON.parse(readFileSync(resolve(process.cwd(),
-    "../coordinator/protocol/testdata/process_memory_wire.json"), "utf8")) as CapacityTelemetry;
+    "../coordinator/tests/protocol/testdata/process_memory_wire.json"), "utf8")) as CapacityTelemetry;
   const memory = wire.process_memory!;
   expect(memory.charged_bytes - memory.materialized_bytes).toBe(memory.unmaterialized_bytes);
   expect(memory.active_bytes + memory.cache_bytes + memory.unmaterialized_bytes).toBe(650);
@@ -21,6 +21,6 @@ it("keeps absent process telemetry distinct from a measured zero", () => {
   const legacy: CapacityTelemetry = JSON.parse("{}");
   expect(legacy.process_memory).toBeUndefined();
   const wire = JSON.parse(readFileSync(resolve(process.cwd(),
-    "../coordinator/protocol/testdata/process_memory_wire.json"), "utf8")) as CapacityTelemetry;
+    "../coordinator/tests/protocol/testdata/process_memory_wire.json"), "utf8")) as CapacityTelemetry;
   expect(wire.process_memory?.commitment_debt_bytes).toBe(0);
 });

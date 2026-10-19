@@ -34,11 +34,11 @@ struct Qwen35CheckpointRetentionLiveTests {
 
             let donorStore = try fixture.makeStore()
             let donorBridge = try fixture.makeBridge(store: donorStore)
-            let donor = try await run(fixture, bridge: donorBridge, tokens: donorTokens, scope: "tenant-a",
+            let donor = try await runQwen35CheckpointRetention(fixture, bridge: donorBridge, tokens: donorTokens, scope: "tenant-a",
                 id: "donor", expectedMarker: Qwen35CheckpointRetentionFixture.releaseMarker,
                 donationDemand: .init(repeatedPrefixTokens: 5_120))
             #expect(donor.hitTokens == 0)
-            try await requireIdle(donorBridge)
+            try await requireQwen35CheckpointIdle(donorBridge)
             await donorStore.waitForWritesForTesting()
             let kept = try fixture.positions(scope: "tenant-a", prefixOf: donorTokens)
             #expect(kept.positions == [2_048, 4_096, 8_192],
@@ -59,12 +59,12 @@ struct Qwen35CheckpointRetentionLiveTests {
             try #require(forkStore.stats().entries == 3, "new store failed to scan donated files")
             let forkBridge = try fixture.makeBridge(store: forkStore)
             let forkHint = fork.shared / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
-            let restored = try await run(fixture, bridge: forkBridge, tokens: fork.tokens, scope: "tenant-a",
+            let restored = try await runQwen35CheckpointRetention(fixture, bridge: forkBridge, tokens: fork.tokens, scope: "tenant-a",
                 id: "fork", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker,
                 donationDemand: .init(repeatedPrefixTokens: forkHint))
             #expect(restored.hitTokens == 4_096, "the fork shares \(fork.shared) tokens; 4,096 is its chunk end")
             #expect(forkStore.stats().stageConsumptions == 1)
-            try await requireIdle(forkBridge)
+            try await requireQwen35CheckpointIdle(forkBridge)
             await forkStore.waitForWritesForTesting()
             let forkKept = try fixture.positions(scope: "tenant-a", prefixOf: fork.tokens)
             let added = forkKept.positions.filter { $0 > 4_096 }
@@ -76,9 +76,9 @@ struct Qwen35CheckpointRetentionLiveTests {
             await forkStore.closeAndWait()
 
             let coldBridge = try fixture.makeBridge(store: nil)
-            let cold = try await run(fixture, bridge: coldBridge, tokens: fork.tokens, scope: "tenant-a",
+            let cold = try await runQwen35CheckpointRetention(fixture, bridge: coldBridge, tokens: fork.tokens, scope: "tenant-a",
                 id: "fork-cache-off", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker)
-            try await requireIdle(coldBridge)
+            try await requireQwen35CheckpointIdle(coldBridge)
             #expect(restored.text == cold.text, "a restored fork must answer exactly as its cold control")
             print("[qwen35-retention] forkPrompt=\(fork.tokens.count) shared=\(fork.shared) forkHint=\(forkHint) "
                 + "hit=\(restored.hitTokens) adopterAdded=\(added) sameText=\(restored.text == cold.text) "
@@ -89,11 +89,11 @@ struct Qwen35CheckpointRetentionLiveTests {
             let nextStore = try fixture.makeStore()
             let nextBridge = try fixture.makeBridge(store: nextStore)
             let nextHint = next.shared / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
-            let turn = try await run(fixture, bridge: nextBridge, tokens: next.tokens, scope: "tenant-a",
+            let turn = try await runQwen35CheckpointRetention(fixture, bridge: nextBridge, tokens: next.tokens, scope: "tenant-a",
                 id: "next-turn", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker,
                 donationDemand: .init(repeatedPrefixTokens: nextHint))
             #expect(turn.hitTokens == 8_192, "the next turn restores the donor's deepest chunk end")
-            try await requireIdle(nextBridge)
+            try await requireQwen35CheckpointIdle(nextBridge)
             await nextStore.waitForWritesForTesting()
             let nextKept = try fixture.positions(scope: "tenant-a", prefixOf: next.tokens)
             #expect(nextKept.positions.filter { $0 <= 8_192 } == [2_048, 4_096, 8_192])
@@ -111,8 +111,7 @@ struct Qwen35CheckpointRetentionLiveTests {
     }
 
     /// A ~6.2k donor with the same fork hint: 4,096 is one 2,048 chunk
-    /// below its 6,144 deepest, past the fixed 1,024-token adjacency every
-    /// layout uses, so it is kept beside the first and the deepest.
+    /// below its 6,144 deepest, is kept beside the first and the deepest.
     @Test("a fork target one 2,048 chunk below the deepest is kept",
           .timeLimit(.minutes(10)), .enabled(if: enabled))
     func targetOneChunkBelowDeepestIsKept() async throws {
@@ -121,14 +120,14 @@ struct Qwen35CheckpointRetentionLiveTests {
             let tokens = try fixture.shortDonor(deepest: 6_144)
             let store = try fixture.makeStore()
             let bridge = try fixture.makeBridge(store: store)
-            let donor = try await run(fixture, bridge: bridge, tokens: tokens, scope: "tenant-b",
+            let donor = try await runQwen35CheckpointRetention(fixture, bridge: bridge, tokens: tokens, scope: "tenant-b",
                 id: "short-donor", expectedMarker: Qwen35CheckpointRetentionFixture.releaseMarker,
                 donationDemand: .init(repeatedPrefixTokens: 5_120))
             #expect(donor.hitTokens == 0)
-            try await requireIdle(bridge)
+            try await requireQwen35CheckpointIdle(bridge)
             await store.waitForWritesForTesting()
             let kept = try fixture.positions(scope: "tenant-b", prefixOf: tokens)
-            #expect(kept.positions == [2_048, 4_096, 6_144], "4,096 is 2,048 below 6,144, past the 1,024 adjacency")
+            #expect(kept.positions == [2_048, 4_096, 6_144], "the demanded fork and deepest serve different continuations")
             #expect(store.stats().filesWritten == 3)
             print("[qwen35-retention-adjacent] prompt=\(tokens.count) hint=5120 positions=\(kept.positions) "
                 + "tensorBytes=\(kept.bytes) bytesWritten=\(store.stats().bytesWritten) mtp=\(fixture.mtpActive)")
@@ -181,7 +180,7 @@ struct Qwen35CheckpointRetentionLiveTests {
                 try await taskSleep(.milliseconds(20))
             }
             let donorTask = Task {
-                try await run(fixture, bridge: bridge, tokens: donorTokens, scope: "tenant-a",
+                try await runQwen35CheckpointRetention(fixture, bridge: bridge, tokens: donorTokens, scope: "tenant-a",
                     id: "company-leaves-donor", expectedMarker: Qwen35CheckpointRetentionFixture.releaseMarker,
                     donationDemand: .init(repeatedPrefixTokens: 5_120))
             }
@@ -199,7 +198,7 @@ struct Qwen35CheckpointRetentionLiveTests {
             let companionChunks = await companionDone.value
             #expect(donor.hitTokens == 0)
             #expect(companionChunks > 0)
-            try await requireIdle(bridge)
+            try await requireQwen35CheckpointIdle(bridge)
             await store.waitForWritesForTesting()
 
             let records = trace.records(promptLength: donorTokens.count)
@@ -233,17 +232,17 @@ struct Qwen35CheckpointRetentionLiveTests {
             let nextStore = try fixture.makeStore()
             let nextBridge = try fixture.makeBridge(store: nextStore)
             let nextHint = next.shared / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
-            let turn = try await run(fixture, bridge: nextBridge, tokens: next.tokens, scope: "tenant-a",
+            let turn = try await runQwen35CheckpointRetention(fixture, bridge: nextBridge, tokens: next.tokens, scope: "tenant-a",
                 id: "company-leaves-next", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker,
                 donationDemand: .init(repeatedPrefixTokens: nextHint))
             #expect(turn.hitTokens == deepest, "the next turn restores the deepest boundary \(deepest)")
-            try await requireIdle(nextBridge)
+            try await requireQwen35CheckpointIdle(nextBridge)
             await nextBridge.shutdown()
             await nextStore.closeAndWait()
             let coldBridge = try fixture.makeBridge(store: nil)
-            let cold = try await run(fixture, bridge: coldBridge, tokens: next.tokens, scope: "tenant-a",
+            let cold = try await runQwen35CheckpointRetention(fixture, bridge: coldBridge, tokens: next.tokens, scope: "tenant-a",
                 id: "company-leaves-cold", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker)
-            try await requireIdle(coldBridge)
+            try await requireQwen35CheckpointIdle(coldBridge)
             #expect(turn.text == cold.text, "a restore across a mixed partition must answer exactly as its cold control")
             print("[qwen35-company-leaves] nextPrompt=\(next.tokens.count) hit=\(turn.hitTokens) deepest=\(deepest) "
                 + "sameText=\(turn.text == cold.text) warmTTFT=\(turn.ttft) offTTFT=\(cold.ttft) "
@@ -277,11 +276,11 @@ struct Qwen35CheckpointRetentionLiveTests {
             // Solo donor, solo restore: matching partitions below the boundary.
             let store = try fixture.makeStore()
             let bridge = try fixture.makeBridge(store: store)
-            let donor = try await run(fixture, bridge: bridge, tokens: donorTokens, scope: "tenant-a",
+            let donor = try await runQwen35CheckpointRetention(fixture, bridge: bridge, tokens: donorTokens, scope: "tenant-a",
                 id: "moe-donor", expectedMarker: Qwen35CheckpointRetentionFixture.releaseMarker,
                 donationDemand: .init(repeatedPrefixTokens: 5_120))
             #expect(donor.hitTokens == 0)
-            try await requireIdle(bridge)
+            try await requireQwen35CheckpointIdle(bridge)
             await store.waitForWritesForTesting()
             let kept = try fixture.positions(scope: "tenant-a", prefixOf: donorTokens)
             #expect(kept.positions == [2_048, 4_096, deepest])
@@ -293,17 +292,17 @@ struct Qwen35CheckpointRetentionLiveTests {
             let nextStore = try fixture.makeStore()
             let nextBridge = try fixture.makeBridge(store: nextStore)
             let nextHint = next.shared / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
-            let turn = try await run(fixture, bridge: nextBridge, tokens: next.tokens, scope: "tenant-a",
+            let turn = try await runQwen35CheckpointRetention(fixture, bridge: nextBridge, tokens: next.tokens, scope: "tenant-a",
                 id: "moe-next", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker,
                 donationDemand: .init(repeatedPrefixTokens: nextHint))
             #expect(turn.hitTokens == deepest)
-            try await requireIdle(nextBridge)
+            try await requireQwen35CheckpointIdle(nextBridge)
             await nextBridge.shutdown()
             await nextStore.closeAndWait()
             let coldBridge = try fixture.makeBridge(store: nil)
-            let cold = try await run(fixture, bridge: coldBridge, tokens: next.tokens, scope: "tenant-a",
+            let cold = try await runQwen35CheckpointRetention(fixture, bridge: coldBridge, tokens: next.tokens, scope: "tenant-a",
                 id: "moe-cold", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker)
-            try await requireIdle(coldBridge)
+            try await requireQwen35CheckpointIdle(coldBridge)
             #expect(turn.text == cold.text, "solo donor, solo restore: the same partition below \(deepest)")
             print("[qwen36-moe] nextPrompt=\(next.tokens.count) hit=\(turn.hitTokens) deepest=\(deepest) "
                 + "sameText=\(turn.text == cold.text) warmTTFT=\(turn.ttft) offTTFT=\(cold.ttft)")
@@ -329,7 +328,7 @@ struct Qwen35CheckpointRetentionLiveTests {
                 try await taskSleep(.milliseconds(20))
             }
             let mixedTask = Task {
-                try await run(fixture, bridge: mixedBridge, tokens: donorTokens, scope: "tenant-b",
+                try await runQwen35CheckpointRetention(fixture, bridge: mixedBridge, tokens: donorTokens, scope: "tenant-b",
                     id: "moe-mixed-donor", expectedMarker: Qwen35CheckpointRetentionFixture.releaseMarker,
                     donationDemand: .init(repeatedPrefixTokens: 5_120))
             }
@@ -343,7 +342,7 @@ struct Qwen35CheckpointRetentionLiveTests {
             await mixedBridge.cancel(requestId: "moe-companion")
             let mixed = try await mixedTask.value
             await companionDone.value
-            try await requireIdle(mixedBridge)
+            try await requireQwen35CheckpointIdle(mixedBridge)
             await mixedStore.waitForWritesForTesting()
             let records = trace.records(promptLength: donorTokens.count)
             let widths = records.map { $0.range.count }
@@ -374,12 +373,12 @@ struct Qwen35CheckpointRetentionLiveTests {
             let mixedNextStore = try fixture.makeStore()
             let mixedNextBridge = try fixture.makeBridge(store: mixedNextStore)
             let mixedNextHint = mixedNext.shared / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
-            let mixedTurn = try await run(fixture, bridge: mixedNextBridge, tokens: mixedNext.tokens, scope: "tenant-b",
+            let mixedTurn = try await runQwen35CheckpointRetention(fixture, bridge: mixedNextBridge, tokens: mixedNext.tokens, scope: "tenant-b",
                 id: "moe-mixed-next", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker,
                 donationDemand: .init(repeatedPrefixTokens: mixedNextHint))
             #expect(mixedTurn.hitTokens == mixedDeepest,
                     "the next turn restores the mixed donor's deepest boundary \(mixedDeepest)")
-            try await requireIdle(mixedNextBridge)
+            try await requireQwen35CheckpointIdle(mixedNextBridge)
             print("[qwen36-moe-mixed] nextPrompt=\(mixedNext.tokens.count) hit=\(mixedTurn.hitTokens) "
                 + "deepest=\(mixedDeepest) warmTTFT=\(mixedTurn.ttft) answer=\(mixedTurn.answer.debugDescription)")
             await mixedNextBridge.shutdown()
@@ -389,14 +388,6 @@ struct Qwen35CheckpointRetentionLiveTests {
             await fixture.close()
             throw error
         }
-    }
-
-    private struct Output {
-        let text: String
-        let answer: String
-        let hitTokens: Int
-        let ttft: Duration
-        let finishToDone: Duration
     }
 
     /// The positions a donor retains, derived from what it captured: the
@@ -415,64 +406,4 @@ struct Qwen35CheckpointRetentionLiveTests {
         return expected.sorted()
     }
 
-    private func run(_ fixture: Qwen35CheckpointRetentionFixture, bridge: EngineV2Bridge,
-                     tokens: [Int], scope: String, id: String, expectedMarker: String,
-                     donationDemand: SSDCheckpointDonationDemand? = nil) async throws -> Output {
-        let signal = EngineV2RequestUsageSignal()
-        let request = ChatCompletionRequest(model: fixture.modelID,
-            messages: [ChatMessage(role: "user", content: "pre-tokenized fixture")],
-            temperature: 0, max_tokens: 48)
-        let started = ContinuousClock.now
-        let stream = await bridge.submitTokenized(promptTokens: tokens, request: request,
-            requestId: id, cacheScope: scope, usageSignal: signal, donationDemand: donationDemand)
-        var text = ""
-        var firstChunk: ContinuousClock.Instant?
-        var lastChunk: ContinuousClock.Instant?
-        var done: ContinuousClock.Instant?
-        var failure: String?
-        var finishReason: String?
-        for await event in stream {
-            switch event {
-            case .chunk(let chunk):
-                if firstChunk == nil && !chunk.isEmpty { firstChunk = .now }
-                if !chunk.isEmpty { lastChunk = .now }
-                text += chunk
-            case .info(_, _, _, let reason): finishReason = reason; done = .now
-            case .error(let message): failure = message
-            case .terminal(_, let message, _, _): failure = message
-            }
-        }
-        let finishToDone = (done ?? .now) - (lastChunk ?? started)
-        try #require(failure == nil, "request \(id) failed: \(failure ?? "")")
-        try #require(finishReason == "stop", "request \(id) must finish naturally")
-        let answer = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        try #require(!answer.isEmpty, "request \(id) produced no answer")
-        let normalized = answer.uppercased().trimmingCharacters(in:
-            CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "`\"'.*")))
-        #expect(normalized == expectedMarker,
-                "request \(id) must preserve the requested fact: \(answer)")
-        let other = expectedMarker == Qwen35CheckpointRetentionFixture.releaseMarker
-            ? Qwen35CheckpointRetentionFixture.backupMarker : Qwen35CheckpointRetentionFixture.releaseMarker
-        #expect(!answer.uppercased().contains(other),
-                "request \(id) must not leak the other marker: \(answer)")
-        print("[qwen35-retention-request] id=\(id) hit=\(signal.prefixCacheHitTokens ?? 0) "
-            + "ttft=\((firstChunk ?? .now) - started) finishToDone=\(finishToDone) answer=\(answer.debugDescription)")
-        return Output(text: text, answer: answer, hitTokens: signal.prefixCacheHitTokens ?? 0,
-                      ttft: (firstChunk ?? .now) - started, finishToDone: finishToDone)
-    }
-
-    private func requireIdle(_ bridge: EngineV2Bridge) async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while true {
-            let capacity = await bridge.capacitySnapshot()
-            let idle = capacity.activeRequests == 0 && capacity.waitingRequests == 0
-                && capacity.kvBytesInUse == 0 && capacity.kvBytesReserved == 0
-            if idle { return }
-            if ContinuousClock.now >= deadline {
-                try #require(idle, "request accounting did not drain before reconstruction")
-                return
-            }
-            try await taskSleep(.milliseconds(10))
-        }
-    }
 }

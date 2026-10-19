@@ -1,0 +1,50 @@
+{
+  "status": "expected_native_retention_failure",
+  "startedUTC": "2026-10-03T23:20:47.376368+00:00",
+  "endedUTC": "2026-10-03T23:25:11.821385+00:00",
+  "originalSDKRevision": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+  "originalLibrariesUnchanged": true,
+  "libraryTree": "d49949f66deab8b1dfa0d3326574ee6fcb423ab9",
+  "sourceAndTestBeforeAfterIdentical": true,
+  "testSourceSHA256": {
+    "Tests/MLXLMTests/Fixtures/MiMoNativeHistoricalRetentionFixture.swift": "3142cda9f1e8ba1fba08d139110eb1a4eae85d2d92ca6c6f3ab45ab7f1e54156",
+    "Tests/MLXLMTests/MiMo/MiMoV26NativeHistoricalRetentionTests.swift": "f73c91aea963f1b6721125a5ca7fc240df9300209edff8bf93df8d8a6e83322f"
+  },
+  "binarySHA256": "1030176487f4f59c5fc63f5705c495c38a3fc306452e3cf5de8a30220994e77d",
+  "binaryBeforeAfterIdentical": true,
+  "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+  "compiler": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+  "framework": "XCTest",
+  "test_cases": 1,
+  "assertion_failures": 2,
+  "unexpected_failures": 0,
+  "skips": 0,
+  "seconds": 1.309,
+  "nativeGPUExecuted": true,
+  "expectedFailureObserved": true,
+  "testProcessExitCode": 1,
+  "actualPublishedPositions": [
+    896,
+    128
+  ],
+  "expectedPublishedPositions": [
+    896,
+    512,
+    128
+  ],
+  "missingDemandedPosition": 512,
+  "executedModes": [
+    "MTP off; missing target throws before MTP-on iteration"
+  ],
+  "originalWarmImportExecuted": false,
+  "buildSeconds": 240.6515829580021,
+  "metalStagingSeconds": 10.772981584013905,
+  "processesReapedAndQuiescent": true,
+  "comparison": "Same owning final native test and fixture; original A4 donor-retention observation compared to separately recorded current1.002s passing MTP-off/on invocation. No original warm-output or MTP-on comparison was executed.",
+  "limitations": [
+    "No original MTP-on or original warm-import run: target512 is absent.",
+    "Tiny native-contiguous component, not full MiMo speed or encrypted SSD.",
+    "Root lane reservation plus read-only process refusal is not a universal GPU lock."
+  ],
+  "privacy": "Only source/binary identities, position/count outcomes and timing; no private paths, prompts/completion IDs or logs."
+}

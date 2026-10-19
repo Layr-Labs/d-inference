@@ -170,6 +170,26 @@ describe("classifyDashboardError", () => {
 });
 
 describe("withdrawSuccessMessage", () => {
+  it.each(["connect", "global"] as const)("%s pending withdrawal preserves the server's confirmation message", (payout_rail) => {
+    const message = "Your withdrawal is awaiting confirmation. Your earnings are reserved; track this withdrawal before submitting another.";
+    expect(withdrawSuccessMessage({ status: "pending", payout_rail, method: STANDARD, message })).toBe(message);
+  });
+
+  it.each(["connect", "global"] as const)("%s pending withdrawal defaults to confirmation and reserved earnings", (payout_rail) => {
+    const message = withdrawSuccessMessage({ status: "pending", payout_rail, method: STANDARD });
+    expect(message).toContain("awaiting confirmation");
+    expect(message).toContain("earnings are reserved");
+    expect(message).toContain("before submitting again");
+    expect(message).not.toContain("being processed");
+  });
+
+  it.each([
+    ["processing", "Your withdrawal is being processed. Track its status in Recent withdrawals."],
+    ["posted", "Your bank transfer has been sent. Your bank may take several business days to credit it."],
+  ])("global %s withdrawal keeps its delivery copy", (status, expected) => {
+    expect(withdrawSuccessMessage({ status, payout_rail: "global", method: STANDARD, message: "Awaiting confirmation" })).toBe(expected);
+  });
+
   it("standard: daily payout in local currency with ETA", () => {
     expect(withdrawSuccessMessage({ status: TRANSFERRED, method: STANDARD, eta: STANDARD_ETA_TEXT }))
       .toBe("On its way - Stripe pays out daily to your bank in your local currency (ETA 1-3 business days).");
@@ -266,5 +286,29 @@ describe("Japan weekly payout copy", () => {
     expect(methodExplainer("standard", 150, 0.5, "US")).toContain("daily payout");
     // Instant copy is country-independent.
     expect(methodExplainer("instant", 150, 0.5, "JP")).toContain("debit card");
+  });
+});
+
+
+describe("queued withdrawal copy", () => {
+  it("shows a funding wait with reserved earnings on either rail", () => {
+    for (const payout_rail of ["connect", "global"] as const) {
+      const copy = withdrawSuccessMessage({status:"queued",payout_rail,method:"standard"});
+      expect(copy).toContain("queued");
+      expect(copy).toContain("earnings are reserved");
+      expect(copy).not.toContain("On its way");
+    }
+    const status = withdrawalStatusPresentation("queued",false,"awaiting_funding");
+    expect(status.label).toBe("Queued");
+    expect(status.detail).toContain("retry automatically");
+  });
+});
+
+
+describe("funding queue persistence failure", () => {
+  it("keeps a held withdrawal distinct from a transfer already on its way", () => {
+    const message = "Your withdrawal is awaiting confirmation. Check Recent withdrawals before submitting again.";
+    expect(withdrawSuccessMessage({ status: "pending", method: "standard", message })).toBe(message);
+    expect(withdrawalStatusPresentation("pending", false, "funding_queue_persistence_failed: stripe 400").label).toBe("Needs review");
   });
 });

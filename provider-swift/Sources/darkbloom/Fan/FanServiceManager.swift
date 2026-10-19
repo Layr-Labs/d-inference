@@ -17,6 +17,7 @@ enum FanServiceManagerError: Error, CustomStringConvertible {
     case launchctlFailed(String)
     case unsupported(String)
     case restoreFailed(String)
+    case newerHelperInstalled(String)
 
     var description: String {
         switch self {
@@ -33,6 +34,9 @@ enum FanServiceManagerError: Error, CustomStringConvertible {
         case .launchctlFailed(let detail): return "fan launchd operation failed: \(detail)"
         case .unsupported(let detail): return "fan control is unavailable: \(detail)"
         case .restoreFailed(let detail): return "could not verify automatic fan control: \(detail)"
+        case .newerHelperInstalled(let installed):
+            return "the running fan helper is version \(installed), newer than this build's version "
+                + "\(FanIPC.helperVersion); update this provider instead of replacing the helper with an older one"
         }
     }
 }
@@ -43,13 +47,16 @@ struct FanServiceManager {
 
     let paths: FanServicePaths
     let environment: [String: String]
+    let host: FanServiceHost
 
     init(
         paths: FanServicePaths = .production,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        host: FanServiceHost = .production
     ) {
         self.paths = paths
         self.environment = environment
+        self.host = host
     }
 
     func enable(policy: FanPolicyConfiguration) throws -> FanServiceStatus {
@@ -61,12 +68,18 @@ struct FanServiceManager {
         let source = try bundledHelperURL()
         try verifyRegularExecutable(source)
         try verifyHelperSignature(source)
+        // The helper serves every provider on the Mac. Never replace it with
+        // an older one from an older install.
+        if let running = try? host.helperStatus(),
+           FanIPC.compareHelperVersion(running.helperVersion) == .orderedDescending {
+            throw FanServiceManagerError.newerHelperInstalled(running.helperVersion)
+        }
 
         do {
             // An existing helper may own the fans. Keep this preflight inside
             // the guarded recovery path so any failure after bootout restarts a
             // helper that can continue reconciling the durable journal.
-            _ = try? FanHelperClient().restoreAutomatic()
+            _ = try? host.helperRestoreAutomatic()
             try bootoutIfLoaded()
             try recoverJournalIfPresent(hardware: recoveryHardware)
             let hardware = try hardwareForControl()
@@ -82,7 +95,8 @@ struct FanServiceManager {
                     policy: policy
                 ),
                 to: paths.configuration,
-                permissions: 0o600
+                permissions: 0o600,
+                owner: host.stateOwner
             )
             try writeLaunchDaemonPlist()
             try setLabelEnabled(true)
@@ -90,7 +104,7 @@ struct FanServiceManager {
             try kickstart()
 
             for _ in 0..<30 {
-                if let status = try? FanHelperClient().status() {
+                if let status = try? host.helperStatus() {
                     guard status.enabled,
                           status.configuredUID == configuredUID,
                           status.protocolVersion == FanIPC.protocolVersion
@@ -101,14 +115,14 @@ struct FanServiceManager {
                     }
                     return status
                 }
-                Thread.sleep(forTimeInterval: 0.1)
+                Thread.sleep(forTimeInterval: host.retryDelay)
             }
             throw FanServiceManagerError.launchctlFailed(
                 "helper started but did not answer status"
             )
         } catch {
             let enableError = error
-            _ = try? FanHelperClient().restoreAutomatic()
+            _ = try? host.helperRestoreAutomatic()
             do {
                 try bootoutIfLoaded()
             } catch {
@@ -148,7 +162,7 @@ struct FanServiceManager {
                 var directRecoverySucceeded = false
                 var lastRecoveryError: Error = recoveryError
                 for _ in 0..<20 {
-                    Thread.sleep(forTimeInterval: 0.1)
+                    Thread.sleep(forTimeInterval: host.retryDelay)
                     do {
                         try recoverJournalIfPresent(hardware: recoveryHardware)
                         directRecoverySucceeded = true
@@ -174,7 +188,8 @@ struct FanServiceManager {
                         policy: policy
                     ),
                     to: paths.configuration,
-                    permissions: 0o600
+                    permissions: 0o600,
+                    owner: host.stateOwner
                 )
             } catch {
                 cleanupFailure = error
@@ -197,7 +212,8 @@ struct FanServiceManager {
         try requireRoot()
         let current = try FanDurableFile.readJSON(
             FanServiceConfiguration.self,
-            from: paths.configuration
+            from: paths.configuration,
+            requireRootOwnership: host.requiresRootOwnership
         )
         try FanDurableFile.writeJSON(
             FanServiceConfiguration(
@@ -207,10 +223,11 @@ struct FanServiceManager {
                 policy: policy
             ),
             to: paths.configuration,
-            permissions: 0o600
+            permissions: 0o600,
+            owner: host.stateOwner
         )
         if isLoaded() {
-            let result = FanProcessRunner.run(
+            let result = runProcess(
                 "/bin/launchctl",
                 arguments: ["kickstart", "-k", Self.target]
             )
@@ -225,7 +242,8 @@ struct FanServiceManager {
         let current: FanServiceConfiguration
         if let loaded = try? FanDurableFile.readJSON(
             FanServiceConfiguration.self,
-            from: paths.configuration
+            from: paths.configuration,
+            requireRootOwnership: host.requiresRootOwnership
         ) {
             current = loaded
         } else {
@@ -248,12 +266,13 @@ struct FanServiceManager {
                 policy: current.policy
             ),
             to: paths.configuration,
-            permissions: 0o600
+            permissions: 0o600,
+            owner: host.stateOwner
         )
 
         // XPC is the fast path, not the only recovery authority. Always boot
         // out and reconcile the durable journal even if the helper is wedged.
-        if isLoaded() { _ = try? FanHelperClient().restoreAutomatic() }
+        if isLoaded() { _ = try? host.helperRestoreAutomatic() }
         do {
             try bootoutWithRetries()
         } catch let bootoutError {
@@ -316,20 +335,29 @@ struct FanServiceManager {
     func configuration() throws -> FanServiceConfiguration {
         try FanDurableFile.readJSON(
             FanServiceConfiguration.self,
-            from: paths.configuration
+            from: paths.configuration,
+            requireRootOwnership: host.requiresRootOwnership
         )
     }
 
     func isLoaded() -> Bool {
-        FanProcessRunner.run(
+        runProcess(
             "/bin/launchctl",
             arguments: ["print", Self.target],
             timeout: 5
         ).succeeded
     }
 
+    func runProcess(
+        _ executable: String,
+        arguments: [String],
+        timeout: TimeInterval = FanProcessRunner.defaultTimeout
+    ) -> FanProcessResult {
+        host.runProcess(executable, arguments, timeout)
+    }
+
     private func requireRoot() throws {
-        guard geteuid() == 0 else { throw FanServiceManagerError.rootRequired }
+        guard host.effectiveUserID() == 0 else { throw FanServiceManagerError.rootRequired }
     }
 
     private func invokingUID() throws -> UInt32 {
@@ -343,15 +371,17 @@ struct FanServiceManager {
     }
 
     private typealias Hardware = (
-        backend: AppleSMCBackend,
+        backend: any SMCBackend,
         reader: FanHardwareReader,
         inventory: FanInventory
     )
 
     private func hardwareForControl() throws -> Hardware {
-        let backend = try AppleSMCBackend()
+        let backend = try host.makeSMCBackend()
         let reader = FanHardwareReader(backend: backend)
-        let hardware: Hardware = (backend, reader, try reader.discover())
+        let hardware: Hardware = (
+            backend, reader, try reader.discover(brandString: host.brandString)
+        )
         guard !hardware.inventory.fans.isEmpty else {
             throw FanServiceManagerError.unsupported("this Mac reports no fans")
         }
@@ -364,9 +394,12 @@ struct FanServiceManager {
     }
 
     private func hardwareForRecovery() throws -> Hardware {
-        let backend = try AppleSMCBackend()
+        let backend = try host.makeSMCBackend()
         let reader = FanHardwareReader(backend: backend)
-        return (backend, reader, try reader.discoverForRecovery())
+        return (
+            backend, reader,
+            try reader.discoverForRecovery(brandString: host.brandString)
+        )
     }
 
     private func preflightAutomaticHardware(_ hardware: Hardware) throws {
@@ -392,7 +425,9 @@ struct FanServiceManager {
             try FanOwnershipRecovery.reconcile(
                 backend: hardware.backend,
                 inventory: hardware.inventory,
-                journalURL: paths.sessionJournal
+                journalURL: paths.sessionJournal,
+                requireRootOwnership: host.requiresRootOwnership,
+                journalOwner: host.stateOwner
             )
         } catch {
             throw FanServiceManagerError.restoreFailed(String(describing: error))

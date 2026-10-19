@@ -78,15 +78,23 @@ public struct StandaloneServerConfig: Sendable {
     public let engineV2KVBackend: String
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
+    public let engineV2KVQuantization: String
+    public let engineV2KVQuantizationByModel: [String: String]
+    public let engineV2KVCheckpointQuantization: String
+    public let engineV2KVCheckpointQuantizationByModel: [String: String]
     public let prefillDeadlineMode: PrefillDeadlineMode?
     /// MTP policy inherited from provider config, including exact Gemma QAT.
     /// External assistants download asynchronously through the configured catalog.
     public let mtpMode: MTPMode
     public let mtpDrafterPath: String?
+    /// MTP draft acceptance (`[backend] mtp_acceptance`, nil = not set →
+    /// `exact`) and its per-model table. See `MTPAcceptancePolicy`.
+    public let mtpAcceptance: String?
+    public let mtpAcceptanceByModel: [String: String]
     public let coordinatorURL: String
 
     public init(
-        port: UInt16 = 8000,
+        port: UInt16 = BuildEnvironment.current.defaultLocalPort,
         host: String = "127.0.0.1",
         maxCachedModels: Int = 3,
         authToken: String? = nil,
@@ -95,9 +103,15 @@ public struct StandaloneServerConfig: Sendable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        engineV2KVQuantization: String = "native",
+        engineV2KVQuantizationByModel: [String: String] = [:],
+        engineV2KVCheckpointQuantization: String = "balanced",
+        engineV2KVCheckpointQuantizationByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
+        mtpAcceptance: String? = nil,
+        mtpAcceptanceByModel: [String: String] = [:],
         coordinatorURL: String = CoordinatorSettings().url
     ) {
         self.port = port
@@ -110,15 +124,21 @@ public struct StandaloneServerConfig: Sendable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.engineV2KVQuantization = engineV2KVQuantization
+        self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
+        self.engineV2KVCheckpointQuantization = engineV2KVCheckpointQuantization
+        self.engineV2KVCheckpointQuantizationByModel = engineV2KVCheckpointQuantizationByModel
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpMode = mtpMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.mtpAcceptance = mtpAcceptance
+        self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.coordinatorURL = coordinatorURL
     }
 }
 
 let standaloneLogger = Logger(
-    subsystem: "dev.darkbloom.provider",
+    subsystem: BuildEnvironment.current.serviceLogSubsystem,
     category: "StandaloneServer"
 )
 
@@ -992,7 +1012,7 @@ public actor StandaloneServer {
     }
 
     /// Shared by native/ordinary loads and serving-set reserve raises. A local
-    /// model must retain the same native workspace floor as a network provider.
+    /// model must retain the same workspace floor as a network provider.
     nonisolated static func resliceKeepsSlotsServiceable(
         _ targets: [String: Int], existing: [ExistingSlotGrant]
     ) -> Bool {
@@ -1022,7 +1042,7 @@ public actor StandaloneServer {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
-                    minimumGrantBytes: await slot.bridge.minimumServiceableNativeGrantBytes(),
+                    minimumGrantBytes: await slot.bridge.minimumServiceableGrantBytes(),
                     bridge: slot.bridge))
         }
         return existing
@@ -1209,6 +1229,12 @@ public actor StandaloneServer {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                kvQuantizationConfig: config.engineV2KVQuantization,
+                kvQuantizationConfigByModel: config.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: config.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: config.engineV2KVCheckpointQuantizationByModel,
+                mtpAcceptanceConfig: config.mtpAcceptance,
+                mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
                 modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: cacheEligibleWeightHash,

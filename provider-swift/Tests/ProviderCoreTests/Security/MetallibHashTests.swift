@@ -219,3 +219,63 @@ struct MetallibHashTests {
         ) == nil)
     }
 }
+
+@Suite("runtime metallib temporary directory", .serialized)
+struct RuntimeMetallibTemporaryDirectoryTests {
+    @Test("explicit TMPDIR is used and the snapshot is anonymous before copying")
+    func explicitDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metallib temp \(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.metallib")
+        try Data("approved source".utf8).write(to: source)
+        for directory in [root.path, root.path + "/"] {
+            var selectedPath: String?
+            let snapshot = try makeRuntimeMetallibSnapshot(
+                sourceURL: source, environment: ["TMPDIR": directory],
+                onAnonymousReady: { path in
+                    selectedPath = path
+                    #expect(!FileManager.default.fileExists(atPath: path))
+                    #expect(FileHandle(forWritingAtPath: path) == nil)
+                })
+            let selected = try #require(selectedPath)
+            #expect(URL(fileURLWithPath: selected).deletingLastPathComponent().path == root.path)
+            #expect(hashFile(atPath: snapshot.loaderPath) == snapshot.digest)
+            #expect(snapshot.digest == hashFile(atPath: source.path))
+        }
+    }
+
+    @Test("invalid or missing explicit TMPDIR fails without fallback")
+    func invalidDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metallib-invalid-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.metallib")
+        try Data("source".utf8).write(to: source)
+        for directory in ["", "relative", "/invalid\0suffix"] {
+            #expect(throws: RuntimeMetallibBindingError.invalidTemporaryDirectory) {
+                try makeRuntimeMetallibSnapshot(sourceURL: source, environment: ["TMPDIR": directory])
+            }
+        }
+        #expect(throws: RuntimeMetallibBindingError.snapshotCreateFailed) {
+            try makeRuntimeMetallibSnapshot(
+                sourceURL: source, environment: ["TMPDIR": root.appendingPathComponent("missing").path])
+        }
+        #expect(throws: RuntimeMetallibBindingError.snapshotCreateFailed) {
+            try makeRuntimeMetallibSnapshot(sourceURL: source, environment: ["TMPDIR": source.path])
+        }
+    }
+
+    @Test("absent TMPDIR preserves Foundation's default")
+    func defaultDirectory() throws {
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("metallib-default-\(UUID().uuidString)")
+        try Data("source".utf8).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        var selectedPath: String?
+        _ = try makeRuntimeMetallibSnapshot(sourceURL: source, environment: [:], onAnonymousReady: { selectedPath = $0 })
+        let selected = try #require(selectedPath)
+        #expect(URL(fileURLWithPath: selected).deletingLastPathComponent().path == URL(fileURLWithPath: NSTemporaryDirectory()).path)
+    }
+}

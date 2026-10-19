@@ -1,0 +1,14 @@
+{
+  "status": "pass",
+  "observedUTC": "2026-10-04T03:42:00.137881+00:00",
+  "SDKPRURL": "https://github.com/Layr-Labs/mlx-swift-lm/pull/289",
+  "publishedHead": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+  "publishedBodySHA256": "a46d26527e8f5399da1c3bef38bc3f2979f9ef27e6161cefb0ae83307da19567",
+  "headAndBodyUnchangedAcrossRendering": true,
+  "actualGitHubRenderedDiagrams": 2,
+  "rootVisuallyInspectedBothDiagrams": true,
+  "browserClosed": true,
+  "privateClosureSHA256": "83714623d93478a3088d9348cf613639e03cbf17cdec60f91d11a578271ef7a1",
+  "parentPRDiagramQualificationTransferred": false,
+  "runtimeQualificationTransferred": false
+}

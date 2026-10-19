@@ -27,6 +27,8 @@ def arguments(argv=None):
                         help="Benchmark only: retain token differences while continuing structural checks; default strict")
     parser.add_argument("--cache", choices=["on", "off"], default="on")
     parser.add_argument("--mtp", choices=["on", "off"], default="off")
+    parser.add_argument("--mtp-acceptance", choices=["exact", "typical"], default=None,
+                        help="Candidate only: explicit sampled MTP rule; omitted preserves exact and historical binary compatibility")
     parser.add_argument("--gemma-mtp-verification", choices=["automatic", "serial_target"],
                         help="Explicit offline Gemma verifier control; production B1/cache-off only")
     parser.add_argument("--gemma-projection-tokens",
@@ -133,6 +135,8 @@ def probe_command(args, output):
     if args.key_mode:
         command.append(args.key_mode + "-key")
     # Preserve the historical command line for old immutable B1 artifacts.
+    if args.mtp_acceptance is not None:
+        command.extend(["--mtp-acceptance", args.mtp_acceptance])
     if args.generation_comparison_policy is not None:
         command.extend(["--generation-comparison-policy", args.generation_comparison_policy])
     if args.concurrency != 1:
@@ -223,6 +227,14 @@ def validate_key_mode(args, report_path):
     return provenance
 
 
+def validate_mtp_acceptance(args, report):
+    if args.mtp_acceptance is None or args.mtp != "on":
+        return
+    mtp = report.get("metrics_loaded", {}).get("mtp", {})
+    if mtp.get("active") is not True or mtp.get("acceptance") != args.mtp_acceptance:
+        raise RuntimeError(f"Requested MTP acceptance {args.mtp_acceptance}, observed {mtp!r}")
+
+
 def main():
     args = arguments()
     key_provenance = persistent_test_key_provenance(args)
@@ -289,6 +301,8 @@ def main():
             report = json.loads((root / "report.json").read_text())
             if report.get("generation_comparison_policy") != args.generation_comparison_policy:
                 raise RuntimeError("Native generation comparison policy differs from explicit invocation")
+        if args.mtp_acceptance is not None:
+            validate_mtp_acceptance(args, json.loads((root / "report.json").read_text()))
         observed_keys = validate_key_mode(args, root / "report.json")
         if observed_keys is not None:
             metadata["persistent_test_key_namespace"] = observed_keys

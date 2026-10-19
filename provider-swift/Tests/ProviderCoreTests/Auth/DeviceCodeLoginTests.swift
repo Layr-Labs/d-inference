@@ -39,7 +39,7 @@ struct DeviceCodeLoginTests {
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [DeviceLoginProtocol.self]
     return DeviceLoginClient(session: URLSession(configuration: config), openBrowser: calls.opened,
-      saveProviderToken: { _ in throw DeviceAuthError.invalidResponse("Account login attempted to replace provider credentials") })
+      saveProviderToken: { _, _ in throw DeviceAuthError.invalidResponse("Account login attempted to replace provider credentials") })
   }
 
   @Test func olderCoordinatorUsesExistingDeviceEndpointsWithoutChangingProviderCredentials() async throws {

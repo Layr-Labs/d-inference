@@ -1,0 +1,55 @@
+{
+  "status": "pass_resource_preparation_no_performance_claim",
+  "sdkGeneratedMetadataRetirement": {
+    "testedSDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+    "currentCleanSDKHead": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+    "startedUTC": "2026-10-04T02:11:46.011699+00:00",
+    "endedUTC": "2026-10-04T02:12:03.172459+00:00",
+    "scope": "Only integration SDK debug generated *.dSYM, index and ModuleCache; build, runtime, resources and all source retained.",
+    "receiptSHA256": "1f1e9d4fef2840b8712a0472fbcdde464b17ee62d15ccee1e6560b120433c316",
+    "inventoriedRuntimeFiles": 52,
+    "runtimeRoots": 17,
+    "archiveSHA256": "7f8ef9d94280788be54cb5ccee716100bffd9c76ab7791ebc56fd7bccaa13a2d",
+    "allInventoriedRuntimeBytesReopenedVerified": true,
+    "includesAdjacentPackageResourcesAndRuntimeProducts": true,
+    "runtimeResourcesUnchangedAfterCleanup": true,
+    "portableRuntimeClosureClaimed": false,
+    "externalPrerequisites": "Original SDK source/fixtures and installed OS/Xcode frameworks remain required.",
+    "freeBeforeBytes": 15747858432,
+    "freeAfterBytes": 17097199616,
+    "observedFreeBytesDelta": 1349341184,
+    "diskDeltaIsObservedNotExclusiveReclaim": true,
+    "closedTestComponentStatus": "pass",
+    "closedDocCStatus": "failed_exit_1",
+    "B7TestPassClaimed": false,
+    "B6OverallGreenClaimed": false
+  },
+  "rustGeneratedDependencyRetirement": {
+    "scope": "Only task-owned current Rust release/deps generated tree; tracked sources, retained measured binary, production release product and all benchmark records preserved.",
+    "startedUTC": "2026-10-04T02:12:46.660210+00:00",
+    "endedUTC": "2026-10-04T02:12:46.779583+00:00",
+    "receiptSHA256": "19b2a859e81c3efe501f8f7be16f213229312f986c4baa779829be43a4fa057c",
+    "generatedFilesRetired": 433,
+    "retainedMeasuredBinarySHA256": "4e152c65cf0fcf7883ca3a4d1ea2d6935fedb127ef8ad9920535b17fb189e1f8",
+    "measuredBinaryRetained": true,
+    "trackedSourceRecordCount": 57,
+    "trackedSourcesUnchanged": true,
+    "observedFreeBytesDelta": 349048832,
+    "diskDeltaIsObservedNotExclusiveReclaim": true
+  },
+  "B7PrelaunchGuardRefusal": {
+    "reportedByExecutionOwner": true,
+    "freeGiBObserved": 15.92,
+    "unchangedInitialHostBuildFloorGiB": 16,
+    "outputCreated": false,
+    "testFailureClaimed": false,
+    "testOrDocumentationChildProcessesLaunched": false
+  },
+  "limits": [
+    "Only owned generated metadata/dependencies retired; preserved runtime products/resources/records/source remain.",
+    "Disk changes are observed, not exclusive attributable reclamation or a performance gain.",
+    "Native/performance20/20.25GiB limits are unchanged;16/12GiB applies only to builds/tiny-fixture regressions.",
+    "Portable runtime closure remains unclaimed; no B7 test or B6 overall-green result transfers from cleanup."
+  ],
+  "privacy": "Aggregate public source/archive/resource counters only; no private paths, raw request/output identifiers or model/prompt content."
+}

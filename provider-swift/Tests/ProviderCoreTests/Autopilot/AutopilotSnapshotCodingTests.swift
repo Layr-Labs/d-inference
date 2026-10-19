@@ -10,6 +10,7 @@ struct AutopilotSnapshotCodingTests {
             residentModels: [.init(modelId: "gemma", residentSeconds: 120, idleSeconds: 60,
                 weightsGb: 17.4, residentGb: 14.8)], freeForLoadNoEvictGb: 22,
             activeCommandId: "active", lastCommandId: "previous", lastCommandStatus: .succeeded)
+        value.consentEnabled = true
         value.observeOnly = true
         value.sessionId = "test-session"
         value.revision = "test-revision"
@@ -71,9 +72,10 @@ struct AutopilotSnapshotCodingTests {
         #expect(try decoder.decode(DaemonState.self, from: data) == expected)
     }
 
-    @Test(arguments: [false, true])
-    func snapshotDecodesWireAndDaemonKeyStrategies(convertSnakeCase: Bool) throws {
-        let expected = snapshot()
+    @Test(arguments: [false, true], [false, true])
+    func snapshotDecodesWireAndDaemonKeyStrategies(convertSnakeCase: Bool, consentEnabled: Bool) throws {
+        var expected = snapshot()
+        expected.consentEnabled = consentEnabled
         let data = try JSONEncoder().encode(expected)
         let decoder = JSONDecoder()
         if convertSnakeCase { decoder.keyDecodingStrategy = .convertFromSnakeCase }
@@ -81,6 +83,8 @@ struct AutopilotSnapshotCodingTests {
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["observe_only"] as? Bool == true)
         #expect(json["observeOnly"] == nil)
+        #expect(json["consent_enabled"] as? Bool == consentEnabled)
+        #expect(json["consentEnabled"] == nil)
         #expect(json["protocol"] as? Int == 3)
         let residents = try #require(json["resident_models"] as? [[String: Any]])
         #expect(residents.first?["resident_gb"] as? Double == 14.8)
@@ -88,13 +92,18 @@ struct AutopilotSnapshotCodingTests {
         #expect(history.first?["weight_hash"] as? String == "test-hash")
     }
 
-    @Test(arguments: [false, true])
-    func absentOptionalFieldsRemainAbsent(convertSnakeCase: Bool) throws {
-        let expected = ModelAutopilotSnapshot(enabled: false)
+    @Test(arguments: [false, true], [false, true])
+    func absentOptionalFieldsRemainAbsent(convertSnakeCase: Bool, enabled: Bool) throws {
+        let expected = ModelAutopilotSnapshot(enabled: enabled)
+        let data = try JSONEncoder().encode(expected)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["consent_enabled"] == nil)
+        #expect(json["consentEnabled"] == nil)
         let decoder = JSONDecoder()
         if convertSnakeCase { decoder.keyDecodingStrategy = .convertFromSnakeCase }
-        #expect(try decoder.decode(ModelAutopilotSnapshot.self,
-            from: JSONEncoder().encode(expected)) == expected)
+        let decoded = try decoder.decode(ModelAutopilotSnapshot.self, from: data)
+        #expect(decoded == expected)
+        #expect(decoded.consentEnabled == nil)
     }
 
     @Test(arguments: [false, true])

@@ -2,6 +2,7 @@ import DarkbloomFanProtocol
 import DarkbloomFanService
 import CryptoKit
 import Foundation
+import ProviderCore
 
 #if canImport(Darwin)
 import Darwin
@@ -13,14 +14,14 @@ extension FanServiceManager {
         let directory = executable.deletingLastPathComponent()
         guard directory.lastPathComponent == "MacOS" else {
             throw FanServiceManagerError.helperNotBundled([
-                "a signed Darkbloom.app/Contents/Helpers installation"
+                "a signed \(BuildEnvironment.current.appBundleName)/Contents/Helpers installation"
             ])
         }
         let contents = directory.deletingLastPathComponent()
         let app = contents.deletingLastPathComponent()
         guard app.pathExtension == "app" else {
             throw FanServiceManagerError.helperNotBundled([
-                "a signed Darkbloom.app/Contents/Helpers installation"
+                "a signed \(BuildEnvironment.current.appBundleName)/Contents/Helpers installation"
             ])
         }
         let helper = contents.appendingPathComponent("Helpers/darkbloom-fan-helper")
@@ -29,6 +30,9 @@ extension FanServiceManager {
     }
 
     func currentExecutableURL() throws -> URL {
+        if let override = host.currentExecutableURL {
+            return try override()
+        }
         #if canImport(Darwin)
         var size: UInt32 = 0
         _ = _NSGetExecutablePath(nil, &size)
@@ -67,7 +71,7 @@ extension FanServiceManager {
     }
 
     func verifyHelperSignature(_ url: URL) throws {
-        let result = FanProcessRunner.run(
+        let result = runProcess(
             "/usr/bin/codesign",
             arguments: [
                 "--verify", "--strict", "--verbose=2",
@@ -85,7 +89,7 @@ extension FanServiceManager {
             identifier: FanIPC.providerIdentifier,
             teamID: FanIPC.teamID
         )
-        let signature = FanProcessRunner.run(
+        let signature = runProcess(
             "/usr/bin/codesign",
             arguments: [
                 "--verify", "--deep", "--strict", "--verbose=2",
@@ -94,7 +98,7 @@ extension FanServiceManager {
         )
         guard signature.succeeded else {
             throw FanServiceManagerError.signatureFailed(
-                "outer Darkbloom.app: \(signature.output)"
+                "outer \(BuildEnvironment.current.appBundleName): \(signature.output)"
             )
         }
 
@@ -110,7 +114,7 @@ extension FanServiceManager {
               binary.range(of: Data("darkbloom-fan-helper-v1".utf8)) != nil
         else {
             throw FanServiceManagerError.unsafeFile(
-                "Darkbloom.app fan capability marker is missing or invalid"
+                "\(BuildEnvironment.current.appBundleName) fan capability marker is missing or invalid"
             )
         }
         try verifyRegularExecutable(helper)
@@ -175,7 +179,7 @@ extension FanServiceManager {
             expectedBytes: Int(sourceMetadata.st_size)
         )
         guard fchmod(temporaryDescriptor, 0o755) == 0,
-              fchown(temporaryDescriptor, 0, 0) == 0,
+              !host.requiresRootOwnership || fchown(temporaryDescriptor, 0, 0) == 0,
               fsync(temporaryDescriptor) == 0
         else {
             throw FanServiceManagerError.unsafeFile(
@@ -229,7 +233,8 @@ extension FanServiceManager {
         try FanDurableFile.writeData(
             data,
             to: paths.launchDaemonPlist,
-            permissions: 0o644
+            permissions: 0o644,
+            owner: host.stateOwner
         )
     }
 
@@ -254,7 +259,7 @@ extension FanServiceManager {
         guard lstat(directory.path, &metadata) == 0,
               metadata.st_mode & S_IFMT == S_IFDIR,
               chmod(directory.path, 0o755) == 0,
-              chown(directory.path, 0, 0) == 0
+              !host.requiresRootOwnership || chown(directory.path, 0, 0) == 0
         else {
             throw FanServiceManagerError.unsafeFile(
                 "could not secure directory \(directory.path) (errno \(errno))"
@@ -264,7 +269,7 @@ extension FanServiceManager {
 
     func bootoutIfLoaded() throws {
         guard isLoaded() else { return }
-        let result = FanProcessRunner.run(
+        let result = runProcess(
             "/bin/launchctl",
             arguments: ["bootout", Self.target]
         )
@@ -284,7 +289,7 @@ extension FanServiceManager {
                 return
             } catch {
                 lastError = error
-                Thread.sleep(forTimeInterval: 0.1)
+                Thread.sleep(forTimeInterval: host.retryDelay)
             }
         }
         throw lastError ?? FanServiceManagerError.launchctlFailed("bootout failed")
@@ -293,7 +298,7 @@ extension FanServiceManager {
     func restartDisabledHelperForRecovery() throws {
         try setLabelEnabled(true)
         if isLoaded() {
-            let result = FanProcessRunner.run(
+            let result = runProcess(
                 "/bin/launchctl",
                 arguments: ["kickstart", "-k", Self.target]
             )
@@ -316,13 +321,13 @@ extension FanServiceManager {
             if !FileManager.default.fileExists(atPath: paths.sessionJournal.path) {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            Thread.sleep(forTimeInterval: host.retryDelay)
         }
         return !FileManager.default.fileExists(atPath: paths.sessionJournal.path)
     }
 
     func setLabelEnabled(_ enabled: Bool) throws {
-        let result = FanProcessRunner.run(
+        let result = runProcess(
             "/bin/launchctl",
             arguments: [enabled ? "enable" : "disable", Self.target]
         )
@@ -332,7 +337,7 @@ extension FanServiceManager {
     }
 
     func bootstrap() throws {
-        let result = FanProcessRunner.run(
+        let result = runProcess(
             "/bin/launchctl",
             arguments: ["bootstrap", "system", paths.launchDaemonPlist.path]
         )
@@ -345,7 +350,7 @@ extension FanServiceManager {
     }
 
     func kickstart() throws {
-        let result = FanProcessRunner.run(
+        let result = runProcess(
             "/bin/launchctl",
             arguments: ["kickstart", Self.target]
         )

@@ -1,6 +1,6 @@
 # Darkbloom macOS app implementation plan
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-18
 
 Status: **In progress** — 2026-10-01 — Electron frontend and Swift CLI API implemented locally; release qualification remains open.
 
@@ -598,7 +598,7 @@ management API reference. Update the following existing homes in the same PRs:
 | Change | Documentation |
 |---|---|
 | CLI/service commands and configuration | [CLI reference](../provider/cli-reference.md), [configuration](../reference/configuration.md) |
-| New desktop account routes/session contracts | [API contracts](../reference/api-contracts.md), relevant security architecture and `threat-model.yaml` |
+| New desktop account routes/session contracts | [platform API contracts](https://github.com/Layr-Labs/darkbloom-platform/blob/d7c836b71c77b09dc3fcfa9590c9307a4f2c3a55/docs/reference/api-contracts.md), relevant security architecture and `threat-model.yaml` |
 | Lifecycle, installation, updates | [Provider installation](../provider/installation.md), [provider release](../operations/provider-release.md), new desktop guide |
 | Build/test/CI targets | [Build guide](../developer/build.md), [test guide](../developer/test.md) |
 | New operational telemetry fields | [Telemetry schema](../reference/telemetry-schema.md), [telemetry architecture](../architecture/telemetry.md) |

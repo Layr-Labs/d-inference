@@ -1,6 +1,6 @@
 # Open historical source references
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-09
 
 Use this procedure to read the original source behind a frozen report when a
 file has moved or disappeared from the current tree. Reports keep their
@@ -42,7 +42,7 @@ history (`.github/workflows/ci.yml`, `docs`).
 
    | Report | Original source snapshot |
    |---|---|
-   | [v0.8.12 prefill admission](../reports/2026-08-25-v0.8.12-prefill-deadline-admission.md) | [e0a0d16d9](https://github.com/Layr-Labs/d-inference/tree/e0a0d16d9cedaa01d836ae88d021fcb9718c6556) |
+   | [v0.8.12 prefill admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md) | [e0a0d16d9](https://github.com/Layr-Labs/d-inference/tree/e0a0d16d9cedaa01d836ae88d021fcb9718c6556) |
    | [Admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md) | [bbf6f83d4](https://github.com/Layr-Labs/d-inference/tree/bbf6f83d4bbe66ae1a78c8f5cec898e3fbff5783) |
 
 3. To read a file locally, use `git show` with the original path. For example:

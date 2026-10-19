@@ -31,7 +31,7 @@ struct Report: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Upload recent provider unified logs for troubleshooting.",
         discussion: """
-        Collects recent macOS unified logs for the dev.darkbloom.provider
+        Collects recent macOS unified logs for the \(BuildEnvironment.current.serviceLogSubsystem)
         subsystem and uploads them to the coordinator only when you invoke this
         command. macOS privacy redactions are preserved. Use --dry-run to review
         the exact report locally before uploading it.
@@ -42,7 +42,7 @@ struct Report: AsyncParsableCommand {
         set of failure patterns and numeric codes. These observations may come
         from other apps and are not attributable to Darkbloom. macOS lets only
         administrator accounts read the system log: run this from an
-        administrator account, or `sudo darkbloom report` if this account is
+        administrator account, or `sudo \(BuildEnvironment.current.cliName) report` if this account is
         allowed to use sudo.
 
         No other application or operating-system logs are included.
@@ -73,6 +73,17 @@ struct Report: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        try await run(
+            collectLogs: Self.collectUnifiedLogs,
+            collectEvidence: { DeviceCheckEvidence.collect() },
+            loadPushHistory: { APNsPushHistoryStore().load() })
+    }
+
+    mutating func run(
+        collectLogs: (String) throws -> Data,
+        collectEvidence: () -> DeviceCheckEvidence.Outcome,
+        loadPushHistory: () -> APNsPushHistory
+    ) async throws {
         let invokingHome = ReportAppAttestEvidence.adoptInvokingUserFiles()
         await runUpdateBannerIfEnabled()
 
@@ -95,9 +106,9 @@ struct Report: AsyncParsableCommand {
         print("Collecting unified logs...")
         var logData = Data()
         do {
-            logData = try collectUnifiedLogs(last: last)
+            logData = try collectLogs(last)
             if logData.isEmpty {
-                print("  No provider logs for the given time window (is the provider running? Try: darkbloom start).")
+                print("  No provider logs for the given time window (is the provider running? Try: \(BuildEnvironment.current.cliName) start).")
             }
         } catch ReportLogAccess.denied {
             // Standard accounts cannot open the log store at all. Keep going:
@@ -111,8 +122,8 @@ struct Report: AsyncParsableCommand {
 
         print("Collecting App Attest evidence...")
         var diagnosticData = ReportAppAttestEvidence.snapshotLine(
-            state: DaemonStateFile.read(), pushHistory: APNsPushHistoryStore().load(), now: Date())
-        let evidence = DeviceCheckEvidence.collect()
+            state: DaemonStateFile.read(), pushHistory: loadPushHistory(), now: Date())
+        let evidence = collectEvidence()
         diagnosticData.append(DeviceCheckEvidence.reportLines(evidence))
         let originalBytes = logData.count
         logData = try ReportPayload.assemble(logs: logData, evidence: diagnosticData)
@@ -163,7 +174,7 @@ struct Report: AsyncParsableCommand {
         }
     }
 
-    private func collectUnifiedLogs(last: String) throws -> Data {
+    private static func collectUnifiedLogs(last: String) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         process.arguments = Self.logShowArguments(last: last)

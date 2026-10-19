@@ -1,0 +1,196 @@
+{
+  "status": "all_changed_curated_csv_cells_identical_after_record_end_normalization",
+  "method": "Only CRLF record endings replaced by LF; strict csv.reader(StringIO(text,newline=\"\")) cells compare exactly before/after. No metric calculation or private input is changed.",
+  "changedFiles": 15,
+  "files": [
+    {
+      "file": "live-model-metrics.csv",
+      "originalCuratedSHA256": "987e715fa8abea2359ebc4588eb61223be0d17273928814ad9cf4ff2b68f21a5",
+      "LFCuratedSHA256": "199729c5ac753be1b2bf97545ee7c9e7ebb8b22b18af5246f6a9a6ec78f6a037",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 10,
+      "parsedCellCount": 300,
+      "CRLFPairsReplaced": 10
+    },
+    {
+      "file": "native-candidate-pilot-attempts.csv",
+      "originalCuratedSHA256": "94cff78595a2768be3821095ac84cee361ba4427941e709acf12ff54fa9c22fa",
+      "LFCuratedSHA256": "7c5f43b47ce4c3e506399c19f60b5f42ff2e89e86af69cdd3249c6faf2034c34",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 7,
+      "parsedCellCount": 49,
+      "CRLFPairsReplaced": 7
+    },
+    {
+      "file": "native-candidate-pilot-results.csv",
+      "originalCuratedSHA256": "3d9531f3f3002449addf0c39093e54b51d1916d29d6e6b8b97f013535800378b",
+      "LFCuratedSHA256": "b9c6c673edcf1e5882fb6a117f3dada8d2364034e5093557f42fb207b2efb50b",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 11,
+      "parsedCellCount": 935,
+      "CRLFPairsReplaced": 11
+    },
+    {
+      "file": "nemotron-production-arm-status.csv",
+      "originalCuratedSHA256": "cf0292b6a7e0366d979c924e2e186e5a5eb40f9fa6804759927f6d5f0f342ab8",
+      "LFCuratedSHA256": "2b24ba47d18a84509398d166efa95365fd412c5245fe2b8b59a8fa43731c5210",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 4,
+      "parsedCellCount": 100,
+      "CRLFPairsReplaced": 4
+    },
+    {
+      "file": "nemotron-production-request-metrics.csv",
+      "originalCuratedSHA256": "ee5b926543a5e93c60cc060bb7cc9ef5e13c6eafd35883c57b131fd1b1519cc7",
+      "LFCuratedSHA256": "2670b7d924bdeec1165fbc68cfd7e2a0efbb341e56fab97a45e8dce84b10b06f",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 13,
+      "parsedCellCount": 637,
+      "CRLFPairsReplaced": 13
+    },
+    {
+      "file": "planner-model-metrics.csv",
+      "originalCuratedSHA256": "9537895e9d2b097ca806c2ddc942f5b7e4eb141416bd30c30b3094bb2efb7201",
+      "LFCuratedSHA256": "7bf42a3c464fe3885cf290196c86569b841ac8657577fabc45144d9378b3f982",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 10,
+      "parsedCellCount": 240,
+      "CRLFPairsReplaced": 10
+    },
+    {
+      "file": "qwen35-descendant-diagnostic-counters.csv",
+      "originalCuratedSHA256": "91152a5b384d009c1e69514d482500021b75950a2638411cd8f4ccdd45c7c128",
+      "LFCuratedSHA256": "7f96728c18fbfd522790aed8231cd05f1b64a7b8892682abfd13ee80e7a0ef5a",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 5,
+      "parsedCellCount": 135,
+      "CRLFPairsReplaced": 5
+    },
+    {
+      "file": "qwen9-paired-long-stopped-arm-status.csv",
+      "originalCuratedSHA256": "2867b2ef174b934dbce579563ab553f58ad6cd42c7311950b034bf44b944226f",
+      "LFCuratedSHA256": "ccab24d6ae9fee1e298c05cc3beb3dbcf6519973510a3c2d290cdcb1a9dd3ad1",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 7,
+      "parsedCellCount": 154,
+      "CRLFPairsReplaced": 7
+    },
+    {
+      "file": "qwen9-paired-long-stopped-economics.csv",
+      "originalCuratedSHA256": "35fb977c57faff8fc5162fac8e8a1d17ee0b38004fdf181670924f4b2e1be76e",
+      "LFCuratedSHA256": "8d579e7defd950859236487b0e8b57c62e42730e16af2b1c072ccb9711b155d2",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 4,
+      "parsedCellCount": 168,
+      "CRLFPairsReplaced": 4
+    },
+    {
+      "file": "qwen9-paired-long-stopped-policy-metrics.csv",
+      "originalCuratedSHA256": "05edc25f7a8ae228414a9db4233969d677e91c564a96150ee77fff0df9b3b4ba",
+      "LFCuratedSHA256": "3afec8e9296259a8765770c916f5a4624a5f6bd52f9bbc99cca377f6c194ed84",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 4,
+      "parsedCellCount": 216,
+      "CRLFPairsReplaced": 4
+    },
+    {
+      "file": "qwen9-paired-long-stopped-request-metrics.csv",
+      "originalCuratedSHA256": "6de43f26d813414e79f48630f741262cff43d0734cdd357c19d66b34041675a3",
+      "LFCuratedSHA256": "6dc35bfec4fd91494dfa870e13a7f07d4db895ca8d3dfdd7ccf6c2d4fc510339",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 20,
+      "parsedCellCount": 1160,
+      "CRLFPairsReplaced": 20
+    },
+    {
+      "file": "qwen9-paired-short-arm-status.csv",
+      "originalCuratedSHA256": "2202bec936f4873290044770e2f3db5f9639b6b0aa2cad781cc4c753b66a4265",
+      "LFCuratedSHA256": "0b5efae8c7352176ddffae9c2a58cc5f0ab40fe97762d6d51c5df088a6be6692",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 7,
+      "parsedCellCount": 154,
+      "CRLFPairsReplaced": 7
+    },
+    {
+      "file": "qwen9-paired-short-economics.csv",
+      "originalCuratedSHA256": "e14c4b24ef11ebfac50b2687f19a60ba674d7cbcf6385d631fa679acb11b6bc5",
+      "LFCuratedSHA256": "78b4889075c0aa44ca29cee4cfeae694e0f41403e5708dec962c87e795de3a0f",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 4,
+      "parsedCellCount": 168,
+      "CRLFPairsReplaced": 4
+    },
+    {
+      "file": "qwen9-paired-short-policy-metrics.csv",
+      "originalCuratedSHA256": "24ebbd4c90d3b312e5cb0dadd42afa9c86f23ec6a3b4d37a43d94064d3794f7d",
+      "LFCuratedSHA256": "fd8ccbfc1a9c63692d8ff8dc25abf166140d7349deb25fd69534c6a6bdb83e6f",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 4,
+      "parsedCellCount": 216,
+      "CRLFPairsReplaced": 4
+    },
+    {
+      "file": "qwen9-paired-short-request-metrics.csv",
+      "originalCuratedSHA256": "1ef8baad6a2718ec9d77d38413ef891e2687237d85cd3244754d1e0b68660081",
+      "LFCuratedSHA256": "24f9a71a1b3b892f64203892713ef3a0e96cb09bc54eae13f0f14db117b5a862",
+      "csvReaderCellsIdentical": true,
+      "recordsIncludingHeader": 25,
+      "parsedCellCount": 1450,
+      "CRLFPairsReplaced": 25
+    }
+  ],
+  "sourceBindingClarification": "Economics safeInputSHA256 fields identify the original immutable postprocessor inputs. Those digests remain unchanged; the public LF-copy digests below distinguish normalized copies with identical parsed cells. JSON metric records are not rewritten.",
+  "originalInputReferences": [
+    {
+      "economicsEvidence": "qwen9-paired-short-economics.json",
+      "frozenOriginalInputName": "request-metrics.csv",
+      "curatedPublicCSV": "qwen9-paired-short-request-metrics.csv",
+      "originalInputDigestRetained": true,
+      "publicLFBytesDigest": "24f9a71a1b3b892f64203892713ef3a0e96cb09bc54eae13f0f14db117b5a862",
+      "cellsIdentical": true
+    },
+    {
+      "economicsEvidence": "qwen9-paired-short-economics.json",
+      "frozenOriginalInputName": "paired-policy-metrics.csv",
+      "curatedPublicCSV": "qwen9-paired-short-policy-metrics.csv",
+      "originalInputDigestRetained": true,
+      "publicLFBytesDigest": "fd8ccbfc1a9c63692d8ff8dc25abf166140d7349deb25fd69534c6a6bdb83e6f",
+      "cellsIdentical": true
+    },
+    {
+      "economicsEvidence": "qwen9-paired-short-economics.json",
+      "frozenOriginalInputName": "arm-status.csv",
+      "curatedPublicCSV": "qwen9-paired-short-arm-status.csv",
+      "originalInputDigestRetained": true,
+      "publicLFBytesDigest": "0b5efae8c7352176ddffae9c2a58cc5f0ab40fe97762d6d51c5df088a6be6692",
+      "cellsIdentical": true
+    },
+    {
+      "economicsEvidence": "qwen9-paired-long-stopped-economics.json",
+      "frozenOriginalInputName": "request-metrics.csv",
+      "curatedPublicCSV": "qwen9-paired-long-stopped-request-metrics.csv",
+      "originalInputDigestRetained": true,
+      "publicLFBytesDigest": "6dc35bfec4fd91494dfa870e13a7f07d4db895ca8d3dfdd7ccf6c2d4fc510339",
+      "cellsIdentical": true
+    },
+    {
+      "economicsEvidence": "qwen9-paired-long-stopped-economics.json",
+      "frozenOriginalInputName": "paired-policy-metrics.csv",
+      "curatedPublicCSV": "qwen9-paired-long-stopped-policy-metrics.csv",
+      "originalInputDigestRetained": true,
+      "publicLFBytesDigest": "3afec8e9296259a8765770c916f5a4624a5f6bd52f9bbc99cca377f6c194ed84",
+      "cellsIdentical": true
+    },
+    {
+      "economicsEvidence": "qwen9-paired-long-stopped-economics.json",
+      "frozenOriginalInputName": "arm-status.csv",
+      "curatedPublicCSV": "qwen9-paired-long-stopped-arm-status.csv",
+      "originalInputDigestRetained": true,
+      "publicLFBytesDigest": "ccab24d6ae9fee1e298c05cc3beb3dbcf6519973510a3c2d290cdcb1a9dd3ad1",
+      "cellsIdentical": true
+    }
+  ],
+  "privateRawReceiptsResultsChanged": false,
+  "JSONMetricRecordsChanged": false,
+  "privacy": "Public curated filenames, file digests and aggregate cell counts only; no raw cell values, private paths, prompt/completion text or identifiers."
+}

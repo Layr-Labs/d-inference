@@ -31,7 +31,7 @@ struct Stop: AsyncParsableCommand {
         } else {
             try LaunchAgent.stop()
             if wasLoaded {
-                print("Provider service stopped. (Won't auto-start at login/reboot until you run `darkbloom start` again.)")
+                print("Provider service stopped. (Won't auto-start at login/reboot until you run `\(BuildEnvironment.current.cliName) start` again.)")
             } else {
                 print("Provider service is not running. (Auto-start at login/reboot is now disabled.)")
             }

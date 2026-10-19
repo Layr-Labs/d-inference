@@ -108,6 +108,7 @@ enum RadixBenchmark {
             "cache_requested": cacheEnabled, "cache_mode_requested": options.cacheMode,
             "key_mode_requested": options.requirePersistentKey ? "persistent" : "ephemeral",
             "mtp": options.mtpEnabled ? "on; production configured assistant" : "off; no drafter supplied",
+            "mtp_acceptance_requested": options.mtpAcceptance,
             "gemma_mtp_verification_requested": options.gemmaMTPVerification as Any? ?? NSNull(),
             "gemma_projection_tokens_requested": options.gemmaProjectionTokens as Any? ?? NSNull(),
             "requested_backend": options.backend.rawValue,

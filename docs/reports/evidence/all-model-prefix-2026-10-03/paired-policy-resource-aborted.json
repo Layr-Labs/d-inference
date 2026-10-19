@@ -1,0 +1,167 @@
+{
+  "schema": "paired-policy-resource-aborted-v1",
+  "curatedUTC": "2026-10-03T22:51:08.085889+00:00",
+  "startedUTC": "2026-10-03T22:34:00.574370+00:00",
+  "endedUTC": "2026-10-03T22:35:35.050367+00:00",
+  "matrixStatus": "incomplete_or_failed",
+  "sourceUnchanged": true,
+  "binaryUnchanged": true,
+  "binarySHA256": "ce7b343b36316e00ebcfd3b02cd02633f7b49c70430e1e51134aae8f4f3aab34",
+  "sourceSnapshotSHA256": "81351ac7b59ec39d6a78848943bfe9d64b751cb2f41e31915ec8bdaa4d1cc7ec",
+  "diskFloorGiB": {
+    "armStart": 18.0,
+    "whileActive": 18.25,
+    "pollSeconds": 1
+  },
+  "stopReason": "free_disk_below_selected_floor_plus0.25GiB_while_active",
+  "plannedArms": 6,
+  "passedArms": 1,
+  "failedArms": 1,
+  "notStartedArms": 4,
+  "qualifiedPolicyPairs": 0,
+  "qualifiedThreePairComparisons": 0,
+  "arms": [
+    {
+      "model": "nvidia/nemotron-3.5-lightning",
+      "cell": "short",
+      "block": 0,
+      "policy": "production",
+      "order": 0,
+      "status": "pass",
+      "startedUTC": "2026-10-03T22:34:00.575770+00:00",
+      "endedUTC": "2026-10-03T22:34:58.012978+00:00",
+      "exitCode": 0,
+      "rows": 4,
+      "comparisons": 1,
+      "sourceUnchanged": true,
+      "binaryUnchanged": true,
+      "specUnchanged": true,
+      "failureCodes": [],
+      "currentResultMatchesFinalizedReceipt": true,
+      "currentResultModifiedUTC": "2026-10-03T22:34:57.153648+00:00",
+      "currentResultExcluded": false
+    },
+    {
+      "model": "nvidia/nemotron-3.5-lightning",
+      "cell": "short",
+      "block": 0,
+      "policy": "candidate",
+      "order": 1,
+      "status": "failed",
+      "startedUTC": "2026-10-03T22:34:58.253186+00:00",
+      "endedUTC": "2026-10-03T22:35:34.600424+00:00",
+      "exitCode": -15,
+      "rows": 1,
+      "comparisons": 0,
+      "sourceUnchanged": true,
+      "binaryUnchanged": true,
+      "specUnchanged": true,
+      "failureCodes": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active",
+        "test_process_failed",
+        "incomplete_role_set"
+      ],
+      "currentResultMatchesFinalizedReceipt": false,
+      "currentResultModifiedUTC": "2026-10-03T22:35:53.648926+00:00",
+      "currentResultExcluded": true
+    },
+    {
+      "model": "nvidia/nemotron-3.5-lightning",
+      "cell": "short",
+      "block": 1,
+      "policy": "candidate",
+      "order": 2,
+      "status": "not_started",
+      "startedUTC": null,
+      "endedUTC": null,
+      "exitCode": null,
+      "rows": null,
+      "comparisons": null,
+      "sourceUnchanged": null,
+      "binaryUnchanged": null,
+      "specUnchanged": null,
+      "failureCodes": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active"
+      ]
+    },
+    {
+      "model": "nvidia/nemotron-3.5-lightning",
+      "cell": "short",
+      "block": 1,
+      "policy": "production",
+      "order": 3,
+      "status": "not_started",
+      "startedUTC": null,
+      "endedUTC": null,
+      "exitCode": null,
+      "rows": null,
+      "comparisons": null,
+      "sourceUnchanged": null,
+      "binaryUnchanged": null,
+      "specUnchanged": null,
+      "failureCodes": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active"
+      ]
+    },
+    {
+      "model": "nvidia/nemotron-3.5-lightning",
+      "cell": "short",
+      "block": 2,
+      "policy": "production",
+      "order": 4,
+      "status": "not_started",
+      "startedUTC": null,
+      "endedUTC": null,
+      "exitCode": null,
+      "rows": null,
+      "comparisons": null,
+      "sourceUnchanged": null,
+      "binaryUnchanged": null,
+      "specUnchanged": null,
+      "failureCodes": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active"
+      ]
+    },
+    {
+      "model": "nvidia/nemotron-3.5-lightning",
+      "cell": "short",
+      "block": 2,
+      "policy": "candidate",
+      "order": 5,
+      "status": "not_started",
+      "startedUTC": null,
+      "endedUTC": null,
+      "exitCode": null,
+      "rows": null,
+      "comparisons": null,
+      "sourceUnchanged": null,
+      "binaryUnchanged": null,
+      "specUnchanged": null,
+      "failureCodes": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active"
+      ]
+    }
+  ],
+  "exclusions": [
+    "The candidate exited -15 at the active free-disk guard; original receipt contains one role and incomplete_role_set.",
+    "The SwiftPM-launched tester escaped parent process-group cleanup and later rewrote the raw candidate result; its changed result is excluded.",
+    "No stale/late raw output may replace original status or finalized receipt binding; no paired-policy median or speedup qualifies.",
+    "This older harness predates explicit quiescence fields; original metrics/statuses are preserved, not reclassified by the new contract."
+  ],
+  "supervisorRegression": {
+    "oldGroupOnlyExpectedFailures": 1,
+    "newFakeProcessTestsPassed": 3,
+    "newFakeProcessElapsedSeconds": 6.457,
+    "cases": [
+      "separate-session child cannot rewrite finalized result",
+      "tracked orphan after leader exit fails closed",
+      "unrelated process remains alive",
+      "reused descendant PID retains its new creation-time identity"
+    ],
+    "scope": "Light Python fake subprocesses only; no Swift/model/GPU/build work; no native performance inference.",
+    "finalOwnershipTestsPassed": 4,
+    "syntheticQuiescenceContractTestsPassed": 3,
+    "finalCombinedElapsedSeconds": 6.436
+  },
+  "privacy": "No private paths, prompts, generated IDs/output fingerprints, logprobs or provider/account identifiers are exported."
+}

@@ -66,13 +66,13 @@ extension ModelDownloader {
                 && path.deletingLastPathComponent().resolvingSymlinksInPath()
                     == revision.deletingLastPathComponent().resolvingSymlinksInPath()
             guard !managed || path.resolvingSymlinksInPath() == revision.resolvingSymlinksInPath() else {
-                throw ModelCatalogError.downloadFailed("Selected revision is not current: \(model.id); run darkbloom models download \(model.id)")
+                throw ModelCatalogError.downloadFailed("Selected revision is not current: \(model.id); run \(BuildEnvironment.current.cliName) models download \(model.id)")
             }
             let verified = managed
                 ? try Self.verifyRevisionAndRepairReceipt(at: path, manifest: manifest)
                 : Self.verifiedRevisionExists(at: path, manifest: manifest)
             guard verified else {
-                throw ModelCatalogError.downloadFailed("Selected build verification failed: \(model.id); run darkbloom models download \(model.id)")
+                throw ModelCatalogError.downloadFailed("Selected build verification failed: \(model.id); run \(BuildEnvironment.current.cliName) models download \(model.id)")
             }
         } else {
             guard let expected = model.weightHash, !expected.isEmpty,

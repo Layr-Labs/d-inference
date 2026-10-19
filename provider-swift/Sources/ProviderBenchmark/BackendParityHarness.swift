@@ -95,6 +95,7 @@ public enum BackendParityHarness {
     ) async throws -> BackendParityReport {
         log("loading target \(modelID)")
         log("  path: \(modelDirectory.path)")
+        log("  KV precision: native for both backend parity arms")
 
         let isVLM = ThroughputSweep.readHasVisionConfig(modelDirectory: modelDirectory)
         let container: ModelContainer
@@ -241,8 +242,9 @@ public enum BackendParityHarness {
     /// model-level capability claims read off it. `@unchecked Sendable` by the
     /// same ownership-transfer argument as `MTPProductionModelBundle`: it is
     /// built once inside `container.perform` and only ever used from the
-    /// serialized engine construction that follows.
-    private struct ServingModel: @unchecked Sendable {
+    /// serialized engine construction that follows. Internal (not private)
+    /// so unit tests can drive the probes with a scripted engine and no model.
+    struct ServingModel: @unchecked Sendable {
         let model: any LanguageModel
         let tokenizer: any MLXLMCommon.Tokenizer
         /// `CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill`.
@@ -255,7 +257,7 @@ public enum BackendParityHarness {
         let spanEmbedding: MLXArray?
     }
 
-    private struct EngineBox: @unchecked Sendable {
+    struct EngineBox: @unchecked Sendable {
         let engine: any CBv2Engine
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
@@ -272,7 +274,7 @@ public enum BackendParityHarness {
     /// sequentially with each MTP engine shut down before the next is built,
     /// so it is only ever attached to one live engine at a time. Same
     /// ownership-transfer argument `MTPProductionModelBundle` makes.
-    private struct DrafterBox: @unchecked Sendable {
+    struct DrafterBox: @unchecked Sendable {
         let drafter: any CBv2MTPDrafter
     }
 
@@ -359,28 +361,23 @@ public enum BackendParityHarness {
 
     // MARK: - Engine construction
 
-    /// The pool dtype every harness engine is PINNED to unless a probe
-    /// overrides it (only the fp32 numerics control does). Ambient
-    /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` in the invoking shell would
-    /// otherwise leak into the candidate arm, and the "float16 → float32"
-    /// control would compare two identical fp32 engines — a tautology that
-    /// corrupts the run's numerical-stability evidence while labelling
-    /// itself a control. Literal rather than
-    /// `EngineV2Factory.pagedPoolDTypeEnvKey`: that constant is internal to
-    /// ProviderCore.
-    static let pinnedPoolDTypeEnvironment = ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float16"]
-
-    /// The environment an engine build actually sees: ambient, with the pool
-    /// dtype pinned to fp16, with the probe's own overrides winning last.
+    /// Both main arms use the factory's observed native per-layer KV types.
+    /// Clear shell dtype overrides so the same checkpoint supplies their
+    /// precision contract; only a secondary probe may request an override.
     /// Pure and separated from `buildEngine` so the precedence is testable
     /// without constructing an engine.
     static func engineEnvironment(
         ambient: [String: String],
         overrides: [String: String]
     ) -> [String: String] {
-        ambient
-            .merging(pinnedPoolDTypeEnvironment) { _, pinned in pinned }
-            .merging(overrides) { _, override in override }
+        var environment = ambient
+        environment.removeValue(forKey: "DARKBLOOM_CBV2_PAGED_KV_DTYPE")
+        environment.merge(overrides) { _, override in override }
+        // Gate G2 isolates backend behavior, including exact output tokens.
+        // Keep both arms and every secondary probe at the same native
+        // precision; the contiguous arm cannot serve packed attention KV.
+        environment[EngineV2KVQuantizationPolicy.environmentKey] = "native"
+        return environment
     }
 
     private static func buildEngine(
@@ -413,6 +410,7 @@ public enum BackendParityHarness {
                 mtpDrafter: drafter?.drafter,
                 mtpConfig: mtpConfig,
                 kvBackend: selection,
+                checkpointQuantization: .native,
                 environment: environment)
             return EngineBox(
                 engine: build.engine,
@@ -448,7 +446,7 @@ public enum BackendParityHarness {
     /// difference was even resolvable at the precision the KV is stored in.
     /// Requesting it costs a top-k on rows that ask; rows that do not ask pay
     /// nothing (`DefaultSamplerV2` takes the batch max).
-    private static func generate(
+    static func generate(
         engine: any CBv2Engine,
         id: UInt64,
         name: String,
@@ -498,7 +496,7 @@ public enum BackendParityHarness {
     }
 
     /// Same, but also surfaces the terminal `CBv2Usage` (prefix-cache facts).
-    private static func generateWithUsage(
+    static func generateWithUsage(
         engine: any CBv2Engine,
         id: UInt64,
         name: String,
@@ -563,7 +561,7 @@ public enum BackendParityHarness {
     /// `prefixCacheEnabled: false`), and a token budget below
     /// `rows * chunk` splits the last row into its own group (so the verdict
     /// keys on `groupsExecuted > 0`, never on `rowsExecuted == rowCount`).
-    private static func probePackedPrefill(
+    static func probePackedPrefill(
         box: EngineBox,
         serving: ServingModel,
         seed: [Int],
@@ -657,7 +655,7 @@ public enum BackendParityHarness {
     /// span masks. So submit is a real capability read — and because the model
     /// gate is checked FIRST, a model-side refusal is distinguishable from a
     /// backend-side one and must not be reported as a backend regression.
-    private static func probeVisionSpans(
+    static func probeVisionSpans(
         box: EngineBox,
         serving: ServingModel,
         seed: [Int],
@@ -916,7 +914,7 @@ public enum BackendParityHarness {
     /// candidate lever, `CBv2AttentionV1.queryBlockSize`, is a process-wide
     /// `static let` resolved from `ProcessInfo` at first touch and cannot be
     /// varied in-process at all.
-    private static func probeNumericsControl(
+    static func probeNumericsControl(
         container: ModelContainer,
         serving: ServingModel,
         candidate: BackendParityObservation,
@@ -924,8 +922,9 @@ public enum BackendParityHarness {
         facts: (eos: Set<Int>, prompts: [(name: String, tokens: [Int])]),
         configuration: Configuration
     ) async -> BackendParityReport.NumericsControl {
-        let perturbation = "paged pool dtype float16 -> float32"
         let candidateDType = candidate.pagedPoolDType
+        let nativeDTypeLabel = candidateDType ?? "unreported"
+        let perturbation = "paged pool dtype native (\(nativeDTypeLabel)) -> float32"
 
         guard candidate.resolvedBackend == EngineV2KVBackendKind.paged.rawValue,
             !candidate.rows.isEmpty
@@ -956,7 +955,7 @@ public enum BackendParityHarness {
         }
 
         // Trust the arm ONLY on the RESOLVED dtype. A silently ignored knob
-        // would hand back a second fp16 arm that agrees with the first and
+        // would hand back a second native arm that agrees with the first and
         // looks like a clean control — the precise failure this gate exists
         // to catch, and the one it would be most embarrassing to ship inside.
         guard box.pagedPoolDType == "float32" else {
@@ -970,13 +969,9 @@ public enum BackendParityHarness {
                 controlPoolDType: box.pagedPoolDType)
         }
 
-        // The mirror-image check on the CANDIDATE arm. `buildEngine` pins
-        // every non-control engine to fp16 pages precisely so this cannot
-        // fire, but the pin lives in a different function than the claim —
-        // verify the recorded resolution rather than trusting the plumbing,
-        // exactly as the fp32 guard above refuses to trust the env knob. Two
-        // arms on the same dtype would agree tautologically and masquerade
-        // as a held control.
+        // A model may already use native fp32 KV. Verify the recorded
+        // resolution: two arms on the same dtype perturbed nothing and
+        // cannot masquerade as a held control.
         guard candidateDType != box.pagedPoolDType else {
             await box.engine.shutdown()
             return .init(
@@ -1004,14 +999,9 @@ public enum BackendParityHarness {
         await box.engine.shutdown()
         Memory.clearCache()
 
-        // fp32 pages halve the seats AND, per P4_FrozenChunkGather, run under
-        // an admission ledger that still charges 2 bytes/element
-        // (`CBv2PrefixReuseCapability.fullKVBytesPerToken` hardcodes it and
-        // `derive` never sees a dtype), so the fp32 arm's admitted
-        // concurrency is NOT comparable to the fp16 arm's. That is harmless
-        // for this control only because admission never binds at probe size —
-        // three short prompts, run SEQUENTIALLY, against a multi-GiB pool.
-        // Verify rather than assume it: a capacity refusal would surface as a
+        // Different storage types can change capacity. This control compares
+        // tokens, not throughput or admission, over short sequential prompts.
+        // Verify that it served: a capacity refusal would surface as a
         // submit error or a non-clean terminal, and would make the arm
         // measure admission instead of numerics.
         //
@@ -1023,8 +1013,7 @@ public enum BackendParityHarness {
             return .init(
                 perturbation: perturbation, tokenExact: nil,
                 detail: "the fp32 control arm hit \(unclean.count) non-clean terminal(s) "
-                    + "(\(unclean.map(\.finishReason).joined(separator: "; "))) — fp32 halves "
-                    + "the pool's seats and its byte accounting under-counts, so this arm "
+                    + "(\(unclean.map(\.finishReason).joined(separator: "; "))) — this arm "
                     + "measured admission rather than numerics and is NOT a control",
                 candidatePoolDType: candidateDType,
                 controlPoolDType: box.pagedPoolDType)
@@ -1037,7 +1026,7 @@ public enum BackendParityHarness {
         // token criterion refuses one layer up. Same helper as that criterion,
         // deliberately, so the two can never drift apart.
         if let blocker = BackendParityCriteria.zeroEvidenceBlocker(
-            baselineLabel: "paged fp16 pages", baselineRows: candidate.rows,
+            baselineLabel: "paged native KV (\(nativeDTypeLabel))", baselineRows: candidate.rows,
             candidateLabel: "paged fp32 pages", candidateRows: rows)
         {
             return .init(
@@ -1050,10 +1039,10 @@ public enum BackendParityHarness {
         if let mismatch = BackendParityCriteria.rowMismatch(
             baseline: candidate.rows, candidate: rows)
         {
-            log("control: paged fp32 vs paged fp16 NOT token-exact — \(mismatch)")
+            log("control: paged fp32 vs paged native \(nativeDTypeLabel) NOT token-exact — \(mismatch)")
             return .init(
                 perturbation: perturbation, tokenExact: false,
-                detail: "paged with fp32 pages diverged from paged with fp16 pages on the "
+                detail: "paged with fp32 pages diverged from paged with native \(nativeDTypeLabel) KV on the "
                     + "SAME backend: \(mismatch)",
                 firstFlip: mismatch,
                 candidatePoolDType: candidateDType,
@@ -1068,12 +1057,12 @@ public enum BackendParityHarness {
         // divergence is precision-related actually reads.
         let total = rows.reduce(0) { $0 + $1.tokens.count }
         let shortest = rows.map(\.tokens.count).min() ?? 0
-        log("control: paged fp32 vs paged fp16 token-exact over \(total) tokens "
+        log("control: paged fp32 vs paged native \(nativeDTypeLabel) token-exact over \(total) tokens "
             + "(shortest row \(shortest))")
         return .init(
             perturbation: perturbation, tokenExact: true,
-            detail: "paged with fp32 pages produced token ids IDENTICAL to paged with fp16 "
-                + "pages across \(rows.count) prompts and \(total) tokens (shortest row "
+            detail: "paged with fp32 pages produced token ids IDENTICAL to paged with native \(nativeDTypeLabel) "
+                + "KV across \(rows.count) prompts and \(total) tokens (shortest row "
                 + "\(shortest)), so this model's argmax survives a benign storage-precision "
                 + "change over that many decode steps",
             candidatePoolDType: candidateDType,
@@ -1082,7 +1071,7 @@ public enum BackendParityHarness {
 
     // MARK: - Probe: MTP
 
-    private static func probeMTP(
+    static func probeMTP(
         container: ModelContainer,
         serving: ServingModel,
         selection: EngineV2KVBackendSelection,
@@ -1154,7 +1143,7 @@ public enum BackendParityHarness {
 
     // MARK: - Helpers
 
-    private static func makeNotes(
+    static func makeNotes(
         baseline: BackendParityObservation,
         candidate: BackendParityObservation,
         isVLM: Bool
@@ -1174,6 +1163,12 @@ public enum BackendParityHarness {
         notes.append(
             "token comparisons are over RAW SAMPLED TOKEN IDS with temperature 0; text "
                 + "equality is a strictly weaker oracle and is not used.")
+        notes.append(
+            "both backend arms use native KV precision and the factory's observed per-layer "
+                + "storage types; ambient dtype overrides are cleared. The paged arm reports "
+                + "\(candidate.pagedPoolDType ?? "unreported") storage (mixed means multiple native "
+                + "layer types). The separate fp32 diagnostic may be UNAVAILABLE when the native "
+                + "dtype guard refuses its override; it never coerces KV or proves packed precision quality.")
         return notes
     }
 

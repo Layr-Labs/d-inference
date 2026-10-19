@@ -1,0 +1,7 @@
+model,cell,block,policy,order,status,startedUTC,endedUTC,exitCode,sourceUnchanged,binaryUnchanged,specUnchanged,failureCodes,mtpRequested,mtpEffectiveActive,mtpQualified,assistantIdentityPresent,servingModelType,backend,cacheMode,strictFsync,parityQualified
+qwen/qwen3.5-35b-a3b,short,0,production,6,pass,2026-10-03T23:55:52.970741+00:00,2026-10-03T23:56:27.650838+00:00,0,True,True,True,,True,True,True,True,Qwen35MoEModel,paged,ssd_complete,False,True
+qwen/qwen3.5-35b-a3b,short,0,candidate,7,failed,2026-10-03T23:56:27.989887+00:00,2026-10-03T23:57:01.613591+00:00,1,True,True,True,test_process_failed;output_parity,True,True,True,True,Qwen35MoEModel,paged,ssd_complete,False,False
+qwen/qwen3.5-35b-a3b,short,1,candidate,8,failed,2026-10-03T23:57:01.939235+00:00,2026-10-03T23:57:35.558626+00:00,1,True,True,True,test_process_failed;output_parity,True,True,True,True,Qwen35MoEModel,paged,ssd_complete,False,False
+qwen/qwen3.5-35b-a3b,short,1,production,9,pass,2026-10-03T23:57:35.914182+00:00,2026-10-03T23:58:08.516828+00:00,0,True,True,True,,True,True,True,True,Qwen35MoEModel,paged,ssd_complete,False,True
+qwen/qwen3.5-35b-a3b,short,2,production,10,pass,2026-10-03T23:58:08.847553+00:00,2026-10-03T23:58:44.646764+00:00,0,True,True,True,,True,True,True,True,Qwen35MoEModel,paged,ssd_complete,False,True
+qwen/qwen3.5-35b-a3b,short,2,candidate,11,failed,2026-10-03T23:58:45.106337+00:00,2026-10-03T23:58:46.704376+00:00,-15,True,True,True,unexpected_direct_runner_descendants;test_process_failed;missing_result,,,,,,,,,

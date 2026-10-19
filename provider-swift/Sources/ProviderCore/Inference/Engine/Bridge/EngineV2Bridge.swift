@@ -81,6 +81,8 @@ public actor EngineV2Bridge {
     /// charges. Segmented paged storage follows runtime grant changes; only
     /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
+    public nonisolated let kvQuantization: EngineV2KVQuantizationSelection
+    public nonisolated let kvCheckpointQuantization: EngineV2KVQuantizationSelection
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
     /// Construction-time fallback reason, retained for heartbeat reporting.
@@ -136,6 +138,9 @@ public actor EngineV2Bridge {
     /// committed + transactional conv/SSM generations). Zero preserves the
     /// historical attention-only charge.
     let fixedRequestBytes: Int
+    /// Immutable watermark passed to the ordinary SDK engine's admission config.
+    /// nil is unknown, not the default: prospective grants must then fail closed.
+    let admissionWatermarkFraction: Double?
     /// Assistant-cache allocation geometry. The per-token rate includes target
     /// KV and assistant logical rows; these fields account for the assistant's
     /// block-rounded physical allocation and staged proposal high-water mark.
@@ -292,7 +297,8 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
-    var mimoCalibration = MimoCalibrationState()
+    var modelCalibration = ModelCalibrationState()
+    let calibrationPosturePermitsWork: @Sendable () -> Bool
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
@@ -329,9 +335,9 @@ public actor EngineV2Bridge {
     /// Set on the OLD bridge being drained; the recovered slot's fresh
     /// bridge starts clean.
     var recoveryReloading = false
-    /// Last requested paged grant. Segmented storage follows it; an explicit
-    /// fixed-reference pool uses it to report resize shortfall. nil before
-    /// the first re-slice.
+    /// Last requested total grant. Hybrid caches carve it inside the engine;
+    /// retain the total for exact rollback. Fixed-reference paged pools also
+    /// use it to report resize shortfall. nil before the first re-slice.
     var lastRequestedKVBytesCapacity: Int?
     /// Last shortfall shape published to telemetry, so the clamp signal is
     /// emitted on CHANGE only — the re-slicer fires on every load and unload
@@ -357,6 +363,7 @@ public actor EngineV2Bridge {
         partialPrefillCap: Int? = nil,
         kvBytesPerToken: Int = 0,
         fixedRequestBytes: Int = 0,
+        admissionWatermarkFraction: Double? = nil,
         auxiliaryBytesPerToken: Int = 0,
         auxiliaryTokenGranularity: Int = 1,
         auxiliaryTokenAllocationPadding: Int = 0,
@@ -366,16 +373,23 @@ public actor EngineV2Bridge {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
+        calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
+            !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
+        },
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
+        self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
+        self.kvQuantization = kvQuantization
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.advertisedContextTokens =
@@ -406,6 +420,7 @@ public actor EngineV2Bridge {
         self.partialPrefillCap = partialPrefillCap
         self.kvBytesPerToken = kvBytesPerToken
         self.fixedRequestBytes = max(0, fixedRequestBytes)
+        self.admissionWatermarkFraction = admissionWatermarkFraction
         self.auxiliaryBytesPerToken = max(0, auxiliaryBytesPerToken)
         self.auxiliaryTokenGranularity = max(1, auxiliaryTokenGranularity)
         self.auxiliaryTokenAllocationPadding = max(
@@ -427,6 +442,7 @@ public actor EngineV2Bridge {
             completeStore = nil
         }
         self.ssdHybridCheckpointStore = completeStore
+        self.kvCheckpointQuantization = completeStore == nil ? .native : kvCheckpointQuantization
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil

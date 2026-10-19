@@ -7,6 +7,28 @@ struct SSDCheckpointFileCoordinatorTests {
     private let file = URL(fileURLWithPath: "/checkpoint-tests/first.dbk3")
     private let otherFile = URL(fileURLWithPath: "/checkpoint-tests/second.dbk3")
 
+    @Test("maintenance skips an active commit and never jumps queued readers")
+    func nonblockingMaintenance() async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let writer = try #require(coordinator.tryAcquire(to: file))
+        defer { writer.release() }
+        #expect(coordinator.tryAcquire(to: file) == nil)
+        let independent = try #require(coordinator.tryAcquire(to: otherFile))
+        independent.release()
+        let reader = coordinator.makeAccess(to: file)
+        let task = Task { try await reader.acquire() }
+        defer { task.cancel(); reader.cancel(); reader.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        #expect(coordinator.tryAcquire(to: file) == nil)
+        writer.release()
+        try await task.value
+        #expect(coordinator.tryAcquire(to: file) == nil)
+        reader.release()
+        let retirement = try #require(coordinator.tryAcquire(to: file))
+        retirement.release()
+        #expect(coordinator.trackedFileCount == 0)
+    }
+
     @Test("same-file waiters are FIFO and unrelated files proceed independently")
     func fifoAndIndependentFiles() async throws {
         let coordinator = SSDCheckpointFileCoordinator()

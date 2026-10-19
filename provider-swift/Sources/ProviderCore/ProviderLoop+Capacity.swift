@@ -72,7 +72,7 @@ extension ProviderLoop {
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
         await cleanupAutopilotSupersededModels()
-        await refreshMimoCalibration()
+        await refreshModelCalibration()
         writeDaemonState()
     }
 

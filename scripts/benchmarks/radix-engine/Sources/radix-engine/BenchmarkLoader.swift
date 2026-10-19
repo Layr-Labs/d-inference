@@ -66,6 +66,7 @@ enum BenchmarkLoader {
                 container: container, tokenizer: TokenizerHandle(input.tokenizer),
                 verifiedWeightHash: hashBefore, kvBytesCapacity: options.kvBudgetBytes,
                 maxConcurrentRequests: options.concurrency, mtpEnabled: options.mtpEnabled,
+                mtpAcceptanceConfig: options.mtpAcceptance,
                 assistantDirectory: options.assistantDirectory,
                 gemmaMTPVerification: options.gemmaMTPVerification.flatMap(EngineV2BenchmarkMTPVerification.init(rawValue:)),
                 useProductionKVGrant: options.productionKVGrant,
@@ -102,10 +103,13 @@ enum BenchmarkLoader {
             let assistant = options.mtpEnabled
                 ? try Qwen35InlineMTPAssistant.load(from: directory, target: model) : nil
             let verification = assistant?.requiredVerificationMode ?? .automatic
-            let mtpConfig = CBv2MTPConfig(
+            var mtpConfig = CBv2MTPConfig(
                 enabled: options.mtpEnabled, fixedDraftTokens: nil, verificationMode: verification,
                 maxAutomaticRectangularTokens: verification == .automatic
                     ? MTPAutomaticVerificationPolicy.maxRectangularTokens() : 0)
+            #if RADIX_CANDIDATE
+            mtpConfig.acceptance = MTPAcceptancePolicy.parse(options.mtpAcceptance)!
+            #endif
             let input = try inputs(report, context: context, modelType: modelType, options: options)
             #if RADIX_CANDIDATE
             let hybrid = cacheEnabled ? CBv2HybridPrefixCacheConfig(

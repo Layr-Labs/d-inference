@@ -20,7 +20,7 @@ extension ProviderLoop {
 
     public func run() async throws {
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -30,12 +30,13 @@ extension ProviderLoop {
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
+        let usesHostServices = serveUsesHostServices
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
-        SSDPrefixCacheFactory.startWholeRootMaintenance()
-        defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
+        if usesHostServices { SSDPrefixCacheFactory.startWholeRootMaintenance() }
+        defer { if usesHostServices { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
 
         // Keep the network stack alive during sleep for APN/MDM push delivery.
         networkAssertion.acquire()
@@ -59,13 +60,13 @@ extension ProviderLoop {
         // installs too. KeepAlive stays false to avoid racing the updater.
 
         // Surface any prior-run OOM and react to live memory pressure. Best-effort.
-        startMemoryProtection()
+        if usesHostServices { startMemoryProtection() }
         // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
         // drop a memory-pressure marker so a survived pressure spike isn't
         // misreported as an OOM next launch. A real kill bypasses this.
         defer {
             memoryPressureMonitor?.cancel()
-            OOMDetector.clearMarker()
+            if usesHostServices { OOMDetector.clearMarker() }
         }
 
         // 1. Apply security hardening
@@ -130,6 +131,11 @@ extension ProviderLoop {
             return
         }
 
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
+
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
         // Secure-Enclave-signed attestation below.
@@ -151,9 +157,11 @@ extension ProviderLoop {
         // / no-GUI box gets nil and registers un-attested (fail-closed at routing).
         var apnsDeviceToken: String?
         #if os(macOS)
-        apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
-        if apnsDeviceToken == nil {
-            logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
+        if usesHostServices {
+            apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
+            if apnsDeviceToken == nil {
+                logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
+            }
         }
         #endif
 
@@ -193,10 +201,14 @@ extension ProviderLoop {
         }
         // 4. Create coordinator client and start connection
         publishModelAutopilotSnapshot()
+        let fixedKey = keyPair
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
-            state: state
+            state: state,
+            appAttestResumeResponder: { challenge, nonce in
+                try fixedKey.appAttestResumeResponse(to: challenge, clientNonce: nonce)
+            }
         )
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
@@ -228,30 +240,32 @@ extension ProviderLoop {
         // replying over THIS WebSocket. The app delegate delivers pushes via the
         // bridge; we hop into the actor to use K + the signer + this send handle.
         #if os(macOS)
-        let pushHistory = apnsPushHistory
-        APNsBridge.shared.trackDeviceToken(in: pushHistory)
-        APNsBridge.shared.setPushHandler { [weak self] userInfo in
-            // Receipt is recorded before any parsing or validation so doctor
-            // and `push_history` can tell "never delivered" from "not answered".
-            pushHistory.recordReceipt()
-            // Extract the Sendable EncryptedPayload synchronously here so the
-            // non-Sendable [String: Any] never crosses into the actor Task.
-            guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            // Only a push-delivered challenge counts as a push reply; resume
-            // challenges arrive over the WebSocket through the same handler.
-            Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
-        }
+        if usesHostServices {
+            let pushHistory = apnsPushHistory
+            APNsBridge.shared.trackDeviceToken(in: pushHistory)
+            APNsBridge.shared.setPushHandler { [weak self] userInfo in
+                // Receipt is recorded before any parsing or validation so doctor
+                // and `push_history` can tell "never delivered" from "not answered".
+                pushHistory.recordReceipt()
+                // Extract the Sendable EncryptedPayload synchronously here so the
+                // non-Sendable [String: Any] never crosses into the actor Task.
+                guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
+                // Only a push-delivered challenge counts as a push reply; resume
+                // challenges arrive over the WebSocket through the same handler.
+                Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
+            }
 
-        // If the device token wasn't ready at registration (APNs slow / GUI
-        // session still coming up), keep watching: when it arrives, reconnect so
-        // registration re-runs WITH the token. Otherwise the provider would stay
-        // un-attested (and unroutable under enforcement) until the process restarts.
-        if apnsDeviceToken == nil {
-            let log = logger
-            Task {
-                if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
-                    log.info("APNs device token arrived after registration — reconnecting to re-register with token")
-                    await self.refreshAPNsAfterDrain(late)
+            // If the device token wasn't ready at registration (APNs slow / GUI
+            // session still coming up), keep watching: when it arrives, reconnect so
+            // registration re-runs WITH the token. Otherwise the provider would stay
+            // un-attested (and unroutable under enforcement) until the process restarts.
+            if apnsDeviceToken == nil {
+                let log = logger
+                Task {
+                    if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
+                        log.info("APNs device token arrived after registration — reconnecting to re-register with token")
+                        await self.refreshAPNsAfterDrain(late)
+                    }
                 }
             }
         }
@@ -278,13 +292,13 @@ extension ProviderLoop {
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
         coordinatorEventLoopStarted = true
-        let eventTask = Task {
-            for await event in events {
+        let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
+        let workTask = Task {
+            for await event in workEvents {
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
-                    clearConnectionAuthorization()
                     clearAutopilotControl()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
@@ -294,10 +308,8 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    clearConnectionAuthorization()
                     modelSwitchTask?.cancel()
                     clearAutopilotControl()
-                    cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -339,8 +351,9 @@ extension ProviderLoop {
                         send: send
                     )
 
-                case .appAttestShadow(let payload):
-                    handleAppAttestShadow(payload, send: send)
+                case .appAttestShadow, .trustStatus:
+                    // Consumed by the connection-control reader below.
+                    break
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
@@ -370,11 +383,38 @@ extension ProviderLoop {
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)
 
-                case .trustStatus(let trustLevel, let status, let reason, let authorization):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
-                                      authorization: authorization)
                 }
             }
+        }
+        let eventTask = Task {
+            // Model admission, hashing and cancellation may suspend for longer
+            // than an attestation exchange. Read connection controls separately
+            // so a healthy socket can renew trust while that work is parked.
+            // All fast handlers are synchronous on this actor; connection
+            // invalidation therefore precedes the next session's challenge.
+            for await event in events {
+                switch event {
+                case .appAttestShadow(let payload, let reply):
+                    handleAppAttestShadow(payload, reply: reply)
+                    continue
+                case .trustStatus(let level, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: level, status: status, reason: reason,
+                                      authorization: authorization)
+                    continue
+                case .connected, .disconnected:
+                    clearConnectionAuthorization()
+                    cancelAppAttestShadow()
+                default:
+                    break
+                }
+                // Slow work keeps its original FIFO ordering, including
+                // disconnect cleanup before the next connection's work.
+                workContinuation.yield(event)
+            }
+            clearConnectionAuthorization()
+            cancelAppAttestShadow()
+            workContinuation.finish()
+            await workTask.value
         }
         await withTaskCancellationHandler {
             await eventTask.value
@@ -468,7 +508,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

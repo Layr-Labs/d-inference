@@ -1,6 +1,7 @@
 """Render fixed-format advisory comments; model output cannot create mentions/HTML."""
 import re
 import html
+import unicodedata
 from urllib.parse import quote
 
 MARKER = "<!-- threat-model-review:openrouter:v1 -->"
@@ -35,6 +36,8 @@ def retain_same_diff_findings(existing, repository, head, diff_base, body):
 
 
 def plain(value):
+    value = "".join(" " if c in "\r\n\t" else c for c in value
+                    if c in "\r\n\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs"))
     value = html.escape(value, quote=False)
     value = value.replace("@", "@\u200b").replace("\r", " ").replace("\n", " ")
     return re.sub(r"([\\`*_{}\[\]()#+.!|<>~-])", r"\\\1", value)

@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -316,9 +316,10 @@ make docs-check
 ```
 
 `DesktopControlTests` covers the native auth and validation boundary.
-`TestDesktopAccountTokenIsolationAndRevocation` covers the coordinator projection
-using a real in-process HTTP server and store. The ordinary provider/coordinator
-component suites remain required for changes to their shared code.
+Coordinator-side desktop account sessions and earnings reads are implemented and
+tested in [darkbloom-platform#23](https://github.com/Layr-Labs/darkbloom-platform/pull/23);
+the console `/link` page's desktop purpose is a separate console change. The
+ordinary provider component suites remain required for changes to shared code.
 
 `.github/workflows/desktop.yml` runs the frontend tests and build, including
 for changes to `scripts/install.sh`, which the app bundles. Manual workflow
@@ -552,8 +553,9 @@ signed frontend and signed provider artifact:
 - Fresh install, existing CLI install, and repair use verified compatible payloads.
   The first runtime release must include the new `desktop` command; an older
   published CLI cannot provide this API.
-- Deploy the reviewed coordinator projection before advertising fleet features.
-  A missing endpoint appears as unavailable data, never sample account results.
+- Deploy the platform coordinator's desktop account APIs and the console `/link`
+  desktop purpose before advertising account features. A missing endpoint
+  appears as unavailable data, never sample account results.
 - Choose and host the GUI update feed (`DARKBLOOM_DESKTOP_UPDATE_URL`, step 6),
   publish the signed zip and `latest-mac.yml` there, and verify GUI update
   download, restart and rollback separately from native update.
@@ -570,7 +572,7 @@ signed frontend and signed provider artifact:
 - Confirm desktop redistribution rights for the supplied fonts.
 
 See [provider releases](../operations/provider-release.md) and
-[coordinator deployment](../operations/coordinator-deploy.md) for the independently
+[coordinator deployment](https://github.com/Layr-Labs/darkbloom-platform/blob/d7c836b71c77b09dc3fcfa9590c9307a4f2c3a55/docs/operations/coordinator-deploy.md) for the independently
 authorized release/deploy procedures.
 
 ## CLI installation

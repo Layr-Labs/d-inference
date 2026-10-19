@@ -459,7 +459,7 @@ button {
 .hero-copy p {
   font-size: 14px;
   line-height: 1.3;
-  margin: 10px 0 0;
+  margin: 10px 20px 0 0;
 }
 
 .text-link,
@@ -1554,8 +1554,10 @@ button {
    peeking into the viewport. Only the centered story receives full contrast;
    copy is shared below the rail so the section reads as one gallery. */
 .story-article {
+  cursor: grab;
   margin: 0;
   padding: clamp(76px, 9.5svh, 108px) 0 clamp(72px, 9svh, 96px);
+  touch-action: pan-y pinch-zoom;
 }
 
 .story-gallery {
@@ -1567,6 +1569,26 @@ button {
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
   user-select: none;
+}
+
+.story-section-heading {
+  font-size: clamp(28px, 3.1vw, 44px);
+  font-weight: 400;
+  letter-spacing: -.02em;
+  line-height: 1.2;
+  margin: 0 auto 32px;
+  width: min(84vw, 906px);
+}
+
+.story-article.is-dragging,
+.story-article.is-dragging .story-gallery {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.story-article:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -4px;
 }
 
 .story-gallery.is-dragging {

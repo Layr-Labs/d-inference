@@ -186,7 +186,7 @@ extension Models {
                 }
                 print()
                 print("  These models are no longer served by the network.")
-                print("  Remove with: darkbloom models remove <id>")
+                print("  Remove with: \(BuildEnvironment.current.cliName) models remove <id>")
             }
         }
     }
@@ -229,7 +229,7 @@ extension Models {
 
             guard let entry = catalog.first(where: { $0.id == modelID || $0.s3Name == modelID }) else {
                 printError("model '\(modelID)' is not in the coordinator catalog")
-                printError("hint: list available IDs with `darkbloom models catalog`")
+                printError("hint: list available IDs with `\(BuildEnvironment.current.cliName) models catalog`")
                 throw ExitCode.failure
             }
 

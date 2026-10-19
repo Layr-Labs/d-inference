@@ -1,0 +1,290 @@
+{
+  "status": "test_components_pass_documentation_failed",
+  "SDKHead": "357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+  "startedUTC": "2026-10-04T01:30:24.770968+00:00",
+  "endedUTC": "2026-10-04T01:46:00.278110+00:00",
+  "compiler": "Apple Swift 6.3.3",
+  "swiftSourceTestRecords": 1144,
+  "sourceScopeRecords": 1152,
+  "build": {
+    "exitCode": 0,
+    "elapsedSeconds": 183.98512187501183
+  },
+  "MetalStage": {
+    "exitCode": 0,
+    "elapsedSeconds": 10.587165750039276
+  },
+  "testImageSHA256": "7265de8bf3dc6210a4162cead9e3480f21cda7053d3d044bac9f023d8c0b6637",
+  "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+  "bindings": {
+    "sourceUnchanged": true,
+    "imageUnchanged": true,
+    "helpersUnchanged": true,
+    "MetalSourceUnchanged": true,
+    "finalSourceMatchesBefore": true,
+    "allOwnedStepsQuiescent": true
+  },
+  "requiredInvocations": [
+    {
+      "name": "retention",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 6,
+        "unexpected": 0
+      },
+      "testSeconds": 0.044,
+      "commandElapsedSeconds": 10.853452417009976,
+      "exitCode": 0,
+      "logSHA256": "d971077ad2df795491f56594b26c9acd84a051e435a16f2aaea54850d1a58f74"
+    },
+    {
+      "name": "partition",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 3,
+        "unexpected": 0
+      },
+      "testSeconds": 0.001,
+      "commandElapsedSeconds": 4.032135124958586,
+      "exitCode": 0,
+      "logSHA256": "a548904a6659c98bb85ba73eaad98d567b19cfd7dbcb70034e1f3a6e8e9d06cd"
+    },
+    {
+      "name": "continuation",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 7,
+        "unexpected": 0
+      },
+      "testSeconds": 0.002,
+      "commandElapsedSeconds": 1.4976873329724185,
+      "exitCode": 0,
+      "logSHA256": "183ee3d43fcc31c18a0c2a879ad456bdec519189193c3d49bf8742b1287d095a"
+    },
+    {
+      "name": "native-retention",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 1,
+        "unexpected": 0
+      },
+      "testSeconds": 1.052,
+      "commandElapsedSeconds": 9.438017292006407,
+      "exitCode": 0,
+      "logSHA256": "74ebce9d79a933b5b3883f3181d87253d20aaf626713b26a03ec5e3930244afc"
+    }
+  ],
+  "fullSuite": {
+    "cut": "signed integration B5 357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+    "startedUTC": "2026-10-04T01:30:24.770968+00:00",
+    "endedUTC": "2026-10-04T01:46:00.278110+00:00",
+    "fullCommandElapsedSeconds": 569.865839666978,
+    "fullLogSHA256": "00ab5db7bd1f8db4321357c8a8832cfdd50b1367b3b714e02af72767927474f6",
+    "XCTest": {
+      "enumerated": 1686,
+      "executedPassEvents": 1351,
+      "skippedEvents": 335,
+      "failures": 0,
+      "unexpectedFailures": 0,
+      "testSeconds": 309.941
+    },
+    "SwiftTesting": {
+      "terminalEnumeratedDeclarations": 2380,
+      "individualExecutedPassEvents": 2346,
+      "ordinaryPassMarkerEvents": 2336,
+      "knownIssuePassMarkerEvents": 10,
+      "explicitSkippedTestDeclarations": 34,
+      "skippedSuiteDeclarations": 0,
+      "suites": 364,
+      "failedEvents": 0,
+      "recordedExpectedKnownIssues": 12,
+      "knownIssueAffectedTestMethods": 10,
+      "testSeconds": 256.231,
+      "terminalSummaryExcludedFromPassEvents": true
+    },
+    "completeSuiteExecutedPassCount": 3697,
+    "completeSuiteSkippedCount": 369,
+    "completeSuiteEnumeratedCount": 4066,
+    "incorrectTerminalSummaryPassAddition": 3731,
+    "overstatedExecutedPassCount": 34,
+    "dedicatedNativeMethodSkippedInGenericFull": true,
+    "dedicatedNativeMethodExplicitRequiredPass": true,
+    "requiredInvocationsAddedToFullCount": false,
+    "separateDocCExitCode": 1,
+    "overallRunnerStatus": "aborted_or_failed"
+  },
+  "knownIssueSourceReview": {
+    "status": "pass",
+    "SDKHead": "357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+    "freshMain": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+    "recordedKnownIssueEvents": 12,
+    "affectedTestMethods": 10,
+    "events": [
+      {
+        "test": "streamsContentToolCallAndInfo()",
+        "file": "ModelContainerEngineStreamTests.swift",
+        "line": 140,
+        "column": 17
+      },
+      {
+        "test": "windowedMaskKeepsTheCurrentPosition()",
+        "file": "CompilableCacheTests.swift",
+        "line": 173,
+        "column": 17
+      },
+      {
+        "test": "promotionAfterAPromptLongerThanTheRing()",
+        "file": "CompilableCacheTests.swift",
+        "line": 215,
+        "column": 17
+      },
+      {
+        "test": "promotionAfterAPromptLongerThanTheRing()",
+        "file": "CompilableCacheTests.swift",
+        "line": 217,
+        "column": 17
+      },
+      {
+        "test": "compilableCacheCopyIsIndependent()",
+        "file": "CompilableCacheTests.swift",
+        "line": 323,
+        "column": 17
+      },
+      {
+        "test": "compilableCacheCopyIsIndependent()",
+        "file": "CompilableCacheTests.swift",
+        "line": 324,
+        "column": 17
+      },
+      {
+        "test": "tokensTaskReportsLength()",
+        "file": "GenerateLoopTests.swift",
+        "line": 788,
+        "column": 17
+      },
+      {
+        "test": "streamWithRejectedDraftsMatchesTheMainModel()",
+        "file": "GenerateLoopTests.swift",
+        "line": 888,
+        "column": 17
+      },
+      {
+        "test": "logitsPrepareResultKeepsTheFirstToken()",
+        "file": "GenerateLoopTests.swift",
+        "line": 929,
+        "column": 17
+      },
+      {
+        "test": "generateStreamsTextToolCallsAndInfo()",
+        "file": "ModelContainerGenerationTests.swift",
+        "line": 135,
+        "column": 17
+      },
+      {
+        "test": "floatArrayInTheUnitRange()",
+        "file": "UserInputImageArrayTests.swift",
+        "line": 106,
+        "column": 17
+      },
+      {
+        "test": "idefics3ProcessorOutputRunsThroughTheModel()",
+        "file": "VisionModelExtraPathTests.swift",
+        "line": 1033,
+        "column": 21
+      }
+    ],
+    "sourceComparison": [
+      {
+        "filename": "CompilableCacheTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Cache/CompilableCacheTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "92f96e447b45fa53f6f23f4647c4525735fc2b91608b20e66585b727b740e806"
+          }
+        ]
+      },
+      {
+        "filename": "GenerateLoopTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Generation/GenerateLoopTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "63ffdbe5119b965efce0f8bc1f474aa52d7df1a2b726a8c8df1b2a9e9c156f43"
+          }
+        ]
+      },
+      {
+        "filename": "ModelContainerEngineStreamTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMServerTests/Kernel/Runtime/ModelContainerEngineStreamTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "b84d51d6415f1f1eda654d13a27dae6ef0576506a8a863b43b9f394561994489"
+          }
+        ]
+      },
+      {
+        "filename": "ModelContainerGenerationTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Common/ModelContainerGenerationTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "ad8f23148a9c892b1d30ee4841f0658ec3f602fa7521fcce6135f37482a04835"
+          }
+        ]
+      },
+      {
+        "filename": "UserInputImageArrayTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Common/UserInputImageArrayTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "e901d29ea0549dcd2e7d6c143a562b31de359c188428ddaa85455aae15ae1099"
+          }
+        ]
+      },
+      {
+        "filename": "VisionModelExtraPathTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Vision/VisionModelExtraPathTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "896ef722bb915cc0936927ffdb63c4069b5d6269cb794598bd06f14f40851750"
+          }
+        ]
+      }
+    ],
+    "scope": "Read-only committed-source comparison; known issues remain explicit and are not new failures attributed to cache changes."
+  },
+  "documentation": {
+    "exitCode": 1,
+    "elapsedSeconds": 141.1712805829593,
+    "logSHA256": "6b0a7f440b1d96c4d4817b13676949011b07260ec8ede800d3bc47b85d4105f6",
+    "failureClasses": [
+      "missing_parameter_documentation",
+      "unresolved_DocC_symbol_links"
+    ],
+    "successMarkerPresent": false,
+    "pluginChangedOnlyPackageResolved": true,
+    "ownedIncidentalPackageResolvedRestoredExactly": true,
+    "onlyAfterOwnedProcessQuiescence": true
+  },
+  "diskPolicy": {
+    "activeStopFreeGiB": 12,
+    "initialFreeGiB": 16,
+    "nativePerformanceActiveStopFreeGiBUnchanged": 20.25,
+    "nativePerformanceInitialFreeGiBUnchanged": 20,
+    "scope": "build_and_tiny_fixture_regressions_no_full_weight_native_or_performance_workload"
+  },
+  "limits": [
+    "Required17 invocations are separate from complete-suite totals; host selectors repeat full-suite methods, while the native method is optional-skipped in generic full and required once explicitly.",
+    "The 12 known issues are inherited source-byte-exact from fresh main in six affected test files; they are retained, not reported as zero issues or new cache failures.",
+    "DocC failure makes the overall runner fail despite successful build and tests. No final documentation, GitHub CI, full-model MiMo, deployed effect or native long promotion is qualified."
+  ],
+  "privacy": "Aggregate test/source/image evidence and public source locations only; no raw logs, private paths, generated IDs, request/account/provider identifiers."
+}

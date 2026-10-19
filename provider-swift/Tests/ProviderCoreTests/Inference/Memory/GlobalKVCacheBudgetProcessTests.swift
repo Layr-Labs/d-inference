@@ -17,6 +17,41 @@ private final class ProcessBudgetUsage: @unchecked Sendable {
     func read() -> GlobalKVCacheBudget.MemorySnapshot { lock.withLock { value } }
 }
 
+@Test func processBudgetFreeOnlyPolicyRejectsSharedHostLoadAndRechecks() async throws {
+    func available(_ freeGiB: UInt64, _ policy: SystemMemory.AvailabilityPolicy) -> UInt64 {
+        SystemMemory.availableBytes(freePages: freeGiB * processBudgetGiB / 16_384,
+            inactivePages: 211 * processBudgetGiB / 16_384,
+            pageSize: 16_384, policy: policy) ?? .max
+    }
+    for policy in [SystemMemory.AvailabilityPolicy.reclaimable, .freeOnly] {
+        let usage = ProcessBudgetUsage(total: 512 * processBudgetGiB,
+            active: 16 * processBudgetGiB, available: available(11, policy))
+        let budget = GlobalKVCacheBudget(
+            capFraction: 0.9, activationReserveBytes: UnifiedMemoryCap.defaultActivationReserveBytes,
+            configReserveBytes: 40 * processBudgetGiB, memorySnapshot: usage.read)
+        let first = await budget.claimPendingLoad(requestID: "shared-host",
+            weightBytes: 24 * processBudgetGiB)
+        if policy == .reclaimable {
+            let lease = try #require(first)
+            #expect(await budget.finishPendingLoad(lease))
+        } else {
+            #expect(first == nil)
+            #expect(budget.availableForLoadGb() == 0)
+            #expect(budget.memoryHeadroomSnapshot().ownerCount == 0)
+            // Only the host sample changes; no load or reserve estimate is reduced.
+            usage.setAvailable(available(100, policy))
+            let lease = try #require(await budget.claimPendingLoad(requestID: "shared-host",
+                weightBytes: 24 * processBudgetGiB))
+            #expect(await budget.recheckPendingLoad(lease))
+            usage.setAvailable(available(11, policy))
+            #expect(!(await budget.recheckPendingLoad(lease)))
+            #expect(await budget.outstandingReservedBytes() == 25 * processBudgetGiB)
+            #expect(await budget.finishPendingLoad(lease))
+            #expect(budget.memoryHeadroomSnapshot().ownerCount == 0)
+        }
+    }
+}
+
 @Test func processBudgetNativeCoverageKeepsLoadHeadroomExact() async throws {
     let cap = 6 * processBudgetGiB
     let usage = ProcessBudgetUsage(active: cap - 100)

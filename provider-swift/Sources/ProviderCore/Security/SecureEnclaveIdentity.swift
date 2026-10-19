@@ -30,7 +30,7 @@ import CryptoKit
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "secure-enclave")
+private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "secure-enclave")
 
 /// Manages a hardware-bound P-256 signing key in the Apple Secure Enclave.
 ///

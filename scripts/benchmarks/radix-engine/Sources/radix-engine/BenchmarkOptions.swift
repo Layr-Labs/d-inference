@@ -9,6 +9,7 @@ struct BenchmarkOptions: Sendable {
     let generationComparisonPolicy: BenchmarkGenerationComparisonPolicy
     let cacheEnabled: Bool
     let mtpEnabled: Bool
+    let mtpAcceptance: String
     let backend: EngineV2KVBackendSelection
     let cacheMode: String
     let requirePersistentKey: Bool
@@ -29,6 +30,7 @@ struct BenchmarkOptions: Sendable {
         let positional = Array(arguments.prefix { !$0.hasPrefix("--") })
         var generationComparisonPolicy = BenchmarkGenerationComparisonPolicy.strict
         var concurrency = 1
+        var mtpAcceptance = "exact"
         var kvBudgetGiB = 16
         var nativeKVProbeOnly = false
         var productionKVGrant = false
@@ -58,6 +60,11 @@ struct BenchmarkOptions: Sendable {
             }
             let raw = arguments[index + 1]
             switch flag {
+            case "--mtp-acceptance":
+                guard ["exact", "typical"].contains(raw) else {
+                    throw RadixBenchmark.Failure.message("MTP acceptance must be exact or typical")
+                }
+                mtpAcceptance = raw
             case "--generation-comparison-policy":
                 guard let policy = BenchmarkGenerationComparisonPolicy(rawValue: raw) else {
                     throw RadixBenchmark.Failure.message("generation comparison policy must be strict or record")
@@ -113,13 +120,19 @@ struct BenchmarkOptions: Sendable {
             arguments.count < 9 || ["persistent-key", "ephemeral-key"].contains(arguments[8])
         else {
             throw RadixBenchmark.Failure.message(
-                "usage: radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON OUTPUT_JSON cache-on|cache-off [mtp-on|mtp-off] [auto|paged|contiguous] [ssd|resident] [persistent-key|ephemeral-key] [--concurrency 1|2|4] [--kv-budget-gib 1...128 | --production-kv-grant] [--assistant-directory DIRECTORY] [--expected-model-sha256 SHA256] [--native-kv-probe-only] [--persistent-test-namespace UUID --persistent-test-access-group GROUP] [--generation-comparison-policy strict|record]")
+                "usage: radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON OUTPUT_JSON cache-on|cache-off [mtp-on|mtp-off] [auto|paged|contiguous] [ssd|resident] [persistent-key|ephemeral-key] [--mtp-acceptance exact|typical] [--concurrency 1|2|4] [--kv-budget-gib 1...128 | --production-kv-grant] [--assistant-directory DIRECTORY] [--expected-model-sha256 SHA256] [--native-kv-probe-only] [--persistent-test-namespace UUID --persistent-test-access-group GROUP] [--generation-comparison-policy strict|record]")
         }
         modelDirectory = URL(fileURLWithPath: arguments[1])
         inputURL = URL(fileURLWithPath: arguments[2])
         outputURL = URL(fileURLWithPath: arguments[3])
         cacheEnabled = arguments[4] == "cache-on"
         mtpEnabled = arguments.count > 5 && arguments[5] == "mtp-on"
+        self.mtpAcceptance = mtpAcceptance
+        #if !RADIX_CANDIDATE
+        guard !seen.contains("--mtp-acceptance") else {
+            throw RadixBenchmark.Failure.message("MTP acceptance control requires the candidate artifact")
+        }
+        #endif
         self.backend = backend
         cacheMode = arguments.count < 8 ? "ssd" : arguments[7]
         requirePersistentKey = arguments.count < 9 || arguments[8] == "persistent-key"

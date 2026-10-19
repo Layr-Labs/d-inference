@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { StripePayoutsCard } from "./StripePayoutsCard";
+import { WithdrawalsList } from "./WithdrawalsList";
 import { GlobalWithdrawModal } from "./GlobalWithdrawModal";
 import { withdrawalStatusPresentation, withdrawSuccessMessage } from "./payout-copy";
 import type { BankWithdrawalQuote, StripeStatus } from "@/lib/api";
@@ -10,6 +11,11 @@ const quote: BankWithdrawalQuote = { id: "quote-1", amount_usd: "10.00", fee_usd
 function props() { return { status, balanceMicroUsd: 20_000_000, amount: "10", loading: false, onAmountChange: vi.fn(), onConfirm: vi.fn(), onCancel: vi.fn() }; }
 
 describe("international bank withdrawal", () => {
+  it("labels a queued bank deposit as an estimate in withdrawal history", () => {
+    render(<WithdrawalsList withdrawals={[{ id: "queue-1", status: "queued", amount_micro_usd: 10_000_000, fee_micro_usd: 0, net_micro_usd: 10_000_000, method: "standard", created_at: "2026-10-07T00:00:00Z", updated_at: "2026-10-07T00:00:00Z", payout_rail: "global", payout_currency: "inr", destination_amount: 80000, currency_exponent: 2 }]} />);
+    expect(screen.getByText(/Est\. .*800\.00/)).toBeInTheDocument();
+    expect(screen.getByText("Queued")).toBeInTheDocument();
+  });
   it("shows local-currency deposit limits before requesting a quote", () => {
     render(<GlobalWithdrawModal {...props()} status={{...status,payout_currency:"twd",recipient_limits:{currency:"twd",currency_exponent:2,minimum:80000}}} />);
     expect(screen.getByText(/Bank deposit limits/)).toHaveTextContent("TWD");

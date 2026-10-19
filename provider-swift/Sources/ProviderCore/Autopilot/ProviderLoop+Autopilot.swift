@@ -28,6 +28,7 @@ extension ProviderLoop {
         }
         state.modelAutopilot = ModelAutopilotSnapshot(
             enabled: autopilotConsented && !autopilotNeedsInventoryRefresh,
+            consentEnabled: autopilotSettings.hasConsent,
             minDwellSeconds: autopilotSettings.effectiveMinDwellSeconds,
             pinnedModels: autopilotPinnedModels.sorted(), maxModelSlots: autopilotPlanningMaxModelSlots,
             residentModels: modelSlots.keys.sorted().map { id in

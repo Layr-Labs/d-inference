@@ -1,0 +1,209 @@
+{
+  "model": "openai/gpt-oss-20b",
+  "catalogID": "gpt-oss-20b",
+  "servingModelType": "GPTOSSModel",
+  "artifactSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "purpose": "correctness diagnostic; timings and TPS deliberately excluded",
+  "backend": "paged",
+  "cacheMode": "ssd_complete",
+  "mtpEnabled": false,
+  "strictFsync": false,
+  "checkpointPartition": "production",
+  "schedulerConfiguration": {
+    "maxBatchedTokensPerStep": 2048,
+    "maxConcurrentPartialPrefills": 1,
+    "maxConcurrentRequests": 1,
+    "prefillChunkSize": 512,
+    "soloPrefillStripeTokens": 1024
+  },
+  "outputTokensPerRequest": 128,
+  "pairs": 3,
+  "requestRows": 12,
+  "receipt": {
+    "startedUTC": "2026-10-03T22:05:13.815164+00:00",
+    "endedUTC": "2026-10-03T22:06:46.862287+00:00",
+    "exitCode": 0,
+    "sourceUnchanged": true,
+    "binaryUnchanged": true,
+    "binarySHA256": "a3f11c4187e7dcab5f54b4216dd3a9fd5b95193013b84d891e81975495bd5a22",
+    "timingExcludedReason": "correctness instrumentation and overlapping isolated A4 CPU build"
+  },
+  "observedPrefillChunks": {
+    "cold_fork": [
+      3
+    ],
+    "novel_donor": [
+      2
+    ],
+    "demanded_donor": [
+      2
+    ],
+    "warm_fork": [
+      2
+    ]
+  },
+  "parity": {
+    "forkPairsPassed": 3,
+    "donorPairsPassed": 3,
+    "pairsAttempted": 3,
+    "perPair": [
+      {
+        "pair": 0,
+        "comparisons": [
+          {
+            "control": "cold_fork",
+            "cache": "warm_fork",
+            "positions": 128,
+            "generatedTokensEqual": true,
+            "selectedLogprobsEqual": true,
+            "topTwoTokenIdentitiesAndLogprobsEqual": true,
+            "topTwoGapsEqual": true,
+            "nonfiniteObservations": 0
+          },
+          {
+            "control": "novel_donor",
+            "cache": "demanded_donor",
+            "positions": 128,
+            "generatedTokensEqual": true,
+            "selectedLogprobsEqual": true,
+            "topTwoTokenIdentitiesAndLogprobsEqual": true,
+            "topTwoGapsEqual": true,
+            "nonfiniteObservations": 0
+          }
+        ]
+      },
+      {
+        "pair": 1,
+        "comparisons": [
+          {
+            "control": "cold_fork",
+            "cache": "warm_fork",
+            "positions": 128,
+            "generatedTokensEqual": true,
+            "selectedLogprobsEqual": true,
+            "topTwoTokenIdentitiesAndLogprobsEqual": true,
+            "topTwoGapsEqual": true,
+            "nonfiniteObservations": 0
+          },
+          {
+            "control": "novel_donor",
+            "cache": "demanded_donor",
+            "positions": 128,
+            "generatedTokensEqual": true,
+            "selectedLogprobsEqual": true,
+            "topTwoTokenIdentitiesAndLogprobsEqual": true,
+            "topTwoGapsEqual": true,
+            "nonfiniteObservations": 0
+          }
+        ]
+      },
+      {
+        "pair": 2,
+        "comparisons": [
+          {
+            "control": "cold_fork",
+            "cache": "warm_fork",
+            "positions": 128,
+            "generatedTokensEqual": true,
+            "selectedLogprobsEqual": true,
+            "topTwoTokenIdentitiesAndLogprobsEqual": true,
+            "topTwoGapsEqual": true,
+            "nonfiniteObservations": 0
+          },
+          {
+            "control": "novel_donor",
+            "cache": "demanded_donor",
+            "positions": 128,
+            "generatedTokensEqual": true,
+            "selectedLogprobsEqual": true,
+            "topTwoTokenIdentitiesAndLogprobsEqual": true,
+            "topTwoGapsEqual": true,
+            "nonfiniteObservations": 0
+          }
+        ]
+      }
+    ]
+  },
+  "warmRestore": {
+    "requests": 3,
+    "restoredTokensPerRequest": 1024,
+    "replayTokensPerRequest": 0,
+    "stagedRequests": 3,
+    "filesReadPerRequest": 2,
+    "bytesReadPerRequest": 56392232
+  },
+  "demandedDonorWrites": {
+    "requests": 3,
+    "filesWrittenPerRequest": 1,
+    "bytesWrittenPerRequest": 56377076
+  },
+  "cacheFreeControlsAcrossProfiles": [
+    {
+      "role": "cold_fork",
+      "repetitions": 3,
+      "outputChangesFromDefaultProfile": 3,
+      "defaultPrefillChunks": [
+        2
+      ],
+      "explicitPrefillChunks": [
+        3
+      ],
+      "restoredTokens": 0,
+      "replayTokens": 0,
+      "filesWritten": 0,
+      "bytesWritten": 0,
+      "filesRead": 0,
+      "bytesRead": 0
+    },
+    {
+      "role": "novel_donor",
+      "repetitions": 3,
+      "outputChangesFromDefaultProfile": 3,
+      "defaultPrefillChunks": [
+        1
+      ],
+      "explicitPrefillChunks": [
+        2
+      ],
+      "restoredTokens": 0,
+      "replayTokens": 0,
+      "filesWritten": 0,
+      "bytesWritten": 0,
+      "filesRead": 0,
+      "bytesRead": 0
+    }
+  ],
+  "crossProfileSourceScope": {
+    "sameArtifact": true,
+    "unchangedSharedProductionAndSDKSourceDigests": true,
+    "changedSharedFixtureSources": [
+      "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkFixture.swift",
+      "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkRequest.swift",
+      "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkSpecification.swift"
+    ],
+    "newFixtureSource": "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkDiagnostics.swift",
+    "rebuiltBinaryForExplicitConfigurationAndDiagnostics": true
+  },
+  "defaultProfileOutcome": {
+    "forkPairsPassed": 0,
+    "donorPairsPassed": 3,
+    "pairsAttempted": 3,
+    "coldPrefillChunks": 2,
+    "donorPrefillChunks": 1,
+    "warmPrefillChunks": 1
+  },
+  "qualification": "Exact observed greedy continuation and selected/top-two logprob diagnostics under the explicit 1024 profile; no archive tensor-state equivalence claim.",
+  "limits": [
+    "Default-profile short parity remains failed.",
+    "The explicit profile changes both donor interior/frontier capture and warm suffix partition; default interior archive-state equivalence is unproved.",
+    "Cache-free output changes show ordinary prefill-geometry sensitivity; they do not identify the cause of the default-profile warm/cold mismatch.",
+    "No full-model speedup, decoder TPS or deployed-fleet improvement is qualified by this diagnostic.",
+    "Finite selected/top-two observations do not compare every logit or internal archive tensor."
+  ],
+  "privacy": "Only aggregate counts and equality outcomes are published; no generated token IDs, response fingerprints, raw logprobs or prompt text.",
+  "captureAndSuffixGeometry": {
+    "defaultProfileAnchor": "1024-token interior historical anchor within the1793-token donor span",
+    "explicitProfileAnchor": "actual1024-token donor prefill frontier followed by769-token donor tail",
+    "coupledChanges": "Both donor capture geometry and remaining fork partition change; this run does not isolate either component."
+  }
+}

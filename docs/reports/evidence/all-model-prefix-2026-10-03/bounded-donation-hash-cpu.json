@@ -1,0 +1,433 @@
+{
+  "status": "pass",
+  "startedUTC": "2026-10-03T23:16:29.257467+00:00",
+  "endedUTC": "2026-10-03T23:16:44.059764+00:00",
+  "processElapsedSeconds": 14.731483999988995,
+  "identity": {
+    "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+    "compilerVersion": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+    "sourceRevision": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+    "sourceSnapshotSHA256": "b0463240550c0abf4146df8c85582973e70fb7dd003931db42e71f98bb403d6a"
+  },
+  "sourceUnchanged": true,
+  "imageUnchanged": true,
+  "helperUnchanged": true,
+  "metallibUnchanged": true,
+  "equalWarmupIterationsPerArm": 40,
+  "calibrationTargetSeconds": 0.15,
+  "pairsPerCell": 12,
+  "scope": "Actual CPU hash chain, checkpoint endpoint selection and HMAC tag; synthetic donor inputs.",
+  "cells": [
+    {
+      "name": "short-three-frontiers",
+      "donorTokens": 7169,
+      "pairs": 12,
+      "medianPairedTimeReductionPercent": 31.559140928033408,
+      "proof": {
+        "boundedChainCounts": [
+          4,
+          24,
+          28
+        ],
+        "boundedSHABlocksPerIteration": 56,
+        "checkpointPositions": [
+          1024,
+          6144,
+          7168
+        ],
+        "exactChainEndpointsAndTagsMatch": true,
+        "legacyChainCounts": [
+          28,
+          28,
+          28
+        ],
+        "legacySHABlocksPerIteration": 84
+      },
+      "pairMeasurements": [
+        {
+          "index": 0,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1474245.9903846155,
+          "boundedNanosecondsPerIteration": 1021487.1960784313,
+          "pairedTimeReductionPercent": 30.711210833143532,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 1,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 2095561.298076923,
+          "boundedNanosecondsPerIteration": 1106824.0718954247,
+          "pairedTimeReductionPercent": 47.18245307779129,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 2,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1849422.2788461538,
+          "boundedNanosecondsPerIteration": 1479107.843137255,
+          "pairedTimeReductionPercent": 20.023249419269263,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 3,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1499175.4807692308,
+          "boundedNanosecondsPerIteration": 979184.0980392157,
+          "pairedTimeReductionPercent": 34.68515790180922,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 4,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1466142.625,
+          "boundedNanosecondsPerIteration": 1070409.5882352942,
+          "pairedTimeReductionPercent": 26.99144203414083,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 5,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1436738.3846153845,
+          "boundedNanosecondsPerIteration": 964493.1895424837,
+          "pairedTimeReductionPercent": 32.86925442583767,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 6,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1442273.6442307692,
+          "boundedNanosecondsPerIteration": 974875,
+          "pairedTimeReductionPercent": 32.40707102292328,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 7,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1920693.5096153845,
+          "boundedNanosecondsPerIteration": 952266.0653594771,
+          "pairedTimeReductionPercent": 50.420717277783346,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 8,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 2405088.1346153845,
+          "boundedNanosecondsPerIteration": 1947660.4052287582,
+          "pairedTimeReductionPercent": 19.019167023572592,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 9,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1429030.451923077,
+          "boundedNanosecondsPerIteration": 1019467.0457516339,
+          "pairedTimeReductionPercent": 28.660229431800055,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 10,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1503403.8461538462,
+          "boundedNanosecondsPerIteration": 978551.2026143791,
+          "pairedTimeReductionPercent": 34.91095522219104,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        },
+        {
+          "index": 11,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1451251.201923077,
+          "boundedNanosecondsPerIteration": 1006083.8758169934,
+          "pairedTimeReductionPercent": 30.674725748112042,
+          "legacyIterations": 104,
+          "boundedIterations": 153
+        }
+      ]
+    },
+    {
+      "name": "long-three-frontiers",
+      "donorTokens": 16513,
+      "pairs": 12,
+      "medianPairedTimeReductionPercent": 33.36145277651253,
+      "proof": {
+        "boundedChainCounts": [
+          16,
+          48,
+          64
+        ],
+        "boundedSHABlocksPerIteration": 128,
+        "checkpointPositions": [
+          4096,
+          12288,
+          16384
+        ],
+        "exactChainEndpointsAndTagsMatch": true,
+        "legacyChainCounts": [
+          64,
+          64,
+          64
+        ],
+        "legacySHABlocksPerIteration": 192
+      },
+      "pairMeasurements": [
+        {
+          "index": 0,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 3255492.7608695654,
+          "boundedNanosecondsPerIteration": 2172391.544117647,
+          "pairedTimeReductionPercent": 33.269962377757345,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 1,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 3230206.5217391304,
+          "boundedNanosecondsPerIteration": 2151323.529411765,
+          "pairedTimeReductionPercent": 33.39981468882984,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 2,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 3187351.4565217393,
+          "boundedNanosecondsPerIteration": 2164231.0147058824,
+          "pairedTimeReductionPercent": 32.09939210570639,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 3,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 3223165.7608695654,
+          "boundedNanosecondsPerIteration": 2147878.0735294116,
+          "pairedTimeReductionPercent": 33.36122828042378,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 4,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 3230862.3260869565,
+          "boundedNanosecondsPerIteration": 2139727.9411764704,
+          "pairedTimeReductionPercent": 33.77223399772681,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 5,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 3257112.304347826,
+          "boundedNanosecondsPerIteration": 2157294.117647059,
+          "pairedTimeReductionPercent": 33.76666457686005,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 6,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 3250656.695652174,
+          "boundedNanosecondsPerIteration": 2181182.588235294,
+          "pairedTimeReductionPercent": 32.900247782158154,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 7,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 3231444.7391304346,
+          "boundedNanosecondsPerIteration": 2170596.8235294116,
+          "pairedTimeReductionPercent": 32.82890475442547,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 8,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 3270144.934782609,
+          "boundedNanosecondsPerIteration": 2179169.7352941176,
+          "pairedTimeReductionPercent": 33.36167727260128,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 9,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 3267214.6739130435,
+          "boundedNanosecondsPerIteration": 2185742.029411765,
+          "pairedTimeReductionPercent": 33.100752550368284,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 10,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 3474432.065217391,
+          "boundedNanosecondsPerIteration": 2173213.838235294,
+          "pairedTimeReductionPercent": 37.451249659149155,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        },
+        {
+          "index": 11,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 3946143.1086956523,
+          "boundedNanosecondsPerIteration": 2131878.6764705884,
+          "pairedTimeReductionPercent": 45.975637027131185,
+          "legacyIterations": 46,
+          "boundedIterations": 68
+        }
+      ]
+    },
+    {
+      "name": "deepest-only-control",
+      "donorTokens": 16513,
+      "pairs": 12,
+      "medianPairedTimeReductionPercent": -0.14956861275856048,
+      "proof": {
+        "boundedChainCounts": [
+          64
+        ],
+        "boundedSHABlocksPerIteration": 64,
+        "checkpointPositions": [
+          16384
+        ],
+        "exactChainEndpointsAndTagsMatch": true,
+        "legacyChainCounts": [
+          64
+        ],
+        "legacySHABlocksPerIteration": 64
+      },
+      "pairMeasurements": [
+        {
+          "index": 0,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1060253.3676470588,
+          "boundedNanosecondsPerIteration": 1071291.0444444444,
+          "pairedTimeReductionPercent": -1.0410414278504643,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 1,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1101439.955882353,
+          "boundedNanosecondsPerIteration": 1095657.4074074074,
+          "pairedTimeReductionPercent": 0.5249989746661465,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 2,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1086450.9779411764,
+          "boundedNanosecondsPerIteration": 1299602.474074074,
+          "pairedTimeReductionPercent": -19.619062475954465,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 3,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1113410.2352941176,
+          "boundedNanosecondsPerIteration": 1120666.9777777777,
+          "pairedTimeReductionPercent": -0.6517581977987907,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 4,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1080074.7573529412,
+          "boundedNanosecondsPerIteration": 1111450.9259259258,
+          "pairedTimeReductionPercent": -2.9049997103794745,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 5,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1067893.0735294118,
+          "boundedNanosecondsPerIteration": 1206871.911111111,
+          "pairedTimeReductionPercent": -13.014302744971552,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 6,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1075106.6176470588,
+          "boundedNanosecondsPerIteration": 1070929.3185185185,
+          "pairedTimeReductionPercent": 0.38854742961982325,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 7,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1096095.8970588236,
+          "boundedNanosecondsPerIteration": 1070549.3777777778,
+          "pairedTimeReductionPercent": 2.3306828672194912,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 8,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1073792.5882352942,
+          "boundedNanosecondsPerIteration": 1070006.1703703704,
+          "pairedTimeReductionPercent": 0.3526209722816698,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 9,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1071526.6544117648,
+          "boundedNanosecondsPerIteration": 1067511.111111111,
+          "pairedTimeReductionPercent": 0.3747497352605045,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 10,
+          "firstArm": "legacy",
+          "legacyNanosecondsPerIteration": 1076239.5882352942,
+          "boundedNanosecondsPerIteration": 1089704.9407407406,
+          "pairedTimeReductionPercent": -1.2511482250458172,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        },
+        {
+          "index": 11,
+          "firstArm": "bounded",
+          "legacyNanosecondsPerIteration": 1088358.455882353,
+          "boundedNanosecondsPerIteration": 1067321.2962962964,
+          "pairedTimeReductionPercent": 1.9329256342297096,
+          "legacyIterations": 136,
+          "boundedIterations": 135
+        }
+      ]
+    }
+  ],
+  "quantileConvention": "Median of12 paired normalized process iteration times per cell, not a p95. Alternating arm order; independent0.15s calibration per arm then fixed iteration counts.",
+  "limitations": [
+    "Not complete prepareWriteJob, model TTFT, GPU generation TPS, RSS or measured total allocations.",
+    "Digest-output bytes and actual produced chain counts do not measure allocator or physical memory use.",
+    "No write job, encrypted file, cache-hit or fsync qualification is performed here.",
+    "Checksum consumes timed work; exact full endpoint/tag equality is proved separately before timing.",
+    "External build identity is caller-supplied and must be checked against its source/image/toolchain receipt."
+  ],
+  "privacy": "Consumes checksums internally but exports no checksums, prompts, output IDs/content, private local paths or provider/account identities."
+}

@@ -132,30 +132,7 @@ enum BenchmarkMetrics {
             result["paged_storage"] = storage
         }
         if let mtp = engine.mtpMetricsSnapshot() {
-            result["mtp"] = [
-                "active": mtp.active, "verification_mode": String(describing: mtp.verificationMode),
-                "rounds": mtp.rounds, "seed_steps": mtp.seedSteps,
-                "proposed_tokens": mtp.proposedTokens, "accepted_tokens": mtp.acceptedTokens,
-                "emitted_tokens": mtp.emittedTokens, "selected_depth": mtp.selectedDepth,
-                "serial_rounds": mtp.serialVerificationRounds,
-                "rectangular_rounds": mtp.rectangularVerificationRounds,
-                "max_rectangular_tokens": mtp.maxAutomaticRectangularTokens,
-                "skipped_rows": mtp.skippedRows, "depth_selections": mtp.depthSelections.mapKeysToStrings(),
-                "controller_fallbacks": mtp.controllerFallbacks,
-                "conditional_acceptance": mtp.conditionalAcceptance,
-                "total_round_wall_time_nanos": mtp.totalRoundWallTimeNanos,
-                "cost_inputs": mtp.costInputs.map { cost -> [String: Any] in
-                    var input: [String: Any] = [
-                        "decode_row_bucket": cost.decodeRowBucket, "depth": cost.depth,
-                        "samples": cost.samples, "ewma_wall_time_nanos": cost.ewmaWallTimeNanos,
-                        "total_wall_time_nanos": cost.totalWallTimeNanos,
-                    ]
-                    if let cadence = cost.ewmaNanosPerCommittedToken {
-                        input["ewma_nanos_per_committed_token"] = cadence
-                    }
-                    return input
-                },
-            ] as [String: Any]
+            result["mtp"] = mtpRecord(mtp)
         }
         #if RADIX_CANDIDATE
         if let stats = engine.hybridPrefixCache?.stats {
@@ -171,6 +148,37 @@ enum BenchmarkMetrics {
         }
         #endif
         return result
+    }
+
+    static func mtpRecord(_ mtp: CBv2MTPMetrics) -> [String: Any] {
+        var record: [String: Any] = [
+            "active": mtp.active, "verification_mode": String(describing: mtp.verificationMode),
+            "rounds": mtp.rounds, "seed_steps": mtp.seedSteps,
+            "proposed_tokens": mtp.proposedTokens, "accepted_tokens": mtp.acceptedTokens,
+            "emitted_tokens": mtp.emittedTokens, "selected_depth": mtp.selectedDepth,
+            "serial_rounds": mtp.serialVerificationRounds,
+            "rectangular_rounds": mtp.rectangularVerificationRounds,
+            "max_rectangular_tokens": mtp.maxAutomaticRectangularTokens,
+            "skipped_rows": mtp.skippedRows, "depth_selections": mtp.depthSelections.mapKeysToStrings(),
+            "controller_fallbacks": mtp.controllerFallbacks,
+            "conditional_acceptance": mtp.conditionalAcceptance,
+            "total_round_wall_time_nanos": mtp.totalRoundWallTimeNanos,
+            "cost_inputs": mtp.costInputs.map { cost -> [String: Any] in
+                var input: [String: Any] = [
+                    "decode_row_bucket": cost.decodeRowBucket, "depth": cost.depth,
+                    "samples": cost.samples, "ewma_wall_time_nanos": cost.ewmaWallTimeNanos,
+                    "total_wall_time_nanos": cost.totalWallTimeNanos,
+                ]
+                if let cadence = cost.ewmaNanosPerCommittedToken {
+                    input["ewma_nanos_per_committed_token"] = cadence
+                }
+                return input
+            },
+        ]
+        #if RADIX_CANDIDATE
+        record["acceptance"] = mtp.acceptance.name
+        #endif
+        return record
     }
 
     // The engine captured this value on its owner queue. Never read mutable

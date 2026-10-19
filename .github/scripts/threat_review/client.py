@@ -11,6 +11,12 @@ class ReviewUnavailable(Exception):
     """Safe, credential-free failure suitable for an Actions summary."""
 
 
+class APIError(ReviewUnavailable):
+    def __init__(self, status):
+        super().__init__(f"API returned HTTP {status}")
+        self.status = status
+
+
 class SourceBudgetExceeded(ReviewUnavailable):
     """Stop collection before aggregate source data grows further."""
 
@@ -37,7 +43,7 @@ def request_json(url, token, payload=None, method=None, timeout=90):
             return json.loads(data)
     except HTTPError as error:
         # Do not print provider error bodies, prompts, tokens, or response headers.
-        raise ReviewUnavailable(f"API returned HTTP {error.code}") from None
+        raise APIError(error.code) from None
     except (URLError, TimeoutError, OSError, ValueError):
         raise ReviewUnavailable("API unavailable or returned invalid JSON") from None
 

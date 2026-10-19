@@ -56,7 +56,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "darkbloom"
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? BuildEnvironment.current.cliName
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
@@ -66,7 +66,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 /// Operator policy for multi-token prediction.
 ///
 /// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
-/// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
+/// assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B targets. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
@@ -87,9 +87,10 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
     ]
 
-    private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
-        modelID == "gemma-4-26b-qat-4bit"
-            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+    static func isAutomaticExternalTarget(modelType: String?, modelID: String?) -> Bool {
+        (modelID == "gemma-4-26b-qat-4bit"
+            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType))
+            || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
     }
 
     func enablesMTP(
@@ -103,7 +104,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID) {
+            if Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID) {
                 return true
             }
             guard embeddedArtifactDeclared,
@@ -122,9 +123,10 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            return Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
+            return Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
         case .on:
-            return SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+            return Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
+                || SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
                 || SpecDecArtifactFunnel.isInlineTarget(modelType: modelType)
         }
     }
@@ -156,7 +158,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// decode is aggregate/B (`docs/reports/2026-07-25-paged-gate-results.md`).
     ///
     /// Missing configuration selects the exact reviewed model/runtime/hardware
-    /// profile when one exists; unknown profiles retain default 4 and ceiling 8.
+    /// profile when one exists; unknown profiles retain default 4 and ceiling 8,
+    /// except that models on the native `auto` paged allowlist start at 8 on
+    /// M5 Pro, Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`).
     /// Explicit values remain upper bounds. Widths up to 16 require a reviewed
     /// profile after backend resolution, physical fit and shared-Mac admission.
     /// Heartbeats report the final effective cap, never the requested ceiling.
@@ -170,11 +174,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" follows the exact-model policy in
-    /// `EngineV2KVBackendPolicy.preferredBackend`; "paged" and "contiguous"
+    /// `[backend]`): quantized "auto" requires paged; native "auto" follows
+    /// `EngineV2KVBackendPolicy.preferredBackend`. "paged" and "contiguous"
     /// are explicit selections. `DARKBLOOM_CBV2_PAGED_KV` is a
     /// negative-polarity kill switch and cannot turn paged on.
-    /// Automatic paged failures may fall back, but a box that cannot
+    /// Native automatic paged failures may fall back, but a box that cannot
     /// construct an explicitly requested paged backend REFUSES the load
     /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
     /// reroutes) rather than degrading, because refusal is reserved for a
@@ -186,15 +190,24 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
     /// `EngineV2SlotFactory` passes — is `true`, so the veto is inert and
     /// an explicit "paged" VLM slot gets paged like any other.
-    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` always degrades,
-    /// never refuses. A resolved-contiguous slot also gets NO SSD prefix
-    /// cache (`PrefixCachePolicy.adoptionIsExact`).
+    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` forces contiguous;
+    /// live quantization then refuses until native precision is selected.
+    /// Eligible complete checkpoints keep their independent storage codec
+    /// when live execution resolves to contiguous.
     /// See `EngineV2KVBackendPolicy`.
     public var engineV2KVBackend: String
     /// Optional per-model override map (`engine_v2_kv_backend_by_model`
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
+    /// Live attention precision; native is the default. MiMo stays native.
+    /// Explicit contiguous storage requires native precision.
+    public var engineV2KVQuantization: String
+    public var engineV2KVQuantizationByModel: [String: String]
+    /// Requested precision for eligible complete checkpoints; balanced K4/V4
+    /// is the default, independent of live attention. MiMo stays native.
+    public var engineV2KVCheckpointQuantization: String
+    public var engineV2KVCheckpointQuantizationByModel: [String: String]
     /// Startup model preload (default true) for coordinator and standalone
     /// serving. An explicit `preload_models` list takes precedence; otherwise
     /// previously loaded models go first, then the selected models. The
@@ -233,7 +246,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
     /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
-    /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
+    /// catalog-declared assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B identities.
     /// Native `mimo_v2` also requests its inspected embedded heads automatically.
     /// The retired boolean `mtp` key is ignored (and warned about, see
     /// ``retiredKeysPresent``); only `mtp_mode` is read or written.
@@ -251,6 +264,20 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// involved. Takes precedence over the `spec_dec` download when set. nil
     /// (default) = resolve via the catalog's `spec_dec` pointer.
     public var mtpDrafterPath: String?
+    /// MTP draft acceptance rule for sampled requests (`mtp_acceptance`
+    /// under `[backend]`): `"exact"` or `"typical"`. nil (default, key
+    /// absent) means "not set" and resolves to the built-in `typical`.
+    /// Optional on purpose: `TOMLEncoder` writes every non-optional key, and
+    /// a written default would shadow every lower-precedence source for the
+    /// life of the file. `typical` keeps a draft when the target's filtered
+    /// probability for it clears an entropy-scaled floor; sampled output is
+    /// then not distribution-exact. Greedy requests never change. See
+    /// `MTPAcceptancePolicy`.
+    public var mtpAcceptance: String?
+    /// Optional per-model override map (`mtp_acceptance_by_model` under
+    /// `[backend]`, TOML table of model id → "exact" | "typical"). Missing
+    /// ids use `mtpAcceptance`.
+    public var mtpAcceptanceByModel: [String: String]
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
     /// `legacy_compiled_decode`, `kv_quant`, `mtp`). The keys parse cleanly — an
@@ -284,6 +311,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        engineV2KVQuantization: String = "native",
+        engineV2KVQuantizationByModel: [String: String] = [:],
+        engineV2KVCheckpointQuantization: String = "balanced",
+        engineV2KVCheckpointQuantizationByModel: [String: String] = [:],
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -292,6 +323,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpDrafterPath: String? = nil,
+        mtpAcceptance: String? = nil,
+        mtpAcceptanceByModel: [String: String] = [:],
         modelAutopilot: ModelAutopilotSettings = .init()
     ) {
         self.port = port
@@ -305,6 +338,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.engineV2KVQuantization = engineV2KVQuantization
+        self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
+        self.engineV2KVCheckpointQuantization = engineV2KVCheckpointQuantization
+        self.engineV2KVCheckpointQuantizationByModel = engineV2KVCheckpointQuantizationByModel
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -313,6 +350,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpMode = mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.mtpAcceptance = mtpAcceptance
+        self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.modelAutopilot = modelAutopilot
     }
 
@@ -328,6 +367,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
         case engineV2KVBackendByModel = "engine_v2_kv_backend_by_model"
+        case engineV2KVQuantization = "engine_v2_kv_quantization"
+        case engineV2KVQuantizationByModel = "engine_v2_kv_quantization_by_model"
+        case engineV2KVCheckpointQuantization = "engine_v2_kv_checkpoint_quantization"
+        case engineV2KVCheckpointQuantizationByModel = "engine_v2_kv_checkpoint_quantization_by_model"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -336,6 +379,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case mtpMode = "mtp_mode"
         case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
+        case mtpAcceptance = "mtp_acceptance"
+        case mtpAcceptanceByModel = "mtp_acceptance_by_model"
     }
 
     /// RETIRED `[backend]` keys: parsed for presence only, values ignored.
@@ -373,6 +418,14 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2KVBackendByModel =
             try container.decodeIfPresent(
                 [String: String].self, forKey: .engineV2KVBackendByModel) ?? [:]
+        self.engineV2KVQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVQuantization) ?? "native"
+        self.engineV2KVQuantizationByModel =
+            try container.decodeIfPresent([String: String].self, forKey: .engineV2KVQuantizationByModel) ?? [:]
+        self.engineV2KVCheckpointQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVCheckpointQuantization) ?? "balanced"
+        self.engineV2KVCheckpointQuantizationByModel =
+            try container.decodeIfPresent([String: String].self, forKey: .engineV2KVCheckpointQuantizationByModel) ?? [:]
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =
@@ -386,6 +439,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
                 PrefillDeadlineMode.self,
                 forKey: .prefillDeadlineMode)
         self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
+        self.mtpAcceptance = try container.decodeIfPresent(String.self, forKey: .mtpAcceptance)
+        self.mtpAcceptanceByModel =
+            try container.decodeIfPresent(
+                [String: String].self, forKey: .mtpAcceptanceByModel) ?? [:]
         // Retired keys: presence-only scan so startup can WARN (values are
         // ignored; an old provider.toml must keep loading cleanly).
         let retired = try decoder.container(keyedBy: RetiredCodingKeys.self)
@@ -409,6 +466,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
+        try container.encode(engineV2KVQuantization, forKey: .engineV2KVQuantization)
+        try container.encode(engineV2KVQuantizationByModel, forKey: .engineV2KVQuantizationByModel)
+        try container.encode(engineV2KVCheckpointQuantization, forKey: .engineV2KVCheckpointQuantization)
+        try container.encode(engineV2KVCheckpointQuantizationByModel, forKey: .engineV2KVCheckpointQuantizationByModel)
         try container.encode(startupPreload, forKey: .startupPreload)
         try container.encode(preloadModels, forKey: .preloadModels)
         try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)
@@ -417,6 +478,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(mtpMode, forKey: .mtpMode)
         try container.encodeIfPresent(prefillDeadlineMode, forKey: .prefillDeadlineMode)
         try container.encodeIfPresent(mtpDrafterPath, forKey: .mtpDrafterPath)
+        try container.encodeIfPresent(mtpAcceptance, forKey: .mtpAcceptance)
+        try container.encode(mtpAcceptanceByModel, forKey: .mtpAcceptanceByModel)
     }
 }
 
@@ -428,7 +491,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     /// public fleet. Set `private_only = true` under `[coordinator]` in config.
     public var privateOnly: Bool
 
-    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
+    public init(url: String = BuildEnvironment.current.coordinatorWebSocketURL, heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
         self.url = url
         self.heartbeatIntervalSecs = heartbeatIntervalSecs
         self.privateOnly = privateOnly
@@ -442,7 +505,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "wss://api.darkbloom.dev/ws/provider"
+        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? BuildEnvironment.current.coordinatorWebSocketURL
         self.heartbeatIntervalSecs = try container.decodeIfPresent(UInt64.self, forKey: .heartbeatIntervalSecs) ?? 5
         self.privateOnly = try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
     }
@@ -454,19 +517,22 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
+    public var cache: CacheSettings
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
-        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings()
+        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+        cache: CacheSettings = CacheSettings()
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
+        self.cache = cache
     }
 
     enum CodingKeys: String, CodingKey {
@@ -475,17 +541,20 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case coordinator
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
+        case cache
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: BuildEnvironment.current.cliName)
         self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
+        self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
+        try self.cache.validate()
     }
 
     /// Generate a default config based on detected hardware.
@@ -493,7 +562,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// The provider name is derived from the machine model identifier
     /// (e.g. "Mac16,1" -> "darkbloom-mac16-1").
     public static func defaultForHardware(_ hw: HardwareInfo) -> ProviderConfig {
-        let name = "darkbloom-" + hw.machineModel
+        let name = BuildEnvironment.current.cliName + "-" + hw.machineModel
             .replacingOccurrences(of: ",", with: "-")
             .lowercased()
 
@@ -511,7 +580,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
-                url: "wss://api.darkbloom.dev/ws/provider",
+                url: BuildEnvironment.current.coordinatorWebSocketURL,
                 heartbeatIntervalSecs: 5
             ),
             schedule: nil
@@ -551,9 +620,7 @@ public enum ConfigManager: Sendable {
     /// The same path for another account's home, such as the invoking user
     /// of `sudo darkbloom report`.
     public static func defaultConfigPath(home: URL) -> URL {
-        home
-            .appendingPathComponent(".config")
-            .appendingPathComponent("darkbloom")
+        BuildEnvironment.current.configDirectory(home: home)
             .appendingPathComponent("provider.toml")
     }
 
@@ -583,7 +650,7 @@ public enum ConfigManager: Sendable {
         else {
             // Return a minimal default if we can't load
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )
@@ -633,7 +700,7 @@ public enum ConfigManager: Sendable {
         } catch {
             // Fall back to defaults on malformed TOML (matches previous behavior)
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )

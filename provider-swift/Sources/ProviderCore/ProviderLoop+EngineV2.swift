@@ -259,7 +259,7 @@ extension ProviderLoop {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
-                    minimumGrantBytes: await slot.engineV2.minimumServiceableNativeGrantBytes(),
+                    minimumGrantBytes: await slot.engineV2.minimumServiceableGrantBytes(),
                     bridge: slot.engineV2))
         }
         return existing
@@ -699,6 +699,12 @@ extension ProviderLoop {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                kvQuantizationConfig: loopConfig.config.backend.engineV2KVQuantization,
+                kvQuantizationConfigByModel: loopConfig.config.backend.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: loopConfig.config.backend.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: loopConfig.config.backend.engineV2KVCheckpointQuantizationByModel,
+                mtpAcceptanceConfig: loopConfig.config.backend.mtpAcceptance,
+                mtpAcceptanceConfigByModel: loopConfig.config.backend.mtpAcceptanceByModel,
                 prefillDeadlineMode:
                     loopConfig.config.backend.prefillDeadlineMode,
                 // The loaded artifact's profile identity is independent of

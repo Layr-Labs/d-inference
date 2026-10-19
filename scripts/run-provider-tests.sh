@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # Run from provider-swift after building tests and staging the matched metallib.
-# Allocator, interleaving, environment, stage-deadline and URLSession mock
+# Allocator, compiled-device, interleaving, environment, stage-deadline and URLSession mock
 # cases need fresh processes. Every isolated suite still has a non-zero/no-skip gate.
 # Keep both outcomes: a failure in the general suite must not silence this gate.
 set -uo pipefail
 script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Coverage runs set PROVIDER_COVERAGE_DIR after an instrumented build
+# (`swift build --build-tests --enable-code-coverage`). Each test process then
+# writes its own profile there. `swift test --enable-code-coverage` is not used:
+# it deletes earlier profiles and replaces LLVM_PROFILE_FILE on every call.
+if [[ -n "${PROVIDER_COVERAGE_DIR:-}" ]]; then
+  mkdir -p "$PROVIDER_COVERAGE_DIR"
+  export LLVM_PROFILE_FILE="$PROVIDER_COVERAGE_DIR/%p-%m.profraw"
+fi
 # ProviderLoop tests can publish state without a per-loop override. Keep their
 # snapshots away from the operator's running provider and recovery watchdog.
 provider_test_state_root=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-provider-tests.XXXXXX") || exit 1
@@ -13,6 +21,8 @@ export DARKBLOOM_STATE_FILE="$provider_test_state_root/daemon-state.json"
 export DARKBLOOM_LOADED_MODELS_FILE="$provider_test_state_root/loaded-models.json"
 provider_test_status=0
 isolated_filters=(
+  SSDShorterNativeBlockRestoreTests
+  SSDNativeCheckpointOracleTests
   emptyNativePoolTeardownUsesActualRetiredAdapter
   processLedgerCannotCombineOldUsageWithNewMaterializationCredit
   defaultApplyProjectsSettings

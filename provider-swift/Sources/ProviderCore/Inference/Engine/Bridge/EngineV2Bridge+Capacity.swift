@@ -142,8 +142,8 @@ extension EngineV2Bridge {
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
-        if tracksNativeShutdown {
-            reportedKVBytesCapacity = min(reportedKVBytesCapacity, nativeAdmissionCapacityBytes())
+        if usesMemoryLimitedConcurrency {
+            reportedKVBytesCapacity = min(reportedKVBytesCapacity, admissionCapacityBytes())
         }
         let servingConcurrency = memoryLimitedConcurrency(
             configured: effectiveServingConcurrency, capacityBytes: reportedKVBytesCapacity)

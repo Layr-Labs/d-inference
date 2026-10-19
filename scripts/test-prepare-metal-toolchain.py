@@ -14,11 +14,15 @@ SCRIPT = Path(__file__).with_name("prepare-metal-toolchain.py")
 SPEC = importlib.util.spec_from_file_location("prepare_metal", SCRIPT)
 METAL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(METAL)
+CATALOG_FAILURE = ("xcodebuild: error: Failed fetching catalog for assetType "
+                   "(com.apple.MobileAsset.MetalToolchain), serverParameters ({\n"
+                   "    RequestedBuild = 27A266a;\n})")
 
 
 class FakeAppleTools:
     def __init__(self, *, initially_ready=False, ready_at=None, ready_on_clear=False,
-                 import_ready=False, export_names=("Metal.exportedBundle",), fail=None):
+                 import_ready=False, export_names=("Metal.exportedBundle",), fail=None,
+                 catalog_failures=0, catalog_export=False):
         self.now = 0.0
         self.ready = initially_ready
         self.ready_at = ready_at
@@ -26,6 +30,8 @@ class FakeAppleTools:
         self.import_ready = import_ready
         self.export_names = export_names
         self.fail = fail
+        self.catalog_failures = catalog_failures
+        self.catalog_export = catalog_export
         self.calls, self.sleeps, self.messages = [], [], []
         self.imported = None
 
@@ -38,6 +44,11 @@ class FakeAppleTools:
 
     def run(self, arguments, *, timeout, check, capture_output, text):
         self.calls.append((list(arguments), timeout))
+        if (arguments[:len(METAL.DOWNLOAD)] == METAL.DOWNLOAD
+                and ("-exportPath" in arguments) == self.catalog_export
+                and self.catalog_failures > 0):
+            self.catalog_failures -= 1
+            return subprocess.CompletedProcess(arguments, 70, "", CATALOG_FAILURE)
         if self.fail == tuple(arguments):
             return subprocess.CompletedProcess(arguments, 1, "", "fixture command failure")
         if arguments == METAL.PROBE:
@@ -130,6 +141,58 @@ class MetalSetupTests(unittest.TestCase):
             self.setup_for(fake).prepare()
         self.assertEqual(len(fake.calls), 2)
         self.assertEqual(fake.sleeps, [])
+
+    def test_transient_catalog_failure_retries_normal_and_export_downloads(self):
+        for export in (False, True):
+            with self.subTest(export=export):
+                fake = FakeAppleTools(catalog_failures=1, catalog_export=export,
+                                      ready_on_clear=not export, import_ready=export)
+                self.setup_for(fake).prepare()
+                downloads = [command for command, _ in fake.calls
+                             if command[:len(METAL.DOWNLOAD)] == METAL.DOWNLOAD
+                             and ("-exportPath" in command) == export]
+                self.assertEqual(len(downloads), 2)
+                self.assertEqual(downloads[0], downloads[1])
+                self.assertIn(5, fake.sleeps)
+                self.assertTrue(any(CATALOG_FAILURE in message for message in fake.messages))
+                self.assertEqual(fake.calls[-1][0], METAL.PROBE)
+
+    def test_permanent_catalog_failure_is_bounded_and_preserves_raw_cause(self):
+        fake = FakeAppleTools(catalog_failures=10)
+        with self.assertRaises(METAL.SetupError) as raised:
+            self.setup_for(fake).prepare()
+        self.assertIn(CATALOG_FAILURE, str(raised.exception))
+        self.assertIn("(70)", str(raised.exception))
+        self.assertEqual(sum(command == METAL.DOWNLOAD for command, _ in fake.calls), 3)
+        self.assertEqual(fake.sleeps, [5, 10])
+        self.assertIsNone(fake.imported)
+
+    def test_catalog_retry_deadline_preserves_raw_cause(self):
+        fake = FakeAppleTools(catalog_failures=10)
+        with self.assertRaises(METAL.SetupError) as raised:
+            self.setup_for(fake, timeout=3).prepare()
+        self.assertIn("deadline exceeded", str(raised.exception))
+        self.assertIn(CATALOG_FAILURE, str(raised.exception))
+        self.assertEqual(fake.now, 3)
+        self.assertEqual(sum(command == METAL.DOWNLOAD for command, _ in fake.calls), 1)
+
+    def test_catalog_diagnostic_does_not_retry_other_commands_or_exit_codes(self):
+        for arguments, code, diagnostic in ((["xcrun", "--kill-cache"], 70, CATALOG_FAILURE),
+                                             (METAL.DOWNLOAD, 1, CATALOG_FAILURE),
+                                             (METAL.DOWNLOAD, 70, "invalid component")):
+            with self.subTest(arguments=arguments, code=code, diagnostic=diagnostic):
+                fake = FakeAppleTools()
+                setup = self.setup_for(fake)
+
+                def fail(command, **options):
+                    fake.calls.append((command, options["timeout"]))
+                    return subprocess.CompletedProcess(command, code, "", diagnostic)
+
+                setup.run = fail
+                with self.assertRaisesRegex(METAL.SetupError, "command failed"):
+                    setup.checked(arguments)
+                self.assertEqual(len(fake.calls), 1)
+                self.assertEqual(fake.sleeps, [])
 
     def test_global_deadline_bounds_polling_and_every_subprocess(self):
         fake = FakeAppleTools()

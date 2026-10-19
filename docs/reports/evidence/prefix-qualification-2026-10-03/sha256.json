@@ -1,0 +1,9 @@
+{
+  "planner.csv": "3751faa5be3e2883a656da81544e5cdcb1f30d08f9530554d75d788ca7d49650",
+  "planner.json": "e4099704f74f9a40cee4ea5cf151d8a9a6c8b8b1fb54ec8380342ab75c02bec9",
+  "qwen-adjacent.json": "ddd61dcf6855adf7b939b961fe3947aafc3d46d975cc75bec9d14d25af852e0f",
+  "qwen-mixed-benchmark.swift": "49a213b26219946370ee06ef249ec50b77618146f9ff3c565e380f641fac92c9",
+  "qwen-mixed.json": "850ef8820abb0789198558e258f01d65484c0e20ffa829e240bb3ebe3287bcfe",
+  "qwen-short.json": "ee49b67f49d19d7d52be4f9b8ceeb315bfa3a8fed61709f0a35ed64872181792",
+  "validation.json": "bcc9af255e29674666cb08b40c48d4a32f33a5fafad3a01c3765b11c6b665dc3"
+}

@@ -1,0 +1,88 @@
+{
+  "samples": 3,
+  "rows": [
+    {
+      "prompt": 2559,
+      "hint": 2048,
+      "stripe": 4096,
+      "fileBytes": 135428194,
+      "forkPrompt": 2708,
+      "shared": 2077,
+      "warmHit": 2048,
+      "bytesRead": 135449424,
+      "coldTTFT": 3.271020833,
+      "novelTTFT": 3.469428,
+      "donorTTFT": 3.762844792,
+      "donorFinishToDone": 0.186912083,
+      "warmTTFT": 1.067495542,
+      "forkColdTTFT": 4.140826917,
+      "sourceLog": "qwen-short-live.log",
+      "sameText": true,
+      "novelNoCapture": true
+    },
+    {
+      "prompt": 2559,
+      "hint": 2048,
+      "stripe": 4096,
+      "fileBytes": 135428194,
+      "forkPrompt": 2708,
+      "shared": 2077,
+      "warmHit": 2048,
+      "bytesRead": 135449424,
+      "coldTTFT": 3.25621725,
+      "novelTTFT": 3.306317042,
+      "donorTTFT": 3.464524083,
+      "donorFinishToDone": 0.177732917,
+      "warmTTFT": 0.993001167,
+      "forkColdTTFT": 3.871734167,
+      "sourceLog": "qwen-short-live-2.log",
+      "sameText": true,
+      "novelNoCapture": true
+    },
+    {
+      "prompt": 2559,
+      "hint": 2048,
+      "stripe": 4096,
+      "fileBytes": 135428194,
+      "forkPrompt": 2708,
+      "shared": 2077,
+      "warmHit": 2048,
+      "bytesRead": 135449424,
+      "coldTTFT": 3.278253583,
+      "novelTTFT": 3.358896208,
+      "donorTTFT": 3.47296925,
+      "donorFinishToDone": 0.118393583,
+      "warmTTFT": 0.989908584,
+      "forkColdTTFT": 3.862750667,
+      "sourceLog": "qwen-short-live-3.log",
+      "sameText": true,
+      "novelNoCapture": true
+    }
+  ],
+  "method": "Three sequential local paired integration runs; real immutable Qwen3.5-9B-4bit-MTP weights, own encrypted SSD roots/keys, production paged engine, original4096stripe. Exact generated text checked, native64-token recurrence checked separately. TTFT includes scheduling/prefill/first visible decode; prompt/TTFT is an effective throughput proxy, not isolated kernel/decode TPS. No live API billed cost in this fixture.",
+  "coldTTFTMedian": 3.271020833,
+  "novelTTFTMedian": 3.358896208,
+  "donorTTFTMedian": 3.47296925,
+  "donorFinishToDoneMedian": 0.177732917,
+  "warmTTFTMedian": 0.993001167,
+  "forkColdTTFTMedian": 3.871734167,
+  "pairedDemandedTTFTOverNovelPercentMedian": 4.784993059960763,
+  "pairedWarmTTFTReductionPercentMedian": 74.35254787212254,
+  "encryptedBytesPerSavedTokenPerReuse": 66127.0478515625,
+  "cachedPromptTokenFraction": 0.7562776957163959,
+  "novelEffectivePromptTPS": 761.8574202754883,
+  "demandedEffectivePromptTPS": 736.8334746989194,
+  "model": "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp",
+  "model_sha256": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+  "checkpoint_tensor_bytes": 135405564,
+  "prefill_ranges": [
+    [
+      0,
+      2048
+    ],
+    [
+      2048,
+      2559
+    ]
+  ]
+}

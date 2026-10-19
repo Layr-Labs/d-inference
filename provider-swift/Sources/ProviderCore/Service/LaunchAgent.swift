@@ -9,24 +9,25 @@
 
 import Foundation
 import MLXLMCommon
+import ProviderAppAttest
 
 public enum LaunchAgent: Sendable {
 
-    public static let label = "io.darkbloom.provider"
+    public static let label = BuildEnvironment.current.launchAgentLabel
 
     // MARK: - Paths
 
     /// Path to the launchd plist: ~/Library/LaunchAgents/io.darkbloom.provider.plist
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent("Library/LaunchAgents")
             .appendingPathComponent("\(label).plist")
     }
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/provider.log")
+        BuildEnvironment.current.installDirectory(home: LaunchctlControl.homeDirectory())
+            .appendingPathComponent("provider.log")
     }
 
     // MARK: - Queries
@@ -74,7 +75,7 @@ public enum LaunchAgent: Sendable {
         public let port: UInt16
         public let bind: String
         public let noAuth: Bool
-        public init(enabled: Bool = false, port: UInt16 = 8000, bind: String = "127.0.0.1", noAuth: Bool = false) {
+        public init(enabled: Bool = false, port: UInt16 = BuildEnvironment.current.defaultLocalPort, bind: String = "127.0.0.1", noAuth: Bool = false) {
             self.enabled = enabled
             self.port = port
             self.bind = bind
@@ -94,7 +95,6 @@ public enum LaunchAgent: Sendable {
         // If already loaded, unload first so we pick up plist changes.
         if isLoaded() {
             try unloadService()
-            Thread.sleep(forTimeInterval: 0.5)
         }
 
         try writePlist(
@@ -301,6 +301,8 @@ public enum LaunchAgent: Sendable {
     /// export that did not reach launchd would silently no-op in the normal
     /// `darkbloom start` deployment, leaving the advertised recovery lever
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
+    /// `DARKBLOOM_R2_CDN_URL`: the model CDN override. The daemon downloads and
+    /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
@@ -321,6 +323,7 @@ public enum LaunchAgent: Sendable {
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
+        SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
@@ -330,17 +333,22 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_PREFIX_CACHE_MEMORY",
+        "DARKBLOOM_PREFIX_CACHE_DISK_GB",
+        "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
+        "DARKBLOOM_CBV2_KV_QUANTIZATION",
+        "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+        "DARKBLOOM_R2_CDN_URL",
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
     ///
-    /// One value-conditional entry rides along: the operator drain
+    /// A value-conditional entry rides along: the operator drain
     /// refinement of the expert-slice route
     /// (`GemmaOptimizationEnvironment.daemonDrainPassthrough`). Serving
     /// defaults to `trust`; launchd does not inherit the installing shell, so
@@ -355,6 +363,18 @@ public enum LaunchAgent: Sendable {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }
+        }
+        // Persist only the worker opt-in, never native diagnostic/fault flags.
+        let workerKey = AppAttestWorkerSelection.qualificationEnvironment
+        if environment[workerKey] == "1" {
+            out[workerKey] = "1"
+        }
+        // An explicitly empty/invalid memory policy fails toward free-only in
+        // foreground mode too. Persist its canonical value instead of dropping
+        // an empty value and silently restoring reclaim credit in the daemon.
+        if let value = environment[SystemMemory.availabilityEnvironmentKey] {
+            out[SystemMemory.availabilityEnvironmentKey] =
+                SystemMemory.AvailabilityPolicy.resolve(value).rawValue
         }
         return out
     }
@@ -489,8 +509,9 @@ public enum LaunchAgent: Sendable {
             ["bootstrap", LaunchctlControl.guiDomain(), path.path], captureStderr: true)
         if !bootstrap.succeeded {
             let stderr = bootstrap.stderr
-            // Error 37 = "already loaded" -- not a real failure.
-            if !stderr.contains("37:") && !stderr.contains("already loaded") {
+            // Operation-in-progress (37) is not confirmation of a loaded job.
+            // Retain only launchctl's explicit already-loaded compatibility.
+            if !stderr.contains("already loaded") {
                 throw LaunchAgentError.bootstrapFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
@@ -522,6 +543,47 @@ public enum LaunchAgent: Sendable {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
+        try waitForServiceRemoval(label: serviceLabel)
+    }
+
+    /// A successful bootout asks launchd to remove the job; the label can remain
+    /// registered while its previous process exits. Confirm absence before a
+    /// caller writes a replacement plist or bootstraps it.
+    ///
+    /// This bounds polling, including time spent in returning print calls. The
+    /// shared process runner has no subprocess timeout, so a hung launchctl can
+    /// still outlast this polling budget.
+    private static func waitForServiceRemoval(label serviceLabel: String) throws {
+        let started = LaunchctlControl.uptime()
+        let deadline = started + 10
+        let missingService = "could not find service \"\(serviceLabel)\"".lowercased()
+        for probe in 0...100 {
+            let result = try LaunchctlControl.runThrowing(
+                ["print", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
+            if !result.succeeded {
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Missing-service print can exit 113, not just bootout's 3.
+                // A quoted whole label prevents matching a different service.
+                let confirmsAbsence = stderr.lowercased().split(whereSeparator: \.isNewline).contains { line in
+                    let diagnostic = line.trimmingCharacters(in: .whitespaces)
+                    return diagnostic == missingService || diagnostic.hasPrefix(missingService + " in domain")
+                }
+                guard confirmsAbsence else {
+                    throw LaunchAgentError.bootoutFailed(
+                        "could not confirm service removal (launchctl print exit \(result.status)): \(stderr)")
+                }
+                return
+            }
+            let now = LaunchctlControl.uptime()
+            guard now < deadline, probe < 100 else { break }
+            // Schedule against the monotonic origin, so command duration counts
+            // against the budget and floating-point sleep sums do not drift.
+            let nextProbe = min(deadline, started + Double(probe + 1) * 0.1)
+            let delay = max(0, nextProbe - now)
+            if delay > 0 { LaunchctlControl.sleep(forTimeInterval: delay) }
+        }
+        throw LaunchAgentError.bootoutFailed(
+            "service removal was not confirmed within 10 seconds; no replacement was started")
     }
 
     /// Resolve the current executable path. Falls back to ~/.darkbloom/bin/darkbloom.
@@ -552,7 +614,7 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
         case .disableFailed(let detail):
             return "launchctl disable failed (the provider may auto-start again at next login): \(detail)"
         case .notInstalled:
-            return "provider service is not installed; run `darkbloom start` first"
+            return "provider service is not installed; run `\(BuildEnvironment.current.cliName) start` first"
         }
     }
 }

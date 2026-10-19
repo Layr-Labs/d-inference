@@ -1,0 +1,140 @@
+{
+  "scope": "Fresh observed-process-metadata cohort, same B1c4/Swift source. Qwen3.6MoE short, all six complete reports; three production passes and three benchmark-candidate donor/fork parity failures. No qualified gain or median.",
+  "model": "qwen/qwen3.6-35b-a3b",
+  "startedUTC": "2026-10-04T00:08:35.398956+00:00",
+  "endedUTC": "2026-10-04T00:12:16.187097+00:00",
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "sourceBundlePlanTemplateSpecHelperOrchestrationBeforeAfterIdentical": true,
+  "allSixSavedResultDigestsMatchClosedReports": true,
+  "allOwnedProcessTreesReapedAndQuiescent": true,
+  "maximumTrackedDescendants": 0,
+  "safetyStopReason": null,
+  "completeReports": 6,
+  "measuredRequests": 24,
+  "reportedOutputIDs": 3072,
+  "qualifiedBlocks": 0,
+  "qualifiedThreePairPolicyComparison": false,
+  "qualifiedThreePairEconomicComparison": false,
+  "arms": [
+    {
+      "block": 0,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 0,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "contractFailures": [
+        "output_parity"
+      ],
+      "donorOutputMatches": false,
+      "forkOutputMatches": false
+    },
+    {
+      "block": 1,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "contractFailures": [
+        "output_parity"
+      ],
+      "donorOutputMatches": false,
+      "forkOutputMatches": false
+    },
+    {
+      "block": 1,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "contractFailures": [
+        "output_parity"
+      ],
+      "donorOutputMatches": false,
+      "forkOutputMatches": false
+    }
+  ],
+  "crossPolicyRoleEquality": [
+    {
+      "block": 0,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": false
+    },
+    {
+      "block": 1,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": false
+    },
+    {
+      "block": 2,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": false
+    }
+  ],
+  "production": {
+    "allThreeDonorAndForkComparisonsMatch": true,
+    "allTwelveRowsNoCacheIOOrRestore": true
+  },
+  "candidate": {
+    "allThreeDonorAndForkComparisonsMatch": false,
+    "donorWrittenFilesEach": 1,
+    "donorWrittenBytesEach": 89579023,
+    "warmRestoredTokensEach": 1024,
+    "warmReplayTokensEach": 0,
+    "warmReadFilesEach": 2,
+    "warmReadBytesEach": 89597350
+  },
+  "controlsColdAndNovelNoCacheIOOrRestorationAndCrossPolicyOutputsMatch": true,
+  "allActualMTPAndCheckpointDrainsQualified": true,
+  "actualMTP": {
+    "requestedAndActive": true,
+    "verificationMode": "rectangular",
+    "positiveDraftVerificationEmissionPerRow": true,
+    "acceptedTokensPerRowRange": [
+      70,
+      81
+    ],
+    "outputEventsPerRowRange": [
+      47,
+      58
+    ]
+  },
+  "limits": [
+    "All three production arms pass while all three completed candidates fail demanded donor/fork output parity; zero-I/O cold/novel controls match across policies.",
+    "Donor differs before any restoration; prefilling/capture/MTP effects are not causally separated, so no archive-state cause is asserted.",
+    "Unqualified timing/cost observations are preserved in CSV; no qualified policy/economic median or speedup.",
+    "Fresh closed cohort is separate from the first matrix, which never started Qwen3.6, and from the Qwen3.5 diagnostic.",
+    "Observed process metadata does not relax any strict child/source/resource guard; no descendants were observed."
+  ],
+  "privacy": "Only public model/source/bundle identities, aggregate counters and equality/status booleans; no raw IDs/hashes/logprobs/prompts/privatepaths/processIDs/commands/provider/account identifiers."
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source_repo": {
+    "checkout_path": "/absolute/path/to/nightly-linear/source",
+    "origin_url": "https://github.com/Layr-Labs/d-inference.git",
+    "branch": "master"
+  },
+  "workspace_id": "REPLACE_WITH_VERIFIED_WORKSPACE_ID",
+  "team_id": "REPLACE_WITH_VERIFIED_TEAM_ID",
+  "owner_id": "REPLACE_WITH_AUTHENTICATED_USER_ID",
+  "others_project_id": "REPLACE_WITH_VERIFIED_OTHERS_PROJECT_ID",
+  "timezone": "REPLACE_WITH_CLIENT_IANA_TIME_ZONE",
+  "schedule": "Every day at 22:00 in the configured time zone",
+  "python_executable": "/absolute/path/to/python3",
+  "initial_since": "REPLACE_WITH_LOCAL_DAY_START_AS_UTC_TIMESTAMP",
+  "work_roots": ["/absolute/path/to/approved/darkbloom/work"],
+  "sources": {
+    "codex": {
+      "enabled": true,
+      "roots": ["/absolute/path/to/codex/sessions", "/absolute/path/to/codex/archived_sessions"]
+    },
+    "claude": {
+      "enabled": true,
+      "roots": ["/absolute/path/to/claude/projects"]
+    },
+    "pi": {
+      "enabled": true,
+      "roots": ["/absolute/path/to/pi/agent/sessions"]
+    }
+  }
+}

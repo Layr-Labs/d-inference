@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """CPU checks for metadata authentication and actual deterministic PNG pixels."""
-import hashlib
 import importlib.util
 from pathlib import Path
 import struct

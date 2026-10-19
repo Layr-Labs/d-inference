@@ -149,6 +149,11 @@ compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`.
 
+The qualification lane prepares the bounded MiMo HTTP image fixtures before
+the full provider suite, including on cache hits. Keep that preparation as a
+separate step so its environment reaches the tests. See the
+[fixture recipe](../developer/test.md#mimo-regression-fixtures) for local runs.
+
 Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
 dependency, checkout-path, environment or recipe changes require new compatible

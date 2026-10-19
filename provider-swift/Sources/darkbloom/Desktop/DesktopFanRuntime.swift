@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// Fan XPC authenticates signed providers. The desktop preview must use the
 /// installed signed runtime for status and root-helper operations.
@@ -6,8 +7,9 @@ enum DesktopFanRuntime {
   static func resolve() throws -> URL {
     let manager = FanServiceManager()
     let current = try manager.currentExecutableURL()
-    let installed = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".darkbloom/Darkbloom.app/Contents/MacOS/darkbloom")
+    let environment = BuildEnvironment.current
+    let installed = environment.installDirectory()
+      .appendingPathComponent("\(environment.appBundleName)/Contents/MacOS/\(environment.cliName)")
     return try select([current, installed]) { executable in
       let directory = executable.deletingLastPathComponent()
       guard directory.lastPathComponent == "MacOS" else { return false }

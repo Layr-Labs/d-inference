@@ -4,7 +4,10 @@ import ProviderCore
 /// The user LaunchAgent that keeps the desktop control API running.
 /// `desktop ensure` installs and refreshes it; `stop --uninstall` removes it.
 enum DesktopService {
-  static let label = "io.darkbloom.desktop-api"
+  /// Production keeps `io.darkbloom.desktop-api`; dev and staging builds get a
+  /// suffixed label so both installs can run on one Mac.
+  static let label = BuildEnvironment.current == .prod
+    ? "io.darkbloom.desktop-api" : "io.darkbloom.desktop-api.\(BuildEnvironment.current.rawValue)"
 
   static func plistPath(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
     home.appendingPathComponent("Library/LaunchAgents/\(label).plist")

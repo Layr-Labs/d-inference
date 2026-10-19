@@ -8,8 +8,8 @@ enum DesktopStorage {
     if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DESKTOP_DIR"] {
       return URL(fileURLWithPath: path)
     }
-    return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-      ".darkbloom/desktop")
+    // Dev and staging builds keep their own install directory (`~/.darkbloom-dev`).
+    return BuildEnvironment.current.installDirectory().appendingPathComponent("desktop")
   }
 
   static func prepare() throws {

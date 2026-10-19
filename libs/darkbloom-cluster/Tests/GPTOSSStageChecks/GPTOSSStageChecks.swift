@@ -179,7 +179,7 @@ import Foundation
                                                                       runtimeBinarySHA256: binary)
         expect(capability.adapterID == ClusterRuntimeAdapter.gptossLayerStage.rawValue
                && capability.runtimeModelID == spec.model.rawValue && capability.profile.id == spec.profileID
-               && capability.profile.vocabularySize == 201_088 && capability.profile.maximumContextTokens == 32_768, "capability identity")
+               && capability.profile.vocabularySize == 201_088 && capability.profile.maximumContextTokens == 65_536, "capability identity")
         expect(capability.partitions.map { $0.stages[0].sourceLayerEnd } == spec.supportedCuts
                && capability.partitions.map(\.planSHA256) == plans.map(\.fingerprint), "capability partitions are the admitted plans")
         expect(capability.arithmeticPolicyID == GPTOSSArithmeticEnvironment.contract

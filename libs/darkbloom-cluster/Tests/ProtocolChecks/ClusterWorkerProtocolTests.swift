@@ -53,10 +53,44 @@ private struct Conversation {
 @main
 struct ClusterWorkerProtocolTests {
     static func main() throws {
-        try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
+        try fullLengthOutput(); try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
         try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try tensorParallelModes()
-        print("{\"passed\":true,\"groups\":12,\"modelExecution\":false,\"localPipeIO\":true}")
+        print("{\"passed\":true,\"groups\":13,\"modelExecution\":false,\"localPipeIO\":true}")
     }
+
+    /// Both ranks must accept and retain the requested 32K output budget.
+    /// This exercises the real wire codec and session admission, not a client setting.
+    static func fullLengthOutput() throws {
+        let p = ClusterWorkerProfile(id: "long-output", vocabularySize: 512,
+            maximumPromptTokens: 32_768, maximumOutputTokens: 32_768,
+            maximumChunkTokens: 2048, maximumContextTokens: 65_536)
+        for rank in 0...1 {
+            var session = try ClusterWorkerSession(identity: identity, rank: rank, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256)
+            let r = ClusterWorkerReady(identity: identity, rank: rank, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024,
+                servingContextTokens: 65_536)
+            let event = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(r))
+            try session.accept(ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(event)), now: 10)
+            let reservation = ClusterWorkerReservation(profileID: p.id,
+                promptTokenIDs: Array(repeating: 511, count: 32_768), stopTokenIDs: [],
+                outputCount: 32_768, chunkSize: 2048, deadlineUptimeNanoseconds: 1000,
+                capacityLimitBytes: 900, sampling: nil)
+            let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: requestID, command: .reserve(reservation))
+            let decoded = try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame))
+            try check(decoded == frame, "32K output reservation must not be truncated")
+            try session.accept(decoded, now: 10)
+        }
+        for output in [0, 32_769] {
+            let invalid = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: [1],
+                stopTokenIDs: [], outputCount: output, chunkSize: 1,
+                deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(
+                membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(invalid))) }
+        }
+    }
+
     /// Round-2 fixes: the serving context travels in readiness and in every
     /// keep-warm answer; a refused reservation and a reservation given back
     /// before start (`cancel` then `retired(cancelled)`) both leave the worker

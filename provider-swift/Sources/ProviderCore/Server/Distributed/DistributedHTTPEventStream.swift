@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import Hummingbird
 import MLXLMServer
@@ -10,7 +11,10 @@ import NIOCore
 /// comments are never visible content, tokens or a refreshed request budget.
 enum DistributedHTTPEventStream {
     static let maximumFrameBytes = 1_048_576
-    static let maximumStreamBytes = 8_388_608
+    // Budget framing as well as decoded text: 32K individual JSON/SSE deltas
+    // can exceed the previous 8 MiB bound. This is a cumulative wire allowance,
+    // not a buffer allocation; the pump and per-frame bounds remain unchanged.
+    static let maximumStreamBytes = ClusterWorkerLimits.outputTokens * 2048 + maximumFrameBytes
     static let maximumTerminalBytes = 4_096
     enum Failure: Error, Equatable { case outputLimit, malformedFrame, missingTerminal }
 

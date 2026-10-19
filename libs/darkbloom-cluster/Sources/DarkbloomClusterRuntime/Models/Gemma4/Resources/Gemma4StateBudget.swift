@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// The named storage of one request on the registered Gemma 4 26B geometry, in
@@ -22,7 +23,7 @@ struct Gemma4StateBudget: Equatable {
     let stateAndBoundaryBytes: Int
 
     static func estimate(maximumTokens: Int, chunkSize: Int) throws -> Self {
-        guard (1...32_768).contains(maximumTokens), (1...512).contains(chunkSize) else {
+        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize) else {
             throw ProbeError("Gemma state budget requires bounded tokens and chunk")
         }
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum

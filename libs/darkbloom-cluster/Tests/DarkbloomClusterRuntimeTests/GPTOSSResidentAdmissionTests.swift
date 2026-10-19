@@ -58,6 +58,7 @@ struct GPTOSSResidentAdmissionTests {
         let spec = try Self.specification()
         #expect(sha256(try Self.fixture("configuration")) == spec.configurationSHA256)
         #expect(sha256(try Self.fixture("manifest")) == spec.manifestSHA256)
+        #expect(spec.maximumPositions == 131_072)
         #expect(spec.catalogModelID == "gpt-oss-20b" && spec.catalogVersion == "2026-05-25-r1")
     }
 
@@ -128,13 +129,13 @@ struct GPTOSSResidentAdmissionTests {
         let request = try admission.request(reservation(prompt: Array(repeating: 1, count: 1200)), id: UUID(), now: Self.now)
         #expect(request.prefillFrameCount == 3 && request.forwardCount == 3 + 8 - 1 && request.maximumTokens == 1208)
         #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [201_088]), id: UUID(), now: Self.now) }
-        #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [1], output: 4097), id: UUID(), now: Self.now) }
+        #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [1], output: 32_769), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [1], chunk: 513), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) {
             _ = try admission.request(reservation(prompt: [1], profile: "registered_qwen35_9b_greedy_generation_v1"), id: UUID(), now: Self.now)
         }
         #expect(throws: (any Error).self) {
-            _ = try admission.request(reservation(prompt: Array(repeating: 1, count: 32_768)), id: UUID(), now: Self.now)
+            _ = try admission.request(reservation(prompt: Array(repeating: 1, count: 32_769)), id: UUID(), now: Self.now)
         }
         // Long context: past the earlier 8,192-token reservation.
         #expect(try admission.request(reservation(prompt: Array(repeating: 1, count: 8193)), id: UUID(), now: Self.now)

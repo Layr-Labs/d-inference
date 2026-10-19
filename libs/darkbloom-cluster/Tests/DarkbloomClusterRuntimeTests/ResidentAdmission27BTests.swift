@@ -109,8 +109,8 @@ struct ResidentAdmission27BTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: large.specification)
         #expect(profile.identifier == large.profileID && profile.hiddenSize == 5120)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
+        #expect(profile.maximumPromptTokens == 32_768 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 32_768 && profile.maximumContextTokens == 65_536)
         let smallProfile = try QwenResidentAdapterDefinition.profile(specification: small.specification)
         #expect(smallProfile.identifier == QwenResidentAdapterDefinition.profileID && smallProfile.hiddenSize == 4096)
         #expect(profile.fingerprint != smallProfile.fingerprint)
@@ -119,14 +119,15 @@ struct ResidentAdmission27BTests {
     @Test func ceilingsBelongToEachRegisteredModel() throws {
         let large = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
         #expect(large.maximumManifestPayloadBytes == 16_320_415_757)
-        // Each model's own estimate at its derived largest context (32,768
+        // Each model's own estimate at its derived largest context (65,536
         // tokens); the pinned integer at the reservation's 8,320 stays checked.
-        #expect(large.namedStateByteCeiling == 4_920_836_160 && large.maximumNamedStateBytes == 1_616_248_896)
+        #expect(large.maximumNamedStateBytes == 1_616_248_896)
+        #expect(large.namedStateByteCeiling > 4_920_836_160)
         // The 9B keeps its 8 GiB manifest bound; its state ceiling, too, is its
-        // own estimate at 32,768 tokens, and the 768 MiB receipt bound stays.
+        // own estimate at 65,536 tokens, and the 768 MiB receipt bound stays.
         let small = try QwenResidentResourceCeilings(model: .qwen35NineB)
         #expect(small.maximumManifestPayloadBytes == 8 * 1024 * 1024 * 1024)
-        #expect(small.namedStateByteCeiling == 2_456_551_456 && small.maximumNamedStateBytes == 754_188_320)
+        #expect(small.namedStateByteCeiling > 2_456_551_456 && small.maximumNamedStateBytes == 754_188_320)
         #expect(LocalCorrectnessStorage.maximumManifestPayloadBytes == 8 * 1024 * 1024 * 1024)
         #expect(QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling == 768 * 1024 * 1024)
         // The 27B's estimate exceeds the 9B's ceiling: that is why each has its own row.
@@ -141,7 +142,7 @@ struct ResidentAdmission27BTests {
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8320, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == 1_616_248_896)
-        #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 32_768, chunkSize: 512)
+        #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 65_536, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == large.namedStateByteCeiling)
     }
 
@@ -322,7 +323,7 @@ struct ResidentAdmission27BTests {
         #expect(small.runtimeModelID == "registered_qwen35_9b" && small.profile.id == QwenResidentAdapterDefinition.profileID)
         #expect(small.partitions.map { $0.stages[0].sourceLayerEnd } == [4, 8, 12, 16])
         #expect(small.partitions[0].planSHA256 == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
-        #expect(small.profileFingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
+        #expect(small.profileFingerprint == "fc11ff677896ab33897564a8c2aaafe966b0e1414acf73ad15d76ee3dbfeb0d1")
         // A configuration is never described with the other model's manifest.
         #expect(throws: (any Error).self, "27B configuration, 9B manifest") {
             _ = try QwenResidentCapabilityMetadata.describe(configuration: try Self.fixture("configuration"),

@@ -8,13 +8,13 @@ import Testing
 // takes page-rounded native-dtype pages from one pool that grows in 64 MB
 // segments. This checks, for every registered Qwen 3.5 geometry, every
 // possible share of attention layers in one stage and request lengths from one
-// token to the 32K limit, that the unrounded state charge already covers one
+// token to the 64K limit, that the unrounded state charge already covers one
 // request's pages plus a whole segment, so the paged pool never needs memory
 // the gate did not admit. Arithmetic on registered metadata only.
 
 @Suite("Paged stage KV stays inside the resident request allowance (registered geometry, no model)")
 struct CBv2StageKVAllowanceTests {
-    static let lengths = [1, 15, 16, 17, 127, 512, 513, 2048, 4096, 8191, 8192, 20_480, 32_767, 32_768]
+    static let lengths = [1, 15, 16, 17, 127, 512, 513, 2048, 4096, 8191, 8192, 20_480, 32_767, 32_768, 32_769, 65_535, 65_536]
 
     static var geometries: [(QwenRegisteredDenseModel, QwenLongPrefillBudgetGeometry)] {
         get throws {
@@ -47,7 +47,7 @@ struct CBv2StageKVAllowanceTests {
     /// sum of the lanes' state charges, which batch admission holds live.
     @Test func lanesTogetherStayInsideTheirCharges() throws {
         for (model, geometry) in try Self.geometries {
-            for tokens in [1, 4096, 32_768] {
+            for tokens in [1, 4096, 32_768, 65_536] {
                 let state = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
                     maximumTokens: tokens, chunkSize: min(512, tokens)).conservativeStateAndBoundaryBytes
                 let pages = try CBv2StageKVHost.pageRoundedRequestBytes(
@@ -57,6 +57,22 @@ struct CBv2StageKVAllowanceTests {
                     #expect(lanes * pages + CBv2StageKVHost.segmentBytes <= lanes * state,
                         "\(model.rawValue) tokens=\(tokens) lanes=\(lanes)")
                 }
+            }
+        }
+    }
+
+    @Test func fullContextDoublesPageCapacityAndRejectsBudgetOverflow() throws {
+        let old = try CBv2StageKVHost.pageRoundedRequestBytes(kvShapes: [(4, 256)],
+            maximumTokens: 32_768, dtypeSize: 2)
+        let full = try CBv2StageKVHost.pageRoundedRequestBytes(kvShapes: [(4, 256)],
+            maximumTokens: 65_536, dtypeSize: 2)
+        let lastPage = try CBv2StageKVHost.pageRoundedRequestBytes(kvShapes: [(4, 256)],
+            maximumTokens: 65_535, dtypeSize: 2)
+        #expect(full == 2 * old && lastPage == full)
+        for (_, geometry) in try Self.geometries {
+            #expect(throws: (any Error).self) {
+                _ = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
+                    maximumTokens: 65_537, chunkSize: 512)
             }
         }
     }

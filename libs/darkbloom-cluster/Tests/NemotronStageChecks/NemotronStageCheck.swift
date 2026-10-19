@@ -107,8 +107,8 @@ func refuses(_ message: String, _ body: () throws -> Void) throws {
                 try refuses("a forced Metal architecture") { _ = try definition.arithmetic.admit(dense.merging(["MLX_METAL_GPU_ARCH": "x"]) { $1 }) }
                 let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
                 try require(profile.vocabularySize == 131_072 && profile.hiddenSize == 2688 && profile.activationDType == "bfloat16"
-                    && profile.maximumPromptTokens == 32_767 && profile.maximumContextTokens == 32_768
-                    && profile.maximumOutputTokens == 4096, "generation profile differs (derived from the declared 262,144)")
+                    && profile.maximumPromptTokens == 32_768 && profile.maximumContextTokens == 65_536
+                    && profile.maximumOutputTokens == 32_768, "generation profile differs (derived from the declared 262,144)")
             }
 
             try check("inventory-is-the-geometrys-tensor-set") {

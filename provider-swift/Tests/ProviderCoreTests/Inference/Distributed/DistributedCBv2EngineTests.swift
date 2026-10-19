@@ -267,7 +267,13 @@ struct DistributedCBv2EngineTests {
         let busy = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
             EngineV2Translation.admissionErrorMessage(for: CBv2KVError.capacityExhausted(needed: 1, available: 0)))
         #expect(ProviderLoop.mapInferenceErrorToStatus(busy) == 429)
-        // An omitted max_tokens: the product's default, cut to the pair's context.
+        // An omitted max_tokens receives the cluster's full allowance, cut to remaining context.
+        #expect(DistributedEngineFactory.defaultOutputTokens == 32_768)
+        #expect(EngineV2Translation.defaultOutputTokens(DistributedEngineFactory.defaultOutputTokens,
+            promptTokens: 100, contextLimit: 65_536) == 32_768)
+        #expect(EngineV2Translation.defaultOutputTokens(DistributedEngineFactory.defaultOutputTokens,
+            promptTokens: 100, contextLimit: 4096) == 3996)
+        // Existing explicit defaults continue to clamp identically.
         #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 30_000, contextLimit: 32_768) == 2768)
         #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 100, contextLimit: 32_768) == 4096)
         #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 40_000, contextLimit: 32_768) == 1)

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLLM
@@ -17,7 +18,7 @@ extension CBv2RequestGeometry {
             throw ProbeError("Nemotron request geometry requires the stage's own block list")
         }
         let declaredContext = try qwenPartitionInteger(root, "max_position_embeddings")
-        guard maximumTokens <= min(declaredContext, 32_768) else {
+        guard maximumTokens <= min(declaredContext, ClusterWorkerLimits.contextTokens) else {
             throw ProbeError("CBv2 request exceeds the model's declared context bound")
         }
         let kinds = model.cbv2LayerKinds, recurrent = model.cbv2RecurrentStateSpec

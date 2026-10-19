@@ -165,8 +165,8 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     var structuralCuts: [Int] { Array(1..<specification.layers) }
     var generationModes: [ClusterGenerationMode] { specification.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { specification.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { max(1, profile.maximumContextTokens - maximumOutputTokens) }
-    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    var maximumPromptTokens: Int { profile.maximumPromptTokens }
+    var maximumOutputTokens: Int { profile.maximumOutputTokens }
     var maximumChunkTokens: Int { profile.maximumChunkTokens }
     /// The whole [hc_mult, hidden] stream matrix in bfloat16.
     var boundaryBytesPerToken: Int { specification.hidden * 4 * 2 }

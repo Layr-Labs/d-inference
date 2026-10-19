@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLMCommon
@@ -9,7 +10,7 @@ extension CBv2RequestGeometry {
     /// stage's own storage index.
     init(gemma4StageKinds kinds: [CBv2LayerKind], kvDType: DType, maximumTokens: Int) throws {
         guard !kinds.isEmpty, kinds.count <= Gemma4StageGeometry.layerCount,
-              (1...32_768).contains(maximumTokens), [.float16, .bfloat16, .float32].contains(kvDType),
+              (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), [.float16, .bfloat16, .float32].contains(kvDType),
               kinds.enumerated().allSatisfy({ $0.element.modelLayerIndex == $0.offset }) else {
             throw ProbeError("Gemma stage state requires bounded tokens, a native dtype and local layer indices")
         }

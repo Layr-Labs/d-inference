@@ -149,7 +149,7 @@ import Foundation
                     let value = try gemma(configuration, manifest)
                     try capabilityCheck(value.adapterID == ClusterRuntimeAdapter.gemma4LayerStage.rawValue
                         && value.runtimeModelID == model && value.profile.id == model + "_greedy_generation_v1"
-                        && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 32_767
+                        && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 32_768
                         && value.arithmeticPolicyID == "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
                         && value.supportedGenerationModes == [.pipeline]
                         && value.supportedPrefillSchedules == [.serial, .oneChunkLookahead]

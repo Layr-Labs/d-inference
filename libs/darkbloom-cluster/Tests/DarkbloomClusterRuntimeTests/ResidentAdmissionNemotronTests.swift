@@ -109,7 +109,7 @@ struct ResidentAdmissionNemotronTests {
         #expect(ceilings.maximumNamedStateBytes == 271_556_632)
         let geometry = try spec.expectedGeometry()
         #expect(ceilings.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-            maximumTokens: 32_768, chunkSize: 512).conservativeStateAndBoundaryBytes))
+            maximumTokens: 65_536, chunkSize: 512).conservativeStateAndBoundaryBytes))
         #expect(geometry.layers == 52 && geometry.attentionLayers == 6 && geometry.recurrentLayers == 23)
         #expect(geometry.fullAttentionInterval == 0 && geometry.kvHeads == 2 && geometry.headDimension == 128)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)

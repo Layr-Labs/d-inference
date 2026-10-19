@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 enum QwenLongPrefillBudgetError: Error, CustomStringConvertible {
@@ -108,7 +109,7 @@ struct QwenLongPrefillTensorBudget: Encodable, Equatable {
 
     static func estimate(geometry g: QwenLongPrefillBudgetGeometry,
                          maximumTokens: Int, chunkSize: Int) throws -> Self {
-        guard (1...32768).contains(maximumTokens), (1...512).contains(chunkSize), chunkSize <= maximumTokens else {
+        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize), chunkSize <= maximumTokens else {
             throw QwenLongPrefillBudgetError.invalid("Budget token/chunk geometry is outside explicit bounds")
         }
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum

@@ -10,8 +10,9 @@ public enum ClusterWorkerLimits {
     public static let commandBytes = 512 * 1024
     public static let eventBytes = 16 * 1024
     public static let promptTokens = 32_768
-    public static let outputTokens = 4096
-    public static let contextTokens = 32_768
+    public static let outputTokens = 32_768
+    // Leave room for the full prompt budget as well as a 32K completion.
+    public static let contextTokens = promptTokens + outputTokens
     public static let stopTokens = 256
     public static let vocabularySize = 262_144
     public static let deadlineNanoseconds: UInt64 = 3_600_000_000_000

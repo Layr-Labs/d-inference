@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// One request-state component by identity only: no bytes and no digest.
@@ -99,7 +100,7 @@ struct QwenPhaseSplitPlan: Equatable {
     static func expectedShapes(stage: QwenLayerStagePlan.Stage, geometry g: QwenLongPrefillBudgetGeometry,
                                committedTokens: Int, activationDType: String) throws -> [QwenPhaseSplitStateShape] {
         guard stage.index == 0, stage.sourceRange.lowerBound == 0, !stage.layers.isEmpty,
-              (1...32_768).contains(committedTokens) else {
+              (1...ClusterWorkerLimits.contextTokens).contains(committedTokens) else {
             throw ProbeError("Phase split hands over the producer stage after a committed prompt")
         }
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum

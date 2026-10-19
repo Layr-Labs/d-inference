@@ -28,3 +28,5 @@
 
 - Cluster members prevent idle sleep while a deployment is serving or waiting for its peer; assertions remain held until the child and relay stop, then are released.
 - A cluster service recovering a model process from its previous run keeps waiting after the cleanup deadline, keeps that process visible and protected from idle sleep, and starts no replacement model until it exits.
+
+- Raise cluster worker output support from 4,096 to 32,768 tokens, with 65,536 combined prompt/output tokens subject to model and live per-rank memory limits. Refuse requests over the advertised bounds rather than truncating them.

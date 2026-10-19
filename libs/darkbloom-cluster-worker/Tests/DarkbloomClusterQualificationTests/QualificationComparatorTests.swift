@@ -507,10 +507,10 @@ final class QualificationRequestTests: XCTestCase {
         for prompt in [5120, 10_240, 20_480, 30_720] { XCTAssertNoThrow(try make(prompt: prompt, chunk: 512, output: 128)) }
         XCTAssertNoThrow(try make(prompt: 32_767, chunk: 512, output: 1)); XCTAssertNoThrow(try make(prompt: 28_672, output: 4096))
         XCTAssertNoThrow(try make(stops: [248_044, 248_046]))
-        XCTAssertThrowsError(try make(prompt: 0)); XCTAssertThrowsError(try make(prompt: 32_768, output: 1))
-        XCTAssertThrowsError(try make(prompt: 30_720, output: 2049))
+        XCTAssertThrowsError(try make(prompt: 0)); XCTAssertThrowsError(try make(prompt: 32_769, output: 1))
+        XCTAssertNoThrow(try make(prompt: 32_768, output: 32_768))
         XCTAssertThrowsError(try make(chunk: 513)); XCTAssertThrowsError(try make(chunk: 0))
-        XCTAssertThrowsError(try make(output: 4097)); XCTAssertThrowsError(try make(output: 0))
+        XCTAssertThrowsError(try make(output: 32_769)); XCTAssertThrowsError(try make(output: 0))
         XCTAssertThrowsError(try make(first: 248_320)); XCTAssertThrowsError(try make(first: -1))
         XCTAssertThrowsError(try make(stops: [9, 3])); XCTAssertThrowsError(try make(stops: [3, 3]))
         // A stored request is checked again when read, including its prompt hash.

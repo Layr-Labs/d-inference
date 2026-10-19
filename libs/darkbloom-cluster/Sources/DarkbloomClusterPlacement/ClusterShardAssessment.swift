@@ -267,7 +267,8 @@ extension ClusterPlacementPlanner {
         let layout = context.layout, tp = layout.tensorParallel!, regime = context.policy.regime
         let bounds = [0] + cuts + [layout.layerCount]
         let total = layout.layers.reduce(0.0) { $0 + $1.cost }
-        let context_ = context.prompt + context.outputs, chunk = min(layout.maximumChunkTokens, context.prompt)
+        let context_ = context.memoryContext, memoryChunk = min(layout.maximumChunkTokens, context.memoryPrompt)
+        let chunk = min(layout.maximumChunkTokens, context.prompt)
         var members: [ClusterShardOption.Member] = [], tier = 0, hardwareFits = true, decode: [Double] = [], prefill: [Double] = [], measured = true
         for (index, stage) in stages.enumerated() {
             let range = layout.range(bounds[index]..<bounds[index + 1])
@@ -302,7 +303,7 @@ extension ClusterPlacementPlanner {
                 let state = max(context.policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context_),
                                 part(range.stateBytes(tokens: context_)))
                 let request = max(memory.minimumAdmissibleBytes, state + part(range.requestWorkBytes)
-                    + part(range.transientBytes(chunk: chunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
+                    + part(range.transientBytes(chunk: memoryChunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
                     + memory.loadingHeadroomBytes)
                 let need = max(load.need, load.held + request)
                 let fit = device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)

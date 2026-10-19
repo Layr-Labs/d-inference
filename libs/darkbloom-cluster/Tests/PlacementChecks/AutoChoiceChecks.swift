@@ -21,6 +21,7 @@ func checkAutoChoice(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Placem
     try checkRecordedPairWithoutProbes(layout, golden: golden, checks)
     try checkServedReplacesPrior(layout, checks)
     try checkRequestMix(layout, checks)
+    try checkFixedRequestScope(big, checks)
 }
 
 /// The link as the product's tensor-parallel load measured it on the
@@ -204,4 +205,37 @@ private func checkRequestMix(_ layout: ClusterModelLayout, _ checks: PlacementCh
     let clamped = ClusterRequestMix.reference([sample(50_000, 9_000), sample(60_000, 9_000), sample(70_000, 9_000)], layout: layout)
     checks.require("auto choice: the request mix stays within the model's planned request",
         clamped?.promptTokens == layout.maximumPromptTokens && clamped?.outputTokens == layout.maximumOutputTokens)
+}
+
+/// Fixed LOAD reservations survive short-request speed calibration and layout
+/// serialization. Dynamic adapters retain the existing request-sized behavior.
+private func checkFixedRequestScope(_ original: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    var fixed = try executing(original, [.pipeline, .tensorParallel])
+    fixed.reservesFullRequestScope = true
+    let mac = NewMac(gib: 256, chip: "Apple M5 Ultra", decodeIndex: 46_409, prefillIndex: 2_337_768)
+    let devices = try freshPair(mac, mac, layout: fixed)
+    let decoded = try JSONDecoder().decode(ClusterModelLayout.self, from: JSONEncoder().encode(fixed))
+    checks.require("fixed LOAD scope survives layout serialization", decoded.reservesFullRequestScope == true)
+    var dynamic = fixed; dynamic.reservesFullRequestScope = nil
+    let legacy = try JSONDecoder().decode(ClusterModelLayout.self, from: JSONEncoder().encode(dynamic))
+    checks.require("old layouts retain dynamic memory sizing", legacy.reservesFullRequestScope == nil)
+    dynamic.reservesFullRequestScope = false
+    let disabled = try JSONDecoder().decode(ClusterModelLayout.self, from: JSONEncoder().encode(dynamic))
+    checks.require("explicit false retains dynamic memory sizing", disabled.reservesFullRequestScope == false)
+    for mode in [ClusterGenerationMode.pipeline, .tensorParallel] {
+        let cuts = mode == .pipeline ? [32] : []
+        func evaluate(_ layout: ClusterModelLayout, short: Bool) throws -> ClusterPlacementCandidate {
+            try ClusterPlacementPlanner.evaluate(devices: devices, cuts: cuts, mode: mode,
+                prefillSchedule: .serial, layout: layout,
+                policy: short ? policy(prompt: 64, outputs: 64) : .init(), link: productProbe())
+        }
+        let small = try evaluate(decoded, short: true), full = try evaluate(decoded, short: false)
+        checks.require("fixed scope memory ignores short speed workload: " + mode.rawValue,
+            small.ranks.map(\.needBytes) == full.ranks.map(\.needBytes))
+        checks.require("fixed scope speed still follows short workload: " + mode.rawValue,
+            small.rested.requestSeconds < full.rested.requestSeconds)
+        let dynamicSmall = try evaluate(disabled, short: true)
+        checks.require("dynamic scope remains request sized: " + mode.rawValue,
+            dynamicSmall.ranks.map(\.needBytes) != full.ranks.map(\.needBytes))
+    }
 }

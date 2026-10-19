@@ -30,3 +30,5 @@
 - A cluster service recovering a model process from its previous run keeps waiting after the cleanup deadline, keeps that process visible and protected from idle sleep, and starts no replacement model until it exits.
 
 - Raise cluster worker output support from 4,096 to 32,768 tokens, with 65,536 combined prompt/output tokens subject to model and live per-rank memory limits. Refuse requests over the advertised bounds rather than truncating them.
+
+- Keep fixed-scope model reservations at their full serving context when recent short requests tune automatic placement. GLM placement includes the native transport buffers and allocator bounds, so those requests cannot make an oversized split appear loadable.

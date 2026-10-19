@@ -1,6 +1,7 @@
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
+import MLX
 import MLXLLM
 import Testing
 @testable import DarkbloomClusterRuntime
@@ -134,7 +135,7 @@ struct GLM5NextServingMetadataTests {
         #expect(imageLayout.layers.map(\.weights.storedBytes) == layout.layers.map(\.weights.storedBytes))
         #expect(layout.egress.storedBytes == stage.finalNorm.bytes + stage.head.bytes)
         // DSA layers carry per-token state; linear attention layers fixed state.
-        #expect(layout.layers[3].stateBytesPerToken > 0 && layout.layers[3].stateFixedBytes == 0)
+        #expect(layout.layers[3].stateBytesPerToken > 0 && layout.layers[3].stateFixedBytes > 0)
         #expect(layout.layers[0].stateBytesPerToken == 0 && layout.layers[0].stateFixedBytes > 0)
     }
 
@@ -218,6 +219,37 @@ struct GLM5NextServingMetadataTests {
         #expect(chosen.possible)
         #expect(chosen.ranks.map { $0.endLayer - $0.firstLayer }.reduce(0, +) == 45)
         #expect(chosen.ranks.allSatisfy { $0.hardwareFits == true || $0.fit.tier == 0 })
+        var short = ClusterPlacementPolicy(); short.promptTokens = 64; short.outputTokens = 64
+        let shortRequest = try ClusterPlacementPlanner.evaluate(devices: roomy, cuts: [16], mode: .pipeline,
+            prefillSchedule: .serial, layout: layout, policy: short)
+        let fullRequest = try ClusterPlacementPlanner.evaluate(devices: roomy, cuts: [16], mode: .pipeline,
+            prefillSchedule: .serial, layout: layout)
+        #expect(layout.reservesFullRequestScope == true)
+        #expect(shortRequest.ranks.map(\.needBytes) == fullRequest.ranks.map(\.needBytes))
+        #expect(shortRequest.rested.requestSeconds < fullRequest.rested.requestSeconds)
+        // Actual serving quotation must fit under placement's conservative
+        // requirement, on both ranks, independently of the speed workload.
+        let config = try file("config.json"), manifest = try file("manifest.json")
+        let spec = try GLM5NextRegisteredSpecification.specification(configuration: config)
+        for cut in [1, 16, 44] {
+            let descriptor = try spec.descriptor(configuration: config, manifest: manifest, cut: cut)
+            let inventory = try descriptor.inspectInventory(directory: directory)
+            let planned = try ClusterPlacementPlanner.evaluate(devices: roomy, cuts: [cut], mode: .pipeline,
+                prefillSchedule: .serial, layout: layout, policy: short)
+            for rank in 0...1 {
+                let envelope = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
+                    rank: rank, buildSHA256: String(repeating: "b", count: 64))
+                let request = try envelope.budget(descriptor: descriptor)
+                let load = try GLM5NextStageLoadResources(inventory: inventory, stageIndex: rank, cut: cut,
+                    includeMTP: false, executionPolicy: .serving,
+                    metadataAllowanceBytes: GLM5NextResidentResourceEnvelope.metadataAllowanceBytes,
+                    maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
+                    allocationBound: QwenResidentResourceEnvironment.allocationBound)
+                let peak = try GLM5NextResidentPeak(load: load.summary, request: request)
+                let required = peak.reservedBytes + (4 << 30)
+                #expect(planned.ranks[rank].needBytes >= required, "cut=\(cut) rank=\(rank) planned=\(planned.ranks[rank].needBytes) native=\(required)")
+            }
+        }
     }
 
     /// The serving envelope quotes the whole row scope on a rank's layers with

@@ -5,7 +5,7 @@ import ProviderCoreFoundation
 /// request-local native capsules see additional controls; only the actual
 /// loaded model family selects them. Other families keep their prior behavior.
 struct LocalResponseRequest: Decodable {
-    let request: OpenAIResponseRequest
+    var request: OpenAIResponseRequest
     let templateControls: ChatTemplateControls
 
     init(from decoder: any Decoder) throws {

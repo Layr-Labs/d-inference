@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-19
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -31,6 +31,14 @@ identity is parsed from the brand string into `ChipFamily` ∈ {`M1`, `M2`,
 Weights, KV cache and activations share unified memory, so the provider owns one
 byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`).
+
+Local HTTP Responses also retain host-side JSON. The continuation-history LRU
+limits its saved histories, while the SDK response-object store has an
+independent lifetime and no matching eviction. In-flight request copies are
+outside that history cap. Treat these as application memory when assessing
+process usage; the history limit is not a native KV grant or a total process
+bound. [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention)
+owns the limits and their source mappings.
 
 ## Mechanism
 

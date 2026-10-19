@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-19
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -30,6 +30,45 @@ The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
+
+### Local Responses and reasoning regressions
+
+After building the exact provider/SDK test products, run these focused suites
+from `provider-swift/`. Keep the test state isolated as in
+`scripts/run-provider-tests.sh`; the helper/router fixtures use synthetic
+credentials and no live provider endpoint.
+
+```bash
+../scripts/run-nested-suite.sh 'LocalResponseConversationTests|ReasoningPromptProbeTests|LocalOpenAIObjectCompatibilityTests' --no-parallel
+```
+
+`LocalResponseConversationTests` executes the real helper and authenticated
+Hummingbird `.router` responder. Its acquisition counter must remain zero for
+non-null invalid ID types and unknown/empty strings, on both URL aliases and
+both response modes. Null and omitted IDs must reach acquisition. Retain the
+known-ID, tool-history, storage opt-out and bounded-LRU controls.
+`ReasoningPromptProbeTests` composes the actual prompt probe, service and
+continued history for a prompt-open length stop; it must retain reasoning and
+leave answer text empty. These sources are in
+`provider-swift/Tests/ProviderCoreTests/Server/LocalResponseConversationTests.swift`
+and `provider-swift/Tests/ProviderCoreTests/Inference/Prompting/ReasoningPromptProbeTests.swift`.
+
+Use an SDK revision whose `ReasoningParser.parseThinkTags` handles unclosed
+blocks. Run `CollectedReasoningTests` through the same suite runner from
+`libs/mlx-swift-lm/` after rebuilding its test product. Provider-only prompt
+seeding cannot close this regression against the older parser.
+`LocalOpenAIObjectCompatibilityTests` additionally requires stable fallback
+model creation values in `MLXOpenAIService` and flat tool configuration in
+`OpenAIResponsesProtocol` and `ResponsesStreamWriter`. A provider test host
+does not provide those SDK changes; select the corresponding immutable SDK
+revision before treating these assertions as a gate.
+
+Record actual discovered/executed counts and failures separately. Syntax
+parsing and extracted CPU probes do not execute the package router or scheduler.
+Keep full HTTP create/retrieve/continue, disconnect, cross-request/model
+isolation and retrieval-after-history-eviction checks in product qualification;
+the history LRU and object store have
+[different lifetimes](../provider/direct-mode.md#responses-continuation-and-retention).
 
 ### SSD test working volume
 
@@ -130,6 +169,20 @@ native vision. The fixture metadata's `media: false` is an evidence limit, not
 a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
 suffix rejection, including a valid call followed by malformed output, before
 fallback text or partial calls can escape.
+
+The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
+(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
+filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
+and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
+two suites exercise real files without creating MLX arrays. The loader suite
+creates arrays and belongs in an authorized native test window. Sources live in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
+Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
+`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
+descriptor-policy test initializer. An older SDK pin cannot compile this host;
+resolve the dependency in the SDK rather than weakening the tests or importing
+cluster-stage APIs. These tests retain full-artifact verification, aligned
+windows, mutation/truncation refusal, cancellation and resource charges.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`

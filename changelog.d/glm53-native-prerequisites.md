@@ -15,3 +15,5 @@
 
 - Retain GLM native owners and wired-memory policy entries after backend residency start/end faults. Refuse publication after a failed start and wait for pending ticket work before reporting clean retirement; unsupported platforms skip ticket creation before backend work. Keep the bridge engine, KV claim and activity guards through residency settlement so an end fault cannot erase the retained-memory charge.
 - Reject malformed GLM tool suffixes instead of exposing parser fallback text, and report unproven compatibility shutdown through a fixed diagnostic while retaining resources.
+
+- Add provider-hosted GLM aligned-read, descriptor-cache-policy and tiny-artifact loader regressions. They require the matching immutable SDK loader/reader implementation; native cases remain subject to exact-composition qualification.

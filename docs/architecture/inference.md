@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-19
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -883,7 +883,15 @@ Other model identities keep the legacy defaults in the table byte-for-byte. `do_
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
-### Streaming reasoning state
+### Collected and streaming reasoning state
+
+The local HTTP responder selects an omitted reasoning parser from the model
+type supplied by its application, using `ProviderLoop.inferReasoningParser`.
+An explicit parser, including `none`, is preserved, and selecting a Responses
+parser preserves the request's reasoning effort. The raw request wrappers keep
+template controls while allowing parser selection before service creation
+(`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`resolveReasoningParser`, `respond`; `LocalChatRequest`, `LocalResponseRequest`).
 
 `NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
 markers. It emits unclosed-frame payload incrementally and retains only a
@@ -901,7 +909,7 @@ families retain their previous literal-close behavior
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
 decodes only the final eight prompt tokens to initialize Qwen/DeepSeek
-streaming parsing. A prompt ending in `<think>` receives an opening marker;
+collected and streaming parsing. A prompt ending in `<think>` receives an opening marker;
 a prompt ending in `</think>` receives an empty closed block. The downstream
 think parser consumes these prefixes as state transitions, so reasoning or
 ordinary answer text streams immediately. The prefix bypasses tool parsing
@@ -912,8 +920,27 @@ probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker. Explicit `.none`, other
-parser families, non-streaming requests, and unrecognized prompt tails receive
-no prefix. Unknown tails preserve legacy close-only reasoning parsing.
+parser families and unrecognized prompt tails receive no prefix from the
+probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
+for a streamed think-format request with an unknown tail, `contentSeed` starts
+the parser in content mode. A generated `<think>` can still open reasoning.
+Other callers keep the default fallback disabled. Native parsed channels
+bypass this synthetic prefix (`MultiModelBatchSchedulerEngine.makeEventStream`).
+
+For a token-limit stop inside an open think block, the collected SDK parser
+keeps the unfinished text in `reasoning_content`, retaining any answer text
+that preceded the block. Chat and Responses collection, retrieval and continued
+history preserve that separation; usage and the length-stop status still
+describe generated tokens (`libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/ReasoningParser.swift`,
+`parseThinkTags`; `MLXOpenAIService.collectChatOutput`, `responseObject`).
+This requires the SDK parser's unclosed-block handling as well as the provider
+prompt seed. The [local API tests](../developer/test.md#local-responses-and-reasoning-regressions)
+check their composition.
+
+Responses continuation reconstructs input history before tokenization; it does
+not restore native KV state or grant model capacity. Its application-local
+history LRU and the SDK response-object store have different retention rules;
+see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
 ### Tool-call parsers
 

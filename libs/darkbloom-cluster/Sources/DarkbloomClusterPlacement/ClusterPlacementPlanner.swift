@@ -441,15 +441,37 @@ public enum ClusterPlacementPlanner {
         }
         let bestOther = ranked.first { !$0.mode.usesTensorParallelDecode }?.prediction(regime).requestSeconds
         let bestAlone = alone.filter(\.fit.possible).map { $0.prediction(regime).requestSeconds }.min()
+        func unavailable(_ verdict: ClusterTensorParallelAssessment.Verdict, _ reason: String) -> ClusterTensorParallelAssessment {
+            .init(verdict: verdict, reason: reason, tensorParallel: nil, hybrid: nil,
+                bestOtherSeconds: bestOther, bestAloneSeconds: bestAlone, devices: speeds,
+                reductionsPerStep: steps, reductionSecondsPerStep: nil, reductionKeyed: link.reduction?.keyed)
+        }
+        // Capability and geometry are metadata checks: an unavailable runtime
+        // must not ask for a link measurement or predict a hypothetical speedup.
+        let implemented = layout.generationModes.filter {
+            $0.usesTensorParallelDecode && (policy.handOffModes || !$0.isHandOff)
+        }
+        guard !implemented.isEmpty else {
+            return unavailable(.notExecutedByRuntime, "this runtime does not execute tensor parallel for this model; using pipeline candidates")
+        }
+        let modes = implemented.filter { mode in
+            (policy.modes?.contains(mode) ?? true) && (policy.forcedMode?.admits(mode) ?? true)
+        }
+        guard !modes.isEmpty else {
+            return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes; using pipeline candidates")
+        }
+        let most = min(policy.maximumRanges, devices.count)
+        guard tp.family.ranks.contains(where: { $0 <= most }) else {
+            return unavailable(.notExecutedByRuntime, "this model's tensor-parallel plan supports rank counts "
+                + "\(tp.family.ranks.map(String.init).joined(separator: ", ")), but this placement allows at most \(most) members; using pipeline candidates")
+        }
         guard let reduction = link.reduction else {
-            return .init(verdict: .reductionNotMeasured,
-                reason: "no reduction over the link has been measured, so nothing can be said of tensor parallel here",
-                tensorParallel: nil, hybrid: nil, bestOtherSeconds: bestOther, bestAloneSeconds: bestAlone, devices: speeds,
-                reductionsPerStep: steps, reductionSecondsPerStep: nil, reductionKeyed: nil)
+            return unavailable(.reductionNotMeasured,
+                "the model and rank count support tensor parallel, but no reduction over the keyed link has been measured; using pipeline candidates")
         }
         // The hybrid hands the request state off, so it is assessed only under the hand-off opt-in.
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
-            modes: policy.handOffModes ? [.tensorParallel, .pipelinePrefillTensorDecode] : [.tensorParallel],
+            modes: modes,
             schedules: schedules, link: link, policy: policy, tensorParallelForAssessment: true)
         let possible = try context.candidates(.admitted).filter(\.possible)
         let best = context.ordered(possible.filter { $0.mode == .tensorParallel }, regime: regime).first
@@ -478,10 +500,6 @@ public enum ClusterPlacementPlanner {
         guard reduction.keyed else {
             return make(.reductionNotMeasured, String(format: "predicted %.2f s, but the reduction was measured as a native all-sum; "
                 + "the product reduces over the keyed data plane, and only that measurement can choose the mode", time) + note)
-        }
-        guard layout.generationModes.contains(fastest.mode) else {
-            return make(.notExecutedByRuntime, String(format: "predicted %.2f s, faster than the chosen placement, "
-                + "but this runtime does not execute %@ yet", time, fastest.mode.rawValue) + note)
         }
         return make(.notQualified, String(format: "predicted %.2f s, but the policy admits no %@ shape on these Macs (a cross-cable check diverged at each)",
             time, fastest.mode.rawValue) + note)
@@ -586,27 +604,35 @@ public enum ClusterPlacementPlanner {
             var result: [ClusterPlacementCandidate] = []
             let most = min(policy.maximumRanges, devices.count)
             guard most >= 2 else { return [] }
-            for ranges in 2...most where available.count >= ranges - 1 {
-                let sets = cutSets(available, ranges - 1), permutations = orders(ranges)
-                guard sets.count * permutations.count * modes.count + result.count <= policy.maximumCandidates else {
+            // A lookahead prefill is never slower than a serial one of the same placement.
+            let schedule = schedules.contains(.oneChunkLookahead) ? ClusterPrefillSchedule.oneChunkLookahead : schedules[0]
+            for ranges in 2...most {
+                let tensor = scope == .admitted && modes.contains(.tensorParallel) && placeable(.tensorParallel, ranges: ranges)
+                let layerModes = modes.filter { !($0.usesTensorParallelPrefill) && placeable($0, ranges: ranges) }
+                let pipeline = !layerModes.isEmpty && available.count >= ranges - 1
+                guard tensor || pipeline else { continue }
+                let sets = pipeline ? cutSets(available, ranges - 1) : []
+                let permutations = orders(ranges)
+                let shares = tensor ? (layout.tensorParallel?.family.shareOptions ?? []).filter {
+                    $0.count == ranges && Set($0).count > 1
+                } : []
+                let perOrder = sets.count * layerModes.count + (tensor ? 1 + shares.count : 0)
+                guard perOrder * permutations.count + result.count <= policy.maximumCandidates else {
                     throw ClusterPlacementError("Placing \(ranges) ranges over \(available.count) cuts on \(devices.count) devices "
                         + "is more than \(policy.maximumCandidates) candidates; a bottleneck partition is needed instead of enumeration")
                 }
-                // A lookahead prefill is never slower than a serial one of the same placement.
-                let schedule = schedules.contains(.oneChunkLookahead) ? ClusterPrefillSchedule.oneChunkLookahead : schedules[0]
                 for order in permutations {
-                    for set in sets {
-                        for mode in modes where !mode.usesTensorParallelPrefill && placeable(mode, ranges: ranges) {
-                            result.append(evaluate(order: order, cuts: set, mode: mode, schedule: schedule))
+                    // TP has no layer cuts. Enumerate it independently, including
+                    // when this model has no admitted or structural pipeline cut.
+                    if tensor {
+                        result.append(bestTensorShares(order: order, schedule: schedule))
+                        for weights in shares {
+                            result.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
                         }
                     }
-                    // Tensor parallel cuts no layer range: one candidate per order of devices,
-                    // at the best shares the family's plan allows (equal unless it has share units).
-                    if modes.contains(.tensorParallel), placeable(.tensorParallel, ranges: ranges), scope == .admitted {
-                        result.append(bestTensorShares(order: order, schedule: schedule))
-                        // Unequal Macs: each share option the family's plan accepts.
-                        for weights in layout.tensorParallel?.family.shareOptions ?? [] where weights.count == ranges && Set(weights).count > 1 {
-                            result.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                    for set in sets {
+                        for mode in layerModes {
+                            result.append(evaluate(order: order, cuts: set, mode: mode, schedule: schedule))
                         }
                     }
                 }

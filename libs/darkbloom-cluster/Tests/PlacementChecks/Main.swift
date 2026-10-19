@@ -43,6 +43,7 @@ import Foundation
             try checkBenchCap(checks)
             try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)
             try checkTensorParallel(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkTensorParallelFeasibility(inputs, checks)
             try checkShardPlanner(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkLinkProbe(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkForcedMode(inputs, checks)

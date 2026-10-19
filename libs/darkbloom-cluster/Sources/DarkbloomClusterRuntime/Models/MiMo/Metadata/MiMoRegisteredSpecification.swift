@@ -135,9 +135,9 @@ struct MiMoRegisteredSpecification {
         try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens)
     }
 
-    func profile() throws -> QwenLayerStageGenerationProfile {
+    func profile(imageCandidate: Bool = false) throws -> QwenLayerStageGenerationProfile {
         let limits = try contextLimits()
-        return try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
+        return try .init(identifier: imageCandidate ? ClusterMiMoImageCandidate.profileID : profileID, vocabularySize: vocabulary, hiddenSize: hidden,
             activationDType: "bfloat16", maximumPromptTokens: limits.maximumPromptTokens,
             maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,
             maximumContextTokens: limits.maximumContextTokens)

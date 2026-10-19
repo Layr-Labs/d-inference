@@ -57,14 +57,14 @@ public enum ClusterInstalledHoldings {
     /// arguments and a bounded output, as the capability probe's child is.
     public static func read(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability,
                             deadline: UInt64) throws -> ClusterPlacementHoldings {
-        let layout = try readLayout(configuration: configuration, deadline: deadline)
+        let layout = try readLayout(configuration: configuration, deadline: deadline,capability:capability)
         return try compute(configuration: configuration, capability: capability, layout: layout,
             localPhysicalMemoryBytes: Int(clamping: ProcessInfo.processInfo.physicalMemory), pageSizeBytes: Int(getpagesize()))
     }
 
     /// The model's layout, read through the plan tool installed beside this
     /// Mac's worker from the saved model directory (same checks as `read`).
-    static func readLayout(configuration: ClusterConfiguration, deadline: UInt64) throws -> ClusterModelLayout {
+    static func readLayout(configuration: ClusterConfiguration, deadline: UInt64,capability:ClusterRuntimeCapability? = nil) throws -> ClusterModelLayout {
         let local = configuration.peers[configuration.localRank]
         let tool = URL(fileURLWithPath: local.workerExecutable).deletingLastPathComponent()
             .appendingPathComponent(toolName)
@@ -77,7 +77,8 @@ public enum ClusterInstalledHoldings {
             throw ClusterConfigurationError.invalid("\(toolName) beside this Mac's worker is not this user's own executable file")
         }
         return try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
-            arguments: ["layout", "--model-dir", local.modelDirectory, "--json"], deadline: deadline,
+            arguments: ["layout", "--model-dir", local.modelDirectory, "--json"]
+                + (capability.map(ClusterMiMoPrivateImagePolicy.profileArguments) ?? []), deadline: deadline,
             maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))
     }
 

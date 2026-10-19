@@ -297,6 +297,30 @@ extension ClusterConsoleCheck {
         let alone = ClusterSetupPlanning.decide(readings: F.readings, description: F.pairDescription, localMemberID: "mac-a",
             localProfile: F.profileA, peerProfile: F.profileB, peerModels: [], measurements: [])
         expect(alone.allSatisfy { $0.option.blocker?.contains("copy it there first") == true }, "models only here say to copy them")
+        // The other Mac holds the same entries under other folder names (a catalog download beside a copy): each
+        // setup points every Mac at its own folder, never at this Mac's name for it.
+        let renamed = F.models.map { model -> ClusterSetupLocalModel in var value = model; value.folder = "catalog-" + model.folder; return value }
+        let elsewhere = ClusterSetupPlanning.decide(readings: F.readings, description: F.pairDescription, localMemberID: "mac-a",
+            localProfile: F.profileA, peerProfile: F.profileB, peerModels: renamed, measurements: [])
+        func directories(_ value: Any) -> [String: String] {
+            if let object = value as? [String: Any] {
+                var found = object.values.reduce(into: [String: String]()) { $0.merge(directories($1)) { a, _ in a } }
+                if let id = object["id"] as? String, let directory = object["modelDirectory"] as? String { found[id] = directory }
+                return found
+            }
+            return (value as? [Any])?.reduce(into: [String: String]()) { $0.merge(directories($1)) { a, _ in a } } ?? [:]
+        }
+        let planned = elsewhere.filter { $0.setup != nil }
+        expect(!planned.isEmpty, "renamed folders on the other Mac still plan")
+        for decision in planned {
+            let folder = decision.option.model.folder
+            for data in decision.setup!.configurations.values {
+                let named = directories((try? JSONSerialization.jsonObject(with: data)) ?? [:])
+                expect(named["mac-a"].map { URL(fileURLWithPath: $0).lastPathComponent } == folder
+                    && named["mac-b"].map { URL(fileURLWithPath: $0).lastPathComponent } == "catalog-" + folder,
+                    "\(folder): each Mac loads its own folder: \(named)")
+            }
+        }
         // A model no cluster stage adapter of this build runs is never offered (a start would refuse it on both Macs
         // after a long wait): that is the blocker, in plain words with no command.
         for withheld in F.readings {

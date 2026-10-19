@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-19
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -30,6 +30,15 @@ over the cable and starts it; you never go back to the other Mac. Which Mac
 handles commands afterwards is worked out by the cluster itself (see
 [If a Mac goes away](#if-a-mac-goes-away)).
 
+The screen follows five stages: **Connect**, **Pair**, **Choose**, **Start** and
+**Test**. The model list names the choice that Enter selects and explains why
+any unavailable model cannot be selected. Headings use color on supported
+terminals; `NO_COLOR` and redirected output remain plain text.
+
+Setup reports completion only after the test response succeeds. If that request
+fails, the saved setup remains available: run `darkbloom cluster`, check its
+status, and press `t` to retry the response.
+
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also
 decode as speculative rounds across the pipeline, and does by default where its
@@ -45,7 +54,7 @@ placement both with and without the rounds.
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
-| 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval, only the first time ("Darkbloom needs network access for the cluster cable") |
+| 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
 | 3 | — | The other Mac says **"Paired with <leader>. Continue on <leader>."** Its cluster service now runs; nothing else is ever asked there. macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
 | 4 | the leader | It shows both Macs' hardware and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share and the expected speed. Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
@@ -195,6 +204,23 @@ installed artifact, not from a per-model table:
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 
+### GLM candidate setup
+
+For the current registered GLM artifact, a new automatically derived setup uses
+its 2048-token candidate chunk limit when both the model layout and installed
+worker admit it. The plan reports when no matching long-prompt measurement is
+available. A short historical pass remains evidence of its original request;
+it does not qualify the larger chunk or establish its speed. The candidate's
+[transport and workspace qualification](../architecture/inference.md#glm-cluster-prefill-bounds)
+remains required, with image and MTP qualification separate.
+
+After a Darkbloom update changes the worker identity, the existing update path
+replans and adopts the setup on both Macs. Derived limits follow the installed
+layout and capability; saved explicit diagnostic limits remain in effect.
+Verify the adopted plan and both members' readiness before serving. No new
+manual configuration edit is required. See the
+[configuration readers](../reference/configuration.md#automatic-cluster-chunk-policy).
+
 ## If a Mac goes away
 
 The cluster keeps itself running. When one Mac goes away (turned off, asleep,
@@ -203,6 +229,23 @@ in that time, the cluster re-forms with nothing to do. After that, a Mac that
 can hold the model alone serves it alone until the other Mac is back, and
 `darkbloom cluster` on it says so. Commands typed on either Mac keep working:
 they are handled by whichever Mac runs the cluster now.
+
+## How the split is chosen
+
+The split is worked out from each Mac's hardware and measured speed only: what
+is cached or running when you plan never moves it. A Mac is given a share only
+when its whole need fits its GPU working set and what its memory can give a
+model with every app closed (macOS keeps part of the memory as file cache that
+no model can use). If a Mac's apps hold memory the chosen share needs, the
+screen says "Quit apps on … first" instead of picking a slower split.
+
+## Prompt prefixes on the pair
+
+Both Macs keep the prompt prefixes of every model family, in memory and in the
+encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
+after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
+sliding-window layer's window at every kept frontier; GLM-5.3-Flash keeps its
+attention history once per prompt and its linear-attention state per frontier.
 
 ## MiMo V2.6 Flash on the pair
 
@@ -246,8 +289,11 @@ cluster setup after a Darkbloom update.").
   stops before any prompt. Turn the cluster port off under System Settings →
   General → Sharing → Internet Sharing → “To devices using”, then run
   `darkbloom cluster` again.
-- **The cable moved to another Thunderbolt port**: nothing to do. Each Mac's
-  cluster service notices the new port within a few seconds and answers there.
+- **The cable moved to another Thunderbolt port**: an already configured port
+  is reused without another configuration prompt. For a port not yet configured,
+  run `darkbloom cluster` and press `f` when offered; macOS asks for administrator
+  approval to configure that port. Recovery RDMA enablement and Local Network
+  privacy permission remain separate steps.
 - **A part keeps ending the same way**: after three identical ends the screen
   says it and offers `d`; both Macs keep trying by themselves.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and

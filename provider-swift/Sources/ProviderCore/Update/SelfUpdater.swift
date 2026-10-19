@@ -484,8 +484,14 @@ public struct SelfUpdater: Sendable {
 
             try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
             try BoundedProcess.run(
-                URL(fileURLWithPath: "/usr/bin/tar"),
-                arguments: ["xzf", downloadedFile.path, "-C", stagingRoot.path],
+                URL(fileURLWithPath: "/bin/sh"),
+                // Release modes must not inherit a daemon's private-state umask.
+                // Set it only in the child; keep tar's default ownership,
+                // special-bit and archive-path safeguards (no -p or -P).
+                arguments: [
+                    "-c", "umask 022; exec /usr/bin/tar \"$@\"", "darkbloom-update-tar",
+                    "xzf", downloadedFile.path, "-C", stagingRoot.path,
+                ],
                 timeout: Self.artifactVerificationTimeout)
 
             let identity = BuildEnvironment.current

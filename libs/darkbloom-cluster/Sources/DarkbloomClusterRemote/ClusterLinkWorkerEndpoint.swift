@@ -82,6 +82,9 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     public var planSHA256: String?
     public var bootstrapProfile: String?
     public var nativeStart: Data?
+    /// One rank's bounded credential line, only in open, carried exclusively
+    /// inside the authenticated encrypted link-control message. Never logged.
+    public var dataPlaneTrust: Data?
     public var remainingNanoseconds: UInt64?
     public var deliveryRemainingNanoseconds: UInt64?
     /// A worker command or event, in the worker codec's own encoding.
@@ -106,6 +109,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if planSHA256 != nil { set.insert("planSHA256") }
         if bootstrapProfile != nil { set.insert("bootstrapProfile") }
         if nativeStart != nil { set.insert("nativeStart") }
+        if dataPlaneTrust != nil { set.insert("dataPlaneTrust") }
         if remainingNanoseconds != nil { set.insert("remainingNanoseconds") }
         if deliveryRemainingNanoseconds != nil { set.insert("deliveryRemainingNanoseconds") }
         if worker != nil { set.insert("worker") }
@@ -128,7 +132,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         switch kind {
         case .open:
             required = ["clusterID", "rank", "planSHA256", "remainingNanoseconds"]
-            optional = ["bootstrapProfile", "nativeStart"]
+            optional = ["bootstrapProfile", "nativeStart", "dataPlaneTrust"]
         case .command:
             required = ["worker", "deliveryRemainingNanoseconds"]; optional = ["remainingNanoseconds"]
         case .renew: required = ["remainingNanoseconds"]; optional = []
@@ -149,6 +153,13 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if let planSHA256 { guard planSHA256.utf8.count == 64, planSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw fail("Plan digest differs") } }
         if let bootstrapProfile { guard ClusterOwnerBootstrapProfile(rawValue: bootstrapProfile) != nil else { throw fail("Unknown bootstrap profile") } }
         if let nativeStart { guard (1...3072).contains(nativeStart.count) else { throw fail("Native start exceeds its bound") } }
+        if let dataPlaneTrust {
+            guard (1...4096).contains(dataPlaneTrust.count),
+                  let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(dataPlaneTrust),
+                  trust.membershipEpoch == epoch, trust.rank == rank else {
+                throw fail("Data-plane credential differs from the open epoch/rank or exceeds its bound")
+            }
+        }
         for value in [remainingNanoseconds, deliveryRemainingNanoseconds].compactMap({ $0 }) {
             guard value > 0, value <= ClusterWorkerLimits.deadlineNanoseconds else { throw fail("Duration outside its bound") }
         }
@@ -239,7 +250,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
             sent = .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: 1,
                 // The sampling and the route cross with the reservation: both ranks get them.
-                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route))
+                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages))
         }
         wire.worker = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence,
             requestID: requestID, command: sent))
@@ -264,7 +275,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         guard !deadline.overflow else { throw ClusterLinkWorkerError.invalid("Reservation duration overflow") }
         return (.reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
             outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline.partialValue,
-            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route)), frame.requestID, end.partialValue)
+            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages)), frame.requestID, end.partialValue)
     }
 }
 
@@ -370,6 +381,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     public init(transport: any ClusterLinkWorkerTransport, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
                 profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
                 lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)?,
+                dataPlaneTrust: Data? = nil,
                 retirementAllowanceNanoseconds: UInt64 = ClusterLinkWorkerEndpoint.retirementAllowanceNanoseconds,
                 router: ClusterLinkWorkerRouter? = nil) throws {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -395,6 +407,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
         var open = ClusterLinkWorkerWire(kind: .open, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0)
         open.clusterID = clusterID; open.rank = rank; open.planSHA256 = executionPlanSHA256
         open.remainingNanoseconds = lifetimeDeadlineUptimeNanoseconds - now
+        open.dataPlaneTrust = dataPlaneTrust
         if let bootstrapRelay {
             open.bootstrapProfile = bootstrapRelay.profile.rawValue
             open.nativeStart = bootstrapRelay.profile.carriesNativeStart ? bootstrapRelay.nativeStart(rank: rank)?.canonicalBytes : nil
@@ -662,6 +675,7 @@ public struct ClusterLinkWorkerOpen: Sendable {
     public let executionPlanSHA256: String
     public let bootstrapProfile: ClusterOwnerBootstrapProfile?
     public let nativeStart: ClusterNativeAuthorizationStart?
+    public let dataPlaneTrust: Data?
     public let lifetimeDeadlineUptimeNanoseconds: UInt64
 }
 
@@ -689,6 +703,7 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
     public let clusterID: String
     public let rank: Int
     public let bootstrapProfile: ClusterOwnerBootstrapProfile?
+    private let acceptsDataPlaneTrust: Bool
     private let transport: any ClusterLinkWorkerTransport
     private let admit: Admit
     private let report: @Sendable (Report) -> Void
@@ -705,9 +720,10 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
     /// another is refused (wire bytes alone never enable a profile).
     public init(transport: any ClusterLinkWorkerTransport, clusterID: String, rank: Int = 1,
                 bootstrapProfile: ClusterOwnerBootstrapProfile?, linkLimits: ClusterLinkControlLimits = .init(),
-                admit: @escaping Admit, report: @escaping @Sendable (Report) -> Void = { _ in }) {
+                acceptsDataPlaneTrust: Bool = false, admit: @escaping Admit, report: @escaping @Sendable (Report) -> Void = { _ in }) {
         self.transport = transport; self.clusterID = clusterID; self.rank = rank
         self.bootstrapProfile = bootstrapProfile; self.admit = admit; self.report = report
+        self.acceptsDataPlaneTrust = acceptsDataPlaneTrust
         liveness = ClusterLinkPeerLiveness(limits: linkLimits) { [weak self] _ in self?.leaderLost(reason: "leader link lost") }
     }
 
@@ -775,9 +791,13 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
             }
             start = value
         } else if wire.nativeStart != nil { return refuse("native start without its profile") }
+        guard wire.dataPlaneTrust == nil || acceptsDataPlaneTrust else {
+            return refuse("launcher-issued data-plane credential is not enabled by this follower's saved policy")
+        }
         let lifetime = now + remaining
         let open = ClusterLinkWorkerOpen(membershipEpoch: wire.epoch, session: wire.session, clusterID: clusterID, rank: rank,
-            executionPlanSHA256: plan, bootstrapProfile: profile, nativeStart: start, lifetimeDeadlineUptimeNanoseconds: lifetime)
+            executionPlanSHA256: plan, bootstrapProfile: profile, nativeStart: start,
+            dataPlaneTrust: wire.dataPlaneTrust, lifetimeDeadlineUptimeNanoseconds: lifetime)
         do {
             let admission = try admit(open)
             guard admission.identity.membershipEpoch == wire.epoch else { return refuse("admission epoch differs") }

@@ -21,9 +21,9 @@ public protocol QwenBatchServingHost: AnyObject {
 }
 
 /// The lanes one rank holds: reserved, started (waiting to join the loop),
-/// joined, and cancelled. The worker's control reader may cancel from its own
-/// thread; everything else runs on the executor. A lane stays charged from its
-/// reservation until its request finished and retired.
+/// joined, and cancelled. The worker's control reader may cancel or withdraw
+/// an unstarted lane; everything else runs on the executor. A lane stays charged
+/// from reservation until withdrawal or until its request finishes and retires.
 final class QwenBatchLaneBook: @unchecked Sendable {
     private let lock = NSLock()
     private var reserved: [UUID: QwenResidentReservation] = [:]
@@ -95,6 +95,17 @@ final class QwenBatchLaneBook: @unchecked Sendable {
     }
 
     func cancel(_ id: UUID) { lock.withLock { if reserved[id] != nil { cancelled.insert(id) } } }
+
+    /// A lane reserved but not started gives its reservation back: nothing
+    /// native was made for it, so the lanes that run are untouched. False for a
+    /// lane that started or joined (cancelling one of those ends the batch).
+    func withdraw(_ id: UUID) -> Bool {
+        lock.withLock {
+            guard reserved[id] != nil, !started.contains(id), !joined.contains(id) else { return false }
+            reserved[id] = nil; cancelled.remove(id)
+            return true
+        }
+    }
     var anyCancelled: Bool { lock.withLock { !cancelled.isEmpty } }
 
     /// Every lane is gone (a failed loop, or shutdown).

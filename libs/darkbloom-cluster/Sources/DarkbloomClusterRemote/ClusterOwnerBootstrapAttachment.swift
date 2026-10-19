@@ -2,11 +2,15 @@ import Foundation
 import Darwin
 import DarkbloomClusterBootstrap
 import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 
 /// Created before the configured native child. Only this local triple contains
 /// uptime; the authenticated owner wire never forwards it to another Mac.
 public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
+    public static let maximumBootstrapNanoseconds = ClusterBootstrapListener.maximumLifetimeNanoseconds
+    /// The exact finite child lifetime, independently of the bounded bootstrap socket.
+    public let calibrationExperimentDeadline: UInt64
     public let profile: ClusterOwnerBootstrapProfile
     public let deadlineUptimeNanoseconds: UInt64
     public let nativeStart: ClusterNativeAuthorizationStart?
@@ -19,11 +23,63 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
     private var failed = false
     private var completed = false
 
-    init(profile: ClusterOwnerBootstrapProfile, deadline: UInt64, nativeStart: ClusterNativeAuthorizationStart? = nil) throws {
+    init(profile: ClusterOwnerBootstrapProfile, deadline: UInt64, nativeStart: ClusterNativeAuthorizationStart? = nil,
+         experimentDeadline: UInt64? = nil) throws {
         guard profile.carriesNativeStart == (nativeStart != nil) else { throw OwnerWire.invalid("Native prelude profile/start differs") }
+        let experiment = experimentDeadline ?? deadline
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard experiment >= deadline, experiment > now,
+              experiment - now <= ClusterWorkerLimits.deadlineNanoseconds else {
+            throw OwnerWire.invalid("Calibration experiment deadline differs from bounded bootstrap")
+        }
+        calibrationExperimentDeadline = experiment
         self.nativeStart = nativeStart
         self.profile = profile; deadlineUptimeNanoseconds = deadline
         listener = try .init(deadlineUptimeNanoseconds: deadline)
+    }
+    /// Private calibration uses the same authenticated socket/profile, but
+    /// consumes no READY. No public raw-PID acceptance API is exposed.
+    public static func calibration(profile: ClusterOwnerBootstrapProfile, deadline: UInt64,
+                                   experimentDeadline: UInt64? = nil,
+                                   nativeStart: ClusterNativeAuthorizationStart? = nil) throws -> ClusterOwnerBootstrapAttachment {
+        try .init(profile: profile, deadline: deadline, nativeStart: nativeStart,
+                  experimentDeadline: experimentDeadline)
+    }
+    public func cancelCalibration() {
+        condition.lock(); let child = calibrationChild; condition.unlock()
+        cancel(); child?.cancel()
+    }
+    public func acceptCalibrationReply(sequence: UInt64, bytes: Data) throws {
+        try acceptReply(sequence: sequence, bytes: bytes)
+    }
+    public func requireCalibrationCompleted() throws { try requireCompleted() }
+    private var calibrationStarted = false
+    private var calibrationChild: ClusterCalibrationProcess?
+    public func runCalibration(child: ClusterCalibrationProcess, binding: ClusterOwnerBinding,
+                               publish: @Sendable (UInt64, Data) throws -> Void) throws {
+        guard child.expectedIdentity == binding.identity, child.rank == binding.rank,
+              child.expectedProfile == binding.profile, child.executionPlanSHA256 == binding.executionPlanSHA256,
+              child.experimentDeadline == calibrationExperimentDeadline,
+              !child.observedExit, child.fault == nil, let pid = child.launchedProcessIdentifier else {
+            throw OwnerWire.invalid("Calibration bootstrap differs from actual child binding")
+        }
+        condition.lock()
+        guard !calibrationStarted, !failed else { condition.unlock(); throw ClusterBootstrapError.closed }
+        calibrationStarted = true; calibrationChild = child; condition.unlock()
+        // A timed-out caller may drop its reference. Keep both owners alive
+        // until the direct-child supervisor actually observes exit, even if
+        // cancellation has already closed the bootstrap socket.
+        Task { [self, child] in
+            _ = await child.waitUntilExited()
+            clearExitedCalibrationChild()
+            withExtendedLifetime(self) {}
+        }
+        do { try runOwnedChild(processID: pid, binding: binding, publish: publish) }
+        catch { child.cancel(); throw error }
+    }
+    private func clearExitedCalibrationChild() {
+        condition.lock(); defer { condition.unlock() }
+        if calibrationChild?.observedExit == true { calibrationChild = nil }
     }
     public var workerArguments: [String] {
         ["--bootstrap-socket-path", listener.socketPath, "--bootstrap-owner-pid", String(getpid()),
@@ -69,7 +125,13 @@ public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
              publish: @Sendable (UInt64, Data) throws -> Void) throws {
         do {
             guard let pid = child.launchedProcessIdentifier else { throw OwnerWire.invalid("Bootstrap lacks actual child PID") }
-            let connection = try listener.accept(processID: pid,
+            try runOwnedChild(processID: pid, binding: binding, publish: publish)
+        } catch { cancel(); throw error }
+    }
+    private func runOwnedChild(processID: Int32, binding: ClusterOwnerBinding,
+                               publish: @Sendable (UInt64, Data) throws -> Void) throws {
+        do {
+            let connection = try listener.accept(processID: processID,
                 identity: .init(membershipEpoch: binding.identity.membershipEpoch, rank: binding.rank),
                 deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
                 mode: profile.carriesNativeStart ? .nativeKeyPreludeV1 : .mesh2)

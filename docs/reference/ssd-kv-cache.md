@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-19
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -140,6 +140,15 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
+The unregistered GLM prototype defines
+`native-paged-glm5next-full-state-v1`: asymmetric latent/index/gate/validity rows
+plus exact FP32 convolution and recurrent state. The provider store recognizes
+that format, but the protected native binding, MTP serialization and encrypted
+restore qualification remain separate gates. It is not permission to emit
+durable-ready routing evidence
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/GLM5NextCompleteCheckpointLayout.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
+See the [GLM integration gates](../design/glm53-flash-native.md).
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.
@@ -436,3 +445,11 @@ root (canonical root keys, exact-owner admission, strict supersession, no
 reconnect regain). No call site consumes them yet and there is no
 cross-host raw-KV reuse contract; the epoch store, durable-budget
 accounting and publication behavior are unchanged.
+
+## GLM cluster image exclusion
+
+| Input | SSD prefix behavior | Enforcement |
+|---|---|---|
+| Bounded GLM cluster still image | No restore or capture; cold prompt on both ranks | `agreeGLM5NextStagePrefixPlan` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift` |
+
+See [image prefix isolation](../architecture/prefix-cache.md#glm-cluster-image-prefix-isolation).

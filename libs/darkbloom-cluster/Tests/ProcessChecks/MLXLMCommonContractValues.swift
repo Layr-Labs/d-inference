@@ -21,6 +21,7 @@ public struct CBv2Request: Sendable {
     public var priority = 0
     public var prefixCacheReceiptID: CBv2RequestID?
     public var multimodal: Int?, positionState: Int?, tokenConstraint: Int?
+    public var mimoClusterImages: Data? = nil
     public init(id: CBv2RequestID, promptTokens: [Int], sampling: CBv2SamplingParams, maxTokens: Int) {
         self.id = id; self.promptTokens = promptTokens; self.sampling = sampling; self.maxTokens = maxTokens
     }

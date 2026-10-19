@@ -26,8 +26,11 @@ struct DistributedInstalledValidation: Sendable {
         // alone does not say so: it names whatever binary was installed.
         let features = try DistributedInstalledWorkerFeatures.inspect(executable, deadline: deadline)
         try features.requireProgressGuard()
+        try features.requireMiMoImageCandidate(required:plan.capability.media != nil)
+        try features.requireGLMImageCandidate(required: plan.capability.glmImages != nil)
         inputs.append(try DistributedInstalledFiles.verify(plan.configurationURL,
-            expectedSHA256: plan.capability.configurationSHA256, maximumBytes: 1_048_576, deadline: deadline))
+            expectedSHA256: plan.capability.configurationSHA256,
+            maximumBytes: ClusterConfigurationFiles.maximumModelConfigurationBytes, deadline: deadline))
         inputs.append(try DistributedInstalledFiles.verify(plan.manifestURL,
             expectedSHA256: plan.capability.manifestSHA256, maximumBytes: 65_536, deadline: deadline))
         let manifest = try DistributedInstalledManifest.validate(
@@ -36,7 +39,8 @@ struct DistributedInstalledValidation: Sendable {
         // The time budgets follow the verified artifact's size.
         plan = plan.withArtifactBytes(manifest.totalSizeBytes)
         let model = try DistributedInstalledModel.make(
-            configurationData: ClusterConfigurationFiles.read(plan.configurationURL, maximum: 1_048_576),
+            configurationData: ClusterConfigurationFiles.read(plan.configurationURL,
+                maximum: ClusterConfigurationFiles.maximumModelConfigurationBytes),
             manifest: manifest, plan: plan)
         for file in plan.configuration.tokenizerFiles {
             inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.modelDirectory).appendingPathComponent(file.path),

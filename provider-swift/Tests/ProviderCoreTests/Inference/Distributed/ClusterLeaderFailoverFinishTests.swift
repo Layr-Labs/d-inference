@@ -190,6 +190,35 @@ import Testing
         #expect(try JSONDecoder().decode(ClusterServiceStatus.self, from: JSONEncoder().encode(now)) == now)
     }
 
+    @Test func cleanupTimeoutKeepsPowerUntilTheRecordedProcessExits() throws {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer { if sleeper.isRunning { sleeper.terminate() }; sleeper.waitUntilExit() }
+        let part = ClusterService.RecordedPart(pid: sleeper.processIdentifier,
+            startedAt: try #require(ClusterProcessTable.startTime(of: sleeper.processIdentifier)), solo: true)
+        var released: [UInt32] = []
+        let power = ClusterServicePowerAssertions(
+            inference: InferencePowerAssertion(reason: "leftover test", createAssertion: { _ in 1 },
+                destroyAssertion: { released.append($0) }),
+            network: NetworkPowerAssertion(reason: "leftover test", createAssertion: { type, _ in
+                type == "NetworkClientActive" ? 2 : 3
+            }, destroyAssertion: { released.append($0) }))
+        defer { power.release() }
+        power.update(savedServing: nil, partRunning: true, relayRunning: false)
+        #expect(!ClusterService.stopLeftover(part, seconds: 0), "a deadline does not prove the process exited")
+        for serving in [nil, false] as [Bool?] {
+            power.update(savedServing: serving, partRunning: ClusterService.runningPart(part) != nil, relayRunning: false)
+            #expect(released.isEmpty, "later ticks must protect the still-releasing process")
+        }
+        #expect(ClusterService.runningPart(.init(pid: part.pid, startedAt: part.startedAt - 5, solo: true)) == nil,
+                "recycled PIDs do not keep protection or reserve model memory")
+        #expect(ClusterService.stopLeftover(part, seconds: 10))
+        power.update(savedServing: false, partRunning: ClusterService.runningPart(part) != nil, relayRunning: false)
+        #expect(released.sorted() == [1, 2, 3])
+    }
+
     // MARK: - (e) verify-teardown counts this cluster's processes only
 
     static let me = "mac-0123456789ab", other = "mac-ba9876543210", ownExecutable = "/Applications/Darkbloom.app/Contents/MacOS/darkbloom"

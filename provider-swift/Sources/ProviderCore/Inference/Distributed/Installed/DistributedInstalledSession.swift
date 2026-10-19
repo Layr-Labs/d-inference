@@ -101,6 +101,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
     public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
+    /// The pair's batch lanes, from the plan the pair starts with
+    /// (`DistributedInstalledPlan.batchLanes`), known before it starts.
+    public var concurrentRequests: Int { prepared.plan.batchLanes() ?? 1 }
     /// A fresh epoch is permitted only after all owned native and owner cleanup
     /// and both release acknowledgements. There is no implicit journal recovery.
     public var canRotate: Bool { status == .released }
@@ -269,9 +272,10 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         try prepared.plan.configuration.requireOrdinarySessionRoute()
         self.endpointFactory = keyedEndpointFactory
         let peers = prepared.plan.configuration.peers
-        self.keysDataPlane = keysDataPlane ?? (prepared.validation.workerFeatures.acceptsDataPlane
-            && Set(prepared.plan.identity(epoch: UUID()).peers.map(\.buildSHA256)).count == 1 && peers.count == 2
-            && prepared.plan.configuration.linkControl == nil)
+        self.keysDataPlane = try ClusterMiMoPrivateImagePolicy.keysDataPlane(prepared.plan.capability,
+            supported: prepared.validation.workerFeatures.acceptsDataPlane,
+            sameBuild: Set(prepared.plan.identity(epoch: UUID()).peers.map(\.buildSHA256)).count == 1 && peers.count == 2,
+            hasLink: prepared.plan.configuration.linkControl != nil, selectionOverride: keysDataPlane)
         self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
         // A body still running when the bound ends goes on by itself (the
         // pair's shutdown is idempotent and keeps its own state; the endpoints
@@ -353,7 +357,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         do {
             pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline,
                 timing: prepared.plan.budgets.pairTiming, keepWarm: .standard,
-                lanes: prepared.plan.batchLanes() ?? 1)
+                lanes: concurrentRequests)
         } catch { throw Self.startFailure(error, endpoints: values) }
         lock.withLock { self.pair = pair }
         // Per-request route (pair, or the member holding the whole model alone), derived from this setup.
@@ -366,7 +370,11 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
         // S16: a keyed session is ready only when both ranks report the same
         // encrypted data plane with each peer verified against its pin.
-        if keysDataPlane, pair.readiness?.peerVerified != true { throw DistributedEngineError.unavailable }
+        if keysDataPlane {
+            guard let ready = pair.readiness, ready.encryptedDataPlane, ready.peerVerified else {
+                throw DistributedEngineError.unavailable
+            }
+        }
         // The link as this load measured it (every load over the cable measures it, pipeline or tensor parallel):
         // the next plan of this pair uses it, with no user step.
         if let probe = values.compactMap({ $0.readiness?.linkProbe }).first {
@@ -403,13 +411,13 @@ public final class DistributedInstalledSession: @unchecked Sendable {
                 lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust)
         } else if let link {
             // No SSH: the follower member serves this rank over the link.
-            // The link worker wire carries no data-plane credential: a session
-            // over the link keys nothing here (see `keysDataPlane`); the
-            // coordinator-formed pair keys each rank from its own member.
-            guard dataPlaneTrust == nil else {
-                throw ClusterConfigurationError.invalid("A follower reached over the link control channel takes no launcher-issued data-plane credential")
-            }
-            endpoint = try link.endpoint(plan: plan, identity: wireIdentity, rank: rank, lifetime: lifetime, relay: relay)
+            // The private image candidate carries only this rank's credential
+            // over the existing authenticated encrypted control channel. Text
+            // setups keep their legacy nil credential and plaintext native path.
+            let trust = try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(plan.capability,
+                line: dataPlaneTrust, epoch: wireIdentity.membershipEpoch, rank: rank)
+            endpoint = try link.endpoint(plan: plan, identity: wireIdentity, rank: rank, lifetime: lifetime,
+                relay: relay, dataPlaneTrust: trust)
         } else {
             try DistributedInstalledDeveloperSSH.requireFollowerRoute(plan.configuration)
             guard let trust = plan.configuration.trust else {

@@ -59,7 +59,8 @@ final class QwenLayerStageGenerationTransport {
                 throw ProbeError("Generation residual lost its actual source/request/layout identity")
             }
             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
-                hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype)
+                hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype,
+                residualStreams: agreement.request.profile.residualStreams ?? 1)
             try check()
             try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes,
                 record: record(.residualHeader, "boundary"), check: check)
@@ -107,7 +108,8 @@ final class QwenLayerStageGenerationTransport {
                 producerStageFingerprint: source.stageFingerprints[0], frame: expected.frame,
                 tokenIDsSHA256: expected.tokenIDsSHA256, payloadSHA256: packet.content.payloadSHA256, array: array)
             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
-                hidden: agreement.request.profile.hiddenSize, dtype: dtype)
+                hidden: agreement.request.profile.hiddenSize, dtype: dtype,
+                residualStreams: agreement.request.profile.residualStreams ?? 1)
             try check()
             let result = try consume(boundary, packet)
             try check()
@@ -188,7 +190,7 @@ final class QwenLayerStageGenerationTransport {
     static let compactHeaderLimit = 4096
     private var compactBoundaryFrameBytes: Int {
         let request = agreement.request
-        let residual = request.profile.hiddenSize * ((try? qwenStageWireElementBytes(request.profile.activationDType)) ?? 4)
+        let residual = request.profile.boundaryElementsPerToken * ((try? qwenStageWireElementBytes(request.profile.activationDType)) ?? 4)
         let needed = QwenControlFrame.headerBytes + 4 + Self.compactHeaderLimit + residual
         return (needed + 4095) / 4096 * 4096
     }
@@ -214,7 +216,8 @@ final class QwenLayerStageGenerationTransport {
                 throw ProbeError("Generation residual lost its actual source/request/layout identity")
             }
             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
-                hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype)
+                hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype,
+                residualStreams: agreement.request.profile.residualStreams ?? 1)
             try check()
             let payload = boundary.array.asData().data
             try check()
@@ -263,7 +266,8 @@ final class QwenLayerStageGenerationTransport {
                 producerStageFingerprint: source.stageFingerprints[0], frame: expected.frame,
                 tokenIDsSHA256: expected.tokenIDsSHA256, payloadSHA256: packet.content.payloadSHA256, array: array)
             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
-                hidden: agreement.request.profile.hiddenSize, dtype: dtype)
+                hidden: agreement.request.profile.hiddenSize, dtype: dtype,
+                residualStreams: agreement.request.profile.residualStreams ?? 1)
             try check()
             return (boundary, packet)
         }

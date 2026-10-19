@@ -132,10 +132,10 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
     }
 
     func endpoint(plan: DistributedInstalledPlan, identity: ClusterWorkerIdentity, rank: Int, lifetime: UInt64,
-                  relay: (any ClusterOwnerBootstrapExchange)?) throws -> ClusterLinkWorkerEndpoint {
+                  relay: (any ClusterOwnerBootstrapExchange)?, dataPlaneTrust: Data? = nil) throws -> ClusterLinkWorkerEndpoint {
         try ClusterLinkWorkerEndpoint(transport: ClusterLinkPeerWorkerTransport(peer: peer), clusterID: plan.configuration.clusterID,
             expectedIdentity: identity, profile: plan.capability.profile, rank: rank, executionPlanSHA256: plan.partition.planSHA256,
-            lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, router: router)
+            lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust, router: router)
     }
 
     /// After every endpoint's proofs: delivers what is queued, then closes.
@@ -217,16 +217,20 @@ public enum DistributedInstalledLinkFollower {
         let owner = try ClusterLocalOwnerConfiguration(installedDarkbloom: URL(fileURLWithPath: plan.localPeer.ownerExecutable))
         let server = ClusterLinkWorkerServer(transport: ClusterLinkPeerWorkerTransport(peer: client.peer),
             clusterID: plan.configuration.clusterID, rank: plan.configuration.localRank,
-            bootstrapProfile: plan.bootstrap.ownerProfile, linkLimits: edge.limits, admit: { open in
+            bootstrapProfile: plan.bootstrap.ownerProfile, linkLimits: edge.limits,
+            acceptsDataPlaneTrust: ClusterMiMoPrivateImagePolicy.requiresKeyedDataPlane(plan.capability), admit: { open in
                 guard open.executionPlanSHA256 == plan.partition.planSHA256 else {
                     throw ClusterConfigurationError.invalid("The leader opened another plan")
                 }
                 let identity = plan.identity(epoch: open.membershipEpoch)
+                let dataPlaneTrust = try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(plan.capability,
+                    line: open.dataPlaneTrust, epoch: open.membershipEpoch, rank: open.rank)
                 return .init(identity: identity, profile: plan.capability.profile) { relay in
                     try ClusterRemoteWorkerEndpoint(localOwner: owner, clusterID: plan.configuration.clusterID,
                         expectedIdentity: identity, profile: plan.capability.profile, rank: open.rank,
                         executionPlanSHA256: plan.partition.planSHA256,
-                        lifetimeDeadlineUptimeNanoseconds: open.lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: relay)
+                        lifetimeDeadlineUptimeNanoseconds: open.lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: relay,
+                        dataPlaneTrust: dataPlaneTrust)
                 }
             }, report: { report in
                 switch report {

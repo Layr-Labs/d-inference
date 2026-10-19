@@ -1,0 +1,13 @@
+{
+  "provenance": "new minimal defect reproduction; NOT the original external/private two-case characterization corpus",
+  "cases": [
+    {
+      "id": "new-typeless-enum",
+      "request_json": "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"enable_thinking\":false,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"echo\",\"parameters\":{\"type\":\"object\",\"properties\":{\"value\":{\"enum\":[\"a\",\"b\"]}}}}}]}"
+    },
+    {
+      "id": "new-boolean-property",
+      "request_json": "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"enable_thinking\":false,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"echo\",\"parameters\":{\"type\":\"object\",\"properties\":{\"value\":false}}}}]}"
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import Foundation
 
 /// A fresh owner-only pathname. No arbitrary descriptor inheritance is needed.
 public final class ClusterBootstrapListener: @unchecked Sendable {
+    public static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
     public let socketPath: String
     private let directory: String
     private let socket: BootstrapSocket

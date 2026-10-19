@@ -52,12 +52,14 @@ struct MiMoLayerStagePlan {
     static let excludedSourcePrefixes = ["language_model.model.mtp.", "vision_tower.", "audio_encoder.",
                                          "speech_embeddings."]
 
+    let visionEnabled: Bool
     let originalConfiguration: Data
     let fingerprint: String
     let layers: Int
     let stages: [Stage]
 
-    init(configuration: Data, cut: Int) throws {
+    init(configuration: Data, cut: Int, visionEnabled: Bool = false) throws {
+        self.visionEnabled = visionEnabled
         guard (1...1_048_576).contains(configuration.count),
               let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any] else {
             throw ProbeError("MiMo layer stages require a bounded configuration object")
@@ -121,6 +123,7 @@ struct MiMoLayerStagePlan {
         self.originalConfiguration = configuration
         self.layers = layers; self.stages = stages
         self.fingerprint = sha256(try canonicalJSONData(["mimo-v26-two-layer-stages-v1", sha256(configuration)]
+            + (visionEnabled ? ["rank0-native-vision-draft-v1"] : [])
             + stages.map(\.fingerprint)))
     }
 

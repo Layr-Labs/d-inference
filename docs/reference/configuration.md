@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-19
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -8,6 +8,84 @@ Coordinator and admin settings belong to the [platform configuration reference](
 Pinned platform links on this page are immutable evidence snapshots, not claims
 about current platform behavior. For current settings and behavior, consult the
 latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
+
+## Local GLM qualification
+
+Cluster image qualification is a separate local selection:
+`darkbloom cluster local glm-5.3-flash --private-glm-image-qualification`.
+`ClusterGLMImageCandidate.profileID` binds planning, request admission and worker
+LOAD to the bounded image candidate. It requires the current paired leader and
+the exact cached source; it does not enable images for the ordinary text profile
+or admit coordinator or solo requests. The flag is defined in
+`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`.
+
+This process-local opt-in is independent of the coordinator supported-model set.
+
+| Variable / field | Default / behavior | Consumer |
+|---|---|---|
+| `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` | Unset: disabled. Otherwise an absolute path to a regular JSON selection file, at most 4 MiB; not a boolean and not forwarded to launchd | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift` (`selection`) |
+| `catalog`, `manifest` | Required complete `CatalogModel` and `ModelManifest` objects using their ordinary JSON keys; dates are ISO-8601. Both identify exactly `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`. The catalog's Hugging Face artifact binds that repository and a concrete revision. No network catalog request is made | `GLM5NextLocalQualification.selection` |
+| `expectedAggregateSHA256` | Required lowercase 64-digit SHA-256 pin; must equal both catalog and manifest aggregates. This is the exact local artifact selection, not an assertion that bytes are verified or published | `GLM5NextLocalQualification.validate` |
+| `maximumContextLength` | Optional positive enforced context bound, default `4096`; must not exceed the source model's maximum. Read once per LOAD together with the artifact plan; controls engine sizing and request admission, not source metadata. A request that omits `max_tokens` gets half the bound. A prompt plus output budget above the bound is refused with HTTP 400 `advertised_context_exceeded` before native admission | `GLM5NextLocalQualification.LocalPlan.boundedSizing`; `EngineV2Factory.makeBridge` |
+| `tokenizer` | Not supported. A present field refuses the whole selection: the LOAD quotation covers only the tokenizer shipped in the pinned weight snapshot | `GLM5NextLocalQualification.Selection` |
+| `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | On: a published GLM engine holds standing wired residency for its weights, bounded by the MiMo safe ceiling (physical memory minus max(16 GiB, 10%)) and released only after proven retirement. Rollback: trimmed, case-insensitive `0`, `false`, `no`, `off`. Acceleration only, never load admission; without it 512-token prefill chunks measured 263–367 instead of 1,246 tok/s on a 256 GiB M5 Ultra. Forwarded to the launchd provider job | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`, `prepare`) |
+
+The weight snapshot's `chat_template.jinja` must be the reviewed template
+shipped in `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+(`GLM5NextPromptPolicy.templateSHA256`); any other template refuses the LOAD
+even when it renders (`GLM5NextLocalQualification.requireShippedTemplate`).
+
+The provider rechecks the selection before local LOAD, and the managed loader
+verifies manifest-pinned bytes under ordinary pending-load admission. A stale
+discovery hash refuses selection. The opt-in does not change coordinator
+advertisement, MTP defaults or performance cohorts. Only use an isolated local
+process and explicitly reviewed artifacts; publication and full-model numerical
+or throughput qualification remain separate gates.
+
+GLM serves only through its embedded-MTP engine with a native operation owner;
+target-only GLM has no checked completion receipt. MTP is therefore on for GLM
+without any setting: the default `[backend] mtp_mode = "auto"` enables it, as
+does `"on"` (`MTPMode.enablesMTP`). `mtp_mode = "off"` or the process kill switch
+`DARKBLOOM_CBV2_MTP=0` (also `false`, `no`, `off`) disables it; local startup then skips the
+model with a message, and the local server's model list omits it
+(`GLM5NextLocalServing.partition`); any LOAD fails before weight allocation.
+When a selection is missing or invalid, startup prints the specific reason
+(`GLM5NextLocalQualification.localSelectionRefusal`).
+Coordinator-connected mode needs no setting: it serves only catalog build
+`glm-5.3-flash` with a 262,144-token enforced context, on Apple M5 Max or
+M5 Ultra with at least 256 GiB, and only while MTP is enabled
+(`ProviderLoop.coordinatorGLM5NextPlan`). The selection file is ignored there.
+There is no assistant-floor,
+post-build or wedge-recovery fallback to target-only: those paths unload or
+refuse the GLM slot instead.
+
+For the pinned local identity and `glm-5.3-flash` the encrypted SSD prefix store defaults on;
+`DARKBLOOM_PREFIX_CACHE=0` disables it
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`,
+`PrefixCachePolicy.isEnabled`). The KV backend needs no setting: automatic
+selection is paged, and `contiguous` or `DARKBLOOM_CBV2_PAGED_KV=0` refuses the
+load (`EngineV2Factory.prepareProductionBackend`).
+
+The local `/metrics` endpoint exports these gauges from
+`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFaultState.swift`
+(`GLM5NextLoadFaultState`):
+
+| Metric | Meaning |
+|---|---|
+| `darkbloom_glm5_next_retained_fault` | `1` after any unproven GLM native retirement |
+| `darkbloom_glm5_next_retained_owner_objects` | Distinct in-process objects kept alive by GLM faults (bridges, newcomer containers, leases, activity markers); not a model count |
+| `darkbloom_glm5_next_retained_resident_bytes` | Unpublished weight and KV bytes charged to retained owners; subtracted from fleet KV budgets |
+
+A retained fault refuses new GLM work until process restart. Retained native
+roots, the pending-load lease and memory claims are never refunded by that
+signal. Other model families keep loading and reclaiming under their own
+admission and native health gates when capacity remains, but their re-sliced
+grants exclude the charged bytes, so survivors cannot regrow into memory a
+retained GLM owner may hold. When a lone GLM slot held the whole fleet KV
+budget, the retained charge leaves none, so other loads are refused. A
+published GLM slot whose unload, eviction or shutdown cannot prove retirement
+stays in place: its KV claim is charged, its grant is frozen, eviction skips
+it and shutdown stays draining.
 
 ## Console UI
 
@@ -249,7 +327,8 @@ with the following first-valid-value precedence:
 
 No valid variable means the import fails without saving. Blank, NUL-containing
 or unexpandable `~user` values are ignored; other paths retain significant
-whitespace. The selected candidate must be an existing readable, searchable,
+whitespace. An explicit `~user` requires an existing system account, including
+when a process uses a fixed home directory (`ModelScanner.expandingTilde`). The selected candidate must be an existing readable, searchable,
 writable directory. A missing/unusable higher-priority path does not silently
 fall through to another directory. Later environment changes never redirect a
 saved path; import again explicitly if that is intended. Hugging Face tools do
@@ -337,6 +416,7 @@ and restart for latched kernel flags.
 | Control | Accepted enabling value | Default | Read in / effect |
 |---|---|---|---|
 | `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download. The default verification is exact rectangular (`EngineV2SlotFactory.nativeMiMoVerificationMode`): scalar-dense rows, row-exact affine projections and serialized attention reproduce serial decode while scoring all draft columns in one forward; a tracked engine that cannot arm the scalar-dense scratch never drafts. Under the serial-target rollback the adaptive controller keeps plans target-only (`nativeMiMoMTPConfig`, `allowsAdaptiveSerialRounds: false`), because each serial draft column costs one ordinary target forward. Media rows stay target-only |
+| `DARKBLOOM_GLM_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (rectangular adaptive MTP verification, depth up to 3; greedy output is not token-identical to target-only decode); rollback selects the serial-target single-proposal profile | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextProtectedExecution.swift` (`GLM5NextProtectedModel.verification`); does not itself enable MTP. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (exact rectangular verification when MTP is enabled); rollback selects serial target | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP; the provider never selects the bulk rectangular trunk. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabled(environment:)`); separately charged scalar-shape rows only in genuine admitted rectangular verification. Its rollback also selects serial target in the provider. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_ROW_EXACT_PROJECTION` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RowExactProjection.swift`; scalar-dense affine 8-bit projections stream each weight tile once for up to seven rows with one-row `qmv_fast` arithmetic; rollback keeps one matmul per row (same output, slower). Forwarded to the launchd provider job |
@@ -1076,3 +1156,29 @@ that group or others can access
 `installedReference` and `optionalInstalledReference`), so until such a file is
 saved again or its mode is corrected by hand, `darkbloom cluster status` and
 `darkbloom cluster doctor` report the saved setup as `invalid`.
+
+## Automatic cluster chunk policy
+
+| Input / field | Meaning | Reader |
+|---|---|---|
+| Passing chunk preference | Uses matching-model/artifact passing records only when their prompt is at least their configured chunk; a preference is not proof of actual executed frame geometry or current-build speed | `ClusterPlacementRequestLimits.chunkTokens`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementRequestLimits.swift`; `ClusterPlacementFlow`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` |
+| No matching long-prompt measurement | Uses the smaller of the layout and worker capability chunk caps; the plan identifies the missing measurement. This fallback adds no serving grant | Same readers |
+| Derived versus explicit request limits | Automatic descriptions derive limits; explicit diagnostic limits remain explicit. A changed worker identity triggers the existing replan/adoption path, retaining capability/build validation | `ClusterPairDescription.derivesRequestLimits`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift`; `ClusterService.checkForUpdate`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift` |
+
+The registered GLM candidate's cap and resource qualification boundary live in
+[inference](../architecture/inference.md#glm-cluster-prefill-bounds). Finite
+calibration scope is listed with the
+[CLI command](../provider/cli-reference.md#glm-automatic-finite-calibration-placement).
+This policy adds no environment variable and does not rewrite qualification
+records or enable private image/MTP profiles for public traffic.
+
+## Automatic finite-placement inputs
+
+| Input | Meaning | Reader |
+|---|---|---|
+| `glm-calibration-candidates --input` | Owner-only installed quotation template; `request.selection.cut` may be absent | `GLM5NextCalibrationPlacement.candidates` |
+| `--planner-sha256` | Immutable identity of the installed plan helper | `GLM5NextCalibrationPlacement.candidates` |
+| `--speed` (repeatable) | Existing keyed speed measurement; no missing rate is treated as a measurement | `ClusterSpeedEstimator.estimate` |
+| `glm-calibration-run --placement` (exactly twice) | Same two rank snapshots on both Macs; 120-second maximum age | `ClusterGLMCalibrationPlacement.select` |
+
+All other template fields, including artifact pins, environment, finite request, native/host allowances and expiry, remain unchanged and are validated by the existing quotation owner. No new environment variable, serving capability or public admitted cut is added. See [CLI usage](../provider/cli-reference.md#glm-automatic-finite-calibration-placement).

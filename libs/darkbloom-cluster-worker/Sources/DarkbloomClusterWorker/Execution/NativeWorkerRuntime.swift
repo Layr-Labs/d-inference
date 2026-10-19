@@ -11,6 +11,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case qwenDense(QwenResidentRuntime)
         case qwenTensorParallel(QwenTensorParallelResidentRuntime)
         case mimoV26(MiMoResidentRuntime)
+        case glm5Next(GLM5NextResidentRuntime)
     }
     private let owner: Owner
     /// The owner's bootstrap connection and native key, held for the worker's lifetime.
@@ -39,6 +40,16 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
             owner = .mimoV26(try .load(configuration, generationMode: generationMode,
                 speculativeDepth: speculativeTerms?.depth, qualification: qualification, dataPlane: dataPlane,
                 prefixSSDKey: prefixSSDKey))
+        case .glm5Next:
+            // The registered GLM row: plain pipeline over the keyed data plane,
+            // with its prompt-prefix cache and SSD tier as every family keeps them.
+            guard generationMode == .pipeline, speculativeTerms == nil, let dataPlane else {
+                throw WorkerFailure.invalid("GLM serves the pipeline over a keyed data plane; other modes are not in its row")
+            }
+            let runtime = try GLM5NextResidentRuntime.serving(configuration, qualification: qualification,
+                prefixSSDKey: prefixSSDKey)
+            try runtime.load(dataPlane: dataPlane)
+            owner = .glm5Next(runtime)
         case .gptoss:
             throw WorkerFailure.invalid("GPT-OSS runs on its own worker runtime, not the native wrapper")
         }
@@ -49,6 +60,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.readiness
         case .qwenTensorParallel(let runtime): runtime.readiness
         case .mimoV26(let runtime): runtime.readiness
+        case .glm5Next(let runtime): runtime.readiness
         }
     }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
@@ -56,6 +68,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.reserve(requestID: id, request: value)
         case .qwenTensorParallel(let runtime): try runtime.reserve(requestID: id, request: value)
         case .mimoV26(let runtime): try runtime.reserve(requestID: id, request: value)
+        case .glm5Next(let runtime): try runtime.reserve(requestID: id, request: value)
         }
     }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
@@ -65,6 +78,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         case .qwenTensorParallel(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         case .mimoV26(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
+        case .glm5Next(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         }
         guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
         lastPromptCache = (result.reusedPromptTokens, result.storedPromptFrontiers)
@@ -76,12 +90,13 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.releaseReservation(requestID: id)
         case .qwenTensorParallel(let runtime): try runtime.releaseReservation(requestID: id)
         case .mimoV26(let runtime): try runtime.releaseReservation(requestID: id)
+        case .glm5Next(let runtime): try runtime.releaseReservation(requestID: id)
         }
     }
     func refreshServingContext() -> Int? {
         switch owner {
         case .qwenDense(let runtime): runtime.refreshServingContext()
-        case .qwenTensorParallel, .mimoV26: nil
+        case .qwenTensorParallel, .mimoV26, .glm5Next: nil
         }
     }
     var batchLanes: Int {
@@ -97,6 +112,10 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         try runtime.startLane(requestID: id)
     }
     func cancelLane(_ id: UUID) { if case .qwenDense(let runtime) = owner { runtime.cancelLane(requestID: id) } }
+    func withdrawLane(_ id: UUID) -> Bool {
+        if case .qwenDense(let runtime) = owner { return runtime.withdrawLane(requestID: id) }
+        return false
+    }
     var hasStartedLanes: Bool {
         if case .qwenDense(let runtime) = owner { return runtime.hasStartedLanes }
         return false
@@ -110,6 +129,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.cancel(requestID: id)
         case .qwenTensorParallel(let runtime): runtime.cancel(requestID: id)
         case .mimoV26(let runtime): runtime.cancel(requestID: id)
+        case .glm5Next(let runtime): runtime.cancel(requestID: id)
         }
     }
     func keepWarmPulse() throws -> UInt64 {
@@ -117,6 +137,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.keepWarmPulse()
         case .qwenTensorParallel(let runtime): try runtime.keepWarmPulse()
         case .mimoV26(let runtime): try runtime.keepWarmPulse()
+        case .glm5Next(let runtime): try runtime.keepWarmPulse()
         }
     }
     func dataPlanePing() throws -> UInt64 {
@@ -124,6 +145,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.dataPlanePing()
         case .qwenTensorParallel(let runtime): try runtime.dataPlanePing()
         case .mimoV26(let runtime): try runtime.dataPlanePing()
+        case .glm5Next(let runtime): try runtime.dataPlanePing()
         }
     }
     func shutdown() throws {
@@ -131,6 +153,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.shutdown()
         case .qwenTensorParallel(let runtime): try runtime.shutdown()
         case .mimoV26(let runtime): try runtime.shutdown()
+        case .glm5Next(let runtime): try runtime.shutdown()
         }
     }
 }

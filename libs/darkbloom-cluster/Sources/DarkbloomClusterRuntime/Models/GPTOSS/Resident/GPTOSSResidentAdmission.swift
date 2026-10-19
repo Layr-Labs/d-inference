@@ -43,6 +43,9 @@ struct GPTOSSResidentAdmission {
         specification = spec
         plan = try GPTOSSLayerStagePlan(configuration: configBytes, cut: configuration.stageCut)
         profile = try spec.profile()
+        guard configuration.runtimeProfile == nil || configuration.runtimeProfile == profile.identifier else {
+            throw ProbeError("Runtime profile does not match GPT-OSS")
+        }
         // The largest request this row admits must fit the row's own state ledger.
         for rank in 0...1 {
             _ = try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[rank].layers,
@@ -59,6 +62,7 @@ struct GPTOSSResidentAdmission {
         }
         // No rank of this family holds every layer: every request uses the pair.
         guard value.route == nil else { throw ProbeError("This family serves no request on one rank alone") }
+        guard value.mimoImages == nil else { throw ProbeError("Encoded MiMo images cannot enter a foreign model") }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
             sampling: value.sampling)

@@ -37,7 +37,7 @@ struct MiMoStagePrefixSnapshotTests {
     /// greedy decode; both stages capture at their planned frontiers. Returns
     /// the logits rows (the final prompt row and one per decode step).
     static func run(_ models: [MiMoV26TextModel], plan: MiMoLayerStagePlan, caches: [[KVCache]], prompt: [Int],
-                    start: Int, captures: [MiMoStagePrefixCapture]? = nil) throws -> [MLXArray] {
+                    start: Int, captures: [ClusterStagePrefixCapture]? = nil) throws -> [MLXArray] {
         let last = models[0].configuration.numHiddenLayers - 1
         func step(_ tokens: [Int], frontier: Int, prompt: Bool) throws -> MLXArray {
             let out0 = try models[0].forward(inputIDs: MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count]),
@@ -92,7 +92,7 @@ struct MiMoStagePrefixSnapshotTests {
         let (plan, models) = try Self.stages(cut: cut)
         let frontiers = Self.capturePlan(promptCount: Self.prompt.count)
         #expect(frontiers == [8, 16, 22])
-        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: frontiers), ClusterStagePrefixCapture.mimo(frontiers: frontiers)]
         let cold = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
                                 captures: captures)
         #expect(cold.allSatisfy { all(isFinite($0)).item(Bool.self) })
@@ -118,7 +118,7 @@ struct MiMoStagePrefixSnapshotTests {
     @Test func theEncryptedSSDRecordRestoresThePairBitForBitAfterARestart() throws {
         let (plan, models) = try Self.stages(cut: 2)
         let frontiers = Self.capturePlan(promptCount: Self.prompt.count)
-        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: frontiers), ClusterStagePrefixCapture.mimo(frontiers: frontiers)]
         let cold = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
                                 captures: captures)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("mimo-prefix-ssd-\(UUID().uuidString)")
@@ -160,7 +160,7 @@ struct MiMoStagePrefixSnapshotTests {
     @Test func aKeptStateIsNeverChangedByTheRequestsThatRestoreIt() throws {
         let (plan, models) = try Self.stages(cut: 2)
         let frontiers = Self.capturePlan(promptCount: Self.prompt.count)
-        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: frontiers), ClusterStagePrefixCapture.mimo(frontiers: frontiers)]
         let cold = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
                                 captures: captures)
         let kept = [captures[0].states()[2], captures[1].states()[2]]
@@ -184,14 +184,14 @@ struct MiMoStagePrefixSnapshotTests {
         let prompt = Array(Self.prompt.prefix(22))
         let frontiers = Self.capturePlan(promptCount: prompt.count)
         #expect(frontiers == [8, 16, 21])
-        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: frontiers), ClusterStagePrefixCapture.mimo(frontiers: frontiers)]
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: prompt, start: 0, captures: captures)
         #expect(captures.allSatisfy { $0.skipped == [21] && $0.states().isEmpty && !$0.keepsPrompt })
     }
 
     @Test func aRestoreRefusesAStateThatIsNotThisStagesOwn() throws {
         let (plan, models) = try Self.stages(cut: 2)
-        let captures = [MiMoStagePrefixCapture(frontiers: [8, 16, 22]), MiMoStagePrefixCapture(frontiers: [8, 16, 22])]
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: [8, 16, 22]), ClusterStagePrefixCapture.mimo(frontiers: [8, 16, 22])]
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
                          captures: captures)
         let own = captures[1].states()[2], other = captures[0].states()[2]
@@ -217,18 +217,18 @@ struct MiMoStagePrefixSnapshotTests {
         let (plan, models) = try Self.stages(cut: 2)
         let frontiers: Set<Int> = [8, 16, 22]
         // Measure one capture, then give the next request room for its split frontier only.
-        let probe = MiMoStagePrefixCapture(frontiers: frontiers)
+        let probe = ClusterStagePrefixCapture.mimo(frontiers: frontiers)
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
-                         captures: [probe, MiMoStagePrefixCapture(frontiers: frontiers)])
+                         captures: [probe, ClusterStagePrefixCapture.mimo(frontiers: frontiers)])
         let cost = try #require(probe.cost)
-        let limited = MiMoStagePrefixCapture(frontiers: frontiers)
+        let limited = ClusterStagePrefixCapture.mimo(frontiers: frontiers)
         limited.limitBytes = cost.bytes(deepest: 22, frontiers: 1)
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
-                         captures: [limited, MiMoStagePrefixCapture(frontiers: frontiers)])
+                         captures: [limited, ClusterStagePrefixCapture.mimo(frontiers: frontiers)])
         #expect(limited.states().map(\.committedTokens) == [22])
-        let withdrawn = MiMoStagePrefixCapture(frontiers: frontiers)
+        let withdrawn = ClusterStagePrefixCapture.mimo(frontiers: frontiers)
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
-                         captures: [withdrawn, MiMoStagePrefixCapture(frontiers: frontiers)])
+                         captures: [withdrawn, ClusterStagePrefixCapture.mimo(frontiers: frontiers)])
         withdrawn.withdraw()
         #expect(withdrawn.states().isEmpty && !withdrawn.keepsPrompt)
     }
@@ -240,15 +240,15 @@ struct MiMoStagePrefixSnapshotTests {
     // was charged less than it holds.
     @Test func aCaptureChargesEveryFrontierAFullWindowOfEachSlidingLayer() throws {
         let (plan, models) = try Self.stages(cut: 2)
-        let long = MiMoStagePrefixCapture(frontiers: Self.capturePlan(promptCount: Self.prompt.count))
+        let long = ClusterStagePrefixCapture.mimo(frontiers: Self.capturePlan(promptCount: Self.prompt.count))
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
-                         captures: [long, MiMoStagePrefixCapture(frontiers: [])])
+                         captures: [long, ClusterStagePrefixCapture.mimo(frontiers: [])])
         // Three tokens: the only frontier, 2, is shorter than the window of three.
         let shortPrompt = Array(Self.prompt.prefix(3))
         #expect(Self.capturePlan(promptCount: shortPrompt.count) == [2])
-        let short = MiMoStagePrefixCapture(frontiers: [2])
+        let short = ClusterStagePrefixCapture.mimo(frontiers: [2])
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: shortPrompt, start: 0,
-                         captures: [short, MiMoStagePrefixCapture(frontiers: [])])
+                         captures: [short, ClusterStagePrefixCapture.mimo(frontiers: [])])
         #expect(short.states().map(\.committedTokens) == [2])
         #expect(short.states().first?.recurrent.values.allSatisfy { $0.conv.dim(2) == 2 } == true)
         let longCost = try #require(long.cost), shortCost = try #require(short.cost)
@@ -267,7 +267,7 @@ struct MiMoStagePrefixSnapshotTests {
         let first = Array(Self.prompt.prefix(19))
         let frontiers = Self.capturePlan(promptCount: first.count)
         #expect(frontiers == [8, 16, 18])
-        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: frontiers), ClusterStagePrefixCapture.mimo(frontiers: frontiers)]
         _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: first, start: 0,
                          captures: captures)
         let longer = Self.prompt + [11, 29, 47, 3, 88, 52]

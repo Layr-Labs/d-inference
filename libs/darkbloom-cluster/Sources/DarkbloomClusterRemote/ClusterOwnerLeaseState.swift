@@ -6,6 +6,9 @@ import DarkbloomClusterProtocol
 /// here. Native observations must come from the actual local supervisor.
 public struct ClusterOwnerLeaseState: Sendable {
     public let binding: ClusterOwnerBinding
+    /// Requests this owner's worker serves at once: its batch lanes (one
+    /// unless the pair batches). Each request keeps its own bookkeeping.
+    public let lanes: Int
     /// The rank lease's current deadline on this Mac (S03). The leader renews
     /// it every few seconds while it keeps the session; there is no fixed
     /// lifetime. Past it the state fences, as for any loss of the leader.
@@ -21,7 +24,8 @@ public struct ClusterOwnerLeaseState: Sendable {
     var launchID: UUID?
     var nativeTerminal: ClusterOwnerNativeTerminal?
     var readyCapacity: Int?
-    var request: Request?
+    /// Every reserved, admitted, running or retiring request, by ID: at most `lanes`.
+    var requests: [UUID: Request] = [:]
     /// Recent request IDs, to refuse a replay: a window, never a count.
     var seen = Set<UUID>()
     var seenOrder: [UUID] = []
@@ -40,13 +44,15 @@ public struct ClusterOwnerLeaseState: Sendable {
 
     /// Call only after acquiring the device lease and establishing that no older
     /// unresolved native owner exists. `now` and this deadline are same-Mac uptime.
-    public init(binding: ClusterOwnerBinding, now: UInt64, remainingLifetimeNanoseconds: UInt64) throws {
+    public init(binding: ClusterOwnerBinding, now: UInt64, remainingLifetimeNanoseconds: UInt64,
+                lanes: Int = 1) throws {
         let end = now.addingReportingOverflow(remainingLifetimeNanoseconds)
         guard remainingLifetimeNanoseconds > 0,
-              remainingLifetimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds, !end.overflow else {
-            throw ClusterOwnerStateError.invalid("Invalid owner lifetime")
+              remainingLifetimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds, !end.overflow,
+              (1...8).contains(lanes) else {
+            throw ClusterOwnerStateError.invalid("Invalid owner lifetime or lane count")
         }
-        self.binding = binding; lastNow = now
+        self.binding = binding; self.lanes = lanes; lastNow = now
         lifetimeDeadlineUptimeNanoseconds = end.partialValue
     }
 
@@ -60,23 +66,26 @@ public struct ClusterOwnerLeaseState: Sendable {
     }
 
     private init(binding: ClusterOwnerBinding, deadline: UInt64, now: UInt64) {
-        self.binding = binding; lifetimeDeadlineUptimeNanoseconds = deadline; lastNow = now
+        self.binding = binding; lanes = 1; lifetimeDeadlineUptimeNanoseconds = deadline; lastNow = now
     }
 
     public var status: ClusterOwnerStatus {
         .init(route: binding.route, nextControlSequence: nextControlSequence,
-              ready: available && request == nil, quarantined: quarantined, recoveredUnresolved: recoveryOnly,
-              nativeLaunchID: launchID, activeRequestID: request?.id,
-              chargedRequestBytes: recoveryOnly ? nil : (request?.charged ?? 0), nativeTerminal: nativeTerminal,
-              deviceLeaseReleased: deviceLeaseReleased)
+              ready: available && requests.count < lanes, quarantined: quarantined, recoveredUnresolved: recoveryOnly,
+              nativeLaunchID: launchID, activeRequestID: activeRequestIDs.first,
+              chargedRequestBytes: recoveryOnly ? nil : requests.values.reduce(0) { $0 + $1.charged },
+              nativeTerminal: nativeTerminal, deviceLeaseReleased: deviceLeaseReleased)
     }
+
+    /// Every request this owner still holds, in a stable order.
+    public var activeRequestIDs: [UUID] { requests.keys.sorted { $0.uuidString < $1.uuidString } }
 
     public var requiresNativeFence: Bool {
         !deviceLeaseReleased && !recoveryOnly && quarantined && launchAttempted && nativeTerminal == nil
     }
 
     public var canReleaseDeviceLease: Bool {
-        !deviceLeaseReleased && !recoveryOnly && nativeTerminal != nil && request == nil
+        !deviceLeaseReleased && !recoveryOnly && nativeTerminal != nil && requests.isEmpty
     }
 
     public var terminal: ClusterOwnerTerminal? {
@@ -131,7 +140,7 @@ public struct ClusterOwnerLeaseState: Sendable {
     mutating func clock(_ now: UInt64) throws {
         try require(now >= lastNow, "Local monotonic clock regressed")
         lastNow = now
-        if now >= lifetimeDeadlineUptimeNanoseconds || (request.map { now >= $0.deadline } ?? false) {
+        if now >= lifetimeDeadlineUptimeNanoseconds || requests.values.contains(where: { now >= $0.deadline }) {
             quarantine()
         }
     }

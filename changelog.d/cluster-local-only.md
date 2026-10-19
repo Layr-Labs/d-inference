@@ -23,3 +23,8 @@
 - When the cable moves to a Thunderbolt port that was never set up, `darkbloom cluster` says so and sets it up with one key (f); the service's log says what to do.
 - The local API (single Mac and cluster) puts every model's reasoning in its own field, Qwen and Nemotron included, on chat completions and the Responses API; a stream whose prompt opens no think block still streams its answer at once.
 - Shorter onboarding screens: models held back for the same reason share one line, two Macs running different Darkbloom builds are named as such ("install the same Darkbloom on both") instead of "Planning failed (Peer native build differs from the capability)", models the cluster cannot run say "not supported on a cluster yet", and the development-build service line says only what to do after a restart (the reason is in the service log).
+
+- Guided cluster setup shows five stages, names the default model choice, refreshes peer labels from the authenticated Mac, and reports completion only after the test response succeeds. Terminal color respects `NO_COLOR`; redirected output stays plain.
+
+- Cluster members prevent idle sleep while a deployment is serving or waiting for its peer; assertions remain held until the child and relay stop, then are released.
+- A cluster service recovering a model process from its previous run keeps waiting after the cleanup deadline, keeps that process visible and protected from idle sleep, and starts no replacement model until it exits.

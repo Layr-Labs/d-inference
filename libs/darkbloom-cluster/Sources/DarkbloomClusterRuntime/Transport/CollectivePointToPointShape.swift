@@ -6,6 +6,9 @@ import MLX
 public struct CollectivePointToPointShape {
     static let maximumDimensions = 4
     static let hardByteLimit = 16 * 1024 * 1024
+    /// A logical array carried in multiple encrypted records. This does not
+    /// enlarge a raw native transfer or a record frame.
+    static let authenticatedArrayByteLimit = 64 * 1024 * 1024
     static let allowedDTypes: Set<DType> = [.uint8, .uint32, .int32, .float16, .bfloat16, .float32]
 
     public let shape: [Int]
@@ -14,7 +17,15 @@ public struct CollectivePointToPointShape {
     public let byteCount: Int
 
     public init(shape: [Int], dtype: DType, maximumBytes: Int) throws {
-        guard (1...Self.hardByteLimit).contains(maximumBytes),
+        try self.init(shape: shape, dtype: dtype, maximumBytes: maximumBytes, ceiling: Self.hardByteLimit)
+    }
+
+    static func authenticatedArray(shape: [Int], dtype: DType, maximumBytes: Int) throws -> Self {
+        try .init(shape: shape, dtype: dtype, maximumBytes: maximumBytes, ceiling: authenticatedArrayByteLimit)
+    }
+
+    private init(shape: [Int], dtype: DType, maximumBytes: Int, ceiling: Int) throws {
+        guard (1...ceiling).contains(maximumBytes),
             (1...Self.maximumDimensions).contains(shape.count),
             Self.allowedDTypes.contains(dtype) else {
             throw ProbeError("Point-to-point transfer has an unsupported shape, dtype or byte limit")

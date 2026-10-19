@@ -127,6 +127,10 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     /// saves (the keys and values it would have held). Nil in a layout written
     /// before it was derived: the charge is then taken at the largest request.
     public let requestChargeEveryRankBytesPerToken: Int?
+    /// Bytes every rank's quotation holds beside its weights and its own
+    /// state, added to them: unlike the charge, which stands in for state,
+    /// this is the family's workspace and load allowances. Nil when it has none.
+    public var allowanceEveryRankBytes: Int? = nil
 
     public init(schema: String = ClusterModelLayout.schemaName, runtimeModelID: String, artifactSHA256: String,
                 configurationSHA256: String, layers: [Layer], ingress: Part, egress: Part, excluded: Part,
@@ -179,7 +183,7 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
               maximumPromptTokens > 0, maximumOutputTokens > 0,
               (1...maximumPromptTokens).contains(maximumChunkTokens),
               boundaryBytesPerToken > 0, requestChargeEveryRankBytes >= 0,
-              (requestChargeEveryRankBytesPerToken ?? 0) >= 0 else {
+              (requestChargeEveryRankBytesPerToken ?? 0) >= 0, (allowanceEveryRankBytes ?? 0) >= 0 else {
             throw ClusterPlacementError("Model layout is malformed")
         }
         // The head is part of what no range loads, and its credit is a speed-up.
@@ -337,6 +341,8 @@ public protocol ClusterPlacementFamily {
     var requestChargeEveryRankBytes: Int { get }
     /// See `ClusterModelLayout.requestChargeEveryRankBytesPerToken`.
     var requestChargeEveryRankBytesPerToken: Int? { get }
+    /// See `ClusterModelLayout.allowanceEveryRankBytes`.
+    var allowanceEveryRankBytes: Int? { get }
 
     /// Which of the two stages the family's own plan gives a stored tensor
     /// when stage 0 holds `cut` layers: 0, 1, or nil when no stage loads it.
@@ -376,6 +382,7 @@ extension ClusterPlacementFamily {
     public var structuralCuts: [Int] { admittedCuts }
     public var requestChargeEveryRankBytes: Int { 0 }
     public var requestChargeEveryRankBytesPerToken: Int? { nil }
+    public var allowanceEveryRankBytes: Int? { nil }
     public func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { storedBytes }
     public func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { 0 }
     public func loadsAtBothEnds(storedTensor name: String) -> Bool { false }
@@ -391,18 +398,23 @@ extension ClusterPlacementFamily {
 /// plan, and refuses a family whose answers are not a contiguous layer
 /// pipeline or do not conserve the artifact's bytes.
 public enum ClusterModelLayoutBuilder {
+    /// GLM's packed expert inventory has 114,160 entries. Keep schema input
+    /// bounded independently of the much smaller encoded placement summary.
+    public static let maximumTensorCount = 200_000
+
     public static func build(family: some ClusterPlacementFamily, tensors: [ClusterPlacementStoredTensor],
                              artifactSHA256: String, configurationSHA256: String) throws -> ClusterModelLayout {
         let count = family.layerCount, cuts = family.structuralCuts
         guard (2...1024).contains(count), !cuts.isEmpty, cuts == Array(Set(cuts)).sorted(),
               cuts.allSatisfy({ (1..<count).contains($0) }),
               Set(family.admittedCuts).isSubset(of: Set(cuts)),
-              (1...65_536).contains(tensors.count), Set(tensors.map(\.name)).count == tensors.count else {
+              (1...maximumTensorCount).contains(tensors.count), Set(tensors.map(\.name)).count == tensors.count else {
             throw ClusterPlacementError("A layout needs at least two layers, one cut and a bounded list of distinct tensors")
         }
         var layers = [ClusterModelLayout.Part](repeating: .init(), count: count)
         var ingress = ClusterModelLayout.Part(), egress = ClusterModelLayout.Part(), excluded = ClusterModelLayout.Part()
         var head = ClusterModelLayout.Part()
+        var stored = 0, loadedTotal = 0, workTotal = 0
         // Divided and replicated loaded bytes of each layer, then ingress and egress.
         let tensorPlan = family.tensorParallelPlan
         var tpLayers = [(divided: Int, replicated: Int)](repeating: (0, 0), count: count)
@@ -423,11 +435,19 @@ public enum ClusterModelLayoutBuilder {
         }
         for tensor in tensors {
             guard tensor.byteCount > 0 else { throw ClusterPlacementError("Tensor \(tensor.name) has no bytes") }
+            stored = try addingBytes(stored, tensor.byteCount)
             let stages = try cuts.map { try family.stage(ofStoredTensor: tensor.name, cut: $0) }
             let loaded = family.loadedBytes(ofStoredTensor: tensor.name, storedBytes: tensor.byteCount)
             let work = family.requestWorkBytes(ofStoredTensor: tensor.name, storedBytes: tensor.byteCount)
             guard loaded > 0, work >= 0 else { throw ClusterPlacementError("Tensor \(tensor.name) has an invalid loaded size") }
-            if family.loadsAtBothEnds(storedTensor: tensor.name) {
+            let replicated = family.loadsAtBothEnds(storedTensor: tensor.name)
+            // Bound all positive partitions and replicas before their Part/TP
+            // accumulators run, including sums spanning different layers.
+            loadedTotal = try addingBytes(loadedTotal, loaded)
+            workTotal = try addingBytes(workTotal, work)
+            if replicated {
+                loadedTotal = try addingBytes(loadedTotal, loaded)
+                workTotal = try addingBytes(workTotal, work)
                 // Stored once, held by both ends. A layer's tensor cannot be.
                 guard family.layer(ofStoredTensor: tensor.name) == nil else {
                     throw ClusterPlacementError("Tensor \(tensor.name) names a layer and cannot load at both ends")
@@ -474,12 +494,11 @@ public enum ClusterModelLayoutBuilder {
         guard layers.allSatisfy({ $0.tensorCount > 0 }) else {
             throw ClusterPlacementError("A layer has no stored tensor: the headers and the configuration disagree")
         }
-        let stored = tensors.reduce(0) { $0 + $1.byteCount }
         guard stored == ingress.storedBytes + egress.storedBytes + excluded.storedBytes
                 + layers.reduce(0, { $0 + $1.storedBytes }) else {
             throw ClusterPlacementError("Layout does not conserve the artifact's stored bytes")
         }
-        let value = ClusterModelLayout(schema: ClusterModelLayout.schemaName, runtimeModelID: family.runtimeModelID,
+        var value = ClusterModelLayout(schema: ClusterModelLayout.schemaName, runtimeModelID: family.runtimeModelID,
             artifactSHA256: artifactSHA256, configurationSHA256: configurationSHA256,
             layers: try layers.enumerated().map { index, weights in
                 let state = try family.requestState(layer: index)
@@ -494,6 +513,7 @@ public enum ClusterModelLayoutBuilder {
             maximumChunkTokens: family.maximumChunkTokens, boundaryBytesPerToken: family.boundaryBytesPerToken,
             requestChargeEveryRankBytes: family.requestChargeEveryRankBytes,
             requestChargeEveryRankBytesPerToken: family.requestChargeEveryRankBytesPerToken)
+        value.allowanceEveryRankBytes = family.allowanceEveryRankBytes
         try value.validate()
         // The head no range loads, and the speed-up the family's row credits it with.
         var built = value
@@ -507,5 +527,11 @@ public enum ClusterModelLayoutBuilder {
         }
         try built.validate()
         return built
+    }
+
+    private static func addingBytes(_ lhs: Int, _ rhs: Int) throws -> Int {
+        let result = lhs.addingReportingOverflow(rhs)
+        guard !result.overflow else { throw ClusterPlacementError("Model layout byte total exceeds Int capacity") }
+        return result.partialValue
     }
 }

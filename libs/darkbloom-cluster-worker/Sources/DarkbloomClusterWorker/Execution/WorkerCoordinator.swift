@@ -56,6 +56,12 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var decision: ClusterWorkerTokenDecision?
     /// Batch lanes: rank 0's decisions, by request, until the loop takes them.
     private var laneDecisions: [UUID: ClusterWorkerTokenDecision] = [:]
+    /// Published admissions whose start has not been accepted by the reader.
+    /// Runtime start may still be queued after this set loses the ID.
+    private var unstartedLanes = Set<UUID>()
+    /// Lanes given back before they started, whose cancel the executor answers
+    /// with their retirement (condition lock).
+    private var withdrawnLanes = Set<UUID>()
     private static let laneActionBound = 64
     private var failure: Error?
     private var stopped = false
@@ -295,6 +301,14 @@ final class WorkerCoordinator: @unchecked Sendable {
                 try proposed.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
                 try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: nil)
                 laneSession = proposed; eventSequence += 1
+                if let requestID {
+                    switch event {
+                    case .admitted: unstartedLanes.insert(requestID)
+                    case .retired, .refused:
+                        unstartedLanes.remove(requestID); withdrawnLanes.remove(requestID)
+                    default: break
+                    }
+                }
                 return
             }
             var proposed = session!
@@ -423,8 +437,20 @@ final class WorkerCoordinator: @unchecked Sendable {
         case .tokenDecision(_, let value):
             laneDecisions[frame.requestID!] = value
         case .cancel:
-            // Only the facade's locked flag; the loop's next check ends it.
-            runtime?.cancel(frame.requestID!); runtime?.cancelLane(frame.requestID!)
+            // A repeated cancel before its retirement needs only one queued
+            // acknowledgment; the protocol still validates its sequence.
+            if withdrawnLanes.contains(frame.requestID!) { return }
+            // A lane that never started is given back on its own (the pair's
+            // other rank refused it); the lanes that run go on. Any other
+            // lane: only the facade's locked flag; the loop's next check ends it.
+            // Accepted start is the cutoff, even when the executor has not
+            // applied it yet. Never withdraw beneath a queued/in-flight start.
+            if unstartedLanes.remove(frame.requestID!) != nil,
+               runtime?.withdrawLane(frame.requestID!) == true {
+                withdrawnLanes.insert(frame.requestID!)
+            } else {
+                runtime?.cancel(frame.requestID!); runtime?.cancelLane(frame.requestID!)
+            }
             guard actions.count < Self.laneActionBound else { throw WorkerFailure.invalid("Worker action queue exceeded its bound") }
             actions.append(frame)
         case .shutdown:
@@ -433,6 +459,7 @@ final class WorkerCoordinator: @unchecked Sendable {
             actions.append(frame)
         default:
             guard actions.count < Self.laneActionBound else { throw WorkerFailure.invalid("Worker action queue exceeded its bound") }
+            if case .start = frame.command { unstartedLanes.remove(frame.requestID!) }
             actions.append(frame)
         }
     }
@@ -461,11 +488,19 @@ final class WorkerCoordinator: @unchecked Sendable {
             try publish(.shutdownComplete, requestID: nil)
             return true
         case .cancel:
-            throw WorkerFailure.invalid("Request cancelled")
+            try completeLaneWithdrawal(command.requestID!)
         case .tokenDecision:
             throw WorkerFailure.invalid("Token decision escaped its callback credit")
         }
         return false
+    }
+
+    /// Executor-only. Keep the disposition until publication succeeds, so a
+    /// reader-side duplicate cannot turn the pending acknowledgment fatal.
+    private func completeLaneWithdrawal(_ id: UUID) throws {
+        condition.lock(); let withdrawn = withdrawnLanes.contains(id); condition.unlock()
+        guard withdrawn else { throw WorkerFailure.invalid("Request cancelled") }
+        try publish(.retired(.cancelled), requestID: id)
     }
 
     /// Every queued command, without waiting (between batch steps).
@@ -485,18 +520,28 @@ final class WorkerCoordinator: @unchecked Sendable {
     }
 
     fileprivate func awaitLaneDecisions(_ ids: [UUID]) throws -> [UUID: Bool] {
-        condition.lock(); defer { condition.unlock() }
-        while failure == nil && !ids.allSatisfy({ laneDecisions[$0] != nil }) {
-            // A cancellation ends the wait: the loop's next check fails it.
-            if actions.contains(where: { if case .cancel = $0.command { return true }; return false }) {
-                throw WorkerFailure.invalid("Token decision interrupted by cancellation")
+        condition.lock()
+        while true {
+            if let failure { condition.unlock(); throw failure }
+            if let index = actions.firstIndex(where: { if case .cancel = $0.command { return true }; return false }) {
+                let command = actions.remove(at: index)
+                condition.unlock()
+                // Only a successful unstarted withdrawal is safe to service
+                // while waiting for another lane's decision. A started-lane
+                // cancel still fails the batch. Publish without holding the
+                // condition: publish acquires it and commits the protocol state.
+                try completeLaneWithdrawal(command.requestID!)
+                condition.lock()
+                continue
+            }
+            if ids.allSatisfy({ laneDecisions[$0] != nil }) {
+                var result: [UUID: Bool] = [:]
+                for id in ids { result[id] = laneDecisions.removeValue(forKey: id)! == .proceed }
+                condition.unlock()
+                return result
             }
             condition.wait()
         }
-        if let failure { throw failure }
-        var result: [UUID: Bool] = [:]
-        for id in ids { result[id] = laneDecisions.removeValue(forKey: id)! == .proceed }
-        return result
     }
 
     fileprivate func publishLaneToken(_ id: UUID, ordinal: Int, token: Int, committed: Int) throws {

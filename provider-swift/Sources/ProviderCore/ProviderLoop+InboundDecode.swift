@@ -28,12 +28,21 @@ extension ProviderLoop {
     /// normalisation can't repair the body, the strict-decoder error is
     /// surfaced as-is.
     internal static func decodeOpenAIRequest(
-        _ data: Data
+        _ data: Data,
+        modelType: String? = nil
     ) throws -> OpenAIChatCompletionRequest {
         // Inject default `type`s into tool parameter schemas so a Gemma-style
         // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
         // property (DAR-130). No-op for requests without tools.
-        var data = ToolSchemaNormalization.ensureParameterTypes(in: data)
+        let glm = GLM5NextPromptPolicy.applies(modelType: modelType)
+        if glm {
+            try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: data).validate()
+        }
+        // Only provider-owned model metadata may select the native raw-schema
+        // path. Legacy model-blind callers retain their existing decode shape;
+        // the request-local GLM capsule restores original declarations later,
+        // after the acquired slot's model_type has been checked.
+        var data = glm ? data : ToolSchemaNormalization.ensureParameterTypes(in: data)
         // Legacy assistant `function_call` is an unknown field to the upstream
         // decoder, so normalize it before the strict fast path can silently drop
         // it and leave a following tool/function result orphaned for Harmony.
@@ -130,8 +139,9 @@ extension ProviderLoop {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) -> Int {
-        guard let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
-        if modelType == "mimo_v2" {
+        guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
+            let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
+        if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType) {
             return (try? ProviderPromptContractPipeline.tokenize(
                 prepared: prepared, request: request, tokenizer: tokenizer.inner,
                 modelType: modelType, templateControls: templateControls).count) ?? 0

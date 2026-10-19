@@ -23,6 +23,7 @@ public struct PromptTokenizer: Sendable {
         ("c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd", "registered_gemma4_26b_qat_4bit"),
         ("4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b", "registered_gemma4_26b"),
         ("4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed", "registered_gemma4_26b_8bit"),
+        ("daee0b1bef9258ae0d8ed98b7a489586f2eb8453453302be057b12008d249649", "registered_glm53_flash"),
     ]
     /// Models whose chat format is not the wrapper below. Their prompts are raw
     /// text only, so a request never carries a chat format the model does not have.
@@ -44,6 +45,11 @@ public struct PromptTokenizer: Sendable {
     static func chatWrapper(modelID: String) -> (prefix: String, suffix: String) {
         if modelID == "registered_nemotron35_lightning" {
             return ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think></think>")
+        }
+        // GLM's template has no thinking switch: it renders its default
+        // reasoning-effort system turn and opens the assistant's thinking block.
+        if modelID == "registered_glm53_flash" {
+            return ("[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>", "<|assistant|><think>")
         }
         if modelID.hasPrefix("registered_gemma4_") {
             return ("<bos><|turn>user\n", "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")

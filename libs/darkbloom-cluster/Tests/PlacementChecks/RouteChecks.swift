@@ -60,15 +60,16 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
             decisions.allSatisfy { $0.path == .alone && $0.member == "m2ultra" && ($0.aloneSeconds ?? .infinity) <= $0.pairSeconds })
         checks.require("M2 Ultra + M1: no prompt length makes the pair worth it",
             try ClusterRequestRouter.crossoverPromptTokens(split.setup, outputTokens: 128, maximumPrompt: 32_768) == nil)
-        // Capacity: 60 layers of 3 GiB, more than either Mac holds, pipeline only.
-        let huge = try syntheticLayout(layers: 60, layerGiB: 3, modes: [.pipeline])
+        // Capacity: 60 layers of 2.5 GiB, more than either Mac holds at rest, pipeline only.
+        let huge = try syntheticLayout(layers: 60, layerGiB: 2.5, modes: [.pipeline])
         let big = try SyntheticMac.idle(192).device("m2ultra", speed: measured(prefill: 300, decode: 10), chip: "Apple M2 Ultra")
         let other = try SyntheticMac.idle(128).device("m1ultra", speed: measured(prefill: 150, decode: 6), chip: "Apple M1 Ultra")
         let capacity = try plan([big, other], huge)
         let route = try ClusterRequestRouter.decide(capacity.setup, promptTokens: 32, outputTokens: 16)
         let always = try ClusterRequestRouter.crossoverPromptTokens(capacity.setup, outputTokens: 16, maximumPrompt: 8_192)
-        checks.require("a capacity model (no Mac holds it alone) always goes to the pair, whatever the prompt",
-            capacity.result.alone.allSatisfy { !$0.fit.possible } && route.path == .pair && route.aloneCandidate == nil && always == 1)
+        checks.require("a capacity model (no Mac holds it alone at rest) always goes to the pair, whatever the prompt",
+            capacity.result.alone.allSatisfy { a in a.needBytes > [big, other].first { $0.label == a.device }!.profile.atRestAdmissibleBytes }
+                && route.path == .pair && route.aloneCandidate == nil && always == 1)
     }
 
     // The bench's generation gap (M3 Ultra + M5 Ultra): rates in the proportion
@@ -274,15 +275,16 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     // The planner weighs the member that can hold the whole model against
     // every placement (MiMo on M3 Ultra + M5 Ultra, 2026-10-13: the pair
     // decoded 42 tok/s against 57 on the M5 Ultra alone, every request on the
-    // pair because the model was pipeline-only). A 156 GiB model on a fast
-    // 256 GB Mac and a slower 256 GB Mac, rates in the measured proportion.
+    // pair because the model was pipeline-only). A 139 GiB model (within the
+    // 156 GiB a 256 GB Mac admits at rest, so one member holds it whole) on a
+    // fast 256 GB Mac and a slower 256 GB Mac, rates in the measured proportion.
     // The phase split and its alone route are hand-off modes (owner,
     // 2026-10-13: kept, off by default): these checks hold them under the
     // explicit opt-in, and the default plans a sharded deployment only.
     do {
         let fast = try SyntheticMac.idle(256).device("fast", speed: measured(prefill: 1_250, decode: 57), chip: "Apple M5 Ultra")
         let slow = try SyntheticMac.idle(256).device("slow", speed: measured(prefill: 325, decode: 39), chip: "Apple M3 Ultra")
-        let every = try syntheticLayout(layers: 48, layerGiB: 3.2, modes: [.pipeline, .pipelineCompactDecode, .phaseSplit])
+        let every = try syntheticLayout(layers: 48, layerGiB: 2.9, modes: [.pipeline, .pipelineCompactDecode, .phaseSplit])
         var serial = ClusterPlacementPolicy(); serial.schedules = [.serial]; serial.promptTokens = 4_096
         let byDefault = try ClusterPlacementPlanner.plan(devices: [slow, fast], layout: every, policy: serial)
         checks.require("whole-model member, by default: a sharded mode, no request routed alone (chose \(byDefault.chosen?.mode.rawValue ?? "-"))",
@@ -300,7 +302,7 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
             (chosen?.routedSeconds(.rested) ?? .infinity) < pipelineOnly.routedSeconds(.rested) && pipelineOnly.aloneRoute == nil)
         // With lookahead and a long prompt the pair's prefill wins; the router still serves short prompts alone.
         var long = ClusterPlacementPolicy(); long.promptTokens = 8_000; long.outputTokens = 16; long.handOffModes = true
-        var mixed = try syntheticLayout(layers: 48, layerGiB: 3.2, modes: [.pipeline, .phaseSplit])
+        var mixed = try syntheticLayout(layers: 48, layerGiB: 2.9, modes: [.pipeline, .phaseSplit])
         mixed = try ClusterModelLayout.decode(mixed.encoded())
         let longResult = try ClusterPlacementPlanner.plan(devices: [slow, fast], layout: mixed, policy: long)
         checks.require("whole-model member, long prompt with lookahead: the pair is predicted faster, so it serves the planned request",

@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXNN
+import DarkbloomClusterProtocol
 
 /// A compact stage is not a complete model. Only the MiMo stage session may
 /// consume it: stage 0 takes token IDs and exports the residual, stage 1 takes
@@ -14,6 +15,12 @@ struct LoadedMiMoLayerStage {
     let profile: MiMoRegisteredModelProfile
     let activationDType: DType
     let vocabularySize: Int
+    var vision: MiMoStageVision? = nil
+    var visionCommitmentSHA256: String? = nil
+    var storageCommitmentSHA256: String {
+        visionCommitmentSHA256.map { sha256(Data((receipt.storageCommitmentSHA256 + "|vision=" + $0).utf8)) }
+            ?? receipt.storageCommitmentSHA256
+    }
 
     var layerCount: Int { plan.stages[stageIndex].layers.count }
 }
@@ -25,10 +32,13 @@ struct LoadedMiMoLayerStage {
 final class MiMoStageLoadGate: QwenLayerStageGate {
     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
     private var next = 0
+    private let supplementalBytes: Int
     private var failed = false
     private let watch = QwenDenseStageLoadWatch("Resident load")
 
-    init(inventory: MiMoStagePreparedInventory) throws {
+    init(inventory: MiMoStagePreparedInventory, supplementalBytes: Int = 0) throws {
+        guard supplementalBytes >= 0 else { throw ProbeError("Negative MiMo LOAD supplement") }
+        self.supplementalBytes = supplementalBytes
         active = inventory.active; host = active.map(\.byteCount).max() ?? 0
         bounds = try active.map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
         let inertBounds = try inventory.inert.flatMap(\.parameters).map {
@@ -46,7 +56,7 @@ final class MiMoStageLoadGate: QwenLayerStageGate {
     func observe() throws {
         do {
             guard !failed else { throw ProbeError("MiMo stage load gate was poisoned") }
-            let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next)) + [inert])
+            let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next)) + [inert,supplementalBytes])
             let h = next < active.count ? host : 0
             let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
             let required = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
@@ -89,6 +99,7 @@ func loadMiMoResidentStage(source: MiMoResidentSource, stageIndex index: Int,
                            constructed: (Module) -> Void = { _ in }) throws -> LoadedMiMoLayerStage {
     let plan = source.plan
     guard plan.stages.count == 2, (0...1).contains(index) else { throw ProbeError("MiMo stage load requires a two-stage Plan") }
+    let visionInventory = plan.visionEnabled ? try MiMoStageVision.inventory(source) : nil
     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
         try inspectOtherMiMoStage(source: source, stage: plan.stages[1 - index], check: check)
     }
@@ -112,14 +123,22 @@ func loadMiMoResidentStage(source: MiMoResidentSource, stageIndex index: Int,
                 largestSourceTensorBytes: source.specification.largestTensorBytes,
                 sourceTensorCount: source.tensors.count, canonicalTensorCount: source.tensors.count,
                 bf16ConversionEnabled: false, stages: inventories.map(\.summary))
-            let gate = try MiMoStageLoadGate(inventory: value.inventory)
+            let supplement = index == 0 ? try visionInventory.map { try QwenLongPrefillCheckedBytes.sum([
+                $0.allocationBytes,$0.largestTensorBytes,$0.largestTensorBytes,CheckpointAlignedReadPlan.maximumScratchAllocationBytes,ClusterMiMoImageCandidate.activationFloorBytes]) } ?? 0
+                : (plan.visionEnabled ? ClusterMiMoImageCandidate.wireWorkingReserveBytes : 0)
+            let gate = try MiMoStageLoadGate(inventory: value.inventory,supplementalBytes:supplement)
             let loaded = try materializeMiMoStage(source: source, stageIndex: index, model: value.model,
                 inventory: value.inventory, commitment: commitment, gate: gate,
                 check: { try check(); try gate.observe(); try check() })
             try gate.finish(); try check()
-            return LoadedMiMoLayerStage(model: loaded.model, plan: loaded.plan, stageIndex: loaded.stageIndex,
+            var result = LoadedMiMoLayerStage(model: loaded.model, plan: loaded.plan, stageIndex: loaded.stageIndex,
                 receipt: loaded.receipt, profile: loaded.profile, activationDType: loaded.activationDType,
                 vocabularySize: loaded.vocabularySize)
+            result.visionCommitmentSHA256 = visionInventory?.fingerprint
+            if index == 0, let visionInventory {
+                result.vision = try MiMoStageVision(source:source,inventory:visionInventory,check:check)
+            }
+            return result
         }
     }
 }

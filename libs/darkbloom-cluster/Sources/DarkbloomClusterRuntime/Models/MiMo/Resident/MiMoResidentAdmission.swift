@@ -14,6 +14,20 @@ struct MiMoResidentAdmission {
     let arithmeticSHA256: String
     let jaccl: QwenResidentJACCLConfiguration
 
+    /// Pure startup policy, before the process-wide measurement is enabled.
+    /// Record-only measurement enforces every memory decision and is allowed;
+    /// an image candidate may never request or inherit a refusal waiver.
+    /// Other profiles retain their existing standalone qualification policy.
+    static func memoryMeasurementMode(runtimeProfile: String?, environment: [String: String],
+                                      existingModeWaivesRefusals: Bool) throws -> QwenDenseStageLoadMeasurement.Mode? {
+        let requested = try QwenDenseStageLoadMeasurement.requested(environment: environment)
+        guard runtimeProfile != ClusterMiMoImageCandidate.profileID
+            || (requested != .measure && !existingModeWaivesRefusals) else {
+            throw ProbeError("MiMo image candidate requires enforced host memory gates; measure mode or an active waiver is refused")
+        }
+        return requested
+    }
+
     init(configuration: QwenResidentLoadConfiguration, configBytes: Data, manifestBytes: Data,
          environment: [String: String], now: UInt64, read: (URL, Int) throws -> Data) throws {
         let identity = configuration.identity
@@ -41,8 +55,14 @@ struct MiMoResidentAdmission {
         guard jaccl.rank == configuration.rank else { throw ProbeError("Resident local rank differs from JACCL") }
         self.configuration = configuration; self.configBytes = configBytes; self.manifestBytes = manifestBytes
         specification = spec
-        plan = try MiMoLayerStagePlan(configuration: configBytes, cut: configuration.stageCut)
-        profile = try spec.profile()
+        guard environment["DARKBLOOM_CLUSTER_MIMO_VISION_DRAFT"] == nil,
+              configuration.runtimeProfile == nil || configuration.runtimeProfile == spec.profileID
+                || configuration.runtimeProfile == ClusterMiMoImageCandidate.profileID else {
+            throw ProbeError("MiMo media selection requires the exact bound runtime profile; environment opt-ins are refused")
+        }
+        let imageCandidate = configuration.runtimeProfile == ClusterMiMoImageCandidate.profileID
+        plan = try MiMoLayerStagePlan(configuration: configBytes, cut: configuration.stageCut,visionEnabled:imageCandidate)
+        profile = try spec.profile(imageCandidate:imageCandidate)
     }
 
     /// `decodingRankHoldsEveryLayer`: the loaded mode is a phase split, whose
@@ -54,6 +74,12 @@ struct MiMoResidentAdmission {
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
+        if let media = value.mimoImages {
+            guard plan.visionEnabled, !decodingRankHoldsEveryLayer, value.route == nil else {
+                throw ProbeError("MiMo images require the rank-0 native vision pipeline")
+            }
+            try media.validate(prompt:value.promptTokenIDs)
+        }
         // Only a phase split's decoding rank holds every layer; under a pipeline
         // every request uses the pair.
         guard value.route == nil || decodingRankHoldsEveryLayer else {
@@ -61,7 +87,7 @@ struct MiMoResidentAdmission {
         }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling, route: value.route)
+            sampling: value.sampling, route: value.route, mimoImages:value.mimoImages)
     }
 
     /// Rank, local path and local uptime are intentionally absent. Everything
@@ -77,7 +103,7 @@ struct MiMoResidentAdmission {
             mode.rawValue, transport.rawValue,
         ] + (speculative?.loadAgreementFields ?? []) + [
             // Each rank's own limit differs with its stage; the policy both run under is common.
-            "residency=\(residency ? MiMoStageResidency.policy : "off")", "measuredGate=\(measuredGate)",
+            "residency=\(residency ? ClusterStageResidency.policy : "off")", "measuredGate=\(measuredGate)",
         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
     }
 
@@ -96,7 +122,8 @@ struct MiMoResidentRequestAllowance {
     /// Rank 1 of `pipeline_mtp_v1`: the speculative head's request state at
     /// the allocator's bound (`MiMoMTPHead.requestBytes`); 0 otherwise.
     var speculativeBytes = 0
-    var reservedBytes: Int { budget.reservedBytes + speculativeBytes }
+    var imageBytes = 0
+    var reservedBytes: Int { budget.reservedBytes + speculativeBytes + imageBytes }
     let watch = QwenDenseStageLoadWatch("Resident request")
 
     /// `phaseSplit`: rank 1 holds the state of every layer (its own range and
@@ -104,7 +131,7 @@ struct MiMoResidentRequestAllowance {
     /// exists on both sides while it moves (`handoffBytes`, on each rank).
     static func derive(specification: MiMoRegisteredSpecification, plan: MiMoLayerStagePlan, rank: Int,
                        maximumTokens: Int, chunkSize: Int, phaseSplit: Bool = false,
-                       speculativeBytes: Int = 0) throws -> Self {
+                       speculativeBytes: Int = 0,imageCandidate: Bool = false) throws -> Self {
         guard plan.stages.count == 2, (0...1).contains(rank) else {
             throw ProbeError("Resident MiMo request allowance requires an admitted two-stage Plan")
         }
@@ -115,7 +142,8 @@ struct MiMoResidentRequestAllowance {
         let own = try MiMoRequestStateBudget.estimate(specification: specification, layers: layers,
             rank: rank, maximumTokens: maximumTokens, chunkSize: chunkSize,
             bound: QwenResidentResourceEnvironment.allocationBound)
-        guard phaseSplit else { return .init(budget: own, speculativeBytes: speculativeBytes) }
+        guard phaseSplit else { return .init(budget: own, speculativeBytes: speculativeBytes,
+            imageBytes:imageCandidate ? (rank == 0 ? ClusterMiMoImageCandidate.activationFloorBytes : ClusterMiMoImageCandidate.wireWorkingReserveBytes) : 0) }
         let moving = try MiMoRequestStateBudget.estimate(specification: specification, layers: plan.stages[0].sourceRange,
             rank: 0, maximumTokens: maximumTokens, chunkSize: chunkSize, bound: QwenResidentResourceEnvironment.allocationBound)
         return .init(budget: try own.adding(handoffBytes: try QwenLongPrefillCheckedBytes.sum([

@@ -23,6 +23,8 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
     /// The worker takes its prefix-SSD key as a line of its input
     /// (`--prefix-ssd-key`); detected from the scheme name it compares.
     var acceptsPrefixSSDKeyInput = false
+    var acceptsMiMoImageCandidate = false
+    var acceptsGLMImageCandidate = false
 
     /// `executable` was just hashed against its pin; the caller re-checks that
     /// it did not change after this read.
@@ -49,7 +51,9 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
         }
         let result = Self(hasProgressGuard: contains(progressGuardMarker), acceptsStartupDeadline: contains(startupDeadlineArgument),
             acceptsDataPlane: contains(ClusterDataPlaneLaunch.workerMarker),
-            acceptsPrefixSSDKeyInput: contains(ClusterWorkerPrefixSSDKey.argument))
+            acceptsPrefixSSDKeyInput: contains(ClusterWorkerPrefixSSDKey.argument),
+            acceptsMiMoImageCandidate:contains(ClusterMiMoImageCandidate.runtimeProfileArgument) && contains(ClusterMiMoImageCandidate.schema),
+            acceptsGLMImageCandidate: contains(ClusterGLMImageCandidate.schema) && contains(ClusterGLMImageCandidate.profileID))
         try executable.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result
@@ -61,6 +65,18 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
     func requirePrefixSSDKeyInput(tierOn: Bool) throws {
         guard tierOn, !acceptsPrefixSSDKeyInput else { return }
         throw ClusterConfigurationError.invalid("Install the same Darkbloom release on both Macs. (The installed worker cannot take the prefix-SSD key on its input; an older worker would need it in its environment, which this owner never does.)")
+    }
+
+    func requireMiMoImageCandidate(required: Bool) throws {
+        guard !required || (acceptsMiMoImageCandidate && hasProgressGuard && acceptsStartupDeadline && acceptsDataPlane) else {
+            throw ClusterConfigurationError.invalid("Installed worker does not carry the exact private MiMo image profile and required guards")
+        }
+    }
+
+    func requireGLMImageCandidate(required: Bool) throws {
+        guard !required || (acceptsGLMImageCandidate && hasProgressGuard && acceptsStartupDeadline && acceptsDataPlane) else {
+            throw ClusterConfigurationError.invalid("Installed worker lacks the GLM image profile or required guards")
+        }
     }
 
     func requireProgressGuard() throws {

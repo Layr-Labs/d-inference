@@ -76,10 +76,25 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
                 value.pairSeconds, unit, value.aloneSeconds.map { String(format: "%.2f", $0) + unit } ?? "-",
                 served ? "corrected by this pair's speed records" : "predicted from the plan"))
         }
+        let stillImages = try request.clusterStillImages.map { try ClusterStillImages.decodeBounded($0) }
+        guard stillImages == nil || (identity.modelID == "registered_glm53_flash"
+            && stillImages?.configurationSHA256 == identity.configurationSHA256) else {
+            throw DistributedEngineError.refused(.mediaUnsupported)
+        }
+        let media = try request.mimoClusterImages.map { try ClusterMiMoImages.decodeBounded($0) }
+        guard media == nil || (identity.modelID == "registered_mimo_v26_flash_mopd"
+            && identity.artifactSHA256 == "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034") else {
+            throw DistributedEngineError.refused(.mediaUnsupported)
+        }
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,
-            route: decided?.workerRoute)
+            route: media == nil && stillImages == nil ? decided?.workerRoute : nil, mimoImages:media, stillImages:stillImages)
+        // Encode the COMPLETE bounded command before sending either rank.
+        // Use largest legal sequence metadata so a later pipe header cannot
+        // exceed 512 KiB after rank 0 has already reserved.
+        _ = try ClusterWorkerCodec.encode(.init(membershipEpoch:identity.membershipEpoch,
+            sequence:UInt64(Int64.max)-1,requestID:UUID(),command:.reserve(value)))
         // CBv2 request IDs may be reused after retirement. Each native request
         // gets a fresh UUID; the lease retains its original public CBv2 identity.
         let native: ClusterWorkerRequest

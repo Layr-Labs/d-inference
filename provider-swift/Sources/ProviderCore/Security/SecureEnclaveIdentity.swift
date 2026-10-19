@@ -157,6 +157,13 @@ public final class SecureEnclaveIdentity: @unchecked Sendable {
         }
         return identity
     }
+
+    /// Load only the existing opaque, device-bound handle. Never creates a new
+    /// identity when a private installed operation is reusing a paired member.
+    static func debugLoadExisting(at path: String) throws -> SecureEnclaveIdentity {
+        let data = try ClusterConfigurationFiles.read(URL(fileURLWithPath: path), maximum: 16 << 10, privateMode: true)
+        return try SecureEnclaveIdentity(dataRepresentation: data)
+    }
     #endif
 
     // MARK: - Ephemeral Startup

@@ -1,19 +1,20 @@
 import Foundation
 
-/// The streaming responses of one installed pipeline: the one being generated
-/// and those queued behind it (`DistributedRequestQueue.maximumWaiting`). Each
-/// response hold is separate from the model acquisition and native ownership;
-/// the pipeline still runs one request at a time.
+/// The streaming responses of one installed pipeline: those being generated
+/// (at most its batch lanes) and those queued behind them
+/// (`DistributedRequestQueue.maximumWaiting`). Each response hold is separate
+/// from the model acquisition and native ownership.
 final class DistributedHTTPResponses: @unchecked Sendable {
     let generationID: UUID
-    /// At most this many responses at once: one running and the queue behind it.
+    /// At most this many responses at once: the most lanes a pair runs and the
+    /// queue behind them.
     let limit: Int
     private let lock = NSLock()
     private var active: [UUID: DistributedHTTPResponse] = [:]
     private var accepting = true
     private var deliveryDeadline: ContinuousClock.Instant?
 
-    init(generationID: UUID = UUID(), limit: Int = DistributedRequestQueue.maximumWaiting + 1) {
+    init(generationID: UUID = UUID(), limit: Int = DistributedRequestQueue.maximumWaiting + DistributedRequestQueue.maximumLanes) {
         self.generationID = generationID; self.limit = max(1, limit)
     }
 

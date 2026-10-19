@@ -8,6 +8,15 @@ import Foundation
 public enum ClusterPlacementArtifact {
     static let maximumHeaderBytes = 16 * 1024 * 1024
     static let maximumFiles = 512
+    /// GLM NVFP4 declares per-expert packing in a roughly 10 MiB config.
+    /// This is an IO ceiling only; each family's schema and identity gates
+    /// still decide whether these bytes describe a supported artifact.
+    static let maximumConfigurationBytes = 32 * 1024 * 1024
+
+    static func configuration(directory: URL) throws -> Data {
+        try BoundedProbeInput.data(directory.appendingPathComponent("config.json"),
+            maximumBytes: maximumConfigurationBytes)
+    }
 
     /// Every stored tensor named by the safetensors headers of a flat
     /// directory of regular files.
@@ -53,7 +62,7 @@ public enum ClusterPlacementArtifact {
     /// largest context and its every-rank request charge at `contextTokens`,
     /// or nil for a family that plans within its layout only.
     public static func requestedContext(directory: URL, contextTokens: Int) throws -> (largest: Int, charge: Int)? {
-        let configuration = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
+        let configuration = try Self.configuration(directory: directory)
         guard let family = try? QwenDensePlacementFamily(configuration: configuration),
               contextTokens <= family.largestContextTokens else { return nil }
         return (family.largestContextTokens, family.requestChargeEveryRankBytes(contextTokens: contextTokens))
@@ -62,12 +71,12 @@ public enum ClusterPlacementArtifact {
     /// The layout of the artifact in a directory, from its `config.json`, its
     /// tensor headers and, when present, its `manifest.json` (which tells two
     /// catalog entries that share a configuration apart).
-    public static func layout(directory: URL) throws -> ClusterModelLayout {
-        let configuration = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
+    public static func layout(directory: URL,runtimeProfile: String? = nil) throws -> ClusterModelLayout {
+        let configuration = try Self.configuration(directory: directory)
         let manifestURL = directory.appendingPathComponent("manifest.json")
         let manifest = FileManager.default.fileExists(atPath: manifestURL.path)
             ? try BoundedProbeInput.data(manifestURL, maximumBytes: 4_194_304) : nil
         return try ClusterPlacementLayouts.layout(configuration: configuration, tensors: storedTensors(directory: directory),
-                                                  manifest: manifest)
+                                                  manifest: manifest,runtimeProfile:runtimeProfile)
     }
 }

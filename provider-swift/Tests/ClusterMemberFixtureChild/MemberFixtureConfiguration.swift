@@ -20,10 +20,11 @@ struct MemberFixtureConfiguration: Codable, Sendable {
     }
     func identity(epoch: UUID) throws -> ClusterWorkerIdentity {
         let common = try start.common
+        guard case .servingV1(let serving) = common.permission else { throw MemberFixtureError.invalid }
         return .init(membershipEpoch: epoch, modelID: modelID,
             artifactSHA256: common.artifactSHA256.hex, configurationSHA256: configurationSHA256,
-            peers: [.init(id: "fixture-rank-0", buildSHA256: common.nativeRuntimeSHA256.hex),
-                    .init(id: "fixture-rank-1", buildSHA256: common.nativeRuntimeSHA256.hex)])
+            peers: [.init(id: "fixture-rank-0", buildSHA256: serving.nativeRuntimeSHA256.hex),
+                    .init(id: "fixture-rank-1", buildSHA256: serving.nativeRuntimeSHA256.hex)])
     }
     static let profile = ClusterWorkerProfile(id: "native-key-cpu-fixture", vocabularySize: 256,
         maximumPromptTokens: 8, maximumOutputTokens: 2, maximumChunkTokens: 4, maximumContextTokens: 16)

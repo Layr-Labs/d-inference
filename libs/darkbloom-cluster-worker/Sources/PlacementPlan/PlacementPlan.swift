@@ -11,6 +11,7 @@ import Foundation
         do {
             let output = try ClusterPlacementTool.run(Array(CommandLine.arguments.dropFirst()),
                                                       sampleDevice: ClusterDeviceProfileSampler.sample,
+                                                      glmCandidates: GLM5NextAutomaticPlacement.scan,
                                                       measureIndex: { try ClusterDeviceIndexBenchmark.measure() })
             FileHandle.standardOutput.write(Data((output + "\n").utf8))
         } catch {

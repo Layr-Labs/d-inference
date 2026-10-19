@@ -1,6 +1,7 @@
 import Foundation
 import DarkbloomClusterProtocol
 import MLX
+import MLXRandom
 import MLXLMCommon
 import Testing
 @testable import DarkbloomClusterRuntime
@@ -423,6 +424,62 @@ struct ResidentAdmissionGemma4Tests {
         try evaluation.commit()
         #expect(recurrent.confirmedStateSnapshot() == nil && recurrent.materializedByteCount == 0)
         try recurrent.release()
+    }
+
+    /// A prompt prefix of a Gemma 4 stage past its window: the full row is
+    /// adopted whole and each sliding row from its kept window, and the next
+    /// token sees exactly the history the original rows give it.
+    @Test func aStageAdoptsItsSlidingWindowsAndContinuesBitForBit() throws {
+        func kinds() -> [CBv2LayerKind] {
+            (0..<6).map { local in
+                let full = (local + 1) % 6 == 0
+                return CBv2LayerKind(attention: full ? .full : .slidingWindow(1024), headDim: full ? 512 : 256,
+                    kvHeads: full ? 2 : 8, queryHeads: 16, modelLayerIndex: local)
+            }
+        }
+        func geometry() throws -> CBv2RequestGeometry {
+            try CBv2RequestGeometry(gemma4StageKinds: kinds(), kvDType: .bfloat16, maximumTokens: 1208)
+        }
+        let original = try CBv2OwnedRequestState(geometry: try geometry(), promptCount: 1200, outputCount: 8)
+        let committed = 1100
+        func chunk(_ kind: CBv2LayerKind, _ count: Int, _ seed: UInt64) -> (MLXArray, MLXArray) {
+            let key = MLXRandom.key(seed)
+            let shape = [1, kind.kvHeads, count, kind.headDim]
+            return (MLXRandom.normal(shape, key: key).asType(.bfloat16),
+                    MLXRandom.normal(shape, key: MLXRandom.key(seed + 1)).asType(.bfloat16))
+        }
+        // Prefill-sized frames past the window, as a prompt's chunks write them.
+        for (index, count) in [512, 512, 76].enumerated() {
+            for (position, kind) in original.geometry.kinds.enumerated() {
+                let (k, v) = chunk(kind, count, UInt64(100 * index + 2 * position))
+                _ = try #require(original.rows[position]).update(keys: k, values: v)
+            }
+        }
+        var full: [Int: (keys: MLXArray, values: MLXArray)] = [:], tails = full
+        for (position, kind) in original.geometry.kinds.enumerated() {
+            let snapshot = try #require(original.rows[position]).snapshot()
+            eval(snapshot.keys, snapshot.values)
+            #expect(snapshot.offset == committed && snapshot.keys.dim(2) == kind.retainedTokens(atFrontier: committed))
+            if case .slidingWindow = kind.attention { tails[position] = (snapshot.keys * 1, snapshot.values * 1) }
+            else { full[position] = (snapshot.keys * 1, snapshot.values * 1) }
+        }
+        #expect(tails.count == 5 && full.count == 1 && tails[0]?.keys.dim(2) == 1024)
+        let adopted = try CBv2OwnedRequestState(geometry: try geometry(), promptCount: 1200, outputCount: 8,
+            adoptingCommittedTokens: committed, attention: full, slidingTails: tails, recurrent: [:])
+        for (position, kind) in original.geometry.kinds.enumerated() {
+            let (k, v) = chunk(kind, 1, UInt64(9000 + 2 * position))
+            let a = try #require(original.rows[position]).update(keys: k, values: v)
+            let b = try #require(adopted.rows[position]).update(keys: k, values: v)
+            eval(a.0, a.1, b.0, b.1)
+            #expect(a.0.shape == b.0.shape && arrayEqual(a.0, b.0).item(Bool.self), "keys seen at layer \(position)")
+            #expect(a.1.shape == b.1.shape && arrayEqual(a.1, b.1).item(Bool.self), "values seen at layer \(position)")
+        }
+        // A tail of another length is not this frontier's window.
+        var short = tails; short[0] = (tails[0]!.keys[0..., 0..., 1..., 0...], tails[0]!.values[0..., 0..., 1..., 0...])
+        #expect(throws: (any Error).self) {
+            try CBv2OwnedRequestState(geometry: try geometry(), promptCount: 1200, outputCount: 8,
+                adoptingCommittedTokens: committed, attention: full, slidingTails: short, recurrent: [:])
+        }
     }
 
     @Test func everyFamilysRowsAreListedOnceAndQwenRowsAreUnchanged() throws {

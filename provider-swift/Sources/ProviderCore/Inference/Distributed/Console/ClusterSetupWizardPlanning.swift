@@ -26,13 +26,16 @@ enum ClusterSetupPlanning {
 
     /// The pair description for another model folder: the same members,
     /// installations and trust; that folder's directory, identity and files.
-    static func pairDescription(_ base: ClusterPairDescription, folder: String, publicModelID: String, capabilitySHA256: String,
+    /// A Mac that holds the same entry under another folder name (a catalog
+    /// download beside a copy) is given its own folder (`folders`).
+    static func pairDescription(_ base: ClusterPairDescription, folder: String, folders: [String: String] = [:],
+                            publicModelID: String, capabilitySHA256: String,
                             tokenizerFiles: [ClusterConfiguration.TokenizerFile]) -> ClusterPairDescription {
         ClusterPairDescription(schema: base.schema, clusterID: base.clusterID, publicModelID: publicModelID,
             capabilitySHA256: capabilitySHA256, chunkTokens: base.chunkTokens, requestTimeoutSeconds: base.requestTimeoutSeconds,
             coordinatorPort: base.coordinatorPort,
             members: base.members.map { member in
-                let directory = URL(fileURLWithPath: member.modelDirectory).deletingLastPathComponent().appendingPathComponent(folder).path
+                let directory = URL(fileURLWithPath: member.modelDirectory).deletingLastPathComponent().appendingPathComponent(folders[member.id] ?? folder).path
                 return .init(id: member.id, host: member.host, port: member.port, user: member.user, ownerExecutable: member.ownerExecutable,
                     workerExecutable: member.workerExecutable, modelDirectory: directory, runtimeBinarySHA256: member.runtimeBinarySHA256,
                     jacclDevice: member.jacclDevice, linkAddress: member.linkAddress, trust: member.trust,
@@ -86,7 +89,9 @@ enum ClusterSetupPlanning {
             case .failure: return blocked(notClusterModel)
             }
             guard !reading.tokenizerFiles.isEmpty else { return blocked("its manifest names no tokenizer file") }
-            let pair = pairDescription(description, folder: reading.model.folder, publicModelID: reading.model.modelID,
+            let peerFolder = peerModels.first { $0.sameEntry(reading.model) }?.folder
+            let pair = pairDescription(description, folder: reading.model.folder,
+                folders: peerFolder.map { [peerID: $0] } ?? [:], publicModelID: reading.model.modelID,
                 capabilitySHA256: capability.sha256, tokenizerFiles: reading.tokenizerFiles)
             // The owner's flow (2026-10-14 08:45): a model is refused only when no cluster stage adapter runs it, or
             // (below) when no sharded layout fits both Macs' memory. Records never refuse it; they steer the planner

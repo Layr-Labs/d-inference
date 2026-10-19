@@ -181,7 +181,7 @@ public enum ClusterPlacementFlow {
             var described = description
             if description.derivesRequestLimits {
                 let chunk = ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: capability.runtimeModelID,
-                    layoutMaximum: layout.maximumChunkTokens, capabilityMaximum: capability.profile.maximumChunkTokens)
+                    artifactSHA256: capability.artifactSHA256, layoutMaximum: layout.maximumChunkTokens, capabilityMaximum: capability.profile.maximumChunkTokens)
                 let deadline = ClusterPlacementRequestLimits.requestTimeoutSeconds(result: result, chosen: chosen,
                     maximumPromptTokens: capability.profile.maximumPromptTokens, maximumOutputTokens: capability.profile.maximumOutputTokens)
                 described = description.withRequestLimits(chunkTokens: chunk.tokens, requestTimeoutSeconds: deadline.seconds)

@@ -256,17 +256,19 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     /// from another (a hop, a codec, a local copy) that forgot it would
     /// silently serve a sampled request greedily, the F1 root-cause class.
     public let sampling: ClusterWorkerSampling?
+    public let mimoImages: ClusterMiMoImages?
+    public let stillImages: ClusterStillImages?
     /// Which way this request goes (`ClusterRequestRouter`); nil is the pair as
     /// placed, and then the reservation's bytes are exactly those of a worker
     /// without routes.
     public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil) {
+                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
-        self.sampling = sampling; self.route = route
+        self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
     }
 }
 

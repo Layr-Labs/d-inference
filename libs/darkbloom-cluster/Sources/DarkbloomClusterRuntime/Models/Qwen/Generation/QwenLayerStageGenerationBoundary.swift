@@ -32,8 +32,8 @@ struct QwenLayerStageGenerationBoundaryExpectation: Encodable, Equatable {
         requestFingerprint = request.fingerprint; self.frame = frame
         tokenIDsSHA256 = qwenGenerationTokenHash(tokenIDs)
         self.previousTokenChainSHA256 = previousTokenChainSHA256
-        shape = [1, frame.tokenCount, request.profile.hiddenSize]; dtype = request.profile.activationDType
-        byteCount = frame.tokenCount * request.profile.hiddenSize * (try qwenStageWireElementBytes(dtype))
+        shape = request.profile.boundaryShape(tokenCount: frame.tokenCount); dtype = request.profile.activationDType
+        byteCount = frame.tokenCount * request.profile.boundaryElementsPerToken * (try qwenStageWireElementBytes(dtype))
     }
 }
 

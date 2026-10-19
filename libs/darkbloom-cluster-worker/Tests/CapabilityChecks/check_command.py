@@ -45,6 +45,33 @@ def main(binary, fixtures):
         case("extra-option-refused", argv + ["--mtp"], False, b"Expected --describe-runtime")
         config.write_bytes(config.read_bytes() + b" ")
         case("changed-config-refused", argv, False, b"exact registered 9B")
+    mimo_names = ["registered-mimo-v26-flash-mopd.configuration.json", "registered-mimo-v26-flash-mopd.manifest.json"]
+    mimo_argv = [str(binary), "--describe-runtime", "--config", str(fixtures / mimo_names[0]),
+                 "--manifest", str(fixtures / mimo_names[1]), "--expected-executable-sha256", digest]
+    candidate_id = "registered_mimo_v26_flash_mopd_greedy_generation_v1_image_draft_v1"
+    old = subprocess.run(mimo_argv, capture_output=True, timeout=20)
+    candidate = subprocess.run(mimo_argv + ["--runtime-profile", candidate_id], capture_output=True, timeout=20)
+    assert old.returncode == candidate.returncode == 0 and old.stderr == candidate.stderr == b""
+    text, image = json.loads(old.stdout), json.loads(candidate.stdout)
+    golden_media = json.loads((fixtures / "mimo-image-candidate.media.json").read_bytes())
+    assert text["modality"] == "text" and "media" not in text
+    assert image["media"] == golden_media and image["modality"] == "text_image_candidate"
+    assert image["adapterID"] == "mimo-v26-rank0-image-candidate" and image["profile"]["id"] == candidate_id
+    assert image["runtimeBinarySHA256"] == digest and image["artifactSHA256"] == text["artifactSHA256"]
+    assert image["configurationSHA256"] == text["configurationSHA256"] and image["manifestSHA256"] == text["manifestSHA256"]
+    assert len(image["partitions"]) == 47
+    assert set(p["planSHA256"] for p in image["partitions"]).isdisjoint(p["planSHA256"] for p in text["partitions"])
+    assert image["supportedGenerationModes"] == ["pipeline_v1","pipeline_compact_decode_v1","pipeline_mtp_v1"]
+    assert not any(k in image for k in ["ready","requestCapacityBytes","servingGrant","approved"])
+    assert candidate.stdout == (json.dumps(image, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    foreign_argv = [str(binary), "--describe-runtime", "--config", str(fixtures / names[0]),
+                    "--manifest", str(fixtures / names[1]), "--expected-executable-sha256", digest]
+    wrong_model = subprocess.run(foreign_argv + ["--runtime-profile", candidate_id], capture_output=True, timeout=20)
+    assert wrong_model.returncode != 0 and wrong_model.stdout == b""
+    unknown = subprocess.run(mimo_argv + ["--runtime-profile", "unregistered"], capture_output=True, timeout=20)
+    assert unknown.returncode != 0 and unknown.stdout == b""
+    cases += ["actual-cpu-child-private-image-canonical-golden", "text-capability-unchanged-without-profile",
+              "candidate-profile-refuses-foreign-artifact", "unknown-private-profile-refused"]
     assert [(fixtures / name).read_bytes() for name in names] == originals
     assert hashlib.sha256(binary.read_bytes()).hexdigest() == digest
     print(json.dumps({"passed": True, "actualCPUChildren": len(cases), "cases": cases,

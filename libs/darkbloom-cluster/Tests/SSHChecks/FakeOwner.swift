@@ -3,7 +3,7 @@ import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
 import DarkbloomClusterSecurity
-@testable import DarkbloomClusterRemote
+@_spi(OwnerService) @testable import DarkbloomClusterRemote
 
 @main struct FakeOwner {
     static func main() throws {

@@ -33,7 +33,8 @@ enum ClusterStatusCodec {
               value.authenticationConfigured == authenticationConfigured,
               ["starting", "serving", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
               ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
-              (0...1).contains(value.acquisitions), value.session.members.count == 2,
+              // At most the most batch lanes a pair runs (`DistributedRequestQueue.maximumLanes`).
+              (0...8).contains(value.acquisitions), value.session.members.count == 2,
               DistributedInstalledSpeculation(mode: binding.generationMode,
                   everyMemberAdvertisesHead: binding.peers.allSatisfy { $0.supportedGenerationModes.contains(.phaseSplitMTP) })
                   == .init(enabled: value.session.mtpEnabled, offReason: value.session.mtpOffReason),
@@ -74,12 +75,14 @@ enum ClusterStatusCodec {
         }
         let admitted = value.session.admission
         let sessionReady = value.session.ready
+        // A pair with batch lanes admits while some lanes are held; the pair
+        // itself reports `activeRequest` once every lane is taken.
+        let admits = value.ready && admitted?.valid == true && admitted?.activeRequest == false
+            && admitted?.draining == false
         guard !sessionReady || (value.session.observedMembershipEpoch != nil
             && value.session.members.allSatisfy(\.nativeReady) && admitted?.valid == true),
               value.ready == (value.hostPhase == "serving" && !value.failed && sessionReady),
-              value.admissionAvailable == (value.ready && value.acquisitions == 0
-                && admitted?.valid == true && admitted?.activeRequest == false
-                && admitted?.draining == false),
+              value.acquisitions == 0 ? value.admissionAvailable == admits : (!value.admissionAvailable || admits),
               value.quarantined == (value.hostPhase == "quarantined" || value.session.phase == "quarantined") else {
             throw ClusterConfigurationError.invalid("Inconsistent status readiness observation")
         }

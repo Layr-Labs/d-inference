@@ -51,15 +51,20 @@ struct QwenLayerStageBoundary {
             && storage.allocatedBytes <= bound
     }
 
-    func validateOwnedArray(tokens: Int, hidden: Int, dtype: DType) throws {
+    func validateOwnedArray(tokens: Int, hidden: Int, dtype: DType, residualStreams: Int = 1) throws {
+        guard tokens > 0, hidden > 0, residualStreams == 1 || residualStreams == 4 else {
+            throw ProbeError("Invalid stage boundary geometry")
+        }
+        let shape = residualStreams == 1 ? [1, tokens, hidden] : [1, tokens, residualStreams, hidden]
+        let bytes = try QwenLongPrefillCheckedBytes.product([tokens, hidden, residualStreams, dtype.size])
         let bound = try Memory.allocationFootprintUpperBound(byteCount: array.nbytes)
-        guard array.shape == [1, tokens, hidden], array.dtype == dtype,
-            array.nbytes == tokens * hidden * dtype.size,
+        guard array.shape == shape, array.dtype == dtype,
+            array.nbytes == bytes,
             let storage = try array.evaluatedBufferInfo(), storage.isUnique,
             storage.isRowContiguous, storage.dataOffset == 0, storage.dataElements == array.size,
             storage.allocatedBytes >= array.nbytes,
             storage.allocatedBytes <= bound, sha256(array.asData().data) == payloadSHA256 else {
-            throw ProbeError("Incoming stage residual must be an evaluated, owned, compact native [1,M,H] array")
+            throw ProbeError("Incoming stage residual must be an evaluated, owned, compact array of the admitted shape")
         }
     }
 }

@@ -183,7 +183,7 @@ import DarkbloomClusterProtocol
         // contradicted by a divergence of the same shape: withheld.
         #expect(Set(granted) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
                                  "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning", "registered_mimo_v26_flash_mopd",
-                                 "registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit"])
+                                 "registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit", "registered_glm53_flash"])
         // registered_gemma4_26b has no record of its own: the two that named it ran the 8-bit artifact and are not shipped.
         #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gemma4_26b_8bit"])
         let gpt = ClusterPairServingGrants.records(runtimeModelID: "registered_gpt_oss_20b")

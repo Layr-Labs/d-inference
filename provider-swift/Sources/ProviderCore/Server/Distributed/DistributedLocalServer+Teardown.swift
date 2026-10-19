@@ -43,7 +43,7 @@ extension DistributedLocalServer {
         _ = await engineStop.value
         _ = await serviceTask?.value
         target.responses.listenerStopped()
-        if target.pin != nil {
+        if !target.pins.isEmpty {
             await withCheckedContinuation { target.pinWaiters.append($0) }
         }
         monitorTask?.cancel(); monitorTask = nil

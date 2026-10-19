@@ -93,10 +93,10 @@ private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) thro
     let shardedMode = (shardedChosen?["mode"] as? String).flatMap(ClusterGenerationMode.init(rawValue:))
     checks.require("indexed[m3ultra-m5ultra] MiMo, by default: a sharded mode (\(shardedMode?.rawValue ?? "none")) and no alone route",
         shardedMode?.isSharded == true && shardedChosen?["aloneRoute"] == nil)
-    // Under the hand-off opt-in, with the speed indices the planner chooses the phase split with the M5 Ultra
-    // decoding (it can then serve requests alone) and gives the M3 Ultra a prefill share, instead of the
-    // pipeline that made every request cross the link (2026-10-13: 42 tok/s on the pair against 57 on the
-    // M5 Ultra alone).
+    // Under the hand-off opt-in the phase split would have the M5 Ultra decoding with every layer (2026-10-13:
+    // 42 tok/s on the pair against 57 on the M5 Ultra alone). Its whole-model need (164.6 GiB) is more than
+    // the M5 Ultra admits at rest (its unwired memory less the kernel's file-cache minimum, about 158 GiB),
+    // so no phase split is planned: a pipeline with the faster M5 Ultra holding more layers, no alone route.
     let printed = try ClusterPlacementTool.run(["plan", "--layout", mimo] + peers + ["--hand-off-modes", "--json"],
         sampleDevice: { throw ProbeError("recorded profiles only") })
     let object = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
@@ -104,9 +104,13 @@ private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) thro
     let chosen = result?["chosen"] as? [String: Any]
     let ranks = (chosen?["ranks"] as? [[String: Any]])?.compactMap { $0["device"] as? String } ?? []
     let cut = (chosen?["cuts"] as? [Int])?.first ?? -1
-    checks.require("indexed[m3ultra-m5ultra] MiMo, under the hand-off opt-in: a phase split with the M5 Ultra decoding and the M3 Ultra prefilling a share (cut \(cut), \(ranks)), its alone route priced",
-        chosen?["mode"] as? String == "phase_split_v1" && ranks == ["mac-a", "mac-b"] && cut > 0 && cut < 24
-            && (chosen?["aloneRoute"] as? [String: Any])?["device"] as? String == "mac-b")
+    let m5 = try ClusterDeviceProfile.decode(Data(contentsOf: files["mac-b"]!))
+    let m5Alone = ((result?["alone"] as? [[String: Any]])?.first { $0["device"] as? String == "mac-b" })?["needBytes"] as? Int ?? 0
+    // The recorded M5 Ultra admits the whole model now though not at rest, and a split that loads now is
+    // possible (owner, 2026-10-19): under the opt-in it decodes with every layer, holding more of them.
+    checks.require("indexed[m3ultra-m5ultra] MiMo, under the hand-off opt-in: the M5 Ultra admits every layer now though not at rest, so it decodes holding more layers (cut \(cut), \(ranks))",
+        m5Alone > m5.atRestAdmissibleBytes && m5Alone <= m5.memory.admissibleNowBytes
+            && ranks == ["mac-a", "mac-b"] && cut > 0 && cut < 24)
 }
 
 private func checkGoldenPlanSet(profiles directory: URL, layouts: URL, label: String, _ checks: PlacementChecks) throws {

@@ -10,7 +10,9 @@ import Foundation
         signal(SIGALRM) { _ in _exit(91) }; alarm(24)
         do {
             let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-            if Array(CommandLine.arguments.dropFirst()) == ["cluster", "worker-owner", "--stdio"] {
+            if CommandLine.arguments.dropFirst().first == "--service-part-fixture" {
+                try memberFixtureServicePart(arguments: Array(CommandLine.arguments.dropFirst()))
+            } else if Array(CommandLine.arguments.dropFirst()) == ["cluster", "worker-owner", "--stdio"] {
                 try memberFixtureOwner(executable: executable)
             } else if CommandLine.arguments.dropFirst().first == "--native-fixture" {
                 try memberFixtureNative(executable: executable)

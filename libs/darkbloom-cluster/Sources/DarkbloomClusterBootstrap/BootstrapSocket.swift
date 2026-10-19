@@ -11,7 +11,7 @@ final class BootstrapSocket: @unchecked Sendable {
 
     init(taking descriptor: Int32, deadline: UInt64) throws {
         let now = DispatchTime.now().uptimeNanoseconds
-        guard deadline > now, deadline - now <= 300_000_000_000 else {
+        guard deadline > now, deadline - now <= ClusterBootstrapListener.maximumLifetimeNanoseconds else {
             Darwin.close(descriptor); throw ClusterBootstrapError.deadline
         }
         guard fcntl(descriptor, F_SETFL, O_NONBLOCK) == 0,

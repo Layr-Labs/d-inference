@@ -8,22 +8,42 @@ public enum ClusterNativeKeyError: Error, Equatable, Sendable {
 }
 public enum ClusterNativePrefillSchedule: UInt8, Sendable { case serial = 1, oneChunkLookahead = 2 }
 
+/// A common transcript describes a permission; it never grants authority by
+/// construction. Owners must independently validate its exact bytes before
+/// admitting the parent-authenticated native prelude.
 public struct ClusterNativeAuthorizationCommon: Sendable {
+    public struct ServingV1: Sendable {
+        public let nativePolicyGeneration: UInt64
+        public let approvedNativeBindingSHA256: Data
+        public let nativeRuntimeSHA256: Data
+        public let capabilitySHA256: Data
+        public let resourcePolicySHA256: Data
+    }
+    public struct FiniteCalibrationV1: Sendable {
+        public let requestID: UUID
+        public let expiresUnixSeconds: Int64
+        /// Exact canonical signed experiment documents, in roster/rank order.
+        /// They commit per-rank runtime, precision, artifact files and resources.
+        public let rank0AuthorizationSHA256: Data
+        public let rank1AuthorizationSHA256: Data
+    }
+    public enum Permission: Sendable {
+        case servingV1(ServingV1)
+        /// One cold-text GLM calibration request, never an ordinary serving grant.
+        case finiteCalibrationV1(FiniteCalibrationV1)
+    }
+    public let permission: Permission
     public let epoch: UUID
     public let membershipGeneration: UInt64
-    public let nativePolicyGeneration: UInt64
     public let membershipTranscriptSHA256: Data
-    public let approvedNativeBindingSHA256: Data
     public let planSHA256: Data
     public let artifactSHA256: Data
-    public let nativeRuntimeSHA256: Data
-    public let capabilitySHA256: Data
-    public let resourcePolicySHA256: Data
     public let profileSHA256: Data
     public let schedule: ClusterNativePrefillSchedule
     public let maximumTransportFrameBytes: Int
     public let limits: ClusterRecordLimits
 
+    // Existing serving constructor and its v1 wire encoding are preserved.
     public init(epoch: UUID, membershipGeneration: UInt64, nativePolicyGeneration: UInt64,
                 membershipTranscriptSHA256: Data, approvedNativeBindingSHA256: Data,
                 planSHA256: Data, artifactSHA256: Data, nativeRuntimeSHA256: Data,
@@ -38,14 +58,37 @@ public struct ClusterNativeAuthorizationCommon: Sendable {
               maximumTransportFrameBytes <= ClusterRecordLimits.hardMaximumPlaintextBytes + 40 else {
             throw ClusterNativeKeyError.invalidBinding
         }
+        permission = .servingV1(.init(nativePolicyGeneration: nativePolicyGeneration,
+            approvedNativeBindingSHA256: approvedNativeBindingSHA256, nativeRuntimeSHA256: nativeRuntimeSHA256,
+            capabilitySHA256: capabilitySHA256, resourcePolicySHA256: resourcePolicySHA256))
         self.epoch = epoch; self.membershipGeneration = membershipGeneration
-        self.nativePolicyGeneration = nativePolicyGeneration
         self.membershipTranscriptSHA256 = membershipTranscriptSHA256
-        self.approvedNativeBindingSHA256 = approvedNativeBindingSHA256
-        self.planSHA256 = planSHA256; self.artifactSHA256 = artifactSHA256
-        self.nativeRuntimeSHA256 = nativeRuntimeSHA256; self.capabilitySHA256 = capabilitySHA256
-        self.resourcePolicySHA256 = resourcePolicySHA256; self.profileSHA256 = profileSHA256
+        self.planSHA256 = planSHA256; self.artifactSHA256 = artifactSHA256; self.profileSHA256 = profileSHA256
         self.schedule = schedule; self.maximumTransportFrameBytes = maximumTransportFrameBytes; self.limits = limits
+    }
+
+    public init(finiteCalibrationRequestID requestID: UUID, expiresUnixSeconds: Int64,
+                epoch: UUID, membershipGeneration: UInt64, membershipTranscriptSHA256: Data,
+                planSHA256: Data, artifactSHA256: Data, profileSHA256: Data,
+                rank0AuthorizationSHA256: Data, rank1AuthorizationSHA256: Data,
+                maximumTransportFrameBytes: Int, limits: ClusterRecordLimits) throws {
+        let digests = [membershipTranscriptSHA256, planSHA256, artifactSHA256, profileSHA256,
+            rank0AuthorizationSHA256, rank1AuthorizationSHA256]
+        guard [epoch, requestID].allSatisfy({ !clusterRecordUUIDBytes($0).allSatisfy({ $0 == 0 }) }),
+              membershipGeneration > 0, expiresUnixSeconds > 0,
+              digests.allSatisfy({ $0.count == 32 && !$0.allSatisfy({ $0 == 0 }) }),
+              rank0AuthorizationSHA256 != rank1AuthorizationSHA256,
+              maximumTransportFrameBytes >= limits.maximumPlaintextBytes + 40,
+              maximumTransportFrameBytes <= ClusterRecordLimits.hardMaximumPlaintextBytes + 40 else {
+            throw ClusterNativeKeyError.invalidBinding
+        }
+        permission = .finiteCalibrationV1(.init(requestID: requestID, expiresUnixSeconds: expiresUnixSeconds,
+            rank0AuthorizationSHA256: rank0AuthorizationSHA256, rank1AuthorizationSHA256: rank1AuthorizationSHA256))
+        self.epoch = epoch; self.membershipGeneration = membershipGeneration
+        self.membershipTranscriptSHA256 = membershipTranscriptSHA256
+        self.planSHA256 = planSHA256; self.artifactSHA256 = artifactSHA256; self.profileSHA256 = profileSHA256
+        schedule = .serial
+        self.maximumTransportFrameBytes = maximumTransportFrameBytes; self.limits = limits
     }
 }
 
@@ -60,6 +103,9 @@ public struct ClusterNativeAuthorizationStart: Sendable {
         guard (0...1).contains(rank), [ownerIncarnation, leaseID, launchID].allSatisfy({
             !clusterRecordUUIDBytes($0).allSatisfy({ $0 == 0 })
         }) else { throw ClusterNativeKeyError.invalidBinding }
+        if case .finiteCalibrationV1 = common.permission {
+            guard Set([ownerIncarnation, leaseID, launchID]).count == 3 else { throw ClusterNativeKeyError.invalidBinding }
+        }
         self.common = common; self.rank = rank; self.ownerIncarnation = ownerIncarnation
         self.leaseID = leaseID; self.launchID = launchID
     }
@@ -83,6 +129,10 @@ public struct ClusterNativeKeyBinding: Sendable {
               hellos[0].start.ownerIncarnation != hellos[1].start.ownerIncarnation,
               hellos[0].start.leaseID != hellos[1].start.leaseID,
               hellos[0].start.launchID != hellos[1].start.launchID else { throw ClusterNativeKeyError.invalidBinding }
+        if case .finiteCalibrationV1 = hellos[0].start.common.permission {
+            let nonces = hellos.flatMap { [$0.start.ownerIncarnation, $0.start.leaseID, $0.start.launchID] }
+            guard Set(nonces).count == 6 else { throw ClusterNativeKeyError.invalidBinding }
+        }
         self.hellos = hellos
     }
 }

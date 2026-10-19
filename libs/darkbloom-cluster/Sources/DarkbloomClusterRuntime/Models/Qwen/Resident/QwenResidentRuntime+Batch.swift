@@ -112,6 +112,8 @@ extension QwenResidentRuntime {
 
     public func startLane(requestID: UUID) throws { try laneBook.start(requestID) }
     public func cancelLane(requestID: UUID) { laneBook.cancel(requestID) }
+    /// Gives back a lane that was reserved but never started (`QwenBatchLaneBook.withdraw`).
+    public func withdrawLane(requestID: UUID) -> Bool { laneBook.withdraw(requestID) }
     /// Started lanes wait for the loop; the worker re-enters it while any do.
     public var hasStartedLanes: Bool { laneBook.hasStarted }
     public var hasLanes: Bool { !laneBook.isEmpty }

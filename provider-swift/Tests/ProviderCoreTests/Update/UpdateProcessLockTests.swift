@@ -47,6 +47,7 @@ struct UpdateProcessLockTests {
             """
             use Fcntl qw(:flock);
             $| = 1;
+            umask 0077;
             open(my $fh, '>>', $ARGV[0]) or die $!;
             flock($fh, LOCK_EX) or die $!;
             print '1';
@@ -104,6 +105,7 @@ struct UpdateProcessLockTests {
             """
             use Fcntl qw(:flock);
             $| = 1;
+            umask 0077;
             open(my $fh, '>>', $ARGV[0]) or die $!;
             flock($fh, LOCK_EX) or die $!;
             print '1';

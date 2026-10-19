@@ -26,11 +26,32 @@ final class RegisteredModelListsTests: XCTestCase {
         let layerStage = RegisteredResidentModels.all
         XCTAssertTrue(Set(layerStage.map(\.runtimeModelID)).isSubset(of: identifiers))
 
-        // The protocol: every adapter pair is a catalog row and the reverse.
+        // Explicit local image contracts share a model with their ordinary
+        // text row; they must not silently become additional catalog entries.
         let admitted = ClusterRuntimeAdapter.admittedModels
-        XCTAssertEqual(admitted.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
+        let privateProfiles: [(ClusterRuntimeAdapter, String, String, ClusterRuntimeAdapter)] = [
+            (.mimoV26ImageCandidate, ClusterMiMoImageCandidate.runtimeModelID,
+             ClusterMiMoImageCandidate.profileID, .mimoV26LayerStage),
+            (.glm5NextLayerStage, ClusterGLMImageCandidate.runtimeModelID,
+             ClusterGLMImageCandidate.profileID, .glm5NextLayerStage),
+        ]
+        let privateIDs = Set(privateProfiles.map { $0.2 })
+        let ordinary = admitted.filter { !privateIDs.contains($0.profileID) }
+        XCTAssertEqual(ordinary.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
                        catalog.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
-                       "ClusterRuntimeAdapter.registeredProfiles and the resident catalog differ")
+                       "Ordinary adapter profiles and the resident catalog differ")
+        for (adapter, modelID, profileID, textAdapter) in privateProfiles {
+            let candidates = admitted.filter { $0.profileID == profileID }
+            XCTAssertEqual(candidates.count, 1, "Each private image contract has exactly one profile")
+            let candidate = try XCTUnwrap(candidates.first)
+            XCTAssertEqual(candidate.adapterID, adapter.rawValue)
+            XCTAssertEqual(candidate.adapterVersion, adapter.version)
+            XCTAssertEqual(candidate.runtimeModelID, modelID)
+            let text = try XCTUnwrap(catalog.first { $0.runtimeModelID == modelID })
+            XCTAssertEqual(text.adapterID, textAdapter.rawValue)
+            XCTAssertNotEqual(candidate.profileID, text.profileID)
+            XCTAssertEqual(ClusterRuntimeAdapter.registering(runtimeModelID: modelID), textAdapter)
+        }
 
         // The qualification request models, in the catalog's order.
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), identifiers,

@@ -296,6 +296,16 @@ extension DistributedResidentExecutionProfile {
     func refusal(for request: CBv2Request) -> DistributedRequestRefusal? {
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
+        if let wire = request.clusterStillImages {
+            guard request.mimoClusterImages == nil, id == ClusterStillImages.glmProfileID,
+                  let media = try? ClusterStillImages.decodeBounded(wire),
+                  (try? media.validateStructure(promptCount: request.promptTokens.count)) != nil else { return .mediaUnsupported }
+        }
+        if let wire = request.mimoClusterImages {
+            guard id == "registered_mimo_v26_flash_mopd_greedy_generation_v1" + ClusterMiMoImages.profileSuffix,
+                  let images = try? ClusterMiMoImages.decodeBounded(wire),
+                  (try? images.validate(prompt:request.promptTokens)) != nil else { return .mediaUnsupported }
+        }
         if request.tokenConstraint != nil { return .constrainedDecodingUnsupported }
         if p.topLogprobs != 0 { return .logprobsUnsupported }
         if request.priority != 0 { return .priorityUnsupported }

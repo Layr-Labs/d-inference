@@ -154,20 +154,21 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         let headed = try ClusterPlacementPlanner.evaluate(devices: [m3, m5], cuts: [32], mode: .phaseSplitMTP, prefillSchedule: .oneChunkLookahead, layout: big)
         checks.require("the head's split keeps less headroom than the pipeline and is chosen anyway (the rule is ahead of headroom)",
             headed.smallestHeadroomShare < pipeline.smallestHeadroomShare && headed.smallestHeadroomShare >= 0.10)
-        // With no credit at all, equal times: the plain modes come first, headroom decides among them.
+        // With no credit at all, equal times: the plain modes come first, the lower cut and the labels decide among them.
         var policy = handOffPolicy(); policy.modes = [.pipeline, .phaseSplitMTP]
         let unknownChips = [try SyntheticMac.idle(256).device("a"), try SyntheticMac.idle(128).device("b")]
         let uncredited = try ClusterPlacementPlanner.plan(devices: unknownChips, layout: big, policy: policy)
         checks.require("chips of no known generation: plain decode is preferred and the pipeline is kept", uncredited.chosen?.mode == .pipeline)
     }
-    // A tight decoding Mac: memory still comes first, the head does not override the comfort floor.
+    // A tight decoding Mac: live headroom does not override the head (owner, 2026-10-18); the gate decides at load.
     do {
         let need = try ClusterPlacementPlanner.evaluate(devices: [m3, m5], cuts: [32], mode: .phaseSplitMTP,
             prefillSchedule: .oneChunkLookahead, layout: big).ranks[1].needBytes
         let tight = SyntheticMac(physicalGiB: 128, freeGiB: Double(need) * 1.05 / Double(gib), inactiveCacheGiB: 0, wiredGiB: 6)
         let result = try ClusterPlacementPlanner.plan(devices: [m3, try tight.device("mac-b", chip: "Apple M5 Max")], layout: big, policy: handOffPolicy())
-        checks.require("an M5 with under a tenth in reserve for the whole model: a placement that fits comfortably is chosen over the head",
-            (result.chosen?.smallestHeadroomShare ?? 0) >= 0.10 && result.chosen?.mode.usesSpeculativeHead == false)
+        checks.require("an M5 with under a tenth in reserve for the whole model: the head's split is chosen as for the idle M5, its small reserve reported",
+            result.chosen?.mode == .phaseSplitMTP && result.chosen?.cut == 32 && result.chosen?.ranks.map(\.device) == ["mac-a", "mac-b"]
+                && (result.chosen?.smallestHeadroomShare ?? 1) < 0.10)
     }
     // One Mac alone: the M5 alone runs its head as the product does; the M3 Ultra alone decodes plainly.
     do {

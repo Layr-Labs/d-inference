@@ -26,6 +26,11 @@ import Foundation
             if CommandLine.arguments.dropFirst().first == ExpertLayoutCommand.name {
                 Darwin.exit(try ExpertLayoutCommand.run(Array(CommandLine.arguments.dropFirst(2))))
             }
+            if CommandLine.arguments.dropFirst().first == GLMReferenceCommand.name {
+                let status = try GLMReferenceCommand.run(Array(CommandLine.arguments.dropFirst(2)))
+                GateMeasurement.write()
+                Darwin.exit(status)
+            }
             if CommandLine.arguments.dropFirst().first == MiMoReferenceCommand.name {
                 let status = try MiMoReferenceCommand.run(Array(CommandLine.arguments.dropFirst(2)))
                 GateMeasurement.write()

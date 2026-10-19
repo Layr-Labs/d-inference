@@ -2,8 +2,8 @@ import Cmlx
 import Foundation
 import MLX
 
-/// Standing residency for one loaded MiMo stage, as the product keeps it for
-/// the whole model (`MiMoV26WiredResidency` in the provider).
+/// Standing residency for one loaded MiMo or GLM stage, as the product keeps
+/// it for the whole MiMo model (`MiMoV26WiredResidency` in the provider).
 ///
 /// What it sets is MLX's own per-process wired limit (`mlx_set_wired_limit`):
 /// the Metal allocator then keeps its buffers in a residency set of that size,
@@ -18,7 +18,8 @@ import MLX
 /// unwired. Acceleration only: it is neither a memory permit nor a promise
 /// that particular buffers are wired, and the host memory gate still decides
 /// every load and request.
-final class MiMoStageResidency {
+final class ClusterStageResidency {
+    /// Wire and log value; its name predates GLM's use and stays as it is.
     static let policy = "mimo_stage_wired_residency_v1"
 
     /// MLX's wired limit for this process right now. MLX offers no getter, so
@@ -32,7 +33,7 @@ final class MiMoStageResidency {
     }
 
     struct Receipt: Encodable, Equatable {
-        let policy = MiMoStageResidency.policy
+        let policy = ClusterStageResidency.policy
         let requestedBytes: Int
         let ceilingBytes: Int
         let appliedBytes: Int
@@ -41,6 +42,8 @@ final class MiMoStageResidency {
         let physicalMemoryBytes: Int
     }
 
+    /// The switch every resident stage family reads; named, like `policy`,
+    /// before GLM's use.
     static let environmentName = "DARKBLOOM_CLUSTER_MIMO_STAGE_RESIDENCY"
 
     let receipt: Receipt
@@ -62,12 +65,12 @@ final class MiMoStageResidency {
         guard bytes > 0, Device.defaultDevice().deviceType == .gpu,
               let recommended = GPU.maxRecommendedWorkingSetBytes(),
               let ceiling = Self.ceiling(physicalBytes: physical, recommendedBytes: recommended) else {
-            throw ProbeError("MiMo stage residency requires a GPU device and its recommended working set")
+            throw ProbeError("Stage residency requires a GPU device and its recommended working set")
         }
         let applied = min(bytes, ceiling)
         var previous: size_t = 0
         guard mlx_set_wired_limit(&previous, size_t(applied)) == 0 else {
-            throw ProbeError("MLX refused the MiMo stage wired limit of \(applied) bytes")
+            throw ProbeError("MLX refused the stage wired limit of \(applied) bytes")
         }
         receipt = .init(requestedBytes: bytes, ceilingBytes: ceiling, appliedBytes: applied,
             previousBytes: Int(clamping: previous), recommendedWorkingSetBytes: recommended,

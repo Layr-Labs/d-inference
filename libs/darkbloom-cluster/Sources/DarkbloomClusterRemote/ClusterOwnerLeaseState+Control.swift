@@ -13,32 +13,32 @@ extension ClusterOwnerLeaseState {
         switch frame.control {
         case .reserve(let id, let ceiling, let remaining):
             let end = now.addingReportingOverflow(remaining)
-            try require(available && request == nil && !seen.contains(id)
+            try require(available && requests.count < lanes && requests[id] == nil && !seen.contains(id)
                         && ceiling > 0 && ceiling <= (readyCapacity ?? 0)
                         && remaining > 0 && remaining <= ClusterWorkerLimits.deadlineNanoseconds && !end.overflow,
                         "Reservation is unavailable or outside bounds")
             // The rank lease is renewed for as long as the request runs, so
             // the request's own deadline stands; there is no lifetime cap.
             let deadline = end.partialValue
-            request = .init(id: id, ceiling: ceiling, deadline: deadline, charged: ceiling)
+            requests[id] = .init(id: id, ceiling: ceiling, deadline: deadline, charged: ceiling)
             seen.insert(id); seenOrder.append(id)
             if seenOrder.count > ClusterWorkerLimits.requestReplayWindow { seen.remove(seenOrder.removeFirst()) }
             action = .forwardReserve(id, localDeadlineUptimeNanoseconds: deadline)
         case .start(let id):
-            try require(available && request?.id == id && request?.phase == .admitted
-                        && request?.cancelled == false, "Start requires current admitted request")
-            request?.phase = .running; action = .forwardStart(id)
+            try require(available && requests[id]?.phase == .admitted
+                        && requests[id]?.cancelled == false, "Start requires current admitted request")
+            requests[id]?.phase = .running; action = .forwardStart(id)
         case .cancel(let id, let reason):
-            try require(request?.id == id && request?.releaseRequested == false
-                        && request?.phase != .retired, "Cancel requires current unretired request")
-            request?.cancelled = true; action = .forwardCancel(id, reason)
+            try require(requests[id]?.releaseRequested == false
+                        && requests[id]?.phase != .retired, "Cancel requires current unretired request")
+            requests[id]?.cancelled = true; action = .forwardCancel(id, reason)
         case .release(let id):
-            try require(request?.id == id && request?.releaseRequested == false
-                        && (request?.phase == .retired || nativeTerminal != nil),
+            try require(requests[id]?.releaseRequested == false
+                        && (requests[id]?.phase == .retired || nativeTerminal != nil),
                         "Release requires native retirement or actual native exit")
-            request?.releaseRequested = true; action = .releaseRequestResources(id)
+            requests[id]?.releaseRequested = true; action = .releaseRequestResources(id)
         case .shutdown:
-            try require(!draining && request == nil && nativeTerminal == nil && childStarted,
+            try require(!draining && requests.isEmpty && nativeTerminal == nil && childStarted,
                         "Shutdown requires no outstanding request resources")
             draining = true; readyCapacity = nil; action = .sendShutdown
         }
@@ -47,12 +47,12 @@ extension ClusterOwnerLeaseState {
     }
 
     public mutating func observeAdmitted(requestID: UUID, reservedBytes: Int) throws {
-        try require(!recoveryOnly && nativeTerminal == nil && request?.id == requestID
-                    && request?.phase == .reserving && reservedBytes > 0
-                    && reservedBytes <= (request?.ceiling ?? 0), "Native admission differs")
+        try require(!recoveryOnly && nativeTerminal == nil
+                    && requests[requestID]?.phase == .reserving && reservedBytes > 0
+                    && reservedBytes <= (requests[requestID]?.ceiling ?? 0), "Native admission differs")
         // A late admission after disconnect still records its real ownership;
         // quarantine remains and no start becomes possible.
-        request?.charged = reservedBytes; request?.phase = .admitted
+        requests[requestID]?.charged = reservedBytes; requests[requestID]?.phase = .admitted
     }
 
     /// A refusal for memory, deadline or profile is the request's alone: the
@@ -60,33 +60,34 @@ extension ClusterOwnerLeaseState {
     /// charge is dropped and the lease keeps serving. A worker that refuses
     /// as unavailable is gone, and the lease is quarantined as before.
     public mutating func observeRefused(requestID: UUID, reason: ClusterWorkerRefusal = .unavailable) throws {
-        try require(request?.id == requestID && request?.phase == .reserving, "Unexpected refusal")
+        try require(requests[requestID]?.phase == .reserving, "Unexpected refusal")
         guard reason != .unavailable else { quarantine(); return }
-        request = nil
+        requests[requestID] = nil
     }
 
     public mutating func observeRetired(requestID: UUID, retirement: ClusterWorkerRetirement) throws {
-        try require(!recoveryOnly && childStarted && nativeTerminal == nil && request?.id == requestID
-                    && request?.phase != .retired && request?.releaseRequested == false,
+        try require(!recoveryOnly && childStarted && nativeTerminal == nil && requests[requestID] != nil
+                    && requests[requestID]?.phase != .retired && requests[requestID]?.releaseRequested == false,
                     "Unexpected native retirement")
         if retirement == .clean {
-            try require(request?.phase == .running && request?.cancelled == false,
+            try require(requests[requestID]?.phase == .running && requests[requestID]?.cancelled == false,
                         "Clean retirement requires an uncancelled started request")
         }
         // A reservation the leader cancelled before it started (the pair's
         // other rank refused the request) is given back by the native worker,
         // which stays available. Any other abnormal retirement poisons the
         // native session's epoch; resource release cannot make it ready again.
-        let givenBack = retirement == .cancelled && request?.phase == .admitted && request?.cancelled == true
+        let givenBack = retirement == .cancelled && requests[requestID]?.phase == .admitted
+            && requests[requestID]?.cancelled == true
         if retirement != .clean && !givenBack { quarantine() }
-        request?.phase = .retired
+        requests[requestID]?.phase = .retired
     }
 
     /// Called after the real request owner's exactly-once releaseResources returns.
     public mutating func observeRequestResourcesReleased(requestID: UUID) throws {
-        try require(!recoveryOnly && request?.id == requestID && request?.releaseRequested == true
-                    && (request?.phase == .retired || nativeTerminal != nil), "Resource release was not requested")
-        request = nil; releasedRequests += 1
+        try require(!recoveryOnly && requests[requestID]?.releaseRequested == true
+                    && (requests[requestID]?.phase == .retired || nativeTerminal != nil), "Resource release was not requested")
+        requests[requestID] = nil; releasedRequests += 1
     }
 
     /// No signal-sent, socket-EOF or elapsed-time variant exists here.
@@ -95,7 +96,7 @@ extension ClusterOwnerLeaseState {
                     "Terminal observation is for a different or already retired native child")
         switch termination {
         case .launchFailed:
-            try require(launchAttempted && !childStarted && request == nil, "Launch failure follows a started child")
+            try require(launchAttempted && !childStarted && requests.isEmpty, "Launch failure follows a started child")
         case .exited:
             try require(childStarted, "Exit precedes native process start")
         case .signalled(let signal):
@@ -109,7 +110,7 @@ extension ClusterOwnerLeaseState {
 
     public mutating func closeBeforeLaunch() throws {
         try require(!recoveryOnly && !deviceLeaseReleased && !launchAttempted && nativeTerminal == nil
-                    && request == nil, "Lease already attempted a native launch")
+                    && requests.isEmpty, "Lease already attempted a native launch")
         nativeTerminal = .init(launchID: nil, termination: .neverLaunched)
         draining = true
     }

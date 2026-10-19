@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import DarkbloomClusterProtocol
 
 /// Explicit opt-in only. The caller starts and verifies its owner and supplies
 /// a tokenizer; these factories never load a local model container or weights.
@@ -21,6 +22,13 @@ public enum DistributedEngineFactory {
         pairTelemetry: DistributedPairTelemetryContext? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
+        if profile.id == ClusterMiMoImageCandidate.profileID {
+            guard modelType == "mimo_v2",expectedIdentity.modelID == ClusterMiMoImageCandidate.runtimeModelID,
+                  expectedIdentity.artifactSHA256 == ClusterMiMoImageCandidate.artifactSHA256,
+                  expectedIdentity.configurationSHA256 == ClusterMiMoImageCandidate.configurationSHA256 else {
+                throw DistributedEngineError.invalidConfiguration("Private image profile does not bind the actual installed MiMo model")
+            }
+        }
         let modelID = publicModelID ?? expectedIdentity.modelID
         // Product parity: the single-Mac slot's stop set, from the same files
         // by the same rules (`EngineV2SlotFactory`).
@@ -46,16 +54,45 @@ public enum DistributedEngineFactory {
         // limit), cut to the context left after the prompt.
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
+        var draftMiMoImageConfiguration: Data?
+        if profile.id == ClusterMiMoImageCandidate.profileID {
+            guard let modelDirectory else { throw DistributedEngineError.invalidConfiguration("MiMo image metadata missing") }
+            let url = modelDirectory.appendingPathComponent("config.json")
+            let attrs = try FileManager.default.attributesOfItem(atPath:url.path)
+            guard let size = attrs[.size] as? NSNumber,size.intValue > 0,size.intValue <= 1_048_576 else {
+                throw DistributedEngineError.invalidConfiguration("MiMo image configuration exceeds bound")
+            }
+            let bytes = try Data(contentsOf:url)
+            _ = try DistributedMiMoImageIngress(configuration:bytes,expectedSHA256:expectedIdentity.configurationSHA256)
+            draftMiMoImageConfiguration = bytes
+        }
+        var clusterGLMImageConfiguration: Data?
+        if profile.id == ClusterGLMImageCandidate.profileID {
+            guard modelType == "glm5_next" else { throw DistributedEngineError.invalidConfiguration("GLM image profile on another model") }
+            try ClusterGLMImageCandidate.validateSource(profileID: profile.id, modelID: expectedIdentity.modelID,
+                artifact: expectedIdentity.artifactSHA256, configuration: expectedIdentity.configurationSHA256)
+            guard profile.id == ClusterStillImages.glmProfileID, let modelDirectory else {
+                throw DistributedEngineError.invalidConfiguration("GLM image metadata missing")
+            }
+            let handle = try FileHandle(forReadingFrom: modelDirectory.appendingPathComponent("config.json"))
+            defer { try? handle.close() }
+            let bytes = try handle.read(upToCount: 32 * 1024 * 1024 + 1) ?? Data()
+            _ = try DistributedGLMImageIngress(configuration: bytes, expectedSHA256: expectedIdentity.configurationSHA256)
+            clusterGLMImageConfiguration = bytes
+        }
         return EngineV2Bridge(
             engine: engine, modelId: modelID, tokenizer: tokenizer,
             eosTokenIds: stopTokenIDs, samplingDefaults: samplingDefaults,
             defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
             defaultMaxTokensContextLimit: profile.maxContextTokens,
-            maxConcurrentRequests: 1, residentPrefixCacheEvidence: residentPrefixEvidence,
-            kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
+            // As many requests at once as the pair batches (its lanes); the
+            // owner's own admission still bounds and refuses beyond them.
+            maxConcurrentRequests: max(1, owner.concurrentRequests), residentPrefixCacheEvidence: residentPrefixEvidence,
+            kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy,
+            draftMiMoImageConfiguration:draftMiMoImageConfiguration, clusterGLMImageConfiguration:clusterGLMImageConfiguration)
     }
 
-    /// Text-only registry construction for a successfully started installed
+    /// Registry construction for a successfully started installed
     /// session. The bridge takes owner ownership exactly as makeBridge does;
     /// the registry caller supplies acquisition/release pins and retains it
     /// through shutdown. A failed factory call leaves cleanup with the caller.

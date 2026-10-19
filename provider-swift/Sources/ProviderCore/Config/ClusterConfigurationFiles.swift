@@ -79,6 +79,11 @@ enum ClusterConfigurationFiles {
         Darwin.close(opened.descriptor)
     }
 
+    /// Largest model `config.json` a cluster setup reads: the worker catalog's
+    /// bound (`ClusterResidentModelCatalog.maximumConfigurationBytes`); GLM's
+    /// NVFP4 configuration declares per-expert packing in about 10 MiB.
+    static let maximumModelConfigurationBytes = 32 * 1024 * 1024
+
     static func read(_ url: URL, maximum: Int, privateMode: Bool = false) throws -> Data {
         try requireAbsolute(url.path)
         let parent = try directory(url.deletingLastPathComponent())
@@ -93,7 +98,7 @@ enum ClusterConfigurationFiles {
                        privateMode: Bool = false) throws -> Data? {
         try parent.check()
         try requireName(name)
-        guard (1...1_048_576).contains(maximum) else { throw ClusterConfigurationError.invalid("Invalid configuration byte bound") }
+        guard (1...maximumModelConfigurationBytes).contains(maximum) else { throw ClusterConfigurationError.invalid("Invalid configuration byte bound") }
         let fd = openat(parent.descriptor, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         if fd < 0 && errno == ENOENT { return nil }
         guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot open configuration input") }

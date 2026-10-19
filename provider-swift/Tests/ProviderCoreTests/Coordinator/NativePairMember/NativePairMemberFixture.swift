@@ -226,6 +226,13 @@ final class MemberFixturePeer: @unchecked Sendable {
             "no \(type) within 8 s; member control is \(control.status), frames sent: \(mock.snapshot().nativePairs.map(\.type))")
         try signer.verify(message); return message
     }
+    /// Opt-in cleanup for a test that owns a running session. A joined run
+    /// does not prove release; the test must check the real receipt separately.
+    func closeAfterJoiningSession(timeout: TimeInterval = 20) async {
+        let joined = await control.endSessionBeforeClose(timeout: timeout)
+        #expect(joined, "member session did not finish within \(timeout) s before close; control is \(control.status), frames sent: \(mock.snapshot().nativePairs.map(\.type))")
+        await close()
+    }
     func close() async { if let client { await client.shutdown() }; await mock.shutdown() }
 }
 

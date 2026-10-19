@@ -306,14 +306,39 @@ public enum ClusterPlacementLayouts {
     /// exactly the registered inventory. `manifest` picks between catalog
     /// entries that share a configuration (Gemma 4 26B and its 8-bit entry).
     public static func layout(configuration: Data, tensors: [ClusterPlacementStoredTensor],
-                              manifest: Data? = nil) throws -> ClusterModelLayout {
+                              manifest: Data? = nil, runtimeProfile: String? = nil) throws -> ClusterModelLayout {
+        guard runtimeProfile == nil || runtimeProfile == ClusterMiMoImageCandidate.profileID || runtimeProfile == ClusterGLMImageCandidate.profileID else {
+            throw ProbeError("Unknown placement runtime profile")
+        }
+        if runtimeProfile == ClusterMiMoImageCandidate.profileID, !MiMoPlacementFamily.handles(configuration: configuration) {
+            throw ProbeError("MiMo candidate placement cannot describe another model")
+        }
+        #if canImport(MLXLLM)
+        if runtimeProfile == ClusterGLMImageCandidate.profileID,
+           !GLM5NextPlacementFamily.handles(configuration: configuration) {
+            throw ProbeError("GLM candidate placement cannot describe another model")
+        }
+        #else
+        guard runtimeProfile != ClusterGLMImageCandidate.profileID else { throw ProbeError("GLM runtime is unavailable") }
+        #endif
         if MiMoPlacementFamily.handles(configuration: configuration) {
-            let family = try MiMoPlacementFamily(configuration: configuration)
+            let family = try MiMoPlacementFamily(configuration: configuration, imageCandidate: runtimeProfile != nil)
             try family.requireRegisteredInventory(tensors)
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
                 artifactSHA256: family.specification.artifactSHA256,
                 configurationSHA256: family.specification.configurationSHA256)
         }
+        // GLM's configuration types live in MLXLLM, which the model-free
+        // placement checks do not compile.
+        #if canImport(MLXLLM)
+        if GLM5NextPlacementFamily.handles(configuration: configuration) {
+            let family = try GLM5NextPlacementFamily(configuration: configuration, imageCandidate: runtimeProfile == ClusterGLMImageCandidate.profileID)
+            try family.requireRegisteredInventory(tensors)
+            return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
+                artifactSHA256: family.specification.artifactSHA256,
+                configurationSHA256: family.specification.configurationSHA256)
+        }
+        #endif
         if GPTOSSRegisteredSpecification.handles(configuration: configuration) {
             let family = try GPTOSSPlacementFamily(configuration: configuration)
             try family.requireRegisteredInventory(tensors)

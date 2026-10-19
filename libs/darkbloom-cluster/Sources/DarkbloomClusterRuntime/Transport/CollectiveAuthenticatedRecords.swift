@@ -38,12 +38,12 @@ public final class CollectiveAuthenticatedRecords {
                 try check()
                 guard records.status.active else { throw ClusterRecordTransferError.inactive }
             }
-            let geometry = try CollectivePointToPointShape(shape: input.shape, dtype: input.dtype,
+            let geometry = try CollectivePointToPointShape.authenticatedArray(shape: input.shape, dtype: input.dtype,
                 maximumBytes: maximumBytes)
             try geometry.validateMetadata(input)
             try checked()
             let plaintext = try CollectivePointToPoint.copyCompletedBytes(input,
-                maximumBytes: geometry.byteCount, check: checked)
+                geometry: geometry, check: checked)
             let chunks = Self.chunks(geometry.byteCount, size: min(Self.chunkBytes, records.maximumPlaintextBytes))
             for (index, range) in chunks.enumerated() {
                 let expectation = try scope.expectation(shape: geometry.shape, dtype: geometry.dtype,
@@ -66,7 +66,8 @@ public final class CollectiveAuthenticatedRecords {
                 try check()
                 guard records.status.active else { throw ClusterRecordTransferError.inactive }
             }
-            let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype, maximumBytes: maximumBytes)
+            try checked()
+            let geometry = try CollectivePointToPointShape.authenticatedArray(shape: shape, dtype: dtype, maximumBytes: maximumBytes)
             let chunks = Self.chunks(geometry.byteCount, size: min(Self.chunkBytes, records.maximumPlaintextBytes))
             var plaintext = Data()
             if chunks.count > 1 { plaintext.reserveCapacity(geometry.byteCount) }
@@ -79,7 +80,7 @@ public final class CollectiveAuthenticatedRecords {
             }
             try checked()
             let array = try CollectivePointToPoint.materializeCompletedBytes(plaintext,
-                shape: geometry.shape, dtype: geometry.dtype, maximumBytes: geometry.byteCount, check: checked)
+                geometry: geometry, check: checked)
             try checked()
             return array
         } catch { records.invalidate(); throw error }

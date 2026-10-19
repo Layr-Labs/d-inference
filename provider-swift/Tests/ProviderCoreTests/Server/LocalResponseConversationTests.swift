@@ -1,5 +1,8 @@
 import Foundation
+import Hummingbird
+import HummingbirdTesting
 import MLXLMServer
+import NIOCore
 import Testing
 
 @testable import ProviderCore
@@ -95,6 +98,87 @@ struct LocalResponseConversationTests {
         #expect(preparation == .previousResponseNotFound)
     }
 
+    @Test(arguments: ["0", "-1", "1.5", "true", "false", "[]", #"["resp_1"]"#, "{}", #"{"id":"resp_1"}"#])
+    func nonStringPreviousResponseIsRefusedWithoutHistoryLookup(value: String) {
+        var lookedUp = false
+        let preparation = LocalResponseConversation.prepare(
+            body: Data(#"{"model":"m","previous_response_id":\#(value),"input":"hi"}"#.utf8),
+            conversation: { _ in lookedUp = true; return nil })
+        #expect(preparation == .previousResponseNotFound)
+        #expect(!lookedUp)
+    }
+
+    @Test("null previous_response_id preserves the original request and skips history lookup")
+    func nullPreviousResponseIsAbsence() throws {
+        var lookedUp = false
+        let preparation = LocalResponseConversation.prepare(
+            body: Data(#"{"model":"m","previous_response_id":null,"input":"hi"}"#.utf8),
+            conversation: { _ in lookedUp = true; return nil })
+        guard case .prepared(let body, let items) = preparation else { throw NotPrepared(preparation: preparation) }
+        #expect(body == nil)
+        #expect(!lookedUp)
+        let decoded = try JSONSerialization.jsonObject(with: items) as? [[String: String]]
+        #expect(decoded == [["role": "user", "content": "hi"]])
+    }
+
+    @Test(arguments: [false, true])
+    func invalidPreviousResponseReturns400BeforeAcquisition(streaming: Bool) async throws {
+        let spy = ResponseIDAcquisitionSpy()
+        let app = responseIDApplication(spy: spy)
+        try await app.test(.router) { client in
+            for path in ["/v1/responses", "/responses"] {
+                for value in ["0", "-1", "1.5", "true", "false", "[]", #"["resp_1"]"#, "{}", #"{"id":"resp_1"}"#,
+                              #""""#, #""resp_missing""#] {
+                    let body = #"{"model":"fixture","previous_response_id":\#(value),"input":"hi","stream":\#(streaming),"store":false}"#
+                    try await client.execute(uri: path, method: .post,
+                        headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
+                        body: ByteBuffer(string: body)) { response in
+                        #expect(response.status == .badRequest, "\(path): \(value)")
+                        #expect(response.headers[.accessControlAllowOrigin] == "*")
+                        let text = String(buffer: response.body)
+                        let error = try JSONDecoder().decode(OpenAIErrorResponse.self, from: Data(text.utf8))
+                        #expect(error.error.type == "invalid_request_error")
+                        #expect(error.error.code == "previous_response_not_found")
+                        #expect(!text.contains("data:"))
+                    }
+                    #expect(await spy.count == 0)
+                }
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func absentAndNullPreviousResponseReachNormalAcquisition(streaming: Bool) async throws {
+        let spy = ResponseIDAcquisitionSpy()
+        let app = responseIDApplication(spy: spy)
+        try await app.test(.router) { client in
+            for path in ["/v1/responses", "/responses"] {
+                for field in ["", #""previous_response_id":null,"#] {
+                    let body = #"{\#(field)"model":"fixture","input":"hi","stream":\#(streaming)}"#
+                    try await client.execute(uri: path, method: .post,
+                        headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
+                        body: ByteBuffer(string: body)) { response in
+                        // The fixture refuses at acquisition; it must get past ID validation.
+                        #expect(response.status == .notFound)
+                    }
+                }
+            }
+        }
+        #expect(await spy.count == 4)
+    }
+
+    private func responseIDApplication(spy: ResponseIDAcquisitionSpy) -> LocalInferenceApplication {
+        makeLocalInferenceApplication(
+            config: .init(host: "127.0.0.1", port: 0, authToken: "synthetic-fixture-token"),
+            defaultMaxTokens: 32,
+            acquire: { id in
+                await spy.mark()
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(id)
+            },
+            tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
+            availableModels: { ["fixture"] }, mtpSlots: { [] })
+    }
+
     @Test("a body the rewrite cannot read is left to the decoder")
     func unreadableBodyIsLeftToTheDecoder() {
         for body in ["not json", "[1]", #"{"model":"m","input":5}"#] {
@@ -166,4 +250,9 @@ struct LocalResponseConversationTests {
             .init(role: .user, content: .text("What is my name?")),
         ])
     }
+}
+
+private actor ResponseIDAcquisitionSpy {
+    var count = 0
+    func mark() { count += 1 }
 }

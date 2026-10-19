@@ -217,8 +217,9 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         var serving: [Int?] = [nil, nil]
         do {
             for worker in workers { try worker.sendWorkerCommand(.keepWarm(ordinal: ordinal), requestID: nil, deadline: deadline) }
-            for (index, worker) in workers.enumerated() {
-                let event = try worker.receiveWorkerEvent(until: deadline)
+            for index in workers.indices {
+                // Routed with lanes: the routers own each worker's event stream.
+                let event = try receive(rank: index, requestID: nil, until: deadline)
                 guard event.requestID == nil, case .keptWarm(let answered, let microseconds, let context) = event.event,
                       answered == ordinal else {
                     throw ClusterWorkerOwnerError.invalid("Keep-warm was answered with another event")
@@ -359,6 +360,8 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             lock.withLock { refusedCount += 1 }
             throw ClusterWorkerOwnerError.refused(reason)
         } catch {
+            // Named for the pair's incident (S24), as a started request's failure is.
+            noteRequestFailure(lease, "admission: " + ClusterWorkerRequest.failureText(error))
             invalidate(); lease.cancel(reason: .runtimeError)
             // A refusal whose reservation could not be given back on every
             // rank ends the pair like any other failure; say so to the caller.

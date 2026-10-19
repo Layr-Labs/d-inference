@@ -13,7 +13,7 @@ instruction, body = long_text.strip().split("\n\n", 1)
 (out / "prod-short.txt").write_text(Path(sys.argv[3]).read_text().strip())
 print("prod-short", count(Path(sys.argv[3]).read_text()))
 for name, target in (("prod-4k", 4096), ("prod-8k", 8192)):
-    words = body.split(); pieces = []; text = instruction
+    words = body.split()
     # Whole words only, so the text renders to the same tokens wherever it is tokenized.
     low, high = 1, 20000
     def make(n): return instruction + "\n\n" + " ".join((words * (n // len(words) + 1))[:n])

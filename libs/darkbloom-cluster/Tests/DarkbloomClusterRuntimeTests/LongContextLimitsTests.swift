@@ -61,6 +61,20 @@ struct LongContextLimitsTests {
         }
     }
 
+    @Test func adapterChunkChoiceDoesNotChangeOtherModelsOrTheContextLimit() throws {
+        let ordinary = try QwenResidentContextLimits(declaredContextTokens: 262_144)
+        let glm = try QwenResidentContextLimits(declaredContextTokens: 1_048_576, prefillChunkTokens: 2048)
+        #expect(ordinary.maximumChunkTokens == 512 && glm.maximumChunkTokens == 2048)
+        #expect(ordinary.maximumContextTokens == glm.maximumContextTokens)
+        #expect(try QwenResidentContextLimits(declaredContextTokens: 128, prefillChunkTokens: 2048)
+            .maximumChunkTokens == 127)
+        for invalid in [0, -1, Int.max] {
+            #expect(throws: QwenDenseProfileError.self) {
+                _ = try QwenResidentContextLimits(declaredContextTokens: 32_768, prefillChunkTokens: invalid)
+            }
+        }
+    }
+
     @Test func eachDeclaredContextRowIsWhatThePinnedConfigurationDeclares() throws {
         for model in Self.declaring {
             let spec = try Self.specification(model)

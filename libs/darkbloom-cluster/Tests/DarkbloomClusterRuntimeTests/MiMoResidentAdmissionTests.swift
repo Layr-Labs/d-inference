@@ -384,9 +384,10 @@ struct MiMoResidentAdmissionTests {
         #expect(all.map(\.runtimeModelID) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
             "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
             "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
-            "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit"])
+            "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit",
+            "registered_glm53_flash"])
         #expect(all.map(\.family) == Array(repeating: .qwenDense, count: 6) + [.gptoss, .mimoV26]
-            + Array(repeating: .qwenDense, count: 3))
+            + Array(repeating: .qwenDense, count: 3) + [.glm5Next])
         // Every entry is a pair the protocol admits for that adapter.
         for entry in all {
             let adapter = try #require(ClusterRuntimeAdapter(rawValue: entry.adapterID))
@@ -395,7 +396,8 @@ struct MiMoResidentAdmissionTests {
         }
         let nine = try #require(ClusterResidentModelCatalog.entry(runtimeModelID: "registered_qwen35_9b"))
         #expect(nine.supportedCuts == [4, 8, 12, 16] && nine.layerCount == 32)
-        #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP])
+        #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP,
+            .tensorParallel, .pipelineMTP])
         let mimo = try ClusterResidentModelCatalog.entry(configuration: Self.fixture("configuration"))
         #expect(mimo.family == .mimoV26 && mimo.layerCount == 48 && mimo.supportedCuts == Array(1...47))
         #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
@@ -409,12 +411,12 @@ struct MiMoResidentAdmissionTests {
     @Test func stageResidencyKeepsTheProductsCeiling() {
         let gib = Self.gib
         // 256 GiB: a tenth (25.6 GiB) is the larger reserve; 128 GiB: 16 GiB is.
-        #expect(MiMoStageResidency.ceiling(physicalBytes: 256 * gib, recommendedBytes: 250 * gib) == 256 * gib - (256 * gib / 10 + 1))
-        #expect(MiMoStageResidency.ceiling(physicalBytes: 128 * gib, recommendedBytes: 120 * gib) == 112 * gib)
+        #expect(ClusterStageResidency.ceiling(physicalBytes: 256 * gib, recommendedBytes: 250 * gib) == 256 * gib - (256 * gib / 10 + 1))
+        #expect(ClusterStageResidency.ceiling(physicalBytes: 128 * gib, recommendedBytes: 120 * gib) == 112 * gib)
         // Never above the device's recommended working set.
-        #expect(MiMoStageResidency.ceiling(physicalBytes: 128 * gib, recommendedBytes: 96 * gib) == 96 * gib)
-        #expect(MiMoStageResidency.ceiling(physicalBytes: 16 * gib, recommendedBytes: 12 * gib) == nil)
-        #expect(MiMoStageResidency.ceiling(physicalBytes: 0, recommendedBytes: 1) == nil)
-        #expect(MiMoStageResidency.ceiling(physicalBytes: 128 * gib, recommendedBytes: 0) == nil)
+        #expect(ClusterStageResidency.ceiling(physicalBytes: 128 * gib, recommendedBytes: 96 * gib) == 96 * gib)
+        #expect(ClusterStageResidency.ceiling(physicalBytes: 16 * gib, recommendedBytes: 12 * gib) == nil)
+        #expect(ClusterStageResidency.ceiling(physicalBytes: 0, recommendedBytes: 1) == nil)
+        #expect(ClusterStageResidency.ceiling(physicalBytes: 128 * gib, recommendedBytes: 0) == nil)
     }
 }

@@ -7,9 +7,15 @@ final class DistributedLocalServerGeneration: @unchecked Sendable {
     let session: any DistributedLocalServerSession
     let responses: DistributedHTTPResponses
     var entry: MultiModelBatchSchedulerEngine.ModelRegistryEntry?
-    var pin: UUID?
+    /// The requests that hold the pipeline now: at most `capacity`, the pair's
+    /// batch lanes (one when it serves one request at a time).
+    var pins: Set<UUID> = []
     var ownerStopTask: Task<Void, Never>?
     var pinWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Requests the pipeline runs at once (`EngineV2Bridge.maxConcurrentRequests`,
+    /// the pair's lanes); one before the bridge exists.
+    var capacity: Int { max(1, entry?.engineV2Bridge?.maxConcurrentRequests ?? 1) }
 
     init(session: any DistributedLocalServerSession) {
         let id = UUID(); self.id = id; self.session = session

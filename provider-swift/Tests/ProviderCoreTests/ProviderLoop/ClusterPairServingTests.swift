@@ -91,11 +91,12 @@ private struct ServingFixture {
         let installation = contract.installations[rank]
         var start = contract.starts[rank]
         if let epoch {
+            guard case .servingV1(let serving) = start.common.permission else { throw NativePairMemberError.binding }
             start = try .init(common: .init(epoch: epoch, membershipGeneration: 7, nativePolicyGeneration: 11,
                 membershipTranscriptSHA256: start.common.membershipTranscriptSHA256,
-                approvedNativeBindingSHA256: start.common.approvedNativeBindingSHA256, planSHA256: start.common.planSHA256,
-                artifactSHA256: start.common.artifactSHA256, nativeRuntimeSHA256: start.common.nativeRuntimeSHA256,
-                capabilitySHA256: start.common.capabilitySHA256, resourcePolicySHA256: start.common.resourcePolicySHA256,
+                approvedNativeBindingSHA256: serving.approvedNativeBindingSHA256, planSHA256: start.common.planSHA256,
+                artifactSHA256: start.common.artifactSHA256, nativeRuntimeSHA256: serving.nativeRuntimeSHA256,
+                capabilitySHA256: serving.capabilitySHA256, resourcePolicySHA256: serving.resourcePolicySHA256,
                 profileSHA256: start.common.profileSHA256, schedule: start.common.schedule,
                 maximumTransportFrameBytes: start.common.maximumTransportFrameBytes, limits: start.common.limits),
                 rank: rank, ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID())

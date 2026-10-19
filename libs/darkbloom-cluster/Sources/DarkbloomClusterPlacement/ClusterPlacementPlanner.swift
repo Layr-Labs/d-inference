@@ -564,6 +564,12 @@ public enum ClusterPlacementPlanner {
         /// reduction must have been measured on the keyed data plane.
         var tensorParallelForAssessment = false
 
+        // Performance still uses prompt/outputs; LOAD admission uses the
+        // adapter's reservation scope even after short served requests.
+        var memoryPrompt: Int { layout.reservesFullRequestScope == true ? layout.maximumPromptTokens : prompt }
+        var memoryContext: Int { layout.reservesFullRequestScope == true ? layout.maximumContextTokens : prompt + outputs }
+
+
         /// Whether a mode can be placed on `ranges` ranks here at all.
         func placeable(_ mode: ClusterGenerationMode, ranges: Int) -> Bool {
             guard mode.usesTensorParallelDecode else { return true }
@@ -672,23 +678,23 @@ public enum ClusterPlacementPlanner {
                 held += holding.bytes
                 largest = max(largest, holding.largestTensorBytes)
             }
-            let context = prompt + outputs
+            let context = memoryContext
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
             // One prefill frame's attention transient at the full context, on
             // the rank's largest layer: layers run one after another.
-            let transient = loads.map { $0.transientBytes(chunk: min(layout.maximumChunkTokens, prompt), context: context) }.max() ?? 0
+            let transient = loads.map { $0.transientBytes(chunk: min(layout.maximumChunkTokens, memoryPrompt), context: context) }.max() ?? 0
             // A requested context beyond the layout's planned request brings its own
             // charge (`policy.requestChargeEveryRankBytes`); otherwise the layout's at this context.
             let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
             let work = loads.reduce(0) { $0 + $1.requestWorkBytes }
             var extra = 0
             // A producer keeps the next chunk's residual beside the current one.
-            if schedule == .oneChunkLookahead, !last, prompt > layout.maximumChunkTokens {
+            if schedule == .oneChunkLookahead, !last, memoryPrompt > layout.maximumChunkTokens {
                 extra += 2 * layout.maximumChunkTokens * layout.boundaryBytesPerToken
             }
             // The state that changes owner exists on both sides while it moves.
             if mode.isPhaseSplit {
-                let moving = last ? earlier.reduce(0) { $0 + $1.stateBytes(tokens: prompt) } : own.stateBytes(tokens: prompt)
+                let moving = last ? earlier.reduce(0) { $0 + $1.stateBytes(tokens: memoryPrompt) } : own.stateBytes(tokens: memoryPrompt)
                 extra += 2 * moving
             }
             let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
@@ -766,7 +772,7 @@ public enum ClusterPlacementPlanner {
                 guard divides else { return bytes }
                 return fraction.map { Int((Double(bytes) * min(1, $0 * 1.01)).rounded(.up)) } ?? (bytes + count - 1) / count
             }
-            let context = prompt + outputs, chunk = min(layout.maximumChunkTokens, prompt)
+            let context = memoryContext, chunk = min(layout.maximumChunkTokens, memoryPrompt)
             let ownState = pipelined
                 ? own.stateBytes(tokens: context) + share(whole.stateBytes(tokens: context) - own.stateBytes(tokens: context))
                 : share(whole.stateBytes(tokens: context))
@@ -778,8 +784,8 @@ public enum ClusterPlacementPlanner {
             var extra = 0
             if pipelined {
                 // The share it sends exists until it has gone.
-                extra += share(own.stateBytes(tokens: prompt))
-                if schedule == .oneChunkLookahead, rank != count - 1, prompt > layout.maximumChunkTokens {
+                extra += share(own.stateBytes(tokens: memoryPrompt))
+                if schedule == .oneChunkLookahead, rank != count - 1, memoryPrompt > layout.maximumChunkTokens {
                     extra += 2 * layout.maximumChunkTokens * layout.boundaryBytesPerToken
                 }
             }

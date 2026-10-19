@@ -226,7 +226,10 @@ allowance, clamped to the model and remaining context; an explicit
 at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
 requests that exceed the admitted combined context are refused before generation.
 After updating, let the normal cluster setup refresh both worker capabilities
-and the derived request deadline before serving.
+and the derived request deadline before serving. For adapters such as GLM that
+reserve their whole request scope at load time, automatic placement prices that
+full memory budget even when recent chat requests are short. Request history
+still guides the speed estimate and choice of split.
 
 ### GLM candidate setup
 

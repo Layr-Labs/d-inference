@@ -144,6 +144,8 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     let fullConfiguration: GLM5NextConfiguration
     let profile: QwenLayerStageGenerationProfile
     let imageCandidate: Bool
+    let allocationExtraBytes: Int
+    let transferAndInputAllowanceBytes: Int
 
     static func handles(configuration: Data) -> Bool { GLM5NextRegisteredSpecification.handles(configuration: configuration) }
 
@@ -153,6 +155,24 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
         fullConfiguration = try JSONDecoder().decode(GLM5NextConfiguration.self, from: configuration)
         self.configuration = fullConfiguration.textConfig
         profile = try specification.profile(imageCandidate: imageCandidate)
+        guard let allocation = Memory.allocationFootprintPolicy(), let extra = allocation.maximumExtraBytes else {
+            throw ProbeError("GLM placement needs the allocator's buffer bounds")
+        }
+        allocationExtraBytes = extra
+        let scope = GLM5NextRequestStateBudget.Scope(maximumContextTokens: profile.maximumContextTokens,
+            maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
+            maximumChunkTokens: profile.maximumChunkTokens)
+        let buffers = try GLM5NextRequestStateBudget.transferAndInputBytes(configuration: self.configuration,
+            rank: 1, scope: scope, transport: GLM5NextResidentResourceEnvelope.transportTerms,
+            nativeBound: { bytes, copies in
+                guard let bound = allocation.upperBound(byteCount: bytes) else { throw ProbeError("GLM buffer bound overflow") }
+                return try GLM5NextRequestStateBudget.product([bound, copies])
+            }, hostBound: { bytes, copies in
+                try GLM5NextRequestStateBudget.product([GLM5NextServingResources.hostBound(bytes), copies])
+            })
+        transferAndInputAllowanceBytes = try GLM5NextStageLoadResources.sum([
+            buffers.boundary, buffers.logits, buffers.wireNative, buffers.input, buffers.tokenHost, buffers.wireHost])
+
         guard self.configuration.hiddenLayers == specification.layers, self.configuration.hcMult == 4,
               self.configuration.layerTypes.count == specification.layers else {
             throw ProbeError("GLM configuration geometry differs from the registered row")
@@ -165,6 +185,7 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     var structuralCuts: [Int] { Array(1..<specification.layers) }
     var generationModes: [ClusterGenerationMode] { specification.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { specification.supportedPrefillSchedules }
+    var reservesFullRequestScope: Bool { true }
     var maximumPromptTokens: Int { profile.maximumPromptTokens }
     var maximumOutputTokens: Int { profile.maximumOutputTokens }
     var maximumChunkTokens: Int { profile.maximumChunkTokens }
@@ -177,12 +198,11 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     /// the residual crossing the cut, two copies each). Charged as a state
     /// stand-in, the plan chose cuts the rank's load gate then refused.
     var allowanceEveryRankBytes: Int? {
-        let chunk = maximumChunkTokens
         return GLM5NextServingResources.workspaceNativeBytes + GLM5NextServingResources.workspaceHostBytes
             + GLM5NextResidentResourceEnvelope.metadataAllowanceBytes
             + 2 * Self.largestTensorBytes + GLM5NextArtifactLoader.verificationHostBytes
-            + GLM5NextArtifactLoader.payloadReadScratchAllowanceBytes + Self.largestExpertBankBytes
-            + 2 * chunk * configuration.vocabularySize * 4 + 2 * chunk * boundaryBytesPerToken
+            + GLM5NextArtifactLoader.payloadReadScratchAllowanceBytes + Self.largestExpertBankBytes + allocationExtraBytes
+            + transferAndInputAllowanceBytes
             + mediaAllowanceBytes
     }
 
@@ -190,7 +210,7 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
         // Computed from the pinned full vision configuration, retained below.
         guard imageCandidate else { return 0 }
         return (try? GLM5NextImageBudget.bytes(configuration: fullConfiguration, rank: 0,
-            chunk: maximumChunkTokens, native: { $0 }, host: { $0 })).map { $0.native + $0.host } ?? Int.max / 4
+            chunk: maximumChunkTokens, native: { $0 + allocationExtraBytes }, host: GLM5NextServingResources.hostBound)).map { $0.native + $0.host } ?? Int.max / 4
     }
 
     /// Of the registered inventory (`specification.inventorySHA256`): the
@@ -198,11 +218,17 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     static let largestTensorBytes = 317_194_240
     static let largestExpertBankBytes = 1_207_959_552
 
+    /// Native LOAD bounds every source allocation, including cache reuse;
+    /// stored checkpoint bytes alone omit that allocator overhead.
+    func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int {
+        storedBytes + allocationExtraBytes
+    }
+
     /// The fused-projection construction allowance: every non-expert array of
     /// a layer is bounded as a source alias plus its fused copy.
     func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int {
-        if name.hasPrefix("model.visual.") { return imageCandidate ? 3 * storedBytes : 0 }
-        return layer(ofStoredTensor: name) != nil && !name.contains(".mlp.experts.") ? 2 * storedBytes : 0
+        if name.hasPrefix("model.visual.") { return imageCandidate ? 3 * (storedBytes + allocationExtraBytes) : 0 }
+        return layer(ofStoredTensor: name) != nil && !name.contains(".mlp.experts.") ? 2 * (storedBytes + allocationExtraBytes) : 0
     }
 
     static let layerPrefix = "model.language_model.layers."
@@ -237,11 +263,12 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
         let c = configuration
         if c.layerTypes[layer] == .deepseekSparseAttention {
             let width = c.kvLoraRank * 4 + c.indexHeadDim * 4 * 2 + 1
-            return .init(fixedBytes: 0, bytesPerToken: width * 3 * 2)
+            return .init(fixedBytes: maximumChunkTokens * width + 16 * allocationExtraBytes,
+                bytesPerToken: width * 3 * 2)
         }
         let state = try GLM5NextRequestStateBudget.linearTransactionBytes(configuration: c.linearAttention,
             chunk: profile.maximumChunkTokens, native: { bytes, copies in
-                try GLM5NextRequestStateBudget.product([bytes, copies])
+                try GLM5NextRequestStateBudget.product([bytes + allocationExtraBytes, copies])
             })
         return .init(fixedBytes: state, bytesPerToken: 0)
     }

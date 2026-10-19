@@ -131,6 +131,11 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     /// state, added to them: unlike the charge, which stands in for state,
     /// this is the family's workspace and load allowances. Nil when it has none.
     public var allowanceEveryRankBytes: Int? = nil
+    /// Some adapters reserve the entire advertised request scope during LOAD.
+    /// Their memory fit cannot shrink with the workload used to predict speed.
+    /// Nil preserves request-sized accounting for older/dynamic adapters.
+    public var reservesFullRequestScope: Bool? = nil
+
 
     public init(schema: String = ClusterModelLayout.schemaName, runtimeModelID: String, artifactSHA256: String,
                 configurationSHA256: String, layers: [Layer], ingress: Part, egress: Part, excluded: Part,
@@ -343,6 +348,7 @@ public protocol ClusterPlacementFamily {
     var requestChargeEveryRankBytesPerToken: Int? { get }
     /// See `ClusterModelLayout.allowanceEveryRankBytes`.
     var allowanceEveryRankBytes: Int? { get }
+    var reservesFullRequestScope: Bool { get }
 
     /// Which of the two stages the family's own plan gives a stored tensor
     /// when stage 0 holds `cut` layers: 0, 1, or nil when no stage loads it.
@@ -383,6 +389,7 @@ extension ClusterPlacementFamily {
     public var requestChargeEveryRankBytes: Int { 0 }
     public var requestChargeEveryRankBytesPerToken: Int? { nil }
     public var allowanceEveryRankBytes: Int? { nil }
+    public var reservesFullRequestScope: Bool { false }
     public func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { storedBytes }
     public func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { 0 }
     public func loadsAtBothEnds(storedTensor name: String) -> Bool { false }
@@ -514,6 +521,7 @@ public enum ClusterModelLayoutBuilder {
             requestChargeEveryRankBytes: family.requestChargeEveryRankBytes,
             requestChargeEveryRankBytesPerToken: family.requestChargeEveryRankBytesPerToken)
         value.allowanceEveryRankBytes = family.allowanceEveryRankBytes
+        value.reservesFullRequestScope = family.reservesFullRequestScope ? true : nil
         try value.validate()
         // The head no range loads, and the speed-up the family's row credits it with.
         var built = value

@@ -126,7 +126,6 @@ struct GLM5NextRequestStateBudget: Equatable {
             return try product([rounded, copies])
         }
         let chunk = scope.maximumChunkTokens
-        let elementBytes = c.dtype == "bfloat16" ? 2 : 4
         // GLM5NextDSACache starts at the first append length, then grows to
         // max(end, 2*capacity, 256). Without truncation, capacity <= max(256,2*N).
         // Charge committed + tentative + growth padding, plus new input columns.
@@ -151,6 +150,33 @@ struct GLM5NextRequestStateBudget: Equatable {
                 native: { bytes, copies in try native(bytes, copies: copies) })
             kda = try product([one, kdaLayers])
         }
+        let buffers = try transferAndInputBytes(configuration: c, rank: rank, scope: scope, transport: transport,
+            nativeBound: { try native($0, copies: $1) }, hostBound: { try host($0, copies: $1) })
+        let boundary = buffers.boundary, logits = buffers.logits, wireNative = buffers.wireNative
+        let input = buffers.input, tokenHost = buffers.tokenHost, wireHost = buffers.wireHost
+        let media = scope.includesVision ? try GLM5NextImageBudget.bytes(configuration: inventory.configuration,
+            rank: rank, chunk: chunk, native: { try native($0) }, host: { try host($0) }) : (native: 0, host: 0)
+        let nativeBytes = try sum([media.native, dsa, kda, boundary, logits, input, wireNative, workspace.nativeBytes])
+        let hostBytes = try sum([media.host, wireHost, tokenHost, workspace.hostBytes])
+        return .init(rank: rank, layers: layers, scope: scope, dsaCapacityTokens: capacity,
+            dsaTransactionBytes: dsa, kdaTransactionBytes: kda, boundaryBytes: boundary,
+            logitsBytes: logits, inputBytes: input, tokenHostBytes: tokenHost,
+            transportNativeBytes: wireNative, transportHostBytes: wireHost,
+            workspaceNativeBytes: workspace.nativeBytes, workspaceHostBytes: workspace.hostBytes,
+            nativeBytes: nativeBytes, hostBytes: hostBytes, reservedBytes: try sum([nativeBytes, hostBytes]),
+            workspaceEvidenceSHA256: workspace.evidenceSHA256)
+    }
+
+    /// Shared named buffers for native admission and preliminary placement.
+    /// Bounding metadata does not allocate a tensor or initialize a device.
+    static func transferAndInputBytes(configuration c: GLM5NextTextConfiguration, rank: Int,
+                                      scope: Scope, transport: TransportTerms,
+                                      nativeBound: (Int, Int) throws -> Int,
+                                      hostBound: (Int, Int) throws -> Int) throws
+        -> (boundary: Int, logits: Int, wireNative: Int, input: Int, tokenHost: Int, wireHost: Int) {
+        let chunk = scope.maximumChunkTokens, elementBytes = c.dtype == "bfloat16" ? 2 : 4
+        func native(_ bytes: Int, copies: Int = 1) throws -> Int { try nativeBound(bytes, copies) }
+        func host(_ bytes: Int, copies: Int = 1) throws -> Int { try hostBound(bytes, copies) }
         let payload = try product([chunk, c.hcMult, c.hiddenSize, elementBytes])
         guard payload <= CollectivePointToPointShape.authenticatedArrayByteLimit,
               transport.maximumRecordPlaintextBytes > 0,
@@ -180,17 +206,7 @@ struct GLM5NextRequestStateBudget: Equatable {
             host(record.maximumSealedRecordBytes, copies: 2),
             host(record.additionalFramingDataBytes),
         ])
-        let media = scope.includesVision ? try GLM5NextImageBudget.bytes(configuration: inventory.configuration,
-            rank: rank, chunk: chunk, native: { try native($0) }, host: { try host($0) }) : (native: 0, host: 0)
-        let nativeBytes = try sum([media.native, dsa, kda, boundary, logits, input, wireNative, workspace.nativeBytes])
-        let hostBytes = try sum([media.host, wireHost, tokenHost, workspace.hostBytes])
-        return .init(rank: rank, layers: layers, scope: scope, dsaCapacityTokens: capacity,
-            dsaTransactionBytes: dsa, kdaTransactionBytes: kda, boundaryBytes: boundary,
-            logitsBytes: logits, inputBytes: input, tokenHostBytes: tokenHost,
-            transportNativeBytes: wireNative, transportHostBytes: wireHost,
-            workspaceNativeBytes: workspace.nativeBytes, workspaceHostBytes: workspace.hostBytes,
-            nativeBytes: nativeBytes, hostBytes: hostBytes, reservedBytes: try sum([nativeBytes, hostBytes]),
-            workspaceEvidenceSHA256: workspace.evidenceSHA256)
+        return (boundary, logits, wireNative, input, tokenHost, wireHost)
     }
 
     /// Shared with preliminary placement; admission independently bounds every

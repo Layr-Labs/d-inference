@@ -1,0 +1,187 @@
+import Foundation
+import MLXLMCommon
+import Testing
+
+@_spi(Benchmarking) @testable import ProviderCore
+
+/// Opt-in real-model regression for complete-checkpoint SSD restore TTFT on a
+/// shared engine. Each pair compares the same fork prompt restored from SSD
+/// and served cold under three conditions: idle, while another tenant's long
+/// prefill holds the engine, and right after another tenant's donor finishes
+/// (its own checkpoint write in flight). A restore must reach the demanded
+/// boundary and must never produce its first token later than cold prefill of
+/// the same prompt under the same condition. Timings are otherwise observations.
+@Suite("Complete-checkpoint restore under contention (live)", .serialized)
+struct ModelCheckpointRestoreContentionLiveTests {
+    private static let environment = ProcessInfo.processInfo.environment
+    private static let enabled = environment["DARKBLOOM_RESTORE_CONTENTION_BENCHMARK"] == "1"
+
+    struct Sample: Codable, Sendable {
+        let pair: Int
+        let role: String
+        let promptTokens: Int
+        let stageDisposition: String
+        let stageMilliseconds: Double
+        let restoredTokens: Int
+        let firstOutputSeconds: Double
+        let terminalSeconds: Double
+    }
+
+    struct Report: Codable {
+        let modelID: String
+        let weightHash: String
+        let sharedTokens: Int
+        let demandedTokens: Int
+        var samples: [Sample] = []
+    }
+
+    /// Raw values are the report's role suffixes for the measured fork.
+    private enum Condition: String, CaseIterable {
+        case idle
+        case duringForeignPrefill = "during_foreign_prefill"
+        case afterForeignDonor = "after_foreign_donor"
+
+        func role(cache: Bool) -> String { (cache ? "restore_" : "cold_") + rawValue }
+    }
+
+    /// One fixture is driven by the test task plus one overlapping foreign
+    /// submission; the benchmark session actor serializes shared engine access.
+    private struct FixtureBox: @unchecked Sendable { let fixture: ModelPrefixBenchmarkFixture }
+
+    @Test("SSD restore is never slower than cold prefill, idle or contended",
+          .timeLimit(.minutes(60)), .enabled(if: enabled))
+    func restoreUnderContention() async throws {
+        let output = try #require(Self.environment["DARKBLOOM_RESTORE_CONTENTION_OUTPUT"])
+        try #require(output.hasPrefix("/") && !FileManager.default.fileExists(atPath: output),
+            "the report output must be a new absolute path")
+        let specification = try ModelPrefixBenchmarkSpecification.load()
+        let fixture = try await ModelPrefixBenchmarkFixture(specification)
+        do {
+            let cell = try #require(specification.cases.first)
+            let prompts = try ModelCheckpointStoragePrompts(fixture: fixture, cell: cell)
+            var report = Report(modelID: specification.modelID, weightHash: specification.expectedWeightHash,
+                sharedTokens: prompts.sharedTokens, demandedTokens: prompts.demandedTokens)
+            var requests = RequestIDs()
+            _ = try await Self.timed(fixture, id: requests.next(), pair: -1, role: "excluded_warmup",
+                tokens: prompts.fork, scope: "warmup", target: nil, cache: false)
+            for pair in 0..<specification.pairs {
+                let scope = "contention-\(pair)"
+                report.samples.append(try await Self.timed(fixture, id: requests.next(), pair: pair,
+                    role: "donor", tokens: prompts.donor, scope: scope, target: prompts.demandedTokens, cache: true))
+                try await fixture.session.drainCheckpointWrites()
+                for condition in Condition.allCases {
+                    for cache in [true, false] {
+                        report.samples += try await Self.measureFork(fixture, condition: condition, cache: cache,
+                            pair: pair, scope: scope, prompts: prompts, requests: &requests)
+                    }
+                }
+            }
+            try JSONEncoder().encode(report).write(to: URL(fileURLWithPath: output))
+            try Self.requireRestoreNeverSlower(report)
+        } catch {
+            try? await fixture.close()
+            throw error
+        }
+        try await fixture.close()
+    }
+
+    /// Serves the fork once, restored or cold, under one condition and returns
+    /// its sample first, followed by the foreign request that created the
+    /// condition. Foreign work uses its own tenant scope, so it never shares a
+    /// checkpoint with the measured prompt.
+    private static func measureFork(
+        _ fixture: ModelPrefixBenchmarkFixture, condition: Condition, cache: Bool, pair: Int, scope: String,
+        prompts: ModelCheckpointStoragePrompts, requests: inout RequestIDs
+    ) async throws -> [Sample] {
+        let role = condition.role(cache: cache)
+        let foreignScope = "\(scope)-foreign-\(role)"
+        func fork(id: UInt64) async throws -> Sample {
+            try await timed(fixture, id: id, pair: pair, role: role,
+                tokens: prompts.fork, scope: scope, target: nil, cache: cache)
+        }
+        let samples: [Sample]
+        switch condition {
+        case .idle:
+            samples = [try await fork(id: requests.next())]
+        case .duringForeignPrefill:
+            let box = FixtureBox(fixture: fixture)
+            let foreignID = requests.next()
+            // A child task, so a failed measurement cancels and joins the
+            // foreign request before the caller closes the fixture.
+            async let foreign = timed(box.fixture, id: foreignID, pair: pair, role: "foreign_prefill",
+                tokens: prompts.donor, scope: foreignScope, target: nil, cache: false)
+            // Submit while the foreign prefill is running, not before it starts.
+            try await Task.sleep(for: .seconds(2))
+            let measured = try await fork(id: requests.next())
+            samples = [measured, try await foreign]
+        case .afterForeignDonor:
+            let foreign = try await timed(fixture, id: requests.next(), pair: pair, role: "foreign_donor",
+                tokens: prompts.donor, scope: foreignScope, target: prompts.demandedTokens, cache: true)
+            samples = [try await fork(id: requests.next()), foreign]
+        }
+        try await fixture.session.drainCheckpointWrites()
+        return samples
+    }
+
+    private static func requireRestoreNeverSlower(_ report: Report) throws {
+        for pair in Set(report.samples.map(\.pair)).sorted() where pair >= 0 {
+            for condition in Condition.allCases {
+                let restore = try #require(report.samples.first {
+                    $0.pair == pair && $0.role == condition.role(cache: true)
+                })
+                let cold = try #require(report.samples.first {
+                    $0.pair == pair && $0.role == condition.role(cache: false)
+                })
+                #expect(restore.stageDisposition == "staged" && restore.restoredTokens >= report.demandedTokens,
+                    "pair \(pair) \(condition.rawValue): restore must reach the demanded boundary")
+                #expect(restore.firstOutputSeconds <= cold.firstOutputSeconds,
+                    "pair \(pair) \(condition.rawValue): restore TTFT \(restore.firstOutputSeconds)s exceeds cold TTFT \(cold.firstOutputSeconds)s")
+            }
+        }
+    }
+
+    /// Engine sampling IDs must be distinct while two submissions overlap.
+    private struct RequestIDs {
+        private var last: UInt64 = 1_000
+        mutating func next() -> UInt64 { last += 1; return last }
+    }
+
+    /// TTFT starts before staging, matching the session's caller-visible clock.
+    private static func timed(_ fixture: ModelPrefixBenchmarkFixture, id: UInt64, pair: Int, role: String,
+                              tokens: [Int], scope: String, target: Int?, cache: Bool) async throws -> Sample {
+        var request = ModelPrefixBenchmarkFixture.benchmarkRequest(tokens: tokens, scope: scope, target: target,
+            cacheEnabled: cache, outputTokens: fixture.specification.outputTokens)
+        request.id = CBv2RequestID(id)
+        let started = ContinuousClock.now
+        let submitted = try await fixture.session.submit(request)
+        var first: ContinuousClock.Instant?
+        var outputCount = 0
+        var finish: CBv2FinishReason?
+        var finalUsage: CBv2Usage?
+        for await event in submitted.events {
+            switch event {
+            case .delta(_, let newTokens, _):
+                if first == nil, !newTokens.isEmpty { first = .now }
+                outputCount += newTokens.count
+            case .finished(let reason, let usage):
+                finish = reason
+                finalUsage = usage
+            }
+        }
+        let terminal = ContinuousClock.now
+        let usage = try await ModelPrefixBenchmarkTerminal.completeSuccessfulRequest(
+            finish: finish, usage: finalUsage, outputCount: outputCount,
+            expectedOutputCount: fixture.specification.outputTokens) {
+                await fixture.session.complete(receiptID: submitted.receiptID)
+            }
+        let sample = Sample(pair: pair, role: role, promptTokens: tokens.count,
+            stageDisposition: submitted.stageDisposition, stageMilliseconds: submitted.stageMilliseconds,
+            restoredTokens: usage.prefixCachePrefillTokensSaved,
+            firstOutputSeconds: (try #require(first) - started) / .seconds(1),
+            terminalSeconds: (terminal - started) / .seconds(1))
+        print("[restore-contention] \(role) pair=\(pair) stage=\(sample.stageDisposition) "
+            + "stage_ms=\(Int(sample.stageMilliseconds)) restored=\(sample.restoredTokens) "
+            + "ttft_s=\(String(format: "%.2f", sample.firstOutputSeconds))")
+        return sample
+    }
+}

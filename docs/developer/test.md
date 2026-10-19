@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-19
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -173,6 +173,34 @@ ratio or runner exit code alone does not qualify encrypted restart, quality,
 TTFT, TPS or memory. The existing `ModelPrefixBenchmarkLiveTests` exact replay
 suite requires native live and native checkpoint precision and rejects nonnative
 specifications before loading; keep those output-hash assertions unchanged.
+
+`ModelCheckpointRestoreContentionLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointRestoreContentionLiveTests.swift`)
+is the opt-in real-model regression for complete-checkpoint SSD restore TTFT on
+a shared engine. It reads the first case of the same standalone
+`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache. For each
+pair it serves the fork prompt restored and cold under three conditions: idle,
+while another tenant's long prefill is running, and right after another
+tenant's donor completes. It fails when a restore does not reach
+`demandedTokens` or produces its first token later than the cold run under the
+same condition. Other timings are observations. Run it from `provider-swift/`
+after building tests and staging the metallib, with only the listed variables:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_RESTORE_CONTENTION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_RESTORE_CONTENTION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointRestoreContentionLiveTests
+```
+
+Pick `demandedTokens` at or below the deepest checkpoint that fits
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`; a deeper demand fails the boundary
+check rather than measuring restore latency. The contended fork is submitted
+two seconds after the foreign prefill starts, so pick a `donorTokens` long
+enough to still be prefilling then. The report keeps every sample, including
+the foreign requests that create each condition.
 
 ## Runtime Generation Comparisons
 

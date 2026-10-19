@@ -77,9 +77,9 @@ extension ClusterPlacementExplanation {
         case .doesNotFit:
             return "\(name): tensor parallel does not fit in these Macs' memory."
         case .notExecutedByRuntime:
-            return "\(name): tensor parallel is predicted faster, but this runtime does not run it for this model."
+            return "\(name): \(assessment.reason)."
         case .notQualified:
-            return "\(name): tensor parallel is predicted faster, but no qualification admits it on these Macs."
+            return "\(name): \(assessment.reason)."
         }
     }
 }

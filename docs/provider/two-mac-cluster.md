@@ -170,6 +170,18 @@ for one of two reasons, each said in one line:
   tensor parallel);
 - this build has no cluster stage adapter for it.
 
+Check the printed mode and reason before starting. TP eligibility comes from
+the model's tensor layout, the runtime's advertised modes and supported rank
+counts; this check reads metadata and does not load the weights. TP does not
+require a pipeline layer cut. An unsupported model or rank count falls back
+to pipeline when eligible and fitting, without requesting a link measurement. For a compatible TP
+runtime, automatic selection still requires measured encrypted-link costs,
+memory fit and a predicted advantage over pipeline. A new pair without those
+link measurements uses an eligible fitting pipeline; a supported worker's first load records
+the measurements for later planning. GLM currently has a pipeline adapter only.
+See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
+and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
+
 Chips never decide. Each Mac's memory gate still decides every load; its margins
 scale with the Mac's memory below 96 GB, so a smaller Mac takes the share it can
 hold (one layer is a share).

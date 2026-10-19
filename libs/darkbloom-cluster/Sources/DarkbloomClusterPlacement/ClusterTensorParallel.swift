@@ -233,9 +233,9 @@ public struct ClusterTensorParallelAssessment: Codable, Equatable, Sendable {
         case chosen
         /// Predicted slower than the chosen placement (or within the margin).
         case predictedSlower
-        /// Predicted faster, but this runtime does not execute the mode yet.
+        /// This runtime does not execute the mode for this model and rank count.
         case notExecutedByRuntime
-        /// Predicted faster, but every shape of it diverged on these chips (the policy admits none).
+        /// The policy excludes this mode or every executable shape on these chips.
         case notQualified
         /// No placement in this mode fits.
         case doesNotFit

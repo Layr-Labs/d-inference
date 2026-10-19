@@ -140,9 +140,9 @@ private func checkShardChoiceOnRecordedPair(_ big: ClusterModelLayout, golden: U
     checks.require("shards M3 Ultra + M5 Ultra (floor-bound decode, unequal Macs): the pipeline is chosen; tensor parallel is predicted slower and said so",
         result.chosen.map { $0.mode == .pipeline || $0.mode == .pipelineCompactDecode } == true
             && option(result, .tensorParallel)?.verdict == .slower && option(result, .tensorParallel)?.prediction != nil)
-    // With today's runtime (no tensor-parallel mode listed) and no reduction measured, as the product plans now.
+    // The adapter advertises TP, but a new pair has no keyed reduction measurement yet.
     let today = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: shardPolicy())
-    checks.require("shards M3 Ultra + M5 Ultra, today's runtime, no reduction measured: pipeline chosen; tensor parallel says the reduction is not measured",
+    checks.require("shards M3 Ultra + M5 Ultra, TP-capable runtime, no reduction measured: pipeline chosen; tensor parallel says the reduction is not measured",
         today.chosen?.mode == .pipeline && option(today, .tensorParallel)?.verdict == .reductionNotMeasured)
     if let chosen = option(today, .pipeline) {
         checks.require("shards M3 Ultra + M5 Ultra: the pipeline option names its cut, each member's layers and bytes, and its predicted speed",

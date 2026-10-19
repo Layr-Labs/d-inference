@@ -55,7 +55,7 @@ extension Start {
         }
 
         let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-        print("darkbloom \(ProviderCore.version) (local / direct mode)")
+        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
         print("Preparing local server on \(bind):\(port)")
         print("Models: \(advertised.count)")
         for m in advertised {
@@ -73,7 +73,7 @@ extension Start {
             print("  API key:  (auth disabled — --no-auth)")
         }
         print()
-        print("  Shareable any time with: darkbloom local")
+        print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
         print()
 
         // Lock acquisition and exact legacy-artifact housekeeping are one
@@ -272,7 +272,7 @@ extension Start {
 
         let schedule: Schedule? = config.schedule.flatMap { Schedule.from(config: $0) }
 
-        print("darkbloom \(ProviderCore.version)")
+        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version)")
         print("Backend: mlx-swift")
         print("Config: \(describeConfigPath(snapshot))")
         print("Coordinator: \(coordinatorURL)")
@@ -302,13 +302,13 @@ extension Start {
                 do {
                     token = try LocalEndpoint.loadOrCreateToken()
                 } catch {
-                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/.darkbloom permissions, or pass --no-auth for a trusted/airgapped setup.")
+                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/\(BuildEnvironment.current.installDirectoryName) permissions, or pass --no-auth for a trusted/airgapped setup.")
                     throw ExitCode.failure
                 }
             }
             localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")
+            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled)")")
         }
 
         let loopConfig = ProviderLoopConfig(

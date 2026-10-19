@@ -40,8 +40,8 @@ public enum LoadedModelsStore {
             !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/loaded-models.json")
+        return BuildEnvironment.current.installDirectory()
+            .appendingPathComponent("loaded-models.json")
     }
 
     private static func encoder() -> JSONEncoder {

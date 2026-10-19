@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -31,10 +31,20 @@ convolution state to FP32; checkpoint declarations preserve that actual dtype.
 Packed recurrent prefill retains a compact convolution carry rather than an
 alias of the complete chunk allocation; the SDK copies those state bits without
 changing the recurrence or other model families.
-`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
-MTP remains unsupported because the checkpoint has no assistant tensors.
-See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
-qualification scope. This implementation does not activate a catalog entry.
+`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically for
+the 27B artifact, which has no MTP assistant tensors. The 9B candidate's
+separate local sidecar requires the explicit validation and opt-in described
+below; it does not extend the 27B qualification cohort.
+
+Native Qwen3.5 vision blocks honor explicit checkpoint activation declarations.
+For the three supported nested vision types, tanh and exact GELU are selected
+from `hidden_act`; absent or unknown declarations preserve the existing fast
+approximation. The SDK's `Qwen3VLConfiguration.VisionConfiguration`
+(`visionMLPApproximationForConstruction`) owns this choice in
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift`.
+See `libs/mlx-swift-lm/docs/bonsai2.md` for the exact activation mapping,
+checkpoint contract and qualification scope. This implementation does not
+activate a catalog entry.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
@@ -97,9 +107,14 @@ publishes the newest evidence without sending one heartbeat per token.
 `provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`
 matches reviewed data to verified model weights, provider/runtime revision,
 resolved KV backend, GPU/RAM bin and the entire configured context limit.
-Unknown profiles retain the legacy policy. The concurrency/chunk catalogs remain empty;
+Unknown profiles retain the legacy policy, except that models on the native
+`auto` paged allowlist start at the legacy ceiling of 8 instead of 4 on M5 Pro,
+Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`; chip identity comes from one
+sysctl, not full hardware detection). That width, like a profile
+width, returns to the configured width under Low Power Mode or thermal pressure
+(`EngineV2Bridge.hasPostureGatedWidth`). The concurrency/chunk catalogs remain empty;
 the [qualification procedure](../developer/serving-performance-qualification.md)
-is required before any higher default or model-specific chunk policy activates.
+is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
 engine retirement, not when a caller merely requests cancellation. Atomic
@@ -117,6 +132,78 @@ feeds the same scheduler plan used by execution and first-token projection.
 An absent qualified cap preserves the existing environment/default behavior.
 The prefill-only stripe, one partial prefill, recurrent checkpoints and
 one-image-at-a-time vision execution keep their existing geometry.
+
+### Model startup calibration
+
+The startup health check exercises a one-token request through the serving
+adapter with local-only `EngineMeasurementPurpose.startupWarmup`. Its first-use
+timing never trains prefill, decode, workload-bucket or delivered-rate estimates.
+Work accounting, resource ownership and the health-check result are unchanged;
+overlapping customer requests remain independently measurable.
+
+Completed startup preloads and the pre-registration path schedule calibration
+without waiting for the first capacity tick. Ordinary model loads also schedule
+it after construction releases its device-work receipt. Capacity ticks retry
+when loading, foreground work or device posture initially prevents calibration.
+An uncancelled calibration retirement schedules the next eligible resident
+slot immediately; the process-wide owner still permits only one session at a
+time. That successor scheduling runs after the session's retirement, outside
+the task a preempting customer request waits for; a preempted session schedules
+no successor. Ordinary and native MiMo load
+completion share a handoff that releases the finished construction activity and
+offers the newly loaded slot first,
+while keeping the load-transition gate closed. It rechecks cancellation and
+native ownership before releasing the gate and waking parked requests. Existing
+foreground or calibration ownership can still defer calibration.
+`refreshModelCalibration` asks the loaded bridge's `startModelCalibrationIfNeeded`
+to measure its actual serving configuration. Ordinary `EngineV2` autoregressive engines, including dense and
+MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
+128-token warmup followed by two uncached solo probes
+of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
+prefill/decode evidence without requiring a customer job and runs once per loaded
+engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
+An unfinished bootstrap retries when that backoff expires even if its completed
+probes left fresh partial rates. Fresh serving samples from an early request do
+not suppress an unfinished first bootstrap either. Only completed native MiMo
+maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
+
+Transaction-owned native MiMo slots retain the wider bootstrap and periodic
+maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
+affordable concurrency sweeps and solo refresh after 90 seconds. The existing
+15-second group deadline, context/KV limits and affordability checks bound work.
+All calibration requires an idle Mac in nominal thermal state outside Low Power
+Mode. Slots with a reviewed deadline profile never calibrate, because bounded
+probes must not enter deadline-qualified rates; those profiles keep their own
+applicability and posture checks.
+
+`IdleCalibrationCoordinator.beginForeground` cancels the probe when a customer
+request on any model arrives. Ordinary engines use `EngineV2.submitWithRetirement`
+to retain shared service and KV reservations until the actual submitted stream
+generation retires, including after an early watchdog terminal or cancelled
+waiter. The customer's original first-content deadline continues through this
+wait. Unsupported custom adapters remain ineligible until they expose a trusted
+retirement boundary. Unload and shutdown stop calibration without retaining
+retired weights.
+
+Only completed, uncached, isolated receipts seed solo rates. Batched measurements
+populate workload buckets without replacing solo admission rates. Calibration
+produces no served-request/output-token counters; its actual in-flight work stays
+visible until retirement. Prefill receipts retain their calibration identity
+after cell cleanup, so delayed callback consumption cannot turn a cancelled
+probe into serving counters or rate evidence. Fresh evidence is published through existing capacity
+heartbeats. Memory floors, concurrency ceilings and deadline enforcement remain
+unchanged. Scheduling is asynchronous: registration and customer service do not
+wait for the full calibration plan to finish. Once completed slot publication
+reaches this handoff, cancelling its load caller does not turn the resident slot into a failed
+load; shutdown and slot-owner validity checks still apply. See the calibration entries in the
+[code map](#code-map) for the enforcing paths and symbols.
+
+Each cell stages its numeric prefill/decode observations until all its requests
+have retired. Posture is checked before the cell and again before publication.
+A failed, cancelled or non-nominal cell discards its own staged observations
+and leaves the bootstrap retryable, including for the final cell. Earlier valid
+cells and independent serving observations remain intact. Serving observations
+still publish immediately, through the same rate/EWMA application helper.
 
 ### One request through the engine
 
@@ -532,12 +619,43 @@ disabled for this hybrid model.
 and stored on the `EngineV2Bridge` next to the stop-token set. It fills only
 the knobs a request omits; an explicit request value always wins, so
 `temperature: 0` is still greedy. Admission is per family, like
-`ToolChoiceEnforcementPolicy.nativeStructuredTarget`: today only
-`model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
+`ToolChoiceEnforcementPolicy.nativeStructuredTarget`: `model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
 (`EngineV2SupportedModels.isNemotron35ListingModelID`) honours its artifact
 (`temperature 1.0`, `top_p 0.95`, `do_sample true`, the values the model card
-recommends). Every other family keeps the legacy defaults in the table
-byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
+recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
+`EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
+defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
+qualification requests explicitly supply `presence_penalty: 1.5`; that value
+is absent from the artifact and is not injected as a default. This request
+policy enables native channels, nested reasoning and forced-media framing.
+These exact 9B identities separately default to paged attention and encrypted SSD
+prefix caching. Explicit operator selections, kill switches, native capability
+and cache identity/security checks still apply. The 27B admission/MTP cohort
+does not expand to 9B.
+`Bonsai9BModelPolicy.contextLimit` passes this artifact's positive native
+context limit into the bridge even without a measured performance profile.
+The existing overflow-safe prompt-plus-output check rejects an oversized
+envelope before cache lookup or engine submission, for both KV backends.
+This does not claim physical full-context capacity or alter pre-load listing
+metadata.
+
+The default `mtp_mode = "auto"` requests MTP for these exact 9B identities.
+An optional `mtp_drafter_path` override takes precedence; otherwise the existing
+validated catalog `spec_dec` path prepares the assistant asynchronously and
+attaches it at an eligible idle boundary. No request waits for a download.
+The raw publisher sidecar has a zero-layer declaration and remains invalid
+for native binding: a separately qualified assistant and immutable catalog
+reference are required. `off` and the process kill switch disable MTP.
+`SpecDecArtifactFunnel.prepare` keeps the exact identity, Prism type, local
+artifact validation and kill-switch gates. `ProductionProviderMTPAssistantLoader`
+binds the independently validated head through the Prism wrapper, with exact
+acceptance by default and a fixed maximum draft depth of two. The separate
+head's artifact contract and unchanged base precision are documented in
+`libs/mlx-swift-lm/docs/bonsai2.md`. Its strict binding accepts the inspected
+F16 and affine 4-bit/group-64 heads, preserving the original path for rollback.
+Actual model, cache and speed qualification
+remain separate from this automatic intent and validated loading path.
+Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
@@ -1021,6 +1139,10 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Concern | File / symbol |
 |---|---|
 | Bridge submit path | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| Calibration scheduling | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelCalibration.swift` (`refreshModelCalibration`); `provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift` (`finishStartupPreload`); `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`finishModelLoad`); `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`finishNativeMiMoSlotPublication`) |
+| Calibration plan and retry gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift` (`startModelCalibrationIfNeeded`, `runModelCalibration`); `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`startup`, `bootstrap`, `maintenance`) |
+| Calibration evidence and foreground priority | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` (`EnginePerformanceMeasurements`); `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`) |
+| Per-cell evidence publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+RateObservations.swift` (`recordRateObservation`, `applyRateObservation`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationCell`) |
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
@@ -1043,3 +1165,31 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 - [prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md) — coordinator-side contract identity
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable and config key with its default
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — wire shape of capacity, timing and status fields
+
+### Bonsai 9B release verification mode
+
+With a validated local or catalog sidecar available, `Qwen35InlineMTPAssistant` requires
+rectangular verification and `providerMTPVerificationPolicy` preserves that
+mode. The 9B drafter is bounded to depth two and one speculative request.
+Keep `mtp_acceptance = "exact"`; the generic automatic rectangular work-cap
+selector is not used by this drafter. The existing serial environment override
+remains an explicit comparison/rollback control. Unsupported cache/capture
+capabilities or runtime eligibility retain the target-only path, and an absent
+or invalid sidecar leaves plain generation available. This mode choice does
+not establish final-model qualification.
+
+The publisher checkpoint is publicly readable at
+[revision f4e28a59531731c41b6dfac88cf271bd58f0a287](https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-mlx-2bit/tree/f4e28a59531731c41b6dfac88cf271bd58f0a287).
+Its optional Q4 head and original base weights match the inspected candidate.
+Public availability does not correct the sidecar layer-count declaration or
+substitute for native runtime and deployment qualification.
+
+The Eigen Labs copy is published at
+[revision 98deded13e48aae1f3e27d551d0e2582a7d0cc51](https://huggingface.co/EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit/tree/98deded13e48aae1f3e27d551d0e2582a7d0cc51).
+This documentation revision updates the EigenLabs model card, native MTP notes
+and checksum inventory; all runtime files match the original Eigen publication
+`afce870aab56a267b2ab35c3e3309dcec76abd05`.
+Both exact identifiers use `Bonsai9BModelPolicy`. The copy preserves publisher
+weights and runtime metadata, including the sidecar layer-count declaration.
+Artifact copying does not grant catalog or hosted-serving qualification.
+No family-name or substring alias is accepted.

@@ -1,13 +1,14 @@
 import CryptoKit
 import Darwin
 import Foundation
+import ProviderBuildEnvironment
 
 /// Serializes the existing Keychain read-modify-write budget across helpers.
 /// The lock contains no credentials and is released by the kernel on death.
 final class WorkerCredentialLease {
     private let descriptor: WorkerDescriptor
     init(scope: String) throws {
-        let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".darkbloom")
+        let directory = BuildEnvironment.current.installDirectory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let digest = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
         let path = directory.appendingPathComponent("app-attest-worker-\(digest).lock").path

@@ -43,7 +43,7 @@ public enum AuthTokenStore: Sendable {
     }
 
     private static func canonicalTokenPath(home: URL) -> URL {
-        home.appendingPathComponent(".darkbloom").appendingPathComponent("auth_token")
+        BuildEnvironment.current.installDirectory(home: home).appendingPathComponent("auth_token")
     }
 
     private static func tokenPathOverride() -> String? {
@@ -159,13 +159,13 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
     public var description: String {
         switch self {
         case .alreadyLoggedIn(let prefix):
-            return "Already logged in (token: \(prefix)...). Run 'darkbloom logout' first to unlink."
+            return "Already logged in (token: \(prefix)...). Run '\(BuildEnvironment.current.cliName) logout' first to unlink."
         case .coordinatorUnreachable(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .deviceCodeRequestFailed(let detail):
             return "Failed to get device code: \(detail)"
         case .deviceCodeExpired:
-            return "Device code expired. Run 'darkbloom login' again."
+            return "Device code expired. Run '\(BuildEnvironment.current.cliName) login' again."
         case .authorizationFailed(let detail):
             return "Authorization failed: \(detail)"
         case .invalidResponse(let detail):

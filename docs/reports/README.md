@@ -1,8 +1,10 @@
 # Provider And Native Evidence
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-15
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
+
+- [Bonsai 9B publication delay](2026-10-15-bonsai9b-publication.md)
 
 - [Provider v0.8.0 — release notes](../releases/v0.8.0-notes.md)
 - [Metal resource-COUNT crash fix — how the upstream C++ was landed](2026-06-15-metal-resource-count-fix-handoff.md)

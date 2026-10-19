@@ -247,7 +247,7 @@ enum KVPostureDiagnosis {
                     status: .fail,
                     detail: "daemon is running but its state file has not been rewritten for "
                         + "\(ageText) (expected every ~\(Int(period))s) — it is wedged; "
-                        + "check `darkbloom logs`, then `darkbloom stop && darkbloom start`"))
+                        + "check `\(BuildEnvironment.current.cliName) logs`, then `\(BuildEnvironment.current.cliName) stop && \(BuildEnvironment.current.cliName) start`"))
         } else if age > staleAfter {
             out.append(
                 DoctorCheck(

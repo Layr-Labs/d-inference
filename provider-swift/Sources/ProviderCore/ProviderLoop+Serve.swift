@@ -131,6 +131,11 @@ extension ProviderLoop {
             return
         }
 
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
+
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
         // Secure-Enclave-signed attestation below.
@@ -503,7 +508,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

@@ -15,7 +15,7 @@ import CryptoKit
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "attestation")
+private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "attestation")
 
 // MARK: - Data Types
 

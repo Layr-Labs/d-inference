@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -148,8 +148,13 @@ Serving concurrency is resolved after the model's KV backend and verified
 artifact are known. `BackendSettings.engineV2MaxConcurrentIsExplicit`
 distinguishes an absent `engine_v2_max_concurrent` key (automatic, legacy
 default `4` until an exact reviewed profile applies) from any existing literal
-operator cap. Serialization preserves that distinction; historical literal
-values are not silently raised. Per-model overrides remain explicit limits.
+operator cap. Without a profile, models on the native `auto` paged allowlist
+(`EngineV2KVBackendPolicy.preferredBackend`) start at the legacy ceiling `8` on
+M5 Pro, Max and Ultra and return to `4` under Low Power Mode or thermal pressure
+(`ServingPerformanceProfiles.automaticConcurrency`); a model paged only by an
+explicit backend or live packed quantization keeps `4`. Serialization
+preserves that distinction; historical literal values, including a stamped `4`,
+are not silently raised. Per-model overrides remain explicit limits.
 Daemon and standalone engines use the same profile resolver and preserve
 narrower architecture and physical memory constraints. `darkbloom status` and
 `doctor` explain the selection. See [qualification](../developer/serving-performance-qualification.md).
@@ -480,7 +485,7 @@ capability or alter the TTL, encryption or memory safeguards.
 | Key | Type / default | Effect | Source |
 |---|---|---|---|
 | `cache.daily_write_gb` | Optional nonnegative finite decimal GB; absent uses environment/default below | `0` explicitly means unlimited. A positive value must represent at least one byte and fit in `Int`; saved values win over the environment after restart | `provider-swift/Sources/ProviderCore/Config/CacheSettings.swift` (`validate`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheStorage.swift` (`dailyWriteBytes`) |
-| `cache.directory` | Optional absolute existing directory | Payloads use its `darkbloom/kv3` child; absent retains the built-in cache directory. No automatic migration or fallback when configured storage is unavailable | `CacheStorage.swift` (`root`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift` (`inspect`) |
+| `cache.directory` | Optional absolute existing directory | Payloads use its `darkbloom/kv3` child (a dev build: its own namespace); absent retains the built-in cache directory. No automatic migration or fallback when configured storage is unavailable | `CacheStorage.swift` (`root`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift` (`inspect`) |
 | `cache.volume_uuid` | Optional UUID, required with `cache.directory` | Written by the CLI and checked against opened directories; a different filesystem at the same path is refused | `CacheStorage.swift` (`validateOpenedDirectory`) |
 
 Preparation and commands: [provider cache storage](../provider/cache-storage.md).

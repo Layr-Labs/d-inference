@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-14
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -17,7 +17,7 @@ The tier owns one root per user, one directory per model.
 
 | Item | Value | Code |
 |---|---|---|
-| Root | By default `~/Library/Caches/darkbloom/kv3/`; a saved `cache.directory` selects `<directory>/darkbloom/kv3/` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
+| Root | By default `~/Library/Caches/<encryptedCacheNamespace>/kv3/`; a saved `cache.directory` selects `<directory>/<encryptedCacheNamespace>/kv3/`. The namespace is `darkbloom` for production; a dev build has its own ([Dev build identity](../operations/provider-release.md#dev-build-identity)), so the two never share blocks or epochs | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
 | Per-model directory | `<root>/<modelKey>/`, `modelKey = SHA256(modelId)` first 12 hex characters | `SSDPrefixCacheFactory.swift` (`cacheDirectory`) |
 | Block file | `<tag>.dbk3`, one file per attention block or complete recurrent checkpoint ([block size](../architecture/prefix-cache.md#block-hashing)); `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
 | Epoch record | `<modelKey>/cache-epoch.json`, schema `darkbloom.cache-epoch.v1` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift` |
@@ -58,7 +58,7 @@ header comment and `enum SSDBlockStore`).
 | Cryptographic detail | Value | Code |
 |---|---|---|
 | Per-chunk nonce | HKDF-Expand(DEK, info = `"dbkv-chunk-v3"` ‖ `file_IV` ‖ uint32 BE chunk index, L = 12) | `SSDBlockStore.swift` (`chunkInfoPrefix`) |
-| KEK | Secure-Enclave-rooted and Keychain-persisted; `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit | `SSDCacheKeyMaterial.swift` (`load`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`) |
+| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`); `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit | `SSDCacheKeyMaterial.swift` (`load`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`) |
 | Lookup key | `K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L = 32)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |

@@ -7,7 +7,7 @@ import os
 extension EngineV2Bridge {
     #if canImport(os)
     private static let mtpLogger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2_mtp")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2_mtp")
     #endif
 
     /// Record MTP activation, emit the opening per-slot posture, and

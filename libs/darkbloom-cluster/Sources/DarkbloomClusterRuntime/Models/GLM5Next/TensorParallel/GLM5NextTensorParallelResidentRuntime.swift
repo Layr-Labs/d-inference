@@ -451,6 +451,15 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// Only rank 0 invokes the callback, once both ranks hold the token.
     public func start(requestID: UUID,
                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+        try ClusterCommittedTokenChannel.answering(onCommittedToken) { try start(requestID: requestID, tokens: $0) }
+    }
+
+    /// As `start(requestID:onCommittedToken:)`, with the owner's answer to
+    /// each token read one step (or round) later, after the next one was
+    /// submitted: the answer's pipe round trip (about 1.6 ms a token through
+    /// the owner) then overlaps the next step's encoding and GPU time.
+    public func start(requestID: UUID, tokens channel: ClusterCommittedTokenChannel) throws
+        -> QwenResidentGenerationCompletion {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         guard let reserved = reservation, reserved.request.requestID == requestID else {
@@ -460,7 +469,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
                 identity: .init(requestID: requestID, epoch: requestID, recordedRequestFingerprint: reserved.request.fingerprint),
                 deadline: reserved.deadline, body: {
-                    try autoreleasepool { try generate(reserved, onCommittedToken: onCommittedToken) }
+                    try autoreleasepool { try generate(reserved, channel: channel) }
                 }, prepare: { $0 })
             collective.logDataPlaneStatus()
             reservation = nil
@@ -502,7 +511,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
     // MARK: - One request
 
-    private func generate(_ reserved: Reserved, onCommittedToken: (Int, Int, Int) throws -> Bool) throws
+    private func generate(_ reserved: Reserved, channel: ClusterCommittedTokenChannel) throws
         -> QwenResidentGenerationCompletion {
         guard let stage else { throw ProbeError("Resident model already released") }
         let request = reserved.request, rank = collective.rank
@@ -606,41 +615,76 @@ public final class GLM5NextTensorParallelResidentRuntime {
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false
         var stopKeep: Float = 0
+        // Rank 0 publishes each token at once and reads the owner's answer to
+        // it after the next step or round was submitted, before publishing
+        // the next token. A stop answer is acted on one step later: the extra
+        // step is computed and never published.
+        var unanswered = false
+        func readAnswer() throws {
+            guard unanswered else { return }
+            unanswered = false
+            if try !channel.answer(), stopKeep == 0 { clientStopped = true; stopKeep = Float(tokens.count) }
+        }
+        /// Commits one agreed token on this rank (and publishes it on rank 0);
+        /// the request's own end (EOS or length) at it, else nil.
+        func commit(_ value: Int) throws -> ClusterWorkerFinishReason? {
+            tokens.append(value)
+            if rank == 0 {
+                try channel.publish(tokens.count - 1, value, prompt.count + tokens.count - 1); unanswered = true
+            }
+            switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
+                                                      committed: tokens.count, outputCount: request.outputCount, wanted: true) {
+            case .eos: return .eos
+            case .length: return .length
+            case .clientStop, .proceed: return nil
+            }
+        }
         if let speculation, sampler == nil, let lastHidden {
             // The first token is agreed as a plain step's; then each round
             // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
             // and when the loop ends follow from agreed tokens only, so both
-            // ranks submit the same sums. A rank that stopped (client stop,
-            // cancel, deadline, memory) stops emitting, still ends where the
-            // other rank would, and carries its flag in the next round.
-            var fresh = [try token(choose(firstLogits, stop: 0).asArray(Float.self))]
-            try speculation.begin(carry: fresh[0], lastHidden: lastHidden)
-            var agreedCount = 0
-            rounds: while true {
-                for value in fresh {
-                    agreedCount += 1
-                    guard stopKeep == 0 else {
-                        if request.stopTokenIDs.contains(value) || agreedCount >= request.outputCount { break rounds }
-                        continue
-                    }
-                    tokens.append(value)
-                    let wanted = rank == 0 ? try onCommittedToken(tokens.count - 1, value, prompt.count + tokens.count - 1) : true
-                    switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
-                                                              committed: tokens.count, outputCount: request.outputCount, wanted: wanted) {
-                    case .eos: finish = .eos; break rounds
-                    case .length: finish = .length; break rounds
-                    case .clientStop: clientStopped = true; stopKeep = Float(tokens.count)
-                    case .proceed: break
-                    }
+            // ranks submit the same sums. A round's tokens are committed
+            // while the next round runs (`whileRunning`), unless they end the
+            // request. A rank that stopped (client stop, cancel, deadline,
+            // memory) stops committing, still ends where the other rank
+            // would, and carries its flag in the next round it submits.
+            let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
+            try speculation.begin(carry: first, lastHidden: lastHidden)
+            var agreedCount = 1, last = first, fresh: [Int] = []
+            /// Takes one agreed token; true when the request ends at it.
+            func take(_ value: Int, counted: Int) throws -> Bool {
+                if stopKeep == 0 { try readAnswer() }
+                guard stopKeep == 0 else {
+                    return request.stopTokenIDs.contains(value) || counted >= request.outputCount
                 }
-                if stopKeep == 0, localStop() { stopKeep = Float(tokens.count) }
-                let round = try speculation.round(stage: stage, cache: cache, last: fresh[fresh.count - 1],
-                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep)
+                if let end = try commit(value) { finish = end; return true }
+                return false
+            }
+            var ended = try take(first, counted: 1)
+            rounds: while !ended {
+                let taken = agreedCount
+                let round = try speculation.round(stage: stage, cache: cache, last: last,
+                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep,
+                    whileRunning: {
+                        for (index, value) in fresh.enumerated() {
+                            _ = try take(value, counted: taken - fresh.count + index + 1)
+                        }
+                        if stopKeep == 0, localStop() { stopKeep = Float(tokens.count) }
+                    })
                 if let keep = round.stops.filter({ $0 > 0 }).min() {
                     tokens = Array(tokens.prefix(Int(keep)))
                     finish = .clientStop; break
                 }
-                fresh = round.tokens
+                fresh = round.tokens; last = fresh[fresh.count - 1]; agreedCount += fresh.count
+                // Tokens that end the request are taken now (no next round).
+                let ends = fresh.indices.contains {
+                    request.stopTokenIDs.contains(fresh[$0]) || agreedCount - fresh.count + $0 + 1 >= request.outputCount
+                }
+                if ends {
+                    for (index, value) in fresh.enumerated()
+                    where try take(value, counted: agreedCount - fresh.count + index + 1) { break rounds }
+                    ended = true
+                }
             }
         } else {
             // Greedy steps are built one ahead: step k+1 is submitted before step
@@ -662,6 +706,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
             steps: for index in 0 ..< request.outputCount {
                 pending = nil
                 if pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                // The answer to the last token arrived while this step was encoded.
+                if stopKeep == 0 { try readAnswer() }
                 let agreed = current.asArray(Float.self)
                 let value = try token(agreed)
                 let flags = [agreed[2], agreed[3]].filter { $0 > 0 }
@@ -671,16 +717,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 }
                 if stopKeep == 0 {
                     sampler?.commit(value)
-                    tokens.append(value)
-                    let wanted = rank == 0 ? try onCommittedToken(tokens.count - 1, value, prompt.count + tokens.count - 1) : true
-                    switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
-                                                              committed: tokens.count, outputCount: request.outputCount, wanted: wanted) {
-                    case .eos: finish = .eos; break steps
-                    case .length: finish = .length; break steps
-                    case .clientStop: clientStopped = true
-                    case .proceed: break
-                    }
-                    if clientStopped || localStop() { stopKeep = Float(tokens.count) }
+                    if let end = try commit(value) { finish = end; break steps }
+                    if localStop() { stopKeep = Float(tokens.count) }
                 }
                 if !pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
                 guard let next = pending else { break }
@@ -688,6 +726,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             // A step both ranks submitted is evaluated by both, so its reductions meet.
             if let pending { eval(pending) }
+        }
+        // The owner answers every published token, the last one too. A stop
+        // answer to a token the request ended at changes nothing.
+        if unanswered {
+            unanswered = false
+            if try !channel.answer(), finish == .clientStop { clientStopped = true }
         }
         if stopKeep > 0 || clientStopped { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop

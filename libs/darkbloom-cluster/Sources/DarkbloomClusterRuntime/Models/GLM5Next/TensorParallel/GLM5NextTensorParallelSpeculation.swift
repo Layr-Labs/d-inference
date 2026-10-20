@@ -159,8 +159,11 @@ final class GLM5NextTensorParallelSpeculation {
     /// them, agrees, and commits the kept prefix to `cache`. Both ranks must
     /// call it with the same `last` and `window`, which callers derive from
     /// agreed tokens only. Evaluates the round (one host read).
+    /// `whileRunning` runs once the round is submitted and before its result
+    /// is read (the caller hands the last round's tokens to its owner then);
+    /// what it does cannot change this round.
     func round(stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, last: Int, window: Int,
-               stop: Float) throws -> Round {
+               stop: Float, whileRunning: () throws -> Void = {}) throws -> Round {
         guard let verified = pending, (0...depth).contains(window) else {
             throw ProbeError("GLM speculative round without its verified pairs or beyond its depth")
         }
@@ -193,6 +196,7 @@ final class GLM5NextTensorParallelSpeculation {
                 let built = DispatchTime.now().uptimeNanoseconds
                 asyncEval(all)
                 let encoded = DispatchTime.now().uptimeNanoseconds
+                try whileRunning()
                 eval(all)
                 if recordsPhases {
                     let done = DispatchTime.now().uptimeNanoseconds

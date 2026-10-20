@@ -81,12 +81,20 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         }
     }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
+        try ClusterCommittedTokenChannel.answering(token) { try start(id, tokens: $0) }
+    }
+    func start(_ id: UUID, tokens channel: ClusterCommittedTokenChannel) throws -> ClusterWorkerFinishReason {
         let result: QwenResidentGenerationCompletion
         lastPromptCache = (0, []); lastRequestTelemetry = nil
+        let token = { (ordinal: Int, token: Int, frontier: Int) throws -> Bool in
+            try channel.publish(ordinal, token, frontier)
+            return try channel.answer()
+        }
         switch owner {
         case .qwenDense(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         case .qwenTensorParallel(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
-        case .glm5NextTensorParallel(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
+        // Reads each answer after its next step was submitted.
+        case .glm5NextTensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
         case .mimoV26(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         case .glm5Next(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         }

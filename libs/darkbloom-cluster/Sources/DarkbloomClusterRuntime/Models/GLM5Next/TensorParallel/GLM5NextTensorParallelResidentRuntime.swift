@@ -39,6 +39,15 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// 1: 1,767 tok/s; 2: 2,532; 4: 1,466 (each micro-batch's matmuls too
     /// small); decode and tokens unchanged.
     static let prefillMicroBatches = 2
+    /// How partials cross, bound into the load agreement beside the terms.
+    /// `ClusterTensorParallelTerms` keeps partials in float32 until the sum;
+    /// GLM's row-parallel projections already emit bfloat16, so widening them
+    /// before the link sent zero bits: the sealed sum of the bfloat16 partials
+    /// (each widened exactly, added in float32, rounded once) is bit-identical
+    /// to it, with half the bytes. Measured, sealed TP2 on two M5 Ultra
+    /// (15,724-token prompt): prefill 2,861 -> 3,261 tok/s, decode 48.8 -> 51.1,
+    /// tokens identical. Owner-approved 2026-10-20; flagged for platform review.
+    static let partialsTransport = "glm5-next-partials-stored-bfloat16-sum-float32-rounded-once-v1"
     /// Prefill runs chunks of this many tokens (a multiple of the request's
     /// chunk): the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4
     /// matmuls against ~62 at 2,048. Measured, sealed TP2 with 2 micro-batches:
@@ -46,6 +55,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// 2,771 (8,192: 2,579). Charged as a second request workspace beside the
     /// profile's 2,048-token one, and the sealed sums' buffers at this size.
     static let prefillChunkTokens = 4096
+    /// Bulk prefill runs chunks of this many tokens where the prompt allows,
+    /// still as two micro-batches (4,096 rows each); the last stretch before
+    /// the prefix boundary keeps `prefillChunkTokens`, so prompt prefixes
+    /// are still kept at every 4,096 tokens. Measured, sealed TP2 (bfloat16
+    /// partials, 15,724-token prompt): 4,096-token chunks 3,311 tok/s,
+    /// 8,192: 3,614. Charged as four request workspaces in all.
+    static let bulkPrefillChunkTokens = 8192
 
     let configuration: QwenResidentLoadConfiguration
     let descriptor: GLM5NextResidentDescriptor
@@ -122,10 +138,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
         // at the largest chunk: the float32 partial, its sealed frame, both
         // ranks' frames, the opened peer partial and the sum (six partials).
         let profile = descriptor.profile
+        let largestChunk = max(profile.maximumChunkTokens, Self.bulkPrefillChunkTokens)
         var requestReserve = try QwenLongPrefillCheckedBytes.sum([
-            try QwenLongPrefillCheckedBytes.product([6, max(profile.maximumChunkTokens, Self.prefillChunkTokens),
-                descriptor.configuration.textConfig.hiddenSize, 4]),
-            GLM5NextServingResources.workspaceNativeBytes])
+            try QwenLongPrefillCheckedBytes.product([6, largestChunk, descriptor.configuration.textConfig.hiddenSize, 4]),
+            try QwenLongPrefillCheckedBytes.product([largestChunk / max(1, profile.maximumChunkTokens) - 1,
+                GLM5NextServingResources.workspaceNativeBytes])])
         for rank in 0 ..< 2 {
             let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
                 rank: rank, buildSHA256: configuration.identity.peers[rank].buildSHA256)
@@ -147,7 +164,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             try jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment, read: read)
             try jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
             let identity = configuration.identity
-            let loadAgreement = sha256(try canonicalJSONData(["glm5-next-tensor-parallel-load-v1", planName,
+            let loadAgreement = sha256(try canonicalJSONData(["glm5-next-tensor-parallel-load-v1", planName, partialsTransport,
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
                 collective.transport.rawValue, configuration.allocatorPolicy.rawValue]
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
@@ -199,8 +216,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 roots.releaseAfterConfirmedFence()
                 try loader.verifyUnchanged()
                 try value.installTensorParallelReduction { partial in
-                    // One rounding, as the terms fix: float32 partials summed sealed.
-                    group.allSum(partial.asType(.float32)).asType(partial.dtype)
+                    // GLM's partials are its projections' bfloat16 outputs: they
+                    // cross as they are and the sealed sum adds them in float32,
+                    // rounding once (`partialsTransport`).
+                    group.allSum(partial)
                 }
                 loaded = value; retired = value
                 Memory.clearCache()
@@ -422,7 +441,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
         var offset = start, stored: [Int] = []
         let keepAt = prefix.enabled ? ((prompt.count - 1) / chunk) * chunk : 0
         while offset < prompt.count {
-            let end = min(prompt.count, (offset / chunk + 1) * chunk)
+            // Bulk chunks while they end at or before the boundary kept for
+            // prefixes (or the prompt's end), then chunk-aligned ones.
+            let bulk = (Self.bulkPrefillChunkTokens / chunk) * chunk
+            let limit = keepAt > offset ? keepAt : prompt.count
+            let end = offset % chunk == 0 && bulk > chunk && offset + bulk <= limit
+                ? offset + bulk : min(prompt.count, (offset / chunk + 1) * chunk)
             let last = end == prompt.count
             let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
             let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)

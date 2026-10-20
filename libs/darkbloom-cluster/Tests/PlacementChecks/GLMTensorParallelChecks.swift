@@ -28,9 +28,9 @@ private func checkGLMCoverage(_ layout: ClusterModelLayout, _ checks: PlacementC
         checks.require("glm tp: the layout carries the family's tensor-parallel plan", false)
         return
     }
-    checks.require("glm tp: plan glm5_next_heads_and_expert_channels_v1 on 2 ranks, float32 partials of the 4096 residual, state whole on each rank",
+    checks.require("glm tp: plan glm5_next_heads_and_expert_channels_v1 on 2 ranks, bfloat16 partials of the 4096 residual (the projections' outputs, summed in float32), state whole on each rank",
         tp.family.plan == "glm5_next_heads_and_expert_channels_v1" && tp.family.ranks == [2]
-            && tp.family.partialBytesPerToken == 4096 * 4 && !tp.family.stateDividesByHeads
+            && tp.family.partialBytesPerToken == 4096 * 2 && !tp.family.stateDividesByHeads
             && tp.family.shareOptions == nil && tp.family.shareUnits == nil && tp.terms == .current
             && layout.generationModes == [.pipeline, .tensorParallel])
     checks.require("glm tp: two sums per layer (attention, feed-forward) and one per step (token and stop flags): 91 per decode step",

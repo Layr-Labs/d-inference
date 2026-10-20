@@ -16,6 +16,9 @@ def clean(report, head, base):
         return False
     if review.get("errors") != [] or review.get("limited_files") != []:
         return False
+    # Old reports cannot establish the new final-integration decision.
+    if review.get("manual_review_reasons") != []:
+        return False
     findings = review.get("findings")
     if not isinstance(findings, list):
         return False

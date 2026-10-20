@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Offline selective integration scope and cached-evidence regressions."""
+import copy
+import json
+import unittest
+
+from threat_review.budget_scan import Scanner
+from threat_review.context import SOL, SONNET, ThreatContext
+
+
+THREAT = "threats:\n  - id: T-SCOPE\n    description: Preserve source citation boundaries.\n"
+
+
+def finding(path):
+    return {"severity": "medium", "title": "Synthetic control regression",
+            "detail": "Synthetic finding used to exercise exact citation validation.",
+            "file": path, "line": 1, "side": "head", "threat_ids": ["T-SCOPE"]}
+
+
+class MemoryState:
+    def __init__(self):
+        self.responses, self.identities = {}, {}
+        self.scanner = None
+
+    def cached(self, identity):
+        return copy.deepcopy(self.responses.get(identity))
+
+    def save_cache(self, identity, response):
+        self.responses[identity] = copy.deepcopy(response)
+        active = self.scanner.active_request
+        self.identities.setdefault((active["model"], active["stage"]), []).append(identity)
+
+
+class Responses:
+    """Deterministic provider boundary: no HTTP, credentials, SDK or paid calls."""
+    key = "synthetic"
+    stopped = None
+
+    def __init__(self, integration_finding=None):
+        self.requests = []
+        self.integration_finding = integration_finding
+
+    def metrics(self):
+        return {}
+
+    def __call__(self, url, key, payload):
+        message = json.loads(payload["messages"][1]["content"])
+        self.requests.append((payload["model"], message))
+        findings = ([self.integration_finding] if self.integration_finding
+                    and payload["model"] == SOL and message["stage"] == "integration" else [])
+        response = {"covered_units": [unit["id"] for unit in message["units"]],
+                    "analysis": "Synthetic local source analysis.",
+                    "needs_deeper_review": False, "findings": findings}
+        return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(response)}}]}
+
+
+class IntegrationScopeTests(unittest.TestCase):
+    def setUp(self):
+        # Enough ordinary source to put line 1 outside every critical batch.
+        # The last ordinary excerpt can share a batch with crypto.py; file-level
+        # checks alone therefore cannot enforce the required line boundary.
+        self.files = [
+            {"filename": "ordinary.py", "status": "modified", "source_complete": True,
+             "base_text": "x\n" * 20000, "head_text": "y\n" + "x\n" * 19999,
+             "patch": "@@ -1 +1 @@\n-x\n+y"},
+            {"filename": "crypto.py", "status": "modified", "source_complete": True,
+             "base_text": "x\n", "head_text": "y\n", "patch": "@@ -1 +1 @@\n-x\n+y"},
+        ]
+
+    def scanner(self, calls, state=None):
+        state = state or MemoryState()
+        scanner = Scanner(ThreatContext(THREAT), self.files, state, calls, lambda _: None, "a" * 40)
+        state.scanner = scanner
+        return scanner
+
+    def test_selective_sol_cannot_cite_source_only_sonnet_examined(self):
+        calls = Responses(finding("ordinary.py"))
+        scanner = self.scanner(calls)
+        result = scanner.run()
+        self.assertGreater(len(scanner.source), 1)
+        self.assertIn(1, scanner.reviewed_evidence[SONNET]["ordinary.py"]["lines"]["head"])
+        self.assertNotIn(1, scanner.reviewed_evidence[SOL].get(
+            "ordinary.py", {"lines": {"head": set()}})["lines"]["head"])
+        self.assertFalse(result["findings"])
+        self.assertEqual(result["diagnostics"][-1]["code"], "FINDING_VALIDATION_FAILED")
+        self.assertEqual(result["depth_batches_pending"], 1)
+
+    def test_selected_source_citation_is_accepted_and_retained(self):
+        scanner = self.scanner(Responses(finding("crypto.py")))
+        result = scanner.run()
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertEqual(result["findings"][0]["file"], "crypto.py")
+        self.assertEqual(result["findings"][0]["models"], [SOL])
+
+    def test_cached_integration_cannot_expand_cached_source_scope(self):
+        state = MemoryState()
+        first = self.scanner(Responses(), state)
+        self.assertFalse(first.run()["errors"])
+        key = state.identities[(SOL, "integration")][-1]
+        state.responses[key]["findings"] = [finding("ordinary.py")]
+        calls = Responses()
+        scanner = self.scanner(calls, state)
+        result = scanner.run()
+        self.assertFalse(calls.requests)
+        self.assertGreater(result["reused_batches"], 0)
+        self.assertFalse(result["findings"])
+        self.assertTrue(result["diagnostics"][-1]["cache_hit"])
+        self.assertEqual(result["diagnostics"][-1]["code"], "FINDING_VALIDATION_FAILED")
+        self.assertEqual(result["depth_batches_pending"], 1)
+
+    def test_integration_cache_identity_includes_model_source_scope(self):
+        state, calls = MemoryState(), Responses()
+        scanner = self.scanner(calls, state)
+        summary = [{"id": "0", "analysis": "Identical summary.", "findings": [],
+                    "needs_deeper_review": False}]
+        scanner.call(SOL, "source", scanner.source[0])
+        scanner.integrate(SOL, summary)
+        before = state.identities[(SOL, "integration")][-1]
+        scanner.call(SOL, "source", scanner.source[-1])
+        scanner.integrate(SOL, summary)
+        after = state.identities[(SOL, "integration")][-1]
+        self.assertNotEqual(before, after)
+        self.assertEqual(sum(model == SOL and message["stage"] == "integration"
+                             for model, message in calls.requests), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

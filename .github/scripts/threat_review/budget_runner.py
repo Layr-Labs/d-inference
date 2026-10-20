@@ -128,6 +128,8 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     def checkpoint(value):
         nonlocal snapshot, history
         snapshot = value
+        # Preserve local progress before a remote checkpoint/publication can fail.
+        write_diagnostics(env, snapshot)
         # Save even when the PR head moved. Publication alone needs a live head.
         history = state.checkpoint(run_id, {"repository": repository, "head": head, "base": base,
                                            "diff_base": diff_base, "previous_comment": previous,
@@ -167,7 +169,8 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             paid = BedrockCalls(state, number, run_id, key, context.prefix(), env, alive=alive)
         else:
             paid = paid_factory(state, number, run_id, key, context.prefix(), alive=alive)
-        scanner = Scanner(context, files, state, paid, checkpoint, base)
+        scanner = Scanner(context, files, state, paid, checkpoint, base,
+                          diagnostic_checkpoint=lambda value: write_diagnostics(env, value))
         # Merge clearance requires this run's model evidence. Existing cached
         # advice remains useful for advisory mode but cannot grant auto-merge.
         scanner.use_cache = env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") != "true"

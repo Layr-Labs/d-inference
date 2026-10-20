@@ -48,7 +48,7 @@ def failure(error):
 
 
 class Scanner:
-    def __init__(self, context, files, state, paid, checkpoint, base):
+    def __init__(self, context, files, state, paid, checkpoint, base, diagnostic_checkpoint=lambda value: None):
         message, self.evidence, self.limits = prepare(context.text, files)
         self.context, self.state, self.paid, self.checkpoint = context, state, paid, checkpoint
         self.base = base
@@ -71,6 +71,8 @@ class Scanner:
         self.manual_review_reasons = []
         self.diagnostics = []
         self.active_request = {}
+        self.diagnostic_checkpoint = diagnostic_checkpoint
+        self.reviewed_evidence, self.reviewed_source_ids = {}, {}
 
     def snapshot(self):
         errors = list(dict.fromkeys(self.errors + ([self.paid.stopped] if self.paid.stopped else [])))
@@ -80,6 +82,7 @@ class Scanner:
                 "depth_batches_pending": self.depth_pending,
                 "integration_completed": self.integration, "reused_batches": self.reused,
                 "manual_review_reasons": self.manual_review_reasons, "diagnostics": self.diagnostics,
+                "active_request": {**self.active_request, **getattr(self.paid, "last_request", {})},
                 **self.paid.metrics()}
 
     def retain(self, findings, model):
@@ -92,9 +95,10 @@ class Scanner:
             elif model not in match["models"]:
                 match["models"].append(model)
 
-    def batch_evidence(self, stage, batch):
+    def batch_evidence(self, stage, batch, model=None):
         if stage == "integration":
-            return self.evidence
+            # Selective reviewers cannot cite source only another model saw.
+            return self.reviewed_evidence.get(model, {})
         evidence = {}
         for unit in batch:
             path = unit["metadata"]["file"]
@@ -122,39 +126,67 @@ class Scanner:
         if len(findings) == 32:
             raise FindingCapacityReached(findings)
         ids = response.get("covered_units")
-        if (not isinstance(ids, list) or len(ids) != len(batch)
-                or any(not isinstance(id, str) for id in ids)
-                or set(ids) != {u["id"] for u in batch}
-                or not isinstance(response.get("analysis"), str)
-                or not response["analysis"].strip() or len(response["analysis"]) > 4000
-                or type(response.get("needs_deeper_review")) is not bool):
+        if (not isinstance(ids, list) or any(not isinstance(id, str) for id in ids)):
             raise ReviewFailure("Incomplete batch acknowledgment", "BATCH_ACKNOWLEDGMENT_INVALID",
                                 expected_units=len(batch))
+        expected, acknowledged = {u["id"] for u in batch}, set(ids)
+        if len(ids) != len(batch) or acknowledged != expected:
+            raise ReviewFailure("Incomplete batch acknowledgment", "BATCH_ACKNOWLEDGMENT_INVALID",
+                                expected_units=len(batch), acknowledged_units=len(ids),
+                                missing_units=len(expected - acknowledged),
+                                unexpected_units=len(acknowledged - expected),
+                                duplicate_units=len(ids) - len(acknowledged))
+        analysis = response["analysis"]
+        if not isinstance(analysis, str) or not analysis.strip() or len(analysis) > 4000:
+            raise ReviewFailure("Invalid batch analysis", "BATCH_ANALYSIS_INVALID",
+                                analysis_characters=len(analysis) if isinstance(analysis, str) else None,
+                                analysis_limit=4000)
+        if type(response["needs_deeper_review"]) is not bool:
+            raise ReviewFailure("Invalid review decision", "BATCH_DECISION_INVALID")
 
     def call(self, model, stage, batch):
         self.active_request = {"model": model, "stage": stage, "batch_sha256": digest(batch),
-                               "expected_units": len(batch), "cache_hit": False}
+                               "expected_units": len(batch), "cache_hit": False, "phase": "preparing"}
         if hasattr(self.paid, "last_request"):
             self.paid.last_request = {}
+        self.diagnostic_checkpoint(self.snapshot())
         message = {"stage": stage, "units": batch, **self.context.relevant(batch)}
         if stage == "source":
             message["file_changes"] = batch_changes(self.changes, batch)
-        evidence = self.batch_evidence(stage, batch)
+        evidence = self.batch_evidence(stage, batch, model)
         # Base captures unchanged dependencies. Current changed-file interactions
         # are re-evaluated by integration; local source cache is not global safety.
         identity = digest([VERSION, model, self.base, self.context.hash,
                            SYSTEM, SCHEMA, INSTRUCTIONS, message,
-                           self.source_hash if stage == "integration" else None])
+                           [self.source_hash, sorted(self.reviewed_source_ids.get(model, set()))]
+                           if stage == "integration" else None])
+        self.active_request["phase"] = "cache_lookup"
+        self.diagnostic_checkpoint(self.snapshot())
         cached = self.state.cached(identity) if self.use_cache else None
         if cached is not None:
             self.active_request["cache_hit"] = True
+            self.active_request["phase"] = "validating"
+            self.diagnostic_checkpoint(self.snapshot())
             self.validate(cached, batch, evidence)
             response = cached
             self.reused += 1
         else:
+            self.active_request["phase"] = "provider_call"
+            self.diagnostic_checkpoint(self.snapshot())
             response = model_call(json.dumps(message), evidence, self.context.text,
                                   self.paid.key, model, self.paid, SCHEMA, INSTRUCTIONS)
+            self.active_request["phase"] = "validating"
+            self.diagnostic_checkpoint(self.snapshot())
             self.validate(response, batch, evidence)
+        self.active_request["phase"] = "validated"
+        if stage == "source":
+            reviewed = self.reviewed_evidence.setdefault(model, {})
+            self.reviewed_source_ids.setdefault(model, set()).update(u["id"] for u in batch)
+            for path, entry in evidence.items():
+                target = reviewed.setdefault(path, {"base_path": entry["base_path"],
+                                                    "lines": {"base": set(), "head": set()}})
+                for side in ("base", "head"):
+                    target["lines"][side].update(entry["lines"][side])
         self.retain(response["findings"], model)
         if model == SONNET and stage == "source":
             self.covered.update(u["id"] for u in batch)
@@ -198,6 +230,11 @@ class Scanner:
             integrated = self.integrate(SONNET, summaries)
             if integrated and (integrated["needs_deeper_review"] or integrated["findings"]):
                 deepen = list(self.source)
+            if integrated and integrated["needs_deeper_review"]:
+                # Independent depth passes do not receive this global question;
+                # their clean local answers cannot establish its resolution.
+                self.manual_review_reasons.append(
+                    "Cross-file reviewer requests further review; independent human review required")
             if integrated and any(f["severity"] == "high" for f in integrated["findings"]):
                 critical = list(self.source)
             self.integration = True

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 
 from .client import APIError, ReviewUnavailable, ScanTimeout
@@ -77,5 +78,16 @@ def write_diagnostics(env, snapshot):
     """Separate content-free artifact; never upload the full findings report."""
     if env.get("THREAT_REVIEW_DIAGNOSTICS_FILE"):
         value = {key: snapshot.get(key) for key in (
-            "covered_units", "total_units", "integration_completed", "depth_batches_pending", "diagnostics")}
-        Path(env["THREAT_REVIEW_DIAGNOSTICS_FILE"]).write_text(json.dumps(value, indent=2))
+            "covered_units", "total_units", "integration_completed", "depth_batches_pending",
+            "active_request", "diagnostics")}
+        path = Path(env["THREAT_REVIEW_DIAGNOSTICS_FILE"])
+        temporary = path.with_name(path.name + ".tmp")
+        try:
+            temporary.write_text(json.dumps(value, indent=2))
+            temporary.replace(path)
+        except OSError:
+            # Diagnostics must not prevent the saved findings/summary/gate from
+            # being produced. Never print filesystem paths or exception text.
+            print("DIAGNOSTICS_WRITE_FAILED: local diagnostics unavailable", file=sys.stderr)
+            return False
+    return True

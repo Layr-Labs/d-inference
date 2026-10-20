@@ -90,9 +90,10 @@ python3 .github/scripts/test-threat-ensemble.py
 python3 .github/scripts/test-threat-budget.py
 python3 .github/scripts/test-threat-bedrock.py
 python3 .github/scripts/test-threat-diagnostics.py
+python3 .github/scripts/test-threat-integration-scope.py
 ```
 
-Release Integrity runs all six suites using Python 3.9+ and loopback sockets,
+Release Integrity runs all seven suites using Python 3.9+ and loopback sockets,
 without external services, real keys or paid calls. The budget suite exercises
 real local HTTP, conflicting SHA writes, reconciliation, permissions, cache
 invalidation, escalation, partial failures and comment delivery. Earlier suites
@@ -224,6 +225,8 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    a syntax category, line/column/offset, response length/hash and prefix class.
    Field failures identify missing schema fields and count unexpected fields
    without exposing their names. Findings and raw response text are excluded.
+   Coverage mismatches include missing, unexpected and duplicate unit counts;
+   analysis-length and decision-type failures have separate codes.
 3. Correlate Bedrock failures with `bedrock-usage-*`: the call number, allowlisted
    AWS error code, request ID, stop reason and latency distinguish access errors,
    refusal/truncation, invalid JSON and local validation. Missing metadata stays
@@ -234,6 +237,13 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    These artifacts are content-free diagnostics suitable for a public repository,
    not raw-response recordings; use the AWS request ID with authorized provider
    diagnostics when additional evidence is needed.
+
+The local artifact is atomically refreshed before provider calls and remote
+checkpoints. An interrupted run can retain the last model, stage, batch and
+phase even when no final error is available. A `provider_call` phase does not
+prove whether the provider completed or charged the request. If the local
+artifact cannot be written, Actions logs `DIAGNOSTICS_WRITE_FAILED` without
+filesystem details; findings, report delivery and merge evaluation still proceed.
 
 ## Scope, reuse and saved findings
 
@@ -262,6 +272,11 @@ Sol runs; all existing request, runtime and spending limits still apply. A limit
 or validation failure during integration preserves prior findings and leaves the
 scan incomplete. Final uncertainty is stored separately in `manual_review_reasons`;
 it still denies automatic clearance. Reports missing this field also deny clearance.
+An unresolved Sonnet cross-file integration question also requires human review:
+independent local depth passes do not receive that question and cannot clear it.
+Each model's integration may cite only the source lines that model reviewed;
+cached source results rebuild the same evidence scope, and integration cache
+identity includes that scope.
 
 Each request receives an index of **all** canonical definition entries, the
 preamble, and up to eight lexically relevant complete definition blocks within

@@ -219,7 +219,7 @@ Retaining source or running a build does not authorize hosting or traffic change
 For changes to the trusted PR reviewer, no provider build is required. Run the
 offline Python suites in [threat-review verification](threat-model-review.md#verify)
 and validate changed workflow YAML. The review workflow uploads content-free
-failure diagnostics; deploying a new reviewer still requires the trusted-base
+failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
 workflow change to merge.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success

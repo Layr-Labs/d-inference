@@ -194,19 +194,55 @@ struct NemotronSuperLocalPagedTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// Exact text prefix reuse needs the contiguous engine's bank: the
-    /// combination fails before the bridge exists and charges nothing.
-    @Test func pagedStorageRefusesTextPrefixReuse() async throws {
+    /// Exact text prefix reuse on paged storage, plain and speculating: each
+    /// owner holds its bank like a contiguous owner; after an unrelated
+    /// request takes over the donor's freed pages, the next turn restores the
+    /// deepest chunk boundary and streams what a cold paged owner streams;
+    /// every charge retires.
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func pagedStorageRestoresExactTextPrefixes(speculates: Bool) async throws {
         let budget = Self.budget()
-        let fixture = try Self.fixture()
-        let lease = try await Self.lease(fixture, name: "prefix", budget: budget)
-        await #expect(throws: Paged.Failure.pagedPrefixReuse) {
-            _ = try await Self.make(fixture,
-                environment: [Paged.key: "paged", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1"],
-                budget: budget, lease: lease)
+        let warmFixture = try Self.fixture()
+        let coldFixture = try Self.fixture()
+        let environment = [Paged.key: "paged", NemotronSuperLocalPrefill.chunkKey: "4",
+                           PrefixCachePolicy.memoryEnvironmentFlag: "1"]
+        let setting = speculates ? NemotronSuperLocalMTP.Setting(depth: 3) : nil
+        let (warm, warmLease) = try await Self.owner(warmFixture, environment: environment,
+            budget: budget, name: "prefix-warm", speculation: setting)
+        let (cold, coldLease) = try await Self.owner(coldFixture, environment: environment,
+            budget: budget, name: "prefix-cold", speculation: setting)
+        #expect(await warm.bridge.kvBackendKind == .paged && warm.speculates == speculates)
+        #expect(warm.prefixBankBytes > 0 && warm.prefixBankBytes == cold.prefixBankBytes)
+        // The pool follows the grant minus the bank; the slot still claims the whole grant.
+        #expect(await warm.bridge.slotKVBytesClaim() == Self.grant)
+        let held = await budget.reservationBytesSnapshot()
+        let banks = held.filter { NemotronSuperLocalPrefixCache.isBankReservationID($0.key) }
+        #expect(banks.count == 2 && banks.values.allSatisfy { $0 == UInt64(warm.prefixBankBytes) })
+
+        let warmBank = try #require((await warm.bridge.ownedEngine as? EngineV2)?.hybridPrefixCache)
+        let donor = NemotronSuperLocalPrefixCacheTests.donor
+        let adopter = NemotronSuperLocalPrefixCacheTests.adopter
+        _ = try await Self.run(warm, prompt: donor)
+        var published = false
+        for _ in 0 ..< 500 where !published {
+            published = warmBank.stats.entries == 1
+            if !published { try await Task.sleep(for: .milliseconds(10)) }
         }
+        #expect(published)
+        _ = try await Self.run(warm, prompt: Self.prompts[0])
+        let restored = try await Self.run(warm, prompt: adopter)
+        #expect(warmBank.stats.adoptions == 1)
+        #expect(warmBank.stats.tokensSaved == donor.count / 4 * 4)
+        let coldText = try await Self.run(cold, prompt: adopter)
+        #expect(!coldText.isEmpty && restored == coldText)
+
+        for (owner, fixture, lease) in [(warm, warmFixture, warmLease), (cold, coldFixture, coldLease)] {
+            try await owner.closeAfterDrain()
+            #expect(fixture.residency.snapshot.usedBytes == 0)
+            #expect(await budget.finishPendingLoad(lease))
+        }
+        #expect(warmBank.stats.retainedBytes == 0)
         #expect(await budget.reservationBytesSnapshot().isEmpty)
-        fixture.installed.closeAfterRetirement()
-        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 }

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -177,18 +177,25 @@ newcomer memory the bank still holds. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
 `NemotronSuperLocalKVBackend` selects the attention KV storage:
-contiguous by default, or the segmented native paged backend with
-`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` (the adapter declares
-`supportsPagedKV` and `requiresNativePagedKV`; the pool takes the eight
-attention layers' observed BF16 types). An explicit paged selection never
-degrades: a paged construction failure fails the load. On paged storage the
+`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` selects the segmented native
+paged backend (the adapter declares `supportsPagedKV` and
+`requiresNativePagedKV`; the pool takes the eight attention layers' observed
+BF16 types) and `contiguous` the contiguous one. The managed slot's
+`NemotronSuperServingPolicy.loadPlan` sets `paged` when the key is unset; the
+builder alone defaults to contiguous. A paged selection never degrades: a
+paged construction failure fails the load. On paged storage the
 engine's process-memory owner charges pages and recurrent rows to the shared
 budget as they materialize and the bridge reserves no request bytes, so the
 owner reserves `requestWorkspaceBytes` for every configured request (the
 decode rows) from before the first request until native retirement, like the
-lane. The text prefix bank lives in the contiguous engine: the managed plan
-keeps it off on paged storage and an explicit
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1` with paged fails the load. Paged and
+lane. The text prefix bank works on either storage
+(`CBv2HybridPrefixCacheConfig.permitsPagedStorage`): its budget is carved from
+the paged grant as from the contiguous one, a paged donor's prompt KV is
+gathered into the bank's own buffers on the engine queue before its pages
+return to the pool, and an adopter writes that prefix into fresh pages with a
+`.direct` plan. A paged backend with step-owned attention, a native binding or
+a page-sharing index builds no bank, and the builder then fails the load
+(`NemotronSuperLocalPrefixCache.Failure.unavailable`). Paged and
 contiguous attention reduce differently, so their logits agree within a
 stated tolerance rather than bit for bit; within paged storage, batched rows,
 captured speculation windows and rollback stay exact.

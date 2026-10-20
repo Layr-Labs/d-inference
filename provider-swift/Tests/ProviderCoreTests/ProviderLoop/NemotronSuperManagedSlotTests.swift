@@ -107,35 +107,44 @@ struct NemotronSuperManagedSlotTests {
 
     /// The latent-MoE fixture and its embedded head, staged through the real
     /// transaction under the provider's grant, admission and environment.
+    /// 64-wide attention heads, the paged kernels' minimum: the managed plan
+    /// selects paged KV.
     static func loader(tokenizer: TokenizerHandle, template: Data, physicalBytes: UInt64,
                        probe: InstallationProbe? = nil) -> NemotronSuperSlotLoader {
         NemotronSuperSlotLoader(pinned: false, physicalBytes: physicalBytes,
                                 kvBytesPerToken: { _ in 64 }) { request in
-            let fixture = try SuperMTPInstalledFixture(
-                radioDimensions: SuperMTPInstalledFixture.encodedImageTower).staging()
-            let staging = NemotronSuperLocalLoad.Staging(source: fixture.source, install: {
-                let installed = try fixture.install($0, $1, $2)
-                probe?.record(model: installed.model)
-                return installed
-            }, head: fixture.head.map { head in
-                .init(quote: head.quote, load: {
-                    let module = try head.load($0, $1, $2)
-                    probe?.record(head: module)
-                    return module
-                })
-            })
-            let tensorBytes = staging.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
-            let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
-                maxContextLength: 1024, defaultMaxTokens: 16)
-            let transaction = NemotronSuperLocalLoad(budget: request.budget)
-            let bridge = try await transaction.load(staging: { staging }, tokenizer: tokenizer,
-                eosTokenIDs: [], sizing: sizing, kvBytesCapacity: request.kvBytesCapacity,
-                admissionKVBytes: request.admissionKVBytes, backendAllowanceBytes: 1 << 20,
-                modelID: request.modelID, environment: request.environment,
-                physicalBytes: request.physicalBytes)
-            return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
-                tokenizer: tokenizer, sizing: sizing, templateBytes: template)
+            try await SuperMTPInstalledFixture.$attentionHeadDim.withValue(64) {
+                try await load(request, tokenizer: tokenizer, template: template, probe: probe)
+            }
         }
+    }
+
+    private static func load(_ request: NemotronSuperSlotLoader.Request, tokenizer: TokenizerHandle,
+                             template: Data, probe: InstallationProbe?) async throws -> NemotronSuperSlotOwner {
+        let fixture = try SuperMTPInstalledFixture(
+            radioDimensions: SuperMTPInstalledFixture.encodedImageTower).staging()
+        let staging = NemotronSuperLocalLoad.Staging(source: fixture.source, install: {
+            let installed = try fixture.install($0, $1, $2)
+            probe?.record(model: installed.model)
+            return installed
+        }, head: fixture.head.map { head in
+            .init(quote: head.quote, load: {
+                let module = try head.load($0, $1, $2)
+                probe?.record(head: module)
+                return module
+            })
+        })
+        let tensorBytes = staging.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+        let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+            maxContextLength: 1024, defaultMaxTokens: 16)
+        let transaction = NemotronSuperLocalLoad(budget: request.budget)
+        let bridge = try await transaction.load(staging: { staging }, tokenizer: tokenizer,
+            eosTokenIDs: [], sizing: sizing, kvBytesCapacity: request.kvBytesCapacity,
+            admissionKVBytes: request.admissionKVBytes, backendAllowanceBytes: 1 << 20,
+            modelID: request.modelID, environment: request.environment,
+            physicalBytes: request.physicalBytes)
+        return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
+            tokenizer: tokenizer, sizing: sizing, templateBytes: template)
     }
 
     static func body(_ pieces: [String], script: SuperOutputScript,

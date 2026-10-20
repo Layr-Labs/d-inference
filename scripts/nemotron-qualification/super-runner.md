@@ -165,7 +165,7 @@ DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` stores the attention KV in the
 segmented native paged backend. Its pages and recurrent rows are charged by the
 engine's process-memory owner (reported in `unattributed_bytes`, not as `kv`
 rows) and the owner holds the decode rows as `decode_rows` from load to
-retirement. It refuses the prefix bank. The gated
+retirement. The prefix bank composes with it. The gated
 `NemotronSuperPagedLiveTests` (`DARKBLOOM_SUPER_PAGED_LIVE=1` and
 `NEMOTRON_SUPER_CHECKPOINT_DIR`, exclusive GPU) stages the pinned checkpoint
 once and compares paged against contiguous logits at every 2,048-token chunk

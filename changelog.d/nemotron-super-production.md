@@ -45,10 +45,12 @@
   (thread-scoped limits in the pinned MLX), and full SSD prefill windows run
   batched, with tokens unchanged: one plain request decodes at 42.9 tok/s
   instead of 34.6 on the full checkpoint. Speculative rounds are unchanged.
-- Opt-in paged attention KV (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged`): the
-  segmented native paged backend, charged by the engine's process-memory owner,
-  with the decode rows reserved for the owner's lifetime; it never falls back to
-  contiguous storage and keeps the text prefix bank off.
+- Paged attention KV by default (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`, `paged`
+  unless set to `contiguous`): the segmented native paged backend, charged by
+  the engine's process-memory owner, with the decode rows reserved for the
+  owner's lifetime; it never falls back to contiguous storage. Exact prefix
+  reuse works on it: the bank keeps its own copy of a donor's prompt KV and a
+  restore writes it into fresh pages.
 - Serves 65,536 tokens of context, prompt plus output (was 16,384); the runner
   can select up to 262,144 tokens. The speculating owner charges each request
   its draft history per token of its own prompt and output instead of for the

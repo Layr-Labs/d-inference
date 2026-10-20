@@ -4,27 +4,26 @@ import Foundation
 
 /// Attention KV storage of the unpublished Super owner. Contiguous unless the
 /// runtime policy selects the segmented native paged backend (BF16 layer
-/// types observed from the loaded model). Paged storage is charged to the
-/// shared budget by the engine's process-memory owner as segments and
-/// recurrent rows materialize, and the bridge then reserves no request bytes
-/// of its own; the owner therefore reserves every request's decode-row
-/// workspace itself, like the prefill lane, from before the first request
-/// until native retirement.
+/// types observed from the loaded model), as the managed slot's serving
+/// policy does by default (`NemotronSuperServingPolicy.loadPlan`). Paged
+/// storage is charged to the shared budget by the engine's process-memory
+/// owner as segments and recurrent rows materialize, and the bridge then
+/// reserves no request bytes of its own; the owner therefore reserves every
+/// request's decode-row workspace itself, like the prefill lane, from before
+/// the first request until native retirement.
 enum NemotronSuperLocalKVBackend {
-    /// Runtime-policy key: `contiguous` (default) or `paged`.
+    /// Runtime-policy key: `contiguous` (builder default) or `paged`.
     static let key = "DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND"
 
     enum Failure: Error, Equatable {
         /// The key is neither `contiguous` nor `paged`.
         case invalidBackend
-        /// Exact text prefix checkpoints live in the contiguous engine's bank.
-        case pagedPrefixReuse
         /// The shared budget cannot hold the decode rows; nothing was admitted.
         case decodeRowsRefused
     }
 
     /// A malformed value fails the load rather than silently changing the
-    /// measured configuration. An explicit paged selection never degrades to
+    /// measured configuration. A paged selection never degrades to
     /// contiguous: paged construction failures fail the load.
     static func resolve(environment: [String: String]) throws -> EngineV2KVBackendSelection {
         guard let raw = environment[key]?.trimmingCharacters(in: .whitespaces) else {

@@ -69,4 +69,4 @@ bit on synthetic fixtures; prompts shorter than one chunk restore nothing. On
 the speculating owner a checkpoint also holds the assistant's prompt history, so
 a restored request speculates exactly as a cold one. An image request reuses
 only checkpoints bound to the same evaluated image features at the same
-positions. Paged KV never uses it.
+positions.

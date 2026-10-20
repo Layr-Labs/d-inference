@@ -196,12 +196,24 @@ struct NemotronSuperServingPolicyTests {
         let tight = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 6 << 30)
         #expect(tight.prefixBankBytes == 0 && tight.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
-        // Paged KV keeps the default bank off; the operator's choice passes through.
-        let paged = NemotronSuperServingPolicy.loadPlan(
-            base: [NemotronSuperLocalKVBackend.key: "paged"], mode: .off,
-            configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
-        #expect(paged.prefixBankBytes == 0 && paged.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
-        #expect(paged.environment[NemotronSuperLocalKVBackend.key] == "paged")
+    }
+
+    /// Paged KV is the managed default and holds the same default bank as
+    /// contiguous storage; the operator's choice of either passes through.
+    @Test func pagedStorageIsTheDefaultAndHoldsTheBank() {
+        for mode in [MTPMode.off, .auto] {
+            let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: mode,
+                configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
+            #expect(plan.environment[NemotronSuperLocalKVBackend.key] == "paged", "\(mode)")
+            #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1", "\(mode)")
+            #expect(plan.prefixBankBytes == 16 << 30, "\(mode)")
+            let contiguous = NemotronSuperServingPolicy.loadPlan(
+                base: [NemotronSuperLocalKVBackend.key: "contiguous"], mode: mode,
+                configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
+            #expect(contiguous.environment[NemotronSuperLocalKVBackend.key] == "contiguous", "\(mode)")
+            #expect(contiguous.prefixBankBytes == plan.prefixBankBytes, "\(mode)")
+            #expect(contiguous.admissionKVBytes == plan.admissionKVBytes, "\(mode)")
+        }
     }
 
     /// The default bank is at most half of what the grant leaves beside every

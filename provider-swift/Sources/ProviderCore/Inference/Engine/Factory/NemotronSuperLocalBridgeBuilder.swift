@@ -249,7 +249,7 @@ enum NemotronSuperLocalBridgeBuilder {
     /// one claim before allocation covers everything the loaded owner keeps:
     /// the prefill lane at the measured whole-chunk bound, a speculating
     /// owner's round work (`NemotronSuperServingPolicy.speculativeOwnerBoundBytes`)
-    /// and the default (or operator) prefix bank, which paged KV never has.
+    /// and the default (or operator) prefix bank on either KV backend.
     struct OwnerShares: Equatable, Sendable {
         let lane: Int
         var round = 0
@@ -275,8 +275,7 @@ enum NemotronSuperLocalBridgeBuilder {
         let lane = NemotronSuperLocalPrefill.requestedChunkTokens(environment: environment)
             .map(NemotronSuperLocalPrefill.pinnedLaneBytes) ?? 0
         let requests = try concurrentRequests(environment: environment, speculates: speculates)
-        let paged = (try? NemotronSuperLocalKVBackend.resolve(environment: environment)) == .paged
-        let bank = paged ? 0 : NemotronSuperLocalPrefixCache.config(environment: environment,
+        let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
             physicalBytes: physicalBytes)?.maximumBytes ?? 0
         let round = speculates
@@ -331,9 +330,6 @@ enum NemotronSuperLocalBridgeBuilder {
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
             pinned: installed.isPinnedCheckpoint, physicalBytes: physicalBytes, modelID: modelID)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
-        if kvBackend == .paged, prefixCache != nil {
-            throw NemotronSuperLocalKVBackend.Failure.pagedPrefixReuse
-        }
         try Task.checkCancellation()
         let (bridge, prefill, laneBytes, workspace) = try installed.withNativeSetup(
             construction: construction

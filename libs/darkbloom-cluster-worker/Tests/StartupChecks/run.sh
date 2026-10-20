@@ -78,6 +78,11 @@ check tensor-shares-reach-the-model 1 "" "tensor-shares" -- --generation-mode te
 check tensor-parallel-turns-fast-synch-on 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=0 source=launcher" "" MLX_METAL_FAST_SYNCH=0 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-fast-synch-alone 1 "" "darkbloom-collective-sync-v1" --
+# Tensor parallel lifts MLX's per-command-buffer input-size bound (whole expert banks tripped it every MoE launch);
+# the operation bound stays, numerics are unchanged, and a launcher value is kept.
+check tensor-parallel-lifts-the-command-buffer-size-bound 1 "darkbloom-command-buffer-budget-v1 max_mb=1000000 source=worker" "" -- --generation-mode tensor_parallel_v1
+check tensor-parallel-keeps-an-explicit-command-buffer-size 1 "darkbloom-command-buffer-budget-v1 max_mb=50 source=launcher" "" MLX_MAX_MB_PER_BUFFER=50 -- --generation-mode tensor_parallel_v1
+check pipeline-leaves-the-command-buffer-size-alone 1 "" "darkbloom-command-buffer-budget-v1" --
 check tensor-shares-refused-without-tensor-parallel 1 "--tensor-shares takes two canonical weights" "" -- --tensor-shares 1:3
 check tensor-shares-refused-malformed 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:03
 check tensor-shares-refused-out-of-range 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 0:3

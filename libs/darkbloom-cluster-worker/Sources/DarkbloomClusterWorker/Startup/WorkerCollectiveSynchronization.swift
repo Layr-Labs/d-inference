@@ -25,3 +25,26 @@ enum WorkerCollectiveSynchronization {
         return "darkbloom-collective-sync-v1 fast_synch=1 source=worker"
     }
 }
+
+/// How much a Metal command buffer may take before MLX commits it. MLX
+/// commits after 50 operations or after 50 Mi elements of distinct inputs,
+/// and weights count: under tensor parallel every GLM MoE launch takes a
+/// whole expert bank (151 Mi elements for one rank's gate bank), so each
+/// decode step committed ~88 buffers instead of ~22, each a host round trip
+/// and a GPU gap. Lifting the size bound leaves the operation bound in force.
+/// Measured, GLM-5.3-Flash TP2 on two M5 Ultra: decode 52.6 -> 60.0 tok/s
+/// (19.0 -> 16.8 ms a step), prefill within 2 %, tokens identical. Only the
+/// commit points change, never what the GPU computes; a launcher value is kept.
+enum WorkerCommandBufferBudget {
+    static let variable = "MLX_MAX_MB_PER_BUFFER"
+    static let tensorParallelMegaElements = 1_000_000
+
+    static func apply(mode: ClusterGenerationMode, environment: [String: String]) -> String? {
+        guard mode == .tensorParallel else { return nil }
+        if let explicit = environment[variable] {
+            return "darkbloom-command-buffer-budget-v1 max_mb=\(explicit) source=launcher"
+        }
+        setenv(variable, String(tensorParallelMegaElements), 1)
+        return "darkbloom-command-buffer-budget-v1 max_mb=\(tensorParallelMegaElements) source=worker"
+    }
+}

@@ -27,21 +27,30 @@ enum Qwen4SupportPolicy {
         }
     }
 
-    /// Validate this owned artifact's template contract after the existing
-    /// boolean/effort precedence has resolved. Other Qwen4 artifacts may ship
-    /// different templates, so architecture identity alone is insufficient.
-    /// Never coerce an unsupported effort or change disabled-thinking behavior.
+    /// The owned Flash-Next artifact and every concrete Qwen3.8-27B build ship
+    /// templates that raise on any active effort outside low/medium/xhigh.
+    /// Other Qwen4 artifacts may ship different templates, so architecture
+    /// identity alone is insufficient.
+    static func hasRestrictedEffortTemplate(modelID: String, modelType: String?) -> Bool {
+        (isOwnedModelID(modelID) && isQwen4ModelType(modelType))
+            || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)
+    }
+
+    /// Validate the restricted-effort template contract after the existing
+    /// boolean/effort precedence has resolved, so the template's own raise
+    /// cannot surface as a provider 500. Never coerce an unsupported effort or
+    /// change disabled-thinking behavior.
     static func validateReasoningContext(
         modelID: String,
         modelType: String?,
         additionalContext: [String: any Sendable]?
     ) throws {
-        guard isOwnedModelID(modelID), isQwen4ModelType(modelType),
+        guard hasRestrictedEffortTemplate(modelID: modelID, modelType: modelType),
             additionalContext?["enable_thinking"] as? Bool != false,
             let effort = additionalContext?["reasoning_effort"] as? String
         else { return }
-        // The original template defaults to xhigh and accepts these exact
-        // spellings. Preserve that behavior rather than inventing aliases.
+        // The templates accept only these exact spellings (Flash-Next defaults
+        // to xhigh). Preserve that behavior rather than inventing aliases.
         guard ["low", "medium", "xhigh"].contains(effort) else {
             throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort
         }

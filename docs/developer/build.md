@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-20
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -215,6 +215,12 @@ configuration selects mock authentication. See [console architecture](../archite
 Retaining source or running a build does not authorize hosting or traffic changes.
 
 ## Verify
+
+For changes to the trusted PR reviewer, no provider build is required. Run the
+offline Python suites in [threat-review verification](threat-model-review.md#verify)
+and validate changed workflow YAML. The review workflow uploads content-free
+failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
+workflow change to merge.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.

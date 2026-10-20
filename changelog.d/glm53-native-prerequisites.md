@@ -17,3 +17,4 @@
 - Reject malformed GLM tool suffixes instead of exposing parser fallback text, and report unproven compatibility shutdown through a fixed diagnostic while retaining resources.
 
 - Add provider-hosted GLM aligned-read, descriptor-cache-policy and tiny-artifact loader regressions. They require the matching immutable SDK loader/reader implementation; native cases remain subject to exact-composition qualification.
+- Build single-Mac GLM-5.3-Flash on the single-Mac native stack (`Layr-Labs/mlx-swift`, `mlx` and `mlx-c` `work/glm53-flash-release`). It carries the quantized tile-bound, allocation-cap, page-backed footprint and 512-thread launch fixes the GLM path needs, without the two-Mac JACCL, sealed all-sum and collective startup-wait changes, so this release does not depend on the cluster pull requests. Metal kernel sources are unchanged from the previous pin.

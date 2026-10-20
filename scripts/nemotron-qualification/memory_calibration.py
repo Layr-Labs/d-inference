@@ -71,7 +71,7 @@ class Calibration:
         while True:
             snapshot = self.runner.memory()
             context = snapshot["context"]
-            held = [row for row in snapshot["charges"]["rows"] if row["kind"] != "load"]
+            held = incremental_rows(snapshot, self.baseline)
             idle = (not held and context["bridge_active_requests"] == 0
                     and context["http_active_responses"] == 0)
             if idle or time.perf_counter() - start > timeout:
@@ -93,6 +93,12 @@ class Calibration:
         window = after["window"]
         reserved = window["sampled_max_charge_by_kind"]
         request_bytes = window["sampled_max_request_charges_held"]
+        idle_request_kinds = sum(before["charges"]["by_kind"].get(kind, 0) for kind in REQUEST_KINDS)
+        incremental_request_bytes = max(0, request_bytes - idle_request_kinds)
+        # Managed owners retain the prefill lane, MTP workspace and prefix bank
+        # across requests. Their held capacity also covers transient allocations
+        # and newly retained cache entries; it is not a leaked request charge.
+        owner_and_request_bytes = window["sampled_max_ledger_charged"]
         active_before = before["memory"]["mlx_active"]
         mlx_delta = window["mlx_peak"] - active_before
         footprint_delta = (window["kernel_max_phys_footprint"] or window["sampled_max_phys_footprint"]) \
@@ -101,6 +107,8 @@ class Calibration:
         row = {"workload": name, "status": sample["status"], "error": sample.get("error"),
                "prompt_tokens": sample.get("prompt_tokens"), "completion_tokens": sample.get("completion_tokens"),
                "reserved_by_kind_sampled_max": reserved, "request_reserved_bytes": request_bytes,
+               "incremental_request_reserved_bytes": incremental_request_bytes,
+               "owner_and_request_reserved_bytes": owner_and_request_bytes,
                "request_reserved_bytes_definition":
                    "max over samples of media_ingress+media+kv+prefill_lane held at once",
                "activation_reserve_bytes": reserve,
@@ -108,6 +116,7 @@ class Calibration:
                "measured_phys_footprint_delta_bytes": footprint_delta,
                "margin_vs_request_reservations_bytes": request_bytes - mlx_delta,
                "margin_vs_request_plus_activation_reserve_bytes": request_bytes + reserve - mlx_delta,
+               "margin_vs_owner_and_request_plus_activation_reserve_bytes": owner_and_request_bytes + reserve - mlx_delta,
                "window": window, "settle": self.settled()}
         observed = request_bytes > 0
         ok = sample["status"] == 200 and not sample.get("error")
@@ -116,9 +125,10 @@ class Calibration:
         elif not observed:
             verdict = "not_observed"
         else:
-            verdict = "pass" if request_bytes + reserve >= mlx_delta else "fail"
+            verdict = "pass" if owner_and_request_bytes + reserve >= mlx_delta else "fail"
         self.record(f"reservation_covers_peak.{name}", verdict, {
             "request_reserved_bytes": request_bytes, "activation_reserve_bytes": reserve,
+            "owner_and_request_reserved_bytes": owner_and_request_bytes,
             "measured_mlx_peak_delta_bytes": mlx_delta,
             "note": "sampled charges only; raise runner --sample-interval-ms resolution if not_observed"})
         self.record(f"no_leak_after_success.{name}", leak_verdict(row["settle"]), row["settle"])
@@ -200,7 +210,7 @@ class Calibration:
         charge_gone = bridge_idle = http_idle = None
         while time.perf_counter() - start < 120:
             snapshot = self.runner.memory()
-            request_rows = [r for r in snapshot["charges"]["rows"] if r["kind"] in REQUEST_KINDS]
+            request_rows = incremental_rows(snapshot, self.baseline)
             context = snapshot["context"]
             now = time.perf_counter() - start
             timeline.append({"t_s": now, "request_charges": len(request_rows),
@@ -307,6 +317,13 @@ class Calibration:
                             "retirement": restart_retirement}}
 
 
+def incremental_rows(snapshot, baseline):
+    """Reservations created after ready; retain unknown new rows as possible leaks."""
+    owner_ids = {row["id"] for row in baseline["charges"]["rows"]}
+    return [row for row in snapshot["charges"]["rows"]
+            if row["kind"] != "load" and row["id"] not in owner_ids]
+
+
 def leak_verdict(settle):
     if not settle["settled"] or settle["leak"] == "request_charge":
         return "fail"
@@ -376,12 +393,12 @@ def run(args):
         workloads = calibration.workloads()
         receipt["geometry"] = [calibration.geometry(name, make) for name, make in workloads]
         reference = next((row for row in receipt["geometry"]
-                          if row["workload"].startswith("image.") and row["request_reserved_bytes"] > 0),
-                         next((row for row in receipt["geometry"] if row["request_reserved_bytes"] > 0), None))
+                          if row["workload"].startswith("image.") and row["incremental_request_reserved_bytes"] > 0),
+                         next((row for row in receipt["geometry"] if row["incremental_request_reserved_bytes"] > 0), None))
         if reference is not None:
             make = dict(workloads)[reference["workload"]]
             receipt["near_limit"] = calibration.near_limit(reference["workload"], make,
-                                                           reference["request_reserved_bytes"])
+                                                           reference["incremental_request_reserved_bytes"])
         else:
             calibration.record("near_limit_boundary", "not_exercised", "no request reservation was observed")
         receipt["cancellation"] = []

@@ -61,6 +61,15 @@ system-available memory, so other processes change near-limit outcomes. Request
 rows are classified by reservation-ID suffix; KV means a bridge request
 reservation in this single-owner runner.
 
+Managed owners retain their prefill lane, MTP round workspace and prefix bank
+after requests finish. The idle snapshot records those reservation IDs; request
+settlement excludes only those existing IDs, while new or unknown reservations
+remain visible as leaks. Geometry reports both incremental request capacity and
+the total owner-plus-request capacity that covers transient allocations and
+newly retained cache entries. The near-limit probe subtracts the already-held
+idle lane before choosing ballast; otherwise it would leave an extra lane's
+worth of headroom and fail to probe the actual request boundary.
+
 Report, per phase and geometry: reservation, observed peak, margin, limits and
 concurrency, next to the throughput receipt from `bench_super.py`. Keep the
 conservative unmeasured vision reserve until repeated worst-case receipts

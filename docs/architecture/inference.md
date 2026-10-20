@@ -227,6 +227,15 @@ decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py
 
 ### Managed Nemotron Super slot
 
+The distribution is one manifest and one model installation: all 88 shards
+include the embedded MTP head, alongside the tokenizer, processor and template
+assets. There is no separate MTP download or manual assistant binding. The
+Super manifest scanner also retains root `LICENSE.txt` and
+`UPSTREAM_README.md` notices in the download and integrity aggregate; adding
+these notices requires a new immutable artifact revision. Other model families'
+integrity inventories are unchanged. Managed `auto` enables text speculation;
+image requests automatically use the target-only path on that same owner.
+
 The provider serves exactly one Super artifact, `NemotronSuperServingPolicy.modelID`
 (`nvidia-nemotron-3.5-super`): the complete pinned NVIDIA NVFP4 checkpoint, embedded
 MTP head included, discovered as described in the

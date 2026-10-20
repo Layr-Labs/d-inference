@@ -474,6 +474,10 @@ enum CompareCommand {
 @main enum TensorParallelCheck {
     static func main() {
         do {
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "glm" {
+                try GLMBench.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

@@ -358,7 +358,8 @@ public enum ClusterServedCalibration {
             let base = device.speed.rested
             // What the plan predicted for this rank: its shard probe, else its measured hardware (`ClusterHardwarePrior`).
             let split = ClusterDecodeSplit(rates: base,
-                hardwareWeightSeconds: ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout))
+                hardwareWeightSeconds: ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout),
+                hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
             var shardDecode = base.tensorShardDecodeTokensPerSecond, shardPrefill = base.tensorShardPrefillTokensPerSecond
             var shareRates = base.tensorShareRates
             if let weights = placement.tensorShares {

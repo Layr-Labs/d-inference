@@ -41,6 +41,8 @@ public final class GLM5NextResidentRuntime {
     private var reservation: Reservation?
     private var baseReady: ClusterWorkerReady?
     private var loadAgreement: String?
+    /// What this load measured of the link (`QwenTensorParallelLinkProbe`); reported at ready.
+    private var linkProbe: ClusterWorkerLinkProbe?
     private var loadStarted = false
     private var startupWaitBudgetActive = false
     private var ownsProcessLease = false
@@ -211,7 +213,13 @@ public final class GLM5NextResidentRuntime {
             if !loadStarted { try beginLoad() }
             self.collective = collective
             try check()
-            let agreement = try admission.loadAgreement(jacclFingerprint: topologySHA256, transport: collective.transport)
+            // Every load over the cable measures the link as tensor parallel uses it
+            // (`QwenTensorParallelLinkProbe`), so the planner can choose it for this
+            // pair; bound into the agreement so both ranks measure it.
+            let probesLink = collective.transport != .localSocketTest
+            let plain = try admission.loadAgreement(jacclFingerprint: topologySHA256, transport: collective.transport)
+            let agreement = probesLink
+                ? sha256(try canonicalJSONData([plain, QwenTensorParallelLinkProbe.loadAgreementField])) : plain
             // Metadata/capacity refusal precedes even streamed artifact hashing.
             let d = admission.descriptor, r = admission.resources
             let quote = try r.quote(descriptor: d, maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
@@ -236,7 +244,7 @@ public final class GLM5NextResidentRuntime {
             loadPeak = (quote.peak.nativeBytes, quote.peak.hostBytes, Memory.activeMemory)
             try requireLoadResources()
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
-                loadAgreement: agreement, tamper: nil, check: { try self.check() })
+                loadAgreement: agreement, tamper: nil, tensorParallelSeal: probesLink, check: { try self.check() })
             guard collective.workerDataPlane?.peerVerified == true else {
                 throw ProbeError("GLM load requires an authenticated peer")
             }
@@ -244,6 +252,14 @@ public final class GLM5NextResidentRuntime {
                 material: { .residentLoadIntent(agreementFingerprint: agreement) },
                 disagreementMessage: "GLM descriptor/source/cut/policy/peers differ before load",
                 scope: .session(.loadAgreement, "glm-resident-load-intent"), check: { try self.check() })
+            if probesLink {
+                // The link, before any weight is read.
+                let probe = try QwenTensorParallelLinkProbe.measure(onPipeline: collective, keyed: true,
+                    loadAgreement: agreement, hiddenSize: d.configuration.textConfig.hiddenSize,
+                    chunkTokens: d.profile.maximumChunkTokens, check: { try self.check() })
+                linkProbe = probe
+                log(QwenTensorParallelLinkProbe.line(probe, rank: collective.rank))
+            }
             loadAgreement = agreement
         } catch { poison(); throw error }
     }
@@ -333,7 +349,8 @@ public final class GLM5NextResidentRuntime {
             try finishStartupWaitBudget()
             baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
                 profile: admission.wireProfile, executionPlanSHA256: contract.source.planFingerprint,
-                requestCapacityBytes: admission.resources.requestCapacityBytes, dataPlane: collective.workerDataPlane)
+                requestCapacityBytes: admission.resources.requestCapacityBytes, dataPlane: collective.workerDataPlane,
+                linkProbe: linkProbe)
             try check()
             try control.loaded()
         } catch { poison(); throw error }

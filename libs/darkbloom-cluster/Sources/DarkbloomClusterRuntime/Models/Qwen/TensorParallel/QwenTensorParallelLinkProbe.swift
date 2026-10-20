@@ -38,17 +38,25 @@ enum QwenTensorParallelLinkProbe {
             if rank == 0 { try send(); try receive() } else { try receive(); try send() }
             large.append((now() - started) / 2)
         }
-        // The sealed all-sum (the native one on a plaintext data plane).
+        // The sealed all-sum (the native one on a plaintext data plane), as a
+        // ready tensor-parallel rank runs it: with its bounded freed-buffer
+        // cache and after one unmeasured pass. A load runs with MLX's cache at
+        // zero, where every repetition would first-touch fresh temporaries
+        // (measured: 32 MiB sealed sum 16.9 ms cold against 7.2 ms ready).
+        let previousCacheLimit = Memory.cacheLimit
+        Memory.cacheLimit = max(previousCacheLimit, QwenTensorParallelLaunch.freedBufferCacheBytes(
+            allocatorHeadroomBytes: QwenDenseStageLoadPolicy.allocatorHeadroomBytes))
+        defer { Memory.cacheLimit = previousCacheLimit; Memory.clearCache() }
         func allSum(_ elements: Int, _ repetitions: Int) throws -> Int {
             let value = MLXArray.zeros([elements], dtype: .float32)
             eval(value)
             var times: [UInt64] = []
-            for _ in 0..<repetitions {
+            for index in 0...repetitions {
                 try check()
                 let started = now()
                 let summed = group.allSum(value)
                 try MLX.withError { error in eval(summed); try error.check() }
-                times.append(now() - started)
+                if index > 0 { times.append(now() - started) }
             }
             return median(times)
         }

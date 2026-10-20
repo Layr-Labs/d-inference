@@ -53,7 +53,7 @@ struct GLM5NextRegisteredSpecification {
             manifestBytes: GLM5NextArtifactPin.manifestBytes, manifestFileCount: GLM5NextArtifactPin.manifestFileCount,
             layers: 45, hidden: 4096, vocabulary: 154_880, declaredContextTokens: 1_048_576,
             storage: .nvfp4Hybrid, executionPolicy: .serving,
-            supportedPrefillSchedules: [.serial], supportedGenerationModes: [.pipeline]),
+            supportedPrefillSchedules: [.serial], supportedGenerationModes: [.pipeline, .tensorParallel]),
     ]
 
     static func specification(runtimeModelID: String) throws -> Self {

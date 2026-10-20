@@ -95,6 +95,10 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     /// rank of `tensor_parallel_v1` (or the hybrid's decode) holds. Nil when
     /// the family has no plan, or in a layout written before it was derived.
     public fileprivate(set) var tensorParallel: ClusterTensorParallelLayout? = nil
+    /// The routed experts of a mixture-of-experts family that states its
+    /// routing: what a decode step reads of them. Nil otherwise, or in a
+    /// layout written before it was derived (every byte is then read).
+    public fileprivate(set) var routedExperts: ClusterRoutedExperts? = nil
 
     /// What the last rank of a speculative mode holds beside its stages, each
     /// tensor in whole pages: the model's head, and under a pipeline (where the
@@ -202,10 +206,13 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
             throw ClusterPlacementError("Model layout's speculative head is malformed")
         }
         try tensorParallel?.validate(layout: self)
+        try routedExperts?.validate(layout: self)
     }
 
     /// The same layout with tensor-parallel facts (a constructed layout, or
     /// one read from a file written before they were derived); validated.
+    /// A layout with routed experts keeps their divided bytes as derived:
+    /// rebuild it instead of replacing its plan.
     public func with(tensorParallel facts: ClusterTensorParallelLayout?) throws -> ClusterModelLayout {
         var copy = self
         copy.tensorParallel = facts
@@ -373,6 +380,12 @@ public protocol ClusterPlacementFamily {
     var speculativeDecodeFactor: Double? { get }
     /// The family's tensor-parallel plan for this model; nil when it has none.
     var tensorParallelPlan: ClusterTensorParallelFamilyPlan? { get }
+    /// How a mixture-of-experts family routes a token; nil for a family
+    /// without routed experts (or one that does not state its routing).
+    var expertRouting: ClusterExpertRouting? { get }
+    /// True for a layer's tensor of a routed expert: one decode step reads it
+    /// only when the token is routed to that expert.
+    func isRoutedExpert(storedTensor name: String) -> Bool
     /// How that plan treats a tensor some range loads; nil when the plan does
     /// not cover it (the layout is then refused: a plan covers every tensor).
     func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut?
@@ -397,6 +410,8 @@ extension ClusterPlacementFamily {
     public var speculativeDecodeFactor: Double? { nil }
     public var tensorParallelPlan: ClusterTensorParallelFamilyPlan? { nil }
     public func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? { nil }
+    public var expertRouting: ClusterExpertRouting? { nil }
+    public func isRoutedExpert(storedTensor name: String) -> Bool { false }
     public func layerCost(_ layer: Int) -> Double { 1 }
     public func prefillTransient(layer: Int) -> ClusterPlacementLayerTransient { .none }
 }
@@ -426,6 +441,9 @@ public enum ClusterModelLayoutBuilder {
         let tensorPlan = family.tensorParallelPlan
         var tpLayers = [(divided: Int, replicated: Int)](repeating: (0, 0), count: count)
         var tpIngress = (divided: 0, replicated: 0), tpEgress = (divided: 0, replicated: 0)
+        // Loaded bytes of the routed experts, and of them the plan's divided bytes.
+        let routing = family.expertRouting
+        var routed = (loaded: 0, divided: 0)
         func tensorParallelCut(_ name: String) throws -> ClusterTensorParallelTensorCut? {
             guard tensorPlan != nil else { return nil }
             guard let cut = family.tensorParallelCut(ofStoredTensor: name) else {
@@ -487,7 +505,12 @@ public enum ClusterModelLayoutBuilder {
                         + "the stage plan is not a contiguous layer pipeline")
                 }
                 layers[layer].add(stored: tensor.byteCount, loaded: loaded, work: work)
-                add(try tensorParallelCut(tensor.name), loaded, to: &tpLayers[layer])
+                let cut = try tensorParallelCut(tensor.name)
+                add(cut, loaded, to: &tpLayers[layer])
+                if routing != nil, family.isRoutedExpert(storedTensor: tensor.name) {
+                    routed.loaded += loaded
+                    if cut == .divided { routed.divided += loaded }
+                }
             } else if stages.allSatisfy({ $0 == 0 }) {
                 ingress.add(stored: tensor.byteCount, loaded: loaded, work: work)
                 add(try tensorParallelCut(tensor.name), loaded, to: &tpIngress)
@@ -532,6 +555,13 @@ public enum ClusterModelLayoutBuilder {
                 layerReplicatedBytes: tpLayers.map(\.replicated), ingressDividedBytes: tpIngress.divided,
                 ingressReplicatedBytes: tpIngress.replicated, egressDividedBytes: tpEgress.divided,
                 egressReplicatedBytes: tpEgress.replicated)
+        }
+        if let routing {
+            guard routed.loaded > 0 else {
+                throw ClusterPlacementError("The family routes to experts, but no layer stores a routed expert")
+            }
+            built.routedExperts = ClusterRoutedExperts(routing: routing, loadedBytes: routed.loaded,
+                tensorParallelDividedBytes: tensorPlan == nil ? nil : routed.divided)
         }
         try built.validate()
         return built

@@ -20,6 +20,7 @@ func checkAutoChoice(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Placem
     try checkNewPairs(layout, checks)
     try checkRecordedPairWithoutProbes(layout, golden: golden, checks)
     try checkServedReplacesPrior(layout, checks)
+    try checkServedTensorParallelKeepsWholeModelRates(layout, checks)
     try checkRequestMix(layout, checks)
     try checkFixedRequestScope(big, checks)
 }
@@ -192,6 +193,37 @@ private func checkServedReplacesPrior(_ layout: ClusterModelLayout, _ checks: Pl
             && replanned.tensorParallel?.devices.allSatisfy({ $0.split.measured && $0.split.fromHardware == nil }) == true
             && (replanned.tensorParallel?.tensorParallel?.prediction(.rested).decodeTokensPerSecond ?? .infinity)
                 < predicted.rested.decodeTokensPerSecond * 0.75)
+}
+
+/// What a tensor-parallel setup served corrects its shard rates only: its
+/// whole-model rates (the estimate it started from) never displace what a
+/// pipeline served, even when its requests' prompts are nearer the plan's.
+/// Two identical Macs had served a pipeline at 1,165 tok/s; the TP setup's
+/// copy of the 1,880 tok/s prior then priced the pipeline as fast as one Mac.
+private func checkServedTensorParallelKeepsWholeModelRates(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    let mac = NewMac(gib: 256, chip: "Apple M5 Ultra", decodeIndex: 46_409, prefillIndex: 2_337_768)
+    let devices = ClusterHardwarePrior.absolute(try freshPair(mac, mac, layout: layout), layout: layout, link: productProbe())
+    let chip = devices[0].profile.chip, os = devices[0].profile.osBuild
+    func measured(_ probe: String, prompt: Int, _ rates: ClusterSpeedRates) throws -> ClusterSpeedMeasurement {
+        try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: chip, osBuild: os, runtimeBinarySHA256: "served", probe: probe),
+            promptTokens: prompt, chunkTokens: layout.maximumChunkTokens, probedLayers: layout.layerCount, layerCount: layout.layerCount,
+            rested: rates, sustained: nil, measuredUTC: "t", provenance: probe)
+    }
+    let pipeline = try measured("served_pipeline_v1_v1", prompt: 2_000,
+        .init(prefillTokensPerSecond: 1_165, decodeTokensPerSecond: 30))
+    let tensor = try measured("served_tensor_parallel_v1_v1", prompt: 2_629,
+        .init(prefillTokensPerSecond: 1_880, decodeTokensPerSecond: 55,
+            tensorShardPrefillTokensPerSecond: 3_000, tensorShardDecodeTokensPerSecond: 60))
+    let estimate = ClusterSpeedEstimator.estimate(devices: [.init(chip: chip, osBuild: os)],
+        artifactSHA256: layout.artifactSHA256, promptTokens: 2_629, measurements: [pipeline, tensor])
+    let rested = estimate.first?.rested
+    let alone = ClusterSpeedEstimator.estimate(devices: [.init(chip: chip, osBuild: os)],
+        artifactSHA256: layout.artifactSHA256, promptTokens: 2_629, measurements: [tensor]).first?.rested
+    checks.require("served tensor parallel: shard rates join the pipeline's served whole-model rates, never replace them",
+        tensor.correctsShardRatesOnly && !pipeline.correctsShardRatesOnly
+            && rested?.prefillTokensPerSecond == 1_165 && rested?.decodeTokensPerSecond == 30
+            && rested?.tensorShardPrefillTokensPerSecond == 3_000 && rested?.tensorShardDecodeTokensPerSecond == 60
+            && alone?.prefillTokensPerSecond == 1_880 && alone?.tensorShardDecodeTokensPerSecond == 60)
 }
 
 private func checkRequestMix(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {

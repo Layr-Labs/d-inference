@@ -5,7 +5,7 @@ import Foundation
 // darkbloom-cluster-tp-check glm --mode full|shard|tp --model-dir DIR --report FILE
 //     [--prompt-tokens N | --prompt-file TOKENS.json] [--output-count N] [--chunk N] [--repeats N]
 //     [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no]
-//     [--reduction native|sealed] [--cache-limit-mb N]
+//     [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -32,7 +32,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -54,6 +54,7 @@ enum GLMBench {
         options.census = (fields["--census"] ?? "no") == "yes"
         options.sealed = (fields["--reduction"] ?? "native") == "sealed"
         options.cacheLimitBytes = fields["--cache-limit-mb"].flatMap(Int.init).map { $0 << 20 }
+        options.microBatches = Int(fields["--micro-batches"] ?? "1") ?? 1
         let result = try GLM5NextTensorParallelBench.run(options, log: { note($0) })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

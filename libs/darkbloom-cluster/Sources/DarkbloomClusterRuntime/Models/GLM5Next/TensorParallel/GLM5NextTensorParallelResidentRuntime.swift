@@ -32,6 +32,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// decode 25.7; 1 GiB 1,624 / 50.4; 4 GiB 1,766 / 50.8. Charged to the
     /// load's memory gate and the stage residency beside the request reserve.
     static let freedBufferCacheBytes = 4 << 30
+    /// Each prefill chunk runs as this many micro-batches, so one computes
+    /// while another's sealed sum crosses the link
+    /// (`GLM5NextTextStage.tensorParallelMicroBatches`). Measured, sealed TP2
+    /// on two M5 Ultra (3,931-token prompt, 2,048-token chunks, 4 GiB cache):
+    /// 1: 1,767 tok/s; 2: 2,532; 4: 1,466 (each micro-batch's matmuls too
+    /// small); decode and tokens unchanged.
+    static let prefillMicroBatches = 2
 
     let configuration: QwenResidentLoadConfiguration
     let descriptor: GLM5NextResidentDescriptor
@@ -174,6 +181,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 let plan = try GLM5NextTextStagePlan(configuration: text, layers: 0 ..< text.hiddenLayers,
                     shard: try GLM5NextTensorShard(rank: collective.rank, size: collective.size))
                 let value = try autoreleasepool { try loader.loadTextStage(plan: plan) }
+                value.tensorParallelMicroBatches = Self.prefillMicroBatches
                 value.freeze()
                 try roots.evaluate(value.parameters().flattened().map(\.1))
                 Stream.gpu.synchronize(); try checked()
@@ -197,7 +205,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
-                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)")
+                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)")
             }
             guard let stage = loaded else { throw ProbeError("GLM tensor-parallel load returned no stage") }
             try control.loaded()

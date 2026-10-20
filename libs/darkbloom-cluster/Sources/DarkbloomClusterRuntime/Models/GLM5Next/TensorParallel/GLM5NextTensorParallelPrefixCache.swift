@@ -4,8 +4,10 @@ import MLXLLM
 
 /// One rank's prompt-prefix cache under GLM tensor parallel: the rank's stage
 /// cache (its own heads' KDA state and the replicated DSA latents) at a
-/// prompt's last whole chunk boundary, kept in memory. The KDA state divides
-/// by heads, so an entry never crosses the cable and is useless to the other
+/// prompt's last whole chunk boundary, kept in memory, with the NextN history
+/// at the same boundary when the runtime decodes speculatively (so a restored
+/// prefix proposes as well as a prefilled one). The KDA state divides by
+/// heads, so an entry never crosses the cable and is useless to the other
 /// rank.
 ///
 /// As `QwenTensorParallelPrefixCache`: an entry is found only under the scope
@@ -18,6 +20,7 @@ final class GLM5NextTensorParallelPrefixCache {
         let key: String
         let length: Int
         let cache: GLM5NextTextStageCache
+        let mtp: GLM5NextMTPCheckpoint?
         let bytes: Int
         var used: UInt64
     }
@@ -40,22 +43,26 @@ final class GLM5NextTensorParallelPrefixCache {
         }
     }
 
-    /// A copy of the entry at `length` (the request writes its own copy).
-    func restore(scope: String, prompt: [Int], length: Int) -> GLM5NextTextStageCache? {
+    /// A copy of the entry at `length` (the request writes its own copy) and
+    /// its NextN history, which is immutable and restored by copy.
+    func restore(scope: String, prompt: [Int], length: Int)
+        -> (cache: GLM5NextTextStageCache, mtp: GLM5NextMTPCheckpoint?)? {
         lock.withLock {
             let key = QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: length)
             guard var entry = entries[key] else { return nil }
             clock += 1; entry.used = clock; entries[key] = entry
-            return entry.cache.copy()
+            return (entry.cache.copy(), entry.mtp)
         }
     }
 
-    /// Keeps a copy of `cache` (evaluated) at `length`, evicting the oldest
-    /// entries beyond the budget; nothing when it alone exceeds the budget.
-    func store(scope: String, prompt: [Int], length: Int, cache: GLM5NextTextStageCache) {
+    /// Keeps a copy of `cache` (evaluated) and the NextN history `mtp` at
+    /// `length`, evicting the oldest entries beyond the budget; nothing when
+    /// it alone exceeds the budget.
+    func store(scope: String, prompt: [Int], length: Int, cache: GLM5NextTextStageCache,
+               mtp: GLM5NextMTPCheckpoint? = nil) {
         guard enabled else { return }
         let kept = cache.copy()
-        let arrays = kept.layers.flatMap { $0.innerState() }
+        let arrays = kept.layers.flatMap { $0.innerState() } + (mtp?.arrays ?? [])
         eval(arrays)
         let bytes = arrays.reduce(0) { $0 + $1.nbytes }
         guard bytes <= budgetBytes else { return }
@@ -63,7 +70,7 @@ final class GLM5NextTensorParallelPrefixCache {
             let key = QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: length)
             if let old = entries[key] { bytesInUse -= old.bytes }
             clock += 1
-            entries[key] = .init(key: key, length: length, cache: kept, bytes: bytes, used: clock)
+            entries[key] = .init(key: key, length: length, cache: kept, mtp: mtp, bytes: bytes, used: clock)
             bytesInUse += bytes
             while bytesInUse > budgetBytes, let oldest = entries.values.min(by: { $0.used < $1.used }) {
                 entries[oldest.key] = nil; bytesInUse -= oldest.bytes

@@ -262,6 +262,15 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     /// (`GLM5NextTensorParallelResidentRuntime.partialsTransport`); each
     /// step sums the ranks' token and stop flags once. The DSA latent cache
     /// is replicated, so request state is held whole on every rank.
+    ///
+    /// Not in this plan yet: the runtime's speculative decode
+    /// (`GLM5NextTensorParallelResidentRuntime.mtpDepth`). It loads the NextN
+    /// layer whole on every rank (about 4.2 GB, which this layout leaves to
+    /// no rank) and charges it, its history and the captured verification
+    /// windows to its own load gate and request reserve; a greedy step then
+    /// verifies up to `mtpDepth + 1` rows per round of sums. The planner
+    /// still prices one token per step and no NextN bytes, so it can admit a
+    /// pair the load gate then refuses, and it underestimates greedy decode.
     static func tensorParallelPlan(specification: GLM5NextRegisteredSpecification,
                                    configuration: GLM5NextTextConfiguration,
                                    modes: [ClusterGenerationMode]) -> ClusterTensorParallelFamilyPlan? {
@@ -274,7 +283,8 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
 
     /// The SDK's split rule for a text layer's tensor (`GLM5NextTensorShard.splitAxis`);
     /// the embedding, final norm and head are replicated. Nil for what no
-    /// text stage loads (the NextN layer, the vision tower).
+    /// text stage loads (the NextN layer, the vision tower; the tensor-parallel
+    /// runtime loads NextN beside the stage, whole, and charges it itself).
     func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? {
         guard tensorParallelPlan != nil, (try? stage(ofStoredTensor: name, cut: 1)) ?? nil != nil else { return nil }
         guard layer(ofStoredTensor: name) != nil else { return .replicated }

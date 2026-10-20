@@ -1015,27 +1015,64 @@ public enum ClusterPlacementPlanner {
             (c.possible ? 0 : 4) + (c.withinGPUWorkingSet ? 0 : 2) + (c.tier == 0 ? 0 : 1)
         }
 
+        /// The share of its own hardware capacity (what it keeps resident for
+        /// the GPU and admits at rest, never what is free now) the tightest
+        /// rank keeps beyond its need. Larger is more even.
+        func capacityBalance(_ c: ClusterPlacementCandidate) -> Double {
+            c.ranks.map { rank -> Double in
+                guard let profile = devices.first(where: { $0.label == rank.device })?.profile else { return -.infinity }
+                let capacity = Double(max(1, min(profile.residentCapacityBytes, profile.atRestAdmissibleBytes)))
+                return (capacity - Double(rank.needBytes)) / capacity
+            }.min() ?? -.infinity
+        }
+
         /// Best first: the hardware group; then predicted request time on the
         /// route the router would take (`routedSeconds`: a phase split's
         /// decoding member alone when it is faster). Equal times are broken
         /// first by the model's speculative head (`headRank`: on a decoding
         /// Mac that prefers it, then no head, then the head on a Mac that
-        /// prefers plain decode), then by the lower cut, the devices' labels
-        /// in rank order and the mode's place in the layout. Nothing depends
-        /// on the order the devices were given in, so the result is the same
-        /// whichever Mac asks with the same samples.
+        /// prefers plain decode), then by the most even use of each Mac's
+        /// hardware capacity (`capacityBalance`), then by the lower cut, the
+        /// devices' labels in rank order and the mode's place in the layout.
+        /// Times equal up to rounding are equal: on identical Macs every
+        /// pipeline cut predicts the same time, and the earliest cut the
+        /// second Mac's free memory held used to win that tie (5/40 of 45
+        /// layers on two M5 Ultras, 2026-10-19). Nothing depends on the order
+        /// the devices were given in, so the result is the same whichever Mac
+        /// asks with the same samples.
         func ordered(_ candidates: [ClusterPlacementCandidate], regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
             // The route the router would take for this request (`routedSeconds`).
             func time(_ c: ClusterPlacementCandidate) -> Double { c.routedSeconds(regime) }
-            return candidates.sorted { a, b in
+            // Exactly equal (infinite times included), or apart by rounding only:
+            // a real speed difference is never traded for balance.
+            func sameTime(_ x: Double, _ y: Double) -> Bool { x == y || abs(x - y) <= 1e-9 * max(abs(x), abs(y)) }
+            let byTime = candidates.sorted { a, b in
                 if hardwareGroup(a) != hardwareGroup(b) { return hardwareGroup(a) < hardwareGroup(b) }
-                if time(a) != time(b) { return time(a) < time(b) }
-                let ha = headRank(a, regime), hb = headRank(b, regime)
-                if ha != hb { return ha < hb }
-                if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }
-                let la = a.ranks.map(\.device), lb = b.ranks.map(\.device)
-                if la != lb { return la.lexicographicallyPrecedes(lb) }
-                return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
+                return time(a) < time(b)
+            }
+            // Split each hardware group into runs of equal time, then order each run.
+            // A run is measured from its fastest member, so near-equal times cannot
+            // chain it across a real difference.
+            var runs: [[ClusterPlacementCandidate]] = []
+            for candidate in byTime {
+                if let anchor = runs.last?.first, hardwareGroup(anchor) == hardwareGroup(candidate),
+                   sameTime(time(anchor), time(candidate)) {
+                    runs[runs.count - 1].append(candidate)
+                } else {
+                    runs.append([candidate])
+                }
+            }
+            return runs.flatMap { run in
+                run.sorted { a, b in
+                    let ha = headRank(a, regime), hb = headRank(b, regime)
+                    if ha != hb { return ha < hb }
+                    let ba = capacityBalance(a), bb = capacityBalance(b)
+                    if ba != bb { return ba > bb }
+                    if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }
+                    let la = a.ranks.map(\.device), lb = b.ranks.map(\.device)
+                    if la != lb { return la.lexicographicallyPrecedes(lb) }
+                    return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
+                }
             }
         }
 

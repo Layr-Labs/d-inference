@@ -266,6 +266,11 @@ model with every app closed (macOS keeps part of the memory as file cache that
 no model can use). If a Mac's apps hold memory the chosen share needs, the
 screen says "Quit apps on … first" instead of picking a slower split.
 
+When several splits predict the same time (two identical Macs, or Macs with
+equal measured speed), the one that leaves each Mac the largest share of its
+own memory is chosen: identical Macs split the layers evenly, and a Mac with
+more memory takes more. A faster split is never given up for an even one.
+
 ## Prompt prefixes on the pair
 
 Both Macs keep the prompt prefixes of every model family, in memory and in the

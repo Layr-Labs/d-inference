@@ -36,6 +36,7 @@ import Foundation
             try checkRequestedContext(layouts.twentySeven, checks)
             try checkQualifiedShapes(layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)
+            try checkBalancedCut(layouts.twentySeven, checks)
             try checkSpeculativeCredit(inputs, checks)
             try checkRequestRoutes(inputs, checks)
             try checkBudgets(layouts.twentySeven, checks)

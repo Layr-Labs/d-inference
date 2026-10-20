@@ -155,7 +155,7 @@ enum SSDPrefixCachePolicy {
     /// explicit settings still win. A full-size file estimates about 5 s at
     /// the conservative 1.5 GB/s rate, so the byte cap, not the 15 s time
     /// cap, binds. Attention block caches keep the general defaults.
-    static let largeMemoryThresholdBytes: UInt64 = 96 << 30
+    static let largeMemoryThresholdBytes: UInt64 = 48 << 30
     static let largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576  // 7 GiB
     static let largeMemoryCompleteCheckpointStageMillis = 15_000
 

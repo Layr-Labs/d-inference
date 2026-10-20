@@ -7,7 +7,7 @@ struct SSDCompleteCheckpointStageCapTests {
     private static let gib: UInt64 = 1 << 30
 
     @Test("below the large-memory threshold the general defaults apply",
-          arguments: [UInt64(16), 36, 64, 95])
+          arguments: [UInt64(16), 24, 36, 47])
     func smallMemoryKeepsDefaults(memoryGiB: UInt64) {
         let memory = memoryGiB * Self.gib
         #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: [:], physicalMemoryBytes: memory)
@@ -17,7 +17,7 @@ struct SSDCompleteCheckpointStageCapTests {
     }
 
     @Test("large-memory Macs default to a deeper complete-checkpoint cap",
-          arguments: [UInt64(96), 128, 192, 512])
+          arguments: [UInt64(48), 64, 96, 128, 192, 512])
     func largeMemoryRaisesDefaults(memoryGiB: UInt64) {
         let memory = memoryGiB * Self.gib
         #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: [:], physicalMemoryBytes: memory)
@@ -34,7 +34,7 @@ struct SSDCompleteCheckpointStageCapTests {
             <= SSDPrefixCachePolicy.largeMemoryCompleteCheckpointStageMillis)
     }
 
-    @Test("explicit settings win at every memory size", arguments: [UInt64(64), 128])
+    @Test("explicit settings win at every memory size", arguments: [UInt64(36), 128])
     func explicitSettingsWin(memoryGiB: UInt64) {
         let environment = [SSDPrefixCachePolicy.maxStageMBFlag: "512",
                            SSDPrefixCachePolicy.maxStageMillisFlag: "300"]
@@ -53,7 +53,7 @@ struct SSDCompleteCheckpointStageCapTests {
             environment: environment, physicalMemoryBytes: 128 * Self.gib)
             == SSDPrefixCachePolicy.largeMemoryCompleteCheckpointStageBytes)
         #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageMillis(
-            environment: environment, physicalMemoryBytes: 64 * Self.gib)
+            environment: environment, physicalMemoryBytes: 36 * Self.gib)
             == SSDPrefixCachePolicy.defaultMaxStageMillis)
     }
 

@@ -34,6 +34,11 @@ import Foundation
                                                                 environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
+            // Before anything native: tensor parallel's command-buffer budget (read once too).
+            if let line = WorkerCommandBufferBudget.apply(mode: configuration.generationMode,
+                                                          environment: ProcessInfo.processInfo.environment) {
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             // Before anything native: a qualification switch in the environment
             // of a worker that was not started with the test flag ends it here.
             let environment = ProcessInfo.processInfo.environment

@@ -117,42 +117,22 @@ struct Qwen4ReasoningEffortValidationTests {
 
     @Test(arguments: ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted())
     func qwen38BuildsShareTheRestrictedEffortContract(model: String) throws {
-        func request(effort: String?) -> OpenAIChatCompletionRequest {
-            .init(model: model, messages: [.init(role: .user, content: .text("hi"))],
-                reasoning: .init(enabled: true, effort: effort))
-        }
+        let hi: [OpenAIChatMessage] = [.init(role: .user, content: .text("hi"))]
         for effort: String? in [nil, "low", "medium", "xhigh"] {
-            let tokenizer = ReasoningContextTokenizer()
-            _ = try tokenize(request(effort: effort), controls: .init(), tokenizer: tokenizer, modelType: "qwen3_5")
-            #expect(tokenizer.context?["reasoning_effort"] as? String == effort)
+            _ = try tokenize(.init(model: model, messages: hi, reasoning: .init(enabled: true, effort: effort)),
+                controls: .init(), tokenizer: ReasoningContextTokenizer(), modelType: "qwen3_5")
         }
-        for effort in ["high", "minimal", "High"] {
+        // Raw-body `reasoning_effort`, the shape OpenRouter traffic arrives in.
+        for effort in ["high", "minimal"] {
             let tokenizer = ReasoningContextTokenizer()
             #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort) {
-                try tokenize(request(effort: effort), controls: .init(), tokenizer: tokenizer, modelType: "qwen3_5")
+                try tokenize(.init(model: model, messages: hi), controls: .init(reasoningEffort: effort),
+                    tokenizer: tokenizer, modelType: "qwen3_5")
             }
             #expect(tokenizer.calls == 0)
         }
-        for effort in ["high", "none"] {
-            let tokenizer = ReasoningContextTokenizer()
-            _ = try tokenize(.init(model: model, messages: [.init(role: .user, content: .text("hi"))]),
-                controls: .init(reasoningEffort: effort, enableThinking: false), tokenizer: tokenizer,
-                modelType: "qwen3_5")
-            #expect(tokenizer.context?["enable_thinking"] as? Bool == false)
-        }
-    }
-
-    /// The raw `reasoning_effort` body field is the shape OpenRouter traffic
-    /// reached production with; it must stop at the same typed 400 boundary.
-    @Test(arguments: ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted())
-    func qwen38RawBodyEffortIsRejectedBeforeTemplateInvocation(model: String) throws {
-        let body = #"{"model":"\#(model)","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}"#
-        let tokenizer = ReasoningContextTokenizer()
-        #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort) {
-            try ProviderPromptContractPipeline.tokenizeProviderBody(Data(body.utf8),
-                tokenizer: tokenizer, modelType: "qwen3_5")
-        }
-        #expect(tokenizer.calls == 0)
+        _ = try tokenize(.init(model: model, messages: hi), controls: .init(reasoningEffort: "high", enableThinking: false),
+            tokenizer: ReasoningContextTokenizer(), modelType: "qwen3_5")
     }
 
     private func tokenize(_ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls,

@@ -78,8 +78,8 @@ Unsupported active efforts such as `high` or `minimal` are rejected before
 template rendering with a typed HTTP 400, not coerced to another effort.
 Disabled thinking retains its existing precedence. Every concrete
 Qwen3.8-27B build (`ModelRuntimeRequirements.qwen38ConcreteModelIDs`) ships a
-template with the same effort raise, so it shares this boundary
-(`hasRestrictedEffortTemplate`); other artifact templates are unaffected. Source: `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`
+template with the same effort raise, so it shares this boundary; other
+artifact templates are unaffected. Source: `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`
 (`validateReasoningContext`) and `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
 (`tokenize`). Hosted OpenRouter routing, adapter control mappings, exclusion,
 reasoning-token budgets and opaque reasoning-history extensions require

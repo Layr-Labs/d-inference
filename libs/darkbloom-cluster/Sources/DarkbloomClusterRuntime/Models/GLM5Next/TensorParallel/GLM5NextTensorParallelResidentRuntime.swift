@@ -57,6 +57,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     private var reservation: Reserved?
     private var processLeaseOwned = true
     public let linkProbe: ClusterWorkerLinkProbe?
+    /// This rank's prompt prefixes (`GLM5NextTensorParallelPrefixCache`).
+    let prefix: GLM5NextTensorParallelPrefixCache
 
     struct Reserved {
         let request: QwenLayerStageGenerationRequest
@@ -212,7 +214,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
             return GLM5NextTensorParallelResidentRuntime(configuration: configuration, descriptor: descriptor,
                 control: control, collective: collective, group: group, codec: codec, stage: stage,
                 residency: stageResidency, requestReserveBytes: requestReserve, loadAgreement: loadAgreement, linkProbe: probe,
-                planSHA256: planSHA256)
+                planSHA256: planSHA256, prefix: GLM5NextTensorParallelPrefixCache(
+                    budgetBytes: QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)))
         } catch {
             let primary = error; control.fail(); loaded = nil
             do {
@@ -252,7 +255,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                  control: QwenResidentControl, collective: Collective, group: QwenTensorParallelGroup,
                  codec: QwenTensorParallelSealCodec?, stage: GLM5NextTextStage, residency: ClusterStageResidency?,
                  requestReserveBytes: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
-                 planSHA256: String) {
+                 planSHA256: String, prefix: GLM5NextTensorParallelPrefixCache) {
+        self.prefix = prefix
         self.configuration = configuration; self.descriptor = descriptor; self.control = control
         self.collective = collective; self.group = group; self.codec = codec; self.stage = stage
         self.residency = residency; self.requestReserveBytes = requestReserveBytes
@@ -336,6 +340,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
             reservation = nil
             return value
         } catch {
+            // The peer may hold something else now.
+            prefix.sweep()
             control.fail(); throw error
         }
     }
@@ -382,20 +388,39 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let now = DispatchTime.now().uptimeNanoseconds
             if now - lastCheck >= 250_000_000 {
                 lastCheck = now
-                if (try? Self.requireLiveMemory(bytes: 0)) == nil { return true }
+                if (try? prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil { return true }
             }
             return false
         }
-        let cache = stage.newCache()
+        // Prompt prefix: the longest chunk boundary both ranks hold.
+        let scope = loadAgreement
+        var cache = stage.newCache(), start = 0
+        if prefix.enabled, prompt.count > chunk {
+            let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
+            let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
+            if let agreed = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates) {
+                guard let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) else {
+                    throw ProbeError("GLM tensor-parallel prefix both ranks voted for is gone")
+                }
+                cache = restored; start = agreed
+            }
+        }
+        // Prefill from `start` in chunks aligned to the boundaries; keep the
+        // last whole boundary before the final token.
         var logits: MLXArray?
-        var offset = 0
+        var offset = start, stored: [Int] = []
+        let keepAt = prefix.enabled ? ((prompt.count - 1) / chunk) * chunk : 0
         while offset < prompt.count {
-            let end = min(prompt.count, offset + chunk)
+            let end = min(prompt.count, (offset / chunk + 1) * chunk)
             let last = end == prompt.count
             let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
             let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
             try candidate.commit { roots in eval(roots) }
             if last, case .final(let output) = candidate.output { logits = output.logits[0..., -1, 0...] }
+            if !last, end == keepAt, keepAt > start {
+                prefix.store(scope: scope, prompt: prompt, length: end, cache: cache)
+                stored.append(end)
+            }
             offset = end
         }
         guard let firstLogits = logits else { throw ProbeError("GLM tensor-parallel prefill produced no logits") }
@@ -491,11 +516,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
             throw ProbeError("The peer rank stopped the GLM tensor-parallel request")
         }
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
-            + " prompt=\(prompt.count) reused=0 output=\(tokens.count) finish=\(finish.rawValue)"
+            + " prompt=\(prompt.count) reused=\(start) stored=\(stored.map(String.init).joined(separator: "_"))"
+            + " prefix_entries=\(prefix.count) output=\(tokens.count) finish=\(finish.rawValue)"
             + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)")
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,
-            reusedPromptTokens: 0, storedPromptFrontiers: [])
+            reusedPromptTokens: start, storedPromptFrontiers: stored)
     }
 }

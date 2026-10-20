@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-20
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1822,3 +1822,9 @@ workspace allowances do not become measured serving evidence. The
 retains separate logical-array, raw-frame and encrypted-record bounds.
 
 These commands do not enable a public GLM endpoint. See [placement semantics](../architecture/inference.md#exact-quote-placement).
+
+The `cluster` setup installs its background service with the enclosing app's
+Local Network identity. A signed app keeps serving after the setup terminal
+closes. A development fallback names its session lifetime limitation on screen;
+keep that Terminal or SSH session open. See [cluster service
+permissions](cluster-always-on.md#permissions-asked-once).

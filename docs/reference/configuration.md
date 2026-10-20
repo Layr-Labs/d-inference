@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-20
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1184,3 +1184,10 @@ records or enable private image/MTP profiles for public traffic.
 | `glm-calibration-run --placement` (exactly twice) | Same two rank snapshots on both Macs; 120-second maximum age | `ClusterGLMCalibrationPlacement.select` |
 
 All other template fields, including artifact pins, environment, finite request, native/host allowances and expiry, remain unchanged and are validated by the existing quotation owner. No new environment variable, serving capability or public admitted cut is added. See [CLI usage](../provider/cli-reference.md#glm-automatic-finite-calibration-placement).
+
+The cluster login agent derives `AssociatedBundleIdentifiers` from its actual
+enclosing app's `CFBundleIdentifier` and matching `CFBundleExecutable` in
+`Contents/Info.plist`; it is not a user setting. Unbundled executables do not
+borrow an app identity. See
+`provider-swift/Sources/ProviderCore/Service/ClusterServiceAgent.swift`
+(`ClusterServiceAgent.job`) and [background cluster setup](../provider/cluster-always-on.md).

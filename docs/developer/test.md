@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-20
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -771,3 +771,10 @@ and protected-import cancellation must execute. Preserve 1024-token restore/logi
 parity, positive MTP metrics and confirmed retirement with zero outstanding
 budget. A quote equality assertion is not execution evidence; use the rebuilt
 provider tests and normal isolated native-test lane.
+
+`ClusterServiceAgentTests` covers Local Network app attribution, replacement
+of older unassociated jobs, symlinked CLI entry points and unbundled tools.
+`ClusterConsoleChecks` preserves the socket failure in setup/lease diagnostics.
+Live qualification must close both setup terminals and check lease stability
+and follower connections in both role orientations; a foreground SSH success
+alone does not qualify detached background serving.

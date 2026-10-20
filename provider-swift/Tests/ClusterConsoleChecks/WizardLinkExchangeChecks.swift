@@ -30,6 +30,13 @@ extension ClusterConsoleCheck {
             expect(false, "lo0 selection"); return
         }
 
+        let denied = X.connectionFailure(refusal: .connectFailed, dial: "unreachable")
+        expect(denied.contains("connectFailed") && denied.contains("unreachable") && denied.contains("Local Network")
+               && denied.contains("signed Darkbloom.app"), "setup leases retain the dial failure and its recovery guidance")
+        expectEqual(X.connectionFailure(refusal: .connectFailed, dial: "refused"), "refused (connectFailed) (refused)",
+                    "a closed port is not called a permission denial")
+        expectEqual(X.connectionFailure(refusal: nil, dial: nil), "no answer", "a timeout remains a timeout")
+
         // Member IDs come from the pins alone: equal on both Macs, no host or user name.
         expectEqual(ClusterSetupMemberFacts.memberID(pin: pinA), "mac-111122223333", "member ID from the pin")
         let linkEpoch = UUID(uuidString: epoch)!

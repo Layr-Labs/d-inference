@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-20
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -276,3 +276,10 @@ Backend build and deployment configuration belongs in the platform repository.
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Landing](../../landing/README.md)
+
+For background cluster qualification, stage the complete app and sign it with
+an available Apple-issued development identity. An ad-hoc binary's Terminal or
+SSH access does not establish background Local Network permission. Keep the
+bundle identifier and signing team consistent; record post-signing hashes.
+Development signing is separate from the Developer ID and notarization gates
+in [provider releases](../operations/provider-release.md).

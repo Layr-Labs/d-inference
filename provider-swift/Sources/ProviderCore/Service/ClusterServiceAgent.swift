@@ -25,8 +25,20 @@ public enum ClusterServiceAgent {
         let jobEnvironment = ClusterServiceAgentPlan.environment(
             passthrough: LaunchAgent.passthroughEnvironment(from: environment), installing: environment)
         let plist = try ClusterServiceAgentPlan.encoded(ClusterServiceAgentPlan.propertyList(
-            label: label, programArguments: arguments, logPath: logPath.path, environment: jobEnvironment))
+            label: label, programArguments: arguments, logPath: logPath.path, environment: jobEnvironment,
+            bundleIdentifier: enclosingAppIdentifier(executablePath: executablePath)))
         return Job(label: label, programArguments: arguments, logPath: logPath.path, environment: jobEnvironment, plist: plist)
+    }
+
+    /// Only the actual enclosing app may be responsible for this executable.
+    /// A bare tool cannot borrow an unrelated app's identity or its approvals.
+    private static func enclosingAppIdentifier(executablePath: String) -> String? {
+        let executable = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
+        guard let bundle = ClusterMemberPermissionIdentity.enclosingAppBundle(of: executable.path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: bundle).appendingPathComponent("Contents/Info.plist")),
+              let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+              info["CFBundleExecutable"] as? String == executable.lastPathComponent else { return nil }
+        return info["CFBundleIdentifier"] as? String
     }
 
     // MARK: - Paths and queries

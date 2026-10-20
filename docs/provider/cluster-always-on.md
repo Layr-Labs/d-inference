@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-17
+> Last updated: 2026-10-20
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -39,6 +39,10 @@ the cluster comes back by itself, with no command run on either Mac (see
   `Contents/MacOS`, `Contents/Helpers` or the `~/.darkbloom/bin` symlink) or of
   the folder of a development build. One cluster service runs per user: a
   newer install's agent replaces an older one's.
+- The job's `AssociatedBundleIdentifiers` names the actual enclosing app from
+  its `Info.plist`. macOS attributes Local Network access to that app after the
+  setup terminal exits; the supervisor, service and follower use its approval.
+  An older job without this association is replaced once by the normal CLI.
 - Running `darkbloom cluster` again is idempotent: an unchanged, running
   agent is left alone; a changed one (another binary or options) is replaced;
   a parked one is restarted. A service an earlier version started from a
@@ -52,8 +56,10 @@ the cluster comes back by itself, with no command run on either Mac (see
   service started by launchd no longer runs under the terminal's Local Network
   approval, so the signed release asks once per Mac ("find and connect to
   devices on your local network") the first time the service uses the link;
-  an ad-hoc development build is refused (`Local network prohibited` in
-  `service.log`) instead of asked.
+  the app must retain its signing identity across updates. A development build
+  without that identity uses a session-only fallback. Keep its originating
+  Terminal or SSH session open: detaching does not preserve that session's
+  Local Network access. Use a signed app for background qualification.
 - `darkbloom cluster stop` (on the leader, the cluster stops serving first)
   and unpairing (`darkbloom cluster pair --forget`, once no pairing is left)
   remove the agent; the service stops this Mac's part first (SIGTERM, up to

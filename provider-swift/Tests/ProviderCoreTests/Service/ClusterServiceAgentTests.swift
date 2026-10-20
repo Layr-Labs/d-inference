@@ -78,8 +78,107 @@ private func job(_ executable: String = release, options: [String] = [], environ
                                 logPath: URL(fileURLWithPath: "/h/.darkbloom/cluster-setup/service.log"), environment: environment)
 }
 
+private func withAgentApp<T>(_ body: (URL, URL, URL) throws -> T) throws -> T {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-agent-app-\(UUID().uuidString)")
+    let contents = root.appendingPathComponent("Fixture.app/Contents")
+    let executable = contents.appendingPathComponent("MacOS/fixture-provider")
+    try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data().write(to: executable)
+    return try body(root, executable, contents.appendingPathComponent("Info.plist"))
+}
+
 @Suite("Cluster service login agent")
 struct ClusterServiceAgentTests {
+    @Test func thePlanAssociatesOnlyTheSuppliedNonemptyBundleIdentifier() {
+        let legacy = ClusterServiceAgentPlan.propertyList(label: "fixture-agent", programArguments: ["/fixture/provider"],
+            logPath: "/fixture/service.log", environment: [:])
+        #expect(legacy["AssociatedBundleIdentifiers"] == nil)
+        func plan(_ identifier: String? = nil) -> [String: Any] {
+            ClusterServiceAgentPlan.propertyList(label: "fixture-agent", programArguments: ["/fixture/provider"],
+                logPath: "/fixture/service.log", environment: [:], bundleIdentifier: identifier)
+        }
+        #expect(plan()["AssociatedBundleIdentifiers"] == nil)
+        #expect(plan("")["AssociatedBundleIdentifiers"] == nil)
+        #expect(plan(" \n")["AssociatedBundleIdentifiers"] == nil)
+        #expect(plan("example.fixture.provider")["AssociatedBundleIdentifiers"] as? [String] == ["example.fixture.provider"])
+    }
+
+    @Test func theJobUsesItsEnclosingAppsIdentityAndReplacesAnOlderUnassociatedJob() throws {
+        try withAgentApp { root, executable, infoPath in
+            let info = ["CFBundleIdentifier": "example.fixture.provider", "CFBundleExecutable": executable.lastPathComponent]
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: infoPath)
+            let made = try job(executable.path)
+            let plist = try #require(PropertyListSerialization.propertyList(from: made.plist, format: nil) as? [String: Any])
+            #expect(plist["AssociatedBundleIdentifiers"] as? [String] == ["example.fixture.provider"],
+                    "read the synthetic app's identity, not the test runner's or a product constant")
+            #expect(plist["ProgramArguments"] as? [String] == [executable.path, "cluster", "service", "--supervise"])
+            #expect(try job(executable.path).plist == made.plist)
+
+            // A symlinked CLI belongs to its real enclosing app.
+            let alias = root.appendingPathComponent("provider-link")
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: executable)
+            let linked = try job(alias.path)
+            let linkedPlist = try #require(PropertyListSerialization.propertyList(from: linked.plist, format: nil) as? [String: Any])
+            #expect(linkedPlist["AssociatedBundleIdentifiers"] as? [String] == ["example.fixture.provider"])
+
+            // The migration must reach the installer: identical label/options,
+            // but the old bytes lack the association, so reload exactly once.
+            var old = plist
+            old["AssociatedBundleIdentifiers"] = nil
+            let oldBytes = try ClusterServiceAgentPlan.encoded(old)
+            let launchd = FakeLaunchd()
+            try withFakeLaunchd(launchd) { home in
+                let path = home.appendingPathComponent("Library/LaunchAgents/\(made.label).plist")
+                try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try oldBytes.write(to: path)
+                launchd.preload(made.label)
+                launchd.serviceRunning = true
+                #expect(try ClusterServiceAgent.install(made, serviceRunning: { launchd.serviceRunning },
+                                                       stopUnsupervisedService: {}) == .replaced)
+                #expect(launchd.verbs.contains("bootout") && launchd.verbs.contains("bootstrap"))
+                #expect(try Data(contentsOf: path) == made.plist)
+                launchd.reset()
+                #expect(try ClusterServiceAgent.install(made, serviceRunning: { launchd.serviceRunning },
+                                                       stopUnsupervisedService: {}) == .unchanged)
+                #expect(!launchd.verbs.contains("bootout") && !launchd.verbs.contains("bootstrap"))
+            }
+        }
+    }
+
+    @Test func theJobOmitsAssociationWithoutAnEnclosingMainAppIdentity() throws {
+        try withAgentApp { root, executable, infoPath in
+            func expectUnassociated(_ path: String) throws {
+                let made = try job(path)
+                let plist = try #require(PropertyListSerialization.propertyList(from: made.plist, format: nil) as? [String: Any])
+                #expect(plist["AssociatedBundleIdentifiers"] == nil)
+            }
+            try expectUnassociated(executable.path) // missing Info.plist
+            try Data("invalid plist".utf8).write(to: infoPath)
+            try expectUnassociated(executable.path)
+            let invalidIdentities: [[String: Any]] = [
+                ["CFBundleExecutable": executable.lastPathComponent],
+                ["CFBundleExecutable": executable.lastPathComponent, "CFBundleIdentifier": ""],
+                ["CFBundleExecutable": executable.lastPathComponent, "CFBundleIdentifier": " \n"],
+                ["CFBundleExecutable": executable.lastPathComponent, "CFBundleIdentifier": 7],
+                ["CFBundleExecutable": "another-program", "CFBundleIdentifier": "example.unrelated.app"],
+            ]
+            for info in invalidIdentities {
+                try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: infoPath)
+                try expectUnassociated(executable.path)
+            }
+
+            let valid = ["CFBundleExecutable": executable.lastPathComponent, "CFBundleIdentifier": "example.fixture.provider"]
+            try PropertyListSerialization.data(fromPropertyList: valid, format: .xml, options: 0).write(to: infoPath)
+            let outside = root.appendingPathComponent(executable.lastPathComponent)
+            try Data().write(to: outside)
+            try expectUnassociated(outside.path) // a nearby app is not the tool's responsible app
+            try FileManager.default.removeItem(at: executable)
+            try FileManager.default.createSymbolicLink(at: executable, withDestinationURL: outside)
+            try expectUnassociated(executable.path) // a bundle-shaped alias cannot claim an external tool
+        }
+    }
+
     @Test func theJobRunsTheSupervisorAtLoginWithTheServiceOptions() throws {
         let made = try job(options: ["--config", "/c/provider.toml"], environment: ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/bin"])
         let plist = try #require(PropertyListSerialization.propertyList(from: made.plist, format: nil) as? [String: Any])

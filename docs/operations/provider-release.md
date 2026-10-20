@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-20
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -639,3 +639,10 @@ API remains a compatibility/recovery tool, not a normal release step.
 - [Pinned platform deployment reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md)
 - [Pinned release-policy reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md)
 - [Pinned release API reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md)
+
+The cluster service LaunchAgent must include `AssociatedBundleIdentifiers`
+for the installed app. Verify the normal `darkbloom cluster` flow after both
+setup terminals exit, including leases and an outbound follower connection on
+each Mac. A foreground CLI check does not qualify background Local Network
+access. Keep the signing identity consistent across builds and retain final
+post-signing executable hashes.

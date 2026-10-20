@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1642,3 +1642,11 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 (`GLM5NextStageVision`, `GLM5NextStageImageFeatures`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextResidentRuntime.swift`
 (`run`, `shutdown`).
+
+Background cluster control depends on the app's macOS Local Network identity.
+`ClusterServiceAgent.job` reads the enclosing app and records its identifier in
+the login agent; this keeps the service and its follower attributed to the app
+after the setup terminal exits. A one-way connection failure can expire the
+control lease even while an established native session still runs. Setup lease
+diagnostics retain the dial failure; the lease timeout and election rules stay
+unchanged. See [cluster permissions](../provider/cluster-always-on.md#permissions-asked-once).

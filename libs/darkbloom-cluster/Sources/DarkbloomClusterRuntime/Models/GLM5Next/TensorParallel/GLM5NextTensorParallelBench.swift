@@ -37,6 +37,8 @@ public enum GLM5NextTensorParallelBench {
         public var sealed = false
         /// MLX freed-buffer cache while measuring (nil: MLX's default).
         public var cacheLimitBytes: Int?
+        /// `GLM5NextTextStage.tensorParallelMicroBatches`.
+        public var microBatches = 1
         public init(modelDirectory: URL, mode: Mode, shardRank: Int = 0, promptTokenIDs: [Int],
                     chunkSize: Int = 2048, outputCount: Int = 64, repeats: Int = 2, float32Partials: Bool = true) {
             self.modelDirectory = modelDirectory; self.mode = mode; self.shardRank = shardRank
@@ -103,6 +105,7 @@ public enum GLM5NextTensorParallelBench {
         let text = loader.configuration.textConfig
         let plan = try GLM5NextTextStagePlan(configuration: text, layers: 0 ..< text.hiddenLayers, shard: shard)
         let stage = try loader.loadTextStage(plan: plan)
+        stage.tensorParallelMicroBatches = options.microBatches
         stage.freeze()
         try MLX.withError { error in
             try roots.evaluate(stage.parameters().flattened().map(\.1))

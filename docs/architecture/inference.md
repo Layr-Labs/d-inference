@@ -730,9 +730,11 @@ and returned as HTTP 500, the provider-fault class, so a caller control that
 a template is known to reject must be validated before rendering. The
 Flash-Next and Qwen3.8-27B templates accept only `low`, `medium` and `xhigh`
 while thinking is enabled; any other active effort, such as OpenAI's `high`
-or `minimal`, is a typed HTTP 400 `client_error` and never reaches Jinja
+or `minimal`, is a typed HTTP 400 `client_error` and never reaches Jinja, on
+text and media requests alike
 (`provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`,
-`validateReasoningContext`).
+`validateReasoningContext`). Media preparation rethrows such typed request
+errors instead of wrapping them as a retryable 503 construction refusal.
 
 ### Vision constraints
 

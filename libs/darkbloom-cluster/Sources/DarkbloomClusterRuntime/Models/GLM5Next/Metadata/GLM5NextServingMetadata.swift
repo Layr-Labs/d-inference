@@ -257,8 +257,9 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
 
     /// `GLM5NextTensorParallelResidentRuntime`'s plan, offered only where the
     /// runtime lists the mode and the geometry halves (`localConfiguration`).
-    /// Each layer sums its attention and its feed-forward partials, float32
-    /// at the residual width (`ClusterTensorParallelTerms.current`); each
+    /// Each layer sums its attention and its feed-forward partials, the
+    /// projections' bfloat16 outputs at the residual width
+    /// (`GLM5NextTensorParallelResidentRuntime.partialsTransport`); each
     /// step sums the ranks' token and stop flags once. The DSA latent cache
     /// is replicated, so request state is held whole on every rank.
     static func tensorParallelPlan(specification: GLM5NextRegisteredSpecification,
@@ -268,7 +269,7 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
               (try? GLM5NextTensorShard(rank: 0, size: 2).localConfiguration(configuration)) != nil else { return nil }
         return ClusterTensorParallelFamilyPlan(plan: GLM5NextTensorParallelResidentRuntime.planName, ranks: [2],
             reductionsPerLayer: 2, reductionsPerStep: 1,
-            partialBytesPerToken: specification.hidden * 4, stateDividesByHeads: false)
+            partialBytesPerToken: specification.hidden * 2, stateDividesByHeads: false)
     }
 
     /// The SDK's split rule for a text layer's tensor (`GLM5NextTensorShard.splitAxis`);

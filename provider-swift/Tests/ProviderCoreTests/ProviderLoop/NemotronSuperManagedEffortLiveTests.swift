@@ -30,25 +30,38 @@ extension NemotronSuperManagedSlotTests {
                 return NemotronSuperLocalEndpointEngine(body: body, hasMedia: MediaIngest.hasMedia(request), cacheScope: "effort-http",
                     acquire: { try await loop.acquireNemotronSuperForLocal(Self.modelID) })
             })
-        func body(_ controls: [String: Any], stream: Bool, prompt: String = "What is 17 times 19? Reply with the number only.") throws -> Data {
-            var value: [String: Any] = ["model": Self.modelID, "stream": stream, "temperature": 0,
-                "max_tokens": 2048, "messages": [["role": "user", "content": prompt]]]
-            if stream { value["stream_options"] = ["include_usage": true] }
-            value.merge(controls) { _, new in new }
-            return try JSONSerialization.data(withJSONObject: value)
-        }
-        let modes: [(String, [String: Any], Bool)] = [
+        let body = Self.effortBody
+        let modeControls: [(String, [String: Any], Bool)] = [
             ("omitted", [:], true), ("high", ["reasoning_effort": "high"], true),
             ("medium", ["reasoning_effort": "medium"], true), ("none", ["reasoning_effort": "none"], false),
             ("off", ["reasoning_effort": "off"], false), ("zero", ["reasoning_effort": "0"], false),
             ("nested-medium", ["reasoning": ["effort": " MEDIUM\n"]], true),
             ("template-medium", ["chat_template_kwargs": ["enable_thinking": true, "medium_effort": true]], true),
         ]
+        // The live client closure is @Sendable: encode every body before it.
+        let modes: [(name: String, thinking: Bool, bodies: [(stream: Bool, data: Data)])] = try modeControls.map {
+            name, controls, thinking in
+            (name, thinking, try [false, true].map { ($0, try body(controls, $0, Self.arithmeticPrompt)) })
+        }
+        let tool: [String: Any] = ["type": "function", "function": ["name": "get_weather",
+            "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
+        let structured: [(effort: String, stream: Bool, tool: Data, json: Data)] = try ["none", "medium", "high"]
+            .flatMap { effort in try [false, true].map { stream in
+                (effort, stream,
+                 try body(["reasoning_effort": effort, "tools": [tool],
+                     "tool_choice": ["type": "function", "function": ["name": "get_weather"]]],
+                     stream, "Call get_weather for Paris."),
+                 try body(["reasoning_effort": effort, "response_format": ["type": "json_object"]],
+                     stream, "Return exactly one JSON object with key answer and integer value 4."))
+            } }
+        let invalid: [Data] = try ([["reasoning_effort": "low"], ["reasoning_effort": "xhigh"],
+                                    ["reasoning_effort": "medium", "medium_effort": false],
+                                    ["reasoning_effort": "high", "reasoning": ["effort": "medium"]]] as [[String: Any]])
+            .map { try body($0, true, Self.arithmeticPrompt) }
         try await app.test(.live) { client in
             let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer super-effort-test"]
-            for (name, controls, thinking) in modes {
-                for stream in [false, true] {
-                    let data = try body(controls, stream: stream)
+            for (name, thinking, bodies) in modes {
+                for (stream, data) in bodies {
                     try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
                         body: ByteBuffer(bytes: data)) { response in
                         #expect(response.status == .ok, "\(name) stream=\(stream)")
@@ -71,42 +84,31 @@ extension NemotronSuperManagedSlotTests {
                     }
                 }
             }
-            for effort in ["none", "medium", "high"] {
-                for stream in [false, true] {
-                    let tool: [String: Any] = ["type": "function", "function": ["name": "get_weather",
-                        "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
-                    let toolBody = try body(["reasoning_effort": effort, "tools": [tool],
-                        "tool_choice": ["type": "function", "function": ["name": "get_weather"]]],
-                        stream: stream, prompt: "Call get_weather for Paris.")
-                    try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
-                        body: ByteBuffer(bytes: toolBody)) { response in
-                        #expect(response.status == .ok)
-                        let text = String(buffer: response.body)
-                        let calls = stream ? SuperSSE(text).toolCalls : try SuperJSON(text).toolCalls
-                        #expect(calls.count == 1 && calls.first?.name == "get_weather")
-                        let arguments = try #require(calls.first?.arguments)
-                        let parsed = try JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: String]
-                        #expect(parsed?["city"] == "Paris")
-                        print("SUPER_EFFORT_TOOL mode=\(effort) stream=\(stream) call=get_weather city=Paris")
-                    }
-                    let jsonBody = try body(["reasoning_effort": effort, "response_format": ["type": "json_object"]],
-                        stream: stream, prompt: "Return exactly one JSON object with key answer and integer value 4.")
-                    try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
-                        body: ByteBuffer(bytes: jsonBody)) { response in
-                        #expect(response.status == .ok)
-                        let text = String(buffer: response.body)
-                        let content = stream ? SuperSSE(text).content : (try SuperJSON(text).content ?? "")
-                        let parsed = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Int]
-                        #expect(parsed == ["answer": 4])
-                        print("SUPER_EFFORT_JSON mode=\(effort) stream=\(stream) answer=4")
-                    }
+            for (effort, stream, toolBody, jsonBody) in structured {
+                try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                    body: ByteBuffer(bytes: toolBody)) { response in
+                    #expect(response.status == .ok)
+                    let text = String(buffer: response.body)
+                    let calls = stream ? SuperSSE(text).toolCalls : try SuperJSON(text).toolCalls
+                    #expect(calls.count == 1 && calls.first?.name == "get_weather")
+                    let arguments = try #require(calls.first?.arguments)
+                    let parsed = try JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: String]
+                    #expect(parsed?["city"] == "Paris")
+                    print("SUPER_EFFORT_TOOL mode=\(effort) stream=\(stream) call=get_weather city=Paris")
+                }
+                try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                    body: ByteBuffer(bytes: jsonBody)) { response in
+                    #expect(response.status == .ok)
+                    let text = String(buffer: response.body)
+                    let content = stream ? SuperSSE(text).content : (try SuperJSON(text).content ?? "")
+                    let parsed = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Int]
+                    #expect(parsed == ["answer": 4])
+                    print("SUPER_EFFORT_JSON mode=\(effort) stream=\(stream) answer=4")
                 }
             }
-            for controls in [["reasoning_effort": "low"], ["reasoning_effort": "xhigh"],
-                             ["reasoning_effort": "medium", "medium_effort": false],
-                             ["reasoning_effort": "high", "reasoning": ["effort": "medium"]]] as [[String: Any]] {
+            for data in invalid {
                 try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
-                    body: ByteBuffer(bytes: try body(controls, stream: true))) { response in
+                    body: ByteBuffer(bytes: data)) { response in
                     #expect(response.status == .badRequest)
                 }
             }
@@ -116,7 +118,7 @@ extension NemotronSuperManagedSlotTests {
         let document = (1...250).map { "Fact \($0): marker \($0) is violet and weighs 50 kilograms." }.joined(separator: " ")
         let prompt = document + " What color is marker 164? Reply with one word."
         for mode in ["high", "medium", "none"] {
-            let request = try body(["reasoning_effort": mode], stream: true, prompt: prompt)
+            let request = try body(["reasoning_effort": mode], true, prompt)
             let beforeCold = bank.stats.adoptions
             let cold = try await Self.send(request, to: loop, recorder: recorder, consumer: consumer, scope: nil, deadline: 600)
             #expect(bank.stats.adoptions == beforeCold)
@@ -136,5 +138,15 @@ extension NemotronSuperManagedSlotTests {
         #expect(await loop.unloadModel(Self.modelID))
         #expect(bank.stats.retainedBytes == 0)
         try await Self.awaitMemoryReturn(loop)
+    }
+
+    static let arithmeticPrompt = "What is 17 times 19? Reply with the number only."
+
+    static func effortBody(_ controls: [String: Any], _ stream: Bool, _ prompt: String) throws -> Data {
+        var value: [String: Any] = ["model": modelID, "stream": stream, "temperature": 0,
+            "max_tokens": 2048, "messages": [["role": "user", "content": prompt]]]
+        if stream { value["stream_options"] = ["include_usage": true] }
+        value.merge(controls) { _, new in new }
+        return try JSONSerialization.data(withJSONObject: value)
     }
 }

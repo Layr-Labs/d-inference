@@ -45,7 +45,8 @@ public enum GLM5NextResidentCapabilityMetadata {
             arithmeticPolicyID: adapter.arithmeticPolicyID,
             arithmeticPolicySHA256: try GLM5NextStageContract.policySHA256(spec.executionPolicy),
             supportedPrefillSchedules: spec.supportedPrefillSchedules,
-            supportedGenerationModes: spec.supportedGenerationModes,
+            // Images are served by the pipeline only; tensor parallel is text-only.
+            supportedGenerationModes: imageCandidate ? [.pipeline] : spec.supportedGenerationModes,
             glmImages: imageCandidate ? .init() : nil)
     }
 }
@@ -137,7 +138,9 @@ enum GLM5NextServingResources {
 /// to no text stage. Request state is the verified driver's own quotation
 /// (`GLM5NextRequestStateBudget`): DSA histories grow with the context, linear
 /// attention layers hold fixed recurrent and convolution state. The
-/// conservative workspace is charged once on every rank.
+/// conservative workspace is charged once on every rank. Text requests may
+/// also run tensor parallel on two ranks (`GLM5NextTensorShard`); images are
+/// served by the pipeline only.
 struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     let specification: GLM5NextRegisteredSpecification
     let configuration: GLM5NextTextConfiguration
@@ -146,6 +149,7 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     let imageCandidate: Bool
     let allocationExtraBytes: Int
     let transferAndInputAllowanceBytes: Int
+    let tensorParallelPlan: ClusterTensorParallelFamilyPlan?
 
     static func handles(configuration: Data) -> Bool { GLM5NextRegisteredSpecification.handles(configuration: configuration) }
 
@@ -177,13 +181,16 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
               self.configuration.layerTypes.count == specification.layers else {
             throw ProbeError("GLM configuration geometry differs from the registered row")
         }
+        tensorParallelPlan = imageCandidate ? nil : Self.tensorParallelPlan(specification: specification,
+            configuration: self.configuration, modes: specification.supportedGenerationModes)
     }
 
     var runtimeModelID: String { specification.model.rawValue }
     var layerCount: Int { specification.layers }
     var admittedCuts: [Int] { specification.supportedCuts }
     var structuralCuts: [Int] { Array(1..<specification.layers) }
-    var generationModes: [ClusterGenerationMode] { specification.supportedGenerationModes }
+    /// The capability's modes (`GLM5NextResidentCapabilityMetadata`): the image profile is pipeline-only.
+    var generationModes: [ClusterGenerationMode] { imageCandidate ? [.pipeline] : specification.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { specification.supportedPrefillSchedules }
     var reservesFullRequestScope: Bool { true }
     var maximumPromptTokens: Int { profile.maximumPromptTokens }
@@ -246,6 +253,40 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
         if name.hasPrefix("model.language_model.embed_tokens.") { return 0 }
         if name.hasPrefix("model.language_model.norm.") || name.hasPrefix("lm_head.") { return 1 }
         return nil  // NextN layer and vision tower.
+    }
+
+    /// `GLM5NextTensorParallelResidentRuntime`'s plan, offered only where the
+    /// runtime lists the mode and the geometry halves (`localConfiguration`).
+    /// Each layer sums its attention and its feed-forward partials, float32
+    /// at the residual width (`ClusterTensorParallelTerms.current`); each
+    /// step sums the ranks' token and stop flags once. The DSA latent cache
+    /// is replicated, so request state is held whole on every rank.
+    static func tensorParallelPlan(specification: GLM5NextRegisteredSpecification,
+                                   configuration: GLM5NextTextConfiguration,
+                                   modes: [ClusterGenerationMode]) -> ClusterTensorParallelFamilyPlan? {
+        guard modes.contains(.tensorParallel),
+              (try? GLM5NextTensorShard(rank: 0, size: 2).localConfiguration(configuration)) != nil else { return nil }
+        return ClusterTensorParallelFamilyPlan(plan: GLM5NextTensorParallelResidentRuntime.planName, ranks: [2],
+            reductionsPerLayer: 2, reductionsPerStep: 1,
+            partialBytesPerToken: specification.hidden * 4, stateDividesByHeads: false)
+    }
+
+    /// The SDK's split rule for a text layer's tensor (`GLM5NextTensorShard.splitAxis`);
+    /// the embedding, final norm and head are replicated. Nil for what no
+    /// text stage loads (the NextN layer, the vision tower).
+    func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? {
+        guard tensorParallelPlan != nil, (try? stage(ofStoredTensor: name, cut: 1)) ?? nil != nil else { return nil }
+        guard layer(ofStoredTensor: name) != nil else { return .replicated }
+        return GLM5NextTensorShard.splitAxis(name) == nil ? .replicated : .divided
+    }
+
+    /// Each token is routed to `num_experts_per_tok` of `n_routed_experts` per sparse layer.
+    var expertRouting: ClusterExpertRouting? {
+        ClusterExpertRouting(selected: configuration.numExpertsPerTok, experts: configuration.nRoutedExperts)
+    }
+
+    func isRoutedExpert(storedTensor name: String) -> Bool {
+        layer(ofStoredTensor: name) != nil && name.contains(".mlp.experts.")
     }
 
     func isSpeculativeHead(storedTensor name: String) -> Bool {

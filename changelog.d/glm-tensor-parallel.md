@@ -1,0 +1,7 @@
+### GLM-5.3-Flash runs tensor parallel across two Macs
+
+- `darkbloom cluster` can now serve GLM-5.3-Flash text requests with both Macs working on every layer (tensor parallel) instead of each Mac holding half the layers. On two M5 Ultra 256 GB it chooses this by itself once the cable has been measured: the setup's test answered at 51 tokens/s against 42 for the layer split, and long prompts prefill at about 1,700 tokens/s against 1,450. Every byte between the Macs stays encrypted. Image requests still use the layer split, and tensor parallel does not yet reuse prompt prefixes.
+- The cable measurement that decides between the two modes now times the encrypted sum as a running model pays it, not cold: it had read three times slower and kept tensor parallel from being chosen.
+- Fixed a hang where the GPU could wait forever on an encrypted sum between two GPU steps.
+- What a tensor-parallel setup served no longer resets the speeds the planner learned from a pipeline the same Macs served: it corrects only the tensor-parallel figures. Before, after serving in tensor parallel the planner priced the layer split as fast as one Mac alone and switched back to it. This applies to every model the cluster plans.
+- The hardware speed prior no longer counts every routed expert of a mixture-of-experts model as read on each decode step. It counts only the experts a token is routed to, and it does not count replicated weights as divided by a tensor-parallel share.

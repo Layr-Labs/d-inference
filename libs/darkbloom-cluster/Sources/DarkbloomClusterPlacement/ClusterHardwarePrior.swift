@@ -37,15 +37,34 @@ public enum ClusterHardwarePrior {
     }
 
     /// Weight bytes one decode step reads: every layer's and the output
-    /// head's (the embedding is a gather of one row).
+    /// head's (the embedding is a gather of one row), of a mixture of
+    /// experts' routed experts only the ones a token is routed to
+    /// (`ClusterRoutedExperts`: 8 of GLM's 288 per layer, not all 288).
     public static func decodeBytesPerToken(_ layout: ClusterModelLayout) -> Int {
-        layout.layers.reduce(0) { $0 + $1.weights.loadedBytes } + layout.egress.loadedBytes
+        let whole = layout.layers.reduce(0) { $0 + $1.weights.loadedBytes } + layout.egress.loadedBytes
+        guard let experts = layout.routedExperts else { return whole }
+        return whole - experts.loadedBytes + experts.activeBytes(experts.loadedBytes)
+    }
+
+    /// Of `decodeBytesPerToken`, the fraction a tensor-parallel share divides:
+    /// the plan's divided bytes of every layer and the head (routed experts
+    /// at the same active fraction); each rank reads its replicated bytes
+    /// whole. 1 without tensor-parallel facts.
+    public static func dividedDecodeFraction(_ layout: ClusterModelLayout) -> Double {
+        guard let tp = layout.tensorParallel else { return 1 }
+        var divided = tp.layerDividedBytes.reduce(0, +) + tp.egressDividedBytes
+        if let experts = layout.routedExperts, let routedDivided = experts.tensorParallelDividedBytes {
+            divided += experts.activeBytes(routedDivided) - routedDivided
+        }
+        let total = decodeBytesPerToken(layout)
+        guard total > 0 else { return 1 }
+        return min(1, max(0, Double(divided) / Double(total)))
     }
 
     /// Seconds this Mac needs to read a decode step's weights at the rate its
     /// index measured; nil without a usable index. `ClusterDecodeSplit` takes
-    /// the smaller of this and the measured whole step as the part a share
-    /// divides.
+    /// the smaller of this and the measured whole step as the weight part, of
+    /// which a share divides `dividedDecodeFraction`.
     public static func weightSeconds(profile: ClusterDeviceProfile, layout: ClusterModelLayout) -> Double? {
         guard let index = profile.speedIndex, let rates = bytesPerSecond(index), rates.decode > 0 else { return nil }
         let seconds = Double(decodeBytesPerToken(layout)) / rates.decode

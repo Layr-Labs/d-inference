@@ -119,7 +119,9 @@ struct GLM5NextServingMetadataTests {
         #expect(layout.runtimeModelID == "registered_glm53_flash")
         #expect(layout.maximumChunkTokens == 2048)
         #expect(layout.structuralCuts == Array(1..<45) && layout.admittedCuts == Array(1..<45))
-        #expect(layout.generationModes == [.pipeline] && layout.boundaryBytesPerToken == 32_768)
+        // Text serving plans pipeline or tensor parallel; images stay on the pipeline.
+        #expect(layout.generationModes == [.pipeline, .tensorParallel] && layout.boundaryBytesPerToken == 32_768)
+        #expect(layout.tensorParallel != nil)
         let stage = try GLM5NextArtifactMetadata.read(directory: directory).layout
         #expect(layout.layers.count == 45)
         for (index, layer) in layout.layers.enumerated() {
@@ -130,6 +132,7 @@ struct GLM5NextServingMetadataTests {
             runtimeProfile: ClusterGLMImageCandidate.profileID)
         #expect(imageLayout.ingress.storedBytes == stage.embedding.bytes + stage.vision.bytes)
         #expect(imageLayout.maximumChunkTokens == 2048)
+        #expect(imageLayout.generationModes == [.pipeline])
         #expect(imageLayout.structuralCuts == layout.structuralCuts)
         #expect(imageLayout.admittedCuts == layout.admittedCuts)
         #expect(imageLayout.layers.map(\.weights.storedBytes) == layout.layers.map(\.weights.storedBytes))

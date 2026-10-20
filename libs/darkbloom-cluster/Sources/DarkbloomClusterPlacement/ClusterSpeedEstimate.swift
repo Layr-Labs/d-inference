@@ -151,6 +151,32 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
         try validate()
     }
 
+    /// True for what a tensor-parallel setup served (`ClusterServedCalibration`):
+    /// its shard rates are measured, its whole-model rates are not.
+    public var correctsShardRatesOnly: Bool {
+        let probe = key.probe
+        guard probe.hasPrefix("served_"), probe.hasSuffix("_v1"),
+              let mode = ClusterGenerationMode(rawValue: String(probe.dropFirst(7).dropLast(3))) else { return false }
+        return mode.usesTensorParallelDecode
+    }
+
+    /// This measurement with `other`'s shard rates (equal half and other
+    /// shares) in place of its own.
+    func withShardRates(of other: ClusterSpeedMeasurement) throws -> ClusterSpeedMeasurement {
+        func merged(_ a: ClusterSpeedRates, _ b: ClusterSpeedRates) -> ClusterSpeedRates {
+            .init(prefillTokensPerSecond: a.prefillTokensPerSecond, decodeTokensPerSecond: a.decodeTokensPerSecond,
+                speculativeDecodeTokensPerSecond: a.speculativeDecodeTokensPerSecond,
+                pipelineSpeculativeFactor: a.pipelineSpeculativeFactor,
+                tensorShardPrefillTokensPerSecond: b.tensorShardPrefillTokensPerSecond ?? a.tensorShardPrefillTokensPerSecond,
+                tensorShardDecodeTokensPerSecond: b.tensorShardDecodeTokensPerSecond ?? a.tensorShardDecodeTokensPerSecond,
+                tensorShareRates: b.tensorShareRates ?? a.tensorShareRates)
+        }
+        return try .init(key: key, promptTokens: promptTokens, chunkTokens: chunkTokens, probedLayers: probedLayers,
+            layerCount: layerCount, rested: merged(rested, other.rested), sustained: sustained.map { merged($0, other.rested) },
+            hashBytesPerSecond: hashBytesPerSecond, materializeBytesPerSecond: materializeBytesPerSecond,
+            measuredUTC: measuredUTC, provenance: String((provenance + "; shard rates as a tensor-parallel setup served").prefix(1024)))
+    }
+
     public func validate() throws {
         // A v1 record cannot carry a speculative, served-speed-up or shard figure; a v2 record may.
         let speculative = rested.extended || (sustained?.extended ?? false)
@@ -285,16 +311,29 @@ public enum ClusterSpeedEstimator {
     public static func estimate(devices: [Subject], artifactSHA256: String, runtimeBinarySHA256: String? = nil,
                                 promptTokens: Int? = nil,
                                 measurements: [ClusterSpeedMeasurement], indices: [ClusterDeviceIndex] = []) -> [ClusterDeviceSpeed] {
+        // A tensor-parallel setup's served requests correct only that setup's
+        // shard rates (`ClusterServedCalibration`); the whole-model rates they
+        // carry are the estimate the correction started from. So they never
+        // outrank another measurement's whole-model rates (a probe's, or what a
+        // pipeline or a lone Mac served): the device takes the best of those,
+        // with the served shard rates on top.
         func latest(_ subject: Subject, artifact: String) -> ClusterSpeedMeasurement? {
             func distance(_ m: ClusterSpeedMeasurement) -> Double {
                 promptTokens.map { abs(log(Double(m.promptTokens) / Double(max(1, $0)))) } ?? 0
             }
-            return measurements.filter {
+            func best(_ candidates: [ClusterSpeedMeasurement]) -> ClusterSpeedMeasurement? {
+                candidates.min { a, b in
+                    distance(a) != distance(b) ? distance(a) < distance(b) : a.measuredUTC > b.measuredUTC
+                }
+            }
+            let candidates = measurements.filter {
                 $0.key.artifactSHA256 == artifact && $0.key.chip == subject.chip && $0.key.osBuild == subject.osBuild
                     && (runtimeBinarySHA256 == nil || $0.key.runtimeBinarySHA256 == runtimeBinarySHA256)
-            }.min { a, b in
-                distance(a) != distance(b) ? distance(a) < distance(b) : a.measuredUTC > b.measuredUTC
             }
+            let wholeModel = best(candidates.filter { !$0.correctsShardRatesOnly })
+            guard let shard = best(candidates.filter(\.correctsShardRatesOnly)) else { return wholeModel }
+            guard let wholeModel else { return shard }
+            return (try? wholeModel.withShardRates(of: shard)) ?? wholeModel
         }
         let own = devices.map { latest($0, artifact: artifactSHA256) }
         // A ratio between two devices, from the most trusted source that has one.

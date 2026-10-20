@@ -157,9 +157,10 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
         let ok = padding && eachPiece(count) { index in
             let range = Self.piece(index, of: count, bytes: bytes)
             do {
+                // Views of the received frame: the piece is not first copied out of it.
                 let box = try AES.GCM.SealedBox(nonce: try nonce(sender: peer, counter: counter, piece: index),
-                    ciphertext: Data(bytes: source + range.lowerBound, count: range.count),
-                    tag: Data(bytes: source + bytes + index * Self.tagBytes, count: Self.tagBytes))
+                    ciphertext: UnsafeRawBufferPointer(start: source + range.lowerBound, count: range.count),
+                    tag: UnsafeRawBufferPointer(start: source + bytes + index * Self.tagBytes, count: Self.tagBytes))
                 let opened = try AES.GCM.open(box, using: receiveKey,
                     authenticating: aad(counter: counter, bytes: bytes, sender: peer, piece: index, of: count))
                 guard opened.count == range.count else { return false }

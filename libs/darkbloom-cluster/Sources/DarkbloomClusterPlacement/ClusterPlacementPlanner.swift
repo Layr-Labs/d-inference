@@ -437,7 +437,8 @@ public enum ClusterPlacementPlanner {
         let speeds = devices.map { device in
             ClusterTensorParallelAssessment.Device(device: device.label,
                 split: ClusterDecodeSplit(rates: device.speed.sustained.flatMap { regime == .sustained ? $0 : nil } ?? device.speed.rested,
-                    hardwareWeightSeconds: device.speed.absolute ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil))
+                    hardwareWeightSeconds: device.speed.absolute ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil,
+                    hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout)))
         }
         let bestOther = ranked.first { !$0.mode.usesTensorParallelDecode }?.prediction(regime).requestSeconds
         let bestAlone = alone.filter(\.fit.possible).map { $0.prediction(regime).requestSeconds }.min()
@@ -918,7 +919,8 @@ public enum ClusterPlacementPlanner {
         /// else no gain.
         func split(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> ClusterDecodeSplit {
             ClusterDecodeSplit(rates: rates(device, regime).0, hardwareWeightSeconds: device.speed.absolute
-                ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil)
+                ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil,
+                hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
         }
 
         /// A device's whole-model decode rate in this regime: plain, or with

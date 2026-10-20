@@ -148,15 +148,16 @@ enum SSDPrefixCachePolicy {
     }
 
     /// A complete checkpoint restores a whole prompt prefix from one file, so
-    /// the byte cap is a token cap: at 1 GiB, Qwen 3.8 with MTP restores at
-    /// most 8,192 tokens. The restored state is a transient reservation on
-    /// top of the slot grant, so only large-memory Macs default to a deeper
-    /// cap; explicit settings still win. The estimated-time cap scales so the
-    /// conservative 1.5 GB/s estimate does not refuse what the byte cap
-    /// admits. Attention block caches keep the general defaults.
+    /// the byte cap is a token cap: on the 4,096-token prefill grid, Qwen 3.8
+    /// with MTP restores at most 8,192 tokens at 1 GiB and about 94,000 at
+    /// 7 GiB. Deeper captures and restores hold larger transient ledger
+    /// reservations, so only large-memory Macs default to the deeper cap;
+    /// explicit settings still win. A full-size file estimates about 5 s at
+    /// the conservative 1.5 GB/s rate, so the byte cap, not the 15 s time
+    /// cap, binds. Attention block caches keep the general defaults.
     static let largeMemoryThresholdBytes: UInt64 = 96 << 30
-    static let largeMemoryCompleteCheckpointStageBytes = 3072 * 1_048_576  // 3 GiB
-    static let largeMemoryCompleteCheckpointStageMillis = 2500
+    static let largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576  // 7 GiB
+    static let largeMemoryCompleteCheckpointStageMillis = 15_000
 
     static func completeCheckpointMaxStageBytes(
         environment: [String: String] = ProcessInfo.processInfo.environment,

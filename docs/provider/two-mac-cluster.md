@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-20
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -378,3 +378,11 @@ Nothing here is needed to use the cluster.
   explicit developer setting and is never chosen automatically.
 - A development build reads `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS`
   (0-3600) to shorten the 10-minute absence grace for tests.
+
+For background serving, install the same signed `Darkbloom.app` on each Mac and
+approve Local Network access on each when macOS asks. The setup installs a login
+agent associated with that app. After leaving both setup terminals, reopen
+`darkbloom cluster` on either Mac and test a response. An ad-hoc development
+service can lose outbound access when its originating session closes; use the
+signed app instead of extending lease timeouts. See [background service
+permissions](cluster-always-on.md#permissions-asked-once).

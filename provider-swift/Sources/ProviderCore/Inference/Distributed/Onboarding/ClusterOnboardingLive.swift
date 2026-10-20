@@ -467,7 +467,9 @@ final class OnboardingLive: @unchecked Sendable {
             // Once per service start, not on every `darkbloom cluster`.
             if started { Self.logLoginAgentReason(reason) }
             return .success((started ? "Started this Mac's cluster service" : "This Mac's cluster service is running")
-                + " (after a restart of this Mac, run `darkbloom cluster` again).")
+                + " for this development session; it is not installed at login. "
+                + "Keep the originating Terminal or SSH session open: a detached service can lose Local Network access "
+                + "when that session closes. Use a signed Darkbloom.app for reliable background serving.")
         } catch let failure as ClusterOnboardingFailure {
             return .failure(failure)
         } catch {

@@ -94,6 +94,7 @@ public enum ClusterServiceAgentPlan {
     /// The launchd property list for the job.
     public static func propertyList(label: String, programArguments: [String], logPath: String,
                                     environment: [String: String],
+                                    bundleIdentifier: String? = nil,
                                     budget: ClusterMemberRestartBudget.Limits = .production) -> [String: Any] {
         var plist: [String: Any] = [
             "Label": label,
@@ -107,6 +108,10 @@ public enum ClusterServiceAgentPlan {
             "StandardOutPath": logPath,
             "StandardErrorPath": logPath,
         ]
+        // Attribute this per-user agent to its enclosing app for Local Network privacy.
+        if let bundleIdentifier, !bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            plist["AssociatedBundleIdentifiers"] = [bundleIdentifier]
+        }
         if !environment.isEmpty { plist["EnvironmentVariables"] = environment }
         return plist
     }

@@ -271,7 +271,7 @@ public enum ClusterSetupLinkExchange {
         func request(tag: UInt16, _ body: Data, reply: UInt16, seconds: Double) throws -> Data {
             client.start()
             guard client.peer.waitUntilConnected(timeout: .milliseconds(Int64(seconds * 1000))) else {
-                let reason = client.lastRefusal.map { "refused (\($0))" } ?? client.lastConnectFailure ?? "no answer"
+                let reason = ClusterSetupLinkExchange.connectionFailure(refusal: client.lastRefusal, dial: client.lastConnectFailure)
                 throw ClusterSetupFailure("the other Mac's wizard did not take the paired connection: \(reason)")
             }
             lock.withLock { replies[reply] = nil }
@@ -288,6 +288,18 @@ public enum ClusterSetupLinkExchange {
         }
 
         func close() { client.stop() }
+    }
+
+    /// Keep the socket reason alongside the protocol refusal: a detached process denied Local Network
+    /// otherwise reports only `connectFailed`, indistinguishable from a cable or listener problem.
+    static func connectionFailure(refusal: ClusterLinkControlRefusal?, dial: String?) -> String {
+        let reason = refusal.map { "refused (\($0))" } ?? "no answer"
+        guard refusal == nil || refusal == .connectFailed, let dial else { return reason }
+        let detail = reason + " (\(dial))"
+        guard dial == "unreachable" else { return detail }
+        return detail + "; check Darkbloom's Local Network access in System Settings on this Mac. "
+            + "A development service detached from Terminal or SSH can lose that session's access; "
+            + "use a signed Darkbloom.app for the background service. Also check the cable route."
     }
 
     private final class WeakSessionBox: @unchecked Sendable { weak var session: Session? }

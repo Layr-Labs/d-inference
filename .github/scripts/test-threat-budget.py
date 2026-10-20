@@ -400,6 +400,24 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(result["requests"], 0)
         self.assertEqual(result["reused_batches"], count)
 
+    def test_malformed_cache_stops_without_spend_or_prior_request_metadata(self):
+        with patch.object(self.service.state, "cached", return_value={"findings": [], "PRIVATE": "secret"}):
+            result, _ = self.scan()
+        self.assertFalse(self.service.calls)
+        self.assertFalse(result["integration_completed"])
+        self.assertEqual(result["diagnostics"][0]["code"], "RESPONSE_FIELDS_INVALID")
+        self.assertTrue(result["diagnostics"][0]["cache_hit"])
+        self.assertNotIn("provider", result["diagnostics"][0])
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_sonnet_integration_receives_source_uncertainty(self):
+        self.service.reply = lambda body: self.service.completion(
+            body, uncertain=json.loads(body["messages"][1]["content"])["stage"] == "source")
+        result, _ = self.scan()
+        integration = json.loads(self.service.calls[1]["messages"][1]["content"])
+        self.assertTrue(integration["units"][0]["needs_deeper_review"])
+        self.assertFalse(result["errors"])
+
     def test_model_context_or_dependency_base_invalidates_cache(self):
         self.scan()
         result, _ = self.scan(base="d" * 40)
@@ -471,7 +489,7 @@ class ScanTests(unittest.TestCase):
             return self.service.completion(body, [finding] if model == SONNET else [], uncertain=model == SONNET)
         self.service.reply = reply
         result, _ = self.scan()
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL, SOL])
         self.assertEqual(result["findings"][0]["models"], [SONNET])
 
     def test_actual_cost_overrun_preserves_findings_but_halts_spending(self):
@@ -485,12 +503,73 @@ class ScanTests(unittest.TestCase):
         from threat_review.merge_policy import clean
         self.service.reply = lambda body: self.service.completion(body, [], uncertain=body["model"] == SOL)
         result, _ = self.scan(force=True)
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL, SOL])
         self.assertEqual(result["depth_batches_pending"], 0)
-        self.assertIn("Final reviewer requests further review", result["errors"][0])
+        self.assertIn("Final reviewer requests further review", result["manual_review_reasons"][0])
+        self.assertFalse(result["errors"])
         report = {"head": fixtures.HEAD, "base": fixtures.BASE, "review": result}
         self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
-        self.assertTrue(self.checkpoints[-1]["errors"])
+        self.assertTrue(self.checkpoints[-1]["manual_review_reasons"])
+
+    def test_sol_reconciles_local_uncertainty_before_final_decision(self):
+        from threat_review.merge_policy import clean
+        def reply(body):
+            stage = json.loads(body["messages"][1]["content"])["stage"]
+            return self.service.completion(body, uncertain=body["model"] == SOL and stage == "source")
+        self.service.reply = reply
+        result, _ = self.scan(force=True)
+        self.assertFalse(result["manual_review_reasons"])
+        self.assertTrue(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                              fixtures.HEAD, fixtures.BASE))
+        final = json.loads(self.service.calls[-1]["messages"][1]["content"])
+        self.assertEqual(final["stage"], "integration")
+        self.assertTrue(final["units"][0]["needs_deeper_review"])
+
+    def test_failed_final_integration_is_incomplete_and_retains_advice(self):
+        def reply(body):
+            stage = json.loads(body["messages"][1]["content"])["stage"]
+            if body["model"] == SOL and stage == "integration":
+                return 503
+            return self.service.completion(body, [fixtures.FINDING])
+        self.service.reply = reply
+        result, _ = self.scan(force=True)
+        self.assertEqual(result["depth_batches_pending"], 1)
+        self.assertTrue(result["findings"])
+        self.assertTrue(result["errors"])
+        self.assertEqual(result["diagnostics"][0]["http_status"], 503)
+        self.assertEqual(result["diagnostics"][0]["stage"], "integration")
+
+    def test_head_only_excerpt_receives_complete_change_coordinates(self):
+        from threat_review.change_context import batch_changes
+        self.files = [{"filename": "docs/guide.md", "status": "modified", "source_complete": True,
+                       "base_text": "old\n" + "unchanged\n" * 9000,
+                       "head_text": "new\n" + "unchanged\n" * 9000,
+                       "patch": "@@ -1 +1 @@\n-old\n+new"}]
+        scanner = Scanner(self.context, self.files, self.service.state, None, lambda _: None, fixtures.BASE)
+        tail = next(u for b in scanner.source for u in b
+                    if u.get("kind") == "head_text" and u["start_line"] > 1)
+        context = batch_changes(scanner.changes, [tail])[0]
+        self.assertEqual(context["changed_ranges"], {"base": [[1, 1]], "head": [[1, 1]]})
+        self.assertTrue(context["range_map_complete"])
+        self.assertIn("-old", context["patch_excerpt"])
+        # Orientation includes line 1, but it grants no new citation permission.
+        evidence = scanner.batch_evidence("source", [tail])
+        self.assertNotIn(1, evidence["docs/guide.md"]["lines"]["head"])
+
+    def test_invalid_json_diagnostic_is_correlated_and_has_no_response_text(self):
+        def reply(body):
+            response = self.service.completion(body)
+            response["choices"][0]["message"]["content"] = '{"private-secret":\nINVALID}'
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        diagnostic = result["diagnostics"][0]
+        self.assertEqual(diagnostic["code"], "RESPONSE_JSON_INVALID")
+        self.assertEqual(diagnostic["line"], 2)
+        self.assertEqual(diagnostic["model"], SONNET)
+        self.assertEqual(len(diagnostic["batch_sha256"]), 64)
+        self.assertNotIn("private-secret", json.dumps(result))
+        self.assertEqual(len(self.service.calls), 1)
 
     def test_followup_push_reuses_unaffected_batches_but_reintegrates(self):
         self.files = [{"filename": name, "status": "modified", "source_complete": True,

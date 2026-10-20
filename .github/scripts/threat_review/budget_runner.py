@@ -11,6 +11,7 @@ from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render
 from .runner import same_revision, verify_diff
 from .source import complete_files
 from .state import State
+from .diagnostics import failure_record, write_diagnostics
 
 
 def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False, clearance=False):
@@ -27,15 +28,23 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
                   [] if compact else snapshot.get("limited_files", []),
                   "Report exceeds comment capacity; see saved findings" if compact else error,
                   diff_base, [] if compact else snapshot.get("outcomes", []))
+    if complete and (snapshot.get("manual_review_reasons") or any(
+            finding.get("severity") in ("medium", "high") for finding in snapshot.get("findings", []))):
+        body += "\n\n**Scan completed; human review required.**"
+        if snapshot.get("manual_review_reasons"):
+            body += "\n" + "; ".join(snapshot["manual_review_reasons"])
+    if snapshot.get("diagnostics"):
+        body += "\n\nFailure diagnostics: " + "; ".join(
+            f"`{item['code']}`" for item in snapshot["diagnostics"])
     # The legacy renderer's full-text-model claim does not describe this engine.
     body = re.sub(r"(?m)^Coverage: .*", "", body)
     if clearance:
         body = body.replace("## Threat model review — advisory", "## Threat model review", 1)
         old = "Findings require human validation; this review never requests changes or blocks merging."
-        body = body.rsplit(old, 1)[0] + (
+        body = body.replace(old, (
             "Merge clearance requires complete coverage with no medium/high findings, or an independent "
             "manual security override. Review-control changes always require human approval. "
-            f"[Override instructions](https://github.com/{repository}/blob/master/docs/developer/threat-model-review.md).")
+            f"[Override instructions](https://github.com/{repository}/blob/master/docs/developer/threat-model-review.md)."), 1)
     body += (f"\n\nCoverage: {snapshot.get('covered_units', 0)}/{snapshot.get('total_units', 0)} source units; "
              f"cross-file integration {'complete' if snapshot.get('integration_completed') else 'pending'}. "
              f"{snapshot.get('depth_batches_pending', 0)} selected depth batch(es) pending. "
@@ -168,6 +177,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     except Exception as error:
         snapshot = scanner.snapshot() if scanner else snapshot
         snapshot.setdefault("errors", []).append(failure(error))
+        snapshot.setdefault("diagnostics", []).append(failure_record(error, {"stage": "lifecycle"}))
         try:
             checkpoint(snapshot)
         except Exception:
@@ -179,6 +189,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
                 # Delivery can fail or become stale; return the saved report
                 # to the Actions summary rather than losing local findings.
                 pass
+    write_diagnostics(env, snapshot)
     if env.get("THREAT_REVIEW_RESULT_FILE"):
         Path(env["THREAT_REVIEW_RESULT_FILE"]).write_text(json.dumps({
             "repository": repository, "head": head, "base": base, "diff_base": diff_base,

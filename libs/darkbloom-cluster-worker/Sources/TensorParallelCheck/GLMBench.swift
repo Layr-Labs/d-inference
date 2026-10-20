@@ -6,7 +6,8 @@ import MLX
 // darkbloom-cluster-tp-check glm --mode full|shard|tp --model-dir DIR --report FILE
 //     [--prompt-tokens N | --prompt-file TOKENS.json] [--output-count N] [--chunk N] [--repeats N]
 //     [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no]
-//     [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N]
+//     [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3]
+//     [--mtp-check none|keep-first|one-token]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -60,7 +61,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -83,6 +84,17 @@ enum GLMBench {
         options.sealed = (fields["--reduction"] ?? "native") == "sealed"
         options.cacheLimitBytes = fields["--cache-limit-mb"].flatMap(Int.init).map { $0 << 20 }
         options.microBatches = Int(fields["--micro-batches"] ?? "1") ?? 1
+        // NextN proposals per greedy round, as the product's tensor-parallel decode (0: one token per step).
+        guard let depth = Int(fields["--mtp-depth"] ?? "0"), (0...3).contains(depth) else {
+            throw Failure("glm: --mtp-depth takes 0 through 3")
+        }
+        options.mtpDepth = depth
+        // Speculative decode's arithmetic alone: every proposal rejected, or one-token windows.
+        guard let check = GLM5NextTensorParallelBench.Options.MTPCheck(rawValue: fields["--mtp-check"] ?? "none"),
+              check == .none || depth > 0 else {
+            throw Failure("glm: --mtp-check takes none, keep-first or one-token, with --mtp-depth 1...3")
+        }
+        options.mtpCheck = check
         let result = try GLM5NextTensorParallelBench.run(options, log: { note($0) })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

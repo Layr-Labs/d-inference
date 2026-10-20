@@ -37,10 +37,11 @@ extension QwenTensorParallelSealCodec {
         return QwenTensorParallelSealCodec(rank: group.rank, sendKey: key(group.rank), receiveKey: key(1 - group.rank), scope: scope)
     }
 
-    /// Installs this codec for the process's sealed all-sums (one at a time).
+    /// Installs this codec for the process's sealed all-sums (one at a time):
+    /// streamed pieces on a JACCL mesh, whole frames on other groups.
     public func install() throws {
         let context = Unmanaged.passRetained(self).toOpaque()
-        let status = mlx_distributed_set_seal_codec({ context, plaintext, bytes, frame, counter in
+        let status = mlx_distributed_set_streamed_seal_codec({ context, plaintext, bytes, frame, counter in
             guard let context, let plaintext, let frame else { return 1 }
             let codec = Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).takeUnretainedValue()
             return codec.seal(plaintext, bytes, frame, counter)
@@ -48,7 +49,15 @@ extension QwenTensorParallelSealCodec {
             guard let context, let frame, let plaintext else { return 1 }
             let codec = Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).takeUnretainedValue()
             return codec.open(frame, bytes, plaintext, counter, Int(peer))
-        }, context, Self.frameOverhead)
+        }, { context, plaintext, length, sealed, counter, piece, pieces, total in
+            guard let context, let plaintext, let sealed else { return 1 }
+            let codec = Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).takeUnretainedValue()
+            return codec.sealPiece(plaintext, length, sealed, counter, Int(piece), Int(pieces), total)
+        }, { context, sealed, length, plaintext, counter, piece, pieces, total, peer in
+            guard let context, let sealed, let plaintext else { return 1 }
+            let codec = Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).takeUnretainedValue()
+            return codec.openPiece(sealed, length, plaintext, counter, Int(piece), Int(pieces), total, Int(peer))
+        }, context, Self.frameOverhead, Self.streamedPieceBytes)
         guard status == 0 else {
             Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).release()
             throw ProbeError("Sealed all-sum: the codec could not be installed")

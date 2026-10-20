@@ -6,7 +6,9 @@ import Foundation
 /// frame under that rank's direction key (pieces sealed in parallel, each
 /// with a nonce of (piece, sender rank, counter) that never repeats under a
 /// key and authenticated data binding the run's scope, the counter, the
-/// length and the piece).
+/// length and the piece). On a JACCL mesh the frame is streamed
+/// (`sealPiece`/`openPiece`): each piece carries its own tag, so it is sent
+/// when sealed and opened when it lands.
 /// A peer frame that does not open is refused: the evaluation fails, and the
 /// codec stays refused (`refused`), so nothing after a tamper is summed.
 ///
@@ -110,6 +112,28 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
         return data
     }
 
+    /// The streamed frame: pieces of `streamedPieceBytes` plaintext bytes (the
+    /// last can be shorter), each its ciphertext then its tag. Sealed, a piece
+    /// is 256 KiB, so four fill one 1 MiB RDMA frame.
+    public static let streamedPieceBytes = (256 << 10) - tagBytes
+
+    /// True when `length` is piece `piece` of a `total`-byte partial cut into
+    /// `count` streamed pieces (both ranks cut it the same way).
+    static func isStreamedPiece(_ piece: Int, of count: Int, total: Int, length: Int) -> Bool {
+        let size = streamedPieceBytes
+        return total >= 0 && count == max(1, (total + size - 1) / size) && count <= 0xFFFF
+            && piece >= 0 && piece < count && length == min(size, total - piece * size)
+    }
+
+    /// `aad` and the piece size: no streamed piece opens as a whole-frame
+    /// piece (the data differ in length), and a rank that cuts other pieces
+    /// is refused.
+    private func streamedAAD(counter: UInt64, bytes: Int, sender: Int, piece: Int, of count: Int) -> Data {
+        var data = aad(counter: counter, bytes: bytes, sender: sender, piece: piece, of: count)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(Self.streamedPieceBytes).bigEndian) { Array($0) })
+        return data
+    }
+
     /// Runs `body` for every piece, in parallel when there is more than one.
     private func eachPiece(_ count: Int, _ body: (Int) -> Bool) -> Bool {
         if count == 1 { return body(0) }
@@ -174,5 +198,56 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
             return 1
         }
         return 0
+    }
+
+    /// One streamed piece: `length` plaintext bytes become `length` ciphertext
+    /// bytes, then the tag. Any thread, any order within a counter.
+    func sealPiece(_ plaintext: UnsafeRawPointer, _ length: Int, _ sealed: UnsafeMutableRawPointer, _ counter: UInt64,
+                   _ piece: Int, _ count: Int, _ total: Int) -> Int32 {
+        guard !refused, Self.isStreamedPiece(piece, of: count, total: total, length: length),
+              let sendKey = keys(counter: counter, bytes: total)?.send else { return 1 }
+        do {
+            let box = try AES.GCM.seal(UnsafeRawBufferPointer(start: plaintext, count: length), using: sendKey,
+                nonce: try nonce(sender: rank, counter: counter, piece: piece),
+                authenticating: streamedAAD(counter: counter, bytes: total, sender: rank, piece: piece, of: count))
+            guard box.ciphertext.count == length, box.tag.count == Self.tagBytes else { return 1 }
+            let out = sealed.assumingMemoryBound(to: UInt8.self)
+            box.ciphertext.copyBytes(to: out, count: length)
+            box.tag.copyBytes(to: out + length, count: Self.tagBytes)
+            if piece == count / 2, let tamper = tamperAtCounter, tamper == counter {
+                out[length / 2] ^= 0x01
+                FileHandle.standardError.write(Data("[tp-sealed] TEST: flipped one byte of sealed frame \(counter)\n".utf8))
+            }
+            if piece == 0 { lock.lock(); sealedFrames += 1; lock.unlock() }
+            return 0
+        } catch { return 1 }
+    }
+
+    /// One streamed peer piece: `length` ciphertext bytes and the tag become
+    /// `length` plaintext bytes, or a refusal that holds for the session.
+    func openPiece(_ sealed: UnsafeRawPointer, _ length: Int, _ plaintext: UnsafeMutableRawPointer, _ counter: UInt64,
+                   _ piece: Int, _ count: Int, _ total: Int, _ peer: Int) -> Int32 {
+        guard !refused, peer == 1 - rank, Self.isStreamedPiece(piece, of: count, total: total, length: length),
+              let receiveKey = keys(counter: counter, bytes: total)?.receive else { return 1 }
+        let source = sealed.assumingMemoryBound(to: UInt8.self)
+        let opened: Data
+        do {
+            // Views of the received frame: the piece is not first copied out of it.
+            let box = try AES.GCM.SealedBox(nonce: try nonce(sender: peer, counter: counter, piece: piece),
+                ciphertext: UnsafeRawBufferPointer(start: source, count: length),
+                tag: UnsafeRawBufferPointer(start: source + length, count: Self.tagBytes))
+            opened = try AES.GCM.open(box, using: receiveKey,
+                authenticating: streamedAAD(counter: counter, bytes: total, sender: peer, piece: piece, of: count))
+        } catch { return refuse(counter: counter, piece: piece) }
+        guard opened.count == length else { return refuse(counter: counter, piece: piece) }
+        opened.copyBytes(to: plaintext.assumingMemoryBound(to: UInt8.self), count: length)
+        return 0
+    }
+
+    private func refuse(counter: UInt64, piece: Int) -> Int32 {
+        lock.lock(); refusedFlag = true; lock.unlock()
+        FileHandle.standardError.write(Data(
+            "[tp-sealed] a peer piece did not authenticate (counter \(counter), piece \(piece)): refused\n".utf8))
+        return 1
     }
 }

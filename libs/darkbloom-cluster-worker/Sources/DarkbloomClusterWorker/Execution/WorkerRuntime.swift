@@ -9,6 +9,10 @@ protocol WorkerRuntime: AnyObject, Sendable {
     var readiness: ClusterWorkerReady? { get }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason
+    /// As `start(_:token:)`, with publication and the owner's answer apart
+    /// (`ClusterCommittedTokenChannel`); a runtime that cannot read answers
+    /// late publishes and waits as before.
+    func start(_ id: UUID, tokens: ClusterCommittedTokenChannel) throws -> ClusterWorkerFinishReason
     func cancel(_ id: UUID)
     func shutdown() throws
     /// Keep-warm tier 1: one asynchronous GPU pulse while idle; returns the
@@ -46,6 +50,12 @@ protocol WorkerRuntime: AnyObject, Sendable {
 }
 
 extension WorkerRuntime {
+    func start(_ id: UUID, tokens: ClusterCommittedTokenChannel) throws -> ClusterWorkerFinishReason {
+        try start(id) { ordinal, token, frontier in
+            try tokens.publish(ordinal, token, frontier)
+            return try tokens.answer()
+        }
+    }
     var lastPromptCache: (reused: Int, stored: [Int]) { (0, []) }
     func releaseReservation(_ id: UUID) throws {
         throw WorkerFailure.invalid("This runtime cannot give back a reservation")

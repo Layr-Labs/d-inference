@@ -197,10 +197,15 @@ final class WorkerCoordinator: @unchecked Sendable {
                 case .start:
                     let id = command.requestID!
                     admittedNotStarted = nil
-                    let reason = try runtime.start(id) { ordinal, token, frontier in
-                        try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier), requestID: id)
-                        return try self.nextDecision() == .proceed
-                    }
+                    // Publication and the owner's answer apart: a runtime may read
+                    // the answer after submitting its next step (the token credit
+                    // still holds: the session refuses a token before the answer).
+                    let reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
+                        publish: { ordinal, token, frontier in
+                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier),
+                                requestID: id)
+                        },
+                        answer: { try self.nextDecision() == .proceed }))
                     // The native facade returns only after bilateral retirement
                     // and after its request/autorelease scope has ended.
                     let cache = runtime.lastPromptCache

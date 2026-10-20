@@ -117,6 +117,7 @@ struct GLM5NextStageContract {
         fields["routing"] = switch policy.routing {
         case .reference: "reference"
         case .nativeKernel: "nativeKernel"
+        case .nativeKernelPrefill: "nativeKernelPrefill"
         }
         fields["projections"] = switch policy.projections {
         case .separate: "separate"

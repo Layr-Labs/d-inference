@@ -400,6 +400,102 @@ func checkSealCodec() {
 
 /// Every launch option that changes the collectives must change the first
 /// agreement, or two ranks launched differently meet in mismatched all-sums.
+/// The streamed codec: each piece opens alone, in any order and on any
+/// thread, only on the peer, at its counter and index. A flipped byte, a
+/// swapped tag or a whole-frame piece is refused.
+func checkSealPieces() {
+    typealias Codec = QwenTensorParallelSealCodec
+    let scope = Data("scope-a".utf8)
+    let size = Codec.streamedPieceBytes, tag = Codec.tagBytes, stride = size + tag
+    check(stride == 256 << 10, "pieces: four sealed pieces fill one 1 MiB frame")
+    check(Codec.isStreamedPiece(64, of: 65, total: 16 << 20, length: 1024)
+          && !Codec.isStreamedPiece(64, of: 65, total: 16 << 20, length: size)
+          && !Codec.isStreamedPiece(0, of: 64, total: 16 << 20, length: size)
+          && Codec.isStreamedPiece(128, of: 129, total: 32 << 20, length: 2048)
+          && Codec.isStreamedPiece(0, of: 1, total: 8192, length: 8192)
+          && !Codec.isStreamedPiece(0, of: 70_000, total: 70_000 * size, length: size), "pieces: counts and lengths")
+    let total = 3 * size + 1000, count = 4
+    let plain = (0..<total).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) }
+    func length(_ k: Int) -> Int { min(size, total - k * size) }
+    func seal(_ codec: Codec, _ counter: UInt64) -> [UInt8]? {
+        var frame = [UInt8](repeating: 0, count: total + count * tag)
+        var refused = 0
+        plain.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in
+            let source = p.baseAddress!, target = f.baseAddress!
+            let lock = NSLock()
+            DispatchQueue.concurrentPerform(iterations: count) { k in
+                if codec.sealPiece(source + k * size, length(k), target + k * stride, counter, k, count, total) != 0 {
+                    lock.lock(); refused += 1; lock.unlock()
+                }
+            }
+        } }
+        return refused == 0 ? frame : nil
+    }
+    func open(_ codec: Codec, _ frame: [UInt8], _ counter: UInt64, _ k: Int, at offset: Int? = nil,
+              into out: inout [UInt8], peer: Int = 0) -> Int32 {
+        frame.withUnsafeBytes { f in out.withUnsafeMutableBytes { o in
+            codec.openPiece(f.baseAddress! + (offset ?? k * stride), length(k), o.baseAddress! + k * size,
+                            counter, k, count, total, peer)
+        } }
+    }
+    let (r0, r1) = Codec.pair(scope: scope)
+    var out = [UInt8](repeating: 0, count: total)
+    guard let frame = seal(r0, 41) else { failures += 1; print("FAIL: pieces: rank 0 seals"); return }
+    check(!frame.starts(with: plain.prefix(64)), "pieces: a sealed piece is not the plaintext")
+    let reversed = (0..<count).reversed().allSatisfy { open(r1, frame, 41, $0, into: &out) == 0 }
+    check(reversed && out == plain, "pieces: rank 1 opens rank 0's pieces in reverse order, byte for byte")
+    let (t0, t1) = Codec.pair(scope: scope)
+    if let good = seal(t0, 9) {
+        var flipped = good; flipped[2 * stride + 100] ^= 1
+        check(open(t1, flipped, 9, 2, into: &out) != 0, "pieces: one flipped byte is refused")
+        check(t1.refused && open(t1, good, 9, 0, into: &out) != 0, "pieces: a refused codec opens nothing more")
+        check(seal(t1, 10) == nil, "pieces: a refused codec seals nothing more")
+    }
+    let (u0, u1) = Codec.pair(scope: scope)
+    if var swapped = seal(u0, 3) {
+        for i in 0..<tag { swapped.swapAt(size + i, stride + size + i) }
+        check(open(u1, swapped, 3, 0, into: &out) != 0, "pieces: two pieces' tags swapped are refused")
+    }
+    let (v0, v1) = Codec.pair(scope: scope)
+    if let moved = seal(v0, 4) {
+        check(open(v1, moved, 4, 0, at: stride, into: &out) != 0, "pieces: piece 1 opened as piece 0 is refused")
+    }
+    let (w0, w1) = Codec.pair(scope: scope)
+    if let other = seal(w0, 5) {
+        check(open(w1, other, 6, 0, into: &out) != 0, "pieces: another counter is refused")
+    }
+    let (x0, x1) = Codec.pair(scope: scope)
+    if let own = seal(x0, 6) {
+        check(open(x1, own, 6, 0, into: &out, peer: 1) != 0, "pieces: a piece claimed from the wrong peer is refused")
+    }
+    // A whole frame (one v1 piece) and a streamed piece of the same bytes,
+    // counter and nonce do not open as each other.
+    let small = 1000
+    var whole = [UInt8](repeating: 0, count: small + Codec.frameOverhead)
+    var single = [UInt8](repeating: 0, count: small + Codec.frameOverhead)
+    var opened = [UInt8](repeating: 0, count: small)
+    let (y0, y1) = Codec.pair(scope: scope)
+    _ = plain.withUnsafeBytes { p in whole.withUnsafeMutableBytes { f in y0.seal(p.baseAddress!, small, f.baseAddress!, 7) } }
+    let asPiece = whole.withUnsafeBytes { f in opened.withUnsafeMutableBytes { o in
+        y1.openPiece(f.baseAddress!, small, o.baseAddress!, 7, 0, 1, small, 0) } }
+    check(asPiece != 0, "pieces: a whole frame does not open as a streamed piece")
+    let (z0, z1) = Codec.pair(scope: scope)
+    _ = plain.withUnsafeBytes { p in single.withUnsafeMutableBytes { f in z0.sealPiece(p.baseAddress!, small, f.baseAddress!, 8, 0, 1, small) } }
+    let asWhole = single.withUnsafeBytes { f in opened.withUnsafeMutableBytes { o in z1.open(f.baseAddress!, small, o.baseAddress!, 8, 0) } }
+    check(asWhole != 0, "pieces: a streamed piece does not open as a whole frame")
+    // Rekey: pieces of one counter share its generation; both ranks cross
+    // each generation at the same counter.
+    let (g0, g1) = Codec.pair(scope: scope, rekeyFrames: 3)
+    var crossed = true
+    for counter in UInt64(20)..<UInt64(30) {
+        guard let f = seal(g0, counter) else { crossed = false; break }
+        crossed = crossed && (0..<count).allSatisfy { open(g1, f, counter, $0, into: &out) == 0 } && out == plain
+    }
+    check(crossed && g0.keyGeneration == 3 && g1.keyGeneration == 3, "pieces: rekey every 3 sums, both at generation 3")
+    check(open(g1, frame, 19, 0, into: &out) != 0, "pieces: counters only grow")
+    print("seal pieces: layout, any-order open, tamper, swap, index, counter, direction, frame kind and rekey checked")
+}
+
 func checkLaunchAgreement() {
     let base = QwenTensorParallelLaunch(outputCount: 128, chunkSize: 512, promptTokens: 1024, repeats: 2, warmup: true,
                                         explicitTiming: false, bfloat16Partials: false, hybridPrefillRank: nil)
@@ -504,6 +600,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         checkWeightedShares(c27: c27, c9: c9, quantization: quantization)
         checkLaunchAgreement()
         checkSealCodec()
+        checkSealPieces()
 
         for path in CommandLine.arguments.dropFirst() {
             let directory = URL(fileURLWithPath: path)

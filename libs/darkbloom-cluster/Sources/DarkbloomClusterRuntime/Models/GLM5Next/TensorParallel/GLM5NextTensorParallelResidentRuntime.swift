@@ -3,6 +3,7 @@ import DarkbloomClusterSecurity
 import Foundation
 import MLX
 import MLXLLM
+import MLXLMCommon
 
 /// The worker's resident owner for `tensor_parallel_v1` on the registered GLM
 /// row: both ranks hold every layer, each with half of every head- and
@@ -19,8 +20,15 @@ import MLXLLM
 /// sampled token is rank 0's draw, and a stop on either rank ends both after
 /// the same step.
 ///
-/// Not in this mode yet (the pipeline serves them): prompt-prefix reuse, image
-/// input and speculative (MTP) decode. A request asking for images is refused.
+/// Greedy requests decode speculatively with the model's own NextN (MTP)
+/// layer, which every rank holds whole (`mtpDepth`,
+/// `GLM5NextTensorParallelSpeculation`): one stage forward verifies up to
+/// `mtpDepth` proposals, and its round's reduction carries every window
+/// position's token, the proposals and the stop flags. Sampled requests
+/// decode one token per step.
+///
+/// Not in this mode yet (the pipeline serves it): image input. A request
+/// asking for images is refused.
 public final class GLM5NextTensorParallelResidentRuntime {
     static let planName = "glm5_next_heads_and_expert_channels_v1"
     /// The freed-buffer cache a ready rank keeps under the
@@ -62,6 +70,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// partials, 15,724-token prompt): 4,096-token chunks 3,311 tok/s,
     /// 8,192: 3,614. Charged as four request workspaces in all.
     static let bulkPrefillChunkTokens = 8192
+    /// NextN (MTP) proposals each greedy decode round verifies
+    /// (`GLM5NextTensorParallelSpeculation`, at most
+    /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
+    /// request decodes one token per step. Bound into the load agreement.
+    /// The NextN layer is replicated whole on each rank: +4.2 GB of weights
+    /// per rank, charged to the load gate beside the shard
+    /// (`speculationRequestBytes` for its request state). Measured on the
+    /// pair (sealed, 3,931-token prompt, 256 tokens): one token per step
+    /// 62.6 tok/s; depth 1 68.7, depth 2 76.0 (2.24 tokens a round), depth 3
+    /// 71.8 (its third proposal is rarely kept and widens every window).
+    static let mtpDepth = 2
 
     let configuration: QwenResidentLoadConfiguration
     let descriptor: GLM5NextResidentDescriptor
@@ -74,6 +93,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
     private var stage: GLM5NextTextStage?
+    /// The NextN layer when `mtpDepth > 0`; it shares the stage's embedding and head.
+    private var mtp: GLM5NextMTP?
     private var residency: ClusterStageResidency?
     private let requestReserveBytes: Int
     private let baseReady: ClusterWorkerReady
@@ -151,10 +172,25 @@ public final class GLM5NextTensorParallelResidentRuntime {
             requestReserve = try QwenLongPrefillCheckedBytes.sum([requestReserve, quote.request.reservedBytes])
         }
         let shardBytes = try Self.shardBytes(inventory)
+        // Every rank holds the NextN layer whole: its loader never shards, so
+        // its bytes are the stored ones (`GLM5NextTensorShard.splitAxis` has
+        // no layer bound and would wrongly halve some of them).
+        let text = descriptor.configuration.textConfig
+        guard Self.mtpDepth == 0 || (text.numNextNPredictLayers == 1
+                && Self.mtpDepth <= GLM5NextMTP.maximumProposalDepth
+                && (Self.mtpDepth == 1 || text.indexShareForMTPIteration)) else {
+            throw ProbeError("GLM tensor-parallel speculative depth \(Self.mtpDepth) is unsupported by this model")
+        }
+        let mtpBytes = Self.mtpDepth > 0 ? inventory.bytes(in: .mtp) : 0
+        requestReserve = try QwenLongPrefillCheckedBytes.sum([requestReserve,
+            try Self.speculationRequestBytes(configuration: text, profile: profile, depth: Self.mtpDepth,
+                executionPolicy: descriptor.executionPolicy)])
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: GLM5NextTextStage?
+        var loadedMTP: GLM5NextMTP?
         weak var retired: GLM5NextTextStage?
+        weak var retiredMTP: GLM5NextMTP?
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
             let read: (URL, Int) throws -> Data = { try BoundedProbeInput.data($0, maximumBytes: $1) }
@@ -165,6 +201,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             try jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
             let identity = configuration.identity
             let loadAgreement = sha256(try canonicalJSONData(["glm5-next-tensor-parallel-load-v1", planName, partialsTransport,
+                GLM5NextTensorParallelSpeculation.agreementName, String(mtpDepth),
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
                 collective.transport.rawValue, configuration.allocatorPolicy.rawValue]
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
@@ -198,7 +235,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
                 // The live gate admits this rank's shard and the whole request charge before any read.
-                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, requestReserve, bufferCacheBytes]))
+                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, requestReserve,
+                    bufferCacheBytes]))
                 let roots = GLM5NextArtifactLoadRoots()
                 let loader = try GLM5NextArtifactLoader(directory: directory, expectedIdentity: descriptor.artifactIdentity,
                     storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy)
@@ -211,7 +249,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 let value = try autoreleasepool { try loader.loadTextStage(plan: plan) }
                 value.tensorParallelMicroBatches = Self.prefillMicroBatches
                 value.freeze()
-                try roots.evaluate(value.parameters().flattened().map(\.1))
+                // The NextN layer, whole, bound to the stage's replicated embedding and head.
+                let head = Self.mtpDepth > 0 ? try autoreleasepool { try loader.loadMTP(stage: value) } : nil
+                head?.freeze()
+                loadedMTP = head; retiredMTP = head
+                try roots.evaluate(value.parameters().flattened().map(\.1)
+                    + (head?.parameters().flattened().map(\.1) ?? []))
                 Stream.gpu.synchronize(); try checked()
                 roots.releaseAfterConfirmedFence()
                 try loader.verifyUnchanged()
@@ -227,7 +270,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     Memory.activeMemory, requestReserve, bufferCacheBytes]))
                 if bufferCacheBytes > 0 { Memory.cacheLimit = bufferCacheBytes; try checked() }
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, descriptor.artifactAggregateSHA256,
-                    String(shardBytes)]))
+                    String(shardBytes), String(mtpBytes)]))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                     material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                     disagreementMessage: "GLM tensor-parallel peers did not load matching shards",
@@ -235,22 +278,27 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
-                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)")
+                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
+                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes)")
             }
-            guard let stage = loaded else { throw ProbeError("GLM tensor-parallel load returned no stage") }
+            guard let stage = loaded, (loadedMTP != nil) == (Self.mtpDepth > 0) else {
+                throw ProbeError("GLM tensor-parallel load returned no stage or NextN layer")
+            }
             try control.loaded()
             return GLM5NextTensorParallelResidentRuntime(configuration: configuration, descriptor: descriptor,
-                control: control, collective: collective, group: group, codec: codec, stage: stage,
+                control: control, collective: collective, group: group, codec: codec, stage: stage, mtp: loadedMTP,
                 residency: stageResidency, requestReserveBytes: requestReserve, loadAgreement: loadAgreement, linkProbe: probe,
                 planSHA256: planSHA256, prefix: GLM5NextTensorParallelPrefixCache(
                     budgetBytes: QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)))
         } catch {
-            let primary = error; control.fail(); loaded = nil
+            let primary = error; control.fail(); loaded = nil; loadedMTP = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try nativeError.check()
                 }
-                guard retired == nil else { throw ProbeError("GLM tensor-parallel failed-load stage remains retained") }
+                guard retired == nil, retiredMTP == nil else {
+                    throw ProbeError("GLM tensor-parallel failed-load stage remains retained")
+                }
             } catch {
                 throw ProbeError("GLM tensor-parallel load failed (\(primary)); local cleanup failed (\(error))")
             }
@@ -267,6 +315,55 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
     }
 
+    /// Request memory speculative decode adds on one rank, beside both
+    /// pipeline ranks' request budgets (0 when `depth` is 0):
+    /// - the NextN layer's history, priced as one of the text model's DSA
+    ///   layers is (`GLM5NextRequestStateBudget`): three float32-bounded
+    ///   histories and validity over twice the context, three copies, plus one
+    ///   chunk of new columns;
+    /// - its work: the SDK's bound for one history observation of a chunk's
+    ///   rows (`GLM5NextMTPExecution.memoryPlan`; prompt priming runs in
+    ///   pieces of at most a chunk), or for a round's proposal, one bound per
+    ///   primed row and one per continuation, whichever is larger;
+    /// - the captured verification windows: every linear-attention layer keeps
+    ///   each window token's state until the commit adopts one, and the state
+    ///   adopted last round (a lazy copy out of its window) and this round's
+    ///   window coexist. Full heads, as the request budgets charge KDA state.
+    /// A window's logits (`[1 + depth, vocabulary]`) are far inside the final
+    /// stage's chunk-logits allowance already in the budget.
+    static func speculationRequestBytes(configuration c: GLM5NextTextConfiguration,
+                                        profile: QwenLayerStageGenerationProfile, depth: Int,
+                                        executionPolicy: GLM5NextExecutionPolicy,
+                                        allocationBound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound)
+        throws -> Int {
+        guard depth > 0 else { return 0 }
+        typealias Bytes = QwenLongPrefillCheckedBytes
+        func native(_ bytes: Int, copies: Int = 1) throws -> Int {
+            try Bytes.product([allocationBound(bytes), copies])
+        }
+        let chunk = profile.maximumChunkTokens
+        let capacity = max(256, try Bytes.product([2, profile.maximumContextTokens]))
+        let history = try Bytes.sum([c.kvLoraRank * 4, c.indexHeadDim * 4, c.indexHeadDim * 4, 1].map { width in
+            try Bytes.sum([native(Bytes.product([capacity, width]), copies: 3), native(Bytes.product([chunk, width]))])
+        })
+        let plan = try GLM5NextMTPExecution.memoryPlan(configuration: c, maximumInputs: profile.maximumContextTokens,
+            limits: .init(maximumPrefillTokens: chunk, maximumDraftTokens: depth), executionPolicy: executionPolicy)
+        func bytes(_ buffers: [CBv2MTPFixedBufferSpec]) throws -> Int {
+            try Bytes.sum(buffers.map { try native($0.logicalBytes, copies: $0.allocationCount) })
+        }
+        let work = max(try bytes(plan.historyWorkBuffers), try Bytes.sum([
+            Bytes.product([bytes(plan.draftWorkBuffers), depth + 1]),
+            Bytes.product([bytes(plan.continuationWorkBuffers), depth - 1])]))
+        let linear = c.linearAttention
+        let kdaLayers = c.layerTypes.filter { $0 == .linearAttention }.count
+        let recurrent = try Bytes.product([depth + 1, linear.numHeads, linear.headDim, linear.headDim, 4])
+        let convolution = try Bytes.product([depth + 1, 3, linear.numHeads, linear.headDim,
+            linear.shortConvKernelSize, 4])
+        let windows = try Bytes.product([Bytes.sum([native(recurrent, copies: 2), native(convolution, copies: 2)]),
+            kdaLayers])
+        return try Bytes.sum([history, work, windows])
+    }
+
     /// The host memory gate's decision for `bytes` more, as the resident families take it.
     static func requireLiveMemory(bytes: Int) throws {
         try QwenResidentResourceEnvironment.require()
@@ -281,12 +378,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
     private init(configuration: QwenResidentLoadConfiguration, descriptor: GLM5NextResidentDescriptor,
                  control: QwenResidentControl, collective: Collective, group: QwenTensorParallelGroup,
-                 codec: QwenTensorParallelSealCodec?, stage: GLM5NextTextStage, residency: ClusterStageResidency?,
+                 codec: QwenTensorParallelSealCodec?, stage: GLM5NextTextStage, mtp: GLM5NextMTP?,
+                 residency: ClusterStageResidency?,
                  requestReserveBytes: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
                  planSHA256: String, prefix: GLM5NextTensorParallelPrefixCache) {
         self.prefix = prefix
         self.configuration = configuration; self.descriptor = descriptor; self.control = control
-        self.collective = collective; self.group = group; self.codec = codec; self.stage = stage
+        self.collective = collective; self.group = group; self.codec = codec; self.stage = stage; self.mtp = mtp
         self.residency = residency; self.requestReserveBytes = requestReserveBytes
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe
         baseReady = .init(identity: configuration.identity, rank: collective.rank, profile: descriptor.wireProfile,
@@ -353,6 +451,15 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// Only rank 0 invokes the callback, once both ranks hold the token.
     public func start(requestID: UUID,
                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+        try ClusterCommittedTokenChannel.answering(onCommittedToken) { try start(requestID: requestID, tokens: $0) }
+    }
+
+    /// As `start(requestID:onCommittedToken:)`, with the owner's answer to
+    /// each token read one step (or round) later, after the next one was
+    /// submitted: the answer's pipe round trip (about 1.6 ms a token through
+    /// the owner) then overlaps the next step's encoding and GPU time.
+    public func start(requestID: UUID, tokens channel: ClusterCommittedTokenChannel) throws
+        -> QwenResidentGenerationCompletion {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         guard let reserved = reservation, reserved.request.requestID == requestID else {
@@ -362,7 +469,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
                 identity: .init(requestID: requestID, epoch: requestID, recordedRequestFingerprint: reserved.request.fingerprint),
                 deadline: reserved.deadline, body: {
-                    try autoreleasepool { try generate(reserved, onCommittedToken: onCommittedToken) }
+                    try autoreleasepool { try generate(reserved, channel: channel) }
                 }, prepare: { $0 })
             collective.logDataPlaneStatus()
             reservation = nil
@@ -386,8 +493,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     weak var released: GLM5NextTextStage?
-                    released = stage; reservation = nil; stage = nil
-                    guard released == nil else { throw ProbeError("GLM tensor-parallel stage remains retained") }
+                    weak var releasedMTP: GLM5NextMTP?
+                    released = stage; releasedMTP = mtp; reservation = nil; stage = nil; mtp = nil
+                    guard released == nil, releasedMTP == nil else {
+                        throw ProbeError("GLM tensor-parallel stage remains retained")
+                    }
                     try residency?.end(); residency = nil
                     Memory.clearCache(); try error.check()
                 }
@@ -401,7 +511,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
     // MARK: - One request
 
-    private func generate(_ reserved: Reserved, onCommittedToken: (Int, Int, Int) throws -> Bool) throws
+    private func generate(_ reserved: Reserved, channel: ClusterCommittedTokenChannel) throws
         -> QwenResidentGenerationCompletion {
         guard let stage else { throw ProbeError("Resident model already released") }
         let request = reserved.request, rank = collective.rank
@@ -422,6 +532,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             return false
         }
+        // Greedy requests decode speculatively. Every request primes the NextN
+        // history over its prompt (cheap: no attention, MoE or readout), so
+        // every prefix entry carries the history at its boundary.
+        let speculation = try mtp.map {
+            try GLM5NextTensorParallelSpeculation(mtp: $0, depth: Self.mtpDepth, rank: rank, ranks: collective.size,
+                primeRows: descriptor.profile.maximumChunkTokens, agree: { [group] in group.allSum($0) })
+        }
         // Prompt prefix: the longest chunk boundary both ranks hold.
         let scope = loadAgreement
         var cache = stage.newCache(), start = 0
@@ -432,12 +549,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 guard let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) else {
                     throw ProbeError("GLM tensor-parallel prefix both ranks voted for is gone")
                 }
-                cache = restored; start = agreed
+                cache = restored.cache; start = agreed
+                try speculation?.restore(restored.mtp)
             }
         }
         // Prefill from `start` in chunks aligned to the boundaries; keep the
         // last whole boundary before the final token.
-        var logits: MLXArray?
+        var logits: MLXArray?, lastHidden: MLXArray?
         var offset = start, stored: [Int] = []
         let keepAt = prefix.enabled ? ((prompt.count - 1) / chunk) * chunk : 0
         while offset < prompt.count {
@@ -450,10 +568,20 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let last = end == prompt.count
             let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
             let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
-            try candidate.commit { roots in eval(roots) }
-            if last, case .final(let output) = candidate.output { logits = output.logits[0..., -1, 0...] }
+            // The chunk's hidden rows prime the NextN history, in the chunk's evaluation.
+            if let speculation {
+                switch candidate.output {
+                case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
+                case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
+                case .streams: throw ProbeError("GLM tensor-parallel prefill produced no hidden rows")
+                }
+            }
+            try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
+            if last, case .final(let output) = candidate.output {
+                logits = output.logits[0..., -1, 0...]; lastHidden = output.hidden[0..., (-1)..., 0...]
+            }
             if !last, end == keepAt, keepAt > start {
-                prefix.store(scope: scope, prompt: prompt, length: end, cache: cache)
+                prefix.store(scope: scope, prompt: prompt, length: end, cache: cache, mtp: try speculation?.checkpoint())
                 stored.append(end)
             }
             offset = end
@@ -483,55 +611,128 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             return Int(agreed[0])
         }
-        // Greedy steps are built one ahead: step k+1 is submitted before step
-        // k's choice is read. A sampled step is built after its token is known
-        // (the sampler draws at the output index with the history up to it).
-        let pipelined = sampler == nil
-        var current = choose(firstLogits, stop: 0)
-        asyncEval(current)
         var tokens: [Int] = []
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false
         var stopKeep: Float = 0
-        var pending: MLXArray?
-        func step(from selection: MLXArray, stop: Float) throws -> MLXArray {
-            let next = selection[0 ..< 1].asType(.int32).reshaped(1, 1)
-            let candidate = try stage.prepareForward(tokens: next, cache: cache, readout: .lastToken)
-            try candidate.commit { roots in asyncEval(roots) }
-            guard case .final(let output) = candidate.output else { throw ProbeError("GLM tensor-parallel decode produced no logits") }
-            let chosen = choose(output.logits[0..., -1, 0...], stop: stop)
-            asyncEval(chosen)
-            return chosen
+        // Rank 0 publishes each token at once and reads the owner's answer to
+        // it after the next step or round was submitted, before publishing
+        // the next token. A stop answer is acted on one step later: the extra
+        // step is computed and never published.
+        var unanswered = false
+        func readAnswer() throws {
+            guard unanswered else { return }
+            unanswered = false
+            if try !channel.answer(), stopKeep == 0 { clientStopped = true; stopKeep = Float(tokens.count) }
         }
-        steps: for index in 0 ..< request.outputCount {
-            pending = nil
-            if pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
-            let agreed = current.asArray(Float.self)
-            let value = try token(agreed)
-            let flags = [agreed[2], agreed[3]].filter { $0 > 0 }
-            if let keep = flags.min() {
-                tokens = Array(tokens.prefix(Int(keep)))
-                finish = .clientStop; break
+        /// Commits one agreed token on this rank (and publishes it on rank 0);
+        /// the request's own end (EOS or length) at it, else nil.
+        func commit(_ value: Int) throws -> ClusterWorkerFinishReason? {
+            tokens.append(value)
+            if rank == 0 {
+                try channel.publish(tokens.count - 1, value, prompt.count + tokens.count - 1); unanswered = true
             }
-            if stopKeep == 0 {
-                sampler?.commit(value)
-                tokens.append(value)
-                let wanted = rank == 0 ? try onCommittedToken(tokens.count - 1, value, prompt.count + tokens.count - 1) : true
-                switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
-                                                          committed: tokens.count, outputCount: request.outputCount, wanted: wanted) {
-                case .eos: finish = .eos; break steps
-                case .length: finish = .length; break steps
-                case .clientStop: clientStopped = true
-                case .proceed: break
+            switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
+                                                      committed: tokens.count, outputCount: request.outputCount, wanted: true) {
+            case .eos: return .eos
+            case .length: return .length
+            case .clientStop, .proceed: return nil
+            }
+        }
+        if let speculation, sampler == nil, let lastHidden {
+            // The first token is agreed as a plain step's; then each round
+            // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
+            // and when the loop ends follow from agreed tokens only, so both
+            // ranks submit the same sums. A round's tokens are committed
+            // while the next round runs (`whileRunning`), unless they end the
+            // request. A rank that stopped (client stop, cancel, deadline,
+            // memory) stops committing, still ends where the other rank
+            // would, and carries its flag in the next round it submits.
+            let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
+            try speculation.begin(carry: first, lastHidden: lastHidden)
+            var agreedCount = 1, last = first, fresh: [Int] = []
+            /// Takes one agreed token; true when the request ends at it.
+            func take(_ value: Int, counted: Int) throws -> Bool {
+                if stopKeep == 0 { try readAnswer() }
+                guard stopKeep == 0 else {
+                    return request.stopTokenIDs.contains(value) || counted >= request.outputCount
                 }
-                if clientStopped || localStop() { stopKeep = Float(tokens.count) }
+                if let end = try commit(value) { finish = end; return true }
+                return false
             }
-            if !pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
-            guard let next = pending else { break }
-            current = next; pending = nil
+            var ended = try take(first, counted: 1)
+            rounds: while !ended {
+                let taken = agreedCount
+                let round = try speculation.round(stage: stage, cache: cache, last: last,
+                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep,
+                    whileRunning: {
+                        for (index, value) in fresh.enumerated() {
+                            _ = try take(value, counted: taken - fresh.count + index + 1)
+                        }
+                        if stopKeep == 0, localStop() { stopKeep = Float(tokens.count) }
+                    })
+                if let keep = round.stops.filter({ $0 > 0 }).min() {
+                    tokens = Array(tokens.prefix(Int(keep)))
+                    finish = .clientStop; break
+                }
+                fresh = round.tokens; last = fresh[fresh.count - 1]; agreedCount += fresh.count
+                // Tokens that end the request are taken now (no next round).
+                let ends = fresh.indices.contains {
+                    request.stopTokenIDs.contains(fresh[$0]) || agreedCount - fresh.count + $0 + 1 >= request.outputCount
+                }
+                if ends {
+                    for (index, value) in fresh.enumerated()
+                    where try take(value, counted: agreedCount - fresh.count + index + 1) { break rounds }
+                    ended = true
+                }
+            }
+        } else {
+            // Greedy steps are built one ahead: step k+1 is submitted before step
+            // k's choice is read. A sampled step is built after its token is known
+            // (the sampler draws at the output index with the history up to it).
+            let pipelined = sampler == nil
+            var current = choose(firstLogits, stop: 0)
+            asyncEval(current)
+            var pending: MLXArray?
+            func step(from selection: MLXArray, stop: Float) throws -> MLXArray {
+                let next = selection[0 ..< 1].asType(.int32).reshaped(1, 1)
+                let candidate = try stage.prepareForward(tokens: next, cache: cache, readout: .lastToken)
+                try candidate.commit { roots in asyncEval(roots) }
+                guard case .final(let output) = candidate.output else { throw ProbeError("GLM tensor-parallel decode produced no logits") }
+                let chosen = choose(output.logits[0..., -1, 0...], stop: stop)
+                asyncEval(chosen)
+                return chosen
+            }
+            steps: for index in 0 ..< request.outputCount {
+                pending = nil
+                if pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                // The answer to the last token arrived while this step was encoded.
+                if stopKeep == 0 { try readAnswer() }
+                let agreed = current.asArray(Float.self)
+                let value = try token(agreed)
+                let flags = [agreed[2], agreed[3]].filter { $0 > 0 }
+                if let keep = flags.min() {
+                    tokens = Array(tokens.prefix(Int(keep)))
+                    finish = .clientStop; break
+                }
+                if stopKeep == 0 {
+                    sampler?.commit(value)
+                    if let end = try commit(value) { finish = end; break steps }
+                    if localStop() { stopKeep = Float(tokens.count) }
+                }
+                if !pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                guard let next = pending else { break }
+                current = next; pending = nil
+            }
+            // A step both ranks submitted is evaluated by both, so its reductions meet.
+            if let pending { eval(pending) }
         }
-        // A step both ranks submitted is evaluated by both, so its reductions meet.
-        if let pending { eval(pending) }
+        // The owner answers every published token, the last one too. A stop
+        // answer to a token the request ended at changes nothing.
+        if unanswered {
+            unanswered = false
+            if try !channel.answer(), finish == .clientStop { clientStopped = true }
+        }
         if stopKeep > 0 || clientStopped { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
         let agreedEnd = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
@@ -553,7 +754,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
             + " prompt=\(prompt.count) reused=\(start) stored=\(stored.map(String.init).joined(separator: "_"))"
             + " prefix_entries=\(prefix.count) output=\(tokens.count) finish=\(finish.rawValue)"
-            + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)")
+            + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
+            + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
+            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)")
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,

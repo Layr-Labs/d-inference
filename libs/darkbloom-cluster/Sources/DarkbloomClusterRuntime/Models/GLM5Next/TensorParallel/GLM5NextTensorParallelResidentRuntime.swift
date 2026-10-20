@@ -39,6 +39,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// 1: 1,767 tok/s; 2: 2,532; 4: 1,466 (each micro-batch's matmuls too
     /// small); decode and tokens unchanged.
     static let prefillMicroBatches = 2
+    /// Prefill runs chunks of this many tokens (a multiple of the request's
+    /// chunk): the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4
+    /// matmuls against ~62 at 2,048. Measured, sealed TP2 with 2 micro-batches:
+    /// 3,931-token prompt 2,518 -> 2,841 tok/s, 15,724-token prompt 2,371 ->
+    /// 2,771 (8,192: 2,579). Charged as a second request workspace beside the
+    /// profile's 2,048-token one, and the sealed sums' buffers at this size.
+    static let prefillChunkTokens = 4096
 
     let configuration: QwenResidentLoadConfiguration
     let descriptor: GLM5NextResidentDescriptor
@@ -115,8 +122,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
         // at the largest chunk: the float32 partial, its sealed frame, both
         // ranks' frames, the opened peer partial and the sum (six partials).
         let profile = descriptor.profile
-        var requestReserve = try QwenLongPrefillCheckedBytes.product([6, profile.maximumChunkTokens,
-            descriptor.configuration.textConfig.hiddenSize, 4])
+        var requestReserve = try QwenLongPrefillCheckedBytes.sum([
+            try QwenLongPrefillCheckedBytes.product([6, max(profile.maximumChunkTokens, Self.prefillChunkTokens),
+                descriptor.configuration.textConfig.hiddenSize, 4]),
+            GLM5NextServingResources.workspaceNativeBytes])
         for rank in 0 ..< 2 {
             let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
                 rank: rank, buildSHA256: configuration.identity.peers[rank].buildSHA256)
@@ -381,7 +390,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
             throw ProbeError("GLM tensor-parallel ranks were given different requests")
         }
         let sampler = request.sampler
-        let prompt = request.promptTokenIDs, chunk = max(1, request.chunkSize)
+        let requestChunk = max(1, request.chunkSize)
+        let chunk = max(requestChunk, (Self.prefillChunkTokens / requestChunk) * requestChunk)
+        let prompt = request.promptTokenIDs
         var lastCheck: UInt64 = 0
         func localStop() -> Bool {
             if (try? control.check(deadline: reserved.deadline)) == nil { return true }

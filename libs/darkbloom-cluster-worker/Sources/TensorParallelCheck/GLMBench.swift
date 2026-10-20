@@ -1,6 +1,7 @@
 import DarkbloomClusterRuntime
 import Darwin
 import Foundation
+import MLX
 
 // darkbloom-cluster-tp-check glm --mode full|shard|tp --model-dir DIR --report FILE
 //     [--prompt-tokens N | --prompt-file TOKENS.json] [--output-count N] [--chunk N] [--repeats N]
@@ -14,6 +15,33 @@ enum GLMBench {
     static func run(_ arguments: [String]) throws {
         if arguments.first == "sealprobe" {
             GLM5NextTensorParallelBench.sealProbe(bytes: [16_384, 16 << 20, 32 << 20], repeats: 20, log: { note($0) })
+            return
+        }
+        if arguments.first == "gemm" {
+            // Local diagnostic: achievable matmul TFLOPS at GLM prefill shapes.
+            func measure(_ label: String, flops: Double, _ body: () -> MLXArray) {
+                for _ in 0 ..< 3 { eval(body()) }
+                let start = Date()
+                let n = 20
+                for _ in 0 ..< n { eval(body()) }
+                let s = Date().timeIntervalSince(start) / Double(n)
+                note(String(format: "gemm %@: %.3f ms, %.1f TFLOPS", label, s * 1000, flops / s / 1e12))
+            }
+            for (m, k, n) in [(2048, 4096, 4096), (4096, 4096, 4096), (8192, 8192, 8192), (2048, 4096, 1024), (16384, 4096, 1024)] {
+                let x = MLXRandom.normal([m, k]).asType(.bfloat16), w = MLXRandom.normal([n, k]).asType(.bfloat16) * 0.02
+                eval(x, w)
+                measure("bf16 \(m)x\(k)x\(n)", flops: 2.0 * Double(m * k * n)) { matmul(x, w.T) }
+                let q = quantized(w, groupSize: 16, bits: 4, mode: .nvfp4)
+                eval(q.wq, q.scales)
+                measure("nvfp4 \(m)x\(k)x\(n)", flops: 2.0 * Double(m * k * n)) {
+                    quantizedMM(x, q.wq, scales: q.scales, biases: q.biases, transpose: true, groupSize: 16, bits: 4, mode: .nvfp4)
+                }
+                let a = quantized(w, groupSize: 64, bits: 4, mode: .affine)
+                eval(a.wq, a.scales)
+                measure("affine4 \(m)x\(k)x\(n)", flops: 2.0 * Double(m * k * n)) {
+                    quantizedMM(x, a.wq, scales: a.scales, biases: a.biases, transpose: true, groupSize: 64, bits: 4, mode: .affine)
+                }
+            }
             return
         }
         if arguments.first == "allsum" {

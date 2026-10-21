@@ -7,7 +7,8 @@ import Testing
 
 /// The Super video decoder's bounds and refusals on synthesized clips: the
 /// decoded-pixel budget, the codec allowlist, track and timing refusals,
-/// per-frame validation, the decode allowance and cancellation of the reader.
+/// per-frame validation, the decode allowance, cancellation of the reader,
+/// and the container type hint.
 struct NemotronSuperVideoDecodeTests {
     private typealias Decode = NemotronSuperVideoDecode
     private typealias Clips = NemotronSuperVideoClips
@@ -131,6 +132,42 @@ struct NemotronSuperVideoDecodeTests {
         await #expect(throws: CancellationError.self) { try await pull.value }
         // An uncancelled pull finds the reader stopped.
         #expect(throws: Decode.Failure.inconsistentFrames) { try frames.value.next() }
+    }
+
+    /// The type hint follows the SDK container rule `MediaIngest` applied, so
+    /// a legacy QuickTime movie without `ftyp` is read as QuickTime.
+    @Test func containerTypeFollowsTheSharedIngestRule() async throws {
+        typealias Asset = NemotronSuperVideoAsset
+        func atom(_ type: String, _ payload: [UInt8] = [], size: UInt32? = nil) -> Data {
+            var data = Data()
+            withUnsafeBytes(of: (size ?? UInt32(8 + payload.count)).bigEndian) { data.append(contentsOf: $0) }
+            data.append(contentsOf: Array(type.utf8))
+            data.append(contentsOf: payload)
+            return data
+        }
+        let quickTime = Array("qt  ".utf8) + [0, 0, 0, 0]
+        let iso = Array("isom".utf8) + [0, 0, 2, 0]
+        #expect(try Asset.contentType(of: atom("ftyp", quickTime) + atom("moov") + atom("mdat")) == .mov)
+        #expect(try Asset.contentType(of: atom("ftyp", iso) + atom("moov") + atom("mdat")) == .mp4)
+        #expect(try Asset.contentType(of: atom("wide") + atom("mdat") + atom("moov")) == .mov)
+        // An ftyp after another atom, or with a 64-bit size, still decides.
+        #expect(try Asset.contentType(of: atom("free") + atom("ftyp", quickTime) + atom("moov")) == .mov)
+        let extended = atom("ftyp", [0, 0, 0, 0, 0, 0, 0, 24] + quickTime, size: 1)
+        #expect(try Asset.contentType(of: extended + atom("mdat")) == .mov)
+        let invalid = [Data(), atom("moov"), atom("ftyp", quickTime) + atom("ftyp", iso), atom("moov").dropLast(),
+                       atom("mdat") + Data([0, 0, 0]), atom("moov", size: 9)]
+        for data in invalid {
+            #expect(throws: Decode.Failure.invalidVideo, "\(Array(data))") { try Asset.contentType(of: data) }
+        }
+        // A real movie without its ftyp plans as the original does.
+        let movie = try await Clips.movie(frames: 6, fps: 2, fileType: .mov)
+        let legacy = try Clips.withoutFileType(movie)
+        #expect(try Asset(videoData: movie).contentType == .mov)
+        #expect(try Asset(videoData: legacy).contentType == .mov)
+        let original = try await Decode.inspect(Clips.uri(movie, quickTime: true))
+        let plan = try await Decode.inspect(Clips.uri(legacy, quickTime: true))
+        #expect(plan.sourceFrames == original.sourceFrames && plan.frameIndices == original.frameIndices
+            && plan.labels == original.labels)
     }
 }
 

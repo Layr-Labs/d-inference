@@ -76,6 +76,15 @@ enum NemotronSuperVideoClips {
         return data
     }
 
+    /// `movie` with its leading `ftyp` atom renamed `free`: a legacy
+    /// QuickTime layout, whose chunk offsets stay valid.
+    static func withoutFileType(_ movie: Data) throws -> Data {
+        try #require(movie.count > 8 && movie[movie.startIndex + 4 ..< movie.startIndex + 8] == Data("ftyp".utf8))
+        var data = movie
+        data.replaceSubrange(data.startIndex + 4 ..< data.startIndex + 8, with: Data("free".utf8))
+        return data
+    }
+
     static func uri(_ movie: Data, quickTime: Bool = false) -> String {
         "data:video/\(quickTime ? "quicktime" : "mp4");base64," + movie.base64EncodedString()
     }

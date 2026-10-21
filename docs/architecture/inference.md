@@ -436,10 +436,13 @@ keep an operator's value. The plain owner turns exact text prefix reuse on when
 the grant holds every request's fixed bytes beside the bank, unless the
 operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
 
-On NAX GPUs (M5 and later) prompt processing runs the routed NVFP4 expert
-products through MLX's NAX gather instead of the simdgroup grouped GEMM
-(`ModelOptNVFP4GroupedGEMM.isEnabled`): the summation order differs, the
-teacher-forced accuracy does not (`libs/mlx-swift-lm/docs/nemotron-super.md`).
+On NAX GPUs (M5 and later) prompt processing runs the routed NVFP4 experts
+on dedicated NAX kernels behind one fused expert route
+(`ModelOptNVFP4NAXExperts`) instead of the simdgroup grouped GEMM, and the
+dense FP8 and NVFP4 projections decode their weights inside the NAX GEMM
+(`ModelOptNAXDenseLinear`): the expert summation order differs from the
+grouped GEMM, the teacher-forced accuracy does not
+(`libs/mlx-swift-lm/docs/nemotron-super.md`).
 Speculative rounds submit the verify window to the GPU every 12 blocks
 (`DARKBLOOM_NEMOTRON_SUPER_MTP_WINDOW_SUBMIT`, `0` builds it whole) and run it
 and the MTP head on Super's fused decode kernels row by row

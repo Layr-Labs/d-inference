@@ -139,9 +139,10 @@
 - Faster on M5 GPUs, with tokens unchanged in decode: speculative rounds
   submit the verify window in parts and use the fused decode kernels, so
   one request decodes realistic prompts at 79 tok/s instead of 70 on the M5
-  Ultra. Prompt processing on NAX GPUs uses MLX's NAX expert products: 2,100
-  tokens/s instead of 1,556, at the same teacher-forced accuracy (top-1
-  78.16% vs 78.12%).
+  Ultra. Prompt processing on NAX GPUs runs the experts on dedicated NVFP4
+  NAX kernels with a fused expert route and decodes the dense projections'
+  weights inside the NAX GEMM: 2,471 tokens/s instead of 1,556 on a 12K
+  prompt, at the same teacher-forced accuracy (top-1 78.16% vs 78.12%).
 - Paged attention KV by default (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`, `paged`
   unless set to `contiguous`): the segmented native paged backend, charged by
   the engine's process-memory owner, with the decode rows reserved for the

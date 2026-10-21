@@ -235,6 +235,42 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(deep))
     }
 
+    /// Only the requested top-level member is parsed, and held to the limits;
+    /// the others need only well-formed extents. A repeated key keeps its last
+    /// value, as in Python.
+    func testOrderedJSONMemberParsesOnlyItsKey() throws {
+        func tools(_ body: String) throws -> Value? {
+            try NemotronSuperOrderedJSON.member("tools", of: Data(body.utf8))
+        }
+        let deep = String(repeating: "[", count: 100) + String(repeating: "]", count: 100)
+        XCTAssertEqual(try tools(#"{"seed": 9223372036854775808, "deep": "# + deep
+            + #", "tools": [1], "s": "}\"[\\", "e": 1e999, "tools": [{"b": 1, "a": null}]}"#),
+            .array([.object(["b": .int(1), "a": .null])]))
+        XCTAssertNil(try tools(#"{"seed": 18446744073709551616}"#))
+        XCTAssertThrowsError(try tools(#"{"tools": [12345678901234567890]}"#)) {
+            XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .limit)
+        }
+        for invalid in ["[]", #"{"a": }"#, #"{"a": [1}"#, #"{"a": "x}"#, #"{"a": 1] }"#, #"{"a": 1} x"#,
+                        #"{"a": 1"#, "{\"a\": \"\u{01}\"}"] {
+            XCTAssertThrowsError(try tools(invalid), invalid)
+        }
+    }
+
+    /// The body is parsed strictly only for `tools`: a `seed` the SDK decodes
+    /// as UInt64 but beyond Int64 no longer refuses a tool request.
+    func testSeedBeyondInt64DoesNotRefuseATooledRequest() throws {
+        let body = Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID
+            + #"","seed":9223372036854775808,"messages":[{"role":"user","content":"q"}],"#
+            + #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","#
+            + #""properties":{"b":{"type":"string"},"a":{"type":"integer"}}}}}]}"#).utf8)
+        let plan = try NemotronSuperRequestPlan(body: body)
+        XCTAssertEqual(plan.request.seed, 1 << 63)
+        let prompt = SuperVideoTextTokenizer.text(try plan.textPromptTokens(body: body,
+            templateBytes: Self.templateBytes(), tokenizer: SuperVideoTextTokenizer()))
+        XCTAssertTrue(prompt.contains("<name>b</name>\n<type>string</type>\n</parameter>\n<parameter>\n<name>a</name>"),
+                      prompt)
+    }
+
     /// String bytes decode exactly, as Python's `json.loads` reads them: a
     /// U+FEFF that starts a raw segment survives, and invalid UTF-8 (a stray
     /// byte, an encoded surrogate, an overlong or truncated sequence) is refused.

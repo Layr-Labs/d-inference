@@ -254,10 +254,12 @@ enum NemotronSuperPromptContract {
             "function": .object(["name": .string(call.function.name), "arguments": arguments])])
     }
 
+    /// Only `tools` is parsed from the raw body, so other members (a `seed`
+    /// beyond Int64, say) are not held to the ordered parser's limits.
     private static func toolValues(body: Data, declared: [OpenAITool]?) throws -> Value? {
         guard let declared, !declared.isEmpty else { return nil }
-        guard case .object(let root) = try NemotronSuperOrderedJSON.parse(body),
-            case .array(let raw)? = root["tools"] else { throw Failure.toolDeclarationMismatch }
+        guard case .array(let raw)? = try NemotronSuperOrderedJSON.member("tools", of: body)
+        else { throw Failure.toolDeclarationMismatch }
         let names = Set(declared.map(\.function.name))
         let selected = raw.filter { tool in
             guard case .object(let object) = tool else { return false }

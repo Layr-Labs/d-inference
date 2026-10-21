@@ -1,8 +1,5 @@
-import CoreGraphics
 import Foundation
-import ImageIO
 import Testing
-import UniformTypeIdentifiers
 import zlib
 @testable import ProviderCore
 
@@ -414,45 +411,6 @@ enum SuperImageTestJPEG {
         var copy = data
         copy.removeSubrange(start..<(start + 2 + length))
         return copy
-    }
-}
-
-extension NemotronSuperImageDecodeTests {
-    /// One picture encoded by ImageIO as PNG and as JPEG.
-    static func encoded(_ type: UTType, width: Int = 256, height: Int = 256,
-                        fill: (red: CGFloat, green: CGFloat, blue: CGFloat) = (1, 0, 0)) throws -> Data {
-        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
-        context.setFillColor(CGColor(red: fill.red, green: fill.green, blue: fill.blue, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let image = try #require(context.makeImage())
-        let data = NSMutableData()
-        let destination = try #require(CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil))
-        CGImageDestinationAddImage(destination, image, nil)
-        #expect(CGImageDestinationFinalize(destination))
-        return data as Data
-    }
-
-    /// The same picture as PNG and JPEG normalizes to nearly the same tower
-    /// input, inside the range the reference normalization can produce.
-    @Test func samePictureAsPNGAndJPEGNormalizesAlike() throws {
-        let png = try NemotronSuperImageDecode.prepare(Self.encoded(.png), orientation: .applyEXIF)
-        let jpeg = try NemotronSuperImageDecode.prepare(Self.encoded(.jpeg), orientation: .applyEXIF)
-        #expect(png.grid == jpeg.grid && png.normalizedCHW.count == jpeg.normalizedCHW.count)
-        let difference = zip(png.normalizedCHW, jpeg.normalizedCHW).map { abs($0 - $1) }.max() ?? .infinity
-        #expect(difference < 0.05, "max |png - jpeg| = \(difference)")
-        // (x / 255 - mean) / std for x in 0...255, per channel.
-        let mean: [Float] = [0.48145466, 0.4578275, 0.40821073]
-        let std: [Float] = [0.26862954, 0.26130258, 0.27577711]
-        let plane = png.normalizedCHW.count / 3
-        for prepared in [png, jpeg] {
-            for channel in 0..<3 {
-                let values = prepared.normalizedCHW[(channel * plane)..<((channel + 1) * plane)]
-                #expect(values.allSatisfy { $0.isFinite && $0 >= -mean[channel] / std[channel] - 1e-3
-                    && $0 <= (1 - mean[channel]) / std[channel] + 1e-3 }, "channel \(channel)")
-            }
-        }
     }
 }
 

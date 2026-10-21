@@ -288,11 +288,11 @@ extension NemotronSuperLocalHTTPTests {
                     try await superHTTPEventually("reset reached its exact request cancellation scope") {
                         disconnect.cancelled
                     }
-                    // The transport may already have retired the reset body, so
-                    // the response tracker can read 0 or 1 here. A transport abort
-                    // is not native completion: the held pump and the real
-                    // media/KV charges must remain until its gate opens, and the
-                    // tracker reaches 0 once it has (checked below).
+                    // LocalResponseTracker owns body.finish, so a disconnected
+                    // body waiting for native retirement correctly remains held.
+                    #expect(tracker.activeCount == 1)
+                    // A transport abort is not native completion. The held pump
+                    // and real media/KV charges must remain until its gate opens.
                     try #require(!(await gate.released))
                     #expect(await budget.outstandingReservedBytes() > baseline)
                     #expect(await owner.bridge._testLivePumpCount() == 1)

@@ -8,18 +8,12 @@ enum ProviderModelContainer: Sendable {
     case autoregressive(ModelContainer)
     case nativeMiMo(ModelContainer, MiMoV26ServingLoad)
     case diffusion(DiffusionGemmaContainer)
-    /// The managed Super owner; it holds no `ModelContainer` and is never
-    /// rebuilt from one (`ProviderLoop+NemotronSuper`).
-    case nemotronSuper(NemotronSuperSlotOwner)
 
     var autoregressive: ModelContainer? {
         switch self {
         case .autoregressive(let value), .nativeMiMo(let value, _): value
-        case .diffusion, .nemotronSuper: nil
+        case .diffusion: nil
         }
-    }
-    var nemotronSuper: NemotronSuperSlotOwner? {
-        if case .nemotronSuper(let owner) = self { owner } else { nil }
     }
     var diffusion: DiffusionGemmaContainer? {
         if case .diffusion(let value) = self { value } else { nil }
@@ -29,7 +23,6 @@ enum ProviderModelContainer: Sendable {
         case .autoregressive(let value): ObjectIdentifier(value)
         case .nativeMiMo(let value, _): ObjectIdentifier(value)
         case .diffusion(let value): ObjectIdentifier(value)
-        case .nemotronSuper(let owner): ObjectIdentifier(owner)
         }
     }
 
@@ -44,8 +37,6 @@ enum ProviderModelContainer: Sendable {
             return await value.perform { TokenizerHandle($0.tokenizer) }
         case .nativeMiMo(let value, _):
             return await value.perform { TokenizerHandle($0.tokenizer) }
-        case .nemotronSuper(let owner):
-            return owner.tokenizer
         }
     }
 
@@ -70,8 +61,6 @@ enum ProviderModelContainer: Sendable {
                     fp16KVBytesPerToken: rate, maxContextLength: config.maxPositionEmbeddings,
                     defaultMaxTokens: min(config.maxPositionEmbeddings, defaultMaxTokens))
             }
-        case .nemotronSuper(let owner):
-            return owner.sizing
         case .diffusion(let value):
             return await value.perform { context in
                 let config = context.model.configuration.textConfig

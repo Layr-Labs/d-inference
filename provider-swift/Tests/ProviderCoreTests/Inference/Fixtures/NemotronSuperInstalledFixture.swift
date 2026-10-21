@@ -6,7 +6,6 @@ import Testing
 @testable import MLXLLM
 @testable import MLXLMCommon
 @testable import MLXVLM
-@testable import ProviderCore
 
 struct SuperInstalledFixture {
     var radioDimensions: NemotronRadioDimensions? = nil
@@ -86,26 +85,6 @@ struct SuperInstalledFixture {
         let index = try JSONSerialization.data(withJSONObject: ["weight_map": map], options: [.sortedKeys])
         let hash = SHA256.hash(data: index).map { String(format: "%02x", $0) }.joined()
         try body(ModelOptCheckpointSource(indexData: index, indexSHA256: hash, files: files))
-    }
-
-    /// The same fixture as a `NemotronSuperLocalLoad` staging, so it installs
-    /// through the transaction's real claim, fences and builder. The shard
-    /// files are unlinked at once; their open descriptors stay readable.
-    func staging() throws -> NemotronSuperLocalLoad.Staging {
-        let makeModel = model
-        return try withSourceValue(tensors()) { source in
-            NemotronSuperLocalLoad.Staging(source: source, install: { residency, allowance, construction in
-                try NemotronSuperInstallation.stage(source: source, residency: residency, dtype: .float32,
-                    backendAllowanceBytes: allowance, construction: construction, makeModel: makeModel)
-            }, head: nil)
-        }
-    }
-
-    private func withSourceValue<Value>(_ tensors: [String: Tensor],
-                                        _ body: (ModelOptCheckpointSource) throws -> Value) throws -> Value {
-        var value: Value?
-        try withSource(tensors) { value = try body($0) }
-        return try #require(value)
     }
 
     func make() throws -> (NemotronSuperInstallation.Installed, NativeConstructionScope, NemotronSuperResidency) {

@@ -218,28 +218,27 @@ extension EngineV2Factory {
 
         var nativeKVTypes: CBv2NativeKVTypeProbe.Result?
         var nativeKVProbeFailure: Error?
-        /// The recurrent checkpoint bank this backend hosts, carved from its
-        /// grant. Paged storage hosts one only when the config opts in.
-        func hostedHybridCache(paged: Bool) throws -> CBv2HybridPrefixCacheConfig? {
-            guard modelCapabilities.supportsRecurrentCheckpointReuse,
-                let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
-                !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
-                !hybridPrefixCache.buildID.isEmpty,
-                !paged || hybridPrefixCache.permitsPagedStorage
-            else { return nil }
-            guard hybridPrefixCache.maximumBytes < cappedCapacity else {
-                throw EngineV2ProductionError.noKVHeadroom
-            }
-            return hybridPrefixCache
-        }
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             try EngineV2KVQuantizationPolicy.requireResolvedBackend(
                 .contiguous, selection: precision, reason: fallbackReason)
             if let nativeKVProbeFailure { throw nativeKVProbeFailure }
             let observed = try nativeKVTypes ?? probeNativeKVTypes(model: model, adapter: adapter)
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .contiguous)
-            let configuredHybridCache = try hostedHybridCache(paged: false)
-            let contiguousCapacity = cappedCapacity - (configuredHybridCache?.maximumBytes ?? 0)
+            var contiguousCapacity = cappedCapacity
+            let configuredHybridCache: CBv2HybridPrefixCacheConfig?
+            if modelCapabilities.supportsRecurrentCheckpointReuse,
+                let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
+                !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
+                !hybridPrefixCache.buildID.isEmpty
+            {
+                guard hybridPrefixCache.maximumBytes < contiguousCapacity else {
+                    throw EngineV2ProductionError.noKVHeadroom
+                }
+                configuredHybridCache = hybridPrefixCache
+                contiguousCapacity -= hybridPrefixCache.maximumBytes
+            } else {
+                configuredHybridCache = nil
+            }
             let backend = CBv2ContiguousKVBackend(
                 config: CBv2ContiguousBackendConfig(bytesCapacity: contiguousCapacity))
             let caches = try adapter.newCaches { index, kind in
@@ -303,13 +302,9 @@ extension EngineV2Factory {
             let resolvedResidentPrefix =
                 precision == .native && modelCapabilities.supportsPrefixReuse
                 ? residentPrefixCache : nil
-            // Carve a bank only where the engine hosts one on pages: unquantized
-            // storage without a resident page index (`EngineV2.hostsPagedHybridBank`).
-            let pagedHybridCache = resolvedResidentPrefix == nil && precision == .native
-                ? try hostedHybridCache(paged: true) : nil
             do {
                 let paged = try makeSegmentedPagedBackend(
-                    admittedGrantBytes: cappedCapacity - (pagedHybridCache?.maximumBytes ?? 0),
+                    admittedGrantBytes: cappedCapacity,
                     layerKinds: layerKinds,
                     layerDTypes: nativeKVTypes.layerDTypes,
                     schedulerConfig: schedulerConfig,
@@ -350,8 +345,7 @@ extension EngineV2Factory {
                         ? Self.pagedPoolDTypeName(paged.pool.config.dtype) : "mixed",
                     nativeLayerDTypes: nativeKVTypes.layerDTypes,
                     kvQuantization: precision,
-                    residentPrefixCacheEnabled: resolvedResidentPrefix != nil,
-                    hybridPrefixCache: pagedHybridCache)
+                    residentPrefixCacheEnabled: resolvedResidentPrefix != nil)
             } catch let error as CBv2KVError {
                 switch error {
                 case .backendIneligible(let reason):

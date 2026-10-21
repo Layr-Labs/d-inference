@@ -166,10 +166,8 @@ order are not modeled. Passing parity proves prompt bytes, not model quality.
 The provider harness template also builds `NemotronSuperRunner`, a
 qualification-only executable that serves one Super owner on 127.0.0.1 through
 the real local HTTP stack with isolated state. [super-runner.md](super-runner.md)
-covers building, running, `bench_super.py` and the serving policy benchmark
-`bench_serving.py` (natural prompts in `serving_prompts.json`);
-[memory_calibration.md](memory_calibration.md) covers `memory_calibration.py`.
-The scripts are stdlib-only (`python3 -I`).
+covers building, running and `bench_super.py`; [memory_calibration.md](memory_calibration.md)
+covers `memory_calibration.py`. Both scripts are stdlib-only (`python3 -I`).
 
 ## Admission and reservation calibration
 

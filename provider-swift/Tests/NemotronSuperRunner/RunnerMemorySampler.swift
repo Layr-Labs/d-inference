@@ -122,7 +122,7 @@ actor RunnerMemorySampler {
         for (kind, bytes) in sums {
             window.byKind[kind] = max(window.byKind[kind] ?? 0, bytes)
         }
-        let held = [RunnerChargeKind.mediaIngress, .media, .kv, .prefillLane, .decodeRows, .mtpRound]
+        let held = [RunnerChargeKind.mediaIngress, .media, .kv, .prefillLane]
             .reduce(UInt64(0)) { $0 &+ (sums[$1] ?? 0) }
         window.requestHeld = max(window.requestHeld, held)
         trackLifetimes(sample.rows, footprint: footprint, active: active)

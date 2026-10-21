@@ -43,11 +43,7 @@ extension EngineV2Bridge {
     /// engine capacity — for co-resident slots.
     public func slotKVBytesClaim() -> Int {
         let snapshot = capacitySnapshot()
-        // A segmented pool follows the grant minus any bank carve, so a slot
-        // with a bank claims like contiguous storage; only a fixed-reference
-        // pool's physical capacity replaces the grant.
-        if kvBackendKind == .paged, snapshot.kvBytesBackendCapacity > 0,
-            snapshot.pagedStorage == nil || (ownedEngine as? EngineV2)?.hybridPrefixCache == nil {
+        if kvBackendKind == .paged, snapshot.kvBytesBackendCapacity > 0 {
             return snapshot.kvBytesBackendCapacity
         }
         let claim = resliceAdmissionBytesClaim()

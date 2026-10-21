@@ -16,31 +16,10 @@ must be reported rather than silently repaired.
 
 Media discovery uses `ModelMediaPolicy.advertisesMedia` in
 `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.
-`nemotron_h_omni` checkpoints do not advertise media support, even when
+Staged `nemotron_h_omni` checkpoints do not advertise media support, even when
 `vision_config` is present. The architecture match ignores surrounding whitespace
 and case and applies independently of Hugging Face repository IDs or local aliases.
-
-### Nemotron Super discovery
-
-`EngineV2SupportedModels.isSupported(model:)` admits exactly one
-`nemotron_h_omni` artifact: the registry id `nvidia-nemotron-3.5-super` with the
-canonical declaration (`NemotronSuperServingPolicy.isServingIdentity`). The type
-alone stays unsupported, so providers without this policy, other ids (including
-the upstream Hugging Face id) and whitespace or case variants keep being dropped
-at scan, advertisement and prefetch publication. `ModelScanner.parseModelInfo`
-withholds that id unless `config.json` and `model.safetensors.index.json` are the
-pinned bytes (`NemotronSuperServingPolicy.hasPinnedMetadata`); the managed load
-verifies every shard. A discovered Super artifact reports `quantization`
-`nvfp4`, image input (`ModelMediaPolicy.advertisesMedia`, for that exact id
-only), the ordinary template render check, and its managed LOAD footprint
-(`NemotronSuperServingPolicy.discoveryFootprint`): `estimated_memory_gb` covers
-the installation and head claim, prefill lane and admission KV of the largest
-default configuration plus one single-image request's media charge, and
-`native_load_transient_bytes` the LOAD bytes above the shard bytes. Capacity
-quotes for its image probes also charge the probe's images
-(`CapacityQuoteEngine.nemotronSuperMediaCharge`). Registration identity and RAM floor are in the
-[registry reference](../reference/model-registry-format.md#nemotron-super).
-Discovery does not register or publish the model.
+This guard does not enable text inference, qualify a RAM tier, or register the model.
 
 Published metadata is not a loadability or quality certificate. Keep full LOAD
 quotations, native transient allowances, memory safeguards and post-load

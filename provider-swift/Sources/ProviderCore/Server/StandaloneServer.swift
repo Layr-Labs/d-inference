@@ -407,17 +407,7 @@ public actor StandaloneServer {
             standaloneLogger.error(
                 "Not serving permanently ineligible model(s): \(ids)")
         }
-        // The managed Super owner is built only by the provider loop.
-        let (supported, unsupported) = EngineV2SupportedModels.partition(eligible.filter {
-            !NemotronSuperServingPolicy.isServingIdentity(modelID: $0.id, modelType: $0.modelType)
-        })
-        let managedOnly = eligible.filter {
-            NemotronSuperServingPolicy.isServingIdentity(modelID: $0.id, modelType: $0.modelType)
-        }
-        if !managedOnly.isEmpty {
-            standaloneLogger.warning(
-                "Not serving \(managedOnly.map(\.id).joined(separator: ", ")): it loads only in the provider daemon")
-        }
+        let (supported, unsupported) = EngineV2SupportedModels.partition(eligible)
         if !unsupported.isEmpty {
             let ids = unsupported.map(\.id).sorted().joined(separator: ", ")
             standaloneLogger.warning(

@@ -38,60 +38,6 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertThrowsError(try NemotronSuperPromptContract.verifiedTemplate(Data("altered".utf8)))
     }
 
-    /// Fields the template cannot honor are refused instead of dropped; their
-    /// default spellings still parse to the same controls.
-    func testUnhonoredReasoningFieldsAreRefused() throws {
-        for body in [#"{"chat_template_kwargs":{"reasoning_effort":"low"}}"#,
-                     #"{"chat_template_kwargs":{"preserve_thinking":true}}"#,
-                     #"{"chat_template_kwargs":{"unknown":null}}"#,
-                     #"{"reasoning":{"max_tokens":64}}"#,
-                     #"{"reasoning":{"exclude":true}}"#,
-                     #"{"reasoning":{"exclude":0}}"#,
-                     #"{"reasoning":{"exclude":"false"}}"#,
-                     #"{"reasoning":{"summary":"verbose"}}"#,
-                     #"{"reasoning":{"summary":true}}"#,
-                     #"{"reasoning":{"effort":"medium","generate_summary":"auto"}}"#] {
-            XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: Data(body.utf8)), body) { error in
-                guard case .unsupportedControl = error as? NemotronSuperPromptContract.Failure else {
-                    return XCTFail("\(body): \(error)")
-                }
-            }
-        }
-        for body in [#"{"reasoning":"on"}"#, #"{"chat_template_kwargs":[]}"#] {
-            XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: Data(body.utf8)), body)
-        }
-        let plain = try NemotronSuperPromptContract.controls(body: Data("{}".utf8))
-        for body in [#"{"reasoning":{"exclude":false}}"#, #"{"reasoning":{"max_tokens":null,"exclude":null}}"#,
-                     #"{"reasoning":null,"chat_template_kwargs":null}"#,
-                     #"{"reasoning":{"summary":"auto"}}"#, #"{"reasoning":{"summary":"detailed"}}"#,
-                     #"{"chat_template_kwargs":{"thinking":true}}"#,
-                     #"{"chat_template_kwargs":{"truncate_history_thinking":true,"force_nonempty_content":false}}"#] {
-            XCTAssertEqual(try NemotronSuperPromptContract.controls(body: Data(body.utf8)), plain, body)
-        }
-        let medium = try NemotronSuperPromptContract.controls(body: Data(
-            #"{"reasoning":{"effort":"medium","exclude":false,"summary":"concise"},"chat_template_kwargs":{"enable_thinking":true,"medium_effort":true}}"#.utf8))
-        XCTAssertEqual(medium, .init(enableThinking: true, mediumEffort: true,
-                                     truncateHistoryThinking: true, forceNonemptyContent: false))
-    }
-
-    /// OpenRouter's `chat_template_kwargs.thinking` is the template's
-    /// `enable_thinking`, under the same conflict rules as every spelling.
-    func testOpenRouterThinkingSwitchesTheTemplate() throws {
-        let off = try NemotronSuperPromptContract.controls(body: Data(#"{"chat_template_kwargs":{"thinking":false}}"#.utf8))
-        XCTAssertFalse(off.enableThinking)
-        let medium = try NemotronSuperPromptContract.controls(body: Data(
-            #"{"reasoning_effort":"medium","chat_template_kwargs":{"thinking":true}}"#.utf8))
-        XCTAssertEqual(medium, .init(enableThinking: true, mediumEffort: true,
-                                     truncateHistoryThinking: true, forceNonemptyContent: false))
-        for body in [#"{"reasoning_effort":"none","chat_template_kwargs":{"thinking":true}}"#,
-                     #"{"reasoning_effort":"high","chat_template_kwargs":{"thinking":false}}"#,
-                     #"{"enable_thinking":true,"chat_template_kwargs":{"thinking":false}}"#,
-                     #"{"chat_template_kwargs":{"enable_thinking":false,"thinking":true}}"#,
-                     #"{"chat_template_kwargs":{"thinking":"no"}}"#] {
-            XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: Data(body.utf8)), body)
-        }
-    }
-
     func testImageOrderAndOrderedToolArguments() throws {
         let body = Data(#"{"model":"local","messages":[{"role":"user","content":[{"type":"text","text":"before"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}},{"type":"text","text":"after"}]},{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{\"z\":1,\"a\":[true,null]}"}}]}]}"#.utf8)
         let request = try ProviderLoop.decodeOpenAIRequest(body)

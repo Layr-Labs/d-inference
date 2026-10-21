@@ -6,7 +6,6 @@ import Testing
 @testable import MLXLLM
 @testable import MLXLMCommon
 @testable import MLXVLM
-@testable import ProviderCore
 
 /// Seeded MTP-capable Super installation with a calibrated FP8 output head,
 /// NVFP4 target experts and an embedded NVFP4 prediction head, staged through
@@ -16,17 +15,8 @@ import Testing
 /// always accepted.
 struct SuperMTPInstalledFixture {
     var seed: UInt64 = 3
-    /// nil keeps the one-channel tower that takes direct normalized input;
-    /// encoded PNG/JPEG requests need the reference three-channel 16-pixel patch.
-    var radioDimensions: NemotronRadioDimensions? = nil
-    /// The reference preprocessing's three-channel, 16-pixel-patch layout on a
-    /// two-wide tower: what an encoded PNG or JPEG request needs.
-    static let encodedImageTower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
-        channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
     static let hidden = 32
     static let vocabulary = 64
-    /// Attention head width; the paged KV kernels take 64, 128, 256 or 512.
-    @TaskLocal static var attentionHeadDim = 16
     private struct Tensor { let dtype: String; let shape: [Int]; let data: Data }
 
     static func configuration() -> NemotronHConfiguration {
@@ -34,15 +24,14 @@ struct SuperMTPInstalledFixture {
             numAttentionHeads: 2, numKeyValueHeads: 1, mambaNumHeads: 2, mambaHeadDim: 16,
             ssmStateSize: 8, convKernel: 4, nGroups: 1, intermediateSize: 32,
             moeIntermediateSize: 32, moeSharedExpertIntermediateSize: 32, nRoutedExperts: 4,
-            numExpertsPerTok: 2, hybridOverridePattern: "M*E", headDim: attentionHeadDim,
-            nSharedExperts: 1,
+            numExpertsPerTok: 2, hybridOverridePattern: "M*E", headDim: 16, nSharedExperts: 1,
             numNextnPredictLayers: 1, mtpLayersBlockType: ["attention", "moe"], moeLatentSize: 16)
     }
 
     private func model() throws -> NemotronSuperModel {
-        let images = NemotronSuperImageComposition(tower: NemotronRadio(radioDimensions
-            ?? NemotronRadioDimensions(width: 2, layers: 1, heads: 1, channels: 1, patch: 2,
-                positionSide: 2, prefix: 1, mlpWidth: 3)),
+        let images = NemotronSuperImageComposition(tower: NemotronRadio(NemotronRadioDimensions(
+            width: 2, layers: 1, heads: 1, channels: 1, patch: 2, positionSide: 2, prefix: 1,
+            mlpWidth: 3)),
             projector: NemotronSuperVisionProjector(visionWidth: 2, hiddenWidth: 3,
                 outputWidth: Self.hidden),
             width: Self.hidden, imageTokenID: 18)
@@ -181,24 +170,6 @@ struct SuperMTPInstalledFixture {
         let index = try JSONSerialization.data(withJSONObject: ["weight_map": map], options: [.sortedKeys])
         let hash = SHA256.hash(data: index).map { String(format: "%02x", $0) }.joined()
         return try body(ModelOptCheckpointSource(indexData: index, indexSHA256: hash, files: files))
-    }
-
-    /// The fixture and its head as a `NemotronSuperLocalLoad` staging: the
-    /// transaction quotes, claims and loads the head as it does the pinned one.
-    func staging() throws -> NemotronSuperLocalLoad.Staging {
-        let makeModel = model
-        return try withSource(tensors()) { source in
-            let head = NemotronSuperLocalLoad.Staging.Head(quote: {
-                try NemotronSuperMTPModule.loadQuote(configuration: Self.configuration(), source: source)
-            }, load: { installed, quote, construction in
-                try NemotronSuperMTPModule.load(for: try #require(installed.model).languageModel,
-                    source: source, quote: quote, construction: construction, dtype: .float32)
-            })
-            return NemotronSuperLocalLoad.Staging(source: source, install: { residency, allowance, construction in
-                try NemotronSuperInstallation.stage(source: source, residency: residency, dtype: .float32,
-                    backendAllowanceBytes: allowance, construction: construction, makeModel: makeModel)
-            }, head: head)
-        }
     }
 
     struct Installation {

@@ -73,28 +73,8 @@ enum NemotronSuperLocalPrefill {
     /// charge their own arithmetic quote. Not a measured peak of this run.
     static func laneBytes(_ language: NemotronHModel, chunkTokens: Int, measuredBound: Bool) -> Int {
         let workspace = language.modelOptGraphPrefillWorkspaceBytes(tokens: chunkTokens) ?? 0
-        let bound = measuredBound ? pinnedLaneBytes(chunkTokens: chunkTokens) : 0
+        let bound = measuredBound ? NemotronHModel.prefillActivationBoundBytes(tokens: chunkTokens) : 0
         return max(workspace, bound)
-    }
-
-    /// The pinned checkpoint's lane bound. The builder's lane, the LOAD
-    /// claim's lane share, the default bank and the discovery footprint all
-    /// read it here, so a new bound reaches each of them.
-    static func pinnedLaneBytes(chunkTokens: Int) -> Int {
-        NemotronHModel.prefillActivationBoundBytes(tokens: chunkTokens)
-    }
-
-    /// The chunk the runtime policy asks for, before the model's calibrated
-    /// limit is known: `defaultChunkTokens` without the key, nil when the key
-    /// is malformed or outside 1...`maximumContextTokens` (the builder then
-    /// refuses it).
-    static func requestedChunkTokens(environment: [String: String]) -> Int? {
-        guard let raw = environment[chunkKey]?.trimmingCharacters(in: .whitespaces) else {
-            return defaultChunkTokens
-        }
-        guard let value = Int(raw), (1 ... NemotronSuperServingPolicy.maximumContextTokens).contains(value)
-        else { return nil }
-        return value
     }
 
     private static let laneSuffix = "-nemotron-super-prefill-lane"

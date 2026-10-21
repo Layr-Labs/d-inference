@@ -51,18 +51,11 @@ enum NemotronSuperPromptContract {
         enum Keys: String, CodingKey {
             case enabled = "enable_thinking", medium = "medium_effort"
             case truncate = "truncate_history_thinking", effort = "reasoning_effort"
-            case forceContent = "force_nonempty_content", thinking
+            case forceContent = "force_nonempty_content"
             case kwargs = "chat_template_kwargs", reasoning, preserve = "preserve_thinking"
         }
         enum ReasoningKeys: String, CodingKey { case enabled, effort }
-        /// The kwargs this contract reads: the template's switches, OpenRouter's
-        /// `thinking` spelling of `enable_thinking`, and the parser's
-        /// `force_nonempty_content`. Any other kwarg would be dropped by the template.
-        static let templateKwargs = Set([Keys.enabled, .thinking, .medium, .truncate, .forceContent].map(\.rawValue))
-        /// Responses `reasoning.summary` levels; the full reasoning is returned for each.
-        static let summaryLevels: Set<String> = ["auto", "concise", "detailed"]
         init(from decoder: any Decoder) throws {
-            try Self.refuseUnhonoredFields(decoder)
             let values = try decoder.container(keyedBy: Keys.self)
             let kwargs = try values.nestedOptionalContainer(keyedBy: Keys.self, forKey: .kwargs)
             func boolean(_ key: Keys) throws -> Bool? {
@@ -71,52 +64,17 @@ enum NemotronSuperPromptContract {
                 if let top, let alias, top != alias { throw Failure.conflictingControls }
                 return top ?? alias
             }
-            let thinking = try kwargs?.decodeIfPresent(Bool.self, forKey: .thinking)
-            let enableThinking = try boolean(.enabled)
-            if let thinking, let enableThinking, thinking != enableThinking { throw Failure.conflictingControls }
-            enabled = enableThinking ?? thinking
+            enabled = try boolean(.enabled)
             medium = try boolean(.medium)
             truncate = try boolean(.truncate)
             forceContent = try boolean(.forceContent)
             // This generic alias has different semantics; do not silently lose it.
-            guard !values.contains(.preserve) else { throw Failure.unsupportedControl }
+            guard !values.contains(.preserve), kwargs?.contains(.preserve) != true else { throw Failure.unsupportedControl }
             effort = try values.decodeIfPresent(String.self, forKey: .effort)
             let reasoning = try values.nestedOptionalContainer(keyedBy: ReasoningKeys.self, forKey: .reasoning)
             nestedEnabled = try reasoning?.decodeIfPresent(Bool.self, forKey: .enabled)
             nestedEffort = try reasoning?.decodeIfPresent(String.self, forKey: .effort)
         }
-
-        /// Fields the pinned template cannot honor are refused, never dropped:
-        /// `chat_template_kwargs` beyond `templateKwargs`, and `reasoning` members
-        /// beyond `effort` and `enabled` unless null, `exclude: false` (its default
-        /// meaning) or a `summary` level. The coordinator's sidecar applies the same rule.
-        private static func refuseUnhonoredFields(_ decoder: any Decoder) throws {
-            let values = try decoder.container(keyedBy: AnyKey.self)
-            if let kwargs = try values.nestedOptionalContainer(keyedBy: AnyKey.self,
-                    forKey: AnyKey(Keys.kwargs.rawValue)),
-                !kwargs.allKeys.allSatisfy({ templateKwargs.contains($0.stringValue) }) {
-                throw Failure.unsupportedControl
-            }
-            guard let reasoning = try values.nestedOptionalContainer(keyedBy: AnyKey.self,
-                forKey: AnyKey(Keys.reasoning.rawValue)) else { return }
-            for key in reasoning.allKeys where ReasoningKeys(stringValue: key.stringValue) == nil {
-                if try reasoning.decodeNil(forKey: key) { continue }
-                switch key.stringValue {
-                case "exclude" where (try? reasoning.decode(Bool.self, forKey: key)) == false: continue
-                case "summary" where summaryLevels.contains((try? reasoning.decode(String.self, forKey: key)) ?? ""):
-                    continue
-                default: throw Failure.unsupportedControl
-                }
-            }
-        }
-    }
-
-    private struct AnyKey: CodingKey {
-        let stringValue: String
-        var intValue: Int? { nil }
-        init(_ string: String) { stringValue = string }
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { nil }
     }
 
     /// The official template defaults thinking on even for images. Medium effort

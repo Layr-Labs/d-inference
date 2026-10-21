@@ -16,12 +16,11 @@ struct NemotronSuperRequestPlan: Sendable {
 
     /// `formatted` is a request that `MLXOpenAIService` already passed through
     /// `OpenAIResponseFormatSupport.preparedRequest`; otherwise the instruction
-    /// is inserted here exactly once. The request must name `modelID`.
-    init(body: Data, formatted: OpenAIChatCompletionRequest? = nil,
-         modelID: String = NemotronSuperLocalBinding.modelID) throws {
+    /// is inserted here exactly once.
+    init(body: Data, formatted: OpenAIChatCompletionRequest? = nil) throws {
         let decoded = try formatted ?? OpenAIResponseFormatSupport.preparedRequest(
             ProviderLoop.decodeOpenAIRequest(body))
-        try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
+        try Self.validateWireControls(body: body, request: decoded)
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
             modelType: "nemotron_h_omni", allowInternalSchemaMetadata: false)
         var rendered = decoded
@@ -50,21 +49,17 @@ struct NemotronSuperRequestPlan: Sendable {
     }
 
     /// Output controls this owner cannot honor are refused rather than ignored:
-    /// no logprob channel, prefix cache, logit bias, min-p sampler or
-    /// alternate parsers.
-    private static func validateWireControls(body: Data, request: OpenAIChatCompletionRequest,
-                                             modelID: String) throws {
+    /// no logprob channel, prefix cache, min-p sampler or alternate parsers.
+    private static func validateWireControls(body: Data, request: OpenAIChatCompletionRequest) throws {
         struct Wire: Decodable {
             let logprobs: Bool?
             let top_logprobs: Int?
             let prompt_cache_key: String?
             let n: Int?
-            let logit_bias: [String: Double]?
         }
         let wire = try JSONDecoder().decode(Wire.self, from: body)
-        guard request.model == modelID,
+        guard request.model == NemotronSuperLocalBinding.modelID,
             wire.logprobs != true, wire.top_logprobs == nil, wire.prompt_cache_key == nil,
-            wire.logit_bias?.isEmpty != false,
             wire.n == nil || wire.n == 1,
             request.minP == nil || request.minP == 0,
             request.toolCallParser == nil, request.reasoningParser == nil,

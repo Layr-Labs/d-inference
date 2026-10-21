@@ -124,7 +124,7 @@ extension NemotronSuperLocalHTTPTests {
 }
 
 /// Script and last rendered prompt, shared with the tokenizer across tasks.
-final class SuperOutputScript: @unchecked Sendable {
+private final class SuperOutputScript: @unchecked Sendable {
     private let lock = NSLock()
     private var pieces: [String] = []
     private var rendered = ""
@@ -136,7 +136,7 @@ final class SuperOutputScript: @unchecked Sendable {
 
 /// Generated token N decodes to script piece N (pieces never end in a newline,
 /// which would restart the streaming detokenizer's segment).
-struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
+private struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
     let script: SuperOutputScript
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1, 2, 3] }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { script.decode(count: tokenIds.count) }
@@ -163,7 +163,7 @@ struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
     }
 }
 
-struct SuperSSE {
+private struct SuperSSE {
     var reasoning = "", content = "", finishReason: String?
     var toolCalls: [(name: String, arguments: String)] = []
     init(_ body: String) {
@@ -183,7 +183,7 @@ struct SuperSSE {
     }
 }
 
-struct SuperJSON {
+private struct SuperJSON {
     let reasoning: String?, content: String?
     let toolCalls: [(name: String, arguments: String)]
     init(_ body: String) throws {

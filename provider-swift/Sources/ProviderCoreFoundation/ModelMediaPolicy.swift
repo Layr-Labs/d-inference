@@ -6,10 +6,6 @@ import CoreFoundation
 /// discovery and template validation can share it without importing MLX.
 public enum ModelMediaPolicy {
     public static let ownedQwen4ModelID = Qwen4ModelIdentity.legacyModelID
-    /// Registry id of the one Nemotron 3.5 Super VL artifact served natively.
-    public static let nemotronSuperModelID = "nvidia-nemotron-3.5-super"
-    /// Its exact `config.json` `model_type`.
-    public static let nemotronSuperModelType = "nemotron_h_omni"
 
     public static func isNativeQwen4Type(_ modelType: String?) -> Bool {
         guard let modelType = modelType?
@@ -19,16 +15,11 @@ public enum ModelMediaPolicy {
     }
 
     public static func advertisesMedia(_ configuration: [String: Any], modelID: String? = nil) -> Bool {
-        // Only the managed native owner of the exact registry id serves image
-        // input; discovery further requires its pinned configuration. Other
-        // ids, aliases and spellings of the architecture stay text-only, and
-        // that owner's image boundary refuses video.
+        // Super VL staging is not native media qualification. Match the outer
+        // architecture, independent of repository IDs or local aliases.
         if (configuration["model_type"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == nemotronSuperModelType {
-            return configuration["model_type"] as? String == nemotronSuperModelType
-                && modelID == nemotronSuperModelID
-                && configuration["language_model_only"] as? Bool != true
-                && configuration["vision_config"] is [String: Any]
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h_omni" {
+            return false
         }
         if configuration["model_type"] as? String == "diffusion_gemma_text" { return false }
         if configuration["model_type"] as? String == "diffusion_gemma" {

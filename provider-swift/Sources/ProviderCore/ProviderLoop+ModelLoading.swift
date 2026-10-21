@@ -265,10 +265,6 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
-        // Super builds its own owner and speculates with its embedded head;
-        // neither the generic loaders nor the assistant funnel apply.
-        let managedSuper = NemotronSuperServingPolicy.isServingIdentity(
-            modelID: modelId, modelType: modelInfo.modelType)
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -277,9 +273,7 @@ extension ProviderLoop {
             nativeLoad = inspected
         } else { nativeLoad = nil }
         var mtpPreparation: SpecDecPreparation
-        if managedSuper {
-            mtpPreparation = SpecDecPreparation(artifact: nil, status: .disabled(.configDisabled, configured: false))
-        } else if let nativeLoad {
+        if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: loopConfig.config.backend.mtpMode,
                 externalPath: loopConfig.config.backend.mtpDrafterPath,
                 embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
@@ -431,11 +425,6 @@ extension ProviderLoop {
 
             // The accepted lease is the allocation permit. Advisory eviction and
             // assistant checks above cannot reserve process memory across awaits.
-            if managedSuper {
-                try await loadNemotronSuperSlot(modelID: modelId, directory: modelPath,
-                                                modelInfo: modelInfo, deviceActivity: deviceActivity)
-                return
-            }
             if let nativeLoad {
                 try await loadNativeMiMoSlot(modelID: modelId, directory: modelPath,
                                              load: nativeLoad, preparation: mtpPreparation)
@@ -965,7 +954,6 @@ extension ProviderLoop {
             || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
             return await retireNativeMiMoOwner(modelID: modelId)
         }
-        if isNemotronSuperSlot(modelId) { return await retireNemotronSuperSlot(modelId) }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
         // without extending it through a local. Explicit retirement can leave
@@ -1185,12 +1173,9 @@ extension ProviderLoop {
             if available >= requiredGb { return }
             // Metal can drop all allocation ownership before macOS returns
             // the physical pages (observed at full-model scale). Only a recent
-            // owned Qwen4 retirement (for a Qwen4 load) or Nemotron Super
-            // retirement (for any load) enables this bounded retry. Never add
+            // owned Qwen4 retirement enables this bounded retry. Never add
             // guessed reclaimable bytes to the OS sample or relax the gate.
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
-                try await retirement.pauseForRecheck() { continue }
-            if let retirement = nemotronSuperMemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
             let evictable = evictableModelSlots()
             // Feasibility BEFORE the first eviction: if even evicting every
@@ -1269,9 +1254,6 @@ extension ProviderLoop {
 
     internal func fastAdmissionReject(modelId: String) async -> Bool {
         if nativeMiMoRefusesRequest(modelId) { return true }
-        // A retained Super fault refuses every later Super load until restart.
-        if nemotronSuperRetainedWeightBytes > 0, modelSlots[modelId] == nil,
-            isNemotronSuperIdentity(modelId) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the
@@ -1329,9 +1311,8 @@ extension ProviderLoop {
         // can be eviction credit; check the resulting headroom before rejecting.
         let evictable = evictableModelSlots()
         let hasEvictable = !evictable.isEmpty
-        let mayStillReclaim = (Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-            && qwen4MemoryRetirement?.nextDelay() != nil)
-            || nemotronSuperMemoryRetirement?.nextDelay() != nil
+        let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+            && qwen4MemoryRetirement?.nextDelay() != nil
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
         // the load path refuses without evicting (see evictUntilAvailable),
@@ -1363,7 +1344,8 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb && !mayStillReclaim {
+            if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+                && qwen4MemoryRetirement?.nextDelay() != nil) {
                 return true
             }
         }

@@ -310,10 +310,11 @@ struct NemotronSuperVideoBindingTests {
         let body = try await Self.longVideoBody()
         let template = try Self.template()
         let baseline = await fixture.budget.outstandingReservedBytes()
-        let request = Task {
-            try await media.runEncoded(body: body, templateBytes: template) { _ in }
+        let hold = SuperDecodeHold()
+        let request = hold.decoding {
+            Task { try await media.runEncoded(body: body, templateBytes: template) { _ in } }
         }
-        try await Self.decodeStarted(fixture.budget)
+        try await Self.decodeStarted(hold, fixture.budget)
         request.cancel()
         await #expect(throws: CancellationError.self) { try await request.value }
         #expect(await fixture.budget.outstandingReservedBytes() == baseline)
@@ -328,10 +329,11 @@ struct NemotronSuperVideoBindingTests {
         let media = try fixture.owner.localImageBinding()
         let body = try await Self.longVideoBody()
         let template = try Self.template()
-        let request = Task {
-            try await media.runEncoded(body: body, templateBytes: template) { _ in }
+        let hold = SuperDecodeHold()
+        let request = hold.decoding {
+            Task { try await media.runEncoded(body: body, templateBytes: template) { _ in } }
         }
-        try await Self.decodeStarted(fixture.budget)
+        try await Self.decodeStarted(hold, fixture.budget)
         try await fixture.close()
         await #expect(throws: CancellationError.self) { try await request.value }
     }
@@ -370,21 +372,17 @@ struct NemotronSuperVideoBindingTests {
     }
 
     /// 600 frames at 30 fps: 40 sampled frames (20 tubelets) to decode and
-    /// normalize, seconds of work in a debug build.
+    /// normalize.
     private static func longVideoBody() async throws -> Data {
         let uri = NemotronSuperVideoClips.uri(try await NemotronSuperVideoClips.movie(frames: 600, fps: 30))
         return try body([user([text("fixture"), video(uri)])], extras: ["max_tokens": 2, "temperature": 0])
     }
 
-    /// Returns once the video's media charge is held, which is taken right
-    /// before its first frame decodes, and a moment more.
-    private static func decodeStarted(_ budget: GlobalKVCacheBudget) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
-        while await !budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }) {
-            try #require(ContinuousClock.now < deadline, "the video never reserved its media charge")
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try await Task.sleep(for: .milliseconds(200))
+    /// Returns once `hold` holds the video's decode after its first frame,
+    /// under the media charge taken before any frame decodes.
+    private static func decodeStarted(_ hold: SuperDecodeHold, _ budget: GlobalKVCacheBudget) async throws {
+        try #require(await hold.started(), "the video never started decoding")
+        #expect(await budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }))
     }
 
     @Test(.timeLimit(.minutes(3))) func encodedVideoServesAndReleasesItsCharge() async throws {
@@ -461,6 +459,39 @@ struct NemotronSuperVideoBindingTests {
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+/// Once a video's first sampled frame has decoded, holds the decode of the
+/// next until the task decoding it is cancelled (a minute at most).
+private final class SuperDecodeHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames = 0
+    private let holding = DispatchSemaphore(value: 0)
+
+    /// Runs `body`; the tasks it creates decode under this hold.
+    func decoding<Result>(_ body: () -> Result) -> Result {
+        NemotronSuperVideoDecode.Frames.$beforeFrameDecodeForTesting.withValue({ self.frameStarts() }, operation: body)
+    }
+
+    /// Whether a decode is held, waiting off the cooperative pool at most a minute.
+    func started() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: self.holding.wait(timeout: .now() + 60) == .success)
+            }
+        }
+    }
+
+    private func frameStarts() {
+        let index = lock.withLock { () -> Int in
+            defer { frames += 1 }
+            return frames
+        }
+        guard index == 1 else { return }
+        holding.signal()
+        let deadline = ContinuousClock.now + .seconds(60)
+        while !Task.isCancelled, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.001) }
     }
 }
 

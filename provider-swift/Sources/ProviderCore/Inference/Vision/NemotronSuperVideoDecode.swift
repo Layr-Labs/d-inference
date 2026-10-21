@@ -279,6 +279,10 @@ enum NemotronSuperVideoDecode {
         private var produced = 0
         private var last: [Float]?
 
+        /// Tests only: runs as each sampled frame starts decoding, on the
+        /// pulling thread, so a test can hold a decode in progress.
+        @TaskLocal static var beforeFrameDecodeForTesting: (@Sendable () -> Void)?
+
         /// `decodeAllowance` replaces the plan's
         /// `NemotronSuperVideoDecode.decodeAllowance`.
         init(_ plan: Plan, decodeAllowance: Duration? = nil) async throws {
@@ -322,6 +326,7 @@ enum NemotronSuperVideoDecode {
                 produced += 1
                 return last
             }
+            Self.beforeFrameDecodeForTesting?()
             // Only the wait for decoded frames counts against the allowance.
             stop.startCharging()
             defer { stop.stopCharging() }

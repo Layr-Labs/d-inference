@@ -168,13 +168,19 @@ public struct WeightHasher: Sendable {
     /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
     /// so callers can either hex-encode it or feed it into another hasher.
     ///
-    /// Tries the reusable-buffer `InputStream` reader first by default, retaining
-    /// `FileHandle`, retry and size-bounded `Data(contentsOf:)` fallbacks.
+    /// Tries the uncached descriptor reader first, then the reusable-buffer
+    /// `InputStream` reader by default, retaining `FileHandle`, retry and
+    /// size-bounded `Data(contentsOf:)` fallbacks.
     /// `FileHandle` can fail for files moved from URLSession
     /// download temp locations — they retain NSFileProtectionComplete extended
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
+        // Uncached reads first: hashing must not pull a second copy of the
+        // weights through the file cache while the loaded copy is resident.
+        if let digest = hashSingleFileUncached(at: url) {
+            return digest
+        }
         // Reuse InputStream's fixed 64 KiB buffer by default
         // before trying FileHandle's per-read Data allocation. Preserve the
         // full digest and every existing fallback; never skip integrity work.
@@ -227,6 +233,38 @@ public struct WeightHasher: Sendable {
         return autoreleasepool(invoking: body)
         #else
         return body()
+        #endif
+    }
+
+    /// Reads from a descriptor with `F_NOCACHE`, so the bytes bypass the
+    /// unified buffer cache instead of competing with resident (wired) model
+    /// memory. Unaligned reads would still use the cache: the buffer is
+    /// page-aligned and its size a page multiple, so full reads keep every file
+    /// offset aligned. Nil on any open or read failure, including a directory,
+    /// leaving the cached readers as the fallback, for example for
+    /// file-protection attributes that refuse a raw open().
+    static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
+        #if canImport(Darwin)
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        guard fcntl(fd, F_NOCACHE, 1) == 0 else { return nil }
+        let chunk = maxStreamingBufferSize
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: chunk, alignment: Int(getpagesize()))
+        defer { buffer.deallocate() }
+        var hasher = SHA256()
+        while true {
+            let count = read(fd, buffer, chunk)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if count == 0 { break }
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
+        }
+        return hasher.finalize()
+        #else
+        return nil
         #endif
     }
 

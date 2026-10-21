@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -530,7 +530,10 @@ uploads, catalog changes, signing or production promotion.
 
 The default reusable-buffer reader and bounded parallel hashing change full-file
 reading and scheduling, not the verified
-bytes or model arithmetic. Discovery remains hash-free. Fresh pre/post-load
+bytes or model arithmetic. Each file is first read through a page-aligned
+`F_NOCACHE` descriptor (`WeightHasher.hashSingleFileUncached`), so verification
+does not pull a second copy of loaded weights through the file cache; the
+readers selected below remain its fallbacks. Discovery remains hash-free. Fresh pre/post-load
 verification and delayed identity publication retain their existing rules.
 
 | Variable | Values / type | Default | Read in | Effect |
@@ -572,6 +575,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows an in-memory KEK fallback and the isolated test root. Ephemeral ciphertext cannot be reused after process exit. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | absolute path; empty is unset | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` (`load`) | DEBUG builds only; release builds do not compile this path. Replaces the Secure Enclave/Keychain SSD cache KEK with one derived from an existing operator-created file (`(umask 077 && head -c 32 /dev/urandom > FILE)`), reported as persistent. The file must be exactly 32 bytes, a regular file owned by the current user with mode `0600` and one link; the final path component must not be a symlink. Any other file refuses with a typed `key_unavailable` cause (an affirmative `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` still falls back to an ephemeral key). The file is never created or rewritten. An explicit persistent test namespace keeps its own enclave key. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `4000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persistent rolling-day write budget; includes serialized cache-file framing. A saved `cache.daily_write_gb` takes precedence. Forwarded to newly installed launchd jobs. See [accounting and limits](ssd-kv-cache.md#size-and-eviction-rules). |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |

@@ -176,6 +176,7 @@ public enum EngineV2Factory {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
     ) throws -> EngineV2Bridge {
@@ -235,6 +236,7 @@ public enum EngineV2Factory {
                 ssdHybridCheckpointStore: ssdHybridCheckpointStore,
                 residentPrefixCacheEvidence: residentPrefixCacheEvidence,
                 prefixCacheStatus: prefixCacheStatus,
+                prefixCacheConstructionFailure: prefixCacheConstructionFailure,
                 kvBackendKind: build.kvBackendKind,
                 kvQuantization: build.kvQuantization,
                 kvCheckpointQuantization: build.kvCheckpointQuantization,

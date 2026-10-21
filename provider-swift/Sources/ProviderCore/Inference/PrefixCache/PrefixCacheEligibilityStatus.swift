@@ -4,6 +4,8 @@ import MLXLMCommon
 struct PrefixCacheConstructionStatus: Sendable {
     let state: PrefixCacheStatusState
     let reason: PrefixCacheStatusReason
+    /// Local-only typed refusal behind an error status; never sent on the wire.
+    var failure: SSDPrefixCacheConstructionFailure? = nil
 
     static let configDisabled = PrefixCacheConstructionStatus(
         state: .disabled, reason: .configDisabled)
@@ -49,11 +51,12 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
                 state: .disabled, reason: .unsupportedLayout)
         case .unsafePath:
             return PrefixCacheConstructionStatus(
-                state: .error, reason: .diskUnavailable)
+                state: .error, reason: .diskUnavailable, failure: failure)
         case .keyUnavailable, .ephemeralKeyUnavailable, .blockContractMismatch,
-            .epochUnavailable, .promptContractUnavailable, .writeBudgetUnavailable:
+            .epochUnavailable, .promptContractUnavailable, .identityUnavailable,
+            .writeBudgetUnavailable:
             return PrefixCacheConstructionStatus(
-                state: .error, reason: .cacheInitFailed)
+                state: .error, reason: .cacheInitFailed, failure: failure)
         }
     }
 }

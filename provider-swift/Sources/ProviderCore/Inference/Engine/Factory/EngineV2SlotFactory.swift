@@ -594,6 +594,7 @@ enum EngineV2SlotFactory {
             ssdHybridCheckpointStore: ssdHybridCheckpointStore,
             residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
+            prefixCacheConstructionFailure: attentionPreparation.status.failure,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
         await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)

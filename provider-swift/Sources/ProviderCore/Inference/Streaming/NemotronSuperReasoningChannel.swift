@@ -7,7 +7,9 @@ import MLXLMServer
 ///
 /// Streaming follows the token-level parser: in reasoning, `<think>` deltas
 /// are dropped and the first `</think>` ends reasoning; every later byte is
-/// content, including literal markers. A complete response follows
+/// content, including literal markers. With `force_nonempty_content`, a
+/// stream whose reasoning never closes repeats it as content at the end
+/// (vLLM `nemotron_v3`). A complete response follows
 /// `extract_reasoning`: text before the first `<think>` is discarded, the
 /// first `</think>` splits, a leading newline is removed only when the output
 /// itself opened the span, and `force_nonempty_content` turns unterminated
@@ -68,6 +70,10 @@ struct NemotronSuperReasoningChannel {
         append(held, reasoning: inReasoning, to: &pieces)
         return pieces
     }
+
+    /// At the end of a stream: thinking never reached `</think>`, so no
+    /// content exists, and the request forces content from its reasoning.
+    var promotesUnterminatedReasoning: Bool { forceNonemptyContent && inReasoning }
 
     /// `UltraV3ReasoningParser.extract_reasoning` for a complete output.
     func complete(_ output: String) -> Split {

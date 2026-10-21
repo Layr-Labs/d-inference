@@ -64,6 +64,11 @@ struct NemotronSuperLocalOutput {
         var events: [MLXServerGenerationEvent] = []
         if streaming {
             events = try route(channel.finishStream())
+            // The streamed reasoning stays; its copy is content and passes the
+            // same tool and response-format checks as any other.
+            if channel.promotesUnterminatedReasoning, !reasoning.isEmpty {
+                events += try route([.init(content: reasoning, reasoningContent: nil)])
+            }
         } else {
             let split = channel.complete(raw)
             reasoning = split.reasoning ?? ""

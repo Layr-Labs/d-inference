@@ -101,6 +101,42 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(off.2, ["C:<think>x</think>y"])
     }
 
+    /// `force_nonempty_content` makes unterminated reasoning the answer. A
+    /// stream (every coordinator request) keeps the streamed reasoning and
+    /// repeats it as content at the end, as vLLM `nemotron_v3` does, through
+    /// the same validators; a complete response moves it. Content after
+    /// `</think>`, or no opt-in, promotes nothing.
+    func testForceNonemptyContentPromotesUnterminatedReasoning() throws {
+        let force = #""chat_template_kwargs":{"force_nonempty_content":true}"#
+        var streamed = try output(force)
+        var events = try streamed.append("still ") + streamed.append("thinking")
+        let finished = try streamed.finish()
+        events += finished.events
+        XCTAssertEqual(try trace(events), ["R:still ", "R:thinking", "C:still thinking"])
+        XCTAssertEqual(finished.result, .init(content: "still thinking", reasoning: "still thinking", calls: []))
+        var answered = try output(force)
+        XCTAssertEqual(try stream(&answered, ["r</think>", "c"]), ["R:r", "C:c"])
+        var closedEmpty = try output(force)
+        XCTAssertEqual(try stream(&closedEmpty, ["r</think>"]), ["R:r"])
+        var notForced = try output()
+        XCTAssertEqual(try stream(&notForced, ["still thinking"]), ["R:still thinking"])
+        let json = force + #","response_format":{"type":"json_object"}"#
+        var object = try output(json)
+        XCTAssertEqual(try stream(&object, ["{\"a\":", "1}"]), [#"R:{"a":"#, "R:1}", #"C:{"a":1}"#])
+        var notObject = try output(json)
+        _ = try notObject.append("not json")
+        XCTAssertThrowsError(try notObject.finish())
+        var required = try output(force + "," + Self.weather + #","tool_choice":"required""#)
+        _ = try required.append("no call")
+        XCTAssertThrowsError(try required.finish()) {
+            XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, .toolChoiceViolation(
+                "forced tool_choice produced visible text before a validated call"))
+        }
+        var complete = try output(force, streaming: false)
+        _ = try complete.append("r</think>")
+        XCTAssertEqual(try complete.finish().result, .init(content: "r", reasoning: nil, calls: []))
+    }
+
     func testToolCallsAreParsedOnlyFromContentAndValidated() throws {
         var call = try output(Self.weather)
         XCTAssertEqual(try stream(&call, ["Need weather.</think>",

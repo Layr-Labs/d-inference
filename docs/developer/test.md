@@ -183,15 +183,20 @@ requires native live and checkpoint precision: a lossy checkpoint can restore
 slower than recompute, which belongs in `ModelCheckpointStorageLiveTests`. For each
 pair it serves the fork prompt restored and cold under three conditions: idle,
 while another tenant's long prefill is running, and right after another
-tenant's donor completes. It fails when a restore does not reach
-`demandedTokens`, produces its first token later than the cold run under the
-same condition, or stages more than 1 s slower than the idle restore of its
-pair, the signature of waiting on another prefill's `evalLock`. Other timings
-are observations. Run it from `provider-swift/`
-after building tests and staging the metallib, with only the listed variables:
+tenant's donor completes. Each condition gets its own donor and cache scope,
+so a deeper checkpoint donated by one measured fork never serves another. It
+fails when a restore does not reach `demandedTokens`, restores a different
+depth than the idle restore of its pair, produces its first token later than
+the cold run under the same condition, or stages more than 1 s slower than the
+idle restore, the signature of waiting on another prefill's `evalLock`. A
+contended run also fails if the foreign prefill finished before its stage did.
+Other timings are observations. The timing gates need exclusive GPU use. Run
+it from `provider-swift/` after building tests and staging the metallib, with
+only the listed variables:
 
 ```bash
 env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
   DARKBLOOM_RESTORE_CONTENTION_BENCHMARK=1 \
   DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
   DARKBLOOM_RESTORE_CONTENTION_OUTPUT=/absolute/new-report.json \

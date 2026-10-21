@@ -11,7 +11,9 @@ import Testing
 /// (its own checkpoint write in flight). A restore must reach the demanded
 /// boundary, must never produce its first token later than cold prefill of
 /// the same prompt under the same condition, and must stage as fast contended
-/// as idle. Timings are otherwise observations.
+/// as idle. Each condition has its own donor and scope, so every restore stages
+/// the same boundary, and a contended run must overlap the foreign prefill.
+/// Timings are otherwise observations.
 @Suite("Complete-checkpoint restore under contention (live)", .serialized)
 struct ModelCheckpointRestoreContentionLiveTests {
     private static let environment = ProcessInfo.processInfo.environment
@@ -26,6 +28,9 @@ struct ModelCheckpointRestoreContentionLiveTests {
         let restoredTokens: Int
         let firstOutputSeconds: Double
         let terminalSeconds: Double
+        /// During a foreign prefill: whether that prefill was still running
+        /// when this request's stage finished.
+        var foreignPrefillOverlap: Bool? = nil
     }
 
     struct Report: Codable {
@@ -65,6 +70,8 @@ struct ModelCheckpointRestoreContentionLiveTests {
         let output = try #require(Self.environment["DARKBLOOM_RESTORE_CONTENTION_OUTPUT"])
         try #require(output.hasPrefix("/") && !FileManager.default.fileExists(atPath: output),
             "the report output must be a new absolute path")
+        try #require(Self.environment["DARKBLOOM_PREFIX_EXCLUSIVE_GPU"] == "1",
+            "the timing gates need exclusive GPU use, as ModelPrefixBenchmarkLiveTests does")
         let specification = try ModelPrefixBenchmarkSpecification.load()
         // A lossy checkpoint can legitimately restore slower than recompute
         // (docs/reports/2026-10-11-native-inference-checkpoint-storage.md), so
@@ -84,11 +91,14 @@ struct ModelCheckpointRestoreContentionLiveTests {
             _ = try await Self.timed(fixture, id: requests.next(), pair: -1, role: "excluded_warmup",
                 tokens: prompts.fork, scope: "warmup", target: nil, cache: false)
             for pair in 0..<specification.pairs {
-                let scope = "contention-\(pair)"
-                report.samples.append(try await Self.timed(fixture, id: requests.next(), pair: pair,
-                    role: "donor", tokens: prompts.donor, scope: scope, target: prompts.demandedTokens, cache: true))
-                try await fixture.session.drainCheckpointWrites()
                 for condition in Condition.allCases {
+                    // A fresh scope and donor per condition: a deeper checkpoint a
+                    // measured fork donates can never serve a later condition.
+                    let scope = "contention-\(pair)-\(condition.rawValue)"
+                    report.samples.append(try await Self.timed(fixture, id: requests.next(), pair: pair,
+                        role: "donor_\(condition.rawValue)", tokens: prompts.donor, scope: scope,
+                        target: prompts.demandedTokens, cache: true))
+                    try await fixture.session.drainCheckpointWrites()
                     for cache in [true, false] {
                         report.samples += try await Self.measureFork(fixture, condition: condition, cache: cache,
                             pair: pair, scope: scope, prompts: prompts, requests: &requests)
@@ -138,14 +148,21 @@ struct ModelCheckpointRestoreContentionLiveTests {
         case .duringForeignPrefill:
             let box = FixtureBox(fixture: fixture)
             let foreignID = requests.next()
+            let foreignStarted = ContinuousClock.now
             // A child task, so a failed measurement cancels and joins the
             // foreign request before the caller closes the fixture.
             async let foreign = timed(box.fixture, id: foreignID, pair: pair, role: "foreign_prefill",
                 tokens: prompts.donor, scope: foreignScope, target: nil, cache: false)
             // Submit while the foreign prefill is running, not before it starts.
             try await Task.sleep(for: .seconds(2))
-            let measured = try await fork(id: requests.next())
-            samples = [measured, try await foreign]
+            let measuredStarted = ContinuousClock.now
+            var measured = try await fork(id: requests.next())
+            let foreignSample = try await foreign
+            // The foreign first token ends its prefill; it must come after the
+            // measured stage, or this run did not exercise contention.
+            measured.foreignPrefillOverlap = foreignStarted + .seconds(foreignSample.firstOutputSeconds)
+                > measuredStarted + .milliseconds(measured.stageMilliseconds)
+            samples = [measured, foreignSample]
         case .afterForeignDonor:
             let foreign = try await timed(fixture, id: requests.next(), pair: pair, role: "foreign_donor",
                 tokens: prompts.donor, scope: foreignScope, target: prompts.demandedTokens, cache: true)
@@ -180,6 +197,13 @@ struct ModelCheckpointRestoreContentionLiveTests {
                 // measured on M5 Max) on top of the 0.3 s idle stage.
                 if restore.stageMilliseconds > idle.stageMilliseconds + 1_000 {
                     violations.append("\(label): stage \(restore.stageMilliseconds)ms vs idle \(idle.stageMilliseconds)ms")
+                }
+                if restore.restoredTokens != idle.restoredTokens {
+                    violations.append("\(label): restored \(restore.restoredTokens) tokens vs idle \(idle.restoredTokens)")
+                }
+                for sample in [restore, cold] where sample.foreignPrefillOverlap == false {
+                    violations.append("\(label) \(sample.role): the foreign prefill ended before the measured stage, "
+                        + "so contention was not exercised (raise donorTokens)")
                 }
             }
         }

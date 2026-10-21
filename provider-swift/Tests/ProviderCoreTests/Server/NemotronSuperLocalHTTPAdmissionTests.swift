@@ -55,7 +55,7 @@ private func superAdmissionApplication(hook: NemotronSuperLocalImageHTTP, token:
 
 /// Live loopback HTTP admission through the Super hook on the actual native
 /// bridge with tiny synthetic weights: the single-request owner's busy status
-/// and the text-only hook of a speculating owner.
+/// and a speculating owner's hook, whose images run target-only.
 struct NemotronSuperLocalHTTPAdmissionTests {
     @Test(.timeLimit(.minutes(2))) func busyOwnerRefusesWith429BeforeAnyResponse() async throws {
         let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
@@ -209,8 +209,9 @@ struct NemotronSuperLocalHTTPAdmissionTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    @Test(.timeLimit(.minutes(3))) func speculatingOwnerHookServesTextAndRefusesImagesWith400() async throws {
-        let fixture = try SuperMTPInstalledFixture().make()
+    @Test(.timeLimit(.minutes(3))) func speculatingOwnerHookServesTextAndTargetOnlyImages() async throws {
+        let fixture = try SuperMTPInstalledFixture(
+            radioDimensions: SuperMTPInstalledFixture.encodedImageTower).make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
         let bytes = fixture.installed.receipt.payloadBytes
@@ -221,18 +222,23 @@ struct NemotronSuperLocalHTTPAdmissionTests {
         let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: fixture.installed,
             tokenizer: tokenizer, eosTokenIDs: [63],
             sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
-                fp16KVBytesPerToken: 64, maxContextLength: 64, defaultMaxTokens: 2),
+                fp16KVBytesPerToken: 64, maxContextLength: 1024, defaultMaxTokens: 2),
             kvBytesCapacity: 2 << 30, kvBudget: budget, loadLease: lease,
             construction: fixture.construction,
             mtp: .init(module: fixture.head, setting: .init(depth: 1)), environment: [:])
         #expect(owner.speculates)
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
-        // The hook takes the owner's text binding and never asks for media.
         let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
         let token = "synthetic-super-mtp-hook"
         let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
         let baseline = await budget.outstandingReservedBytes()
+        // Speculation counters of the served engine; a plain build has none.
+        let speculation: @Sendable () async -> [Int]? = {
+            let ownedEngine = await owner.bridge.ownedEngine
+            return (ownedEngine as? EngineV2)?.mtpMetricsSnapshot().map { [$0.rounds, $0.draftedTokens] }
+        }
+        #expect(await speculation() != nil)
         try await superAdmissionApplication(hook: hook, token: token, tokenizer: tokenizer).test(.live) { client in
             for stream in [true, false] {
                 try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
@@ -242,18 +248,20 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                     #expect(text.contains(stream ? "[DONE]" : "chat.completion"))
                     #expect(text.contains("\"content\":\"x") && !text.contains("\"error\""))
                 }
+                let beforeImage = await speculation()
+                // Images run on the same owner, target-only: no round of their own.
                 try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
                     body: ByteBuffer(bytes: try superAdmissionBody(image: true, stream: stream))) { response in
-                    #expect(response.status == .badRequest)
+                    #expect(response.status == .ok)
                     let text = String(buffer: response.body)
-                    #expect(text.contains("Media input is not supported.") && !text.contains("data:"))
+                    #expect(text.contains(stream ? "[DONE]" : "chat.completion"))
+                    #expect(text.contains("\"content\":\"x") && !text.contains("\"error\""))
+                    #expect(!text.contains("base64"))
                 }
+                #expect(await speculation() == beforeImage)
             }
         }
         #expect(await budget.outstandingReservedBytes() == baseline)
-        let ownedEngine = await owner.bridge.ownedEngine
-        // The served engine is the speculative build (a plain build has none).
-        #expect((ownedEngine as? EngineV2)?.mtpMetricsSnapshot() != nil)
         await hook.drain()
         try await owner.closeAfterDrain()
         #expect(fixture.residency.snapshot.usedBytes == 0)

@@ -37,7 +37,8 @@ return validated `tool_calls` and validated `response_format` JSON. Image
 requests still refuse tools and structured output; image prompts carry the
 reference `<img>`/`</img>` span around each image's placeholders. A request
 that arrives while the owner is busy gets 429 before any response starts, and
-with speculation installed the hook serves text and refuses images with 400.
+with speculation installed image requests run target-only beside speculating
+text.
 Each request's reservation now includes a decode row; a KV grant too small for
 the configured requests fails the load with the minimum grant it needs. `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT`
 (default 1) opts the plain owner into row-exact batched text decode of up to
@@ -54,11 +55,18 @@ the same as when it is served alone. The prefill activation charge is one
 owner-wide lane, reserved before the first request and held until retirement
 (the pinned checkpoint charges the SDK's measured whole-chunk bound), instead
 of a prefill workspace in every request's reservation.
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1` opts the plain (non-speculating) owner into
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1` opts the owner into
 exact text prefix reuse: a resident recurrent checkpoint bank sized from the KV
-grant (`min(1 GiB, grant / 8)`, or `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`) whose
-budget is reserved from load until retirement. Checkpoints sit only at multiples
+grant and the machine (half of what the grant leaves beside every request's
+fixed bytes, the prefill lane and one image, and half of what the memory cap
+leaves beside the load, at most a quarter of the grant and 16 GiB, none below
+1 GiB: 16 GiB for a lone slot on 192 GB and up; or
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`) whose budget is reserved from load until
+retirement. The managed slot turns it on whenever that size is
+non-zero. Checkpoints sit only at multiples
 of the prefill chunk, where a restored request continues a cold prefill bit for
-bit on synthetic fixtures; prompts shorter than one chunk restore nothing. Image
-requests, the speculating owner and paged KV never use it, and its full-checkpoint
-speedup is unmeasured.
+bit on synthetic fixtures; prompts shorter than one chunk restore nothing. On
+the speculating owner a checkpoint also holds the assistant's prompt history, so
+a restored request speculates exactly as a cold one. An image request reuses
+only checkpoints bound to the same evaluated image features at the same
+positions.

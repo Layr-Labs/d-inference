@@ -24,15 +24,20 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var port = 0
     @Option(help: "Diagnostics port on 127.0.0.1 (0 = ephemeral).")
     var diagnosticsPort = 0
-    @Option(help: "Maximum context tokens (the Super builder accepts at most 16384).")
-    var maxContext = 16384
+    @Option(help: """
+        Maximum context tokens. Default: the managed slot's context \
+        (NemotronSuperServingPolicy.contextTokens); the builder accepts at most \
+        NemotronSuperServingPolicy.maximumContextTokens.
+        """)
+    var maxContext = NemotronSuperServingPolicy.contextTokens
     @Option(help: "max_tokens applied when a request omits it.")
     var defaultMaxTokens = 512
     @Option(help: """
         KV capacity granted to the bridge, GiB (at least 1). Each request's fixed bytes (recurrent \
-        state, request workspace, any speculation charge) are carved from it. Default 4; 12 when \
-        --engine-env enables DARKBLOOM_NEMOTRON_SUPER_MTP; 1 + 3 x N for \
-        DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N > 1. The ready file reports the minimum.
+        state, request workspace, any speculation charge) are carved from it. Default 4; with \
+        --engine-env DARKBLOOM_NEMOTRON_SUPER_MTP=1, 12 or the managed slot's speculative \
+        admission (2 + 3 x N for DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N) when larger; \
+        1 + 3 x N for a plain N > 1. The ready file reports the minimum.
         """)
     var kvCapacityGib: Double?
     @Option(help: "Explicit backend/allocator allowance added to the LOAD quote, GiB (unmeasured default).")
@@ -49,6 +54,16 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var verifyParallelism = 4
     @Flag(help: "Check checkpoint identity and configuration only (no shard reads, no GPU), then exit.")
     var preflight = false
+    @Option(help: """
+        Emulate a Mac with this much physical memory, GiB (at most this machine's): the process \
+        budget, MLX limits and the managed slot's load gate use it (qualification only).
+        """)
+    var emulatePhysicalGib: Double?
+    @Flag(help: """
+        Claim the LOAD's KV headroom as the managed slot does (every configured request's fixed bytes, \
+        2 GiB and the default prefix bank) instead of the whole --kv-capacity-gib; the grant is unchanged.
+        """)
+    var managedLoadClaim = false
     @Option(name: .customLong("engine-env"),
         help: "KEY=VALUE runtime-policy entry passed to the engine (repeatable; used for A/B switches).")
     var engineEnv: [String] = []
@@ -59,8 +74,12 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         }
         guard !synthetic || template != nil else { throw ValidationError("--synthetic requires --template") }
         guard !preflight || checkpoint != nil else { throw ValidationError("--preflight requires --checkpoint") }
-        guard (1...16384).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
-            throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= 16384")
+        guard !managedLoadClaim || checkpoint != nil else {
+            throw ValidationError("--managed-load-claim requires --checkpoint")
+        }
+        let ceiling = NemotronSuperServingPolicy.maximumContextTokens
+        guard (1...ceiling).contains(maxContext), (1...maxContext).contains(defaultMaxTokens) else {
+            throw ValidationError("need 1 <= --default-max-tokens <= --max-context <= \(ceiling)")
         }
         guard kvCapacityGib.map({ $0 >= 1 }) ?? true, backendAllowanceGib > 0, sampleIntervalMs >= 5,
             verifyParallelism >= 1,
@@ -68,6 +87,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         else { throw ValidationError("invalid capacity, allowance, sampling or port value") }
         if let capFraction, !(capFraction > 0 && capFraction <= UnifiedMemoryCap.defaultCapFraction) {
             throw ValidationError("--cap-fraction must be in (0, \(UnifiedMemoryCap.defaultCapFraction)]")
+        }
+        if emulatePhysicalGib != nil, RunnerMemoryEmulation(gib: emulatePhysicalGib) == nil {
+            throw ValidationError("--emulate-physical-gib must be positive and at most this machine's memory")
         }
         guard engineEnv.allSatisfy({ $0.contains("=") }) else {
             throw ValidationError("--engine-env entries must be KEY=VALUE")
@@ -87,11 +109,34 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             try isolation.writePreflight(inputs.json)
             return
         }
+        // The managed Super load's MLX ceiling (memory limit and buffer-cache
+        // cap), set before any weights, so the ledger sees production's cache;
+        // with `--emulate-physical-gib` the emulated Mac's.
+        let emulation = RunnerMemoryEmulation(gib: emulatePhysicalGib)
+        let emulatedMLX = emulation?.configureMLX() ?? .null
+        MLXMemoryGuard.configureOnce()
+        let mlxLimits: RunnerJSON = MLXMemoryGuard.configuredLimitsSnapshot().map {
+            ["memory_limit_bytes": .bytes($0.memoryLimitBytes), "cache_limit_bytes": .bytes($0.cacheLimitBytes)]
+        } ?? .null
         log.emit("runner.start", ["pid": .int(Int64(getpid())), "mode": synthetic ? "synthetic" : "checkpoint",
             "build_configuration": .string(Self.buildConfiguration), "settings": settings.json,
-            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs)])
+            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs),
+            "mlx_limits": mlxLimits, "emulated_mlx_limits": emulatedMLX])
 
-        let budget = GlobalKVCacheBudget(capFraction: capFraction)
+        let budget = emulation?.budget(capFraction: capFraction) ?? GlobalKVCacheBudget(capFraction: capFraction)
+        // The provider's serving-set reserve for a lone Super slot (its
+        // measured activation floor), as the managed slot's budget holds it.
+        await budget.setActivationReserveBytes(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: [NemotronSuperServingPolicy.modelID]))
+        if let emulation {
+            let gate = emulation.loadGate(budget: budget)
+            log.emit("emulation.load_gate", gate.json.asFields)
+            guard gate.admits || synthetic else {
+                FileHandle.standardError.write(Data("NemotronSuperRunner: emulated load gate refused\n".utf8))
+                log.emit("load.failed", ["error": "emulated load gate refused", "gate": gate.json])
+                throw ExitCode(Exit.loadFailedRetired)
+            }
+        }
         let sampler = RunnerMemorySampler(budget: budget, log: log, interval: .milliseconds(sampleIntervalMs))
         RunnerProcessMemory.resetPeaks()
         await sampler.start()
@@ -135,7 +180,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             "auth_token_file": .string(isolation.authTokenFile.path),
             "events_file": .string(isolation.eventsFile.path), "identity": serving.identity,
             "settings": settings.json, "sample_interval_ms": .count(sampleIntervalMs),
-            "load_seconds": loadSeconds, "load_phases": phases.json,
+            "load_seconds": loadSeconds, "load_phases": phases.json, "mlx_limits": mlxLimits,
         ]
         var servedCleanly = true
         if await shutdown.requested {
@@ -222,12 +267,21 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             let parts = entry.split(separator: "=", maxSplits: 1)
             environment[String(parts[0])] = parts.count > 1 ? String(parts[1]) : ""
         }
-        let kvGib = kvCapacityGib ?? Self.defaultKVCapacityGib(engineEnvironment: environment)
-        return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
-            kvCapacityBytes: Int(kvGib * 1_073_741_824),
+        let kvGib = kvCapacityGib
+            ?? Self.defaultKVCapacityGib(engineEnvironment: environment, contextTokens: maxContext)
+        let grant = Int(kvGib * 1_073_741_824)
+        let emulation = RunnerMemoryEmulation(gib: emulatePhysicalGib)
+        if let emulation { environment = emulation.engineEnvironment(environment, grantBytes: grant) }
+        var settings = RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
+            kvCapacityBytes: grant,
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
             kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
-            verifyParallelism: verifyParallelism)
+            verifyParallelism: verifyParallelism,
+            admissionKVBytes: managedLoadClaim
+                ? RunnerLoadSettings.managedAdmissionKVBytes(grantBytes: grant, environment: environment,
+                    contextTokens: maxContext) : nil)
+        settings.emulation = emulation
+        return settings
     }
 
     /// Unmeasured runner defaults. The speculative grant leaves room for the
@@ -240,9 +294,18 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
 
     /// The grant when `--kv-capacity-gib` is omitted. Malformed engine values
     /// fail at load with the builder's own error; here they keep the plain grant.
-    static func defaultKVCapacityGib(engineEnvironment environment: [String: String]) -> Double {
+    /// Speculating owners take at least the managed slot's admission for their
+    /// width and depth table at the context (`NemotronSuperServingPolicy.admissionKVBytes`,
+    /// about 15.7 GiB for eight at 262,144 tokens), which covers the measured
+    /// minimum grant at depth 3.
+    static func defaultKVCapacityGib(engineEnvironment environment: [String: String],
+                                     contextTokens: Int) -> Double {
         if environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1" {
-            return speculativeKVCapacityGib
+            let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
+                environment: environment, speculates: true)) ?? 1
+            let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: true,
+                environment: environment, contextTokens: contextTokens)
+            return max(speculativeKVCapacityGib, Double(admission) / 1_073_741_824)
         }
         let requests = (try? NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: environment, speculates: false)) ?? 1

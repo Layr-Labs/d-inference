@@ -265,7 +265,7 @@ extension NemotronSuperLocalOwnerTests {
     @Test(.timeLimit(.minutes(1))) func imagePromptRendersOutsideTheOwnerLock() async throws {
         let render = SuperRenderGate()
         let (owner, _, residency, budget, lease) = try await Self.owner(
-            tokenizer: SuperGatedImageTokenizer(gate: render))
+            tokenizer: SuperGatedRenderTokenizer(base: SuperSyntheticImageTokenizer(), gate: render))
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
         let body = try JSONSerialization.data(withJSONObject: [
@@ -289,9 +289,41 @@ extension NemotronSuperLocalOwnerTests {
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
     }
+
+    /// Likewise for a video prompt: while its template renders, text
+    /// admission returns at once.
+    @Test(.timeLimit(.minutes(1))) func videoPromptRendersOutsideTheOwnerLock() async throws {
+        let render = SuperRenderGate()
+        let (owner, _, residency, budget, lease) = try await Self.owner(
+            tokenizer: SuperGatedRenderTokenizer(base: SuperSyntheticVideoTokenizer(), gate: render))
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": NemotronSuperLocalBinding.modelID,
+            "messages": [["role": "user", "content": [
+                ["type": "text", "text": "fixture"],
+                ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AA=="]]]]]])
+        let labels = ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: "]
+        let prompt = Task.detached {
+            try owner.localVideoPrompt(body: body, templateBytes: template, labels: labels)
+        }
+        #expect(await SuperRenderGate.wait(render.entered))
+        // Its own thread: an admission blocked on the lock must not hold the pool.
+        let admitted = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { if owner.admitLocalRequest() { admitted.signal() } }
+        let returned = await SuperRenderGate.wait(admitted)
+        render.release.signal()
+        #expect(returned, "text admission waited for a video prompt to render")
+        #expect(try await prompt.value
+            == NemotronSuperPromptContract.VideoPrompt(prefix: [1], labels: [[3, 4]], suffix: [2]))
+        if returned { owner.finishLocalRequest() }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
 }
 
-/// Holds the image prompt render inside the tokenizer until released.
+/// Holds a media prompt render inside the tokenizer until released.
 private final class SuperRenderGate: @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
@@ -306,25 +338,31 @@ private final class SuperRenderGate: @unchecked Sendable {
     }
 }
 
-/// `SuperSyntheticImageTokenizer` whose template render waits on a gate.
-private struct SuperGatedImageTokenizer: MLXLMCommon.Tokenizer {
+/// `base`, whose template render waits on a gate.
+private struct SuperGatedRenderTokenizer: MLXLMCommon.Tokenizer {
+    let base: any MLXLMCommon.Tokenizer
     let gate: SuperRenderGate
-    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1, 18, 2] }
-    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        String(repeating: "x", count: tokenIds.count)
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        base.encode(text: text, addSpecialTokens: addSpecialTokens)
     }
-    func convertTokenToId(_ token: String) -> Int? { nil }
-    func convertIdToToken(_ id: Int) -> String? { "x" }
-    var bosToken: String? { nil }
-    var eosToken: String? { nil }
-    var unknownToken: String? { nil }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        base.decode(tokenIds: tokenIds, skipSpecialTokens: skipSpecialTokens)
+    }
+    func convertTokenToId(_ token: String) -> Int? { base.convertTokenToId(token) }
+    func convertIdToToken(_ id: Int) -> String? { base.convertIdToToken(id) }
+    var bosToken: String? { base.bosToken }
+    var eosToken: String? { base.eosToken }
+    var unknownToken: String? { base.unknownToken }
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
-                           additionalContext: [String: any Sendable]?) throws -> [Int] { [1, 18, 2] }
+                           additionalContext: [String: any Sendable]?) throws -> [Int] {
+        try base.applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
+    }
     func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String,
                            tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] {
         gate.entered.signal()
         _ = gate.release.wait(timeout: .now() + 10)
-        return [1, 18, 2]
+        return try base.applyChatTemplate(messages: messages, chatTemplate: chatTemplate, tools: tools,
+                                          additionalContext: additionalContext)
     }
 }
 

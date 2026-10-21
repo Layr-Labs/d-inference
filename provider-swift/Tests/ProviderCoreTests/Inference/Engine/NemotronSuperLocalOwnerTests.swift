@@ -263,59 +263,50 @@ extension NemotronSuperLocalOwnerTests {
     /// The owner's lock covers only an image step's admission check: while
     /// an image prompt renders, text admission returns at once.
     @Test(.timeLimit(.minutes(1))) func imagePromptRendersOutsideTheOwnerLock() async throws {
-        let render = SuperRenderGate()
-        let (owner, _, residency, budget, lease) = try await Self.owner(
-            tokenizer: SuperGatedRenderTokenizer(base: SuperSyntheticImageTokenizer(), gate: render))
-        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
-                                        options: .ignoreUnknownCharacters))
-        let body = try JSONSerialization.data(withJSONObject: [
-            "model": NemotronSuperLocalBinding.modelID,
-            "messages": [["role": "user", "content": [
-                ["type": "text", "text": "fixture"],
-                ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]]]]]])
-        let prompt = Task.detached {
+        try await Self.expectTextAdmittedWhileRendering(base: SuperSyntheticImageTokenizer(),
+            media: ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]],
+            expected: [1, 19, 18, 18, 18, 20, 2]
+        ) { owner, body, template in
             try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
         }
-        #expect(await SuperRenderGate.wait(render.entered))
-        // Its own thread: an admission blocked on the lock must not hold the pool.
-        let admitted = DispatchSemaphore(value: 0)
-        Thread.detachNewThread { if owner.admitLocalRequest() { admitted.signal() } }
-        let returned = await SuperRenderGate.wait(admitted)
-        render.release.signal()
-        #expect(returned, "text admission waited for an image prompt to render")
-        #expect(try await prompt.value == [1, 19, 18, 18, 18, 20, 2])
-        if returned { owner.finishLocalRequest() }
-        try await owner.closeAfterDrain()
-        #expect(residency.snapshot.usedBytes == 0)
-        #expect(await budget.finishPendingLoad(lease))
     }
 
     /// Likewise for a video prompt: while its template renders, text
     /// admission returns at once.
     @Test(.timeLimit(.minutes(1))) func videoPromptRendersOutsideTheOwnerLock() async throws {
-        let render = SuperRenderGate()
+        let labels = ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: "]
+        try await Self.expectTextAdmittedWhileRendering(base: SuperSyntheticVideoTokenizer(),
+            media: ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AA=="]],
+            expected: NemotronSuperPromptContract.VideoPrompt(prefix: [1], labels: [[3, 4]], suffix: [2])
+        ) { owner, body, template in
+            try owner.localVideoPrompt(body: body, templateBytes: template, labels: labels)
+        }
+    }
+
+    /// Renders the prompt of a text part and `media` with `render` while a
+    /// gate holds its template render in `base`; text admission must return
+    /// meanwhile, and the prompt must equal `expected`.
+    private static func expectTextAdmittedWhileRendering<Prompt: Equatable & Sendable>(
+        base: any MLXLMCommon.Tokenizer, media: [String: Any], expected: Prompt,
+        render: @escaping @Sendable (NemotronSuperLocalBridgeBuilder.Owner, Data, Data) throws -> Prompt
+    ) async throws {
+        let gate = SuperRenderGate()
         let (owner, _, residency, budget, lease) = try await Self.owner(
-            tokenizer: SuperGatedRenderTokenizer(base: SuperSyntheticVideoTokenizer(), gate: render))
+            tokenizer: SuperGatedRenderTokenizer(base: base, gate: gate))
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
         let body = try JSONSerialization.data(withJSONObject: [
             "model": NemotronSuperLocalBinding.modelID,
-            "messages": [["role": "user", "content": [
-                ["type": "text", "text": "fixture"],
-                ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AA=="]]]]]])
-        let labels = ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: "]
-        let prompt = Task.detached {
-            try owner.localVideoPrompt(body: body, templateBytes: template, labels: labels)
-        }
-        #expect(await SuperRenderGate.wait(render.entered))
+            "messages": [["role": "user", "content": [["type": "text", "text": "fixture"], media]]]])
+        let prompt = Task.detached { try render(owner, body, template) }
+        #expect(await SuperRenderGate.wait(gate.entered))
         // Its own thread: an admission blocked on the lock must not hold the pool.
         let admitted = DispatchSemaphore(value: 0)
         Thread.detachNewThread { if owner.admitLocalRequest() { admitted.signal() } }
         let returned = await SuperRenderGate.wait(admitted)
-        render.release.signal()
-        #expect(returned, "text admission waited for a video prompt to render")
-        #expect(try await prompt.value
-            == NemotronSuperPromptContract.VideoPrompt(prefix: [1], labels: [[3, 4]], suffix: [2]))
+        gate.release.signal()
+        #expect(returned, "text admission waited for a media prompt to render")
+        #expect(try await prompt.value == expected)
         if returned { owner.finishLocalRequest() }
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)

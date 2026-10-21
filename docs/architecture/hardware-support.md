@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -381,7 +381,14 @@ view never creates another materialization credit.
 
 The bound covers one buffer. Complete checkpoint capture/import separately
 prices zero-fill intermediates, retained recurrent backing, MTP state and
-metadata. Shared SSD reads and writes claim bounded host buffers before I/O or
+metadata. A provider-staged import builds each destination, paged segment and
+recent row from a zeroed host buffer of that array's size, one at a time; the
+buffer is resident outside the MLX allocator while it is copied, so the import
+plan charges the largest one as stage scratch
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHostZeros.swift`
+(`MLXArray.cbv2HostZeros`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointImportPlan.swift`
+(`CBv2CompleteCheckpointImportPlan.scratchBytes`)). Shared SSD reads and writes claim bounded host buffers before I/O or
 encoding; native destinations remain under Admission. Host buffers drain before
 their permit returns. Native owners retain completion and retirement barriers;
 allocator-active aliases remain visible in U after their coverage retires. Physical

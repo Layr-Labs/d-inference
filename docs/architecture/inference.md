@@ -490,6 +490,15 @@ check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
 `EngineProfile` (`EngineV2Bridge+Profile.swift`).
 
+The SSD stage runs before `engine.submit`, off the engine queue, while the
+engine may be evaluating another request's prefill chunk under MLX-Swift's
+process-wide `evalLock`. A provider-staged complete-checkpoint import therefore
+creates its destinations already available from host bytes and never evaluates
+or fences them, so staging does not wait for that chunk
+([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
+(`CBv2CompleteCheckpointImport`)).
+
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
 correlates checkpoint callbacks to that receipt so delayed donor callbacks
@@ -978,6 +987,11 @@ Resolution happens before submit so a bad parser name never orphans a request.
 | anything else, including `qwen3_vl_moe` | `nil` → `.json` | `JSONToolCallParser` (`<tool_call>…</tool_call>`) |
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
+
+Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
+inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
+including the embedded-MTP one, advertise forced tools
+(`ToolChoiceEnforcementPolicy.swift`).
 
 ### Chat-template render check
 

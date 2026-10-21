@@ -62,7 +62,7 @@ struct NemotronSuperLocalPrefillTests {
         #expect(Prefill.laneBytes(language, chunkTokens: 2048, measuredBound: false) == workspace)
         #expect(Prefill.laneBytes(language, chunkTokens: 2048, measuredBound: true)
             == max(workspace, NemotronHModel.prefillActivationBoundBytes(tokens: 2048)))
-        #expect(NemotronHModel.prefillActivationBoundBytes(tokens: 2048) == (4 << 30) + 2048 * (4 << 20))
+        #expect(NemotronHModel.prefillActivationBoundBytes(tokens: 2048) == (1 << 30) + 2048 * (15 << 18))
         let id = Prefill.laneReservationID()
         #expect(Prefill.isLaneReservationID(id) && !Prefill.isLaneReservationID("decode-contended-prefill"))
         // A synthetic installation is never the pinned checkpoint.

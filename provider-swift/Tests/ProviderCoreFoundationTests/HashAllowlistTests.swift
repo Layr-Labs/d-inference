@@ -15,6 +15,7 @@ final class HashAllowlistTests: XCTestCase {
         "preprocessor_config.json",
         "processor_config.json",
         "video_preprocessor_config.json",
+        "decision_config.json",
     ]
 
     func testEachNewlyAllowlistedFileIsHashed() async throws {

@@ -24,6 +24,7 @@ enum Qwen35TemplateFix {
             modelType == "qwen3_5" || modelType == "qwen3_5_moe"
                 || modelType == "qwen3_vl_moe"
                 || modelType == "prism_hadamard_qwen35"
+                || modelType == "pplx_decider_qwen35"
         {
             return true
         }

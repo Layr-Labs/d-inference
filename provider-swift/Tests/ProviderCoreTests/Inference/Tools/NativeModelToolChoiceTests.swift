@@ -72,6 +72,22 @@ struct NativeModelToolChoiceTests {
         }
     }
 
+    @Test func decisionModelsRefuseForcedToolsAndAdvertiseNone() throws {
+        let context = ChatTemplateFixContext(
+            modelId: EngineV2SupportedModels.pplxDeciderModelID, modelType: "pplx_decider_qwen35")
+        #expect(Qwen35TemplateFix.applies(to: context))
+        for mode: ToolConstraintMode in [.required, .named("route")] {
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
+            }
+        }
+        #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: .auto, modelContext: context) == .none)
+        #expect(!ToolChoiceEnforcementPolicy.advertisesCapability(for: ModelInfo(
+            id: EngineV2SupportedModels.pplxDeciderModelID, modelType: "pplx_decider_qwen35",
+            sizeBytes: 1, estimatedMemoryGb: 1)))
+        #expect(!ToolChoiceEnforcementPolicy.nativeStructuredTarget(context))
+    }
+
     @Test func unqualifiedVariantsRemainRefusedAndAutoIsUnchanged() throws {
         let context = ChatTemplateFixContext(modelId: "unqualified-nemotron", modelType: "nemotron_h")
         #expect(throws: (any Error).self) {

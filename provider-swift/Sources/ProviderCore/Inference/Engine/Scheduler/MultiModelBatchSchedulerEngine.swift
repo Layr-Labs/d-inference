@@ -119,6 +119,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// the engine captures them, and the bridge publishes OpenAI-shaped
     /// entries to `engineV2Logprobs.channel` for the caller's SSE frame decorator.
     private let engineV2Logprobs: EngineV2LogprobsPlumbing?
+    /// Non-nil only on the engine view one decision question submits
+    /// through (`DecisionRunner`): the pack's input-token bound, enforced on
+    /// the tokenized prompt before engine admission. Decision models serve
+    /// nothing else, and other models never serve this view.
+    private let decisionInputTokenLimit: Int?
+    private var maximumTopLogprobs: Int {
+        engineV2Logprobs?.maximumTopLogprobs ?? EngineV2LogprobsPlumbing.openAIMaximumTopLogprobs
+    }
     /// OpenAI `logit_bias`/`seed` decoded out-of-band from the sealed body
     /// (the upstream `OpenAIChatCompletionRequest` models neither — same
     /// pattern as `engineV2Logprobs`/`reasoningEffort`/`cacheScope`).
@@ -172,6 +180,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
         engineV2Usage: EngineV2RequestUsageSignal? = nil,
+        decisionInputTokenLimit: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         profile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
@@ -197,6 +206,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Sampling = engineV2Sampling
         self.engineV2Vision = engineV2Vision
         self.engineV2Usage = engineV2Usage
+        self.decisionInputTokenLimit = decisionInputTokenLimit
         self.allowInternalToolSchemaMetadata = true
         self.firstContentDeadline = firstContentDeadline
         self.promptWork = promptWork
@@ -261,6 +271,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // (no provider frame decorator), so there is nowhere to splice
         // cached_tokens — same scoping as `engineV2Logprobs`.
         self.engineV2Usage = nil
+        // Decisions build their own per-question registry view.
+        self.decisionInputTokenLimit = nil
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
         self.promptWork = nil
@@ -431,6 +443,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let nativeMiMoThinkingEnabled: Bool
         do {
             try checkFirstContentDeadline()
+            try DecisionServingGate.validate(
+                modelType: modelType, servesDecision: decisionInputTokenLimit != nil)
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
             if modelType == "mimo_v2" {
@@ -627,6 +641,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // MLX vision evaluation mutates container/Metal state and is
                     // not safely cancellable. Reject immediately after it returns.
                     try checkFirstContentDeadline()
+                    try DecisionServingGate.checkInputTokens(
+                        visionPrepared.promptTokens.count, limit: decisionInputTokenLimit)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hash the evaluated media while its reservation still
                     // owns the preparation peak. Bind cache lookup to actual
@@ -686,7 +702,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation,
                         promptWork: promptWork,
-                        measurementPurpose: measurementPurpose
+                        measurementPurpose: measurementPurpose,
+                        maximumTopLogprobs: maximumTopLogprobs
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -731,6 +748,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if let failure = error as? PreContentDeadlineFailure { throw failure }
                     if error is CancellationError { throw CancellationError() }
                     if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+                    if let decisionError = error as? DecisionRequestError { throw decisionError }
                     if let visionError = error as? EngineV2VisionPrefillError {
                         switch visionError {
                         case .noProcessedMedia:
@@ -807,6 +825,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 f.mark(.promptPrepEnd, offsetUs: now)
                 f.set(.promptTokens, promptTokenCount)
             }
+        }
+        do {
+            try DecisionServingGate.checkInputTokens(promptTokens.count, limit: decisionInputTokenLimit)
+        } catch {
+            await releaseBox.fire()
+            throw error
         }
 
         // The rendered prompt determines whether output starts in reasoning
@@ -906,7 +930,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     serviceReservationID: serviceReservationID,
                     serviceReservation: serviceReservation,
                     promptWork: promptWork,
-                    measurementPurpose: measurementPurpose
+                    measurementPurpose: measurementPurpose,
+                    maximumTopLogprobs: maximumTopLogprobs
                 )
                 do {
                     try checkFirstContentDeadline()

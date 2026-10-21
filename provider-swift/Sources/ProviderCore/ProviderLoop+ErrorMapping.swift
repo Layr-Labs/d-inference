@@ -42,6 +42,7 @@ extension ProviderLoop {
     ) -> InferenceErrorReason? {
         if error is CancellationError { return .cancelled }
         if error is PreContentDeadlineFailure { return .deadlineUnreachable }
+        if error is DecisionRequestError { return .clientError }
         if let typed = classifyTypedInferenceErrorReason(error) { return typed }
         if let cause = terminalCause {
             switch cause {
@@ -233,6 +234,11 @@ extension ProviderLoop {
         }
         if error is PreContentDeadlineFailure {
             return 503
+        }
+        // Decision/chat model mismatch, invalid decision body or an
+        // over-long decision prompt: deterministic client faults.
+        if error is DecisionRequestError {
+            return 400
         }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {

@@ -783,6 +783,7 @@ records tiny-model correctness and remaining release gates.
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
+| `pplx_decider_qwen35` | pplx-decider (dense Qwen 3.8 27B with a 255-row decision head) | Served as dense `qwen3_5`; serves only [decision requests](#decision-requests). The output head is the trained option readout, so chat is refused and MTP never attaches |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
@@ -1090,6 +1091,56 @@ serializes SSE frames; the provider encrypts and sends them back over the
 coordinator connection. This integration does not start a local HTTP endpoint
 or change consumer/OpenRouter routing.
 
+### Decision requests
+
+A `pplx_decider_qwen35` pack installs the pplx-decider option readout as the
+model's output head, one row per answer option (`decision.options`, 255). The
+engine's first-token logprobs are therefore the option logits' log-softmax at
+T=1, and one greedy readout per question replaces the reference forward pass.
+The pack contract and the probability identity are in
+`libs/mlx-swift-lm/docs/pplx-decider.md`; the `decision` block is decoded and
+validated by `PplxDeciderConfiguration`
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/PplxDeciderConfiguration.swift`).
+
+```mermaid
+flowchart LR
+  body["decision body<br/>model, state, questions, images"] --> parse["DecisionRequest.parse<br/>strict, closed schema"]
+  parse --> prompt["DecisionPrompt<br/>reference prompt per question"]
+  prompt --> engine["MultiModelBatchSchedulerEngine<br/>max_tokens 1, top_logprobs 255"]
+  engine --> rows["first token's head rows<br/>SSETokenLogprob.Top.tokenID"]
+  rows --> probs["PplxDecision.probabilities<br/>softmax(l / T) over 0..&lt;count"]
+  probs --> answer["DecisionAnswer.answer"]
+  answer --> response["{id, object: decision, answers, usage}"]
+```
+
+| Step | Behaviour | Code |
+|---|---|---|
+| Body | `{"model", "state", "questions": {key: question}, "images"?}`; a question is `{"type": "choice"\|"noul"\|"score", "instructions"?, "criteria"}`. Unknown fields, including sampling and chat fields, are refused. At most `DecisionRequest.maximumQuestions = 64` questions | `provider-swift/Sources/ProviderCore/Inference/Decision/DecisionRequest.swift` (`DecisionRequest.parse`) |
+| JSON | Member order and Python's int/float split are preserved; `describe` reproduces `json.dumps(ensure_ascii=False)` | `provider-swift/Sources/ProviderCore/Inference/Decision/DecisionJSON.swift` (`DecisionJSON`, `described`) |
+| Prompt | Reference system message, then the images and `State:/Question:/Options:` text in one user turn; codes from the pack; thinking off | `provider-swift/Sources/ProviderCore/Inference/Decision/DecisionPrompt.swift` (`text`, `chatRequest`) |
+| Readout | One chat submission per question through the ordinary v2 path: `max_tokens 1`, temperature 0, `top_p 1`, `top_k 0`, repetition/frequency/presence penalties at their no-op values, `top_logprobs` = head width (the clamp ceiling is `EngineV2LogprobsPlumbing.maximumTopLogprobs`, 20 for chat) | `provider-swift/Sources/ProviderCore/Inference/Decision/DecisionRunner.swift` (`DecisionRunner`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`topLogprobs`) |
+| Input bound | The tokenized prompt (image tokens included) above `decision.max_input_tokens` is refused before engine admission; nothing is truncated | `provider-swift/Sources/ProviderCore/Inference/Decision/DecisionServingGate.swift` (`checkInputTokens`) |
+| Answer | `noul`, `choice` and `score` answers exactly as the reference `answer` | `provider-swift/Sources/ProviderCore/Inference/Decision/DecisionAnswer.swift` (`answer`, `response`) |
+| Usage | `input_tokens` = Σ question prompt tokens; `output_tokens` = number of questions (one sampled token each) | `DecisionRunner.run` |
+
+The coordinator handler parses a decision body only after the chat decode
+fails (`ProviderLoop+InferenceHandler.swift`, `handleInferenceRequest`). The
+answer is one `inference_response_chunk` holding a single SSE `data:` frame
+with the response JSON, then `inference_complete` with `prompt_tokens` and
+`completion_tokens` set to the usage above
+(`provider-swift/Sources/ProviderCore/Inference/Decision/ProviderLoop+Decision.swift`,
+`serveDecision`). Only the first question carries the request's prefix-cache
+usage signal. The local endpoint serves `POST /v1/decisions`
+(`provider-swift/Sources/ProviderCore/Server/LocalDecisionResponder.swift`);
+see [direct mode](../provider/direct-mode.md#routes).
+
+`DecisionServingGate.validate` keys on the loaded slot's `model_type`: chat to
+a decision model and a decision to any other model are refused with 400. The
+coordinator handler also checks provider metadata before acceptance. Tool
+choices are refused for decision models (`ToolChoiceEnforcementPolicy`).
+Logs and telemetry carry counts only, never the state, questions, codes or
+probabilities.
+
 ## Invariants
 
 1. Only `model_type`s accepted by `EngineV2SupportedModels.isSupported` are
@@ -1111,6 +1162,9 @@ or change consumer/OpenRouter routing.
 7. MTP is fail-open to target-only decode: artifact resolution failure or
    `DARKBLOOM_CBV2_MTP` off never refuses a load — `EngineV2SlotFactory+MTP.swift`,
    `MTPContractsV2.swift` (`envEnabled`).
+8. A decision model serves only decision requests and a decision request
+   reaches only a decision model, by loaded `model_type` —
+   `DecisionServingGate.swift` (`validate`).
 
 ## Failure modes
 
@@ -1122,6 +1176,7 @@ or change consumer/OpenRouter routing.
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
 | `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
+| Decision refused with 400 | Invalid decision body, chat/decision model mismatch, or prompt above `max_input_tokens` | `DecisionRequest.swift`, `DecisionServingGate.swift` (`DecisionRequestError`) |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
@@ -1144,6 +1199,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | `Tools` | Schema normalization and constrained generation (`ToolSchemaNormalization`, `ToolConstraintFactory`). |
 | `Streaming` | Reasoning/tool output routing, logprobs and usage (`NativeToolStreamRouter`, `StreamedGenerationUsage` in `Streaming/UsageAccounting.swift`). |
 | `Vision` | Media decoding, feature preparation and memory gates (`MediaIngest`, `VisionMemoryGate`). |
+| `Decision` | pplx-decider decision requests: parsing, prompt, readout and answers (`DecisionRunner`, `ProviderLoop.serveDecision`). |
 
 | Concern | File / symbol |
 |---|---|

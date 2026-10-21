@@ -1510,7 +1510,9 @@ public actor StandaloneServer {
     /// slot *after* taking the reservation, then drop the
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
-    func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+    func acquireModel(_ requestedModelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        // Slots, reservations and loads stay keyed by the advertised id.
+        let modelId = advertisedModelID(for: requestedModelId)
         try requireNativeMiMoNewWorkAllowed()
         if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
@@ -1583,6 +1585,7 @@ public actor StandaloneServer {
     func resolveTokenizer(
         _ modelId: String?
     ) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution {
+        let modelId = modelId.map(advertisedModelID(for:))
         if let modelId, let slot = slots[modelId] {
             return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
@@ -1635,6 +1638,13 @@ public actor StandaloneServer {
     /// catalog here; this method restores that behaviour.
     func advertisedModelIds() -> [String] {
         models.map { $0.id }.sorted()
+    }
+
+    /// The advertised id a request's `model` names. All local request
+    /// routes resolve through this one rule (see
+    /// ``EngineV2SupportedModels/canonicalAdvertisedModelID(for:advertised:)``).
+    func advertisedModelID(for requested: String) -> String {
+        EngineV2SupportedModels.canonicalAdvertisedModelID(for: requested, advertised: models)
     }
 
     func computeStandaloneWeightHash(

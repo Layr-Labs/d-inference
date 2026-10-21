@@ -56,11 +56,22 @@ public struct SSETokenLogprob: Codable, Sendable, Equatable {
         /// Raw UTF-8 bytes of `token` — the OpenAI escape hatch for BPE
         /// intermediate tokens whose text is not valid standalone UTF-8.
         public let bytes: [Int]?
+        /// Engine output-head row of this alternative. In-process only (never
+        /// encoded): the decision path maps rows to options; token ids never
+        /// reach the wire or telemetry.
+        public var tokenID: Int? = nil
 
-        public init(token: String, logprob: Float, bytes: [Int]?) {
+        enum CodingKeys: String, CodingKey {
+            case token
+            case logprob
+            case bytes
+        }
+
+        public init(token: String, logprob: Float, bytes: [Int]?, tokenID: Int? = nil) {
             self.token = token
             self.logprob = logprob
             self.bytes = bytes
+            self.tokenID = tokenID
         }
     }
 
@@ -111,12 +122,22 @@ public struct SSETokenLogprob: Codable, Sendable, Equatable {
 /// them from the raw body and threads them in here); `channel` receives the
 /// engine-emitted entries. Present ⇒ the request asked for logprobs.
 public struct EngineV2LogprobsPlumbing: Sendable {
+    /// OpenAI's `top_logprobs` wire maximum.
+    public static let openAIMaximumTopLogprobs = 20
+
     public let topLogprobs: Int?
     public let channel: EngineV2LogprobsChannel
+    /// Clamp ceiling for `topLogprobs`: the OpenAI wire maximum for chat; a
+    /// decision question raises it to its option-head width.
+    public let maximumTopLogprobs: Int
 
-    public init(topLogprobs: Int?, channel: EngineV2LogprobsChannel) {
+    public init(
+        topLogprobs: Int?, channel: EngineV2LogprobsChannel,
+        maximumTopLogprobs: Int = EngineV2LogprobsPlumbing.openAIMaximumTopLogprobs
+    ) {
         self.topLogprobs = topLogprobs
         self.channel = channel
+        self.maximumTopLogprobs = maximumTopLogprobs
     }
 }
 

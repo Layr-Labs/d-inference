@@ -65,12 +65,14 @@ enum EngineV2Translation {
         multimodal: CBv2MultimodalInput? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
-        prefixCheckpointTargetTokens: Int? = nil
+        prefixCheckpointTargetTokens: Int? = nil,
+        maximumTopLogprobs: Int = EngineV2LogprobsPlumbing.openAIMaximumTopLogprobs
     ) -> CBv2Request {
         CBv2Request(
             id: id,
             promptTokens: promptTokens,
-            sampling: samplingParams(from: request, defaults: samplingDefaults),
+            sampling: samplingParams(
+                from: request, defaults: samplingDefaults, maximumTopLogprobs: maximumTopLogprobs),
             maxTokens: request.max_tokens ?? defaultMaxTokens,
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
@@ -92,7 +94,8 @@ enum EngineV2Translation {
     /// sampler would not have applied). Explicit request values always win.
     static func samplingParams(
         from request: ChatCompletionRequest,
-        defaults: EngineV2SamplingDefaults = .legacy
+        defaults: EngineV2SamplingDefaults = .legacy,
+        maximumTopLogprobs: Int = EngineV2LogprobsPlumbing.openAIMaximumTopLogprobs
     ) -> CBv2SamplingParams {
         let (logitBias, droppedBiasKeys) = parseLogitBiasCountingDropped(request.logit_bias)
         if droppedBiasKeys > 0 {
@@ -115,7 +118,8 @@ enum EngineV2Translation {
             seed: request.seed,
             logitBias: logitBias,
             topLogprobs: topLogprobs(
-                logprobs: request.logprobs, topLogprobs: request.top_logprobs
+                logprobs: request.logprobs, topLogprobs: request.top_logprobs,
+                maximum: maximumTopLogprobs
             )
         )
     }
@@ -156,12 +160,16 @@ enum EngineV2Translation {
     /// the OpenAI shape "logprobs=true, top_logprobs omitted/0" (chosen
     /// token's logprob only, no alternatives) has no exact representation.
     /// Closest conforming mapping: request 1 top alternative so the chosen
-    /// token's logprob is still captured. `top_logprobs` is clamped to the
-    /// OpenAI wire maximum of 20.
-    static func topLogprobs(logprobs: Bool?, topLogprobs: Int?) -> Int {
+    /// token's logprob is still captured. `top_logprobs` is clamped to
+    /// `maximum`: the OpenAI wire maximum of 20 unless a decision question
+    /// raises it to its option-head width.
+    static func topLogprobs(
+        logprobs: Bool?, topLogprobs: Int?,
+        maximum: Int = EngineV2LogprobsPlumbing.openAIMaximumTopLogprobs
+    ) -> Int {
         guard logprobs == true else { return 0 }
         let requested = topLogprobs ?? 0
-        return min(20, max(1, requested))
+        return min(max(1, maximum), max(1, requested))
     }
 
     // MARK: - Logprobs translation (CBv2TokenLogprob → OpenAI entry shape)
@@ -188,13 +196,14 @@ enum EngineV2Translation {
                     // Its text and bytes are identical; decode it only once.
                     if alt.token == entry.token {
                         return SSETokenLogprob.Top(
-                            token: token, logprob: alt.logprob, bytes: bytes)
+                            token: token, logprob: alt.logprob, bytes: bytes, tokenID: alt.token)
                     }
                     let altToken = decodeToken(alt.token)
                     return SSETokenLogprob.Top(
                         token: altToken,
                         logprob: alt.logprob,
-                        bytes: altToken.utf8.map(Int.init)
+                        bytes: altToken.utf8.map(Int.init),
+                        tokenID: alt.token
                     )
                 }
             )

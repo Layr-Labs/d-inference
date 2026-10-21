@@ -26,7 +26,17 @@ struct BenchmarkCheckpointPartitionTests {
         #expect(minimum(backend: .contiguous) == nil)
         #expect(minimum(layout: CBv2CompleteCheckpointManifest.historicalAttentionLayout) == nil)
         #expect(minimum(layout: CBv2CompleteCheckpointManifest.pagedAsymmetricMTPLayout) == nil)
+        #expect(minimum(layout: CBv2CompleteCheckpointManifest.quantizedPagedLayout) == nil)
         #expect(minimum(floor: 1_023) == nil)
         #expect(minimum(recurrent: false) == nil)
+
+        let compressed = CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+        #expect(minimum(layout: compressed) == 1_024)
+        #expect(minimum(layout: compressed, floor: 2_048) == 2_048)
+        #expect(minimum(purpose: .serving, layout: compressed) == nil)
+        #expect(minimum(partition: .production, layout: compressed) == nil)
+        #expect(minimum(backend: .contiguous, layout: compressed) == nil)
+        #expect(minimum(layout: compressed, floor: 1_023) == nil)
+        #expect(minimum(layout: compressed, recurrent: false) == nil)
     }
 }

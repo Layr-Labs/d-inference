@@ -60,7 +60,7 @@ public enum OOMDetector {
     public static func defaultMarkerURL(
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        home.appendingPathComponent(".darkbloom").appendingPathComponent("oom_marker.json")
+        BuildEnvironment.current.installDirectory(home: home).appendingPathComponent("oom_marker.json")
     }
 
     /// Where macOS writes crash/jetsam reports. KERNEL jetsam reports
@@ -82,7 +82,7 @@ public enum OOMDetector {
     public static func defaultLastScanURL(
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        home.appendingPathComponent(".darkbloom").appendingPathComponent("oom_last_scan")
+        BuildEnvironment.current.installDirectory(home: home).appendingPathComponent("oom_last_scan")
     }
 
     public static func loadLastScan(at url: URL = defaultLastScanURL()) -> Date? {
@@ -174,7 +174,7 @@ public enum OOMDetector {
     public static func detectOnLaunch(
         markerURL: URL = defaultMarkerURL(),
         diagnosticReportsDirs: [URL] = defaultDiagnosticReportsDirs(),
-        processName: String = "darkbloom",
+        processName: String = BuildEnvironment.current.cliName,
         since: Date,
         fileManager: FileManager = .default
     ) -> [Finding] {

@@ -8,7 +8,7 @@ import os
 extension EngineV2Bridge {
     #if canImport(os)
     private static let ssdStatsLogger = Logger(
-        subsystem: "com.darkbloom.provider", category: "prefix_cache")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "prefix_cache")
     #endif
 
     /// One low-rate snapshot from the slot's accepted durable cache. This task

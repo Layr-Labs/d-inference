@@ -112,6 +112,19 @@ struct NemotronSuperLocalMTPTests {
         fixture.installed.closeAfterRetirement()
     }
 
+    /// The shared factory serves the Super composition only through its
+    /// dispatch-only wrappers; the generic `NemotronHModel` they wrap is no
+    /// CBv2 serving type of its own.
+    @Test func sharedFactoryDoesNotServeTheGenericNemotronModel() throws {
+        let fixture = try SuperMTPInstalledFixture().make()
+        let model = try #require(fixture.installed.model)
+        #expect(type(of: model.languageModel) == NemotronHModel.self)
+        #expect(EngineV2Factory.ProductionModelAdapter(model: model.languageModel) == nil)
+        #expect(EngineV2Factory.cbv2LayerKinds(model: model.languageModel) == nil)
+        #expect(EngineV2Factory.ProductionModelAdapter(model: NemotronSuperRecurrentAdapter(model)) != nil)
+        fixture.installed.closeAfterRetirement()
+    }
+
     /// With speculation the refused grant's report includes the assistant's
     /// bounded per-request charge, so its minimum exceeds the plain owner's.
     @Test(.timeLimit(.minutes(2))) func speculativeGrantRefusalReportsTheAssistantCharge() async throws {

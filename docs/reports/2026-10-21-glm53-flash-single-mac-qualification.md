@@ -18,9 +18,9 @@ catalog activation or production deployment approval.
 | Hugging Face check | every manifest file present at `8841c52a` with matching LFS SHA-256; the catalog's earlier pin `8603f7fe` differs only in `README.md` |
 | Selection | local qualification selection, `maximumContextLength` 65,536 |
 | Policy | `GLM5NextExecutionPolicy.serving` (enforced by the managed load), paged KV, embedded MTP with adaptive rectangular verification up to depth 3 |
-| SDK | mlx-swift-lm `97b2ca6d` (#314; tests only after `322a231f`, which the final executable compiled) on mlx-swift `205ee3d8`, core `6ee3062c`, mlx-c `bd03297a` (production footprint policy). Earlier checks ran on mlx-swift-lm `48f1e000`, mlx-swift `cf921c05`, core `2bba342d`, mlx-c `2f1bcab9` |
+| SDK | mlx-swift-lm `77a0d1d9` (#314; merged with main's Nemotron 3.5 Super stack) on mlx-swift `c2cbef34`, core `ad596687`, mlx-c `fa6565d4` (production footprint policy, merged with each main). The final executable compiled mlx-swift-lm `a630039b`; later commits change tests and one line break. Earlier checks ran on `97b2ca6d`/`48f1e000` and earlier native heads |
 | Metallib | `156f2624f9f1b1413dfabd8b6e16423121b0e5b18e2573c23c4e023b606a462d` (unchanged by this work) |
-| Executables | final: `darkbloom` `94a83e2730262d61a9d0af72729ec17043579fb403cd2dc88fe1a87211902d40` (= #1516 `15d7a833d`, SDK `322a231f`; see "Recheck after restoring production footprint charges"), DEBUG variant `4f7fd9df…` (SSD restart recheck). Before that: `593cd3d0…` (= #1516 `1216ffb84`, SDK `48f1e000`; refusal probes and confirmation soak); `8eee2c99…` (#1516 `23eb9d377`; admission checks and the 40-minute soak). Earlier builds of the same chain: `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (#1516 `e114fc348`; performance table, long context, video proof), DEBUG variant `3256e2c7…` (SSD restart check only). The SDK changes after the port gate (`0ceec3ab`… `48f1e000`) only gate a non-bitwise path off, change admission charges, video decoding and the step-refusal path; none changes text numerics |
+| Executables | final: `darkbloom` `d9780e867576bf14208d15ff6e80037dd9a54438a6f9b15264eed7b901e74945` (#1516 with SDK `a630039b`; see "Final recheck after merging main"), DEBUG variant `d0974768…` (SSD restart only). Before that: `94a83e27…` (production footprint policy recheck), `593cd3d0…` (refusal probes and confirmation soak), `8eee2c99…` (admission checks and the 40-minute soak), `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (performance table, long context, video proof), DEBUG `3256e2c7…`/`4f7fd9df…` (SSD restart checks) |
 
 The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitted by
 `GLM5NextHardwareRequirement` but was not measured.
@@ -67,6 +67,28 @@ adaptive MTP, 5 repetitions (medians):
 MTP speculates for one row at a time (`maxSpeculativeBatch` 1), so from two
 concurrent requests on, rows decode without speculation and aggregate decode
 grows slowly (c4 is 1.55× c1).
+
+## Final recheck after merging main
+
+All five native and SDK pull requests merged their base branches, which now
+carry the Nemotron 3.5 Super stack (command-buffer limits, custom-kernel math
+modes, and engine changes shared by every model: non-finite logit flags and
+the durable prefix-checkpoint gate). GLM's declared MTP charge is unchanged
+(4,054,826,930 bytes fixed, 33,900 bytes per token). Final executable
+`d9780e86…`, metallib `156f2624…`:
+
+| Check | Result |
+|---|---|
+| Tokens, serial-target mode | 14/14 cases byte-identical to the previous final build, image included; run to run 14/14 |
+| Endpoint | 18 of 23 pass; the others are two informational checks, the known seeded-sampling limit, the harness's 64K-selection `over_context` probe (the listed 131,072-token bound is exact: 131,000 output tokens accepted, 131,072 refused) and OpenRouter's `reasoning.exclude: true` / thinking-off shapes, refused with 400 by design; every other OpenRouter reasoning shape returns 200 |
+| OpenRouter templates | none failed, streaming and non-streaming |
+| Images / video | images 45/51 (the three known slashed-zero glyph misreads and three harness cases written before video was served or needing a special restart); video 15/15 |
+| Prefix cache | 10.6K repeat 10,240 cached, TTFT 5.36 → 1.21 s; extended, multi-turn and media cases pass |
+| SSD tier across restart (DEBUG, persistent key) | 20,015-token prompt: 18,432 cached after the restart, TTFT 1.99 s |
+| Long context | needles at 64K and 125K (125,494 tokens, TTFT 80.0 s) pass |
+| Admission flood, 8 × (~30K + 30K) | 3 served, 5 clean 503, idle 0.26 s after, faults 0 |
+| Soak, 20 minutes (seed 5301) | 466 ok, 34 intended cancels, 93 capacity 503, 0 other errors, faults 0, idle at the end; memory pressure normal in every sample of the whole recheck |
+| Performance | same-state A/B against the previous final build: prefill 1,904 / 1,935 / 2,019 vs 1,679 / 1,981 / 2,008 tok/s, decode 59.1 / 59.8 vs 60.1 / 60.6 tok/s: equal within run-to-run variation |
 
 ## Recheck after restoring production footprint charges
 

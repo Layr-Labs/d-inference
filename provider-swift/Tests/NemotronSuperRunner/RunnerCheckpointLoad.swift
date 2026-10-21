@@ -104,10 +104,12 @@ enum RunnerCheckpointLoad {
     }
 
     /// Each configuration the LOAD gate weighed (`NemotronSuperLoadFit`) with
-    /// the gate's own terms: the gate admits a claim within
-    /// min(cap - used, system available - load reserve) - activation reserve.
-    /// `served_requests` is the admitted configuration's width only when the
-    /// load completed; `admitted` alone means the gate accepted that claim.
+    /// the gate's own terms: the gate admits a claim and its slack within
+    /// min(cap - used, system available - system reserve), less the
+    /// activation reserve and unmaterialized commitments
+    /// (`loadClaimRemainingBytes`); the provider's load reserve is not among
+    /// them. `served_requests` is the admitted configuration's width only when
+    /// the load completed; `admitted` alone means the gate accepted that claim.
     private static func fitJSON(_ transaction: NemotronSuperLocalLoad, budget: GlobalKVCacheBudget,
                                 loaded: Bool) async -> RunnerJSON {
         let attempts = await transaction.fitAttempts
@@ -120,7 +122,8 @@ enum RunnerCheckpointLoad {
             }),
             "served_requests": loaded ? attempts.last(where: \.admitted).map { .count($0.requests) } ?? .null : .null,
             "admission_slack_bytes": .bytes(NemotronSuperLoadFit.admissionSlackBytes),
-            "system_reserve_bytes": .bytes(NemotronSuperLoadFit.systemReserveBytes),
+            "system_reserve_bytes": .bytes(NemotronSuperLoadFit.systemReserveBytes(
+                configReserveBytes: budget.configReserveBytes)),
             "minimum_available_bytes": .bytes(NemotronSuperLoadFit.minimumAvailableBytes),
             "load_reserve_bytes": .bytes(budget.loadReserveBytes),
             "available_for_load_gb": .double(budget.availableForLoadGb()),

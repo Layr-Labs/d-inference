@@ -36,7 +36,7 @@ extension ProviderLoop {
     /// What a Super LOAD claim could charge right now.
     func nemotronSuperClaimRoomBytes() -> UInt64 {
         kvBudget.memoryHeadroomSnapshot().loadClaimRemainingBytes(
-            systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes)
+            systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes(configReserveBytes: kvBudget.configReserveBytes))
     }
 
     /// `evictUntilAvailable` for the managed Super load. Evicts idle models,

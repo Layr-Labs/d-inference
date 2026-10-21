@@ -78,12 +78,13 @@ struct RunnerMemoryEmulation {
     /// requirement, as the provider's pre-accept and eviction decide.
     func loadGate(budget: GlobalKVCacheBudget) -> (admits: Bool, json: RunnerJSON) {
         let headroom = budget.memoryHeadroomSnapshot()
-        let room = headroom.loadClaimRemainingBytes(systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes)
+        let reserve = NemotronSuperLoadFit.systemReserveBytes(configReserveBytes: budget.configReserveBytes)
+        let room = headroom.loadClaimRemainingBytes(systemReserveBytes: reserve)
         let required = NemotronSuperLoadFit.narrowestRequirementBytes
         return (room >= required, ["physical_bytes": .bytes(physicalBytes),
                 "cap_bytes": .bytes(headroom.capBytes),
                 "activation_reserve_bytes": .bytes(headroom.activationReserveBytes),
-                "system_reserve_bytes": .bytes(NemotronSuperLoadFit.systemReserveBytes),
+                "system_reserve_bytes": .bytes(reserve),
                 "required_bytes": .bytes(required), "load_claim_room_bytes": .bytes(room),
                 "admits": .bool(room >= required)])
     }

@@ -19,6 +19,8 @@ public actor GlobalKVCacheBudget {
     nonisolated let processLedger: ProcessMemoryLedger
     nonisolated let physicalMemoryBytes: UInt64
     nonisolated let loadReserveBytes: UInt64
+    /// The operator's `memory_reserve_gb` this budget honors, in bytes.
+    nonisolated let configReserveBytes: UInt64
     private var policyEpoch: UInt64 = 1
     /// Owner push epochs reject stale serving-set reserve changes.
     private var lastActivationReserveEpoch: UInt64 = 0
@@ -100,6 +102,7 @@ public actor GlobalKVCacheBudget {
         }
         let total = ProcessInfo.processInfo.physicalMemory
         self.physicalMemoryBytes = total
+        self.configReserveBytes = configReserveBytes
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: configReserveBytes, capFraction: capFraction)
         self.processLedger = Self.makeLedger(
@@ -134,6 +137,7 @@ public actor GlobalKVCacheBudget {
         self.serviceBudget = serviceBudget
         let total = memorySnapshot().total
         self.physicalMemoryBytes = total
+        self.configReserveBytes = configReserveBytes
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: configReserveBytes, capFraction: capFraction)
         self.processLedger = Self.makeLedger(

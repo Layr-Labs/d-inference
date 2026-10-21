@@ -26,11 +26,13 @@ extension NemotronSuperManagedSlotTests {
     /// activation reserve is the 5.5 GiB default. Super is advertised as the
     /// scanner discovers it; its loader sizes and gates the load as the pinned
     /// checkpoint's on 128 GiB, and a fixture loads.
-    static func coResidentFixture(weightsGiB: Double, availableGiB: Double) async throws -> CoResidentFixture {
+    static func coResidentFixture(weightsGiB: Double, availableGiB: Double,
+                                  configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
         let stub = makeInertStubBridge(modelId: coResidentID)
         let engine = stub.engine
         let weights = UInt64(weightsGiB * 1_073_741_824), available = UInt64(availableGiB * 1_073_741_824)
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
+                                         configReserveBytes: configReserveBytes) {
             let resident = engine.shutdownCalls == 0
             return .init(total: 128 << 30, active: resident ? weights : 0, cache: 0,
                          systemAvailable: resident ? available : available + weights)
@@ -153,6 +155,22 @@ extension NemotronSuperManagedSlotTests {
         }
     }
 
+    /// A `memory_reserve_gb` raised to 16 GiB stays free beside Super's claim,
+    /// so pre-accept refuses what that claim would: 100 GiB available holds
+    /// the narrowest configuration only without the reserve.
+    @Test(.timeLimit(.minutes(1)))
+    func raisedOperatorReserveRefusesSuperBeforeAccepting() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 1, availableGiB: 100,
+                                                       configReserveBytes: 16 << 30)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let sample = fixture.budget.memoryHeadroomSnapshot()
+        #expect(sample.loadClaimRemainingBytes(systemReserveBytes: 0) > NemotronSuperLoadFit.narrowestRequirementBytes)
+        #expect(await loop.nemotronSuperClaimRoomBytes() == sample.loadClaimRemainingBytes(systemReserveBytes: 16 << 30))
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
+        #expect(!(await Self.claimAdmits(NemotronSuperLoadFit.narrowestRequirementBytes, fixture.budget)))
+    }
+
     /// Startup preload (which never evicts) admits Super exactly when its own
     /// gate does, whatever the preloader's free figure says: not beside the
     /// idle 30 GiB model, and, once it is gone, by the claim's room beyond
@@ -193,7 +211,8 @@ extension NemotronSuperManagedSlotTests {
     static func claimAdmits(_ bytes: UInt64, _ budget: GlobalKVCacheBudget) async -> Bool {
         let kvFloor = UInt64(UnifiedMemoryCap.minimumLoadKVBytes)
         guard let lease = await budget.claimPendingLoad(requestID: "super-gate-probe", weightBytes: bytes - kvFloor,
-            minimumKVBytes: kvFloor, systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes)
+            minimumKVBytes: kvFloor,
+            systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes(configReserveBytes: budget.configReserveBytes))
         else { return false }
         return await budget.finishPendingLoad(lease)
     }

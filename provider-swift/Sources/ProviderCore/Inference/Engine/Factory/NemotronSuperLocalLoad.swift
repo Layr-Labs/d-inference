@@ -156,7 +156,8 @@ actor NemotronSuperLocalLoad {
                 }) else { continue }
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
                     weightBytes: fit.askedWeightBytes, minimumKVBytes: UInt64(fit.kvFloorBytes),
-                    systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes)
+                    systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes(
+                        configReserveBytes: budget.configReserveBytes))
                 let chunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: candidate.environment) ?? 0
                 fitAttempts.append(FitAttempt(requests: candidate.requests, prefixBankBytes: shares?.bank ?? 0,
                     claimBytes: fit.chargedBytes, admitted: claim != nil, chunkTokens: chunk))

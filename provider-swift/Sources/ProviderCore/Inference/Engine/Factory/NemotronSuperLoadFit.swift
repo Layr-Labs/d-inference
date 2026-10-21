@@ -16,10 +16,10 @@ import Foundation
 /// coordinator routes no more concurrent work to a narrower owner.
 ///
 /// Super loads keep no OS reserve beyond `admissionSlackBytes` and the
-/// activation reserve (`systemReserveBytes`): with the provider's 10% LOAD
-/// reserve the model could not load on a 128 GB Mac running anything else.
-/// The narrowest configuration needs `minimumAvailableBytes` (85.6 GiB) of
-/// available memory.
+/// activation reserve unless the operator raised `memory_reserve_gb`
+/// (`systemReserveBytes`): with the provider's 10% LOAD reserve the model
+/// could not load on a 128 GB Mac running anything else. The narrowest
+/// configuration needs `minimumAvailableBytes` (85.6 GiB) of available memory.
 enum NemotronSuperLoadFit {
     /// Room the gate must have beyond a configuration's claim when it is
     /// asked; `FitAttempt.claimBytes` excludes it, and the lease releases it
@@ -33,9 +33,17 @@ enum NemotronSuperLoadFit {
     /// and the next narrower one is tried.
     static let admissionSlackBytes = 3 << 30
 
-    /// OS reserve a Super LOAD claim keeps beside its charge and the slack, in
-    /// place of the provider's `loadReserveBytes`.
-    static let systemReserveBytes: UInt64 = 0
+    /// `memory_reserve_gb` of every generated provider config (`ProviderSettings`).
+    static let defaultConfigReserveBytes: UInt64 = 4 << 30
+
+    /// OS reserve a Super LOAD claim keeps beside its charge and the slack,
+    /// in place of the provider's `loadReserveBytes`: not the cap's implied
+    /// 10%, only an operator's `memory_reserve_gb` above its 4 GiB default,
+    /// whole. Every generated config carries the default, so it is no
+    /// operator choice.
+    static func systemReserveBytes(configReserveBytes: UInt64) -> UInt64 {
+        configReserveBytes > defaultConfigReserveBytes ? configReserveBytes : 0
+    }
 
     /// Prompt chunk of the last configuration.
     static let narrowestChunkTokens = 1_024

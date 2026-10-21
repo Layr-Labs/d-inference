@@ -256,7 +256,8 @@ process-wide `evalLock`. A provider-staged complete-checkpoint import therefore
 creates its destinations already available from host bytes and never evaluates
 or fences them, so staging does not wait for that chunk
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
-`CompleteCheckpointTransfer.swift`).
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
+(`CBv2CompleteCheckpointImport`)).
 
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge

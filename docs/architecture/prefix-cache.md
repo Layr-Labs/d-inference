@@ -787,7 +787,8 @@ them, so staging never waits for MLX-Swift's process-wide `evalLock`, which the
 engine holds for another request's whole prefill chunk. The import plan charges
 the largest host-zero source as staging scratch
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
-`CompleteCheckpointTransfer.swift`).
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
+(`CBv2CompleteCheckpointImport`)).
 See [first-content routing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/first-content-routing.md) for the calibrated-work
 rules applied to these signals.
 

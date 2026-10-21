@@ -40,7 +40,9 @@ struct ModelCheckpointRestoreContentionLiveTests {
         var failure: String?
 
         func save(to path: String) throws {
-            try JSONEncoder().encode(self).write(to: URL(fileURLWithPath: path), options: .atomic)
+            let url = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(self).write(to: url, options: .atomic)
         }
     }
 

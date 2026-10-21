@@ -373,8 +373,33 @@ extension ProviderLoop {
             return "insufficient memory for the decode rows"
         case NemotronSuperLocalPrefixCache.Failure.bankRefused: return "insufficient memory for the prefix bank"
         case NemotronSuperLocalPrefixCache.Failure.unavailable: return "the engine did not construct the prefix bank"
+        case NemotronSuperLocalMTP.Failure.roundRefused: return "insufficient memory for the MTP round"
         case NemotronSuperSlotError.retainedFault: return "native work did not retire; restart required"
-        default: return "native construction was refused"
+        default: return nemotronSuperConfigurationRefusal(error) ?? "native construction was refused"
+        }
+    }
+
+    /// A runtime policy or quote the load refuses before building anything.
+    private static func nemotronSuperConfigurationRefusal(_ error: Error) -> String? {
+        switch error {
+        case NemotronSuperLocalMTP.Failure.invalidDepth:
+            return "\(NemotronSuperLocalMTP.depthKey) is not a draft depth the owner serves"
+        case NemotronSuperLocalMTP.Failure.invalidVerification:
+            return "\(NemotronSuperLocalMTP.verificationKey) is neither rectangular nor serial"
+        case NemotronSuperLocalMTP.Failure.loadQuote: return "the speculation head's LOAD quote is invalid"
+        case NemotronSuperLocalPrefill.Failure.invalidChunk:
+            return "\(NemotronSuperLocalPrefill.chunkKey) is malformed or above the calibrated prefill limit"
+        case NemotronSuperLocalPrefill.Failure.invalidDecodeSteps:
+            return "\(NemotronSuperLocalPrefill.decodeStepsKey) is malformed or out of range"
+        case NemotronSuperLocalKVBackend.Failure.invalidBackend:
+            return "\(NemotronSuperLocalKVBackend.key) is neither contiguous nor paged"
+        case NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency:
+            return "\(NemotronSuperLocalBridgeBuilder.maxConcurrentKey) is malformed or above what the owner serves"
+                + " (one request with serial verification)"
+        case NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing:
+            return "the slot sizing or engine configuration is unsupported"
+        case NemotronSuperLoadClaim.Failure.invalidQuote: return "the checkpoint's LOAD quote is invalid"
+        default: return nil
         }
     }
 

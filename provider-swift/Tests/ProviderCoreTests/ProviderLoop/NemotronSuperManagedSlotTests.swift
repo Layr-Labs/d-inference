@@ -439,6 +439,24 @@ struct NemotronSuperManagedSlotTests {
             (NemotronSuperLocalPrefixCache.Failure.bankRefused, "insufficient memory for the prefix bank"),
             (NemotronSuperLocalPrefill.Failure.laneRefused, "insufficient memory for the prefill lane"),
             (NemotronSuperLocalLoad.Failure.capacity, "insufficient memory at LOAD admission"),
+            (NemotronSuperLocalMTP.Failure.roundRefused, "insufficient memory for the MTP round"),
+            (NemotronSuperLocalMTP.Failure.invalidDepth,
+             "DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH is not a draft depth the owner serves"),
+            (NemotronSuperLocalMTP.Failure.invalidVerification,
+             "DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION is neither rectangular nor serial"),
+            (NemotronSuperLocalMTP.Failure.loadQuote, "the speculation head's LOAD quote is invalid"),
+            (NemotronSuperLocalPrefill.Failure.invalidChunk,
+             "DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK is malformed or above the calibrated prefill limit"),
+            (NemotronSuperLocalPrefill.Failure.invalidDecodeSteps,
+             "DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS is malformed or out of range"),
+            (NemotronSuperLocalKVBackend.Failure.invalidBackend,
+             "DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND is neither contiguous nor paged"),
+            (NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency,
+             "DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT is malformed or above what the owner serves"
+                 + " (one request with serial verification)"),
+            (NemotronSuperLocalBridgeBuilder.Failure.unsupportedSizing,
+             "the slot sizing or engine configuration is unsupported"),
+            (NemotronSuperLoadClaim.Failure.invalidQuote, "the checkpoint's LOAD quote is invalid"),
         ]
         for (error, reason) in named {
             #expect(ProviderLoop.nemotronSuperLoadRefusalReason(error) == reason, "\(error)")

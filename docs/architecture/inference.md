@@ -151,7 +151,9 @@ application and standard JSON/SSE framing and defaults to absent. It serves text
 through the owner's `localTextBinding` and images through its image binding, admits
 the owner's configured number of requests before it decodes the body or renders
 the prompt, and refuses another with `queueFull` (429) before any response
-starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
+starts. A response starts at the first generated chunk the output parser accepts,
+even one it withholds, so a held answer's failed validation ends the stream with
+an error. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
 it over the transaction's own owner. Only the qualification runner installs it as
 a hook; the managed slot serves the same route through `engine(body:hasMedia:cacheScope:)`.
 `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (default `1`) sets how many requests

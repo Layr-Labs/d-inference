@@ -77,7 +77,10 @@
   again. ImageIO is given only the primary JPEG image, and a request reserves
   its largest image's decode workspace once instead of once per image.
 - A busy owner refuses a request with 429 before decoding its body or
-  rendering its prompt.
+  rendering its prompt. An answer held for validation (JSON content with
+  thinking off, forced or tool-call-only answers) starts its stream at the
+  first generated token, so a streamed one that fails validation ends with an
+  error event instead of a 422 status.
 - Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
   `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
   reference serving samples it: 2 frames per second, at most 256, paired into

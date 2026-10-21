@@ -150,8 +150,9 @@ private struct SuperHTTPEngine: MLXServerEngine {
         admissionTransferred = true
         relay.installCancellation { task.cancel() }
         pair.continuation.onTermination = { _ in task.cancel() }
-        // Preserve pre-header error status for rejected requests. This also keeps
-        // transport preparation cancellation attached until a real event exists.
+        // Media and bridge-admission refusals precede the first native chunk,
+        // where the stream starts, so they keep their pre-header status. This
+        // also keeps transport preparation cancellation attached until then.
         try await withTaskCancellationHandler {
             try await relay.waitUntilStarted()
         } onCancel: { task.cancel() }
@@ -221,6 +222,8 @@ enum SuperHTTPErrors {
 /// Stream state and startup result are actor-owned. Cancellation registration
 /// uses a separate lock so transport callbacks never wait on this actor.
 /// Every native chunk passes the request's output parser before it is yielded.
+/// The stream starts at the first chunk the parser accepts, even one it
+/// withholds, so a held answer's validation failure is a stream error.
 /// Parser and validator errors map identically for text and image routes, so
 /// the relay maps them with `media: false`.
 actor SuperImageHTTPRelay {
@@ -260,8 +263,12 @@ actor SuperImageHTTPRelay {
             }
             guard !text.isEmpty else { return }
             if firstChunkAt == nil { firstChunkAt = Date() }
-            do { yield(try output.append(text)) }
-            catch {
+            do {
+                yield(try output.append(text))
+                // Held output (structured content, tool calls) yields nothing
+                // until finish; generation has started all the same.
+                if failure == nil { started(.success(())) }
+            } catch {
                 failure = SuperHTTPErrors.map(error, media: false)
                 cancel()
             }

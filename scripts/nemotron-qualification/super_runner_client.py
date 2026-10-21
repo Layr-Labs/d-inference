@@ -4,6 +4,7 @@ Loaded by path from bench_super.py and memory_calibration.py (both run with
 ``python3 -I``, so the script directory is not importable). Talks only to the
 runner's 127.0.0.1 listeners with the per-run bearer token from its state dir.
 """
+import contextlib
 import hashlib
 import http.client
 import json
@@ -50,32 +51,42 @@ class Runner:
         self.events_file = Path(ready["events_file"])
 
     @classmethod
-    def launch_process(cls, command, work_dir, timeout=3600.0):
-        """Start ``command`` (which must not contain --state-dir) with a new state dir."""
+    def launch_process(cls, command, work_dir, timeout=3600.0, abort_timeout=120.0):
+        """Start ``command`` (which must not contain --state-dir) with a new state dir.
+
+        A runner that does not become ready, or whose launch is interrupted, is
+        stopped and reaped before the error propagates: it runs in its own
+        session, so nothing else would signal it while it holds the model.
+        """
         work_dir = Path(work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
         index = 0
         while (work_dir / f"runner-state-{index}").exists():
             index += 1
         state_dir = work_dir / f"runner-state-{index}"
-        output = open(work_dir / f"runner-{index}.output.log", "wb")
+        output_log = work_dir / f"runner-{index}.output.log"
         argv = list(command) + ["--state-dir", str(state_dir)]
         started = time.monotonic()
-        process = subprocess.Popen(argv, stdout=output, stderr=subprocess.STDOUT,
-                                   stdin=subprocess.DEVNULL, start_new_session=True)
-        deadline = started + timeout
-        while not (state_dir / READY_FILE).exists():
-            if process.poll() is not None:
-                raise RunnerError(f"runner exited with {process.returncode} before ready; "
-                                  f"see {output.name}")
-            if time.monotonic() > deadline:
-                process.send_signal(signal.SIGINT)
-                raise RunnerError("runner did not become ready in time")
-            time.sleep(0.05)
-        launch = {"command": list(command), "argv": argv,
-                  "process_start_to_ready_s": time.monotonic() - started,
-                  "output_log": output.name}
-        return cls(state_dir, process=process, launch=launch)
+        # The child writes through its own copy of the descriptor.
+        with open(output_log, "wb") as output:
+            process = subprocess.Popen(argv, stdout=output, stderr=subprocess.STDOUT,
+                                       stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            deadline = started + timeout
+            while not (state_dir / READY_FILE).exists():
+                if process.poll() is not None:
+                    raise RunnerError(f"runner exited with {process.returncode} before ready; "
+                                      f"see {output_log}")
+                if time.monotonic() > deadline:
+                    raise RunnerError("runner did not become ready in time")
+                time.sleep(0.05)
+            launch = {"command": list(command), "argv": argv,
+                      "process_start_to_ready_s": time.monotonic() - started,
+                      "output_log": str(output_log)}
+            return cls(state_dir, process=process, launch=launch)
+        except BaseException:
+            _terminate(process, abort_timeout)
+            raise
 
     def stop(self, signum=signal.SIGINT, timeout=900.0):
         """Signal a launched runner and wait for its clean-drain exit code."""
@@ -91,16 +102,18 @@ class Runner:
     # Diagnostics -----------------------------------------------------------
     def _diagnostics(self, method, path, body=None):
         host, port = _host_port(self.diagnostics_url)
-        connection = http.client.HTTPConnection(host, port, timeout=60)
         headers = {"Authorization": "Bearer " + self.token}
         data = None
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        connection.request(method, path, body=data, headers=headers)
-        response = connection.getresponse()
-        payload = response.read()
-        connection.close()
+        connection = http.client.HTTPConnection(host, port, timeout=60)
+        try:
+            connection.request(method, path, body=data, headers=headers)
+            response = connection.getresponse()
+            payload = response.read()
+        finally:
+            connection.close()
         if response.status != 200:
             raise RunnerError(f"diagnostics {path} returned {response.status}")
         return json.loads(payload)
@@ -132,6 +145,19 @@ class Runner:
                            on_first_delta=on_first_delta)
 
 
+def _terminate(process, timeout):
+    """Interrupt ``process`` (the runner cancels its load or drains), kill it
+    after ``timeout`` seconds, and reap it."""
+    if process.poll() is not None:
+        return
+    process.send_signal(signal.SIGINT)
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def _host_port(url):
     rest = url.split("://", 1)[1].split("/", 1)[0]
     host, port = rest.rsplit(":", 1)
@@ -157,11 +183,11 @@ class AbortHandle:
             sock = self._socket
             self.aborted_at = time.perf_counter()
         if sock is not None:
-            try:
+            # The peer may already have closed or reset the connection; the
+            # socket is closed below either way.
+            with contextlib.suppress(OSError):
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                 sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
             sock.close()
 
 

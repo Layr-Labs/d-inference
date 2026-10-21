@@ -1,14 +1,20 @@
 """CPU-only checks of the runner client: SSE timing math, abort accounting,
-workload parsing, percentiles and the PNG generator. No runner or GPU."""
+launch cleanup, diagnostics connections, workload parsing, percentiles and the
+PNG generator. No runner or GPU."""
+import http.client
 import http.server
 import importlib.util
 import json
 from pathlib import Path
+import signal
 import struct
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import zlib
 
 sys.dont_write_bytecode = True
@@ -86,6 +92,78 @@ class StreamChatTests(unittest.TestCase):
     def test_non_loopback_endpoint_is_refused(self):
         with self.assertRaises(client.RunnerError):
             client.stream_chat("http://example.invalid:80", "token", {})
+
+
+class LaunchTests(unittest.TestCase):
+    """A launched runner lives in its own session: a failed launch must stop it."""
+
+    def _launch_unready(self, script, **launch):
+        """Launch ``script`` as a runner that never writes its ready file."""
+        launched = []
+        popen = subprocess.Popen
+
+        def recording_popen(*args, **kwargs):
+            launched.append(popen(*args, **kwargs))
+            return launched[-1]
+
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(client.subprocess, "Popen", recording_popen):
+            with self.assertRaises(client.RunnerError):
+                client.Runner.launch_process([sys.executable, "-c", script], work, **launch)
+        self.assertEqual(len(launched), 1)
+        return launched[0]
+
+    def test_unready_runner_is_interrupted_and_reaped(self):
+        process = self._launch_unready("import time; time.sleep(60)", timeout=0.5)
+        self.assertIsNotNone(process.returncode, "the runner was left running")
+        self.assertNotEqual(process.returncode, -signal.SIGKILL)
+
+    def test_runner_ignoring_the_interrupt_is_killed_and_reaped(self):
+        script = "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)"
+        process = self._launch_unready(script, timeout=2.0, abort_timeout=0.2)
+        self.assertEqual(process.returncode, -signal.SIGKILL)
+
+    def test_runner_exiting_before_ready_reports_its_code(self):
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaisesRegex(client.RunnerError, "exited with 3 before ready"):
+                client.Runner.launch_process([sys.executable, "-c", "raise SystemExit(3)"], work)
+
+
+class _MalformedStatusHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        # http.client closes its own connection only for connection errors.
+        self.wfile.write(b"not an HTTP status line\r\n")
+        self.close_connection = True
+
+    def log_message(self, *args):
+        pass
+
+
+class DiagnosticsTests(unittest.TestCase):
+    def test_connection_is_closed_when_the_request_fails(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _MalformedStatusHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        closed = []
+
+        class RecordingConnection(http.client.HTTPConnection):
+            def close(self):
+                closed.append(self)
+                super().close()
+
+        with tempfile.TemporaryDirectory() as state:
+            token = Path(state, "token")
+            token.write_text("token")
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+            Path(state, client.READY_FILE).write_text(json.dumps({
+                "base_url": url, "diagnostics_url": url, "auth_token_file": str(token),
+                "events_file": str(Path(state, client.EVENTS_FILE))}))
+            runner = client.Runner(state)
+            with mock.patch.object(client.http.client, "HTTPConnection", RecordingConnection):
+                with self.assertRaises(http.client.HTTPException):
+                    runner.status()
+        self.assertEqual(len(closed), 1)
 
 
 class HelperTests(unittest.TestCase):

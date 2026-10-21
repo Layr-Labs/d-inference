@@ -13,6 +13,8 @@ extension EngineV2Factory {
     public static let defaultSoloPrefillStripeTokens = 2048
     /// Dense recurrent prefill can use a larger stripe without MoE tile limits.
     public static let defaultDenseQwenSoloPrefillStripeTokens = 4096
+    /// Qwen streams keep decoding while another request's long prompt prefills.
+    public static let qwenDecodeStepsBetweenPrefillChunks = 4
 
     public static let maxPartialPrefillsKey = "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"
     public static let defaultMaxConcurrentPartialPrefills: Int? = 1
@@ -84,6 +86,9 @@ extension EngineV2Factory {
             requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
+        if model is Qwen35Model {
+            config.decodeStepsBetweenPrefillChunks = qwenDecodeStepsBetweenPrefillChunks
+        }
         return config
     }
 

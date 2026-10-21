@@ -1,0 +1,4 @@
+### Faster Qwen Gated DeltaNet prompt prefill
+
+- Run Gated DeltaNet prompt chunks of 16 or more tokens for Qwen3.5, Qwen3.6, Qwen3.8 and Bonsai 2 models on kernels that compute four value rows per SIMD group. On M5 Ultra the per-layer recurrence is 1.45-1.70x faster (Qwen3.5-9B geometry, 4,096-token chunk: 3.160 to 1.930 ms), which saves about 3-4% of Qwen3.5-9B cold time to first token at 8K-32K prompt tokens. Decode, MTP verification, masked updates and shorter chunks keep the existing kernel.
+- The new kernels reproduce the existing kernel bit for bit, so outputs and recurrent checkpoints do not change. The first prompt chunk of each model geometry checks this on the GPU and keeps the existing kernel where no candidate matches. Speed on M1-M4 GPUs is unmeasured. `DARKBLOOM_TTFT_GDN_BLOCKED=0` restores the existing kernel in a foreground process; the provider LaunchAgent does not receive it.

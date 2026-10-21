@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -35,6 +35,21 @@ changing the recurrence or other model families.
 the 27B artifact, which has no MTP assistant tensors. The 9B candidate's
 separate local sidecar requires the explicit validation and opt-in described
 below; it does not extend the 27B qualification cohort.
+
+Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
+`prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
+a four-row recurrence kernel
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`, `GatedDeltaPrefill`).
+The first such window of each kernel instantiation (input dtype and head
+geometry) runs the candidates on a fixed probe window and keeps the first that
+reproduces `gated_delta_step` bit for bit on the GPU, or else the stock kernel.
+Decode, MTP verification, masked updates and shorter windows always run the
+stock kernel; because a selected kernel matches it bit for bit, mixing kernels
+across chunks cannot change the recurrent state that
+[checkpoint capture](prefix-cache.md#streamed-complete-checkpoints) relies on.
+`qwen4_exp` and `qwen4_exp_text` keep their blocked-seq path. `DARKBLOOM_TTFT_GDN_BLOCKED`
+([configuration](../reference/configuration.md#engine-and-scheduler)) keeps the
+stock kernel or forces one candidate for A/B measurement.
 
 Native Qwen3.5 vision blocks honor explicit checkpoint activation declarations.
 For the three supported nested vision types, tanh and exact GELU are selected

@@ -207,7 +207,7 @@ frame-timestamp label.
 |---|---|
 | `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
 | `enable_thinking: false` | All output is `content`, including literal markers |
-| `chat_template_kwargs.force_nonempty_content` | Non-streaming only: unterminated reasoning becomes `content` |
+| `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
 | `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422 |
 | `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422 |
 | Contradictory controls, `logprobs`, `logit_bias`, `min_p`, `n > 1` | 400 before generation |

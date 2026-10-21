@@ -49,6 +49,17 @@
   and `chat_template_kwargs` beyond `enable_thinking`, `thinking`,
   `medium_effort`, `truncate_history_thinking` and `force_nonempty_content`
   are refused with 400 instead of being ignored.
+- Coordinator tool requests whose schemas hold `{}` or boolean subschemas
+  are served (they were refused with 400); the local endpoint still refuses
+  a client-sent internal schema marker. `force_nonempty_content` applies to
+  streamed responses too: reasoning that never closes is repeated as
+  content at the end, as vLLM does. With no tools declared, a literal
+  `<tool_call>` in an answer is returned as text instead of failing. A
+  `seed` of 2^63 or more no longer refuses a tool request; history tool-call
+  arguments that are not a JSON object, and requests with more than 4,096
+  content parts, are refused with 400. Prompts keep a string's leading
+  U+FEFF and add no separator before an image after text ending in CRLF,
+  and reasoning markers followed by a combining mark are recognized.
 - Serves inline JPEG and PNG images (`data:` URIs) on the same slot. On the
   default speculating owner each image request runs target-only, with no
   draft state, while text keeps speculating; its media reservation, including

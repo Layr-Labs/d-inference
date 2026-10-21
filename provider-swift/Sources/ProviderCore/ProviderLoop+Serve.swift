@@ -20,7 +20,7 @@ extension ProviderLoop {
 
     public func run() async throws {
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -131,6 +131,11 @@ extension ProviderLoop {
             return
         }
 
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
+
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
         // Secure-Enclave-signed attestation below.
@@ -196,10 +201,14 @@ extension ProviderLoop {
         }
         // 4. Create coordinator client and start connection
         publishModelAutopilotSnapshot()
+        let fixedKey = keyPair
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
-            state: state
+            state: state,
+            appAttestResumeResponder: { challenge, nonce in
+                try fixedKey.appAttestResumeResponse(to: challenge, clientNonce: nonce)
+            }
         )
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
@@ -385,8 +394,8 @@ extension ProviderLoop {
             // invalidation therefore precedes the next session's challenge.
             for await event in events {
                 switch event {
-                case .appAttestShadow(let payload):
-                    handleAppAttestShadow(payload, send: send)
+                case .appAttestShadow(let payload, let reply):
+                    handleAppAttestShadow(payload, reply: reply)
                     continue
                 case .trustStatus(let level, let status, let reason, let authorization):
                     handleTrustStatus(trustLevel: level, status: status, reason: reason,
@@ -499,7 +508,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

@@ -59,11 +59,8 @@ struct ProcessMemoryTelemetryTests {
     }
 
     @Test func canonicalWireAndLegacyOmission() throws {
-        let file = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("coordinator/tests/protocol/testdata/process_memory_wire.json")
+        let file = try #require(Bundle.module.url(
+            forResource: "process_memory_wire", withExtension: "json", subdirectory: "Fixtures/Protocol"))
         let data = try Data(contentsOf: file)
         let value = try JSONDecoder().decode(CapacityTelemetry.self, from: data)
         let encoded = try JSONEncoder().encode(value)

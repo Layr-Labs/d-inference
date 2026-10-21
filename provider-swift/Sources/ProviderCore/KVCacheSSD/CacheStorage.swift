@@ -4,7 +4,14 @@ import Foundation
 /// An invocation's immutable operator settings. Installed before model loading;
 /// factories, maintenance and descriptor I/O all consult the same snapshot.
 public enum CacheStorage {
-    static let rootDirectoryName = "darkbloom/kv3"
+    /// `<encryptedCacheNamespace>/kv3`. Each build environment has its own
+    /// namespace, so a dev and a production provider on the same Mac never
+    /// share a payload root, an epoch record or a write-budget ledger.
+    static let rootDirectoryName = directoryName(for: .current)
+
+    static func directoryName(for environment: BuildEnvironment) -> String {
+        environment.encryptedCacheNamespace + "/kv3"
+    }
 
     private final class State: @unchecked Sendable {
         let lock = NSLock()
@@ -19,16 +26,24 @@ public enum CacheStorage {
 
     static var settings: CacheSettings { state.lock.withLock { state.settings } }
 
-    public static var defaultRoot: URL {
+    public static var defaultRoot: URL { defaultRoot(for: .current) }
+
+    public static func defaultRoot(for environment: BuildEnvironment) -> URL {
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return root.appendingPathComponent(rootDirectoryName, isDirectory: true)
+        return root.appendingPathComponent(directoryName(for: environment), isDirectory: true)
     }
 
     public static func root(for settings: CacheSettings) -> URL {
-        guard let directory = settings.directory else { return defaultRoot }
+        root(for: settings, environment: .current)
+    }
+
+    /// A configured directory is a parent: the environment namespace is added
+    /// under it too, so two environments on one volume never share a root.
+    public static func root(for settings: CacheSettings, environment: BuildEnvironment) -> URL {
+        guard let directory = settings.directory else { return defaultRoot(for: environment) }
         return URL(fileURLWithPath: directory, isDirectory: true)
-            .appendingPathComponent(rootDirectoryName, isDirectory: true)
+            .appendingPathComponent(directoryName(for: environment), isDirectory: true)
     }
 
     public static func dailyWriteBytes(

@@ -77,7 +77,7 @@ public struct AutoUpdateController: Sendable {
         public var prepareInstalledRestart: @Sendable () async -> StepOutcome
         /// Restart the process into the new binary. In production this does not
         /// return (the process is replaced/relaunched by launchd).
-        public var restart: @Sendable () throws -> Void
+        public var restart: @Sendable () async throws -> Void
         /// Undo the pending-attempt marker if `restart` throws before launch.
         public var restartDidFail: @Sendable () async -> Void
         /// Emit a human-readable progress line.
@@ -93,7 +93,7 @@ public struct AutoUpdateController: Sendable {
             waitForDrain: @escaping @Sendable (Duration) async -> Bool,
             commitInstall: @escaping @Sendable () async -> StepOutcome,
             prepareInstalledRestart: @escaping @Sendable () async -> StepOutcome = { .completed },
-            restart: @escaping @Sendable () throws -> Void,
+            restart: @escaping @Sendable () async throws -> Void,
             restartDidFail: @escaping @Sendable () async -> Void = {},
             log: @escaping @Sendable (String) -> Void
         ) {
@@ -119,10 +119,8 @@ public struct AutoUpdateController: Sendable {
         /// No forced cancellation or restart. The owner releases staged state
         /// and resumes only if a permanent coordinator fence is not pending.
         case drainTimedOut
-        /// The cycle was cancelled (provider shutdown / monitor teardown)
-        /// during the pre-install rollover-jitter wait. Nothing was drained,
-        /// committed, or restarted; the staged bundle is discarded by
-        /// `resumeServing` and a later tick can retry.
+        /// The cycle was cancelled at a side-effect boundary. Cleanup discards
+        /// any uncommitted stage; an earlier completed install is not rolled back.
         case cancelled
         /// Already on the latest version.
         case upToDate
@@ -219,12 +217,13 @@ public struct AutoUpdateController: Sendable {
             await deps.resumeServing()
             return .drainTimedOut
         }
-        if case .failed(let reason) = await deps.commitInstall() {
+        let commit = await deps.commitInstall()
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
+        if case .failed(let reason) = commit {
             deps.log("auto-update: installing staged v\(release.version) failed, staying on v\(current): \(reason)")
             await deps.resumeServing()
             return .commitFailed(reason)
         }
-        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         deps.log("auto-update: restarting into v\(release.version)")
         return await restartInstalled(from: current, to: release.version, drained: drained, logFailure: true)
     }
@@ -234,18 +233,20 @@ public struct AutoUpdateController: Sendable {
     private func restartInstalled(
         from current: String, to installed: String, drained: Bool, logFailure: Bool = false
     ) async -> Outcome {
-        if case .failed(let reason) = await deps.prepareInstalledRestart() {
+        let prepared = await deps.prepareInstalledRestart()
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
+        if case .failed(let reason) = prepared {
             await deps.resumeServing()
             return .restartFailed(reason)
         }
-        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         do {
-            try deps.restart()
+            try await deps.restart()
             return .restarted(from: current, to: installed, drained: drained)
         } catch {
             if logFailure { deps.log("auto-update: restart failed: \(error.localizedDescription)") }
             await deps.restartDidFail()
             await deps.resumeServing()
+            if error is CancellationError { return .cancelled }
             return .restartFailed("\(error)")
         }
     }

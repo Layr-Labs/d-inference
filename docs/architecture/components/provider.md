@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-12
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -27,7 +27,7 @@ lives inside this one hardened process. The authoritative provider version is
 | Product | Kind | Role |
 |---|---|---|
 | `darkbloom` | executable | CLI: `start`, `status`, `doctor`, `logs`, `benchmark`, `models`, `fan`, `watchdog`; long-running serve modes host an `NSApplication(.accessory)` run loop for APNs pushes (`provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift`) |
-| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
+| `darkbloom-enclave` | executable | Secure Enclave helper used by [coordinator/api/install.sh](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/install.sh) before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
 | `darkbloom-fan-helper` | executable | Opt-in root LaunchDaemon for fan control; never installed by default (`provider-swift/Sources/DarkbloomFanHelper/`) |
 | `ProviderCore` | library | Everything below; shared by the CLI and helpers |
 | `ProviderCoreFoundation` | library | Pure-Foundation pieces also linked by publish tooling: `WeightHasher`, `PromptContractIdentity`, `TemplateRenderCheck`, `ModelScanner`, `Manifest` (`provider-swift/Sources/ProviderCoreFoundation/`) |
@@ -86,15 +86,51 @@ owns the connection and trust guarantees.
   `provider-swift/Sources/DarkbloomFanHelper/FanXPCService.swift`).
 - **promptsidecar** is a coordinator-side process; the provider computes the
   same contract identity locally and never talks to it
-  ([`../prompt-contract-sidecar.md`](../prompt-contract-sidecar.md)).
+  ([../prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md)).
+
+### Reconnect and attestation lifecycle
+
+`ProviderLoop.run` captures the existing process key for `CoordinatorClient`'s
+endpoint-resumption responder. `CoordinatorClient.connectAndRun` gives every
+socket a fresh registration nonce and clears its resume state on teardown.
+The normal provider installs
+the [protocol-1 resumption responder](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+without requiring the worker flag. It is synchronous, with no Apple operation,
+model-state change or key persistence. It proves custody only; the platform decides
+whether the new connection may serve. Unexpected disconnect still cancels that
+connection's inference requests; this does not resume interrupted completions
+or prove two-minute engine continuity.
+
+Apple exchanges use `AppAttestShadowReply`, a capability bound to their original
+`NWConnection`, rather than the reconnectable outbound router. Late results are
+discarded after transport replacement, even before `ProviderLoop` consumes the
+disconnect event. Sources: `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`
+(`connectAndRun`), `Coordinator/AppAttestShadowReply.swift` (`sendAppAttestShadow`)
+and `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`).
+
+The default App Attest implementation stays in-process. The internal,
+default-off [worker candidate](../security/identity-binding.md#supervised-app-attest-worker-candidate)
+uses another invocation of the same signed executable, with no inference or
+endpoint private key in the child. `cancelAppAttestShadow` invalidates the old
+exchange generation and chains worker retirement before the next transport can
+start verification. `stopAppAttestWorkerAndWait` is a terminal shutdown barrier.
+The separate `stopAppAttestWorkerForUpdateAndWait` guards installation and every
+update restart, including an already-installed candidate. A failed reap withholds
+drain completion or postpones update; a fresh `prepare` may retry retained-owner
+cleanup only after a failed update returns to idle, never after terminal shutdown.
+No worker-stall recovery restarts inference or falls back to in-process Apple
+work (`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`,
+`ProviderLoop+Lifecycle.swift`, `ProviderLoop+AutoUpdate.swift`).
 
 ## Invariants
 
 1. Prompts are decrypted only inside this process and never logged; logs carry
    request ids, model ids and token counts — `ProviderLoop+InboundDecode.swift`,
    `ProviderLoop+InferenceHandler.swift`.
-2. The X25519 private key is generated in-process and never leaves the Mac —
-   `Crypto/NodeKeyPair.swift`.
+2. The X25519 private key is generated in the parent and remains only in that
+   process's memory, including with the worker candidate selected; it is never
+   exported to the worker or persisted — `Crypto/NodeKeyPair.swift`,
+   `ProviderLoop+AppAttestWorker.swift`.
 3. The SE P-256 identity binds the node key, binary hash, SIP and boot state
    into every attestation — `Security/AttestationBuilder.swift`,
    `Security/PersistentEnclaveKey.swift`.
@@ -132,5 +168,5 @@ owns the connection and trust guarantees.
 - [`mlx-swift.md`](mlx-swift.md) — the three pinned submodules and the metallib
 - [`../inference.md`](../inference.md), [`../prefix-cache.md`](../prefix-cache.md), [`../hardware-support.md`](../hardware-support.md)
 - [`../security/encryption.md`](../security/encryption.md), [`../../provider/attestation.md`](../../provider/attestation.md)
-- [`coordinator.md`](coordinator.md) — the other side of the WebSocket
+- [coordinator.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/components/coordinator.md) — the other side of the WebSocket
 - [`../../provider/cli-reference.md`](../../provider/cli-reference.md), [`../../provider/fan-control.md`](../../provider/fan-control.md)

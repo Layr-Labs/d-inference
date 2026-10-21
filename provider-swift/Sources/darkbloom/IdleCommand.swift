@@ -190,7 +190,7 @@ struct Idle: AsyncParsableCommand {
           unload-after <minutes>   Unload after N minutes without requests (shipped default: 60).
 
         The policy is `idle_timeout_mins` under `[backend]` in your provider
-        config. Changes apply after `darkbloom restart`.
+        config. Changes apply after `\(BuildEnvironment.current.cliName) restart`.
         """,
         subcommands: [Status.self, KeepLoaded.self, UnloadAfter.self],
         defaultSubcommand: Status.self
@@ -225,9 +225,9 @@ extension Idle {
 
             print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: minutes))")
             print("  Config:  \(snapshot.configPath.path)")
-            print("  Change:  darkbloom idle keep-loaded")
-            print("           darkbloom idle unload-after <minutes>")
-            print("  Applies after:  darkbloom restart")
+            print("  Change:  \(BuildEnvironment.current.cliName) idle keep-loaded")
+            print("           \(BuildEnvironment.current.cliName) idle unload-after <minutes>")
+            print("  Applies after:  \(BuildEnvironment.current.cliName) restart")
         }
     }
 
@@ -259,7 +259,7 @@ extension Idle {
 
         mutating func validate() throws {
             guard minutes > 0 else {
-                throw ValidationError("minutes must be at least 1; use `darkbloom idle keep-loaded` to keep models resident.")
+                throw ValidationError("minutes must be at least 1; use `\(BuildEnvironment.current.cliName) idle keep-loaded` to keep models resident.")
             }
             if let problem = IdleUnloadPolicy.validate(minutes: minutes) {
                 throw ValidationError(problem)
@@ -277,7 +277,7 @@ private func printIdleOutcome(minutes: UInt64, result: (path: URL, changed: Bool
     let summary = IdleUnloadPolicy.describe(minutes: minutes)
     if result.changed {
         print("Memory when idle: \(summary)")
-        print("  Restart to apply:  darkbloom restart")
+        print("  Restart to apply:  \(BuildEnvironment.current.cliName) restart")
     } else {
         print("Memory when idle is already \(summary).")
     }

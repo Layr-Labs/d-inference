@@ -120,7 +120,7 @@ final class GemmaQATCheckpointRestartFixture {
         let build = try EngineV2Factory.makeProductionBuild(
             model: model, modelID: Self.modelID, tokenizer: tokenizer.inner,
             kvBytesCapacity: 24 << 30, maxConcurrentRequests: 1,
-            completePrefixCache: store, kvBackend: .paged, environment: [:])
+            completePrefixCache: store, kvBackend: .paged, checkpointQuantization: .native, environment: [:])
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil)
         let bridge = EngineV2Bridge(engine: build.engine, modelId: Self.modelID,
             tokenizer: tokenizer, eosTokenIds: eos, extraEOSTokens: extraEOSTokens,

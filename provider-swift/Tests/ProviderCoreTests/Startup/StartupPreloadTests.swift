@@ -834,6 +834,36 @@ private func makeFakeHFSnapshot(modelId: String) throws -> URL {
 @Suite("Startup preload no-evict enforcement (production load path)")
 struct StartupPreloadNoEvictTests {
 
+    @Test("the production startup self-test never seeds a tiny-prompt performance estimate")
+    func startupSelfTestDoesNotPublishThroughput() async throws {
+        let model = "startup-rate-fixture"
+        let loop = try await makePreloadLoop(models: [preloadModelInfo(model, memoryGb: 0.01)],
+            backend: BackendSettings())
+        let engine = PrefillScriptEngine()
+        let tokenizer = TokenizerHandle(PrefillStubTokenizer())
+        let bridge = EngineV2Bridge(engine: engine, modelId: model,
+            tokenizer: tokenizer, eosTokenIds: [])
+        await loop.installModelSlotForTesting(modelId: model,
+            container: makeNoEvictStubContainer(), tokenizer: tokenizer, engineV2: bridge)
+        let selfTest = Task { try await loop.runStartupSelfTestDecode(modelId: model) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while engine.continuations.isEmpty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let continuation = try #require(engine.continuations.first)
+        engine.completeColdPrefill(milliseconds: 10)
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(reason: .length,
+            usage: CBv2Usage(promptTokens: 3, completionTokens: 1)))
+        continuation.finish()
+        _ = try await selfTest.value
+        let capacity = await bridge.backendSlotCapacity()
+        #expect(capacity.observedPrefillTps == 0)
+        #expect(capacity.observedDecodeTps == 0)
+        #expect(capacity.performanceMeasurements?.isolatedPrefill == nil)
+        await bridge.shutdown()
+    }
+
     private func installStubSlot(_ loop: ProviderLoop, _ id: String) async {
         await loop.installModelSlotForTesting(
             modelId: id,

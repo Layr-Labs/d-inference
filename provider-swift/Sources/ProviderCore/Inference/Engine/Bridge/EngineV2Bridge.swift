@@ -81,6 +81,8 @@ public actor EngineV2Bridge {
     /// charges. Segmented paged storage follows runtime grant changes; only
     /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
+    public nonisolated let kvQuantization: EngineV2KVQuantizationSelection
+    public nonisolated let kvCheckpointQuantization: EngineV2KVQuantizationSelection
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
     /// Construction-time fallback reason, retained for heartbeat reporting.
@@ -295,7 +297,8 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
-    var mimoCalibration = MimoCalibrationState()
+    var modelCalibration = ModelCalibrationState()
+    let calibrationPosturePermitsWork: @Sendable () -> Bool
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
@@ -370,16 +373,23 @@ public actor EngineV2Bridge {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
+        calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
+            !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
+        },
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
+        self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
+        self.kvQuantization = kvQuantization
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.advertisedContextTokens =
@@ -432,6 +442,7 @@ public actor EngineV2Bridge {
             completeStore = nil
         }
         self.ssdHybridCheckpointStore = completeStore
+        self.kvCheckpointQuantization = completeStore == nil ? .native : kvCheckpointQuantization
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil

@@ -5,7 +5,8 @@ import Testing
 @testable import ProviderCore
 
 private func fixtureEnvironment(_ root: URL) -> [String: String] {
-    ["DARKBLOOM_PREFIX_CACHE_TEST_ROOT": root.path, "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1"]
+    ["DARKBLOOM_PREFIX_CACHE_TEST_ROOT": root.path, "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+     EngineV2KVQuantizationPolicy.environmentKey: "native"]
 }
 
 @Test func deadlineQualificationCacheIsolationRequiresExactOwnedSafePair() throws {

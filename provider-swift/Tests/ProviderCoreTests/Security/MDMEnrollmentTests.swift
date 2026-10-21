@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -18,12 +19,32 @@ import Testing
             == .enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect"))
     }
 
-    @Test func darkbloomDevServerIsOurs() {
-        let out = """
-        MDM enrollment: Yes (User Approved)
-        MDM server: https://api.dev.darkbloom.dev/mdm/connect
-        """
-        #expect(parseMDMEnrollmentStatus(out).isDarkbloom)
+    /// A dev and a production provider can be installed on one Mac. Each
+    /// accepts only its own environment's coordinator host, and names the
+    /// other install's profile instead of claiming or removing it.
+    @Test func otherEnvironmentsProfileBelongsToTheOtherInstall() {
+        for (owner, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let serverURL = owner.coordinatorHTTPURL + "/mdm/connect"
+            let out = """
+            MDM enrollment: Yes (User Approved)
+            MDM server: \(serverURL)
+            """
+            #expect(parseMDMEnrollmentStatus(out, environment: owner)
+                == .enrolledDarkbloom(serverURL: serverURL))
+            #expect(parseMDMEnrollmentStatus(out, environment: other)
+                == .enrolledOtherMDM(serverURL: serverURL))
+        }
+        let devServer = BuildEnvironment.dev.coordinatorHTTPURL + "/mdm/connect"
+        let state = parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(devServer)\n")
+        #expect(!state.isDarkbloom)
+        #expect(state.otherInstall == .dev)
+        #expect(describeOtherMDM(state).contains("`\(BuildEnvironment.dev.cliName) unenroll`"))
+        // An explicitly configured coordinator host is still accepted.
+        let configuredHost = URL(string: BuildEnvironment.dev.coordinatorHTTPURL)?.host ?? ""
+        #expect(parseMDMEnrollmentStatus(
+            "MDM enrollment: Yes\nMDM server: \(devServer)\n", expectedHosts: [configuredHost]).isDarkbloom)
+        // A foreign MDM is not attributed to either install.
+        #expect(MDMEnrollmentState.enrolledOtherMDM(serverURL: "https://corp.example/mdm").otherInstall == nil)
     }
 
     /// The retired dev domain darkbloom.xyz is not ours: no host on it is a
@@ -65,6 +86,31 @@ import Testing
         """
         #expect(parseMDMEnrollmentStatus(out, expectedHosts: ["coordinator.example.com"]).isDarkbloom)
         #expect(!parseMDMEnrollmentStatus(out).isDarkbloom)
+    }
+
+    @Test func attestationPostureUsesTheCoordinatorTheLoopConnectsTo() {
+        // `start --coordinator-url` sets ProviderLoopConfig.coordinatorURL, which
+        // may differ from provider.toml; the posture check receives that URL.
+        let loopConfig = ProviderLoopConfig(
+            coordinatorURL: "wss://coordinator.example/ws/provider",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+                memoryGb: 64, memoryAvailableGb: 64,
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546),
+            models: [], config: ConfigManager.parse(""))
+        #expect(loopConfig.coordinatorURL != loopConfig.config.coordinator.url)
+        let configured = loopConfig.coordinatorURL
+        var seen: [String?] = []
+        let enrolled = postureMDMEnrolled(coordinatorURL: configured) { url in
+            seen.append(url)
+            return .enrolledDarkbloom(serverURL: "https://coordinator.example/mdm/connect")
+        }
+        #expect(enrolled)
+        #expect(seen == [configured])
+        #expect(!postureMDMEnrolled(coordinatorURL: configured) { _ in
+            .enrolledOtherMDM(serverURL: BuildEnvironment.dev.coordinatorHTTPURL + "/mdm/connect")
+        })
     }
 
     @Test func corporateMDMIsForeign() {

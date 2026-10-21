@@ -1845,16 +1845,11 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
 }
 
 @Test func profilerSharedFixtureRoundTripsAndKeySetsMatch() throws {
-    // coordinator/tests/protocol/testdata/profiler_wire_fixture.json — written by
-    // the Go side; both sides decode every frame, re-encode, and compare the
+    // The shared golden fixture was written by the Go side; both sides
+    // decode every frame, re-encode, and compare the
     // key sets of the contract additions (`profile`, `telemetry`, `stats`).
-    let fixtureURL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()  // Protocol
-        .deletingLastPathComponent()  // ProviderCoreTests
-        .deletingLastPathComponent()  // Tests
-        .deletingLastPathComponent()  // provider-swift
-        .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("coordinator/tests/protocol/testdata/profiler_wire_fixture.json")
+    let fixtureURL = try #require(Bundle.module.url(
+        forResource: "profiler_wire_fixture", withExtension: "json", subdirectory: "Fixtures/Protocol"))
     let fixtureData = try Data(contentsOf: fixtureURL)
     let fixture = try #require(
         try JSONSerialization.jsonObject(with: fixtureData) as? [String: Any])

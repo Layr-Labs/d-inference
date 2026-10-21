@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -31,10 +31,20 @@ convolution state to FP32; checkpoint declarations preserve that actual dtype.
 Packed recurrent prefill retains a compact convolution carry rather than an
 alias of the complete chunk allocation; the SDK copies those state bits without
 changing the recurrence or other model families.
-`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
-MTP remains unsupported because the checkpoint has no assistant tensors.
-See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
-qualification scope. This implementation does not activate a catalog entry.
+`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically for
+the 27B artifact, which has no MTP assistant tensors. The 9B candidate's
+separate local sidecar requires the explicit validation and opt-in described
+below; it does not extend the 27B qualification cohort.
+
+Native Qwen3.5 vision blocks honor explicit checkpoint activation declarations.
+For the three supported nested vision types, tanh and exact GELU are selected
+from `hidden_act`; absent or unknown declarations preserve the existing fast
+approximation. The SDK's `Qwen3VLConfiguration.VisionConfiguration`
+(`visionMLPApproximationForConstruction`) owns this choice in
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift`.
+See `libs/mlx-swift-lm/docs/bonsai2.md` for the exact activation mapping,
+checkpoint contract and qualification scope. This implementation does not
+activate a catalog entry.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
@@ -52,7 +62,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
-| promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | `coordinator/promptsidecar/`, `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
+| promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([prefix-cache.md#block-hashing](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | [coordinator/promptsidecar/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/promptsidecar/), `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md) |
 
 Slot construction carries the engine's immutable admission watermark into the
 bridge so future load and reserve-raise checks can preserve a serviceable total
@@ -80,7 +90,7 @@ confirmed prompt computation. The buckets retain computed-suffix size, full
 context size, cache state and same/other-model overlap. They do not train text
 rates. Cold, unpacked, non-preempted samples with exclusive whole-Mac ownership
 and one continuously observed nominal AC/Automatic posture can inform the
-native target predictor described in [first-content routing](first-content-routing.md#native-media-target-observations).
+native target predictor described in [first-content routing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/first-content-routing.md#native-media-target-observations).
 These online observations are not a release-certified prediction envelope.
 Generic vision submissions remain excluded. The native owner and opaque media seal are checked before a
 submission can produce a completed receipt
@@ -97,9 +107,14 @@ publishes the newest evidence without sending one heartbeat per token.
 `provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`
 matches reviewed data to verified model weights, provider/runtime revision,
 resolved KV backend, GPU/RAM bin and the entire configured context limit.
-Unknown profiles retain the legacy policy. The concurrency/chunk catalogs remain empty;
+Unknown profiles retain the legacy policy, except that models on the native
+`auto` paged allowlist start at the legacy ceiling of 8 instead of 4 on M5 Pro,
+Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`; chip identity comes from one
+sysctl, not full hardware detection). That width, like a profile
+width, returns to the configured width under Low Power Mode or thermal pressure
+(`EngineV2Bridge.hasPostureGatedWidth`). The concurrency/chunk catalogs remain empty;
 the [qualification procedure](../developer/serving-performance-qualification.md)
-is required before any higher default or model-specific chunk policy activates.
+is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
 engine retirement, not when a caller merely requests cancellation. Atomic
@@ -117,6 +132,78 @@ feeds the same scheduler plan used by execution and first-token projection.
 An absent qualified cap preserves the existing environment/default behavior.
 The prefill-only stripe, one partial prefill, recurrent checkpoints and
 one-image-at-a-time vision execution keep their existing geometry.
+
+### Model startup calibration
+
+The startup health check exercises a one-token request through the serving
+adapter with local-only `EngineMeasurementPurpose.startupWarmup`. Its first-use
+timing never trains prefill, decode, workload-bucket or delivered-rate estimates.
+Work accounting, resource ownership and the health-check result are unchanged;
+overlapping customer requests remain independently measurable.
+
+Completed startup preloads and the pre-registration path schedule calibration
+without waiting for the first capacity tick. Ordinary model loads also schedule
+it after construction releases its device-work receipt. Capacity ticks retry
+when loading, foreground work or device posture initially prevents calibration.
+An uncancelled calibration retirement schedules the next eligible resident
+slot immediately; the process-wide owner still permits only one session at a
+time. That successor scheduling runs after the session's retirement, outside
+the task a preempting customer request waits for; a preempted session schedules
+no successor. Ordinary and native MiMo load
+completion share a handoff that releases the finished construction activity and
+offers the newly loaded slot first,
+while keeping the load-transition gate closed. It rechecks cancellation and
+native ownership before releasing the gate and waking parked requests. Existing
+foreground or calibration ownership can still defer calibration.
+`refreshModelCalibration` asks the loaded bridge's `startModelCalibrationIfNeeded`
+to measure its actual serving configuration. Ordinary `EngineV2` autoregressive engines, including dense and
+MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
+128-token warmup followed by two uncached solo probes
+of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
+prefill/decode evidence without requiring a customer job and runs once per loaded
+engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
+An unfinished bootstrap retries when that backoff expires even if its completed
+probes left fresh partial rates. Fresh serving samples from an early request do
+not suppress an unfinished first bootstrap either. Only completed native MiMo
+maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
+
+Transaction-owned native MiMo slots retain the wider bootstrap and periodic
+maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
+affordable concurrency sweeps and solo refresh after 90 seconds. The existing
+15-second group deadline, context/KV limits and affordability checks bound work.
+All calibration requires an idle Mac in nominal thermal state outside Low Power
+Mode. Slots with a reviewed deadline profile never calibrate, because bounded
+probes must not enter deadline-qualified rates; those profiles keep their own
+applicability and posture checks.
+
+`IdleCalibrationCoordinator.beginForeground` cancels the probe when a customer
+request on any model arrives. Ordinary engines use `EngineV2.submitWithRetirement`
+to retain shared service and KV reservations until the actual submitted stream
+generation retires, including after an early watchdog terminal or cancelled
+waiter. The customer's original first-content deadline continues through this
+wait. Unsupported custom adapters remain ineligible until they expose a trusted
+retirement boundary. Unload and shutdown stop calibration without retaining
+retired weights.
+
+Only completed, uncached, isolated receipts seed solo rates. Batched measurements
+populate workload buckets without replacing solo admission rates. Calibration
+produces no served-request/output-token counters; its actual in-flight work stays
+visible until retirement. Prefill receipts retain their calibration identity
+after cell cleanup, so delayed callback consumption cannot turn a cancelled
+probe into serving counters or rate evidence. Fresh evidence is published through existing capacity
+heartbeats. Memory floors, concurrency ceilings and deadline enforcement remain
+unchanged. Scheduling is asynchronous: registration and customer service do not
+wait for the full calibration plan to finish. Once completed slot publication
+reaches this handoff, cancelling its load caller does not turn the resident slot into a failed
+load; shutdown and slot-owner validity checks still apply. See the calibration entries in the
+[code map](#code-map) for the enforcing paths and symbols.
+
+Each cell stages its numeric prefill/decode observations until all its requests
+have retired. Posture is checked before the cell and again before publication.
+A failed, cancelled or non-nominal cell discards its own staged observations
+and leaves the bootstrap retryable, including for the final cell. Earlier valid
+cells and independent serving observations remain intact. Serving observations
+still publish immediately, through the same rate/EWMA application helper.
 
 ### One request through the engine
 
@@ -261,7 +348,10 @@ the fixed rate reduction takes effect without a timing-profile entry.
 
 `DeadlineRuntimeEnvironment.permitsQualification` rejects `MLX_*`, `MTPLX_*`,
 `QWEN_*`, and unrecognized or performance-affecting `DARKBLOOM_*` settings.
-Only exact credential, local-state and update-control keys are exempt.
+Exact credential, local-state and update-control keys are exempt. The resolved
+`DARKBLOOM_CBV2_KV_QUANTIZATION` key is accepted only for native precision by
+both deadline and serving-profile environment checks. Balanced and 8-bit cache
+formats still require separate format-bound measurements before using a profile.
 CLI-projected MLX settings also retain the timing fallback until that execution
 environment is covered by reviewed evidence. This deadline-only guard does not
 change universal serving-profile admission.
@@ -529,12 +619,43 @@ disabled for this hybrid model.
 and stored on the `EngineV2Bridge` next to the stop-token set. It fills only
 the knobs a request omits; an explicit request value always wins, so
 `temperature: 0` is still greedy. Admission is per family, like
-`ToolChoiceEnforcementPolicy.nativeStructuredTarget`: today only
-`model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
+`ToolChoiceEnforcementPolicy.nativeStructuredTarget`: `model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
 (`EngineV2SupportedModels.isNemotron35ListingModelID`) honours its artifact
 (`temperature 1.0`, `top_p 0.95`, `do_sample true`, the values the model card
-recommends). Every other family keeps the legacy defaults in the table
-byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
+recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
+`EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
+defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
+qualification requests explicitly supply `presence_penalty: 1.5`; that value
+is absent from the artifact and is not injected as a default. This request
+policy enables native channels, nested reasoning and forced-media framing.
+These exact 9B identities separately default to paged attention and encrypted SSD
+prefix caching. Explicit operator selections, kill switches, native capability
+and cache identity/security checks still apply. The 27B admission/MTP cohort
+does not expand to 9B.
+`Bonsai9BModelPolicy.contextLimit` passes this artifact's positive native
+context limit into the bridge even without a measured performance profile.
+The existing overflow-safe prompt-plus-output check rejects an oversized
+envelope before cache lookup or engine submission, for both KV backends.
+This does not claim physical full-context capacity or alter pre-load listing
+metadata.
+
+The default `mtp_mode = "auto"` requests MTP for these exact 9B identities.
+An optional `mtp_drafter_path` override takes precedence; otherwise the existing
+validated catalog `spec_dec` path prepares the assistant asynchronously and
+attaches it at an eligible idle boundary. No request waits for a download.
+The raw publisher sidecar has a zero-layer declaration and remains invalid
+for native binding: a separately qualified assistant and immutable catalog
+reference are required. `off` and the process kill switch disable MTP.
+`SpecDecArtifactFunnel.prepare` keeps the exact identity, Prism type, local
+artifact validation and kill-switch gates. `ProductionProviderMTPAssistantLoader`
+binds the independently validated head through the Prism wrapper, with exact
+acceptance by default and a fixed maximum draft depth of two. The separate
+head's artifact contract and unchanged base precision are documented in
+`libs/mlx-swift-lm/docs/bonsai2.md`. Its strict binding accepts the inspected
+F16 and affine 4-bit/group-64 heads, preserving the original path for rollback.
+Actual model, cache and speed qualification
+remain separate from this automatic intent and validated loading path.
+Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
@@ -593,6 +714,14 @@ Resolution happens before submit so a bad parser name never orphans a request.
 
 ### Chat-template render check
 
+The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
+`qwen3_5_moe`, `prism_hadamard_qwen35`) raise "No user query found in
+messages." when no user turn is more than a `<tool_response>` wrapper. Such
+histories are refused before rendering with the typed HTTP 400
+`missingUserQuery` instead of a provider-fault 500 `template_render`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift`,
+`validateUserQuery`).
+
 At scan time `TemplateRenderCheck.renderOK(at:)` compiles every template
 source in runtime precedence (`chat_template.jinja`, `chat_template.json`,
 `tokenizer_config.json`) with swift-jinja `lstripBlocks: true, trimBlocks:
@@ -649,13 +778,13 @@ records tiny-model correctness and remaining release gates.
 
 | `model_type` | Family | Notes |
 |---|---|---|
-| `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); contiguous fallback serves cold; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
-| `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires the loaded paged capability |
+| `gpt_oss` | GPT-OSS | Harmony tool format; historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); native contiguous and paged paths require observed dtype/capability gates; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
+| `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires loaded capability and observed native types |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
-| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
@@ -663,9 +792,28 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
-`detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
+`detectQuantization`). Weight precision is independent of live KV and checkpoint
+precision. `EngineV2KVQuantizationPolicy` defaults to native live execution and
+separately requests balanced checkpoint storage. Native `auto` backend selection
+is unchanged; storage compression never forces paging. Eligible native paged
+and contiguous checkpoints encode older attention rows and restore into native
+state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
+rows remain lossy. Effective native fallback and the unchanged opt-in live
+packed path are described in the
+[precision architecture](kv-cache-quantization.md); controls are in the
+[CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+Admission prices actual live/native destination owners rather than a disk
+compression ratio. Memory sizing
 (native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+Explicit live-packed slots reuse durable prefixes only through the complete packed
+checkpoint contract, which preserves the coded rows and original-precision
+tail. Their legacy resident blocks and attention-only native tensor snapshots
+are disabled. DiffusionGemma's packed prefix codec remains unqualified, so its
+quantized slots report `unsupported_layout` and retain no resident or SSD prefix
+payloads. Generation continues with packed KV; selecting `native` preserves the
+existing native prefix policy.
 
 ### Native MiMo V2.6 candidate
 
@@ -674,7 +822,7 @@ separately packaged DFlash assistant. It preserves unequal K/V widths, hybrid
 full/sliding attention, partial RoPE, trained sinks, native value scaling and
 sigmoid MoE routing. The embedded three-head MTP assistant consumes target
 post-final-norm features; it does not chain one predictor head's output into
-the next. See the [SDK implementation map](../../libs/mlx-swift-lm/docs/mimo-v26/README.md).
+the next. See the [SDK implementation map](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/README.md).
 
 `MiMoV26ServingLoad.inspect` validates the source-bound serial load plan.
 Discovery quotes that same full main LOAD request plus the ordinary installed
@@ -760,7 +908,7 @@ flowchart LR
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
 | Prefix | [Exact MiMo identities default to SSD reuse](prefix-cache.md#mimo-complete-state); text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
 | Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
-| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
+| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 
 The native contiguous and paged factories use the same artifact-bound serving
@@ -868,7 +1016,7 @@ real-frame limits and native sampling/timestamps are unchanged.
 Joint contiguous text-prefix/media issuance shares the real process/store/model
 ownership contract: text can use complete checkpoints, while media remains
 noncacheable and target-only. This does not enable media-prefix reuse or the
-separate paged profile. The [composed SDK component record](../../libs/mlx-swift-lm/docs/mimo-v26/qualified-composition-20260928.md)
+separate paged profile. The [composed SDK component record](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/qualified-composition-20260928.md)
 identifies selected executed checks and the still-open full-artifact gates.
 
 The newer serial-paged-prefix composition retains the real encrypted store on
@@ -881,7 +1029,7 @@ This source candidate does not register a catalog model, change context or
 hardware limits, or activate a release. Defaults and opt-in spellings are in
 the [MiMo configuration reference](../reference/configuration.md#native-mimo-v26-candidate);
 qualification requirements and numerical boundaries are in the
-[SDK qualification contract](../../libs/mlx-swift-lm/docs/mimo-v26/qualification.md).
+[SDK qualification contract](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/qualification.md).
 
 ### Native Flash-Next ownership and admission
 
@@ -976,6 +1124,7 @@ or change consumer/OpenRouter routing.
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
+| `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
 
@@ -999,6 +1148,10 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Concern | File / symbol |
 |---|---|
 | Bridge submit path | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| Calibration scheduling | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelCalibration.swift` (`refreshModelCalibration`); `provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift` (`finishStartupPreload`); `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`finishModelLoad`); `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`finishNativeMiMoSlotPublication`) |
+| Calibration plan and retry gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift` (`startModelCalibrationIfNeeded`, `runModelCalibration`); `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`startup`, `bootstrap`, `maintenance`) |
+| Calibration evidence and foreground priority | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` (`EnginePerformanceMeasurements`); `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`) |
+| Per-cell evidence publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+RateObservations.swift` (`recordRateObservation`, `applyRateObservation`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationCell`) |
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
@@ -1018,6 +1171,34 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 - [`prefix-cache.md`](prefix-cache.md) — KV layouts, resident prefix reuse, SSD tier
 - [`hardware-support.md`](hardware-support.md) — memory model and load gate
 - [`components/provider.md`](components/provider.md), [`components/mlx-swift.md`](components/mlx-swift.md) — process components and pinned submodules
-- [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) — coordinator-side contract identity
+- [prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md) — coordinator-side contract identity
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable and config key with its default
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — wire shape of capacity, timing and status fields
+
+### Bonsai 9B release verification mode
+
+With a validated local or catalog sidecar available, `Qwen35InlineMTPAssistant` requires
+rectangular verification and `providerMTPVerificationPolicy` preserves that
+mode. The 9B drafter is bounded to depth two and one speculative request.
+Keep `mtp_acceptance = "exact"`; the generic automatic rectangular work-cap
+selector is not used by this drafter. The existing serial environment override
+remains an explicit comparison/rollback control. Unsupported cache/capture
+capabilities or runtime eligibility retain the target-only path, and an absent
+or invalid sidecar leaves plain generation available. This mode choice does
+not establish final-model qualification.
+
+The publisher checkpoint is publicly readable at
+[revision f4e28a59531731c41b6dfac88cf271bd58f0a287](https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-mlx-2bit/tree/f4e28a59531731c41b6dfac88cf271bd58f0a287).
+Its optional Q4 head and original base weights match the inspected candidate.
+Public availability does not correct the sidecar layer-count declaration or
+substitute for native runtime and deployment qualification.
+
+The Eigen Labs copy is published at
+[revision 98deded13e48aae1f3e27d551d0e2582a7d0cc51](https://huggingface.co/EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit/tree/98deded13e48aae1f3e27d551d0e2582a7d0cc51).
+This documentation revision updates the EigenLabs model card, native MTP notes
+and checksum inventory; all runtime files match the original Eigen publication
+`afce870aab56a267b2ab35c3e3309dcec76abd05`.
+Both exact identifiers use `Bonsai9BModelPolicy`. The copy preserves publisher
+weights and runtime metadata, including the sidecar layer-count declaration.
+Artifact copying does not grant catalog or hosted-serving qualification.
+No family-name or substring alias is accepted.

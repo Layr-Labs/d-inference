@@ -1,0 +1,702 @@
+{
+  "packet": {
+    "after": {
+      "abandoned_steps": 0,
+      "completed_step_timings": [
+        {
+          "phase": "prefill",
+          "wall_nanos": 1630619000
+        },
+        {
+          "phase": "prefill",
+          "wall_nanos": 1353271542
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 104484667
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55461917
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56187250
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56432500
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56029417
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55343291
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56215125
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56461333
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54640125
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54402208
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54588417
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54414833
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54117333
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 53988625
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56477625
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 57810500
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56984625
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55993917
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55202541
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54975291
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55059583
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54978625
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56631709
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56596333
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54185084
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54312459
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54574959
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54424125
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54046708
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54600584
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55065500
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54541375
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 53955667
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 53714458
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 53714459
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54603958
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55495084
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55028666
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 104099625
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 110253792
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 64471833
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 63344792
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 63136417
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 59752208
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 57275917
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56409667
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 57748500
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 58426709
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 57230834
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56019125
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55107875
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55282375
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56248167
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56613041
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 57604541
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 56862750
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54923334
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54844084
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54984125
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55921625
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 55410750
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54654791
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 54255459
+        },
+        {
+          "phase": "decode",
+          "wall_nanos": 28025084
+        }
+      ],
+      "confirmed_token_timings": [
+        {
+          "relative_nanos": 0,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 104679875,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 132548708,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 161037166,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 189160333,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 217242208,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 244678041,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 273617291,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 301293208,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 328419000,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 355874083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 383151083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 410432083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 437406333,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 464584000,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 494049375,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 522548791,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 551196041,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 578684083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 606550916,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 633749791,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 661769208,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 688900750,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 718479125,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 745658333,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 772815250,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 800109250,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 827566250,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 854686583,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 881768833,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 909432875,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 936979333,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 964143208,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 991082083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1017972333,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1044931625,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1072703083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1100579250,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1127844166,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1204836166,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1238238458,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1269493083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1301770500,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1332803833,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1361704083,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1390189875,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1418269250,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1448058041,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1476826500,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1505401000,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1532984458,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1560617375,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1588385416,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1617006958,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1645124916,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1674764291,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1702124291,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1729845625,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1757116125,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1784967208,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1813139666,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1840534458,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1867926291,
+          "row_ordinal": 0,
+          "token_count": 1
+        },
+        {
+          "relative_nanos": 1894933750,
+          "row_ordinal": 0,
+          "token_count": 1
+        }
+      ],
+      "dropped_calls": 0,
+      "dropped_step_timings": 0,
+      "dropped_token_timings": 0,
+      "enabled": true,
+      "entries": [
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "decode",
+            "physical_batch_rows": 1,
+            "sequence_width": 1
+          },
+          "completed_calls": 64,
+          "submitted_calls": 64
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 1881
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 2048
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        }
+      ],
+      "pending_steps": 0,
+      "schema": 1,
+      "scope": 1,
+      "unobserved_dispatches": 0
+    },
+    "before": {
+      "abandoned_steps": 0,
+      "completed_step_timings": [],
+      "confirmed_token_timings": [],
+      "dropped_calls": 0,
+      "dropped_step_timings": 0,
+      "dropped_token_timings": 0,
+      "enabled": true,
+      "entries": [],
+      "pending_steps": 0,
+      "schema": 1,
+      "scope": 1,
+      "unobserved_dispatches": 0
+    },
+    "delta": {
+      "complete": true,
+      "entries": [
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "decode",
+            "physical_batch_rows": 1,
+            "sequence_width": 1
+          },
+          "completed_calls": 64,
+          "submitted_calls": 64
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 1881
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 2048
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        }
+      ],
+      "pending_steps_after": 0,
+      "pending_steps_before": 0,
+      "reasons": [],
+      "schema": 1,
+      "scope": 1
+    },
+    "schema": 1
+  },
+  "provenance": {
+    "probe_binary_sha256": "58791d7aa815ea4ade9c81be274aa5a808999eb79d1c3db347f869d5b5f09395",
+    "scope": "Real GPT-OSS native cache-correctness probe; scalar metadata only.",
+    "source_file_digest": "b290e9349127d7206af16e7801ceee3348876b0356a1bea965bd01c80a0cfa10"
+  },
+  "requested_width": 1
+}

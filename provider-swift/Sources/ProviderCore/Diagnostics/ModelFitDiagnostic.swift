@@ -146,7 +146,7 @@ public enum ModelFitDiagnostic {
                 message: "\(modelID) needs ~\(fmt(needed)) GB; \(fmt(usableGb)) GB is usable without eviction "
                     + "(\(fmt(shortfall)) GB short). A request may fit after evicting idle model slots; "
                     + "startup preload will not evict them.",
-                fix: "No configuration change is required. Check `darkbloom status` for current slots; "
+                fix: "No configuration change is required. Check `\(BuildEnvironment.current.cliName) status` for current slots; "
                     + "free memory if both models should stay resident.")
         }
         let coldShortfall = evictionAwareWeightGb.map { max(0, weightGb - $0) }
@@ -158,10 +158,10 @@ public enum ModelFitDiagnostic {
             .sorted { $0.weightGb > $1.weightGb }
         let suggestion: String
         if fits.isEmpty {
-            suggestion = "Free at least \(fmt(actionableShortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. A larger-memory Mac is another option."
+            suggestion = "Free at least \(fmt(actionableShortfall)) GB of usable memory and rerun `\(BuildEnvironment.current.cliName) doctor`; restart to preload when enabled, or retry a request. A larger-memory Mac is another option."
         } else {
             let list = fits.prefix(3).map { "\($0.id) (~\(fmt(requiredGb(estimatedMemoryGb: $0.weightGb, modelID: $0.id))) GB)" }.joined(separator: ", ")
-            suggestion = "Free at least \(fmt(actionableShortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. Alternatively set `enabled_models` to a smaller model: \(list)."
+            suggestion = "Free at least \(fmt(actionableShortfall)) GB of usable memory and rerun `\(BuildEnvironment.current.cliName) doctor`; restart to preload when enabled, or retry a request. Alternatively set `enabled_models` to a smaller model: \(list)."
         }
         return Diagnostic(
             section: .traffic, name: "model fits in RAM", level: .fail,

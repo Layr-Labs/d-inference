@@ -122,6 +122,34 @@ struct NemotronSuperVideoBindingTests {
         #expect(Features.retainedRows(tubelets: 1, rowsPerTubelet: 256, pruningRate: 0.7) == 256)
     }
 
+    /// A malformed rate fails the load before its LOAD claim and the
+    /// installation, so a retry never reinstalls the checkpoint.
+    @Test func malformedPruningFailsTheLoadBeforeInstalling() async throws {
+        let base = try SuperInstalledFixture().staging()
+        let installs = SuperPrefixInstallCount()
+        let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
+            installs.increment()
+            return try base.install($0, $1, $2)
+        }, head: nil)
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let load = NemotronSuperLocalLoad(budget: budget)
+        var failure: Error?
+        do {
+            _ = try await load.load(staging: { staging }, tokenizer: TokenizerHandle(SuperSyntheticVideoTokenizer()),
+                eosTokenIDs: [31], sizing: .init(weightsBytes: 1 << 20, fp16KVBytesPerToken: 64,
+                    maxContextLength: 1024, defaultMaxTokens: 2),
+                kvBytesCapacity: 2 << 30, backendAllowanceBytes: 1 << 20, modelID: NemotronSuperLocalBinding.modelID,
+                environment: [NemotronSuperVideoFeatures.pruningKey: "half"])
+        } catch {
+            failure = error
+        }
+        #expect(failure as? NemotronSuperLocalBridgeBuilder.Failure == .invalidVideoPruning, "\(String(describing: failure))")
+        #expect(installs.count == 0)
+        #expect(await load.fitAttempts.isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// The policy's bound is the binding's own charge at every maximum, and
     /// stays within one largest image, so the footprint and quotes hold it.
     @Test func videoChargeStaysWithinOneLargestImage() throws {

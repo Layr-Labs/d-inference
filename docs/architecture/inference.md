@@ -142,10 +142,11 @@ binding's `drain` does, cancels a read blocked in the decoder.
 the installation's native setup, checking every evaluation with
 `throwIfMLXFaulted`, and keeps only projected rows. When
 `DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING` (default `0.5`, `0` keeps every row; a
-malformed value fails the load) prunes anything, each batch is scored with
-`NemotronSuperEVS.dissimilarity` behind the previous batch's last tubelet, since
-a token scores only against the same position of the previous tubelet; the
-host scores then select the kept rows. Each tubelet's kept rows are substituted
+malformed value fails the load before its LOAD claim) prunes anything, each
+batch is scored with `NemotronSuperEVS.dissimilarity` behind the previous
+batch's last tubelet, since a token scores only against the same position of
+the previous tubelet; the host scores then select the kept rows. Each
+tubelet's kept rows are substituted
 at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
 rows were all pruned keeps its label and wrappers and has no span. Invalid,
 oversized or undecodable videos map to the invalid-media 400. AVFoundation's

@@ -29,6 +29,16 @@ enum NemotronSuperVideoFeatures {
         return rate
     }
 
+    /// The configured rate, or `invalidVideoPruning`. The load checks it
+    /// before its LOAD claim and installation, so a malformed value costs no
+    /// install.
+    static func validatedPruningRate(environment: [String: String]) throws -> Double {
+        guard let rate = pruningRate(environment: environment) else {
+            throw NemotronSuperLocalBridgeBuilder.Failure.invalidVideoPruning
+        }
+        return rate
+    }
+
     /// vLLM's `compute_retained_tokens_count`: the unpruned share of every
     /// row, never fewer than one tubelet's rows; every row when off.
     static func retainedRows(tubelets: Int, rowsPerTubelet: Int, pruningRate: Double) -> Int {

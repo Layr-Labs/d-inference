@@ -398,9 +398,7 @@ enum NemotronSuperLocalBridgeBuilder {
         else { throw Failure.unsupportedSizing }
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
-        guard let videoPruningRate = NemotronSuperVideoFeatures.pruningRate(environment: environment) else {
-            throw Failure.invalidVideoPruning
-        }
+        let videoPruningRate = try NemotronSuperVideoFeatures.validatedPruningRate(environment: environment)
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
             pinned: installed.isPinnedCheckpoint, physicalBytes: physicalBytes, modelID: modelID)

@@ -497,7 +497,8 @@ ids. `NemotronSuperVideoBindingTests` covers video admission, the tubelet
 layout, the media charge and its quote, and serves a synthesized MP4 end to
 end on the tiny installed fixture, checking its prompt length and one span per
 tubelet that kept rows; it also checks that cancelling or draining a decoding
-video returns its charge. `NemotronSuperVideoDecodeTests` covers the decoder's
+video returns its charge and that a malformed pruning rate fails the load
+before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
 refusals on synthesized clips (decoded-pixel budget, codec, second track,
 zero-duration frame), per-frame validation, the decode allowance and reader
 cancellation.

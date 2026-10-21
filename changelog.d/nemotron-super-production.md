@@ -98,7 +98,8 @@
   sampled one decodes; ten minutes of 30 fps 1080p fits), extreme aspect
   ratios and undecodable movies are refused with 400, as is a movie that
   keeps the decoder busy past its allowance (at most two minutes).
-  Cancelling a video request stops its decoder at once. The checkpoint's video
+  Cancelling a video request stops its decoder at once. A malformed pruning
+  rate fails the load before installing. The checkpoint's video
   embedder is now loaded, adding 3,932,160 bytes to the resident installation.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.

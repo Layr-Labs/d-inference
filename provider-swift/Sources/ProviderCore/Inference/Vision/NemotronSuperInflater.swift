@@ -13,22 +13,13 @@ final class NemotronSuperInflater {
     private var ended = false
 
     init(segments: [UnsafeRawBufferPointer]) throws {
+        // Assigned only once zlib accepted it: a throwing initializer that
+        // already set every property runs deinit, which would free it again.
+        stream = try makeInflateStream()
         self.segments = segments[...]
-        // zlib keeps a back-pointer to the z_stream, so it must not move.
-        stream = .allocate(capacity: 1)
-        stream.initialize(to: z_stream())
-        guard inflateInit_(stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
-            stream.deinitialize(count: 1)
-            stream.deallocate()
-            throw NemotronSuperImageDecode.Failure.invalidRaster
-        }
     }
 
-    deinit {
-        inflateEnd(stream)
-        stream.deinitialize(count: 1)
-        stream.deallocate()
-    }
+    deinit { freeInflateStream(stream) }
 
     /// Fills exactly `count` bytes; a stream ending earlier is truncated data.
     func read(into output: UnsafeMutablePointer<UInt8>, count: Int) throws {
@@ -121,4 +112,23 @@ final class NemotronSuperInflater {
             }
         }
     }
+}
+
+/// A heap z_stream ready for inflate: zlib keeps a back-pointer to it, so it
+/// must not move. Nothing stays allocated when zlib refuses it.
+private func makeInflateStream() throws -> UnsafeMutablePointer<z_stream> {
+    let stream = UnsafeMutablePointer<z_stream>.allocate(capacity: 1)
+    stream.initialize(to: z_stream())
+    guard inflateInit_(stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+        stream.deinitialize(count: 1)
+        stream.deallocate()
+        throw NemotronSuperImageDecode.Failure.invalidRaster
+    }
+    return stream
+}
+
+private func freeInflateStream(_ stream: UnsafeMutablePointer<z_stream>) {
+    inflateEnd(stream)
+    stream.deinitialize(count: 1)
+    stream.deallocate()
 }

@@ -133,13 +133,12 @@ extension NemotronSuperManagedSlotTests {
         let fixture = try await Self.coResidentFixture(weightsGiB: weightsGiB, availableGiB: availableGiB)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let loop = fixture.loop
-        let requirements = await loop.nemotronSuperLoadRequirements(
-            try #require(await loop.loadGateAdvertisedModel(Self.modelID)))
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        let requirements = await loop.nemotronSuperLoadRequirements(model)
         #expect(requirements == [109_816_317_472, 104_179_172_896, 100_152_641_056,
                                  95_387_911_712, 93_777_298_976, 89_750_767_136])
         #expect(requirements.last == NemotronSuperLoadFit.narrowestRequirementBytes)
         #expect(await loop.fastAdmissionReject(modelId: Self.modelID) == !loads)
-        let model = try #require(await loop.loadGateAdvertisedModel(Self.modelID))
         // The widest configuration evicting every idle model reaches.
         let reachable = await loop.nemotronSuperClaimRoomBytes() + UInt64(weightsGiB * 1_073_741_824)
         let target = requirements.first { $0 <= reachable }
@@ -202,7 +201,7 @@ extension NemotronSuperManagedSlotTests {
         let file = fixture.directory.appendingPathComponent("loaded-models.json")
         LoadedModelsStore.write([Self.coResidentID, Self.modelID], to: file)
         await loop.setLoadedModelsFileForTesting(file)
-        let scanned = try #require(await loop.loadGateAdvertisedModel(Self.modelID)).estimatedMemoryGb
+        let scanned = try #require(await loop.advertisedModels[Self.modelID]).estimatedMemoryGb
         #expect(scanned < 90)
         #expect(await loop.startupPreloadPlanForTesting().map(\.modelId) == [Self.modelID, Self.coResidentID])
     }
@@ -217,8 +216,4 @@ extension NemotronSuperManagedSlotTests {
         else { return false }
         return await budget.finishPendingLoad(lease)
     }
-}
-
-extension ProviderLoop {
-    func loadGateAdvertisedModel(_ modelID: String) -> ModelInfo? { advertisedModels[modelID] }
 }

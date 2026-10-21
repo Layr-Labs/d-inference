@@ -553,8 +553,10 @@ Set `DARKBLOOM_FLINT_BACKEND=paged` for the paged HTTP qualification pass and
 select `--kv-backend paged` in the matching performance runs. Retain the resolved
 backend; contiguous reference results do not qualify paged serving.
 
-`FlintHTTPBenchmarkTests` is the opt-in authenticated HTTP baseline. Build tests
-in release, stage the source-matched metallib, then run only that suite with
+`FlintHTTPBenchmarkTests` is the opt-in authenticated HTTP baseline. It lives in
+`ServingQualificationTests`, which builds in release; `ProviderCoreTests` uses
+debug-only test hooks. Build that target in release with `-Xswiftc
+-enable-testing`, stage the source-matched metallib, then run only that suite with
 `DARKBLOOM_FLINT_HTTP_BENCHMARK=1`, `MLX_ENABLE_TF32=0`,
 `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE=2048`, `DARKBLOOM_FLINT_BACKEND=paged` and
 task-owned `_ROOT`, `_CONFIG`, `_RECEIPT`, cache, port and a fresh, nonexistent
@@ -571,7 +573,7 @@ holds counts, timings and hashes only. Its prefill rate is prompt tokens per
 TTFT second, a lower bound on engine prefill; its decode figure is an estimate
 that includes reasoning tokens. Both are single-stream results from a release
 test build, not server capacity or a signed release. Source:
-`provider-swift/Tests/ProviderCoreTests/Server/FlintHTTPBenchmarkTests.swift`.
+`provider-swift/Tests/ServingQualificationTests/FlintHTTPBenchmarkTests.swift`.
 
 `FlintLiveTests` is opt-in physical-machine qualification, not an ordinary CI
 weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and

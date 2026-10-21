@@ -229,6 +229,62 @@ struct NemotronSuperVideoBindingTests {
         }
     }
 
+    /// Ten tubelets run as batches of four, four and two, each later batch
+    /// scored behind the previous batch's last tubelet. The kept rows equal
+    /// EVS over the whole video's rows (the SDK's whole-video reference):
+    /// the same count per tubelet and the same rows.
+    @Test(.timeLimit(.minutes(3))) func windowedPruningKeepsTheWholeVideoSelection() async throws {
+        let (installed, _, residency) = try SuperInstalledFixture(radioDimensions: Self.squareTower).make()
+        // Every frame of a 2 fps clip is sampled: 20 frames, 10 tubelets.
+        let plan = try await NemotronSuperVideoDecode.inspect(
+            NemotronSuperVideoClips.uri(try await NemotronSuperVideoClips.movie(frames: 20, fps: 2)))
+        try #require(plan.tubelets == 10 && plan.grid.tokens == 256)
+        #expect(plan.tubelets > 2 * NemotronSuperVideoFeatures.tubeletBatch)
+        let prompt = VideoPrompt(prefix: [1], labels: Array(repeating: [3, 4], count: plan.tubelets), suffix: [2])
+        func prepared(pruningRate: Double) async throws -> EngineV2VisionPrefill.PreparedSubmission {
+            let frames = try await NemotronSuperVideoDecode.Frames(plan)
+            var live: [MLXArray] = []
+            return try NemotronSuperVideoFeatures.prepare(installed: installed, frames: frames, prompt: prompt,
+                pruningRate: pruningRate, contextLength: 16_384,
+                maximumFeatureBytes: plan.tubelets * plan.grid.tokens * 4096 * 4,
+                construction: NativeConstructionScope(), live: &live)
+        }
+        // Unpruned, the submission carries every tubelet's rows in order.
+        let whole = try await prepared(pruningRate: 0)
+        try #require(whole.embeddings.count == plan.tubelets)
+        let rows = concatenated(whole.embeddings, axis: 0)
+        let reference = NemotronSuperEVS.keptPositions(features: rows, pruningRate: 0.5)
+        try #require(reference.count == plan.tubelets)
+        // Scoring a later batch's first tubelet against the previous batch's
+        // first tubelet instead of its last would keep other rows, so the
+        // comparison below covers the cross-batch overlap.
+        let batch = NemotronSuperVideoFeatures.tubeletBatch, tokens = plan.grid.tokens
+        var misaligned = NemotronSuperEVS.dissimilarity(rows).asArray(Float.self)
+        for first in stride(from: batch, to: plan.tubelets, by: batch) {
+            let pair = concatenated([rows[(first - batch) ..< (first - batch + 1)], rows[first ..< (first + 1)]], axis: 0)
+            misaligned.replaceSubrange((first - 1) * tokens ..< first * tokens,
+                                       with: NemotronSuperEVS.dissimilarity(pair).asArray(Float.self))
+        }
+        #expect(NemotronSuperEVS.keptPositions(dissimilarity: misaligned, tubelets: plan.tubelets, tokens: tokens,
+                                               pruningRate: 0.5) != reference)
+        let pruned = try await prepared(pruningRate: 0.5)
+        var kept: [Int] = []
+        for token in pruned.promptTokens {
+            if token == 19 { kept.append(0) }
+            if token == 18, !kept.isEmpty { kept[kept.count - 1] += 1 }
+        }
+        #expect(kept == reference.map(\.count))
+        let spans = reference.indices.filter { !reference[$0].isEmpty }
+        try #require(pruned.embeddings.count == spans.count)
+        for (embedding, tubelet) in zip(pruned.embeddings, spans) {
+            let expected = rows[tubelet].take(MLXArray(reference[tubelet]), axis: 0).expandedDimensions(axis: 0)
+            #expect(embedding.shape == expected.shape, "tubelet \(tubelet)")
+            #expect(arrayEqual(embedding, expected).item(Bool.self), "tubelet \(tubelet)")
+        }
+        installed.closeAfterRetirement()
+        #expect(residency.snapshot.usedBytes == 0)
+    }
+
     /// Cancelling a request while its frames decode returns the ingress and
     /// media charges and leaves the owner without a fault.
     @Test(.timeLimit(.minutes(3))) func cancellingAVideoMidDecodeReleasesItsCharge() async throws {

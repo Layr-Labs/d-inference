@@ -496,8 +496,9 @@ and the template text without the tokenizer; with
 ids. `NemotronSuperVideoBindingTests` covers video admission, the tubelet
 layout, the media charge and its quote, and serves a synthesized MP4 end to
 end on the tiny installed fixture, checking its prompt length and one span per
-tubelet that kept rows; it also checks that cancelling or draining a decoding
-video returns its charge and that a malformed pruning rate fails the load
+tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
+selects over the whole video, that cancelling or draining a decoding video
+returns its charge and that a malformed pruning rate fails the load
 before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
 refusals on synthesized clips (decoded-pixel budget, codec, second track,
 zero-duration frame), per-frame validation, the decode allowance, reader

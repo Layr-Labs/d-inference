@@ -17,13 +17,17 @@ struct NemotronSuperRequestPlan: Sendable {
     /// `formatted` is a request that `MLXOpenAIService` already passed through
     /// `OpenAIResponseFormatSupport.preparedRequest`; otherwise the instruction
     /// is inserted here exactly once. The request must name `modelID`.
+    /// `trustsSchemaMetadata` admits the reserved tool-schema marker, as the
+    /// generic engine does for coordinator requests: there the coordinator's
+    /// authenticated normalizer or this provider's decode inserted it. Local
+    /// requests leave it false, so a client-sent marker is refused.
     init(body: Data, formatted: OpenAIChatCompletionRequest? = nil,
-         modelID: String = NemotronSuperLocalBinding.modelID) throws {
+         modelID: String = NemotronSuperLocalBinding.modelID, trustsSchemaMetadata: Bool = false) throws {
         let decoded = try formatted ?? OpenAIResponseFormatSupport.preparedRequest(
             ProviderLoop.decodeOpenAIRequest(body))
         try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
-            modelType: "nemotron_h_omni", allowInternalSchemaMetadata: false)
+            modelType: "nemotron_h_omni", allowInternalSchemaMetadata: trustsSchemaMetadata)
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools

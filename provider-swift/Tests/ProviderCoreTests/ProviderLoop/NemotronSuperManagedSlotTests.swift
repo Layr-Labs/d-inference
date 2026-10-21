@@ -160,6 +160,7 @@ struct NemotronSuperManagedSlotTests {
     /// One encrypted coordinator request: the decrypted SSE and its terminal.
     static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
         consumer: NodeKeyPair, scope: String? = "tenant-a", deadline seconds: Int = 60,
+        toolSchemaMetadataProtocol: Int? = nil,
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
         let id = "super-coordinator-\(UUID().uuidString)"
@@ -167,7 +168,8 @@ struct NemotronSuperManagedSlotTests {
                                               plaintext: body)
         await loop.handleInferenceRequest(requestId: id, ciphertext: ciphertext,
             senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: nil,
-            authenticatedCacheScope: scope, send: SendHandle(recorder.record))
+            authenticatedCacheScope: scope, toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+            send: SendHandle(recorder.record))
         if let whileRunning { await whileRunning(id) }
         let deadline = ContinuousClock.now + .seconds(seconds)
         while recorder.terminal(id) == nil, ContinuousClock.now < deadline {

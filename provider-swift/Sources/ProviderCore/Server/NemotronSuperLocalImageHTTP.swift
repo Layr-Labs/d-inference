@@ -38,8 +38,9 @@ struct NemotronSuperLocalImageHTTP: Sendable {
 
     /// Reference prompt length of a text request, the usage floor when a
     /// stream ends before its terminal usage; 0 for media or a refused body.
-    func promptTokenCount(body: Data) -> Int {
-        guard let plan = try? NemotronSuperRequestPlan(body: body, modelID: owner.modelID), !plan.hasMedia,
+    func promptTokenCount(body: Data, trustsSchemaMetadata: Bool = false) -> Int {
+        guard let plan = try? NemotronSuperRequestPlan(body: body, modelID: owner.modelID,
+                                                       trustsSchemaMetadata: trustsSchemaMetadata), !plan.hasMedia,
             let tokens = try? plan.textPromptTokens(body: body, templateBytes: template,
                                                     tokenizer: tokenizer.inner)
         else { return 0 }
@@ -60,10 +61,12 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// The engine for one immutable raw request body. `cacheScope` partitions
     /// prefix reuse (nil: none); the hook's single local operator shares one
     /// partition. Image requests reuse only within their image identity.
-    func engine(body: Data, hasMedia: Bool, cacheScope: String? = "") -> any MLXServerEngine {
+    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`.
+    func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
+                trustsSchemaMetadata: Bool = false) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
-                               cacheScope: cacheScope)
+                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata)
     }
 }
 
@@ -80,6 +83,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let template: Data
     let owner: NemotronSuperLocalBridgeBuilder.Owner
     let cacheScope: String?
+    let trustsSchemaMetadata: Bool
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -97,7 +101,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
         let output: NemotronSuperLocalOutput
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
         do {
-            let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID)
+            let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID,
+                                                    trustsSchemaMetadata: trustsSchemaMetadata)
             output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
             switch route {
             case .image(let images):

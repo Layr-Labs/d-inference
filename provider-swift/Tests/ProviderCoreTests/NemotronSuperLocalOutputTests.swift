@@ -180,6 +180,42 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(direct.request.messages.first?.role, .system)
     }
 
+    /// The coordinator normalizes a `{}` or boolean subschema into the
+    /// reserved marker. Only a caller that trusts schema metadata (the
+    /// coordinator path) admits it; a local request's marker is forged.
+    func testSchemaMetadataIsAdmittedOnlyWhenTrusted() throws {
+        func body(_ x: String) -> Data {
+            Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID
+                + #"","messages":[{"role":"user","content":"q"}],"tools":[{"type":"function","function":{"name":"set","parameters":{"type":"object","properties":{"x":"#
+                + x + "}}}}]}").utf8)
+        }
+        let marked = body(#"{"type":"string","x-darkbloom-original-boolean-schema":true}"#)
+        let forged = MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "tool schema contains reserved internal metadata")
+        XCTAssertThrowsError(try NemotronSuperRequestPlan(body: marked)) {
+            XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, forged)
+        }
+        let local = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: marked)
+        XCTAssertThrowsError(try NemotronSuperRequestPlan(body: marked, formatted: local)) {
+            XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, forged)
+        }
+        let template = try XCTUnwrap(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                          options: .ignoreUnknownCharacters))
+        let trusted = try NemotronSuperRequestPlan(body: marked, trustsSchemaMetadata: true)
+        let prompt = SuperVideoTextTokenizer.text(try trusted.textPromptTokens(body: marked,
+            templateBytes: template, tokenizer: SuperVideoTextTokenizer()))
+        XCTAssertTrue(prompt.contains("<name>x</name>"), prompt)
+        var output = try NemotronSuperLocalOutput(plan: trusted, streaming: true)
+        XCTAssertEqual(try stream(&output, [
+            "</think><tool_call>\n<function=set>\n<parameter=x>\nhi\n</parameter>\n</function>\n</tool_call>"]),
+            [#"F:set{"x":"hi"}"#])
+        // A local client's unmarked `{}` is decoded without normalization and serves.
+        let plain = body("{}")
+        let unmarked = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: plain)
+        XCTAssertNoThrow(try NemotronSuperRequestPlan(body: plain, formatted: unmarked).textPromptTokens(
+            body: plain, templateBytes: template, tokenizer: SuperVideoTextTokenizer()))
+    }
+
     func testCollectorRejectsTruncationAndMissingTerminal() async throws {
         let missing = NemotronSuperOutputCollector(try output(streaming: false))
         await missing.accept(.chunk("partial"))

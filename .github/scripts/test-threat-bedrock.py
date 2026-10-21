@@ -84,6 +84,47 @@ class BedrockTests(unittest.TestCase):
             self.assertNotIn(private, ledger)
         self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 0)
         self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 12)
+        self.assertEqual(self.calls.metrics()["bedrock_cache_read_input_tokens"], 0)
+        self.assertEqual(self.calls.metrics()["bedrock_cache_write_input_tokens"], 0)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_sol_cache_input_usage_is_preserved_in_ledger_metrics_and_report(self):
+        # Token counts from the bounded local Sol response; no content retained.
+        self.payload["model"] = SOL
+        self.client.response["usage"] = {"inputTokens": 2, "outputTokens": 123,
+                                         "cacheReadInputTokens": 0, "cacheWriteInputTokens": 2093}
+        self.invoke()
+        self.client.response["usage"] = {"inputTokens": 3, "outputTokens": 40,
+                                         "cacheReadInputTokens": 2093, "cacheWriteInputTokens": 0}
+        self.invoke()
+        metrics = self.calls.metrics()
+        self.assertEqual(metrics["bedrock_input_tokens"], 5)
+        self.assertEqual(metrics["bedrock_cache_read_input_tokens"], 2093)
+        self.assertEqual(metrics["bedrock_cache_write_input_tokens"], 2093)
+        self.assertEqual(metrics["bedrock_output_tokens"], 163)
+        self.assertEqual(metrics["bedrock_unknown_usage"], 0)
+        rows = [json.loads(line) for line in self.path.read_text().splitlines()]
+        responses = [row for row in rows if row["event"] == "response"]
+        self.assertEqual(responses[0]["cache_write_input_tokens"], 2093)
+        self.assertEqual(responses[1]["cache_read_input_tokens"], 2093)
+        body = status_body("example/repo", "a" * 40, "b" * 40, "b" * 40, metrics, {})
+        self.assertIn("5 uncached + 2093 cache-read + 2093 cache-write input / 163 output tokens", body)
+
+    def test_legacy_snapshot_does_not_invent_zero_cache_usage(self):
+        metrics = self.calls.metrics()
+        del metrics["bedrock_cache_read_input_tokens"], metrics["bedrock_cache_write_input_tokens"]
+        body = status_body("example/repo", "a" * 40, "b" * 40, "b" * 40, metrics, {})
+        self.assertIn("unavailable cache input", body)
+
+    def test_invalid_cache_usage_remains_unknown_without_fallback(self):
+        for field in ("cacheReadInputTokens", "cacheWriteInputTokens"):
+            for invalid in (None, True, -1, "2", 1.5):
+                with self.subTest(field=field, invalid=invalid):
+                    self.client.response["usage"] = {"inputTokens": 2, "outputTokens": 123, field: invalid}
+                    with self.assertRaises(ReviewUnavailable):
+                        self.invoke()
+        self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 10)
+        self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 0)
         self.assertEqual(self.calls.fallback.calls, [])
 
     def test_explicit_availability_rejection_uses_backup_once(self):

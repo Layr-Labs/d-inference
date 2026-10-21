@@ -974,6 +974,46 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("Review not completed", body)
         self.assertFalse(self.service.calls)
 
+    def assert_fallback_accounting_halts_recovered_primary(self, mode):
+        def fallback(body):
+            response = self.service.completion(body, [fixtures.FINDING], cost=2 if mode == "overrun" else 0.01)
+            if mode == "missing":
+                response["usage"].pop("cost")
+            return response
+        self.service.reply = fallback
+        if mode == "reconciliation":
+            def failed_settlement(*args):
+                raise APIError(403)
+            self.service.state.settle = failed_settlement
+        native_calls = 0
+        def reply(request):
+            nonlocal native_calls
+            native_calls += 1
+            if native_calls == 1:
+                error = RuntimeError("synthetic unavailability")
+                error.response = {"Error": {"Code": "ServiceUnavailableException"}}
+                raise error
+            return self.bedrock_response(request)  # recovery must not bypass stop
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(self.service.calls), 1)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertFalse(report["review"]["integration_completed"])
+        self.assertEqual(report["review"]["findings"][0]["title"], fixtures.FINDING["title"])
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertEqual(saved["review"]["findings"], report["review"]["findings"])
+        self.assertIn(fixtures.FINDING["title"], body)
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "REVIEW_BUDGET_STOPPED")
+
+    def test_missing_fallback_cost_stops_recovered_bedrock_and_retains_findings(self):
+        self.assert_fallback_accounting_halts_recovered_primary("missing")
+
+    def test_failed_fallback_settlement_stops_recovered_bedrock_and_retains_findings(self):
+        self.assert_fallback_accounting_halts_recovered_primary("reconciliation")
+
+    def test_fallback_overrun_stops_recovered_bedrock_and_retains_findings(self):
+        self.assert_fallback_accounting_halts_recovered_primary("overrun")
+
     def test_bedrock_truncation_preserves_code_request_identity_and_no_clearance(self):
         def reply(request):
             response = self.bedrock_response(request)

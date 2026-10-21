@@ -59,8 +59,16 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
         body += (f"\n\nSaved report contains {len(snapshot.get('findings', []))} finding(s) and "
                  f"{len(snapshot.get('limited_files', []))} file(s) requiring manual review.")
     if "bedrock_requests" in snapshot:
+        # Older saved snapshots have no cache breakdown: keep that explicitly
+        # unavailable instead of presenting unrecorded input as zero.
+        cache_input = (f"{snapshot['bedrock_cache_read_input_tokens']} cache-read + "
+                       f"{snapshot['bedrock_cache_write_input_tokens']} cache-write"
+                       if all(key in snapshot for key in ("bedrock_cache_read_input_tokens",
+                                                          "bedrock_cache_write_input_tokens"))
+                       else "unavailable cache")
         body += (f"\n\nBedrock: {snapshot['bedrock_requests']} request(s), "
-                 f"{snapshot['bedrock_input_tokens']} input / {snapshot['bedrock_output_tokens']} output tokens; "
+                 f"{snapshot['bedrock_input_tokens']} uncached + {cache_input} input / "
+                 f"{snapshot['bedrock_output_tokens']} output tokens; "
                  f"{snapshot['bedrock_unknown_usage']} request(s) with unknown usage. "
                  f"OpenRouter backup used {snapshot['openrouter_fallbacks']} time(s). "
                  "Dollar amounts above cover OpenRouter only; AWS billing is reconciled separately.")

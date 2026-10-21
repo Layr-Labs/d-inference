@@ -149,6 +149,7 @@ in addition to the original schema in the prompt. `structured_output.py` project
 unsupported length/count/numeric bounds into descriptions for the provider; local
 validation still enforces every original bound, coverage ID, citation and review
 decision. Empty or whitespace-only analysis is invalid even for a clean batch.
+Finding title/detail limits count raw characters, including whitespace padding.
 Sol also sets the required `additionalModelRequestFields.text.format.strict=true`
 ([AWS model contract](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html));
 that model-specific field is not sent to Claude.
@@ -161,7 +162,15 @@ same model once through OpenRouter, with its existing durable caps below. Each
 switch is recorded and visible in the comment. Whole-scan deadlines, ambiguous
 transport failures, refusals, truncation and invalid model responses never
 trigger fallback. Budget exhaustion cannot be bypassed through the backup.
+Missing backup cost, failed settlement or a cost overrun stops the entire
+attempt, including a subsequently recovered Bedrock primary; validated findings
+are retained before stopping.
 Source, prompts, reasoning and keys are excluded from AWS usage records.
+Reports and usage records preserve uncached, cache-read and cache-write input
+tokens separately using the [Converse usage fields](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_TokenUsage.html).
+Sol can place nearly all input in cache-write usage; `inputTokens` alone does not
+represent that input. Invalid cache counts leave usage unknown, and older saved
+reports without a cache breakdown show it as unavailable.
 Unknown usage stays unknown; Bedrock token totals are not presented as actual
 dollars. No external gateway or long-lived AWS credential is used.
 
@@ -273,6 +282,14 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    These artifacts are content-free diagnostics suitable for a public repository,
    not raw-response recordings; use the AWS request ID with authorized provider
    diagnostics when additional evidence is needed.
+
+`BEDROCK_CALL_LIMIT` is a workload limit, not a model-format failure. Count source,
+integration and selected depth calls together: a clean PR with eleven Sonnet
+source batches, one Sonnet integration, eight Opus batches and one Sol batch plus
+integration needs 22 calls. It cannot complete under the default 12-call limit.
+Changing `BEDROCK_SCAN_MAX_CALLS` is a maintainer spending decision and does not
+require another code PR; the 15-minute scan deadline and request/output limits
+still apply. More capacity does not prove a scan will finish or be clean.
 
 The local artifact is atomically refreshed before provider calls and remote
 checkpoints. An interrupted run can retain the last model, stage, batch and

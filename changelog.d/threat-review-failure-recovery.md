@@ -8,3 +8,7 @@
   distinguish state, GitHub and OpenRouter failures in content-free diagnostics.
 - Give final integration reviewers bounded exact source evidence from their own
   reviewed scope, retaining explicit omissions and human-review decisions.
+- Preserve Bedrock cache-read/write input accounting and enforce finding-text
+  limits on raw characters, including whitespace padding.
+- Stop further model calls after backup cost-accounting failures even if the
+  primary provider recovers, retaining validated findings.

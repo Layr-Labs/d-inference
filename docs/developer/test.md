@@ -407,6 +407,10 @@ State tests reproduce shared-branch conflicts between different report files,
 cache immutability, bounded recovery and refusal to retry ambiguous writes.
 Request tests verify native schema projection preserves local bounds; workflow
 tests keep current trusted scanner code separate from pinned threat-model data.
+Bedrock usage tests preserve Sol cache-write input and reject malformed cache
+counts; finding-text tests enforce raw character limits including padding.
+Lifecycle tests ensure failed backup accounting also stops a recovered primary
+while preserving already validated findings.
 Live smoke tests establish model compatibility separately.
 
 From the repository root:

@@ -46,6 +46,7 @@ class BedrockCalls:
         self.limit = bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100)
         self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS", 4096, 256, 16384)
         self.calls = self.fallbacks = self.input_tokens = self.output_used = 0
+        self.cache_read_input_tokens = self.cache_write_input_tokens = 0
         self.unknown = 0
         self.ledger = Path(env["BEDROCK_SCAN_USAGE_FILE"])
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +81,10 @@ class BedrockCalls:
 
     def __call__(self, endpoint, key, payload):
         self.last_request = {}
+        if self.stopped:
+            # Unknown/rejected backup accounting halts the whole attempt, even
+            # if the primary provider has recovered before the next batch.
+            raise BudgetStopped(self.stopped)
         self.alive()
         if self.calls >= self.limit:
             error = BudgetStopped("Bedrock request allowance reached; no fallback around the limit")
@@ -147,15 +152,23 @@ class BedrockCalls:
         if not isinstance(usage, dict):
             usage = {}
         incoming, outgoing = usage.get("inputTokens"), usage.get("outputTokens")
-        known = all(type(v) is int and v >= 0 for v in (incoming, outgoing))
+        # Cache tokens are separate input categories in Converse usage. Sol can
+        # report nearly all input as cache writes, even on its first request.
+        cache_read = usage.get("cacheReadInputTokens", 0)
+        cache_write = usage.get("cacheWriteInputTokens", 0)
+        known = all(type(v) is int and v >= 0 for v in (incoming, outgoing, cache_read, cache_write))
         self.record(event="response", model=alias, usage_unknown=not known,
                     input_tokens=incoming if known else None, output_tokens=outgoing if known else None,
+                    cache_read_input_tokens=cache_read if known else None,
+                    cache_write_input_tokens=cache_write if known else None,
                     **{key: value for key, value in self.last_request.items() if key != "call"})
         if not known:
             raise ReviewFailure("Bedrock usage missing; no complete result", "BEDROCK_USAGE_MISSING")
         self.unknown -= 1
         self.input_tokens += incoming
         self.output_used += outgoing
+        self.cache_read_input_tokens += cache_read
+        self.cache_write_input_tokens += cache_write
         if response.get("stopReason") != "end_turn":
             raise ReviewFailure("Bedrock response incomplete or refused; no automatic fallback",
                                 "BEDROCK_RESPONSE_INCOMPLETE")
@@ -171,4 +184,6 @@ class BedrockCalls:
     def metrics(self):
         return {**self.fallback.metrics(), "bedrock_requests": self.calls,
                 "bedrock_unknown_usage": self.unknown, "bedrock_input_tokens": self.input_tokens,
+                "bedrock_cache_read_input_tokens": self.cache_read_input_tokens,
+                "bedrock_cache_write_input_tokens": self.cache_write_input_tokens,
                 "bedrock_output_tokens": self.output_used, "openrouter_fallbacks": self.fallbacks}

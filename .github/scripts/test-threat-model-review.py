@@ -101,10 +101,16 @@ class ReviewTests(unittest.TestCase):
         _, evidence, _ = prepare(THREAT, FILES)
         mutations = [{"line": 99}, {"file": "unseen.go"}, {"line": True}, {"side": "other"},
                      {"severity": "critical"}, {"threat_ids": ["T-999"]}, {"title": ""},
-                     {"detail": "x" * 1601}]
+                     {"detail": "x" * 1601}, {"title": " " * 160 + "x"},
+                     {"detail": "x" + "\n" * 1600}]
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(ReviewUnavailable):
                 validate_findings({"findings": [dict(FINDING, **mutation)]}, evidence, THREAT)
+
+    def test_finding_text_bounds_count_raw_characters(self):
+        _, evidence, _ = prepare(THREAT, FILES)
+        finding = dict(FINDING, title=" " * 159 + "x", detail="x" + "\n" * 1599)
+        self.assertEqual(validate_findings({"findings": [finding]}, evidence, THREAT), [finding])
 
     def test_all_canonical_id_families_survive_full_scan(self):
         threat_model = """adversaries:

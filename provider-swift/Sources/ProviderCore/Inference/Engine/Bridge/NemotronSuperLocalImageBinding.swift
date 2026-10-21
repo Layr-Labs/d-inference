@@ -42,7 +42,10 @@ actor NemotronSuperLocalImageBinding {
                                     contextLength: contextLength)
     }
 
-    /// `cacheScope` partitions prefix reuse as for text (nil: none).
+    #if DEBUG
+    /// TEST SEAM (debug builds only): pre-normalized input, which no
+    /// production caller supplies. `cacheScope` partitions prefix reuse as
+    /// for text (nil: none).
     func run(request: ChatCompletionRequest, input: Input, cacheScope: String? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !closing else { throw Failure.closed }
@@ -68,6 +71,7 @@ actor NemotronSuperLocalImageBinding {
         }
         try await settle(task, reservations: [mediaReservationID])
     }
+    #endif
 
     /// Inline base64 media under one of `admittedDataURIPrefixes` (images) or
     /// `admittedVideoDataURIPrefixes` (one video), rendered with this exact

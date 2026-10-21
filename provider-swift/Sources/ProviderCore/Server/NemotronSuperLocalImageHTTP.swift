@@ -5,8 +5,9 @@ import MLXLMServer
 import MLXVLM
 
 /// The Super chat route over one loaded owner. Text renders with the owner's
-/// own tokenizer and runs on its text binding; inline images run on the
-/// owner's image binding, target-only when the owner speculates for text.
+/// own tokenizer and runs on its text binding; inline images, or one inline
+/// video, run on the owner's image binding, target-only when the owner
+/// speculates for text.
 /// Both stream through the reference reasoning, tool and structured-output
 /// parsers. The qualification runner installs `service` on the local HTTP
 /// stack (`LocalInferenceHTTP` plumbs it); a managed provider slot serves
@@ -162,7 +163,7 @@ enum SuperHTTPErrors {
             case .closed, .retainedFault:
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidInput:
-                return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline image request")
+                return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline media request")
             case .invalidFeatures:
                 return MultiModelBatchSchedulerEngineError.generationFailed("native image features were not finite")
             }
@@ -188,6 +189,9 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.generationFailed("native output handling failed")
             }
         }
+        if error is NemotronSuperVideoDecode.Failure || error is NemotronSuperVideoPreprocessing.Failure {
+            return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
+        }
         if error is DecodingError || error is NemotronSuperImageDecode.Failure
             || error is NemotronSuperImagePreprocessing.Failure || error is MediaIngest.MediaError
             || error is NemotronSuperPromptContract.Failure || error is NemotronSuperRequestPlan.Failure
@@ -199,7 +203,7 @@ enum SuperHTTPErrors {
     }
 
     private static func invalidRequest(media: Bool) -> Error {
-        media ? MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline image request")
+        media ? MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline media request")
             : MultiModelBatchSchedulerEngineError.invalidToolPayload(
                 "unsupported or contradictory Nemotron Super request")
     }

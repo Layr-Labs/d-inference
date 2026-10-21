@@ -288,12 +288,13 @@ enum NemotronSuperServingPolicy {
     }
 
     /// LOAD quotes of the pinned checkpoint, header-derived and recorded from
-    /// its verified shards: the installation's resident payload and staging
-    /// (including `backendAllowanceBytes`), and the embedded head's payload and
+    /// its verified shards: the installation's resident payload (the tower's
+    /// video embedder included) and staging (including
+    /// `backendAllowanceBytes`), and the embedded head's payload and
     /// construction allowance. The managed load recomputes them and claims
     /// `NemotronSuperLoadClaim.bytes`: both payloads and the larger transient.
-    static let pinnedInstallationPayloadBytes: UInt64 = 73_213_230_600
-    static let pinnedInstallationStagingBytes: UInt64 = 8_887_435_264
+    static let pinnedInstallationPayloadBytes: UInt64 = 73_217_162_760
+    static let pinnedInstallationStagingBytes: UInt64 = 8_903_163_904
     static let pinnedHeadPayloadBytes: UInt64 = 1_769_654_296
     static let pinnedHeadConstructionBytes: UInt64 = 7_078_617_184
     static var pinnedInstallationLoadBytes: UInt64 { pinnedInstallationPayloadBytes + pinnedInstallationStagingBytes }
@@ -390,5 +391,48 @@ enum NemotronSuperServingPolicy {
         let tokens = UInt64(min(imageCount * grid.tokens, contextTokens))
         return ingress + UInt64(imageCount) * maximumImageDecodeBytes + encodedCopies
             + tokens * mediaBytesPerVisualToken + activation
+    }
+
+    // MARK: - Video media charge
+
+    /// Coded frame ceiling of the video binding: 4096 x 2160 (DCI 4K; UHD and
+    /// both portrait forms fit).
+    static let maximumVideoFramePixels = 4_096 * 2_160
+    /// Decoder working set per coded pixel: the MiMo AVAssetReader sampler's
+    /// 32-byte transient and the frame's RGB8 copy.
+    static let videoDecodeBytesPerCodedPixel: UInt64 = 32 + 3
+    /// The sampler's fixed 1 MiB allowance and the SDK's 256 MiB per-frame
+    /// normalization budget.
+    static let videoDecodeAllowanceBytes: UInt64 = (1 << 20) + (256 << 20)
+    /// Per projected row of a tubelet (4,096 wide, charged as Float32): the
+    /// batch outputs, their concatenation and the gathered kept rows.
+    static let videoBytesPerFeatureRow: UInt64 = 3 * 4_096 * 4
+    /// Per row of an EVS scoring window (4,096 wide, BF16 features): the
+    /// window's concatenated copy (2 bytes an element), its FP32 promotion
+    /// and square (8), the unit rows (2), their pairwise products (2) and
+    /// the products' FP32 cast (4).
+    static let videoScoringBytesPerRow: UInt64 = 18 * 4_096
+    /// Frame grid ceiling of the video binding. `frameGrid` targets 1,024
+    /// patches, but its rounding reaches 1,056 for aspect ratios up to 4:1
+    /// and 1,080 up to 16:1; only more extreme ratios exceed 1,088 (272 rows
+    /// per tubelet), and they are refused.
+    static let maximumVideoGridPatches = 1_088
+
+    /// Upper bound of what the binding reserves from the shared ledger for
+    /// one encoded video request (the only media of its request): the ingress
+    /// quote at the largest body and `NemotronSuperLocalImageBinding.videoChargeBytes`
+    /// at the largest body, coded frame, frame grid (32 x 34 patches) and
+    /// sampled frame count. It stays within one largest image's charge
+    /// (`mediaChargeBytes(imageCount: 1)`), so the discovery footprint and a
+    /// one-part quote hold a video. nil when the binding refuses those maxima.
+    static var videoMediaChargeBytes: UInt64? {
+        guard let ingress = try? NemotronSuperLocalImageBinding.encodedHeaderQuote(
+                bodyBytes: maximumEncodedBodyBytes, templateBytes: pinnedTemplateBytes),
+            let video = try? NemotronSuperLocalImageBinding.videoChargeBytes(
+                encodedBytes: maximumEncodedBodyBytes / 4 * 3, codedPixels: maximumVideoFramePixels,
+                patchRows: 32, patchColumns: maximumVideoGridPatches / 32,
+                tubelets: (NemotronSuperVideoPreprocessing.maximumFrames + 1) / 2)
+        else { return nil }
+        return ingress + video
     }
 }

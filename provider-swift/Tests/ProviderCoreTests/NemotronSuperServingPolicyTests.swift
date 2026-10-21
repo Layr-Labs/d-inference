@@ -468,24 +468,24 @@ struct NemotronSuperServingPolicyTests {
     @Test func discoveryFootprintCoversTheLargestDefaultLoadAndOneImage() throws {
         // The ship-check claim at a 28 GiB grant: installation, head and grant.
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
-            + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_013_708_416)
+            + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_033_369_216)
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
         // Media is a serving reservation, not LOAD transient. The LOAD claim
         // holds both payloads and the larger of the two sequential transients
-        // (the installation's 8,887,435,264-byte staging, not the head's
+        // (the installation's 8,903,163,904-byte staging, not the head's
         // 7,078,617,184-byte construction), which runs in the serving room
         // (lane, admission KV, one image) before anything is served.
-        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_870_320_160)
-        #expect(footprint.nativeLoadTransientBytes == 8_860_131_920)
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_889_980_960)
+        #expect(footprint.nativeLoadTransientBytes == 8_879_792_720)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
         let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: 2048))
         let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
         let serving = lane + admission + media
-        #expect(serving > 8_887_435_264)
-        let expected = Double(73_213_230_600 + 1_769_654_296 + serving) / 1_073_741_824
+        #expect(serving > 8_903_163_904)
+        let expected = Double(73_217_162_760 + 1_769_654_296 + serving) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        // 93.142 GiB at 65,536 tokens; the served 262,144 adds exactly 4.5 GiB of history copies.
-        #expect(abs(footprint.estimatedMemoryGb - 97.642_094_161_361_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
+        // 93.146 GiB at 65,536 tokens; the served 262,144 adds exactly 4.5 GiB of history copies.
+        #expect(abs(footprint.estimatedMemoryGb - 97.645_756_270_736_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         // The plain owner's scan-time equivalent (no head, no bank) is smaller.
@@ -547,9 +547,9 @@ struct NemotronSuperServingPolicyTests {
         }
         // The pinned checkpoint: the plain claim is unchanged; speculation adds
         // the head's payload, not its construction (below the staging).
-        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false) == 82_100_665_864)
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false) == 82_120_326_664)
         #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true)
-            == 82_100_665_864 + 1_769_654_296)
+            == 82_120_326_664 + 1_769_654_296)
     }
 
     private static let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)

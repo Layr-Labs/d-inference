@@ -150,9 +150,10 @@ extension NemotronSuperManagedSlotTests {
     }
 
     /// One image request runs at a time per owner: a second concurrent image
-    /// gets 429 before any response and holds nothing; video gets 400.
+    /// gets 429 before any response and holds nothing; a video that is not a
+    /// movie gets 400 from the shared inline ingest.
     @Test(.timeLimit(.minutes(3)))
-    func concurrentImageIsRefusedWith429AndVideoWith400() async throws {
+    func concurrentImageIsRefusedWith429AndInvalidVideoWith400() async throws {
         let fixture = try await Self.fixture(mode: .auto)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let loop = fixture.loop, script = fixture.script

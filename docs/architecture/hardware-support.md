@@ -19,14 +19,14 @@ checkpoint does not waive that policy. Sources:
 
 The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
 claims, before allocation, the pinned checkpoint's resident installation and
-head payloads (73,213,230,600 and 1,769,654,296 bytes), the owner's serving
+head payloads (73,217,162,760 and 1,769,654,296 bytes), the owner's serving
 room and only the part of its load transient beyond that room
 (`NemotronSuperLoadClaim`). The serving room is the 8.5 GiB owner-wide prefill
 lane, any prefix bank and `NemotronSuperServingPolicy.admissionKVBytes` of KV
 headroom: 15.7 GiB for eight speculative requests at the served 262,144-token
 context (576 MiB of fixed bytes per request, the speculating owner's 9.87 GB of
 round work once, and 2 GiB; 11.2 GiB at 65,536 tokens). The transient is the larger of the installation's
-staging with its 2 GiB backend allowance (8,887,435,264 bytes) and the head's
+staging with its 2 GiB backend allowance (8,903,163,904 bytes) and the head's
 construction allowance (7,078,617,184 bytes), never both, because each phase
 returns its freed buffers from MLX's cache before the next phase or serving
 uses that room; for the default configuration the room is larger, so the
@@ -35,7 +35,8 @@ resident payloads plus the serving room with the worst-case media reservation
 of one single-image request (`NemotronSuperServingPolicy.mediaChargeBytes`,
 3.62 GiB: a 64 Mi-pixel decode workspace, the encoded body copies, a
 13,312-patch image's tokens and its tower and projector bound), so a loaded
-slot can serve an image at once. With Super's measured 2 GiB activation floor
+slot can serve an image at once, or a video, whose largest charge
+(`NemotronSuperServingPolicy.videoMediaChargeBytes`, 3.49 GiB) is smaller. With Super's measured 2 GiB activation floor
 (below) and 1 GiB minimum KV the load gate needs 100.6 GiB under the 90% cap: at
 least 111.8 GiB (120.1 GB) of physical memory before macOS and other processes
 take any. A 128 GB Mac (115.2 GiB cap) therefore admits the default load with

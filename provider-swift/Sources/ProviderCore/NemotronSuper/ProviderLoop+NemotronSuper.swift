@@ -240,6 +240,8 @@ extension ProviderLoop {
         case NemotronSuperLocalLoad.Failure.identity: return "checkpoint identity is not pinned"
         case NemotronSuperLocalBridgeBuilder.Failure.loadAdmissionLost:
             return "the LOAD claim no longer fit after installation"
+        case NemotronSuperLocalBridgeBuilder.Failure.invalidVideoPruning:
+            return "\(NemotronSuperVideoFeatures.pruningKey) is not a rate in [0, 1)"
         case NemotronSuperLocalPrefill.Failure.laneRefused: return "insufficient memory for the prefill lane"
         case NemotronSuperLocalKVBackend.Failure.decodeRowsRefused:
             return "insufficient memory for the decode rows"

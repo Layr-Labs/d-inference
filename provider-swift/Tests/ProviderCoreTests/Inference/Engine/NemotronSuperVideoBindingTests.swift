@@ -1,0 +1,314 @@
+// Copyright © 2026 Eigen Labs.
+import Foundation
+import MLX
+import MLXLMCommon
+import Testing
+@testable import MLXVLM
+@testable import ProviderCore
+
+/// The Super owner's one-video path: request admission, the tubelet prompt
+/// layout, the media charge and its quote, error mapping, and a synthesized
+/// MP4 served end to end on the tiny installed fixture.
+struct NemotronSuperVideoBindingTests {
+    private typealias Binding = NemotronSuperLocalImageBinding
+    private typealias Policy = NemotronSuperServingPolicy
+    private typealias VideoPrompt = NemotronSuperPromptContract.VideoPrompt
+
+    private static let mp4 = "data:video/mp4;base64,AAAAGGZ0eXA="
+    private static let png = "data:image/png;base64,iVBORw0KGgo="
+
+    private static func video(_ uri: String = mp4) -> [String: Any] {
+        ["type": "video_url", "video_url": ["url": uri]]
+    }
+    private static func image(_ uri: String = png) -> [String: Any] {
+        ["type": "image_url", "image_url": ["url": uri]]
+    }
+    private static func text(_ text: String) -> [String: Any] { ["type": "text", "text": text] }
+
+    private static func body(_ messages: [[String: Any]], extras: [String: Any] = [:]) throws -> Data {
+        var value: [String: Any] = ["model": NemotronSuperLocalBinding.modelID, "messages": messages]
+        for (key, item) in extras { value[key] = item }
+        return try JSONSerialization.data(withJSONObject: value)
+    }
+    private static func user(_ parts: [[String: Any]]) -> [String: Any] { ["role": "user", "content": parts] }
+
+    private static func template() throws -> Data {
+        try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
+    }
+
+    @Test func encodedBodyAdmitsOneVideoAsTheOnlyMedia() throws {
+        for uri in [Self.mp4, "data:video/quicktime;base64,AAAA"] {
+            let parsed = try Binding.parseEncodedBody(Self.body([Self.user([Self.text("what happens?"), Self.video(uri)])]))
+            #expect(parsed.video == uri && parsed.images.isEmpty)
+        }
+        let refused: [[[String: Any]]] = [
+            [Self.user([Self.video(), Self.video()])],
+            [Self.user([Self.video()]), Self.user([Self.video()])],
+            [Self.user([Self.video(), Self.image()])],
+            [Self.user([Self.image(), Self.video()])],
+            [Self.user([Self.video("data:video/webm;base64,AAAA")])],
+            [Self.user([Self.video("data:video/MP4;base64,AAAA")])],
+            [Self.user([Self.video("data:video/mp4,AAAA")])],
+            [Self.user([Self.video("https://example.invalid/clip.mp4")])],
+            [Self.user([Self.video("file:///tmp/clip.mp4")])],
+        ]
+        for messages in refused {
+            #expect(throws: Binding.Failure.unsupportedCapability) {
+                try Binding.parseEncodedBody(Self.body(messages))
+            }
+        }
+        #expect(throws: Binding.Failure.invalidInput) {
+            try Binding.parseEncodedBody(Self.body([Self.user([Self.text("no media")])]))
+        }
+    }
+
+    /// Labels, `<img>` and `</img>` stay for every tubelet, including an odd
+    /// single-frame last tubelet and one whose rows were all pruned.
+    @Test func tubeletLayoutKeepsEveryLabelAndWrapper() throws {
+        let odd = VideoPrompt(prefix: [1, 2], labels: [[5, 6], [21, 5, 7], [21, 5, 8]], suffix: [3])
+        #expect(try odd.tokens(keptCounts: [2, 0, 1], contextLength: 64)
+            == [1, 2, 5, 6, 19, 18, 18, 20, 21, 5, 7, 19, 20, 21, 5, 8, 19, 18, 20, 3])
+        let even = VideoPrompt(prefix: [], labels: [[5], [21, 6]], suffix: [])
+        #expect(try even.tokens(keptCounts: [1, 2], contextLength: 64) == [5, 19, 18, 20, 21, 6, 19, 18, 18, 20])
+        // Any split of the kept rows has the same length, which is admitted
+        // before pruning chooses the split.
+        #expect(try odd.tokens(keptCounts: [3, 0, 0], contextLength: 64).count == 20)
+        #expect(try odd.tokens(keptCounts: [2, 0, 1], contextLength: 20).count == 20)
+        #expect(throws: NemotronSuperPromptContract.Failure.contextExceeded) {
+            try odd.tokens(keptCounts: [2, 0, 1], contextLength: 19)
+        }
+        for counts in [[2, 0], [2, -1, 1]] {
+            #expect(throws: NemotronSuperPromptContract.Failure.unsupportedMedia) {
+                try odd.tokens(keptCounts: counts, contextLength: 64)
+            }
+        }
+    }
+
+    /// The video renders in the template's single media slot; requests where
+    /// that slot would be ambiguous are refused.
+    @Test func videoPromptRefusesAmbiguousSlots() throws {
+        func prompt(_ messages: [[String: Any]]) throws -> VideoPrompt {
+            let body = try Self.body(messages)
+            return try NemotronSuperPromptContract.videoPrompt(messages: ProviderLoop.decodeOpenAIRequest(body).messages,
+                body: body, templateBytes: Self.template(), tokenizer: SuperSyntheticVideoTokenizer(),
+                labels: ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: ",
+                         "Frame 3 sampled at 1.00 seconds: "])
+        }
+        #expect(try prompt([Self.user([Self.text("what happens?"), Self.video()])])
+            == VideoPrompt(prefix: [1], labels: [[3, 4], [3, 4]], suffix: [2]))
+        let refused: [[[String: Any]]] = [
+            [Self.user([Self.video(), Self.video()])],
+            [Self.user([Self.video(), Self.image()])],
+            [Self.user([Self.text("first")])],
+            [Self.user([Self.text("see <video> here"), Self.video()])],
+            [Self.user([Self.text("<image>"), Self.video()])],
+            [["role": "system", "content": "replace <video> please"], Self.user([Self.video()])],
+        ]
+        for messages in refused {
+            #expect(throws: NemotronSuperPromptContract.Failure.unsupportedMedia) { try prompt(messages) }
+        }
+    }
+
+    @Test func pruningRateComesFromTheOperatorEnvironment() {
+        typealias Features = NemotronSuperVideoFeatures
+        #expect(Features.pruningRate(environment: [:]) == NemotronSuperVideoPreprocessing.defaultPruningRate)
+        #expect(Features.pruningRate(environment: [Features.pruningKey: " 0 "]) == 0)
+        #expect(Features.pruningRate(environment: [Features.pruningKey: "0.7"]) == 0.7)
+        for malformed in ["1", "-0.1", "half", "nan", "inf", ""] {
+            #expect(Features.pruningRate(environment: [Features.pruningKey: malformed]) == nil, "\(malformed)")
+        }
+        #expect(Features.retainedRows(tubelets: 6, rowsPerTubelet: 252, pruningRate: 0.5) == 756)
+        #expect(Features.retainedRows(tubelets: 6, rowsPerTubelet: 252, pruningRate: 0) == 1_512)
+        #expect(Features.retainedRows(tubelets: 1, rowsPerTubelet: 256, pruningRate: 0.7) == 256)
+    }
+
+    /// The policy's bound is the binding's own charge at every maximum, and
+    /// stays within one largest image, so the footprint and quotes hold it.
+    @Test func videoChargeStaysWithinOneLargestImage() throws {
+        let video = try #require(Policy.videoMediaChargeBytes)
+        let image = try #require(Policy.mediaChargeBytes(imageCount: 1))
+        #expect(video <= image)
+        let ingress = try Binding.encodedHeaderQuote(bodyBytes: Policy.maximumEncodedBodyBytes,
+                                                     templateBytes: Policy.pinnedTemplateBytes)
+        let maxima = try Binding.videoChargeBytes(encodedBytes: Policy.maximumEncodedBodyBytes / 4 * 3,
+            codedPixels: Policy.maximumVideoFramePixels, patchRows: 32, patchColumns: 34, tubelets: 128)
+        #expect(video == ingress + maxima)
+        // 128 tubelets of 272 rows at 49,152 bytes, four tubelets' frames and
+        // activation, a five-tubelet scoring window at 73,728 bytes a row,
+        // the 4K decoder working set and two encoded copies.
+        #expect(Policy.videoScoringBytesPerRow == 73_728)
+        #expect(video == 3_751_221_756)
+        let colors = try Binding.videoChargeBytes(encodedBytes: 19_714, codedPixels: 640 * 360,
+                                                  patchRows: 24, patchColumns: 42, tubelets: 6)
+        #expect(colors < maxima)
+        #expect(try Binding.videoChargeBytes(encodedBytes: 19_714, codedPixels: 640 * 360,
+            patchRows: 24, patchColumns: 42, tubelets: 7) == colors + 252 * Policy.videoBytesPerFeatureRow)
+        // The scoring window grows with the first batch and its predecessor, then stays.
+        let four = try Binding.videoChargeBytes(encodedBytes: 19_714, codedPixels: 640 * 360,
+                                                patchRows: 24, patchColumns: 42, tubelets: 4)
+        #expect(try Binding.videoChargeBytes(encodedBytes: 19_714, codedPixels: 640 * 360,
+            patchRows: 24, patchColumns: 42, tubelets: 5)
+            == four + 252 * (Policy.videoBytesPerFeatureRow + Policy.videoScoringBytesPerRow))
+        for (rows, columns, tubelets) in [(34, 34, 1), (32, 33, 1), (24, 42, 129), (24, 42, 0)] {
+            #expect(throws: Binding.Failure.invalidInput) {
+                try Binding.videoChargeBytes(encodedBytes: 1, codedPixels: 1, patchRows: rows, patchColumns: columns,
+                                             tubelets: tubelets)
+            }
+        }
+        // A one-part probe may carry the one video: the larger charge applies.
+        let probe = CoordinatorMessage.CapacityProbe(quoteId: "q", model: Policy.modelID, promptTokensBucket: 512,
+            maxOutputTokens: 512, requiresVision: true, visionImageCount: 1, deadlineRemainingMs: 9000)
+        let model = ModelInfo(id: Policy.modelID, modelType: "nemotron_h_omni", sizeBytes: 1, estimatedMemoryGb: 1,
+                              isVision: true, templateRenderOK: true)
+        #expect(CapacityQuoteEngine.nemotronSuperMediaCharge(probe: probe, model: model)
+            == .charged(bytes: max(image, video), footprintBytes: image))
+    }
+
+    /// A real clip's plan admits its prompt at the pruned length and reserves
+    /// within the policy bound.
+    @Test func encodedPlanAdmitsThePrunedPromptWithinTheBound() async throws {
+        let golden = try NemotronSuperVideoFixtures.golden()
+        let clip = try #require(golden.clips.first { $0.file == "colors_16x9.mp4" })
+        let video = try await NemotronSuperVideoDecode.inspect(try NemotronSuperVideoFixtures.uri(clip.file))
+        let prompt = VideoPrompt(prefix: Array(repeating: 1, count: 8), labels: clip.labelTokenIds,
+                                 suffix: Array(repeating: 2, count: 13))
+        let length = 8 + 13 + clip.labelTokenIds.reduce(0) { $0 + $1.count + 2 } + 756
+        let plan = try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0.5, contextLength: length)
+        #expect(plan.featureBytes == 756 * 4096 * 4)
+        let ingress = try Binding.encodedHeaderQuote(bodyBytes: Policy.maximumEncodedBodyBytes,
+                                                     templateBytes: Policy.pinnedTemplateBytes)
+        #expect(ingress + plan.totalBytes <= (Policy.videoMediaChargeBytes ?? 0))
+        #expect(throws: Binding.Failure.capacity) {
+            try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0.5, contextLength: length - 1)
+        }
+        // Unpruned, every one of the 1,512 rows needs room.
+        #expect(throws: Binding.Failure.capacity) {
+            try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0, contextLength: length)
+        }
+    }
+
+    @Test func invalidVideosTakeTheInvalidMediaPath() {
+        let errors: [any Error] = [NemotronSuperVideoDecode.Failure.limit, NemotronSuperVideoDecode.Failure.invalidVideo,
+            NemotronSuperVideoDecode.Failure.unsupportedRepresentation,
+            NemotronSuperVideoPreprocessing.Failure.emptyVideo, MediaIngest.MediaError.mediaTooLarge("video"),
+            Binding.Failure.unsupportedCapability, Binding.Failure.invalidInput]
+        for error in errors {
+            let mapped = SuperHTTPErrors.map(error, media: true)
+            guard case .multimodalRejected? = mapped as? MultiModelBatchSchedulerEngineError else {
+                Issue.record("\(error) mapped to \(mapped)")
+                continue
+            }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(3))) func encodedVideoServesAndReleasesItsCharge() async throws {
+        let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+            channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
+        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: dimensions).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-encoded-video",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: TokenizerHandle(SuperSyntheticVideoTokenizer()), eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 1024, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        #expect(owner.videoPruningRate == NemotronSuperVideoPreprocessing.defaultPruningRate)
+        let media = try owner.localImageBinding()
+        let template = try Self.template()
+        // A square clip maps to the 32 x 32 patch grid the fixture tower's
+        // position table covers; an odd sampled count repeats its last frame.
+        let clip = try await MiMoEncodedMediaFixtures.video(frames: 10, fps: 4, width: 64, height: 64)
+        let uri = "data:video/mp4;base64," + clip.base64EncodedString()
+        let body = try Self.body([Self.user([Self.text("fixture"), Self.video(uri)])],
+            extras: ["max_tokens": 2, "temperature": 0])
+        // The layout's length: every tubelet's label and wrappers, and the
+        // rows EVS keeps, however they split.
+        let plan = try await NemotronSuperVideoDecode.inspect(uri)
+        let prompt = try owner.localVideoPrompt(body: body, templateBytes: template, labels: plan.labels)
+        let retained = NemotronSuperVideoFeatures.retainedRows(tubelets: plan.tubelets,
+            rowsPerTubelet: plan.grid.tokens, pruningRate: owner.videoPruningRate)
+        #expect(plan.tubelets > 1 && retained < plan.tubelets * plan.grid.tokens)
+        let length = try prompt.tokens(keptCounts: [retained] + Array(repeating: 0, count: plan.tubelets - 1),
+                                       contextLength: 1024).count
+        let baseline = await budget.outstandingReservedBytes()
+        let events = SuperVideoEvents()
+        try await media.runEncoded(body: body, templateBytes: template) { event in await events.record(event) }
+        #expect(await events.errors.isEmpty)
+        #expect(await events.completions == [2])
+        #expect(await events.prompts == [length])
+        #expect(await budget.outstandingReservedBytes() == baseline)
+        // The submission: one span per tubelet that kept rows, exactly over
+        // its `<image>` run, in a prompt laid out from the kept counts.
+        let frames = try await NemotronSuperVideoDecode.Frames(plan)
+        let prepared = try owner.prepareLocalVideo(frames, prompt: prompt,
+            maximumFeatureBytes: retained * 4096 * 4, construction: NativeConstructionScope())
+        var kept: [Int] = []
+        for token in prepared.promptTokens {
+            if token == 19 { kept.append(0) }
+            if token == 18, !kept.isEmpty { kept[kept.count - 1] += 1 }
+        }
+        #expect(kept.count == plan.tubelets && kept.reduce(0, +) == retained, "\(kept)")
+        #expect(try prepared.promptTokens == prompt.tokens(keptCounts: kept, contextLength: 1024))
+        #expect(prepared.promptTokens.count == length)
+        #expect(prepared.spans.count == kept.filter { $0 > 0 }.count)
+        #expect(prepared.spans.map(\.length) == kept.filter { $0 > 0 })
+        #expect(prepared.spans.allSatisfy { span in
+            span.tokenOffset > 0 && span.tokenOffset + span.length < prepared.promptTokens.count
+                && prepared.promptTokens[span.tokenOffset - 1] == 19
+                && prepared.promptTokens[span.tokenOffset ..< span.tokenOffset + span.length].allSatisfy { $0 == 18 }
+                && prepared.promptTokens[span.tokenOffset + span.length] == 20
+        })
+        #expect(prepared.embeddings.count == prepared.spans.count && prepared.mediaKind == .video)
+        // An undecodable movie is refused by the shared ingest before any
+        // frame decodes; its ingress charge is returned.
+        let broken = try Self.body([Self.user([Self.video(
+            "data:video/mp4;base64," + Data("not a movie".utf8).base64EncodedString())])])
+        await #expect(throws: MediaIngest.MediaError.self) {
+            try await media.runEncoded(body: broken, templateBytes: template) { _ in
+                Issue.record("refused video emitted an event")
+            }
+        }
+        #expect(await budget.outstandingReservedBytes() == baseline)
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+private actor SuperVideoEvents {
+    var errors: [String] = []
+    var prompts: [Int] = []
+    var completions: [Int] = []
+    func record(_ event: GenerationEvent) {
+        switch event {
+        case .chunk: break
+        case .info(let prompt, let count, _, _):
+            prompts.append(prompt)
+            completions.append(count)
+        case .error(let message): errors.append(message)
+        case .terminal(_, let message, _, _): errors.append(message)
+        }
+    }
+}
+
+/// Scripted tokenizer: the template renders one media slot, and every label
+/// encodes to two plain tokens inside the fixture's 32-token vocabulary.
+struct SuperSyntheticVideoTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [3, 4] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { String(repeating: "x", count: tokenIds.count) }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { "x" }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+                           additionalContext: [String: any Sendable]?) throws -> [Int] { [1, 18, 2] }
+    func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String) throws -> [Int] { [1, 18, 2] }
+    func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String,
+                           tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] {
+        [1, 18, 2]
+    }
+}

@@ -198,7 +198,8 @@ enum CapacityQuoteEngine {
     enum NemotronSuperMediaCharge: Equatable {
         /// Not a Super image probe: a text probe or another model.
         case notApplicable
-        /// More images than the Super image binding admits.
+        /// More images than the Super image binding admits, or a one-part
+        /// probe without a video bound.
         case refused
         /// The binding's worst-case reservation for the probe, and the
         /// single-image charge the discovery footprint already includes.
@@ -206,7 +207,10 @@ enum CapacityQuoteEngine {
     }
 
     /// Pure and Super-specific. A probe without an image count is charged
-    /// for the most images the binding admits.
+    /// for the most images the binding admits. The count is of media parts,
+    /// images and videos alike, so a one-part probe may be the binding's one
+    /// video and is charged the larger of the two; only such a probe needs
+    /// the video bound.
     static func nemotronSuperMediaCharge(
         probe: CoordinatorMessage.CapacityProbe, model: ModelInfo
     ) -> NemotronSuperMediaCharge {
@@ -214,10 +218,12 @@ enum CapacityQuoteEngine {
             NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
         else { return .notApplicable }
         let images = probe.visionImageCount > 0 ? probe.visionImageCount : NemotronSuperServingPolicy.maximumImages
-        guard let bytes = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images),
+        guard let imageBytes = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images),
             let single = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1)
         else { return .refused }
-        return .charged(bytes: bytes, footprintBytes: single)
+        guard images == 1 else { return .charged(bytes: imageBytes, footprintBytes: single) }
+        guard let video = NemotronSuperServingPolicy.videoMediaChargeBytes else { return .refused }
+        return .charged(bytes: max(imageBytes, video), footprintBytes: single)
     }
 
     private static func gib(_ bytes: UInt64) -> Double { Double(bytes) / 1_073_741_824 }

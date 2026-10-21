@@ -91,6 +91,55 @@ tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
+The same binding serves one inline video as the only media of a request
+(`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
+at a time, like images). Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
+container, duration, coded frame size up to
+`NemotronSuperServingPolicy.maximumVideoFramePixels`), then reads the
+compressed samples of the one video track as vLLM's OpenCV loader reads
+FFmpeg's metadata: the sample count (at most
+`NemotronSuperVideoDecode.maximumSourceFrames`, 36,000: ten minutes at 60 fps),
+and the rate as that count over the summed sample durations; as in FFmpeg, the
+last sample may have zero duration (no other may). The SDK's
+`NemotronSuperVideoPreprocessing` samples 2 frames per second (at most 256,
+`np.linspace` truncation), formats each tubelet's label and fixes one frame
+grid of about 1,024 patches; grids above
+`NemotronSuperServingPolicy.maximumVideoGridPatches` are refused.
+`NemotronSuperPromptContract.videoPrompt` renders the video in the template's
+single media slot (the template renders a lone video exactly as a lone image,
+but as plain `<video>` text) and tokenizes each label alone, later ones behind
+their `\n`, as vLLM's `get_video_repl`; every tubelet then contributes its label,
+`<img>`, one `<image>` per kept feature and `</img>`. EVS fixes the kept count,
+`max(N, int(T * N * (1 - q)))` (`NemotronSuperVideoFeatures.retainedRows`), so
+the prompt is admitted at its final length before any frame decodes. The whole
+charge (`NemotronSuperLocalImageBinding.videoChargeBytes`: two encoded copies,
+the decoder working set at the coded frame size, one batch of four tubelets'
+frames and tower activation, its five-tubelet EVS scoring window at
+`NemotronSuperServingPolicy.videoScoringBytesPerRow`, and three Float32 copies
+of every projected row) is then reserved; its maximum,
+`NemotronSuperServingPolicy.videoMediaChargeBytes`, stays below one largest
+image's charge. As for images, a prompt over the context, a body over
+`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) or a charge the
+shared budget cannot hold returns the media-memory 503.
+`NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
+frames and converts only the sampled ones (presentation order, the track's
+rotation applied, BGRA to RGB8), normalizing them with the image resize; an odd
+last frame repeats. `NemotronSuperVideoFeatures.prepare` runs
+`videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
+the installation's native setup, checking every evaluation with
+`throwIfMLXFaulted`, and keeps only projected rows. When
+`DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING` (default `0.5`, `0` keeps every row; a
+malformed value fails the load) prunes anything, each batch is scored with
+`NemotronSuperEVS.dissimilarity` behind the previous batch's last tubelet, since
+a token scores only against the same position of the previous tubelet; the
+host scores then select the kept rows. Each tubelet's kept rows are substituted
+at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
+rows were all pruned keeps its label and wrappers and has no span. Invalid,
+oversized or undecodable videos map to the invalid-media 400. AVFoundation's
+BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
+not equal to, the reference loader's.
+
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary
 roots, while failed completion retains resident objects and charges. Header-derived
@@ -241,7 +290,7 @@ Super manifest scanner also retains root `LICENSE.txt` and
 `UPSTREAM_README.md` notices in the download and integrity aggregate; adding
 these notices requires a new immutable artifact revision. Other model families'
 integrity inventories are unchanged. Managed `auto` enables text speculation;
-image requests automatically use the target-only path on that same owner.
+image and video requests automatically use the target-only path on that same owner.
 
 The provider serves exactly one Super artifact, `NemotronSuperServingPolicy.modelID`
 (`nvidia-nemotron-3.5-super`): the complete pinned NVIDIA NVFP4 checkpoint, embedded

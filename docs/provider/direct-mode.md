@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-21
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -196,9 +196,12 @@ every chat request for the Super model ID: text on the owner's text binding with
 its own tokenizer, and bounded inline images on the owner's image binding:
 `data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
 label, selects PNG or JPEG (see the
-[image format reference](../reference/nemotron-super-image-formats.md)).
+[image format reference](../reference/nemotron-super-image-formats.md)), or one
+`data:video/mp4;base64,` or `data:video/quicktime;base64,` video as the only
+media of the request ([managed slot](../architecture/inference.md#managed-nemotron-super-slot)).
 Image prompts carry the reference `<img>`, one `<image>` per visual feature,
-`</img>` span for each image.
+`</img>` span for each image; a video carries one per tubelet behind its
+frame-timestamp label.
 
 | Request control | Hook behavior |
 |---|---|
@@ -211,8 +214,9 @@ Image prompts carry the reference `<img>`, one `<image>` per visual feature,
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
+| A second video, a video with images, another container, an undecodable movie, frames above `4096 * 2160` pixels or an extreme aspect ratio | 400 before any frame decodes |
 
-Image requests still refuse `tools` and `response_format`; formats outside the
+Image and video requests still refuse `tools` and `response_format`; formats outside the
 image format reference are refused. The host calls the hook's `drain()` before the
 owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
 serving qualification.

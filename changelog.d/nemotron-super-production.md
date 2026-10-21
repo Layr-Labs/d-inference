@@ -6,8 +6,9 @@
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
   the resident checkpoint plus the larger of its load transient and the
   serving room (prefill lane, requests' KV headroom and one image request's
-  media charge; 97.6 GiB for the default configuration), and it advertises image input; capacity
-  quotes for image probes charge their images.
+  media charge; 97.6 GiB for the default configuration), and it advertises image and video
+  input; capacity quotes for media probes charge their images, a one-part
+  probe the larger of one image and one video.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
   re-slice, one LOAD claim covering the installation, the head, the
   speculating owner's round work once and the configured requests' KV
@@ -48,6 +49,17 @@
   on deployment engines instead of becoming NaN, so images whose embeddings
   exceed the text-calibrated scales are answered instead of decoding as
   `<unk>`; non-finite image features fail the request.
+- Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
+  `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
+  reference serving samples it: 2 frames per second, at most 256, paired into
+  tubelets with each pair's timestamps in the prompt, and EVS pruning of
+  redundant visual tokens at rate 0.5 (`DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING`,
+  `0` disables). Its media reservation (at most 3.5 GiB, below one largest
+  image's) is taken before any frame decodes; a second video, a video with
+  images, another container, frames above 4096 × 2160 pixels, more than
+  36,000 frames, extreme aspect ratios and undecodable movies are refused
+  with 400. The checkpoint's video
+  embedder is now loaded, adding 3,932,160 bytes to the resident installation.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
 - Plain decode steps of the Super owner commit larger Metal command buffers

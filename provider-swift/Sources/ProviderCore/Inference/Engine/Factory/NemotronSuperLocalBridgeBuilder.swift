@@ -14,6 +14,8 @@ enum NemotronSuperLocalBridgeBuilder {
         case unloaded, loadAdmissionLost, unsupportedSizing, retirementIncomplete
         /// `maxConcurrentKey` is malformed or above the owner's limit.
         case invalidConcurrency
+        /// `NemotronSuperVideoFeatures.pruningKey` is not a rate in [0, 1).
+        case invalidVideoPruning
     }
 
     /// Must be retained by the slot owner while its bridge is reachable. Transfer
@@ -32,6 +34,9 @@ enum NemotronSuperLocalBridgeBuilder {
         private var imageBinding: NemotronSuperLocalImageBinding?
         private var textBinding: NemotronSuperLocalBinding?
         private var imageFaults: [(NativeConstructionScope, WholeMacUnboundedActivity)] = []
+        /// Video arrays a failed fence left in flight; the SDK scope keeps its
+        /// own arrays, these stay with the owner until restart.
+        private var videoFaultArrays: [MLXArray] = []
         private var quarantine: Owner?
         private var localRequestsAdmitted = 0
         let speculates: Bool
@@ -56,6 +61,8 @@ enum NemotronSuperLocalBridgeBuilder {
         /// MTP admission) and reserved in the shared budget like the lane.
         let mtpRoundBytes: Int
         private let mtpRoundID: String?
+        /// EVS pruning rate of video requests (`NemotronSuperVideoFeatures.pruningKey`).
+        let videoPruningRate: Double
 
         fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
@@ -63,7 +70,7 @@ enum NemotronSuperLocalBridgeBuilder {
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
                          decodeRowsID: String?, decodeRowsBytes: Int,
-                         mtpRoundID: String?, mtpRoundBytes: Int) {
+                         mtpRoundID: String?, mtpRoundBytes: Int, videoPruningRate: Double) {
             self.bridge = bridge
             self.modelID = modelID
             self.installed = installed
@@ -75,6 +82,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
             self.decodeRowsID = decodeRowsID; self.decodeRowsBytes = decodeRowsBytes
             self.mtpRoundID = mtpRoundID; self.mtpRoundBytes = mtpRoundBytes
+            self.videoPruningRate = videoPruningRate
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -204,6 +212,60 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// The pinned template around the request's one video with this
+        /// owner's tokenizer, and the video's tubelet `labels` tokenized.
+        func localVideoPrompt(body: Data, templateBytes: Data,
+                              labels: [String]) throws -> NemotronSuperPromptContract.VideoPrompt {
+            return try lock.withLock {
+                guard closing == nil, imageFaults.isEmpty, installed != nil else {
+                    throw Failure.retirementIncomplete
+                }
+                let request = try ProviderLoop.decodeOpenAIRequest(body)
+                guard request.model == modelID,
+                    request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
+                    !labels.isEmpty, labels.count <= contextLength
+                else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
+                do {
+                    return try NemotronSuperPromptContract.videoPrompt(messages: request.messages, body: body,
+                        templateBytes: templateBytes, tokenizer: tokenizer.inner, labels: labels)
+                } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
+                    throw NemotronSuperLocalImageBinding.Failure.invalidInput
+                }
+            }
+        }
+
+        /// Decodes `frames` into the installed tower in bounded tubelet
+        /// batches, prunes the projected rows at `videoPruningRate` and
+        /// expands `prompt` with the kept rows. A failed fence keeps the
+        /// arrays it left in flight with this owner.
+        /// The lock covers only the admission check: frames decode and the
+        /// tower runs without it, so text admission and fault checks never
+        /// wait on a video. The installation cannot close meanwhile: this runs
+        /// inside the image binding's one active media task, which
+        /// `closeAfterDrain` awaits before `closeAfterRetirement`.
+        func prepareLocalVideo(_ frames: NemotronSuperVideoDecode.Frames,
+            prompt: NemotronSuperPromptContract.VideoPrompt, maximumFeatureBytes: Int,
+            construction: NativeConstructionScope
+        ) throws -> EngineV2VisionPrefill.PreparedSubmission {
+            let installation = try lock.withLock { () throws -> NemotronSuperInstallation.Installed in
+                guard closing == nil, imageFaults.isEmpty, let installed else {
+                    throw Failure.retirementIncomplete
+                }
+                return installed
+            }
+            var live: [MLXArray] = []
+            do {
+                return try NemotronSuperVideoFeatures.prepare(installed: installation, frames: frames,
+                    prompt: prompt, pruningRate: videoPruningRate, contextLength: contextLength,
+                    maximumFeatureBytes: maximumFeatureBytes, construction: construction, live: &live)
+            } catch {
+                if construction.snapshot.isRetainedFault {
+                    lock.withLock { videoFaultArrays.append(contentsOf: live) }
+                }
+                throw error
+            }
+        }
+
         func quarantineLocalImage(construction: NativeConstructionScope, activity: WholeMacUnboundedActivity) {
             lock.withLock {
                 imageFaults.append((construction, activity))
@@ -326,6 +388,9 @@ enum NemotronSuperLocalBridgeBuilder {
         else { throw Failure.unsupportedSizing }
         let requests = try concurrentRequests(environment: environment, speculates: mtp != nil)
         if let mtp { try NemotronSuperLocalMTP.validate(mtp.setting, requests: requests) }
+        guard let videoPruningRate = NemotronSuperVideoFeatures.pruningRate(environment: environment) else {
+            throw Failure.invalidVideoPruning
+        }
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
             pinned: installed.isPinnedCheckpoint, physicalBytes: physicalBytes, modelID: modelID)
@@ -481,7 +546,8 @@ enum NemotronSuperLocalBridgeBuilder {
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,
-                     mtpRoundID: round?.id, mtpRoundBytes: round?.bytes ?? 0)
+                     mtpRoundID: round?.id, mtpRoundBytes: round?.bytes ?? 0,
+                     videoPruningRate: videoPruningRate)
     }
 
     /// A bridge that never reached an owner: shut it down and, only once the

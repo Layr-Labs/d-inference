@@ -259,7 +259,30 @@ public struct ModelScanner: Sendable {
             return fm.fileExists(atPath: snapshotDir.appendingPathComponent("config.json").path)
         }
 
+        // Recursive's official Flint MLX export has model-00000.safetensors
+        // shards without an index. Bind discovery to native config identity;
+        // the strict Flint loader validates the complete inventory at load.
+        let configURL = snapshotDir.appendingPathComponent("config.json")
+        if let config = boundedModelConfiguration(at: configURL),
+           config["model_type"] as? String == "flint",
+           let files = try? fm.contentsOfDirectory(atPath: snapshotDir.path) {
+            return files.contains { $0.hasPrefix("model-") && $0.hasSuffix(".safetensors") }
+        }
+
         return false
+    }
+
+    /// Discovery must not block on special files or allocate unbounded config data.
+    private static func boundedModelConfiguration(at url: URL) -> [String: Any]? {
+        let fd = open(url.resolvingSymlinksInPath().path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size > 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // MARK: - Weight File Collection

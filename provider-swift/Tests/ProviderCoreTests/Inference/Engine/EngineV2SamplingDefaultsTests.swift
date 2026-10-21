@@ -65,6 +65,23 @@ struct EngineV2SamplingDefaultsTests {
         }
     }
 
+    @Test func flintUsesPublishedDefaultsAndHonorsExplicitGreedy() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flint-sampling-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"do_sample":true,"temperature":1.0,"top_p":0.95,"top_k":20}"#.utf8)
+            .write(to: directory.appendingPathComponent("generation_config.json"))
+        let defaults = EngineV2SamplingDefaults.resolve(
+            modelId: "RecursiveSI/flint-int4", modelType: "flint", modelDirectory: directory)
+        let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
+        #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
+        let explicit = EngineV2Translation.samplingParams(
+            from: try request(#"{"model":"m","messages":[],"temperature":0,"top_k":0}"#), defaults: defaults)
+        #expect(explicit.temperature == 0 && explicit.topK == 0)
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: "flint", modelType: "unknown"))
+    }
+
     // MARK: parse
 
     @Test func parseReadsTheNemotronArtifactDefaults() {

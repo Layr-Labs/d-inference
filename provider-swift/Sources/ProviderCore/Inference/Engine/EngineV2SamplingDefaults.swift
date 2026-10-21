@@ -19,7 +19,7 @@
 //   are untouched.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
-//   and owned Bonsai 9B listings honor their artifact defaults.
+//   and owned Bonsai 9B listings, plus native Flint, honor their artifact defaults.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -67,6 +67,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// `model_type` is not enough (Nano and Lightning share `nemotron_h`).
     static func honorsArtifactDefaults(modelId: String, modelType: String?) -> Bool {
         Bonsai9BModelPolicy.matches(modelId: modelId, modelType: modelType)
+            || modelType == "flint"
             || (modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
                 && EngineV2SupportedModels.isNemotron35ListingModelID(modelId))
     }

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1165,6 +1165,63 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
+
+### Native Flint
+
+`model_type: flint` resolves to `FlintModel` and the production CBv2 adapter.
+The model derives its full/sliding layer map from the checkpoint: per-head QK
+normalization, learned attention sinks, RoPE only on sliding layers, dense early
+MLPs and sigmoid-routed experts with a shared expert. Router correction bias
+changes selection only; selected sigmoid probabilities are normalized. The
+output head and routed weighted reduction use FP32 arithmetic inputs/reduction.
+
+`FlintModel.cbv2Prefill` implements `CBv2LanguageModelPrefillForwardable`: every
+prompt token traverses the full trunk and writes KV. Evaluation-only chunks omit
+the vocabulary projection; a chunk requiring logits projects only its last
+position, with FP32 head inputs. Ordinary forward retains full logits and packed
+prefill remains disabled. This removes unused head work; its throughput effect
+requires a matched benchmark. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`.
+
+The strict model-owned loader accepts the documented BF16 layout or Recursive's
+mixed affine export (group-64 INT4 projections/experts, INT8 embeddings, BF16
+sensitive tensors), with native BF16 KV for the official export. It rejects
+missing/extra/duplicate tensors, conflicting aliases and unsupported geometry
+rather than silently filling a checkpoint.
+This format is not NVFP4. Native KV and native checkpoint precision are required;
+select both explicitly when the provider's general checkpoint setting is
+`balanced`. `EngineV2KVQuantizationPolicy.resolve` rejects non-native selections;
+the production factory also checks an explicitly supplied checkpoint selection.
+Reduced KV and MTP are not supported by this integration.
+
+Flint chooses reasoning automatically. `FlintRequestPolicy` rejects explicit
+reasoning effort/enabled controls, media and combined JSON response-format/tool
+requests. Output limits remain ordinary completion-token limits. `.flint` tool
+parsing requires complete arg-key/value frames and uses the supplied tool schema
+to interpret values; opaque argument values cannot switch the reasoning channel.
+Required/named choices use the existing withheld schema-validation boundary.
+Native `<think>` output is separated from content. `FlintTemplateNormalization`
+preserves null object values and array positions during template replay.
+
+The published tool protocol has no escape for a literal `</arg_value>` in a
+top-level raw string value. `FlintRequestPolicy` rejects such historical
+arguments; syntactically indistinguishable generated frames cannot be recovered
+unambiguously. Arbitrary delimiter-bearing strings are not a supported
+round-trip contract. Malformed or incomplete frames fail closed.
+
+The published context bound is read from the artifact, not replaced with the
+largest locally tested prompt. Native memory admission still bounds executable
+work on the current host. [Physical validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+is separate from architecture registration and public catalog activation.
+
+Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintRequestPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintTemplateNormalization.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,
+and [SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) (Prince Canuma/mlx-vlm, MIT;
+Recursive rec, Apache-2.0, immutable revisions and full license texts).
 
 ## Related
 

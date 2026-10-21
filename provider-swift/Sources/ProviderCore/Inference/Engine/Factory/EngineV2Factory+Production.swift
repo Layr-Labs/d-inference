@@ -185,7 +185,10 @@ extension EngineV2Factory {
         let storageQuantization: PagedKVQuantizationConfig?
         if completePrefixCache != nil {
             let requested = try checkpointQuantization ?? EngineV2KVQuantizationPolicy.resolve(
-                modelType: nil, modelID: modelID ?? "", environment: environment, purpose: .checkpoint)
+                modelType: model is FlintModel ? "flint" : nil, modelID: modelID ?? "", environment: environment, purpose: .checkpoint)
+            if model is FlintModel, requested != .native {
+                throw EngineV2KVQuantizationPolicy.Failure.flintRequiresNative
+            }
             storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
                 requested.configuration, layerKinds: preparedBackend.layerKinds,
                 layerDTypes: preparedBackend.nativeLayerDTypes,

@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -365,6 +365,16 @@ Revision-only mode rejects `promote=false` before HTTP because the existing
 use normal registration with `promote=false` for that operation. The optional
 HF source follows the [existing revision retry contract](#admin-actions): null
 means R2-only for a new version and preserves the stored source on retry.
+
+## Flint local package exception
+
+| Contract | Value | Source |
+|---|---|---|
+| Native architecture identity | Exact `flint` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`, `isSupported(modelType:)` |
+| Shard-only local discovery | `model-*.safetensors` plus nonempty regular config of at most 1,048,576 bytes; no synthetic index | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `isMLXModel`, `boundedModelConfiguration` |
+| Weight format | Official group-64 affine INT4 projections/experts, INT8 embeddings and BF16 sensitive tensors, or documented BF16; strict complete inventory; not NVFP4 | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintCheckpoint.swift`, `FlintModel.installFlintWeights` |
+| KV precision | Native live KV and native checkpoint storage; official export uses BF16 KV | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| Catalog publication | Separate manifest/review operation; local discovery does not publish to HF/R2 or activate a catalog | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `ModelScanner` |
 
 ## Related
 

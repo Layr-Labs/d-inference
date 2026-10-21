@@ -10,6 +10,7 @@ enum ProviderPromptContractPipeline {
     }
     static func validateNativeControls(_ controls: ChatTemplateControls, modelType: String?) throws {
         try controls.rawMiMoControls.validate(modelType: modelType)
+        try FlintRequestPolicy.validateControls(controls, modelType: modelType)
     }
     static func tokenizeProviderBody(
         _ body: Data,
@@ -57,6 +58,7 @@ enum ProviderPromptContractPipeline {
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
         try validateNativeControls(templateControls, modelType: modelType)
+        try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
         try MediaIngest.rejectUnsupportedAudio(request,
             modelType: preserveMiMoMediaParts ? modelType : nil)
         try DiffusionGemmaReasoningControl.validate(

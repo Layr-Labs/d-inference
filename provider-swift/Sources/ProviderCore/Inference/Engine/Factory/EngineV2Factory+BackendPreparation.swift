@@ -2,6 +2,7 @@
 // Resolve backend policy and prepare KV resources before engine/cache assembly.
 
 import Foundation
+import MLXLLM
 import MLX
 import MLXLMCommon
 
@@ -142,7 +143,7 @@ extension EngineV2Factory {
         let layerKinds = adapter.layerKinds
         let modelCapabilities = adapter.modelCapabilities
         let precision = try EngineV2KVQuantizationPolicy.resolve(
-            modelType: nil, modelID: modelID ?? "", environment: environment)
+            modelType: model is FlintModel ? "flint" : nil, modelID: modelID ?? "", environment: environment)
         var resolvedKind =
             precision != .native && kvBackend == .auto
             ? .paged

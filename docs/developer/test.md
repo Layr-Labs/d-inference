@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -512,6 +512,44 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Flint native validation
+
+Run `make provider-test` for repository checks. Focused provider suites are
+`FlintPolicyTests`, `FlintDiscoveryTests` and `FlintTemplateReplayTests`; SDK suites
+are `FlintTests`, `FlintToolTests`, `FlintPrefixTests` and
+`ToolCallParserIntegrationTests`. The SDK fixture is generated independently by
+`libs/mlx-swift-lm/scripts/generate-flint-oracle.py` with NumPy and credits the pinned mlx-vlm
+oracle. Numeric assertions retain their declared tolerances and run with
+`MLX_ENABLE_TF32=0`.
+
+Verify the prefill output seam against full-logit forward, including identical
+KV and continuation results, sliding-window wrap and both contiguous/paged
+prefix restore. Tool coverage must include schema-aware values, null-preserving
+history, Unicode/chunk boundaries and rejection of unsupported controls and raw
+`</arg_value>` history. These checks do not establish full-model quality or
+throughput. Sources: `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Flint/`,
+`provider-swift/Tests/ProviderCoreTests/Inference/FlintPolicyTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/FlintTemplateReplayTests.swift`.
+
+`FlintLiveTests` is opt-in physical-machine qualification, not an ordinary CI
+weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and
+`DARKBLOOM_FLINT_CACHE` to an owned HF-layout cache containing the verified
+`RecursiveSI/flint-int4` snapshot. It starts an authenticated loopback service,
+uses a task-local encrypted-cache directory, executes real production slots,
+and stops/drains them. `DARKBLOOM_FLINT_PORT` selects an unused port;
+`DARKBLOOM_FLINT_BACKEND` selects `contiguous` or `paged`.
+`DARKBLOOM_FLINT_RECEIPTS` optionally writes synthetic response evidence to an
+owned file. Keep these model-dependent checks separate from tiny-fixture,
+public-CI and signed-release evidence.
+
+For performance claims, rebuild the exact SDK/provider pins and source-matched
+metallib, record hashes and precision settings, and use an exclusive inference
+process. Separate scalar SDK prefill, production CBv2 decode and HTTP timings.
+A captured dense/expert NAX dispatch establishes execution only; a speedup needs
+a matched portable-path comparison. Track the full provider suite independently
+from successful test compilation and focused SDK tests. See
+[hardware evidence limits](../provider/hardware-requirements.md#flint-validation-scope).
 
 ## Related
 

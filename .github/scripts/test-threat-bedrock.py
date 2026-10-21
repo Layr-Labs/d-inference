@@ -12,7 +12,8 @@ from threat_review.bedrock import BedrockCalls, MODELS
 from threat_review.budget_scan import SCHEMA
 from threat_review.budget_runner import status_body
 from threat_review.client import APIError, ReviewUnavailable, ScanTimeout
-from threat_review.context import SONNET
+from threat_review.context import SONNET, SOL
+from threat_review.structured_output import bedrock_schema
 from threat_review.merge_policy import clean, manual_override
 from threat_review.membership import active_member, ORGANIZATION_ID
 from threat_review.state import BudgetStopped
@@ -75,13 +76,55 @@ class BedrockTests(unittest.TestCase):
         request = self.client.requests[0]
         self.assertTrue(request["modelId"].endswith("/sonnet"))
         self.assertIn('"type": "object"', request["system"][0]["text"])
-        self.assertNotIn("outputConfig", request)
+        self.assertEqual(json.loads(request["outputConfig"]["textFormat"]["structure"]["jsonSchema"]["schema"]),
+                         {"type": "object"})
         self.assertEqual(result["choices"][0]["message"]["content"], '{"findings":[]}')
         ledger = self.path.read_text()
         for private in ("private source code", "private reasoning", "synthetic", "system instructions"):
             self.assertNotIn(private, ledger)
         self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 0)
         self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 12)
+        self.assertEqual(self.calls.metrics()["bedrock_cache_read_input_tokens"], 0)
+        self.assertEqual(self.calls.metrics()["bedrock_cache_write_input_tokens"], 0)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_sol_cache_input_usage_is_preserved_in_ledger_metrics_and_report(self):
+        # Token counts from the bounded local Sol response; no content retained.
+        self.payload["model"] = SOL
+        self.client.response["usage"] = {"inputTokens": 2, "outputTokens": 123,
+                                         "cacheReadInputTokens": 0, "cacheWriteInputTokens": 2093}
+        self.invoke()
+        self.client.response["usage"] = {"inputTokens": 3, "outputTokens": 40,
+                                         "cacheReadInputTokens": 2093, "cacheWriteInputTokens": 0}
+        self.invoke()
+        metrics = self.calls.metrics()
+        self.assertEqual(metrics["bedrock_input_tokens"], 5)
+        self.assertEqual(metrics["bedrock_cache_read_input_tokens"], 2093)
+        self.assertEqual(metrics["bedrock_cache_write_input_tokens"], 2093)
+        self.assertEqual(metrics["bedrock_output_tokens"], 163)
+        self.assertEqual(metrics["bedrock_unknown_usage"], 0)
+        rows = [json.loads(line) for line in self.path.read_text().splitlines()]
+        responses = [row for row in rows if row["event"] == "response"]
+        self.assertEqual(responses[0]["cache_write_input_tokens"], 2093)
+        self.assertEqual(responses[1]["cache_read_input_tokens"], 2093)
+        body = status_body("example/repo", "a" * 40, "b" * 40, "b" * 40, metrics, {})
+        self.assertIn("5 uncached + 2093 cache-read + 2093 cache-write input / 163 output tokens", body)
+
+    def test_legacy_snapshot_does_not_invent_zero_cache_usage(self):
+        metrics = self.calls.metrics()
+        del metrics["bedrock_cache_read_input_tokens"], metrics["bedrock_cache_write_input_tokens"]
+        body = status_body("example/repo", "a" * 40, "b" * 40, "b" * 40, metrics, {})
+        self.assertIn("unavailable cache input", body)
+
+    def test_invalid_cache_usage_remains_unknown_without_fallback(self):
+        for field in ("cacheReadInputTokens", "cacheWriteInputTokens"):
+            for invalid in (None, True, -1, "2", 1.5):
+                with self.subTest(field=field, invalid=invalid):
+                    self.client.response["usage"] = {"inputTokens": 2, "outputTokens": 123, field: invalid}
+                    with self.assertRaises(ReviewUnavailable):
+                        self.invoke()
+        self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 10)
+        self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 0)
         self.assertEqual(self.calls.fallback.calls, [])
 
     def test_explicit_availability_rejection_uses_backup_once(self):
@@ -91,6 +134,27 @@ class BedrockTests(unittest.TestCase):
         self.assertEqual(len(self.calls.fallback.calls), 1)
         self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 1)
         self.assertNotIn("private provider detail", self.path.read_text())
+
+    def test_native_schema_preserves_structure_and_local_constraints_for_every_model(self):
+        original = copy.deepcopy(SCHEMA)
+        self.payload["response_format"]["json_schema"]["schema"] = SCHEMA
+        for model in MODELS:
+            self.payload["model"] = model
+            self.invoke()
+            request = self.client.requests[-1]
+            native = json.loads(request["outputConfig"]["textFormat"]["structure"]["jsonSchema"]["schema"])
+            self.assertEqual(native, bedrock_schema(SCHEMA))
+            self.assertEqual(native["required"], SCHEMA["required"])
+            self.assertFalse(native["additionalProperties"])
+            self.assertEqual(native["properties"]["needs_deeper_review"], {"type": "boolean"})
+            self.assertNotIn("maxLength", native["properties"]["analysis"])
+            self.assertIn('"minLength": 1', native["properties"]["analysis"]["description"])
+            self.assertEqual(self.calls.last_request["response_format"], "json_schema")
+            if model == SOL:
+                self.assertEqual(request["additionalModelRequestFields"], {"text": {"format": {"strict": True}}})
+            else:
+                self.assertNotIn("additionalModelRequestFields", request)
+        self.assertEqual(SCHEMA, original)
 
     def test_sonnet_availability_fallback_preserves_selected_model_identity(self):
         self.client.error = SDKError("AccessDeniedException")

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -14,6 +14,18 @@ their real resource bundles; ordinary Python checks do not prove GPU correctness
 Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
+
+## Provider authorization guidance
+
+After rebuilding the provider test product, run
+`swift test --skip-build --no-parallel --filter ProviderAuthorizationReadinessTests`
+from `provider-swift/`. The suite exercises the production freshness checks and
+summary used by status and both doctor paths: a late but unexpired serving lease
+stays visible while removal advice requires the matching fresh decision. It
+covers the receipt-window boundary, disabled rollout, missing or mismatched
+decisions and exact lease expiry. These checks use fixed snapshots and injected
+process identity; they do not run the CLI's host probes, change profiles or
+establish native App Attest acceptance.
 
 ## Provider Terminal And Stop Signals
 

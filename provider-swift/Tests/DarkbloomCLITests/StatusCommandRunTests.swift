@@ -117,4 +117,31 @@ struct StatusCommandRunTests {
         #expect(lines.dropFirst(daemon + 1).first == Status.lifecycleDrainLine(
             ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
     }
+
+    /// A renewal received 15 s ago with an unexpired lease must not turn
+    /// status into legacy trust or offer removal without fresh readiness.
+    @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")
+    func lateLeaseRenewalStillAuthorizes() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            var authorization = CLICommandSandbox.appAttestAuthorization(now: now, removalReady: true)
+            authorization.expiresAt = now + 15
+            sandbox.writeState(try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(trustLevel: "self_signed", status: "online", reason: "Provider authorization updated",
+                             receivedAt: now - 15, authorization: authorization)))
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        #expect(output.contains("\nAuthorization: App Attest authorizes this connection. "))
+        #expect(!output.contains("\nTrust: self_signed / online\n"))
+        #expect(output.contains("MDM removal needs fresh coordinator readiness"))
+        #expect(!output.contains("removal is available"))
+        #expect(!output.contains("run \(BuildEnvironment.current.cliName) unenroll"))
+    }
 }

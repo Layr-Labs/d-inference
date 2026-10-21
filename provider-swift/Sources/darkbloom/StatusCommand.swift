@@ -131,10 +131,12 @@ struct Status: AsyncParsableCommand {
             print("  Selection: \(status.models.joined(separator: ", "))")
         }
 
-        let authorization = state.currentProviderAuthorization(
+        let authorization = state.displayedProviderAuthorization(
+            coordinatorURL: config.coordinator.url, now: now)
+        let removalAuthorization = state.currentProviderAuthorization(
             coordinatorURL: config.coordinator.url, now: now)
         if let authorization {
-            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, removalAuthorization: removalAuthorization, now: now))")
             if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
         } else if let trust = state.trust {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)

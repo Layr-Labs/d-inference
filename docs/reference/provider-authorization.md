@@ -1,6 +1,6 @@
 # Provider Serving Authorization
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-21
 
 Provider trust status reports external serving permission, not a guarantee of
 correct model output, physical uniqueness or secrecy from the executing process.
@@ -88,6 +88,22 @@ profile removal and optional cleanup. Enter/EOF cancels; noninteractive use
 requires an explicit mode flag. Code:
 `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and
 `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
+
+`darkbloom status` and `darkbloom doctor` apply the same snapshot, process,
+coordinator, `online` and protocol checks, but keep displaying an App Attest
+lease until its `expires_at` when its latest renewal arrived more than
+`snapshotMaxAge` ago (`ProviderAuthorizationReadiness.displayedStatus`).
+`none` and `legacy` decisions still require receipt within `snapshotMaxAge`.
+The lease duration remains the external coordinator's decision; see the
+[current status contract][platform-current].
+
+The serving summary takes that displayed lease and the strict removal decision
+separately (`ProviderAuthorizationReadiness.summary`). Status and both doctor
+paths derive them from the same daemon snapshot and observation time. Positive
+removal advice requires the matching fresh decision and `mdm_removal_ready`.
+A late but unexpired serving lease remains visible while the summary asks for
+fresh removal readiness and retains existing profiles. `unenroll` still checks
+readiness before and after profile inspection.
 
 ## Related
 

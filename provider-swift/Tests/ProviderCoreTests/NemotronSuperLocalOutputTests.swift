@@ -65,6 +65,18 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(try stream(&off, ["<think>no</think>", "yes"]), ["C:<think>no</think>", "C:yes"])
     }
 
+    /// A combining mark after a marker's `>` starts the following text, as in
+    /// the reference's code-point and marker-token matching.
+    func testMarkersMatchBeforeACombiningMark() throws {
+        var closed = try output()
+        XCTAssertEqual(try stream(&closed, ["a</think>\u{301}b"]), ["R:a", "C:\u{301}b"])
+        var opened = try output()
+        XCTAssertEqual(try stream(&opened, ["x<think>\u{301}y"]), ["R:x", "R:\u{301}y"])
+        var complete = try output(streaming: false)
+        _ = try complete.append("<think>\u{301}r</think>\u{301}c")
+        XCTAssertEqual(try complete.finish().result, .init(content: "\u{301}c", reasoning: "\u{301}r", calls: []))
+    }
+
     func testCompleteResponseFollowsExtractReasoning() throws {
         func complete(_ text: String, _ extra: String = "") throws -> (String, String?, [String]) {
             var output = try output(extra, streaming: false)

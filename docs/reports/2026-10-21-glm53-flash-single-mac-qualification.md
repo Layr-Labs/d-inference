@@ -40,7 +40,7 @@ The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitt
 | SSD tier across restart | pass (persistent key) | 20,022-token prompt: cold TTFT 10.70 s, after a server restart 18,432 cached and TTFT 2.15 s |
 | Images | pass | 48/51 kit cases: exact media token counts at every size (16–8,000 tokens, 4000×3000 → 7,931), OCR, counting, five formats, 16 images, aggregate cap, all refusals (400/413/503). Three misses are a large slashed-zero bitmap glyph read as 9 |
 | Video | pass | 15/15 clips: direction left/right with reversed controls, frame counter, colour sequences (MP4, QuickTime, NTSC timescales), 720p30 at 12,056 tokens (TTFT 7.5 s), 1080p near the cap at 21,612 tokens (TTFT 13.6 s), two videos, image plus video; over-cap, too-short and variable-frame-rate clips refused 400 |
-| Long context | pass to 128K (listed) | Needle at 10/50/90 % depth: 6/6 at 32K and 60K tokens; 128K pass (1,661 tok/s prefill); 190K pass (1,539 tok/s, 2.7 GB free); 250K refused at ~220K on one 256 GB Mac. The catalog lists 131,072 |
+| Long context | pass to 128K (listed) | Needle at 10/50/90 % depth: 6/6 at 32K and 60K tokens; 128K pass (1,661 tok/s prefill); 190K pass (1,539 tok/s, 2.7 GB free); 250K refused at ~220K on one 256 GB Mac. The catalog listed 131,072 during these checks; it now lists the model's full 262,144 and admission refuses what one Mac cannot fit |
 | Continuous batching | pass with limit | c1/c2/c4 all complete; aggregate decode does not scale (see performance) |
 | Admission when full | pass (after two fixes) | See "Memory admission" below |
 | Retained faults | pass | `darkbloom_glm5_next_retained_*` 0 after every run |
@@ -48,7 +48,7 @@ The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitt
 
 ## Performance (one M5 Ultra 256 GB)
 
-Final executable, 131,072-token selection (the listed context), SSD prefix tier on, default
+Final executable, 131,072-token selection (the context listed at the time), SSD prefix tier on, default
 adaptive MTP, 5 repetitions (medians):
 
 | Measure | Baseline (pre-port, 2026-10-20) | Final | Change |
@@ -119,7 +119,7 @@ Final executable `94a83e27…`, metallib `156f2624…`:
 |---|---|---|
 | 8 concurrent requests of ~30K prompt + 30K output tokens | 5 refusals rendered as 200 + `server_error` frames; the 2 running and 1 waiting request all failed together when the second finished prefill | 5 clean 503 "Provider capacity is temporarily unavailable." before headers; the 3 that fit are served (first tokens 17.6 / 32.5 / 63.4 s); idle again 0.26 s after |
 | 3 concurrent requests of ~30K + 30K | all 3 failed at 32 s | requests 1 and 2 keep decoding, request 3 waits for capacity |
-| One request at ~250K tokens | refused at ~220K (no OOM) | unchanged; the catalog advertises 131,072 |
+| One request at ~250K tokens | refused at ~220K (no OOM) | unchanged; the catalog then advertised 131,072 (now 262,144) |
 
 The first fix throws the GLM slot refusal before the stream starts. The second
 defers a step whose scratch reservation is refused instead of failing every
@@ -139,8 +139,11 @@ OOM, a GPU hang or a retained GLM fault, and memory pressure stayed normal.
 - The SSD tier needs the keychain-wrapped persistent key of a signed app; an
   ad hoc build serves without a prefix cache and reports
   `prefix_cache_status{state="error",reason="cache_init_failed",detail="key_unavailable"}`.
-- `reasoning.exclude: true` and thinking-off controls are refused: GLM-5.3-Flash
-  always reasons.
+- `reasoning.exclude: true` and `include_reasoning: false` are refused: the
+  provider returns the reasoning it generates. Thinking-off controls were
+  refused during these checks; they are now served with a closed
+  `<think></think>` block (`GLM5NextThinkingTokenizer`), checked by unit tests
+  and the platform sidecar render tests, not by this hardware record.
 - Video: inline MP4/QuickTime only at the provider (the coordinator inlines
   URLs); variable-frame-rate clips and clips past the shared 28,532-token
   visual cap are refused.

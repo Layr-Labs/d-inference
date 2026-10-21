@@ -61,7 +61,7 @@ extension ProviderLoop {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
         case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-            .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled, .mediaUnsupportedByModel,
+            .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .mediaUnsupportedByModel,
             .multimodalRejected, .advertisedContextExceeded:
             return .clientError
         case .toolChoiceViolation:
@@ -158,7 +158,7 @@ extension ProviderLoop {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
             case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled, .advertisedContextExceeded:
+                .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .advertisedContextExceeded:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -256,7 +256,7 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload, .missingUserQuery:
                 return 400
-            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled:
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported:
                 return 400
             case .advertisedContextExceeded:
                 return 400

@@ -119,6 +119,9 @@ actor GLM5NextManagedLoad {
                     "installed template does not render; no automatic repair")
             }
             try GLM5NextTokenizerPreflight.validate(tokenizer, modelID: plan.weights.catalog.id)
+            guard let servingTokenizer = try? GLM5NextThinkingTokenizer(base: tokenizer) else {
+                throw GLM5NextManagedLoadError.metadata("tokenizer lacks the <think> tokens")
+            }
             try await recheckPermit()
             nativeAttempted = true
             let owner = GLM5NextConstructionOwner(hooks: hooks)
@@ -126,7 +129,7 @@ actor GLM5NextManagedLoad {
             loaded = EngineV2NewcomerBox(
                 try await GLM5NextConstructionLane.shared.construct(
                     plan,
-                    tokenizer: tokenizer, loadMTP: loadMTP, budget: budget, permit: permit,
+                    tokenizer: servingTokenizer, loadMTP: loadMTP, budget: budget, permit: permit,
                     owner: owner))
             try Task.checkCancellation()
             try plan.weights.recheck()

@@ -70,9 +70,14 @@ struct LocalChatRequestTests {
         let data = Data((#"{"model":"test/qwen","messages":[],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
         let glm = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: data)
-        // Every fragment carries a malformed control or a thinking-off switch
-        // (`enable_thinking` or `reasoning.enabled` false), which GLM refuses.
-        #expect(throws: (any Error).self) { try glm.validate() }
+        // GLM refuses every malformed control; the last fragment is a valid GLM
+        // thinking-off request beside an ignored unknown extension.
+        if fragment.hasPrefix(#""unknown_extension""#) {
+            #expect(glm.disablesThinking && !glm.requestsThinking)
+            try glm.validate()
+        } else {
+            #expect(throws: (any Error).self) { try glm.validate() }
+        }
         let complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
@@ -94,7 +99,8 @@ struct LocalChatRequestTests {
         #expect(local.map(\.request) == upstream)
         let glm = try decoder.decode([GLM5NextPromptPolicy.RawControls].self, from: data)
         #expect(glm.map(\.invalid) == [false, false, true])
-        #expect(glm.map(\.disablesReasoning) == [true, false, false])
+        #expect(glm.map(\.disablesThinking) == [true, false, false])
+        #expect(glm.map(\.requestsThinking) == [false, false, true])
         let expected = [
             ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0]),
             ChatTemplateControls().withRawGLM5Controls(glm[1]),
@@ -111,12 +117,13 @@ struct LocalChatRequestTests {
          nil, false),
         (#""reasoning":{"enabled":true,"max_tokens":2048},"enable_thinking":true"#, .high, false),
         (#""reasoning":{"max_tokens":512,"effort":"xhigh"}"#, .max, false),
-        (#""reasoning":{"enabled":true,"exclude":true}"#, nil, true),
-        (#""include_reasoning":false,"reasoning_effort":"high""#, .high, true),
+        (#""reasoning":{"enabled":true,"exclude":true}"#, nil, false),
+        (#""include_reasoning":false,"reasoning_effort":"high""#, .high, false),
         (#""chat_template_kwargs":{"thinking":false}"#, nil, true),
+        (#""reasoning_effort":"none""#, nil, true),
     ] as [(String, GLM5NextPromptPolicy.Effort?, Bool)])
     func glmReasoningSwitchesMatchAcrossPaths(
-        fragment: String, effort: GLM5NextPromptPolicy.Effort?, disablesReasoning: Bool
+        fragment: String, effort: GLM5NextPromptPolicy.Effort?, disablesThinking: Bool
     ) throws {
         let data = Data((#"{"model":"glm","messages":[{"role":"user","content":"Hi"}],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
@@ -125,7 +132,9 @@ struct LocalChatRequestTests {
         let glm = remote.rawGLM5Controls
         #expect(!glm.invalid)
         #expect(glm.effort == effort)
-        #expect(glm.disablesReasoning == disablesReasoning)
+        #expect(glm.disablesThinking == disablesThinking)
+        #expect(glm.excludesReasoning == (fragment.contains(#""exclude":true"#)
+            || fragment.contains(#""include_reasoning":false"#)))
         let batch = try JSONDecoder().decode([LocalChatRequest].self, from: Data("[\(String(decoding: data, as: UTF8.self))]".utf8))
         #expect(batch.map(\.templateControls.rawGLM5Controls) == [glm])
     }

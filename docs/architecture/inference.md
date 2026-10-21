@@ -139,10 +139,7 @@ engine prices one worst-case step at setup and stays inactive when it exceeds
 the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
 with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
 selection row per query, retained until the step fence (about 46 MB per query
-across 11 DSA layers); past `index_topk` (2,048) tokens of history each query
-attends over its read with the split-K sparse decode kernel, the arithmetic of
-a contiguous row (`SparseDecode.nativeKernels`,
-`GLM5NextDSAAttention.pagedSparseDecodeAttention`). A longer row whose selection rows would read at least
+across 11 DSA layers). A longer row whose selection rows would read at least
 its history instead reads its whole latent plane once per layer through
 the page table and runs the contiguous arithmetic over it
 (`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),

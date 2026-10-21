@@ -18,9 +18,9 @@ catalog activation or production deployment approval.
 | Hugging Face check | every manifest file present at `8841c52a` with matching LFS SHA-256; the catalog's earlier pin `8603f7fe` differs only in `README.md` |
 | Selection | local qualification selection, `maximumContextLength` 65,536 |
 | Policy | `GLM5NextExecutionPolicy.serving` (enforced by the managed load), paged KV, embedded MTP with adaptive rectangular verification up to depth 3 |
-| SDK | mlx-swift-lm `46e4d0ba` (#314; `13fba500` plus swift-format layout only; merged with main's Nemotron 3.5 Super stack) on mlx-swift `c2cbef34`, core `ad596687`, mlx-c `fa6565d4` (production footprint policy, merged with each main). The final executable compiled mlx-swift-lm `13fba500` (see "Paged-attention speedups"). The previous final executable compiled `a630039b`; `77a0d1d9` changes only tests and one line break. Earlier checks ran on `97b2ca6d`/`48f1e000` and earlier native heads |
+| SDK | mlx-swift-lm `ffb71842` (#314; merged with main's Nemotron 3.5 Super stack) on mlx-swift `c2cbef34`, core `ad596687`, mlx-c `fa6565d4` (production footprint policy, merged with each main). The final executable compiled mlx-swift-lm `ffb71842` (see "Paged-attention speedups"). `ffb71842` takes the split-K paged decode attention of `12d00808`/`13fba500` out again; `46e4d0ba` is swift-format layout only. The previous final executable compiled `a630039b`; `77a0d1d9` changes only tests and one line break. Earlier checks ran on `97b2ca6d`/`48f1e000` and earlier native heads |
 | Metallib | `156f2624f9f1b1413dfabd8b6e16423121b0e5b18e2573c23c4e023b606a462d` (unchanged by this work) |
-| Executables | final: `darkbloom` `344b39e36acfb808962625111857cead1bf4d8d51b6239a170ea40b20790443f` (#1516 with SDK `13fba500`; see "Paged-attention speedups"); its A/B build `e31b5ba9…` compiled `12d00808`. Before that: `d9780e867576bf14208d15ff6e80037dd9a54438a6f9b15264eed7b901e74945` (#1516 with SDK `a630039b`; see "Final recheck after merging main"), DEBUG variant `d0974768…` (SSD restart only), `94a83e27…` (production footprint policy recheck), `593cd3d0…` (refusal probes and confirmation soak), `8eee2c99…` (admission checks and the 40-minute soak), `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (performance table, long context, video proof), DEBUG `3256e2c7…`/`4f7fd9df…` (SSD restart checks) |
+| Executables | final: `darkbloom` `6b95747e49d50d32b16018a53bc5fb22a77bd7db2478933e3495b1e15a22db02` (#1516 with SDK `ffb71842`; see "Paged-attention speedups"). Before that: `344b39e3…` (SDK `13fba500`, evaluated with split-K paged decode, not shipped), `e31b5ba9…` (A/B build, SDK `12d00808`), `d9780e867576bf14208d15ff6e80037dd9a54438a6f9b15264eed7b901e74945` (#1516 with SDK `a630039b`; see "Final recheck after merging main"), DEBUG variant `d0974768…` (SSD restart only), `94a83e27…` (production footprint policy recheck), `593cd3d0…` (refusal probes and confirmation soak), `8eee2c99…` (admission checks and the 40-minute soak), `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (performance table, long context, video proof), DEBUG `3256e2c7…`/`4f7fd9df…` (SSD restart checks) |
 
 The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitted by
 `GLM5NextHardwareRequirement` but was not measured.
@@ -68,62 +68,48 @@ MTP speculates for one row at a time (`maxSpeculativeBatch` 1), so from two
 concurrent requests on, rows decode without speculation and aggregate decode
 grows slowly (c4 is 1.55× c1).
 
-## Paged-attention speedups (SDK 13fba500)
+## Paged-attention speedups (SDK ffb71842)
 
 GLM serves only through the paged CBv2 path; the contiguous forward is
-deprecated. SDK `13fba500` brings four speedups that previously reached only the
-contiguous forward to paged serving:
+deprecated. SDK `ffb71842` brings three speedups that previously reached only the
+contiguous forward to paged serving, each bit-identical:
 
 | Change | Steps | Bits |
 |---|---|---|
 | Shared all-true validity constant and one-launch packed-embedding streams (`GLM5NextPackedEmbedding`) | decode and verification (at most 8 tokens) | identical |
 | `.serving` runs `PrefillProjections.nativeGEMM`: `GLM5NextPrefillGEMMKernel` for the KDA and DSA attention projections | Neural-Accelerator prefill | identical (MLX's NAX qmm) |
 | `GLM5NextDSAPayloadKernel` stages a DSA layer's FP32 CBv2 rows in one launch instead of a validity cast, a concatenation and two FP32 casts | CBv2 DSA appends | identical |
-| Split-K `GLM5NextSparseDecodeKernel.attend` over each query's priced selection read (ids replaced by their columns) instead of the absorbed MLX graph (`pagedSparseDecodeAttention`) | paged decode and MTP verification | a contiguous row's bits (the arithmetic `SparseDecode.nativeKernels` qualified); differs from the previous paged build once a request's history exceeds 2,048 tokens (`index_topk`); below that the dense-history path is unchanged |
 
-Final executable `darkbloom`
-`344b39e36acfb808962625111857cead1bf4d8d51b6239a170ea40b20790443f` (#1516
-with SDK `13fba500`), metallib `156f2624…` (unchanged). The speed A/B used
-`e31b5ba9…` (SDK `12d00808`: the same library except that `13fba500` builds
-the column indices once per step and checks the streams' dtype with their
-shape). The previous final executable is `d9780e86…`.
-
-| Check | Result |
-|---|---|
-| Tokens, SDK real-model MTP test against SDK `77a0d1d9` (6 prompts × 256 tokens × target-only/serial/d1/d2/d3) | 20/30 token sequences identical: the 4 prompts whose history stays within 2,048 tokens are identical in every mode; the 2 longer prompts differ |
-
-Same-state endpoint A/B, default adaptive MTP, 64K selection, `bench.py` with a
-256-token decode after long prompts added; previous final executable (`d9780e86…`)
-against `e31b5ba9…`, sessions A-B-B-A, 3 repetitions each, medians of 6:
-
-| Cell | Previous | Paged speedups | Change |
-|---|---|---|---|
-| Prefill 2.7K / 10.5K / 31.5K tokens (tok/s) | 1,915 / 1,988 / 2,016 | 1,916 / 2,010 / 2,036 | +0.0 / +1.1 / +1.0 % |
-| Decode 256 tokens after a 2.7K / 10.5K / 31.5K-token prompt (tok/s) | 48.3 / 41.1 / 30.2 | 48.9 / 43.3 / 31.3 | +1.3 / +5.5 / +3.8 % |
-| Decode 256 / 1,024 tokens from a short prompt (tok/s) | 64.5 / 62.8 | 62.7 / 59.5 | −2.8 / −5.2 % |
-
-Adaptive MTP's depth controller is timing driven, so short-prompt decode varies
-between sessions; the second session of the previous build ran beside a CPU
-build. Short-prompt decode runs no changed arithmetic (its tokens are
-identical); its steps only lose launches.
+The fourth, split-K `GLM5NextSparseDecodeKernel.attend` for paged decode and
+MTP verification (SDK `12d00808`/`13fba500`), was evaluated and left off
+(`ffb71842`): paged decode keeps the absorbed per-query attention of the
+qualified build. Split-K gives a contiguous row's arithmetic but not the
+qualified paged output: at 8-token steps perplexity is 0.0049 % higher and
+top-1 agreement 97.60 %, below the 99.4 % lossless bar (rows below). Its gain
+is given up: in a same-state endpoint A/B (default adaptive MTP, sessions
+A-B-B-A, medians of 6) the build with it (`e31b5ba9…`) decoded 256 tokens after
+10.5K- and 31.5K-token prompts 5.5 and 3.8 % faster than `d9780e86…` (43.3 /
+31.3 vs 41.1 / 30.2 tok/s). Prefill in that A/B was 0–1 % faster.
 
 | Check | Result |
 |---|---|
 | Perplexity panel (4 documents, 15,901 scored positions, `.serving`, 2,048-token chunks) against the previous SDK | bit-identical NLL and argmax at every position (`PrefillProjections.nativeGEMM`) |
-| Same panel at 8-token steps (decode-sized; sparse past 2,048 tokens): split-K decode attention (`.serving`) against absorbed decode attention with the reference selection graph (`sparseDecode: .reference`) | perplexity 7.310244 vs 7.309884 (+0.0049 %); top-1 97.60 % |
+| Same panel at 8-token steps (decode-sized; sparse past 2,048 tokens): split-K decode attention (`.serving` at SDK `13fba500`) against absorbed decode attention with the reference selection graph (`sparseDecode: .reference`) | perplexity 7.310244 vs 7.309884 (+0.0049 %); top-1 97.60 % |
 | Each 8-token variant against `.serving` at 2,048-token chunks | split-K −0.051 % perplexity, 94.03 % top-1; absorbed −0.056 %, 93.98 % top-1. Both are equally close; the qualified policy agrees 94.0 % with itself across step sizes |
 
-Re-qualification of `344b39e3…` on one M5 Ultra 256 GB (128K selection, run in place):
+Final executable `darkbloom` `6b95747e49d50d32b16018a53bc5fb22a77bd7db2478933e3495b1e15a22db02` (#1516 with SDK `ffb71842`), metallib
+`156f2624…` (unchanged):
 
 | Check | Result |
 |---|---|
-| Endpoint checks | as for `d9780e86…`: the misses are the harness's 64K-era `over_context` assumption, the known seeded-sampling limit, `reasoning.exclude: true` and `include_reasoning: false` refused by design, and `thinking_off`, whose harness still expects the earlier 400 (thinking-off now answers 200 with no reasoning and the correct result). `metrics_snapshot` lacks `complete_prefix_key_persistent` because a build run in place has no cache key (`key_unavailable`); `d9780e86…` run the same way reports the same |
-| OpenRouter templates | none failed |
-| Needles at 64K and 125K tokens, depths 10 / 50 / 90 % | 6/6 |
-| Image kit | 45/51, the same six misses as `d9780e86…` (three image-size cases and three cases written for the earlier video refusal) |
-| Video kit | 15/15 |
-| SDK GLM GPU suites (61) | every assertion passes; the remaining reports are env-gated benchmark and oracle-fixture skips. `GLM5NextMoEPrefillBenchTests` flags the known sub-65-row shared-expert difference at its default rows and is bitwise at 2,048 and 4,096 rows |
+| SDK real-model MTP tokens vs SDK `77a0d1d9` (6 prompts × 5 modes × 256) | **30/30 identical** token sequences, with identical MTP proposed/accepted counts in every mode |
+| Endpoint serial-target mode vs `d9780e86…` (14 cases) | **14/14 identical** (391, 2.7K / 10.5K / 31.6K prompts, 256 / 1,024 decodes, 3-turn chat, image, concurrent pair, repeats). In the first run the concurrent pair's requests arrived 0.28 s apart and one differed; three reruns of the pair with simultaneous arrival are identical, both requests |
 
+The earlier qualification of `d9780e86…` therefore applies unchanged. The
+evaluated build with the split-K path (`344b39e3…`, 128K selection) passed the
+endpoint checks as `d9780e86…` did, the OpenRouter templates, needles at 64K
+and 125K tokens (6/6), images 45/51 (the same misses as `d9780e86…`) and video
+15/15.
 
 ## Final recheck after merging main
 

@@ -35,7 +35,7 @@ Stop the isolated local process to disable it. There is no target-only GLM
 serving engine; target-only construction is limited to benchmarks.
 
 Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
-(absorbed sparse attention with native sparse decode and prefill kernels,
+(absorbed sparse attention with native decode selection and sparse prefill kernels,
 parallel-threshold selection, native KDA
 recurrence, fused hyper-connections and routed-expert combine), recorded in the
 encrypted checkpoint identity. The encrypted SSD prefix store defaults on for

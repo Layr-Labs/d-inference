@@ -721,6 +721,11 @@ Resolution happens before submit so a bad parser name never orphans a request.
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
 
+Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
+inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
+including the embedded-MTP one, advertise forced tools
+(`ToolChoiceEnforcementPolicy.swift`).
+
 ### Chat-template render check
 
 The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,

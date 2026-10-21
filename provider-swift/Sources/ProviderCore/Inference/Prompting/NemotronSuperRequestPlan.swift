@@ -9,9 +9,10 @@ import MLXLMServer
 struct NemotronSuperRequestPlan: Sendable {
     enum Failure: Error, Equatable { case unsupportedControl, tooManyContentParts }
 
-    /// Content parts one request may carry across its messages, refused before
-    /// any render or admission. The pinned template's cost grows with parts ×
-    /// prompt length; rendering merges adjacent text parts
+    /// Content parts one request may carry across all its messages, counted
+    /// after the response-format instruction is inserted and refused before
+    /// any render. The pinned template's cost grows with parts × prompt
+    /// length; rendering merges adjacent text parts
     /// (`NemotronSuperPromptContract`), and this bounds what remains.
     static let maximumContentParts = 4096
 

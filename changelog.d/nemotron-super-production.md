@@ -31,7 +31,7 @@
   configuration that barely fits steps down instead of losing its admission
   after the weights are installed. The provider accepts, evicts for and
   preloads Super on that same rule: an idle co-resident model is evicted when
-  that lets the planned owner (or a wider fallback) load,
+  that lets the planned owner (or the widest reachable fallback) load,
   instead of the request being accepted and then refused with 503, and a load
   that cannot fit even after evicting every idle model is refused before it
   is accepted. MLX's cached buffers are returned before the load steps down,
@@ -88,15 +88,15 @@
   16 MiB inflated from them, and a JPEG whose scans would decode a coefficient
   again. ImageIO is given only the primary JPEG image, and a request reserves
   its largest image's decode workspace once instead of once per image.
-- A busy owner refuses a request with 429 before decoding its body or
-  rendering its prompt. An answer held for validation (JSON content with
-  thinking off, forced or tool-call-only answers) starts its stream at the
-  first generated token, so a streamed one that fails validation ends with an
-  error event instead of a 422 status. Text requests no longer wait while an
-  image is prepared, and a GPU fault while checking image features fails the
-  request instead of stopping the provider. An image body over 8 MiB, visual
-  tokens beyond the context or an image prompt beyond it is refused with 400
-  instead of the retryable 503.
+- A busy owner refuses a request with 429 once the request is decoded,
+  before its prompt is planned or rendered. An answer held for validation
+  (JSON content with thinking off, forced or tool-call-only answers) starts
+  its stream at the first generated token, so a streamed one that fails
+  validation ends with an error event instead of a 422 status. Text requests
+  no longer wait while an image is prepared, and a GPU fault while checking
+  image features fails the request instead of stopping the provider. An image
+  body over 8 MiB, visual tokens beyond the context or an image prompt beyond
+  it is refused with 400 instead of the retryable 503.
 - Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
   `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
   reference serving samples it: 2 frames per second, at most 256, paired into

@@ -25,7 +25,8 @@
 //     `templateRenderOK`/`isVision` self-check results;
 //   * vision-tower admission — `VisionTowerBudget.maxAdmissiblePatches`;
 //   * Nemotron Super image media — the policy's media charge against the
-//     cold-load room or the resident no-eviction room.
+//     cold-load room, or for a resident slot the process ledger's runtime
+//     room that admits the media reservation (`process_memory.remaining_bytes`).
 
 import Foundation
 
@@ -180,12 +181,12 @@ enum CapacityQuoteEngine {
                 deadlineRemainingMs: probe.deadlineRemainingMs)
         }
 
-        // A resident slot's media must fit the published room that credits no
-        // resident model as reclaimable, net of the load headroom. Its 1 GiB
-        // minimum-KV part is margin: the slot's KV is already granted.
+        // A resident slot's media reservation is admitted by the process
+        // ledger's runtime room (activation reserve and outstanding
+        // commitments already subtracted), not by a load gate: it keeps no
+        // load reserve.
         if case .charged(let bytes) = superMedia {
-            guard let usable = capacity.loadUsableGb, let headroom = capacity.loadHeadroomGb,
-                usable - headroom >= gib(bytes)
+            guard let remaining = capacity.telemetry?.processMemory?.remainingBytes, remaining >= bytes
             else { return reject(.memoryCap) }
         }
 

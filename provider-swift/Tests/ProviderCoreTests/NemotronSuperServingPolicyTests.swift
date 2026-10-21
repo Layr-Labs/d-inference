@@ -587,19 +587,28 @@ struct NemotronSuperServingPolicyTests {
         estimatedMemoryGb: footprint.estimatedMemoryGb, isVision: true, templateRenderOK: true,
         nativeLoadTransientBytes: footprint.nativeLoadTransientBytes)
 
+    /// `runtimeRemainingBytes` is the published process ledger room
+    /// (`process_memory.remaining_bytes`); nil publishes no process sample.
     private static func quote(_ model: ModelInfo = Self.model, freeForLoadGb: Double = 0,
                               loadUsableGb: Double? = nil, loadHeadroomGb: Double? = 6.5,
+                              runtimeRemainingBytes: UInt64? = nil,
                               resident: Bool = false, vision: Bool = false,
                               images: Int = 0) -> ProviderMessage.CapacityQuote {
         let slot = BackendSlotCapacity(model: model.id, state: "idle", numRunning: 0, numWaiting: 0,
             activeTokens: 0, maxTokensPotential: 0, maxConcurrency: 8, activeTokenBudgetUsed: 0,
             activeTokenBudgetMax: 1 << 20, queuedTokenBudget: 0)
+        let telemetry = runtimeRemainingBytes.map { bytes in
+            var processMemory = ProcessMemoryTelemetry()
+            processMemory.remainingBytes = bytes
+            return CapacityTelemetry(processMemory: processMemory)
+        }
         return CapacityQuoteEngine.quote(.init(
             probe: .init(quoteId: "q", model: model.id, promptTokensBucket: 512, maxOutputTokens: 512,
                 requiresVision: vision, visionImageCount: images, deadlineRemainingMs: 9000),
             capacity: BackendCapacity(slots: resident ? [slot] : [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
                 gpuMemoryCacheGb: 0, totalMemoryGb: 256, freeForLoadGb: freeForLoadGb,
-                loadUsableGb: loadUsableGb, loadHeadroomGb: loadHeadroomGb, capacitySeq: 3),
+                loadUsableGb: loadUsableGb, loadHeadroomGb: loadHeadroomGb, capacitySeq: 3,
+                telemetry: telemetry),
             model: model, ttft: nil,
             visionLimits: .init(maxBufferBytes: 38 << 30, attentionElementBytes: 2, headFactor: 1),
             refusingNewWork: false))
@@ -631,32 +640,48 @@ struct NemotronSuperServingPolicyTests {
         #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb, vision: true).admissibleNow)
     }
 
-    /// A resident slot charges a vision probe against the published room no
-    /// resident model is credited as reclaimable, net of load headroom.
-    @Test func residentVisionProbesNeedTheirMediaCharge() {
-        let headroom = 6.5
+    /// A resident slot charges a vision probe against the room its media
+    /// reservation is admitted by: the published process ledger room, with
+    /// the activation reserve and outstanding commitments already taken.
+    @Test func residentVisionProbesNeedTheirMediaCharge() throws {
         for images in [1, 5, 16] {
-            let chargeGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
-            #expect(Self.quote(loadUsableGb: headroom + chargeGb, resident: true, vision: true, images: images)
+            let image = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
+            let video = try #require(NemotronSuperServingPolicy.videoMediaChargeBytes)
+            let charge = images == 1 ? max(image, video) : image
+            #expect(Self.quote(runtimeRemainingBytes: charge, resident: true, vision: true, images: images)
                 .admissibleNow)
-            // Room to load elsewhere does not substitute for live room here.
-            let short = Self.quote(freeForLoadGb: 200, loadUsableGb: headroom + chargeGb - 0.01,
+            // Room to load elsewhere or under the load gate does not substitute for it.
+            let short = Self.quote(freeForLoadGb: 200, loadUsableGb: 200, runtimeRemainingBytes: charge - 1,
                                    resident: true, vision: true, images: images)
             #expect(!short.admissibleNow && short.rejectionReason == .memoryCap)
         }
-        #expect(Self.quote(freeForLoadGb: 200, loadUsableGb: nil, resident: true, vision: true, images: 1)
-            .rejectionReason == .memoryCap)
-        #expect(Self.quote(loadUsableGb: 200, loadHeadroomGb: nil, resident: true, vision: true, images: 1)
+        #expect(Self.quote(freeForLoadGb: 200, loadUsableGb: 200, resident: true, vision: true, images: 1)
             .rejectionReason == .memoryCap)
         // Text probes on the resident slot do not consult media room.
-        #expect(Self.quote(loadUsableGb: 0, resident: true).admissibleNow)
+        #expect(Self.quote(runtimeRemainingBytes: 0, resident: true).admissibleNow)
         #expect(Self.quote(loadUsableGb: nil, loadHeadroomGb: nil, resident: true).admissibleNow)
+    }
+
+    /// The narrowest owner on a 128 GB Mac with other work open (the claim
+    /// took the room, keeping no load reserve): the load gate's view, less
+    /// the 12.8 GiB load reserve the slot does not keep, shows no room at
+    /// all, but the ledger room its image reservation needs is there, so the
+    /// probe is admissible exactly as the binding would serve it.
+    @Test func narrowestOwnerQuotesMediaOnTheLedgerRoom() throws {
+        let charge = try #require(NemotronSuperServingPolicy.videoMediaChargeBytes.flatMap { video in
+            NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1).map { max($0, video) }
+        })
+        let narrow = Self.quote(loadUsableGb: 0, loadHeadroomGb: 3, runtimeRemainingBytes: charge,
+                                resident: true, vision: true, images: 1)
+        #expect(narrow.admissibleNow, "\(String(describing: narrow.rejectionReason))")
+        #expect(Self.quote(loadUsableGb: 0, loadHeadroomGb: 3, runtimeRemainingBytes: charge - 1,
+                           resident: true, vision: true, images: 1).rejectionReason == .memoryCap)
     }
 
     @Test func visionProbesOutsideTheImageBindingAreCapabilityRejects() {
         #expect(Self.quote(freeForLoadGb: 1_000, loadUsableGb: 1_000, vision: true, images: 17)
             .rejectionReason == .capability)
-        #expect(Self.quote(loadUsableGb: 1_000, resident: true, images: 17).rejectionReason == .capability)
+        #expect(Self.quote(runtimeRemainingBytes: 1 << 40, resident: true, images: 17).rejectionReason == .capability)
         // An unpinned or text-only Super entry never advertises media.
         var textOnly = Self.model
         textOnly.isVision = nil
@@ -665,7 +690,8 @@ struct NemotronSuperServingPolicyTests {
         let other = ModelInfo(id: "org/vision", modelType: "qwen3_vl", sizeBytes: 1, estimatedMemoryGb: 8,
                               isVision: true, templateRenderOK: true)
         #expect(Self.quote(other, freeForLoadGb: 8, vision: true, images: 16).admissibleNow)
-        #expect(Self.quote(other, loadUsableGb: 0, resident: true, vision: true, images: 17).admissibleNow)
+        #expect(Self.quote(other, loadUsableGb: 0, runtimeRemainingBytes: 0, resident: true, vision: true,
+                           images: 17).admissibleNow)
     }
 
     @Test func scannerWithholdsTheRegistryIDWithoutThePinnedMetadata() throws {

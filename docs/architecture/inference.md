@@ -192,9 +192,15 @@ bytes at admission, and charges each step's scratch as a transient reservation
 when the step is built (`PagedKVBackend` step work, `AdmissionV2.reserveTransient`).
 Admission does not yet pre-reserve the per-token scratch, so a full ledger
 refuses the step rather than the request; that native change is deferred. Coordinator publication requires the slot pool to
-hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`),
-and a request whose reservation exceeds the whole pool is refused as
-`token_budget_exhausted: request_exceeds_slot_capacity` instead of queueing.
+hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`).
+The bridge refuses a request whose reservation exceeds the whole pool
+(`request_exceeds_slot_capacity`) or would not fit beside held requests
+(`slot_capacity_committed`) instead of queueing it: `EngineV2Bridge.submitTokenized`
+throws `MultiModelBatchSchedulerEngineError.tokenBudgetExhausted`
+(`EngineV2Bridge.glm5NextSlotRefusal`) before any stream exists. Local HTTP
+answers 503 with the fixed capacity message before response headers
+(`CORSResponder`), and the coordinator receives a pre-stream `inference_error`
+503 with `failure_code` `capacity` and `error_reason` `token_budget_exhausted`.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits

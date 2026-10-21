@@ -97,6 +97,9 @@ extension NemotronSuperManagedSlotTests {
         let fixture = try await Self.coResidentFixture(weightsGiB: 30, availableGiB: 92)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let loop = fixture.loop
+        // The re-slice, like the ledger, sees the emulated 128 GiB Mac.
+        await loop.setEngineV2SlotHooksForTesting(ProviderLoop.EngineV2SlotHooks(
+            physicalMemoryBytes: 128 << 30, makeEngine: { _, _ in throw CancellationError() }))
         let room = await loop.nemotronSuperClaimRoomBytes()
         #expect(room == UnifiedMemoryCap.hardCapBytes(physicalBytes: 128 << 30, capFraction: 0.9) - (30 << 30)
             - UnifiedMemoryCap.defaultActivationReserveBytes)

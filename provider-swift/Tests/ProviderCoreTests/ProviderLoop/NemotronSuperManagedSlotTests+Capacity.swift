@@ -111,7 +111,9 @@ extension NemotronSuperManagedSlotTests {
             try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
                                              revisionDirectory: fixture.directory)
         } catch { refusal = error }
-        #expect(ProviderLoop.loadErrorStatusCode(for: try #require(refusal)) == 503)
+        let error = try #require(refusal)
+        #expect(ProviderLoop.loadErrorStatusCode(for: error) == 503)
+        #expect("\(error)".contains("native work did not retire"), "\(error)")
         let request = try #require(requested.value)
         let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: request.environment,
             kvBytesCapacity: request.kvBytesCapacity, speculates: true, physicalBytes: 128 << 30)

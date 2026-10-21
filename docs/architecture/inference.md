@@ -125,8 +125,9 @@ of every projected row) is then reserved; its maximum,
 `NemotronSuperServingPolicy.videoMediaChargeBytes`, stays below one largest
 image's charge. As for images, a body over
 `NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) returns the
-invalid-media 400 and a charge the shared budget cannot hold returns the
-media-memory 503, as does a video prompt over the context.
+invalid-media 400, as does a video prompt over the context, and a charge the
+shared budget cannot hold returns the media-memory 503. The owner lock covers
+only the admission check while the video prompt is decoded and rendered.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
 each decoded frame must have the inspected size and row bytes within the

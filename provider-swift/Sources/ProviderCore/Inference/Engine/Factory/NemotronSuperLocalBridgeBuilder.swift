@@ -226,21 +226,19 @@ enum NemotronSuperLocalBridgeBuilder {
         /// owner's tokenizer, and the video's tubelet `labels` tokenized.
         func localVideoPrompt(body: Data, templateBytes: Data,
                               labels: [String]) throws -> NemotronSuperPromptContract.VideoPrompt {
-            return try lock.withLock {
-                guard closing == nil, imageFaults.isEmpty, installed != nil else {
-                    throw Failure.retirementIncomplete
-                }
-                let request = try ProviderLoop.decodeOpenAIRequest(body)
-                guard request.model == modelID,
-                    request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
-                    !labels.isEmpty, labels.count <= contextLength
-                else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
-                do {
-                    return try NemotronSuperPromptContract.videoPrompt(messages: request.messages, body: body,
-                        templateBytes: templateBytes, tokenizer: tokenizer.inner, labels: labels)
-                } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
-                    throw NemotronSuperLocalImageBinding.Failure.invalidInput
-                }
+            // The lock covers only the admission check; decoding the body and
+            // rendering read immutable state, so text admission never waits on them.
+            _ = try mediaInstallation()
+            let request = try ProviderLoop.decodeOpenAIRequest(body)
+            guard request.model == modelID,
+                request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
+                !labels.isEmpty, labels.count <= contextLength
+            else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
+            do {
+                return try NemotronSuperPromptContract.videoPrompt(messages: request.messages, body: body,
+                    templateBytes: templateBytes, tokenizer: tokenizer.inner, labels: labels)
+            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
+                throw NemotronSuperLocalImageBinding.Failure.invalidInput
             }
         }
 

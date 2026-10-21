@@ -335,7 +335,8 @@ actor NemotronSuperLocalImageBinding {
             _ = try prompt.tokens(keptCounts: [rows] + Array(repeating: 0, count: video.tubelets - 1),
                                   contextLength: contextLength)
         } catch NemotronSuperPromptContract.Failure.contextExceeded {
-            throw Failure.capacity
+            // A video prompt beyond the context is the request's own fault.
+            throw Failure.invalidInput
         }
         let total = try videoChargeBytes(encodedBytes: video.encodedBytes, codedPixels: video.codedPixels,
             patchRows: video.grid.heightPatches, patchColumns: video.grid.widthPatches,

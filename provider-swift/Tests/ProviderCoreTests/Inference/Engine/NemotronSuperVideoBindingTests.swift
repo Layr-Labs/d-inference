@@ -206,11 +206,12 @@ struct NemotronSuperVideoBindingTests {
         let ingress = try Binding.encodedHeaderQuote(bodyBytes: Policy.maximumEncodedBodyBytes,
                                                      templateBytes: Policy.pinnedTemplateBytes)
         #expect(ingress + plan.totalBytes <= (Policy.videoMediaChargeBytes ?? 0))
-        #expect(throws: Binding.Failure.capacity) {
+        // A prompt beyond the context is the request's own fault: 400, not a retryable 503.
+        #expect(throws: Binding.Failure.invalidInput) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0.5, contextLength: length - 1)
         }
         // Unpruned, every one of the 1,512 rows needs room.
-        #expect(throws: Binding.Failure.capacity) {
+        #expect(throws: Binding.Failure.invalidInput) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0, contextLength: length)
         }
     }

@@ -136,7 +136,7 @@ enum NemotronSuperVideoFeatures {
                 do {
                     tokens = try prompt.tokens(keptCounts: kept.map(\.count), contextLength: contextLength)
                 } catch NemotronSuperPromptContract.Failure.contextExceeded {
-                    throw Binding.Failure.capacity
+                    throw Binding.Failure.invalidInput
                 }
                 guard tokens.allSatisfy({ $0 >= 0 && $0 < model.languageModel.vocabularySize }) else {
                     throw Binding.Failure.invalidInput

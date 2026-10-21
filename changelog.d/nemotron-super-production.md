@@ -117,10 +117,12 @@
   capacity refresh: its bridge shuts down before its requests drain, within
   twice the engine's 10-second shutdown timeout (past it the slot's memory
   stays charged and Super loads are refused until restart), and the model
-  reloads only after a 120-second cooldown. The owner's prefill lane, decode
-  rows and round work count as resident memory in every KV grant and
-  heartbeat, so Super and models beside it no longer advertise token budget
-  the shared memory budget refuses.
+  reloads only after a 120-second cooldown. Until it may load again, Super
+  requests are refused before they are accepted, also while the slot retires,
+  and nothing is evicted for them. The owner's prefill lane, decode rows and
+  round work count as resident memory in every KV grant and heartbeat, so
+  Super and models beside it no longer advertise token budget the shared
+  memory budget refuses.
 - Plain decode steps of the Super owner commit larger Metal command buffers
   (thread-scoped limits in the pinned MLX), and full SSD prefill windows run
   batched, with tokens unchanged: one plain request decodes at 42.9 tok/s

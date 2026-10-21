@@ -513,7 +513,10 @@ the model reloads only after `engineV2RecoveryCooldown`. An owner whose native
 work did not retire, or whose wedged retirement outlives that bound, keeps its
 weights, reservations and bank in the fleet KV budget
 (`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
-restart. Sources:
+restart. `ensureModelLoaded` asks both refusals (`refuseNemotronSuperReload`)
+before it evicts anything for Super, and pre-accept refuses Super requests on
+them (`nemotronSuperRefusesRequest`), also while the wedged slot, still
+resident, retires. Sources:
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLoadFit.swift`,

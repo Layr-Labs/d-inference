@@ -140,7 +140,9 @@ extension NemotronSuperManagedSlotTests {
 
     /// The liveness pass leaves the wedged slot's join to a task of its own;
     /// the engine force-finishes within its shutdown timeout, the owner
-    /// retires completely, and reloads wait out the recovery cooldown.
+    /// retires completely, and reloads wait out the recovery cooldown. Until
+    /// it ends, new requests are refused before they are accepted, also while
+    /// the slot, still resident, retires.
     @Test(.timeLimit(.minutes(2)))
     func confirmedWedgeRetiresTheSlotOffTheCapacityTick() async throws {
         let gate = DecodeGate()
@@ -159,8 +161,11 @@ extension NemotronSuperManagedSlotTests {
             guard let confirmed = await Self.confirmWedge(owner.bridge, gate: gate) else { return }
             #expect(await Self.livenessPassReturnsPromptly(loop, at: confirmed, gate: gate),
                     "the capacity tick never waits for the wedged owner")
-            // Out of serving at once: the heartbeat drops the slot.
+            // Out of serving at once: the heartbeat drops the slot, and the
+            // slot, resident until its owner retires, admits no new request.
             #expect(await loop.engineV2Runtime.bridge(forModel: Self.modelID) == nil)
+            #expect(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID) != nil)
+            #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
         }
         #expect(Self.failure(wedged.terminal) != nil, "\(wedged.terminal)")
         // Bridge shutdown cancelled the pumps first; the engine gave up its
@@ -174,7 +179,9 @@ extension NemotronSuperManagedSlotTests {
         gate.open()
         #expect(await Self.eventually(within: .seconds(30)) { await fixture.budget.outstandingReservedBytes() == 0 })
 
-        // A reload inside the recovery cooldown is refused as transient (503)...
+        // A request inside the recovery cooldown is refused before it is
+        // accepted, a reload as transient (503)...
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
         var refusal: Error?
         do {
             try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
@@ -186,6 +193,7 @@ extension NemotronSuperManagedSlotTests {
         // ...and loads once it has passed.
         await loop.setEngineV2LastRecoveryAtForTesting(
             modelId: Self.modelID, at: ContinuousClock.now - ProviderLoop.engineV2RecoveryCooldown)
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID) == false)
         try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
                                          revisionDirectory: fixture.directory)
         #expect(await loop.unloadModel(Self.modelID))
@@ -229,6 +237,7 @@ extension NemotronSuperManagedSlotTests {
                                              revisionDirectory: fixture.directory)
         } catch { refusal = error }
         #expect("\(String(describing: refusal))".contains("retained native work"))
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
         gate.open()
         #expect(await Self.eventually(within: .seconds(30)) { await fixture.budget.outstandingReservedBytes() == 0 })
         #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == retained)

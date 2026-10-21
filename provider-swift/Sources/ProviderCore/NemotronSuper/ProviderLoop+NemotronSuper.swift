@@ -31,11 +31,7 @@ extension ProviderLoop {
     /// released or retained every resource this load took.
     func loadNemotronSuperSlot(modelID: String, directory: URL, modelInfo: ModelInfo,
                                deviceActivity: WholeMacUnboundedActivity) async throws {
-        guard nemotronSuperRetainedWeightBytes == 0 else {
-            throw InferenceError.modelLoadFailed(
-                "An earlier Nemotron Super owner retained native work; process restart required")
-        }
-        try refuseNemotronSuperReloadAfterWedge(modelID)
+        try refuseNemotronSuperReload(modelID)
         let started = ContinuousClock.now
         let kvRate: Int
         do { kvRate = try nemotronSuperSlotLoader.kvBytesPerToken(directory) }
@@ -317,14 +313,36 @@ extension ProviderLoop {
         }
     }
 
-    /// A wedged slot's model reloads only once `engineV2RecoveryCooldown` has
-    /// passed since its retirement began, never thrashing loads into the
-    /// fault. Transient (503): the coordinator reroutes.
-    private func refuseNemotronSuperReloadAfterWedge(_ modelID: String) throws {
-        guard let wedged = engineV2LastRecoveryAt[modelID],
-            ContinuousClock.now - wedged < Self.engineV2RecoveryCooldown else { return }
+    /// Super's own slot state refuses a load: native work an earlier owner
+    /// retained, until restart, and a wedged slot's model until
+    /// `engineV2RecoveryCooldown` has passed since its retirement began, never
+    /// thrashing loads into the fault. `ensureModelLoaded` asks before it
+    /// evicts anything for Super and the load asks again. Transient (503):
+    /// the coordinator reroutes.
+    func refuseNemotronSuperReload(_ modelID: String) throws {
+        guard nemotronSuperRetainedWeightBytes == 0 else {
+            throw InferenceError.modelLoadFailed(
+                "An earlier Nemotron Super owner retained native work; process restart required")
+        }
+        guard nemotronSuperWedgeCooldownActive(modelID) else { return }
         throw InferenceError.modelLoadFailed(
             "Nemotron Super slot wedged; reload refused for \(Self.engineV2RecoveryCooldown) after its retirement")
+    }
+
+    /// `fastAdmissionReject`'s verdict on a Super request its slot state
+    /// refuses: a load `refuseNemotronSuperReload` refuses, and the wedged
+    /// slot itself while it retires, still resident.
+    func nemotronSuperRefusesRequest(_ modelID: String) -> Bool {
+        guard isNemotronSuperIdentity(modelID) else { return false }
+        if nemotronSuperRetainedWeightBytes > 0, modelSlots[modelID] == nil { return true }
+        return nemotronSuperWedgeCooldownActive(modelID)
+    }
+
+    /// Within `engineV2RecoveryCooldown` of the wedge that began the slot's
+    /// retirement (`retireWedgedNemotronSuperSlot`).
+    private func nemotronSuperWedgeCooldownActive(_ modelID: String) -> Bool {
+        guard let wedged = engineV2LastRecoveryAt[modelID] else { return false }
+        return ContinuousClock.now - wedged < Self.engineV2RecoveryCooldown
     }
 
     /// The pinned owner's planned lane and round (`pinnedOwnerShares`, as its

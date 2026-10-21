@@ -341,6 +341,8 @@ extension ProviderLoop {
                 revisionDirectory: revisionDirectory, autopilotCommandId: autopilotCommandId)
             return
         }
+        // Super's own slot state refuses its load before either eviction below.
+        if managedSuper { try refuseNemotronSuperReload(modelId) }
         isLoadingAny = true
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity.finish() }
@@ -1282,9 +1284,9 @@ extension ProviderLoop {
 
     internal func fastAdmissionReject(modelId: String) async -> Bool {
         if nativeMiMoRefusesRequest(modelId) { return true }
-        // A retained Super fault refuses every later Super load until restart.
-        if nemotronSuperRetainedWeightBytes > 0, modelSlots[modelId] == nil,
-            isNemotronSuperIdentity(modelId) { return true }
+        // Super's slot state refuses its load: a retained fault, and a wedge
+        // (resident while the slot retires) until its cooldown ends.
+        if nemotronSuperRefusesRequest(modelId) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the

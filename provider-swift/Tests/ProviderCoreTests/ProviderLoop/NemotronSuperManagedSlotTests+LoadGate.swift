@@ -112,6 +112,43 @@ extension NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
 
+    /// The same Mac with the co-resident model idle, where Super loads by
+    /// evicting it, while a wedge's reload cooldown runs or an earlier owner's
+    /// native work stays retained: a request is refused before it is accepted,
+    /// and a load is refused before anything is evicted for it.
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
+    func superSlotStateRefusesBeforeAcceptingOrEvicting(wedged: Bool) async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 30, availableGiB: 92)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        if wedged {
+            await loop.setEngineV2LastRecoveryAtForTesting(modelId: Self.modelID, at: .now)
+        } else {
+            await loop.retainNemotronSuperBytesForTesting(1 << 30)
+        }
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
+        let recorder = Recorder()
+        let request = try await Self.send(Self.body(["x"], script: SuperOutputScript()), to: loop,
+                                          recorder: recorder, consumer: NodeKeyPair.generate())
+        #expect(Self.failure(request.terminal)?.statusCode == 503, "\(request.terminal)")
+        #expect(!recorder.snapshot.contains { if case .inferenceAccepted = $0 { true } else { false } })
+        var refusal: Error?
+        do {
+            try await loop.ensureModelLoaded(modelId: Self.modelID, revisionDirectory: fixture.directory)
+        } catch { refusal = error }
+        let error = try #require(refusal)
+        #expect(ProviderLoop.loadErrorStatusCode(for: error) == 503)
+        #expect("\(error)".contains(wedged ? "reload refused" : "retained native work"), "\(error)")
+        #expect(fixture.idle.shutdownCalls == 0, "nothing is evicted for a refused load")
+        #expect(await loop.modelLoadingResidentIDs() == [Self.coResidentID])
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+        guard wedged else { return }
+        // Once the cooldown has passed, eviction may make room again.
+        await loop.setEngineV2LastRecoveryAtForTesting(
+            modelId: Self.modelID, at: ContinuousClock.now - ProviderLoop.engineV2RecoveryCooldown)
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID) == false)
+    }
+
     /// Eviction targets the widest configuration that evicting every idle
     /// model makes room for (102.3, 97.0, 93.3, 88.8, 87.3 and 83.6 GiB on
     /// 128 GiB): an idle model yields to the planned owner, or to a wider
@@ -216,4 +253,9 @@ extension NemotronSuperManagedSlotTests {
         else { return false }
         return await budget.finishPendingLoad(lease)
     }
+}
+
+extension ProviderLoop {
+    /// Charges `bytes` as a Super owner whose native work did not retire.
+    func retainNemotronSuperBytesForTesting(_ bytes: UInt64) { nemotronSuperRetainedWeightBytes += bytes }
 }

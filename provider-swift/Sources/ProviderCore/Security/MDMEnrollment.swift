@@ -23,14 +23,39 @@ public enum MDMEnrollmentState: Equatable, Sendable {
         if case .enrolledDarkbloom = self { return true }
         return false
     }
+
+    /// The other build environment (dev or production) whose coordinator
+    /// issued this profile. That install owns it: this install never treats
+    /// it as its own enrollment and never offers to remove it.
+    public var otherInstall: BuildEnvironment? {
+        guard case .enrolledOtherMDM(let serverURL) = self,
+            let host = URL(string: serverURL)?.host?.lowercased()
+        else { return nil }
+        return BuildEnvironment.allCases.first { $0 != .current && mdmHost(of: $0) == host }
+    }
 }
 
-/// MDM hosts that are always ours, regardless of the locally configured
-/// coordinator (prod + dev). The enrollment profile's ServerURL is built from
-/// the coordinator base URL (coordinator/api/enroll.go), so the host of the
-/// configured coordinator is also accepted via `expectedHosts`.
+/// Text for a profile that this install does not own: the other install's
+/// Darkbloom profile is named with the command that manages it.
+public func describeOtherMDM(_ state: MDMEnrollmentState) -> String {
+    guard case .enrolledOtherMDM(let serverURL) = state else { return "" }
+    if let other = state.otherInstall {
+        return "the \(other.cliName) provider's Darkbloom MDM profile (\(serverURL)); manage it with `\(other.cliName) enroll` / `\(other.cliName) unenroll`"
+    }
+    return "another MDM (\(serverURL))"
+}
+
+/// Host of the coordinator that serves an environment's enrollment profiles.
+func mdmHost(of environment: BuildEnvironment) -> String? {
+    URL(string: environment.coordinatorHTTPURL)?.host?.lowercased()
+}
+
+/// MDM hosts that are ours: the build environment's coordinator host and
+/// these suffixes. The enrollment profile's ServerURL is built from the
+/// coordinator base URL (coordinator/api/enroll.go), so the host of the
+/// configured coordinator is also accepted via `expectedHosts`. The other
+/// build environment's coordinator host is never ours: that install owns it.
 let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.ai"]
-let darkbloomMDMHosts = ["api.darkbloom.dev", "api.dev.darkbloom.dev"]
 let retiredDarkbloomMDMHosts = ["api.dev.darkbloom.xyz"]
 
 private let logger = Logger(label: "darkbloom.MDMEnrollment")
@@ -50,7 +75,8 @@ private let logger = Logger(label: "darkbloom.MDMEnrollment")
 /// source in the old heuristic).
 public func parseMDMEnrollmentStatus(
     _ output: String,
-    expectedHosts: [String] = []
+    expectedHosts: [String] = [],
+    environment: BuildEnvironment = .current
 ) -> MDMEnrollmentState {
     var enrolled = false
     var serverURL: String?
@@ -84,9 +110,15 @@ public func parseMDMEnrollmentStatus(
         return .enrolledOtherMDM(serverURL: serverURL)
     }
 
-    let ours = darkbloomMDMHosts.contains(host)
+    if expectedHosts.contains(where: { !$0.isEmpty && $0.lowercased() == host }) {
+        return .enrolledDarkbloom(serverURL: serverURL)
+    }
+    let otherHosts = BuildEnvironment.allCases.filter { $0 != environment }.compactMap(mdmHost(of:))
+    if otherHosts.contains(host) {
+        return .enrolledOtherMDM(serverURL: serverURL)
+    }
+    let ours = host == mdmHost(of: environment)
         || darkbloomMDMHostSuffixes.contains(where: { host.hasSuffix($0) })
-        || expectedHosts.contains(where: { !$0.isEmpty && $0.lowercased() == host })
     return ours
         ? .enrolledDarkbloom(serverURL: serverURL)
         : .enrolledOtherMDM(serverURL: serverURL)

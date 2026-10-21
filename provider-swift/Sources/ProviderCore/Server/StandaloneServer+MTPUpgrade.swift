@@ -78,7 +78,7 @@ extension StandaloneServer {
         else { return [] }
         return slots.compactMap { modelID, slot in
             guard !isNativeMiMoSlot(modelID), slot.container != nil,
-                modelID == "gemma-4-26b-qat-4bit", !slot.bundle.mtpStatus.active,
+                MTPMode.isAutomaticExternalTarget(modelType: slot.modelType, modelID: modelID), !slot.bundle.mtpStatus.active,
                 config.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
                 !evictingModels.contains(modelID), models.contains(where: { $0.id == modelID })
@@ -173,6 +173,10 @@ extension StandaloneServer {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                kvQuantizationConfig: config.engineV2KVQuantization,
+                kvQuantizationConfigByModel: config.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: config.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: config.engineV2KVCheckpointQuantizationByModel,
                 mtpAcceptanceConfig: config.mtpAcceptance,
                 mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,

@@ -17,37 +17,42 @@ read_version() {
     printf '%s' "$value"
 }
 
+# The provider owns this release; the coordinator belongs to the separate
+# platform repository and does not define provider identity.
 PROVIDER_VERSION=$(read_version \
     "$ROOT/provider-swift/Sources/ProviderCore/ProviderCore.swift" \
     'public static let version =')
-COORDINATOR_VERSION=$(read_version \
-    "$ROOT/coordinator/api/server.go" \
-    'var LatestProviderVersion =')
 
 SEMVER='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
 if [[ ! "$PROVIDER_VERSION" =~ $SEMVER ]]; then
     echo "release version check: invalid ProviderCore.version: $PROVIDER_VERSION" >&2
     exit 1
 fi
-if [ "$PROVIDER_VERSION" != "$COORDINATOR_VERSION" ]; then
-    echo "release version check: provider=$PROVIDER_VERSION coordinator=$COORDINATOR_VERSION" >&2
-    exit 1
-fi
+# A dev release is the source version plus -dev.<run number>; a staging release
+# is the source version plus -staging.<run number>. The master dev lane uses
+# -dev.N; the experimental dev-branch lane
+# (.github/workflows/release-dev-branch.yml) uses -dev.branch.N so a branch
+# build never collides with a master dev build. The release build stamps the
+# full value into ProviderCore.version before compiling.
+RELEASE_VERSION=$PROVIDER_VERSION
 if [ -n "$EXPECTED" ]; then
     EXPECTED=${EXPECTED#v}
-    if [ "$PROVIDER_VERSION" != "$EXPECTED" ]; then
+    if [ "$PROVIDER_VERSION" != "$EXPECTED" ] &&
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-dev\.(branch\.)?[1-9][0-9]*$ ]] &&
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-staging\.[1-9][0-9]*$ ]]; then
         echo "release version check: source=$PROVIDER_VERSION requested=$EXPECTED" >&2
         exit 1
     fi
+    RELEASE_VERSION=$EXPECTED
 fi
 if [ -n "$REPORTED" ]; then
     case "$REPORTED" in
-        "$PROVIDER_VERSION"|"darkbloom $PROVIDER_VERSION") ;;
+        "$RELEASE_VERSION"|"darkbloom $RELEASE_VERSION") ;;
         *)
-            echo "release version check: binary reported '$REPORTED', expected '$PROVIDER_VERSION'" >&2
+            echo "release version check: binary reported '$REPORTED', expected '$RELEASE_VERSION'" >&2
             exit 1
             ;;
     esac
 fi
 
-echo "release version integrity: $PROVIDER_VERSION"
+echo "release version integrity: $RELEASE_VERSION"

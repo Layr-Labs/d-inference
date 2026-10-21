@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-15
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -13,25 +13,70 @@ embedded MTP checkpoint under an existing model ID. For a new model ID or a
 quantization exposed as a separate build, use [model migration](model-migration.md).
 Overwriting an already published R2 revision is rejected.
 
+### Choose the operation first
+
+| State | Operation | Credentials |
+|---|---|---|
+| New model ID with a valid, already published canonical manifest | Register the build using [model migration](model-migration.md#2-register-the-build-in-the-coordinator-catalog) | Coordinator publishing key |
+| Existing model ID with a valid, already published new revision | Set `publish_revision_only=true` and `promote=true` in **Register Model** | Coordinator publishing key |
+| Missing files, changed bytes, wrong manifest inventory or noncanonical prefix | Publish a new immutable revision, then register or promote it | Model-bucket upload credentials plus coordinator publishing key |
+
+A public download URL proves read access, not bucket write permission. Conversely,
+an R2 write failure does not prevent registering a valid existing upload. Check
+the model ID, version, canonical prefix and complete serving inventory before
+choosing a path. Keep optional assistant checkpoints outside the base inventory
+unless the runtime explicitly supports their combined layout.
+
+The coordinator validates the canonical manifest and file sizes; providers verify
+the file hashes. A backup manifest at another prefix cannot be submitted as an
+arbitrary manifest URL through the standard registration API. Publish a new
+canonical revision when its identity or inventory differs; do not make direct
+database edits part of the routine workflow.
+
 ## Prerequisites
 
 - The model already has an active registry entry. Qualify the new checkpoint's
   engine compatibility, memory, output and MTP behavior separately; an upload
   succeeding is not a model-quality verdict.
-- Deploy the coordinator support and release the provider support once. Macs
-  must advertise `model_revisions_v1` for automatic same-ID updates.
-- Configure AWS CLI credentials for the R2 bucket and
-  `MODEL_REGISTRY_PUBLISHING_KEY` for the selected coordinator. The command takes
-  the R2 endpoint explicitly or through `R2_ENDPOINT`.
-- Use a complete, stable local checkpoint directory; do not modify its files
-  during hashing/upload. Keep old R2 revisions and provider snapshots for rollback.
+- Confirm the external platform already supports the revision API and Macs
+  advertise `model_revisions_v1` for automatic same-ID updates. Backend
+  deployment is owned by the platform and is not part of this runbook.
+- Configure `MODEL_REGISTRY_PUBLISHING_KEY` for the selected coordinator.
+- For uploads only, configure AWS CLI credentials for the **model bucket** and
+  its matching account endpoint. The command takes the endpoint explicitly or
+  through `R2_ENDPOINT`. Release-artifact credentials and the account selected
+  in a browser are not evidence of access to `darkbloom-models`.
+- For uploads from local files, use a complete, stable checkpoint directory and
+  do not modify it during hashing/upload. Keep old R2 revisions and provider
+  snapshots for rollback. An already published revision needs no local checkpoint.
 - Exercise this flow on dev first. Production publication, promotion or
   retirement requires approval for that specific operation.
+
+### Check upload access before moving bytes
+
+Confirm the endpoint, bucket and credential source with the bucket owner. Keep
+credentials out of terminal output, reports and commits. The endpoint is the
+account URL, without a bucket path appended. With credentials already configured,
+check one known object in the actual model bucket:
+
+```bash
+aws s3api head-object --bucket darkbloom-models \
+  --key "$KNOWN_MODEL_MANIFEST_KEY" --endpoint-url "$R2_ENDPOINT" \
+  --query '{bytes:ContentLength,etag:ETag}'
+```
+
+`AccessDenied` or HTTP 403 is an access/configuration failure, not evidence that
+the model is missing. Stop and correct that tuple instead of trying unrelated
+accounts or assuming release CI credentials have model-bucket access. This read
+check does not prove write permission; the normal conditional revision reservation
+is the first authorized write. A timeout leaves the outcome uncertain: inspect
+the destination and any running publisher before resuming the same reserved
+version with identical bytes.
 
 ## Steps
 
 1. Read the existing catalog entry and save its version and hash before selecting
-   replacement bytes. The [Nemotron Lightning rollout](cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2)
+   replacement bytes. The [Nemotron Lightning rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2)
    uses the catalog ID `nvidia-nemotron-3.5-lightning`; confirm that ID and its
    active entry on the selected coordinator. A Hugging Face repository name is
    a download source and does not replace the catalog ID.
@@ -50,7 +95,8 @@ Overwriting an already published R2 revision is rejected.
    exact replacement checkpoint independently; the commands below leave its
    local path and optional pinned HF source explicit.
 
-2. Preview the publication. This hashes locally and makes no remote changes:
+2. If an upload is needed, preview it. This hashes locally and makes no remote
+   changes. For an already published revision, use the workflow mode in step 3:
 
    ```bash
    python3 scripts/publish-model-revision.py publish /path/to/qualified-checkpoint "$REVISION_MODEL_ID" \
@@ -59,11 +105,21 @@ Overwriting an already published R2 revision is rejected.
      --version candidate-YYYYMMDD-r1 --dry-run
    ```
 
-3. Run the same command without `--dry-run` to reserve the R2 prefix, upload
+3. To upload, run the same command without `--dry-run` to reserve the R2 prefix, upload
    files and the final manifest, then invoke the authenticated
    `publish-revision` registry action. Omit `--version` to generate a unique
    timestamp/UUID version. Retry with the same version and identical files to
    resume an interrupted publication.
+
+   If the revision is already uploaded, the **Register Model** GitHub workflow
+   accepts `publish_revision_only=true` with `promote=true`. It invokes `publish-revision` with the
+   version and optional pinned HF artifact, preserving model metadata and prices.
+   It uses only `MODEL_REGISTRY_PUBLISHING_KEY`; it does not need R2 credentials
+   or a local GCP login. Registration-only inputs are optional at dispatch and
+   ignored in this mode; normal registration validates them before sending.
+   Revision-only publication always promotes; leaving `promote=false` fails
+   before any HTTP request. Use normal registration for a staged-only build.
+   Keep `publish_revision_only=false` for normal registration.
 
    To use a different HF source for this revision, add these flags to both the
    preview and publication commands:
@@ -103,7 +159,7 @@ Overwriting an already published R2 revision is rejected.
 
 5. If this model participates in cache routing, qualify and derive the new
    `(model_id, model_aggregate_sha256, prompt_contract_id)` tuple using the
-   [cache-routing rollout](cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2).
+   [cache-routing rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2).
    Append it to `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` through that
    runbook's separately approved deployment step. Keep tuples for retained
    approved revisions during convergence and rollback. Promotion does not update
@@ -111,7 +167,7 @@ Overwriting an already published R2 revision is rejected.
    tokenizer and prompt contract remain identical. Until it is appended the
    model has no cache routing: `artifact_allowlist.stale_models` in
    `GET /v1/cache/status` counts it and the coordinator log names the exact
-   tuple ([stale entries](cache-routing-rollout.md#stale-entries-after-a-model-revision)).
+   tuple ([stale entries](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#stale-entries-after-a-model-revision)).
 
 ## Verification
 
@@ -156,7 +212,8 @@ revocation is not complete until the live routing policy refresh succeeds.
 
 ## Related
 
-- [Coordinator deployment](coordinator-deploy.md)
+- [Coordinator deployment](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md)
 - [Provider release](provider-release.md)
 - [Model revision design](../architecture/model-revisions.md)
-- [Cache-routing rollout](cache-routing-rollout.md)
+- [Bonsai 9B publication incident](../reports/2026-10-15-bonsai9b-publication.md)
+- [Cache-routing rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md)

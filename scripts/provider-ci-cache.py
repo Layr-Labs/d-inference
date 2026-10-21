@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Emit compatible cache keys for provider, nested SDK, parity, and integration CI.
+"""Emit compatible cache keys for provider, nested SDK, and Swift prompt parity CI.
 
-Run `keys --lane provider|sdk|parity|integration` after Metal toolchain setup.
-Parity and integration require Rust 1.88.0 first. Redirect scalar stdout to
-GITHUB_OUTPUT. Swift/Rust restore prefixes retain all compatibility boundaries;
+Run `keys --lane provider|sdk|parity` after Metal toolchain setup.
+Redirect scalar stdout to GITHUB_OUTPUT. Swift restore prefixes retain all
+compatibility boundaries;
 the shared metallib key is exact-only. Cache hits never authorize skipping tests
 or the source-matched metallib verification/staging helpers.
 """
@@ -22,10 +22,8 @@ CACHE_VERSION = "v1"
 LANE_PURPOSES = {
     "provider": "provider-debug-tests",
     "sdk": "sdk-nested-debug-tests",
-    "parity": "parity-swift-debug-rust",
-    "integration": "integration-debug-cli-rust",
+    "parity": "parity-swift-debug",
 }
-RUST_LANES = {"parity", "integration"}
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"
 SWIFT_WRAPPER = Path(__file__).resolve().with_name("provider-release-swift.sh")
 METALLIB_RECIPE_PATHS = ("scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
@@ -39,12 +37,13 @@ RECIPE_PATHS = (
     "scripts/prepare-metal-toolchain.py",
     "scripts/prepare-provider-release-toolchain.sh",
     "scripts/provider-release-swift.sh",
-    "scripts/install-release-rust.sh",
     "scripts/run-provider-tests.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/run-nested-suite.sh",
     "scripts/run-paged-kernel-tests.sh",
     "scripts/verify-prompt-parity.sh",
+    "scripts/verify-nemotron-prompt-parity.sh",
+    "scripts/prepare-prompt-fixtures.py",
     *METALLIB_RECIPE_PATHS,
 )
 
@@ -85,7 +84,7 @@ def toolchain_metadata(lane: str) -> dict:
     previous = {name: os.environ.get(name) for name in selected}
     try:
         os.environ.update(selected)
-        metadata = identity.toolchain_metadata("qualification" if lane in RUST_LANES else "release")
+        metadata = identity.toolchain_metadata("release")
         # RUNNER_TEMP changes between machines. The known symlink always
         # invokes this source file; the outer cache key already binds checkout.
         metadata["swift"]["invocation"] = identity.external_file(SWIFT_WRAPPER if wrapped else invocation)
@@ -115,16 +114,12 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
     root = root.resolve(strict=True)
     sources = tracked.inventory(root)
     metadata = metadata if metadata is not None else toolchain_metadata(lane)
-    if lane not in RUST_LANES:
-        metadata = {name: value for name, value in metadata.items() if name != "rust"}
     dependencies = {
         "files": {path: tracked.file_hash(root, path) for path in sorted(sources.files)
                   if identity.dependency_file(path)},
         "gitlinks": sources.gitlinks,
     }
     recipe_paths = set(RECIPE_PATHS)
-    if lane == "integration":
-        recipe_paths.add(".github/workflows/integration.yml")
     recipe_paths.update(path.relative_to(root).as_posix()
                         for path in (root / "scripts/provider_release_cache").glob("*.py"))
     recipe = {path: tracked.file_hash(root, path) if (root / path).exists() else "absent"
@@ -135,11 +130,8 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
         "toolchain": metadata, "dependencies": dependencies, "recipe": recipe,
     })
     commit = tracked.git(root, "rev-parse", "HEAD").decode("ascii").strip()
-    result = {}
-    for kind in (("swift", "rust") if lane in RUST_LANES else ("swift",)):
-        prefix = f"provider-ci-{kind}-{CACHE_VERSION}-{LANE_PURPOSES[lane]}-{compatibility_hash}-"
-        result[f"{kind}-prefix"] = prefix
-        result[f"{kind}-key"] = prefix + commit
+    prefix = f"provider-ci-swift-{CACHE_VERSION}-{LANE_PURPOSES[lane]}-{compatibility_hash}-"
+    result = {"swift-prefix": prefix, "swift-key": prefix + commit}
 
     mlx_commit = sources.gitlinks.get(MLX_SOURCE)
     if mlx_commit is None:
@@ -165,8 +157,6 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
         "swift-version": metadata["swift"]["version"].splitlines()[0],
         "sdk-version": metadata["sdk"]["version"], "sdk-build": metadata["sdk"]["build"],
     })
-    if lane in RUST_LANES:
-        result["rust-version"] = metadata["rust"]["version"].splitlines()[0]
     return result
 
 

@@ -115,9 +115,9 @@ struct LaunchAgentLifecycleTests {
         let launchctl = ScriptedLaunchctl()
         try withScriptedLaunchd(launchctl) { home in
             #expect(LaunchAgent.plistPath().path
-                == home.appendingPathComponent("Library/LaunchAgents/io.darkbloom.provider.plist").path)
+                == home.appendingPathComponent("Library/LaunchAgents/\(BuildEnvironment.current.launchAgentLabel).plist").path)
             #expect(LaunchAgent.logPath().path
-                == home.appendingPathComponent(".darkbloom/provider.log").path)
+                == home.appendingPathComponent("\(BuildEnvironment.current.installDirectoryName)/provider.log").path)
             #expect(!LaunchAgent.isInstalled())
             _ = try writeInstalledPlist(home: home)
             #expect(LaunchAgent.isInstalled())
@@ -157,7 +157,7 @@ struct LaunchAgentLifecycleTests {
             #expect(plist["KeepAlive"] as? Bool == false)
             #expect(plist["ExitTimeOut"] as? Int == 3660)
             #expect(plist["StandardOutPath"] as? String
-                == home.appendingPathComponent(".darkbloom/provider.log").path)
+                == home.appendingPathComponent("\(BuildEnvironment.current.installDirectoryName)/provider.log").path)
             let arguments = try #require(plist["ProgramArguments"] as? [String])
             #expect(Array(arguments.dropFirst()) == [
                 "start", "--foreground",

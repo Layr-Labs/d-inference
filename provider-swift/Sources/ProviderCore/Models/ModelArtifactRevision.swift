@@ -148,7 +148,9 @@ extension ModelDownloader {
         else { throw ModelCatalogError.downloadFailed("revision is outside this model's snapshot store") }
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
-        try directory.lastPathComponent.write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
+        // Only this install's ref: the weights cache is shared with the other install.
+        try directory.lastPathComponent.write(
+            to: refs.appendingPathComponent(BuildEnvironment.current.modelRevisionRef), atomically: true, encoding: .utf8)
     }
 }
 

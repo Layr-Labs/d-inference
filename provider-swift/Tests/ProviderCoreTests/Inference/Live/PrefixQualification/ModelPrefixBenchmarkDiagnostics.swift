@@ -1,7 +1,7 @@
 import MLXLMCommon
 
 /// Actual immutable engine geometry, rather than the requested environment.
-struct ModelPrefixBenchmarkSchedulerConfiguration: Codable, Sendable {
+struct ModelPrefixBenchmarkSchedulerConfiguration: Codable, Sendable, Equatable {
     let prefillChunkSize: Int
     let maxBatchedTokensPerStep: Int
     let soloPrefillStripeTokens: Int?
@@ -9,6 +9,7 @@ struct ModelPrefixBenchmarkSchedulerConfiguration: Codable, Sendable {
     let maxConcurrentPartialPrefills: Int?
     let demandedShortCheckpointMinimumTokens: Int?
     let demandedCheckpointPartitionIncludesLongPrompts: Bool
+    let enablePrefixCache: Bool
 
     init(_ config: CBv2SchedulerConfig) {
         prefillChunkSize = config.prefillChunkSize
@@ -18,6 +19,7 @@ struct ModelPrefixBenchmarkSchedulerConfiguration: Codable, Sendable {
         maxConcurrentPartialPrefills = config.maxConcurrentPartialPrefills
         demandedShortCheckpointMinimumTokens = config.demandedShortCheckpointMinimumTokens
         demandedCheckpointPartitionIncludesLongPrompts = config.demandedCheckpointPartitionIncludesLongPrompts
+        enablePrefixCache = config.enablePrefixCache
     }
 }
 

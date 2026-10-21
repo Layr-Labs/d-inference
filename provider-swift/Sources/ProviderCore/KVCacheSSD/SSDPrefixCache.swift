@@ -276,7 +276,7 @@ public final class SSDPrefixCache:
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
     init(

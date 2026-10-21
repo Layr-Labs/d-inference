@@ -122,7 +122,7 @@ extension Start {
         }
         try Task.checkCancellation()
         if let approved, Set(verified) != approved {
-            throw ValidationError("Could not validate every enrolled model. The recorded Autopilot inventory is unchanged; retry start, or explicitly refresh it with darkbloom autopilot models.")
+            throw ValidationError("Could not validate every enrolled model. The recorded Autopilot inventory is unchanged; retry start, or explicitly refresh it with \(BuildEnvironment.current.cliName) autopilot models.")
         }
         guard !verified.isEmpty else {
             throw ValidationError("No verified downloaded models supported by the network are available. Autopilot was not enrolled; download a supported model separately or use --no-autopilot.")

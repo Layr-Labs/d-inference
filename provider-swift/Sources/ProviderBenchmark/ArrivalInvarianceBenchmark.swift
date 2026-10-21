@@ -72,9 +72,8 @@ public enum ArrivalInvarianceBenchmark {
     private static let retryCooldownNanoseconds: UInt64 = 250_000_000
 
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory, exactly as in `ThroughputSweep.run`. `.auto` resolves
-    /// CONTIGUOUS, so a run that does not forward the wrapper's selection
-    /// here measures a different arm than the sweep it is reported beside.
+    /// factory, exactly as in `ThroughputSweep.run`. Quantized `.auto` requires
+    /// paged storage; native `.auto` retains its model policy and fallback.
     public static func run(
         modelID: String,
         modelDirectory: URL,
@@ -86,7 +85,8 @@ public enum ArrivalInvarianceBenchmark {
         arrivalToleranceMs: Double? = nil,
         maxAttemptsPerSample: Int = 3,
         kvBackend: EngineV2KVBackendSelection = .auto,
-        gemmaOptimizations: GemmaOptimizationSettings
+        gemmaOptimizations: GemmaOptimizationSettings,
+        checkpointQuantizationConfig: String = "balanced"
     ) async throws -> ArrivalInvarianceBenchmarkReport {
         let promptTokens = max(2, promptTokens)
         guard (1...16).contains(width) else { throw BenchmarkError.invalidPromptLengths }
@@ -95,6 +95,10 @@ public enum ArrivalInvarianceBenchmark {
         guard promptLengths.count == width, promptLengths.allSatisfy({ $0 >= 2 }) else {
             throw BenchmarkError.invalidPromptLengths
         }
+        let checkpointQuantization = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: ModelBenchmark.decodedModelType(
+                from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))),
+            global: checkpointQuantizationConfig, modelID: modelID, purpose: .checkpoint)
         let decodeTokens = max(2, decodeTokens)
         let iterations = max(1, iterations)
         let toleranceMs = resolvedToleranceMs(explicit: arrivalToleranceMs)
@@ -139,7 +143,8 @@ public enum ArrivalInvarianceBenchmark {
             modelDirectory: modelDirectory,
             weightBytes: facts.weightBytes,
             maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1,
-            kvBackend: kvBackend
+            kvBackend: kvBackend,
+            checkpointQuantization: checkpointQuantization
         )
         let engine = engineParts.engine
         guard engineParts.effectiveMaxConcurrentRequests == width else {
@@ -451,7 +456,8 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         weightBytes: Int,
         maxConcurrentRequests: Int,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection
     ) async throws -> EngineParts {
         let kvCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
@@ -479,7 +485,8 @@ public enum ArrivalInvarianceBenchmark {
                 maxConcurrentRequests: maxConcurrentRequests,
                 constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
-                kvBackend: kvBackend
+                kvBackend: kvBackend,
+                checkpointQuantization: checkpointQuantization
             )
             return EngineParts(
                 engine: build.engine,

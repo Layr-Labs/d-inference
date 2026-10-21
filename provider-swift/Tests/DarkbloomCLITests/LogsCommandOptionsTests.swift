@@ -37,9 +37,9 @@ struct LogsCommandOptionsTests {
     @Test("the help names the subsystem and the legacy log file")
     func help() {
         let discussion = Logs.configuration.discussion
-        #expect(discussion.contains("(subsystem: dev.darkbloom.provider)"))
+        #expect(discussion.contains("(subsystem: \(BuildEnvironment.current.serviceLogSubsystem))"))
         #expect(discussion.contains(LaunchAgent.logPath().path))
-        #expect(Logs.predicate == #"subsystem == "dev.darkbloom.provider""#)
+        #expect(Logs.predicate == #"subsystem == "\#(BuildEnvironment.current.serviceLogSubsystem)""#)
     }
 
     @Test("show and stream argv share the predicate and output style")

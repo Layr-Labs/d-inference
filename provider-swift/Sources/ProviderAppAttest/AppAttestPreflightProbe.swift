@@ -1,4 +1,5 @@
 import Foundation
+import ProviderBuildEnvironment
 import Security
 
 /// Reads the running code's signing information once per call. Shared by the
@@ -63,7 +64,7 @@ extension AppAttestPreflight {
 
     static func pathClass(_ path: String, home: String) -> BundlePathClass {
         func within(_ root: String) -> Bool { path == root || path.hasPrefix(root + "/") }
-        if within(home + "/.darkbloom") { return .userInstall }
+        if within(home + "/" + BuildEnvironment.current.installDirectoryName) { return .userInstall }
         if within("/Applications") || within(home + "/Applications") { return .applications }
         return .other
     }

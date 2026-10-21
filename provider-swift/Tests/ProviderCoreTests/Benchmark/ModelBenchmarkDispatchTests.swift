@@ -44,6 +44,21 @@ struct ModelBenchmarkDispatchTests {
         #expect(body["max_tokens"] as? Int == 8)
     }
 
+    @Test func nativeSessionForwardsIndependentBackendAndCheckpointControls() throws {
+        // Verify the native route's wiring without loading a model or invoking Metal.
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: packageRoot.appendingPathComponent(
+            "Sources/ProviderBenchmark/ModelBenchmarkNativeQwen4.swift"), encoding: .utf8)
+        let start = try #require(source.range(of: "EngineV2Factory.makeBenchmarkSession("))
+        let end = try #require(source.range(of: "environment: environment)",
+            range: start.upperBound..<source.endIndex))
+        let arguments = source[start.upperBound..<end.lowerBound]
+        #expect(arguments.contains("kvBackendConfig: kvBackend"))
+        #expect(arguments.contains("checkpointQuantizationConfig: checkpointQuantizationConfig"))
+    }
+
     @Test func invalidIterationAndOutputBudgetsFailBeforeLoad() throws {
         try ModelBenchmark.validateArguments(iterations: 1, maxTokens: 1)
         for (iterations, tokens) in [(0, 1), (-1, 1), (1, 0), (1, -1)] {

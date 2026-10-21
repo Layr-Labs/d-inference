@@ -5,11 +5,8 @@ import Testing
 @Suite("Paged allocator footprint wire")
 struct PagedFootprintTelemetryTests {
     @Test func canonicalFootprintAndLegacyOmission() throws {
-        let fixture = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("coordinator/tests/protocol/testdata/paged_footprint_wire.json")
+        let fixture = try #require(Bundle.module.url(
+            forResource: "paged_footprint_wire", withExtension: "json", subdirectory: "Fixtures/Protocol"))
         let data = try Data(contentsOf: fixture)
         var sample = try JSONDecoder().decode(PagedStorageTelemetry.self, from: data)
         #expect(sample.allocatorPaddingBytes == 50 && sample.lastAllocationAllowanceBytes == 77)

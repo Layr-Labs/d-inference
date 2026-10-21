@@ -15,7 +15,7 @@ struct DiagnosticProbeTests {
                 stdout: path == "/usr/sbin/lsof"
                     ? "ollama LISTEN" : "ollama\nllama-server\nvllm\nollama")
         }
-        let snapshot = LocalContentionSnapshot.live(runner: runner)
+        let snapshot = LocalContentionSnapshot.live(runner: runner, otherProviders: { [] })
         #expect(snapshot.ollamaPortListening)
         #expect(snapshot.competingProcessHints == ["llama-server", "ollama", "vllm"])
         #expect(calls.count == 2)
@@ -25,10 +25,22 @@ struct DiagnosticProbeTests {
         #expect(calls[1].1 == ["-axo", "comm="])
     }
 
+    @Test("doctor warns when the other build environment's provider is running")
+    func otherInstallContention() {
+        let other = BuildEnvironment.allCases.first { $0 != .current }!.cliName
+        let snapshot = LocalContentionSnapshot.live(
+            runner: SecurityCommandRunner { _, _ in throw URLError(.unknown) }, otherProviders: { [other] })
+        #expect(snapshot.otherProvidersRunning == [other])
+        let check = competingInferenceCheck(snapshot)
+        #expect(check.status == .warn)
+        #expect(check.detail.contains("`\(other)` provider is also running"))
+        #expect(competingInferenceCheck(.empty).status == .pass)
+    }
+
     @Test("unavailable contention probes remain informational")
     func unavailableContentionProbes() {
         let runner = SecurityCommandRunner { _, _ in throw URLError(.unknown) }
-        #expect(LocalContentionSnapshot.live(runner: runner) == .empty)
+        #expect(LocalContentionSnapshot.live(runner: runner, otherProviders: { [] }) == .empty)
         #expect(DoctorRunner.systemSleepPrevented(runner: runner) == nil)
     }
 

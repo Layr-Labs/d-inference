@@ -1,0 +1,28 @@
+{
+  "status": "arithmetic_only_not_live_allocator_peak",
+  "policy": "k4v4-affine-group64-FP32-scale-offset-key-Hadamard-native128-confirmed",
+  "excluded": "pending/speculation,page/allocator/alignment,poison pages,descriptors,temporary scratch",
+  "rows": [
+    {
+      "model": "gemma-4-26b-qat-4bit",
+      "baseline_tensor_bytes": 293601280,
+      "estimated_packed_tensor_bytes": 111575040.0,
+      "estimated_mib": 106.40625,
+      "reduction_percent": 61.99776785714286
+    },
+    {
+      "model": "gpt-oss-20b",
+      "baseline_tensor_bytes": 207355904,
+      "estimated_packed_tensor_bytes": 42795008.0,
+      "estimated_mib": 40.8125,
+      "reduction_percent": 79.36156763590392
+    },
+    {
+      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "baseline_tensor_bytes": 165068796,
+      "estimated_packed_tensor_bytes": 109199356.0,
+      "estimated_mib": 104.14062118530273,
+      "reduction_percent": 33.8461546663247
+    }
+  ]
+}

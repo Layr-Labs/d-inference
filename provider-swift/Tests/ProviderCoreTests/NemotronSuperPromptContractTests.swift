@@ -1,0 +1,130 @@
+import Foundation
+import Jinja
+import XCTest
+@testable import ProviderCore
+
+final class NemotronSuperPromptContractTests: XCTestCase {
+    func testOfficialDefaultsAndMediumEffort() throws {
+        let defaults = try NemotronSuperPromptContract.additionalContext(body: Data("{}".utf8))
+        XCTAssertEqual(defaults["enable_thinking"] as? Bool, true)
+        XCTAssertEqual(defaults["medium_effort"] as? Bool, false)
+        XCTAssertEqual(defaults["truncate_history_thinking"] as? Bool, true)
+        XCTAssertEqual(try NemotronSuperPromptContract.controls(body: Data("{}".utf8)), .init())
+        let medium = try NemotronSuperPromptContract.additionalContext(body: Data(
+            #"{"reasoning_effort":"medium","chat_template_kwargs":{"truncate_history_thinking":false}}"#.utf8))
+        XCTAssertEqual(medium["medium_effort"] as? Bool, true)
+        XCTAssertEqual(medium["truncate_history_thinking"] as? Bool, false)
+        let forced = try NemotronSuperPromptContract.controls(body: Data(
+            #"{"chat_template_kwargs":{"enable_thinking":true,"force_nonempty_content":true}}"#.utf8))
+        XCTAssertEqual(forced, .init(enableThinking: true, mediumEffort: false,
+                                     truncateHistoryThinking: true, forceNonemptyContent: true))
+        let off = try NemotronSuperPromptContract.controls(body: Data(#"{"enable_thinking":false}"#.utf8))
+        XCTAssertFalse(off.enableThinking)
+    }
+
+    func testStrictUnsupportedAndConflictingControls() {
+        for body in [#"{"reasoning_effort":"off","enable_thinking":true}"#,
+                     #"{"reasoning_effort":"medium","medium_effort":false}"#,
+                     #"{"reasoning_effort":"high","reasoning":{"effort":"medium"}}"#,
+                     #"{"enable_thinking":true,"reasoning":{"enabled":false}}"#,#"{"enable_thinking":"false"}"#,
+                     #"{"reasoning_effort":"low"}"#,
+                     #"{"preserve_thinking":true}"#,
+                     #"{"enable_thinking":false,"medium_effort":true}"#,
+                     #"{"enable_thinking":false,"chat_template_kwargs":{"enable_thinking":true}}"#,
+                     #"{"force_nonempty_content":false,"chat_template_kwargs":{"force_nonempty_content":true}}"#,
+                     #"{"chat_template_kwargs":{"force_nonempty_content":"yes"}}"#] {
+            XCTAssertThrowsError(try NemotronSuperPromptContract.additionalContext(body: Data(body.utf8)), body)
+        }
+        XCTAssertThrowsError(try NemotronSuperPromptContract.verifiedTemplate(Data("altered".utf8)))
+    }
+
+    func testImageOrderAndOrderedToolArguments() throws {
+        let body = Data(#"{"model":"local","messages":[{"role":"user","content":[{"type":"text","text":"before"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}},{"type":"text","text":"after"}]},{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{\"z\":1,\"a\":[true,null]}"}}]}]}"#.utf8)
+        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        let messages = try NemotronSuperPromptContract.messages(request.messages)
+        guard case .array(let parts)? = messages[0]["content"] as? Value else { return XCTFail("parts") }
+        XCTAssertEqual(parts.compactMap { part -> String? in
+            guard case .object(let fields) = part, case .string(let type)? = fields["type"] else { return nil }
+            return type
+        }, ["text", "image_url", "text"])
+        XCTAssertEqual(messages[1]["content"] as? Value, .null)
+        guard case .array(let calls)? = messages[1]["tool_calls"] as? Value,
+            case .object(let call)? = calls.first, case .object(let function)? = call["function"],
+            case .object(let arguments)? = function["arguments"]
+        else { return XCTFail("tool call") }
+        XCTAssertEqual(Array(arguments.keys), ["z", "a"])
+        XCTAssertEqual(arguments["a"], .array([.boolean(true), .null]))
+    }
+
+    func testImagePlaceholderExpansionMatchesProcessor() throws {
+        XCTAssertEqual(try NemotronSuperPromptContract.expandImagePlaceholders(
+            [1, 18, 2, 18, 3], featureCounts: [2, 1], contextLength: 64),
+            [1, 19, 18, 18, 20, 2, 19, 18, 20, 3])
+        XCTAssertThrowsError(try NemotronSuperPromptContract.expandImagePlaceholders(
+            [1, 18, 2], featureCounts: [2, 1], contextLength: 64))
+        XCTAssertThrowsError(try NemotronSuperPromptContract.expandImagePlaceholders(
+            [1, 18, 2], featureCounts: [0], contextLength: 64))
+        XCTAssertThrowsError(try NemotronSuperPromptContract.expandImagePlaceholders(
+            [1, 18, 2], featureCounts: [3], contextLength: 6))
+        XCTAssertEqual(try NemotronSuperPromptContract.expandImagePlaceholders(
+            [1, 18, 2], featureCounts: [3], contextLength: 7).count, 7)
+    }
+
+    func testOrderedJSONKeepsPythonDecodingSemantics() throws {
+        let value = try NemotronSuperOrderedJSON.parse(
+            #" {"b": 1, "a": {"y": 2.5, "x": -0}, "b": "last", "e": 1E2, "s": "\u00e9\ud83d\ude00\n\/"} "#)
+        guard case .object(let root) = value, case .object(let nested)? = root["a"] else { return XCTFail() }
+        XCTAssertEqual(Array(root.keys), ["b", "a", "e", "s"])
+        XCTAssertEqual(root["b"], .string("last"))
+        XCTAssertEqual(Array(nested.keys), ["y", "x"])
+        XCTAssertEqual(nested["x"], .int(0))
+        XCTAssertEqual(root["e"], .double(100))
+        XCTAssertEqual(root["s"], .string("é😀\n/"))
+        for invalid in ["[1,]", "{\"a\":NaN}", "\"\\ud83d\"", "01", "[1] x", "\"\u{01}\"", "{'a':1}"] {
+            XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(invalid), invalid)
+        }
+        XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse("12345678901234567890")) {
+            XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .limit)
+        }
+        let deep = String(repeating: "[", count: 66) + String(repeating: "]", count: 66)
+        XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(deep))
+    }
+
+    /// Expected strings were produced by CPython 3.14 `repr`, `str`,
+    /// `json.dumps(ensure_ascii=False)` and `str.strip`.
+    func testTemplateFiltersMatchPython() throws {
+        let floats: [(Double, String)] = [
+            (1, "1.0"), (0.25, "0.25"), (1e16, "1e+16"), (1e15, "1000000000000000.0"),
+            (1e-05, "1e-05"), (0.0001, "0.0001"), (-0.0, "-0.0"), (123456789.123, "123456789.123"),
+            (1.5e300, "1.5e+300"), (5e-324, "5e-324"), (0.1 + 0.2, "0.30000000000000004"),
+            (2.5e-05, "2.5e-05"), (100, "100.0"), (1234567890123456789, "1.2345678901234568e+18"),
+        ]
+        for (number, expected) in floats {
+            XCTAssertEqual(NemotronSuperTemplateFilters.pythonFloat(number, json: false), expected)
+            XCTAssertEqual(NemotronSuperTemplateFilters.pythonFloat(number, json: true), expected)
+        }
+        XCTAssertEqual(NemotronSuperTemplateFilters.pythonFloat(.infinity, json: true), "Infinity")
+        let reprs: [(String, String)] = [
+            ("it's", #""it's""#), ("a'b\"c", #"'a\'b"c'"#), ("\n\t\r", #"'\n\t\r'"#),
+            ("\u{7f}", #"'\x7f'"#), ("é", "'é'"), ("\u{a0}", #"'\xa0'"#), ("\u{200b}", #"'\u200b'"#),
+            ("\u{1f}", #"'\x1f'"#), ("\\", #"'\\'"#), ("😀", "'😀'"), ("\u{301}", "'\u{301}'"),
+        ]
+        for (text, expected) in reprs {
+            XCTAssertEqual(NemotronSuperTemplateFilters.pythonRepr(text), expected, text)
+        }
+        let nested = Value.array([.boolean(true), .null, .double(1.5), .string("x"),
+                                  .object(["k": .array([.int(1)])])])
+        XCTAssertEqual(try NemotronSuperTemplateFilters.pythonString(nested),
+                       "[True, None, 1.5, 'x', {'k': [1]}]")
+        XCTAssertEqual(try NemotronSuperTemplateFilters.pythonString(.boolean(false)), "False")
+        XCTAssertEqual(try NemotronSuperTemplateFilters.pythonString(.undefined), "")
+        var json = ""
+        try NemotronSuperTemplateFilters.writeJSON(.object(["a": .string("é\u{1f}\"\u{7f}"),
+            "b": .array([.boolean(false), .null, .double(0.5)])]), to: &json, depth: 0)
+        XCTAssertEqual(json, #"{"a": "é\u001f\""# + "\u{7f}" + #"", "b": [false, null, 0.5]}"#)
+        XCTAssertEqual(NemotronSuperTemplateFilters.pythonStrip(" \u{3000}\u{a0}\u{1f}hi\u{200b} \u{1c}"),
+                       "hi\u{200b}")
+        XCTAssertEqual(NemotronSuperTemplateFilters.bind(template: "{{ x | string }}{{ y|string|trim }}{% if x is string %}"),
+            "{{ x | __nemotron_super_string }}{{ y|__nemotron_super_string|trim }}{% if x is string %}")
+    }
+}

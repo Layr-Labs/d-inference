@@ -23,6 +23,153 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 
 ## Context
 
+The unregistered `NemotronSuperLocalBridgeBuilder` assembles an installed Super
+language tower through the native CBv2 factory after rechecking a pending LOAD
+lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement and
+drains its own requests; the owner mints one `localTextBinding` and drains it in
+`closeAfterDrain` before the image binding and bridge. It accepts pretokenized text only; media, tools, schemas
+and client prompt-cache keys are rejected, and text prefix reuse runs only when the owner has a
+checkpoint bank (below). The builder uses serial contiguous KV, bounded
+calibrated prefill, and no MTP unless the explicit opt-in below installs text
+speculation. These internal paths do not register a model or
+expose an HTTP route. `NemotronSuperLocalLoad` owns an unpublished load transaction,
+checks the pinned config, reserves the conservative SDK quote and preserves
+charges on native completion faults. `NemotronSuperPromptContract` renders the
+pinned template with reference `apply_chat_template` semantics: request-order tool
+schemas and tool-call arguments, Python `str`/`strip`/`json.dumps` filters, and the
+processor's `<img>`, one `<image>` per feature, `</img>` expansion. It rejects
+conflicting reasoning controls; `NemotronSuperRequestPlan` resolves those controls,
+the shared tool-choice policy and the response-format instruction once per
+request. A generated golden corpus pins rendered text and token IDs.
+`NemotronSuperVisionSubmission` preserves causal attention and absent position
+state when translating admitted SDK features. `NemotronSuperLocalOutput` applies the
+reference `ultra_v3` reasoning split in `NemotronSuperReasoningChannel`, streams
+reasoning and plain content, and withholds tool calls and JSON content until the
+shared tool and response-format validators pass; output stays bounded. The
+unregistered `runValidatedText` binding connects rendered tool/schema prompts
+to withheld output validation after native retirement. It rejects truncation and
+missing/error terminals. Causal vision submission is exercised by a synthetic
+fixture through the real bridge, including RADIO/projector preparation, generation
+and retirement; public media dispatch remains unwired. SDK fixtures compare
+full-position and narrowed image logits, split prefill inside an image span and
+exercise recurrent rollback with request isolation. These checks do not establish
+full-checkpoint quality or speculative MTP support. Synthetic loopback HTTP tests exercise authentication, model listing, SSE, malformed input and restart through the actual Hummingbird server and native bridge; their weights and tokenizer are fixtures. The local builder wraps the
+composite in `NemotronSuperRecurrentAdapter`, a serial causal adapter with explicit
+scalar-cache-offset positioning. It rejects explicit position tensors, packed rows
+and mismatched state/cache counts; the generic Nemotron type is not widened. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVisionSubmission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperLocalOutput.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperReasoningChannel.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperRequestPlan.swift`.
+Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalLoad.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalBinding.swift`.
+
+The dedicated `NemotronSuperLocalImageBinding` is minted by that exact unpublished
+load owner, uses separate real media and bridge KV reservations, and cancels/drains
+through terminal retirement. Synthetic tests exercise image cancellation, reuse
+and close. It does not manufacture a shared native lease or register a public
+media route. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
+reproduces the reference loader's RGB8 conversion: PNG of every colour type and
+bit depth is decoded in-process and matches Pillow exactly, while JPEG samples
+come from ImageIO within test-enforced bounds. Container limits are checked
+before any raster buffer exists, and the SDK resize is bitwise equal to CPU
+PyTorch on the golden fixtures; see the
+[image format reference](../reference/nemotron-super-image-formats.md).
+Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
+ingress before JSON/base64/header inspection and media before decode. The media
+charge adds the SDK's shape-derived tower and projector working-memory bound for
+the largest image, which preparation evaluates one at a time; the global
+activation reserve is unchanged. It only accepts `data:image/png;base64,` and
+`data:image/jpeg;base64,` URIs, whose content selects the format, and uses the
+owned tokenizer. Native input arrays are constructed in a separate retained,
+fenced epoch before tower preparation. Synthetic RGB tests cover generation,
+cancellation, busy rejection and release after task completion; loopback HTTP
+tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
+tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
+remain required.
+
+SDK installation now holds resident plus bounded staging reservations across
+sequential exclusive construction epochs. Completed fences release temporary
+roots, while failed completion retains resident objects and charges. Header-derived
+projection/expert-bank/image staging bounds and explicit backend allowance must
+still be checked against full-model measured peak memory. Bundling the upstream
+MTP tensors does not qualify execution.
+The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
+application and standard JSON/SSE framing and defaults to absent. It serves text
+through the owner's `localTextBinding` and images through its image binding, admits
+the owner's configured number of requests and refuses another with `queueFull`
+(429) before any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
+it over the transaction's own owner. No production caller installs it.
+`DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (default `1`) sets how many requests
+the owner serves: `1` to `64` plain, `1` to `8` with rectangular speculation, one
+with serial speculation. Above one the plain builder serves
+`NemotronSuperRecurrentAdapter(_:maximumDecodeRows:decodeProducts:)` with
+`.rowExact`, so concurrent requests decode in one `[B, 1]` step bit-identical to
+their one-token decode. The hook admits that many requests and refuses the next
+with 429.
+`NemotronSuperLocalPrefill` fixes prompt scheduling: chunks of
+`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens (default 2,048, at most the
+calibrated prefill limit), at most one prompt chunk per step beside every decode
+or verify row, a step budget that holds a whole chunk plus those rows, and
+optional decode-only steps between chunks
+(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`). A request's chunks are
+therefore the same whether or not it is served alone. Because one chunk runs per
+step, the prefill activation is one owner-wide lane in the shared budget,
+reserved before the first request and released only after native retirement:
+`NemotronHModel.prefillActivationBoundBytes(tokens:)` (the SDK's whole-chunk bound
+measured on the full checkpoint) for the pinned checkpoint, the ModelOpt
+workspace quote for synthetic fixtures. A lane that does not fit fails the load.
+Each bridge request reservation carries, beyond the engine's recurrent
+generations and any speculation charge, `requestWorkspaceBytes`: one
+`NemotronSuperDecodeCharge` decode row. The builder refuses a KV grant that
+cannot hold every configured request's fixed bytes plus the minimum KV with
+`UnserviceableGrant`, which names the grant, the smallest serviceable grant and
+the fixed bytes per request.
+`NemotronSuperLocalPrefixCache` gives the plain owner exact text prefix reuse when
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`: `PrefixCachePolicy.hybridConfig` sizes the SDK's
+resident recurrent checkpoint bank (`min(1 GiB, KV grant / 8)` unless
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` sets it), the backend carves it from the KV
+grant before the grant check, and its whole budget is reserved in the shared
+budget from before the first request until native retirement, like the lane; a
+bank that does not fit fails the load and a retained native fault keeps it
+charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
+only at multiples of the prefill chunk, where a restore continues a cold prefill
+bit for bit; prompts shorter than one chunk restore nothing. Text requests are
+then submitted with prefix caching on and the local unscoped cache scope; image
+requests stay cold and never publish, and a speculating owner has no bank.
+`UnserviceableGrant.minimumGrantBytes` includes the bank. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
+
+`NemotronSuperLocalMTP` installs text speculation only when
+`DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (default off). The load transaction
+adds the embedded head's header-derived payload and loader construction allowance
+to its single LOAD claim, loads the head in its own fenced construction epoch, and
+the builder serves the SDK `NemotronSuperMTPAssistant`: greedy, up to the
+configured requests per round, fixed depth (`DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`,
+`1` to `3`) or `auto` (the engine's marginal policy picks each step's depth). Verification
+(`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION`) defaults to `rectangular`:
+`NemotronSuperMTPCaptureTarget` verifies the seed and drafts in one captured
+target window, bit-identical per position to plain decode, and the engine commits
+the Mamba state after the last accepted token and trims attention KV. `serial`
+serves `NemotronSuperMTPTextTarget` with one ordinary target step per draft. The
+shared production factory recognizes both targets like `NemotronSuperRecurrentAdapter`
+(layer kinds, caches and the calibrated prefill bound).
+The engine admits the assistant's bounded per-request charge (FP8 history, backlog,
+every draft step's dense FP8 output head, the rectangular verify window and an
+unmeasured 256 MiB backend scratch allowance) plus captured recurrent states before
+allocation and holds them until retirement. An owner with speculation refuses
+every media entry with `mediaWithSpeculation`; its HTTP hook is text-only and
+answers image requests with 400. Synthetic fixtures show
+token-exact greedy output against the ordinary owner in both modes, forced
+rejection rollback and cancellation; serial verification cannot beat plain
+decode, and no full-model acceptance or speed is measured. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
+
+
 The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
 and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
 packed weights before returning the model. Packed scales and embeddings are
@@ -740,7 +887,8 @@ At scan time `TemplateRenderCheck.renderOK(at:)` compiles every template
 source in runtime precedence (`chat_template.jinja`, `chat_template.json`,
 `tokenizer_config.json`) with swift-jinja `lstripBlocks: true, trimBlocks:
 true` and renders canonical fixtures; multimodal fixtures run only when
-`config.json` declares `vision_config`. The result is advertised per model as
+the shared media discovery policy accepts the configuration (see
+[model registry boundary](model-registry.md#mechanism)). The result is advertised per model as
 `template_render_ok` (`nil` = no template, key omitted); the model stays
 advertised, but the provider's capacity quotes reject it with reason `template`
 and the coordinator can refuse to route

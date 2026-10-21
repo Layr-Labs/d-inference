@@ -127,7 +127,8 @@ extension EngineV2Factory {
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
         nativeKVLayerIndices: Set<Int> = [],
-        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil,
+        schedulerPolicy: ((inout CBv2SchedulerConfig) -> Void)? = nil
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
@@ -202,7 +203,7 @@ extension EngineV2Factory {
         func servingPolicy(for kind: EngineV2KVBackendKind) -> (
             CBv2SchedulerConfig, ServingPerformanceProfile?
         ) {
-            productionServingPolicy(
+            var resolved = productionServingPolicy(
                 model: model, modelID: modelID, modelArtifactSHA256: modelArtifactSHA256,
                 constructionPurpose: constructionPurpose,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
@@ -211,6 +212,8 @@ extension EngineV2Factory {
                 backend: kind,
                 maxContextLength: maxContextLength, maxConcurrentRequests: maxConcurrentRequests,
                 environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
+            schedulerPolicy?(&resolved.scheduler)
+            return resolved
         }
 
         var nativeKVTypes: CBv2NativeKVTypeProbe.Result?

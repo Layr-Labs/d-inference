@@ -292,12 +292,18 @@ previous resident implementation, not SSD performance.
 | Tier | Lookup and ownership | Gate |
 |---|---|---|
 | Paged resident blocks | Tenant-scoped chained page hashes; generation-validated page handles; shared rows retain physical pages until release | Paged backend and `supportsPrefixReuse`; configured by `PrefixCachePolicy.residentConfig` |
-| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen `supportsRecurrentCheckpointReuse`, native-precision contiguous KV, owning full-attention rows, and a valid slot cache budget |
+| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen or the plain unpublished Nemotron Super owner (`supportsRecurrentCheckpointReuse`), native-precision contiguous KV, owning full-attention rows, and a valid slot cache budget |
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
 tokens, plain chunks under decode company 512. Packed prefill and preemption
-disarm capture; a ragged range end is simply not a boundary. A bank adopter
+disarm capture; a ragged range end is simply not a boundary. A model whose
+prefill output depends on the chunk partition sets
+`alignsRecurrentCheckpointsToPrefillChunks` instead: Nemotron Super's tiled
+prefill is captured only at multiples of its fixed prefill chunk reached by
+whole chunks, so a restored request runs the same chunk partition as a cold one
+and continues it bit for bit (`NemotronSuperLocalPrefixCache`, see
+[`inference.md`](inference.md)). A bank adopter
 resumes at the restored boundary under ordinary chunking, out of packed
 prefill, exactly as a complete-checkpoint adopter does
 (`EngineV2.hybridPrefixLookup`). Completed `stop`/`length` donors publish after the

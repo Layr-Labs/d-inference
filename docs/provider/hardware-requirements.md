@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-15
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,10 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+Nemotron Super VL has no qualified RAM-tier or serving recommendation. Its
+unregistered native builder is an internal qualification path; see
+[the inference architecture](../architecture/inference.md).
 
 Native live inference is the default. Independent checkpoint compression can
 reduce encoded older-row storage, not the native serving allocation or measured

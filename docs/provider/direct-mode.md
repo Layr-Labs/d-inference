@@ -176,6 +176,42 @@ the process prints its listening address and the daemon-state file is not used.
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 
+## Experimental Nemotron Super owner fixtures
+
+The optional `NemotronSuperLocalImageHTTP` owner hook in
+`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift`
+uses the existing local authentication, body limits, JSON/SSE framing and
+request-cancellation scope. Its default is absent; no production callsite
+installs it and it does not advertise a new model. When installed it serves
+every chat request for the Super model ID: text on the owner's text binding with
+its own tokenizer, and bounded inline images on the owner's image binding:
+`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
+label, selects PNG or JPEG (see the
+[image format reference](../reference/nemotron-super-image-formats.md)).
+Image prompts carry the reference `<img>`, one `<image>` per visual feature,
+`</img>` span for each image.
+
+| Request control | Hook behavior |
+|---|---|
+| `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
+| `enable_thinking: false` | All output is `content`, including literal markers |
+| `chat_template_kwargs.force_nonempty_content` | Non-streaming only: unterminated reasoning becomes `content` |
+| `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422 |
+| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422 |
+| Contradictory controls, `logprobs`, `min_p`, `n > 1` | 400 before generation |
+| A request beyond the owner's concurrency while others are in flight (text or image) | 429 before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
+| Image input while `DARKBLOOM_NEMOTRON_SUPER_MTP=1` speculation is installed | 400 (`unsupported_media`); text is served |
+
+Image requests still refuse `tools` and `response_format`; formats outside the
+image format reference are refused. The host calls the hook's `drain()` before the
+owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
+serving qualification.
+
+The [portable component harness](../../scripts/nemotron-qualification/README.md)
+exercises this hook on isolated loopback endpoints. Admission/reservation
+calibration and full-checkpoint throughput remain separate gates. Cancellation
+must retain media/KV and response ownership until native terminal retirement.
+
 ## Related
 
 - [Self-route](./self-route.md) — route your *fleet* requests to your own

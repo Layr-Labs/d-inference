@@ -14,6 +14,13 @@ downloads published artifacts and verifies them. Discovery is not full weight
 hashing: retain fast startup scans and on-demand verification. Broken templates
 must be reported rather than silently repaired.
 
+Media discovery uses `ModelMediaPolicy.advertisesMedia` in
+`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.
+Staged `nemotron_h_omni` checkpoints do not advertise media support, even when
+`vision_config` is present. The architecture match ignores surrounding whitespace
+and case and applies independently of Hugging Face repository IDs or local aliases.
+This guard does not enable text inference, qualify a RAM tier, or register the model.
+
 Published metadata is not a loadability or quality certificate. Keep full LOAD
 quotations, native transient allowances, memory safeguards and post-load
 serviceability checks. Do not replace registry discovery with a hardcoded model

@@ -60,6 +60,17 @@ extension GlobalKVCacheBudget {
         }
     }
 
+    /// Validate both ownership and the exact minimum charge required by a staged
+    /// loader. A live but undersized lease must not authorize native setup.
+    func recheckPendingLoad(_ lease: PendingModelLoadLease,
+        minimumWeightBytes: UInt64, minimumKVBytes: UInt64) -> Bool {
+        guard let current = pendingLoads[lease.owner],
+            current.minimumKVBytes >= minimumKVBytes else { return false }
+        let (required, overflow) = minimumWeightBytes.addingReportingOverflow(minimumKVBytes)
+        guard !overflow, current.state.chargedBytes >= required else { return false }
+        return recheckPendingLoad(lease)
+    }
+
     /// A completed weight phase is now accounted by ordinary MLX usage. Retain
     /// only future weight phases and the temporary setup allowance. There is no
     /// inferred materialization credit from concurrent process memory deltas.

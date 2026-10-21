@@ -15,6 +15,12 @@ public enum ModelMediaPolicy {
     }
 
     public static func advertisesMedia(_ configuration: [String: Any], modelID: String? = nil) -> Bool {
+        // Super VL staging is not native media qualification. Match the outer
+        // architecture, independent of repository IDs or local aliases.
+        if (configuration["model_type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h_omni" {
+            return false
+        }
         if configuration["model_type"] as? String == "diffusion_gemma_text" { return false }
         if configuration["model_type"] as? String == "diffusion_gemma" {
             guard configuration["language_model_only"] as? Bool != true,

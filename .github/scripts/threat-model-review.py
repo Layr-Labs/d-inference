@@ -19,7 +19,7 @@ if __name__ == "__main__":
     signal.alarm(15 * 60)
     try:
         event = json.loads(Path(os.environ.get("THREAT_REVIEW_EVENT_PATH", os.environ["GITHUB_EVENT_PATH"])).read_text())
-        result = run(event, Path.cwd(), os.environ)
+        result = run(event, os.environ)
     except Exception as error:
         write_diagnostics(os.environ, {"diagnostics": [failure_record(error, {"stage": "setup"})]})
         result = "Review unavailable: setup or GitHub API failed; no complete review was produced."

@@ -443,7 +443,17 @@ HTTP tests need permission to bind a local port; none of these suites call paid
 models. Bedrock-shaped lifecycle fixtures exercise transport, scanner, saved
 reports and merge decisions together, including truncation, call limits,
 interruption and failed report/diagnostic writes. Selective integration tests
-enforce each model's source citation scope across fresh and cached results.
+enforce each model's source citation scope across fresh and cached results,
+bounded exact-source replay, explicit omissions and unchanged acknowledgments.
+State tests reproduce shared-branch conflicts between different report files,
+cache immutability, bounded recovery and refusal to retry ambiguous writes.
+Request tests verify native schema projection preserves local bounds; workflow
+tests keep current trusted scanner code separate from pinned threat-model data.
+Bedrock usage tests preserve Sol cache-write input and reject malformed cache
+counts; finding-text and both scan paths' analysis tests enforce raw character
+limits including padding.
+Lifecycle tests ensure failed backup accounting also stops a recovered primary
+while preserving already validated findings.
 Live smoke tests establish model compatibility separately.
 
 From the repository root:

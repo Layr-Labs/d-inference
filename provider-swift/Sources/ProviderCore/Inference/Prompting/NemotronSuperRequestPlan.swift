@@ -7,7 +7,13 @@ import MLXLMServer
 /// rendering and output parsing both consume this plan, so they cannot
 /// disagree about thinking, tools or structured output.
 struct NemotronSuperRequestPlan: Sendable {
-    enum Failure: Error, Equatable { case unsupportedControl }
+    enum Failure: Error, Equatable { case unsupportedControl, tooManyContentParts }
+
+    /// Content parts one request may carry across its messages, refused before
+    /// any render or admission. The pinned template's cost grows with parts ×
+    /// prompt length; rendering merges adjacent text parts
+    /// (`NemotronSuperPromptContract`), and this bounds what remains.
+    static let maximumContentParts = 4096
 
     /// Messages carry the provider's tool-choice and response-format text.
     let request: OpenAIChatCompletionRequest
@@ -25,6 +31,11 @@ struct NemotronSuperRequestPlan: Sendable {
          modelID: String = NemotronSuperLocalBinding.modelID, trustsSchemaMetadata: Bool = false) throws {
         let decoded = try formatted ?? OpenAIResponseFormatSupport.preparedRequest(
             ProviderLoop.decodeOpenAIRequest(body))
+        let parts = decoded.messages.reduce(0) { count, message in
+            guard case .parts(let parts) = message.content else { return count }
+            return count + parts.count
+        }
+        guard parts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
         try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
             modelType: "nemotron_h_omni", allowInternalSchemaMetadata: trustsSchemaMetadata)

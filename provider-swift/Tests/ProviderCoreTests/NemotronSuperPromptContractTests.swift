@@ -1,9 +1,79 @@
 import Foundation
 import Jinja
+import MLXLMServer
 import XCTest
 @testable import ProviderCore
 
 final class NemotronSuperPromptContractTests: XCTestCase {
+    private static func templateBytes() throws -> Data {
+        try XCTUnwrap(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
+    }
+
+    /// One user message's reference prompt text, thinking on.
+    private static func userPrompt(_ content: String) -> String {
+        "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n" + content
+            + "<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    }
+
+    /// Rendering merges each run of adjacent text parts; the pinned template
+    /// over one value per part renders the same tokens, including empty
+    /// parts, text around images and a placeholder split across parts.
+    func testMergedTextPartsRenderTheBytesOfTheSplitParts() throws {
+        let template = try Self.templateBytes()
+        let image = "data:image/png;base64,AA=="
+        let cases: [[OpenAIContentPart]] = [
+            [.text("a"), .text(""), .text("b\n"), .text("")],
+            [.text(""), .text("")],
+            [.text("x"), .text(""), .imageURL(image), .text(""), .text("y"), .text("z"), .imageURL(image), .text("")],
+            [.imageURL(image), .text(""), .imageURL(image)],
+            [.text("Look:"), .text("\n"), .imageURL(image), .text("a "), .text("<ima"), .text("ge>")],
+        ]
+        let tokenizer = SuperVideoTextTokenizer()
+        let chatTemplate = try NemotronSuperPromptContract.verifiedTemplate(template)
+        var context = NemotronSuperPromptContract.additionalContext(.init())
+        context["add_generation_prompt"] = true
+        for parts in cases {
+            let messages = [OpenAIChatMessage(role: .system, content: .parts(parts)),
+                            OpenAIChatMessage(role: .user, content: .parts(parts))]
+            let merged = try NemotronSuperPromptContract.render(messages: messages, body: Data("{}".utf8),
+                declared: nil, controls: .init(), templateBytes: template, tokenizer: tokenizer)
+            let split: [[String: any Sendable]] = messages.map { message in
+                ["role": message.role.rawValue, "content": Value.array(parts.map { part -> Value in
+                    switch part {
+                    case .text(let text): .object(["type": "text", "text": .string(text)])
+                    case .imageURL(let uri): .object(["type": "image_url", "image_url": .object(["url": .string(uri)])])
+                    default: .null
+                    }
+                })]
+            }
+            XCTAssertEqual(merged, try tokenizer.applyChatTemplate(messages: split, chatTemplate: chatTemplate,
+                                                                   tools: nil, additionalContext: context), "\(parts)")
+        }
+        let text = try NemotronSuperPromptContract.render(messages: [OpenAIChatMessage(role: .user,
+            content: .parts([.text("a"), .text(""), .text("b\n"), .text("")]))], body: Data("{}".utf8),
+            declared: nil, controls: .init(), templateBytes: template, tokenizer: tokenizer)
+        XCTAssertEqual(SuperVideoTextTokenizer.text(text), Self.userPrompt("ab\n"))
+    }
+
+    /// A request carries at most `maximumContentParts` parts: a 100,000-part
+    /// body is refused when the plan is built, before any render; one at the
+    /// bound renders its merged text.
+    func testContentPartsAreBoundedBeforeRendering() throws {
+        func body(parts: Int) -> Data {
+            Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID + #"","messages":[{"role":"user","content":["#
+                + Array(repeating: #"{"type":"text","text":"a"}"#, count: parts).joined(separator: ",")
+                + "]}]}").utf8)
+        }
+        XCTAssertThrowsError(try NemotronSuperRequestPlan(body: body(parts: 100_000))) {
+            XCTAssertEqual($0 as? NemotronSuperRequestPlan.Failure, .tooManyContentParts)
+        }
+        let bounded = body(parts: NemotronSuperRequestPlan.maximumContentParts)
+        let tokens = try NemotronSuperRequestPlan(body: bounded).textPromptTokens(body: bounded,
+            templateBytes: Self.templateBytes(), tokenizer: SuperVideoTextTokenizer())
+        XCTAssertEqual(SuperVideoTextTokenizer.text(tokens),
+                       Self.userPrompt(String(repeating: "a", count: NemotronSuperRequestPlan.maximumContentParts)))
+    }
+
     func testOfficialDefaultsAndMediumEffort() throws {
         let defaults = try NemotronSuperPromptContract.additionalContext(body: Data("{}".utf8))
         XCTAssertEqual(defaults["enable_thinking"] as? Bool, true)

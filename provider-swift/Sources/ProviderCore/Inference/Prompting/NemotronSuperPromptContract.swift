@@ -203,21 +203,37 @@ enum NemotronSuperPromptContract {
         }
     }
 
+    /// Each run of adjacent text parts becomes one part. `render_content`
+    /// copies its accumulated text for every part, so its cost grows with
+    /// parts × length; it only concatenates text parts and marks text after
+    /// any non-empty one, so a merged run renders the same bytes.
     private static func content(_ content: OpenAIMessageContent, videoSlot: Bool) throws -> Value {
         switch content {
         case .null: return .null
         case .text(let text): return .string(text)
         case .parts(let parts):
-            return .array(try parts.map { part -> Value in
+            var values: [Value] = []
+            var run: [String] = []
+            func endRun() {
+                guard !run.isEmpty else { return }
+                values.append(.object(["type": "text", "text": .string(run.joined())]))
+                run.removeAll()
+            }
+            for part in parts {
                 switch part {
-                case .text(let text): return .object(["type": "text", "text": .string(text)])
+                case .text(let text):
+                    run.append(text)
                 case .imageURL(let uri):
-                    return .object(["type": "image_url", "image_url": .object(["url": .string(uri)])])
+                    endRun()
+                    values.append(.object(["type": "image_url", "image_url": .object(["url": .string(uri)])]))
                 case .videoURL(let uri) where videoSlot:
-                    return .object(["type": "image_url", "image_url": .object(["url": .string(uri)])])
+                    endRun()
+                    values.append(.object(["type": "image_url", "image_url": .object(["url": .string(uri)])]))
                 case .videoURL, .inputAudio, .unsupported: throw Failure.unsupportedMedia
                 }
-            })
+            }
+            endRun()
+            return .array(values)
         }
     }
 

@@ -522,9 +522,10 @@ capacity tick, shuts the bridge down before the same drain and close, within
 the model reloads only after `engineV2RecoveryCooldown`. An owner whose native
 work did not retire, or whose wedged retirement outlives that bound, keeps its
 weights, reservations and bank in the fleet KV budget
-(`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
-restart, except that a wedged retirement completing after its bound releases
-its charge and reopens the memory retirement window.
+(`nemotronSuperRetainedWeightBytes`; a load that faults keeps its installation's
+size and the lane, round and bank its plan reserves) and refuses later Super
+loads until restart, except that a wedged retirement completing after its
+bound releases its charge and reopens the memory retirement window.
 `ensureModelLoaded` asks both refusals (`refuseNemotronSuperReload`) before it
 evicts anything for Super, and pre-accept refuses Super requests on them
 (`nemotronSuperRefusesRequest`), also while the wedged slot, still resident,

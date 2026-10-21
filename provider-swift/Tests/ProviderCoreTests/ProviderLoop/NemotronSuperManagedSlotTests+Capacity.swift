@@ -87,4 +87,34 @@ extension NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
         #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
+
+    /// A load whose native work did not retire keeps the installation's size
+    /// and the lane, round and bank its pinned LOAD claim holds beside it
+    /// charged in the fleet budget, and refuses Super from then on.
+    @Test(.timeLimit(.minutes(1)))
+    func retainedLoadFaultKeepsItsPlannedReservationsCharged() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 1, availableGiB: 110)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let requested = Box<NemotronSuperSlotLoader.Request>()
+        await loop.setNemotronSuperSlotLoaderForTesting(NemotronSuperSlotLoader(pinned: true,
+            physicalBytes: 128 << 30, kvBytesPerToken: { _ in 64 }) { request in
+            requested.set(request)
+            throw NemotronSuperSlotError.retainedFault
+        }, environment: [:])
+        var refusal: Error?
+        do {
+            try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                             revisionDirectory: fixture.directory)
+        } catch { refusal = error }
+        #expect(ProviderLoop.loadErrorStatusCode(for: try #require(refusal)) == 503)
+        let request = try #require(requested.value)
+        let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: request.environment,
+            kvBytesCapacity: request.kvBytesCapacity, speculates: true, physicalBytes: 128 << 30)
+        #expect(shares.bank > 0 && shares.round > 0)
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        let besideWeights = UInt64(try #require(shares.total))
+        #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == model.sizeBytes + besideWeights)
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
+    }
 }

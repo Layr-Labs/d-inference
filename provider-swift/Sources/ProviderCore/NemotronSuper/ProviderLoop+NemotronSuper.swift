@@ -88,10 +88,12 @@ extension ProviderLoop {
                 environment: plan.environment, budget: kvBudget,
                 physicalBytes: nemotronSuperSlotLoader.physicalBytes))
         } catch {
-            // Retained weights stay resident: survivors keep their shrunk
+            // Retained weights stay resident, with the lane, round and bank
+            // the plan reserves beside them: survivors keep their shrunk
             // grants until a regrow recomputes with them in the budget.
             if case NemotronSuperSlotError.retainedFault? = error as? NemotronSuperSlotError {
-                nemotronSuperRetainedWeightBytes += modelInfo.sizeBytes
+                retainNemotronSuperBytes(Self.saturatingSum(
+                    [Int(clamping: modelInfo.sizeBytes), planned, plan.prefixBankBytes]))
             } else {
                 await restoreNewcomerReslice(reslice)
             }

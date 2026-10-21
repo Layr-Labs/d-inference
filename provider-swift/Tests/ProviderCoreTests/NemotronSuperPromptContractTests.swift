@@ -55,6 +55,24 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertEqual(SuperVideoTextTokenizer.text(text), Self.userPrompt("ab\n"))
     }
 
+    /// The separator before a media part follows Python's `endswith`, which
+    /// compares code points: text ending in "\r\n" ends with "\n" and takes no
+    /// separator (swift-jinja's own `endswith` compares Characters).
+    func testSeparatorBeforeAnImageFollowsPythonEndsWith() throws {
+        let template = try Self.templateBytes()
+        XCTAssertFalse(try NemotronSuperPromptContract.verifiedTemplate(template).contains(".endswith("))
+        let image = OpenAIContentPart.imageURL("data:image/png;base64,AA==")
+        let tokenizer = SuperVideoTextTokenizer()
+        for (text, content) in [("Look:\r\n", "Look:\r\n<image>"), ("Look:\n", "Look:\n<image>"),
+                                ("Look:", "Look:\n<image>"), ("Look:\r", "Look:\r\n<image>")] {
+            let tokens = try NemotronSuperPromptContract.render(
+                messages: [OpenAIChatMessage(role: .user, content: .parts([.text(text), image]))],
+                body: Data("{}".utf8), declared: nil, controls: .init(), templateBytes: template, tokenizer: tokenizer)
+            XCTAssertEqual(tokens, tokenizer.encode(text: Self.userPrompt(content), addSpecialTokens: false),
+                           text.debugDescription)
+        }
+    }
+
     /// A request carries at most `maximumContentParts` parts: a 100,000-part
     /// body is refused when the plan is built, before any render; one at the
     /// bound renders its merged text.

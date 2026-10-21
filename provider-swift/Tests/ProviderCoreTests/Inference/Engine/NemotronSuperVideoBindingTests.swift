@@ -251,7 +251,12 @@ struct NemotronSuperVideoBindingTests {
     /// EVS over the whole video's rows (the SDK's whole-video reference):
     /// the same count per tubelet and the same rows.
     @Test(.timeLimit(.minutes(3))) func windowedPruningKeepsTheWholeVideoSelection() async throws {
-        let (installed, _, residency) = try SuperInstalledFixture(radioDimensions: Self.squareTower).make()
+        // The fixture's weights come from module initializers; a fixed random
+        // state keeps them, and so the cross-batch check below, independent of
+        // the tests that ran before.
+        let (installed, _, residency) = try withRandomState(MLXRandom.RandomState(seed: 1)) {
+            try SuperInstalledFixture(radioDimensions: Self.squareTower).make()
+        }
         // Every frame of a 2 fps clip is sampled: 20 frames, 10 tubelets.
         let plan = try await NemotronSuperVideoDecode.inspect(
             NemotronSuperVideoClips.uri(try await NemotronSuperVideoClips.movie(frames: 20, fps: 2)))

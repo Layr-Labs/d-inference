@@ -315,14 +315,21 @@ extension NemotronSuperImageDecodeTests {
     }
 
     @Test func progressiveScanCountIsCapped() throws {
-        // Container-level check only: ImageIO never sees these headers.
+        // Container-level check only: ImageIO never sees these headers. A
+        // legal 896-scan progression: each coefficient alone, in a first scan
+        // (Al = 13) and thirteen one-bit refinements.
         let frame: [UInt8] = [0xff, 0xc2, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]
-        let scan: [UInt8] = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 0]
+        let progression = (0...63).flatMap { band in
+            (0...13).map { pass -> [UInt8] in
+                let high = pass == 0 ? 0 : 14 - pass, low = pass == 0 ? 13 : high - 1
+                return [0xff, 0xda, 0, 8, 1, 1, 0, UInt8(band), UInt8(band), UInt8(high << 4 | low)]
+            }
+        }
         func jpeg(scans: Int) -> Data {
-            Data([0xff, 0xd8] + frame + Array([[UInt8]](repeating: scan, count: scans).joined()) + [0xff, 0xd9])
+            Data([0xff, 0xd8] + frame + Array(progression.prefix(scans).joined()) + [0xff, 0xd9])
         }
         let limit = NemotronSuperJPEGContainer.maximumScans
-        #expect(limit == 500)
+        #expect(limit == 500 && progression.count > limit)
         #expect(try NemotronSuperImageDecode.inspect(jpeg(scans: limit), orientation: .applyEXIF).format == .jpeg)
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperImageDecode.inspect(jpeg(scans: limit + 1), orientation: .applyEXIF)

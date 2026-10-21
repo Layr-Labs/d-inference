@@ -59,6 +59,7 @@ chroma upsampling are not libjpeg-turbo's, so samples differ from Pillow.
 | 3 components | YCbCr (JFIF, Adobe transform 1, or no marker without `R`,`G`,`B` component IDs) or RGB (Adobe transform 0 without JFIF). Luma sampling 1x1, 2x1 or 2x2 with 1x1 chroma | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`colorModel`) |
 | 4 components | CMYK (Adobe transform 0 or no Adobe marker, 1x1 sampling), read as Adobe-inverted (`CMYK;I`) and converted with Pillow's `cmyk2rgb` | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`decode`) |
 | Metadata | EXIF and XMP before the first SOS. Later `Exif` APP1 payloads are appended to the first, as in Pillow 12 | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`parse`) |
+| Scans | At most 500. Sequential: every component in exactly one scan with Ss = 0, Se = 63, Ah = Al = 0. Progressive: DC scans have Ss = Se = 0, AC scans one component and 1 ≤ Ss ≤ Se ≤ 63; a coefficient's first scan has Ah = 0 and Al ≤ 13, and each later one Ah = the previous Al and Al = Ah − 1, so no coefficient is decoded more than 14 times | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`ScanProgression`, `maximumScans`) |
 
 The test-enforced bounds on |ImageIO − Pillow| per RGB8 sample are:
 
@@ -81,7 +82,7 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 | PNG with a CRC mismatch, invalid IHDR, misplaced PLTE/tRNS, non-consecutive IDAT, data after IEND, an APNG sequence error, a non-zlib `zTXt`/`iCCP` method, or a second `iCCP` (hardening: Pillow reads every copy) | `invalidHeader` |
 | PNG whose zlib stream is truncated, longer than the raster or has an Adler-32 mismatch, or with an invalid filter type or palette index | `invalidRaster` |
 | JPEG with 12-bit precision, a lossless, hierarchical or arithmetic process, DNL, 2 components, YCCK, JFIF combined with Adobe transform 0, `R`,`G`,`B` component IDs without Adobe transform 0, other sampling, or more than 500 scans (hardening beyond the reference: ImageIO's decode cannot be cancelled) | `unsupportedEncoding` |
-| JPEG without a frame or EOI, or with a reserved marker | `invalidHeader` |
+| JPEG without a frame or EOI, with a reserved marker, or with scans outside the scan rules above (hardening: libjpeg-turbo decodes some of them with a warning) | `invalidHeader` |
 | Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`); more than 64 compressed chunks, or more than 16 MiB inflated from them, in one image, unkeyed, corrupt and non-UTF-8 chunks included (hardening: Pillow accepts these) | `sizeLimit` |
 
 ## Limits and admission

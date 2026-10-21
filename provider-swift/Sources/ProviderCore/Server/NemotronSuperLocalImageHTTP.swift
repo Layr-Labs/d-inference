@@ -98,9 +98,10 @@ private struct SuperHTTPEngine: MLXServerEngine {
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         let owner = self.owner
         guard request.model == owner.modelID else { throw unsupported() }
-        // The owner admits its configured concurrency before the body is
-        // decoded, the prompt rendered or media reserved, so a busy owner
-        // refuses at once. Every exit before the task takes it over returns it.
+        // The owner admits its configured concurrency before the request plan
+        // decodes the body, the prompt is rendered or media is reserved, so a
+        // busy owner refuses at once. Every exit before the task takes it over
+        // returns it.
         guard owner.admitLocalRequest() else {
             throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }

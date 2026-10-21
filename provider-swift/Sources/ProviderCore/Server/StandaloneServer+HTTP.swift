@@ -87,8 +87,9 @@ extension StandaloneServer {
     }
 
     /// Metadata only: cold native audio still uses normal strict acquisition.
-    func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
-        slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
+    func localModelTypeForAudioAdmission(_ requestedModelId: String) -> String? {
+        let modelId = advertisedModelID(for: requestedModelId)
+        return slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
     }
 }
 

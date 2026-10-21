@@ -47,6 +47,18 @@ public enum EngineV2SupportedModels {
         default: false
         }
     }
+    /// Resolve a requested model id to the id the server advertises. An
+    /// exact advertised id wins. A pplx-decider listing id resolves to the
+    /// one advertised pplx-decider pack. Every other id stays unchanged, so
+    /// the not-found path still applies to it.
+    public static func canonicalAdvertisedModelID(
+        for requested: String, advertised: [ModelInfo]
+    ) -> String {
+        if advertised.contains(where: { $0.id == requested }) { return requested }
+        guard isPplxDeciderListingModelID(requested) else { return requested }
+        let deciders = advertised.filter { isPplxDeciderListingModelID($0.id) }
+        return deciders.count == 1 ? deciders[0].id : requested
+    }
     /// The decider's head emits option logits, not vocabulary logits, so the
     /// loaded `model_type` (never a model name) selects the decision path.
     public static func isPplxDeciderModelType(_ modelType: String?) -> Bool {

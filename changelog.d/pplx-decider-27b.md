@@ -10,3 +10,5 @@
 - Chat requests to a decision model, and decision requests to any other model,
   are refused with 400. `decision_config.json` is part of the hashed model
   files.
+- On the local endpoint, the short name `pplx-decider-v1-27b` and the full id
+  both resolve to the advertised pack.

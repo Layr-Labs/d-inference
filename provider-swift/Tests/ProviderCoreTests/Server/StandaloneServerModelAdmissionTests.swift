@@ -239,6 +239,45 @@ struct StandaloneServerModelAdmissionTests {
         _ = server
     }
 
+    // MARK: Model id resolution
+
+    @Test func deciderShortNameAcquiresTheAdvertisedPackSlot() async throws {
+        let packID = EngineV2SupportedModels.pplxDeciderModelID
+        let server = StandaloneServer(
+            config: StandaloneServerConfig(runtimeCapabilities: [.appleM5, .mlxNAX]),
+            models: [ModelInfo(
+                id: packID, modelType: "pplx_decider_qwen35", quantization: "4bit",
+                sizeBytes: 1, estimatedMemoryGb: 1)])
+        let slot = await installSlot(server, modelId: packID, modelType: "pplx_decider_qwen35")
+
+        let acquired = try await server.acquireModel("pplx-decider-v1-27b")
+        #expect(acquired.engineV2Bridge === slot.bridge)
+        #expect(acquired.modelType == "pplx_decider_qwen35")
+        // The reservation and the slot stay keyed by the pack id.
+        #expect(await server.loadedModelIds() == [packID])
+        #expect(await server.debugSlotReservationCount(modelId: packID) == 1)
+        #expect(await server.debugSlotReservationCount(modelId: "pplx-decider-v1-27b") == 0)
+        #expect(await server.localModelTypeForAudioAdmission("pplx-decider-v1-27b")
+            == "pplx_decider_qwen35")
+        #expect(try await server.resolveTokenizer("pplx-decider-v1-27b").modelType
+            == "pplx_decider_qwen35")
+        await acquired.releaseToken.fire()
+        #expect(await server.debugSlotReservationCount(modelId: packID) == 0)
+    }
+
+    @Test func deciderShortNameWithoutAdvertisedPackIsNotLoaded() async throws {
+        let server = StandaloneServer(
+            config: StandaloneServerConfig(runtimeCapabilities: [.appleM5, .mlxNAX]),
+            models: [ModelInfo(
+                id: "gpt-oss-20b", modelType: "gpt_oss", quantization: "4bit",
+                sizeBytes: 1, estimatedMemoryGb: 1)])
+        await #expect(throws: MultiModelBatchSchedulerEngineError.modelNotLoaded("pplx-decider-v1-27b")) {
+            _ = try await server.acquireModel("pplx-decider-v1-27b")
+        }
+        #expect(await server.loadedModelIds().isEmpty)
+        #expect(await server.debugSlotReservationCount(modelId: "pplx-decider-v1-27b") == 0)
+    }
+
     @Test func acquisitionWhileDrainingMapsToTooManyRequests() async throws {
         let server = StandaloneServer(config: .init(port: 0))
         _ = await installSlot(server, modelId: "gpt-oss-20b")

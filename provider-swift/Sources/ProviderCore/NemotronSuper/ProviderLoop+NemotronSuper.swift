@@ -89,13 +89,15 @@ extension ProviderLoop {
             }
             throw error
         }
+        let plannedChunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: plan.environment)
         if let served = owner.fitAttempts.last(where: \.admitted),
-            served.requests < plan.requests || served.prefixBankBytes < plan.prefixBankBytes {
+            served.requests < plan.requests || served.prefixBankBytes < plan.prefixBankBytes
+                || served.chunkTokens < plannedChunk ?? served.chunkTokens {
             let gib = Double(served.claimBytes) / 1_073_741_824
             logger.warning("""
                 Nemotron Super loaded \(served.requests) concurrent request(s), \
-                prefix bank \(served.prefixBankBytes > 0 ? "on" : "off") (LOAD claim \(String(format: "%.1f", gib)) GiB): \
-                the configured policy did not fit the memory free beside the load reserve
+                prefix bank \(served.prefixBankBytes > 0 ? "on" : "off"), \(served.chunkTokens)-token prompt chunks \
+                (LOAD claim \(String(format: "%.1f", gib)) GiB): the configured policy did not fit available memory
                 """)
         }
         do {

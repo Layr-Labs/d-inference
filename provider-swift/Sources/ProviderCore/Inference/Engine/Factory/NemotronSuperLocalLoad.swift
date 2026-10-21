@@ -56,6 +56,8 @@ actor NemotronSuperLocalLoad {
         let prefixBankBytes: Int
         let claimBytes: UInt64
         let admitted: Bool
+        /// Its prompt chunk (`NemotronSuperLoadFit.narrowestChunkTokens` on the last).
+        var chunkTokens = NemotronSuperLocalPrefill.defaultChunkTokens
     }
 
     private(set) var phase: Phase = .idle
@@ -157,9 +159,11 @@ actor NemotronSuperLocalLoad {
                 guard !fitAttempts.contains(where: { $0.requests == candidate.requests && $0.claimBytes == charged })
                 else { continue }
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
-                    weightBytes: UInt64(askedBytes), minimumKVBytes: UInt64(kvFloor))
+                    weightBytes: UInt64(askedBytes), minimumKVBytes: UInt64(kvFloor),
+                    systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes)
+                let chunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: candidate.environment) ?? 0
                 fitAttempts.append(FitAttempt(requests: candidate.requests, prefixBankBytes: shares?.bank ?? 0,
-                                              claimBytes: charged, admitted: claim != nil))
+                    claimBytes: charged, admitted: claim != nil, chunkTokens: chunk))
                 guard let claim else { continue }
                 admitted = (candidate.environment, shares, ownerBytes, kvFloor, claim)
                 break

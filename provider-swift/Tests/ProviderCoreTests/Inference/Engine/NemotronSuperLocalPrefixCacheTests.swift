@@ -396,8 +396,8 @@ struct NemotronSuperLocalPrefixCacheTests {
     /// A managed claim that fits only at a narrower width serves that width:
     /// the load drops the bank, then halves eight requests until the gate
     /// admits a configuration (here two) and builds the bridge for it. With
-    /// one byte less free than the narrowest (one request, no bank) nothing
-    /// is installed and the load is refused.
+    /// one byte less free than the narrowest (one request, no bank, 1,024-token
+    /// chunks) nothing is installed and the load is refused.
     @Test(.timeLimit(.minutes(5)))
     func managedLoadServesTheWidestConfigurationTheGateAdmits() async throws {
         let grant: Int = 40 << 30
@@ -407,7 +407,7 @@ struct NemotronSuperLocalPrefixCacheTests {
         let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: false) + (4 << 30)
         let candidates = try NemotronSuperLoadFit.candidates(environment: environment,
             admissionKVBytes: admission, kvBytesCapacity: grant, speculates: false, contextTokens: context)
-        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1])
+        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1, 1])
         let quote = try NemotronSuperInstallation.loadQuote(
             source: try SuperMTPInstalledFixture().staging().source, backendAllowanceBytes: 1 << 20)
         let claims: [UInt64] = try candidates.map { candidate in
@@ -423,7 +423,7 @@ struct NemotronSuperLocalPrefixCacheTests {
         #expect(claims == claims.sorted(by: >) && Set(claims).count == claims.count)
         // The gate must also hold the admission slack beside each claim.
         let slack = UInt64(NemotronSuperLoadFit.admissionSlackBytes)
-        for (free, served) in [(claims[3] + slack, 2), (claims[4] + slack - 1, nil)] {
+        for (free, served) in [(claims[3] + slack, 2), (claims[5] + slack - 1, nil)] {
             let base = try SuperMTPInstalledFixture().staging()
             let installs = SuperPrefixInstallCount()
             let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {

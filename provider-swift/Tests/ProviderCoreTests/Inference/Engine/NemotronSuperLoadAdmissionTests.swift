@@ -22,4 +22,22 @@ struct NemotronSuperLoadAdmissionTests {
             minimumKVBytes: 1)))
         #expect(await budget.outstandingReservedBytes() == 0)
     }
+
+    /// A Super LOAD claim keeps its own OS reserve (none) beside its charge,
+    /// at admission and at every recheck; any other load keeps the provider's
+    /// load reserve. 90 GiB fits 100 GiB available only without that reserve.
+    @Test func superClaimKeepsItsOwnSystemReserve() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 128 << 30, active: 0, cache: 0, systemAvailable: 100 << 30) })
+        #expect(budget.loadReserveBytes > 10 << 30)
+        #expect(NemotronSuperLoadFit.systemReserveBytes == 0)
+        let weight: UInt64 = 89 << 30
+        let refused = await budget.claimPendingLoad(requestID: "provider-reserve", weightBytes: weight)
+        #expect(refused == nil)
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-reserve", weightBytes: weight,
+            systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes))
+        #expect(await budget.recheckPendingLoad(lease))
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
 }

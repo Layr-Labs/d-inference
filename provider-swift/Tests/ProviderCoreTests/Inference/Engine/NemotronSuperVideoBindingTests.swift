@@ -161,7 +161,7 @@ struct NemotronSuperVideoBindingTests {
         let model = ModelInfo(id: Policy.modelID, modelType: "nemotron_h_omni", sizeBytes: 1, estimatedMemoryGb: 1,
                               isVision: true, templateRenderOK: true)
         #expect(CapacityQuoteEngine.nemotronSuperMediaCharge(probe: probe, model: model)
-            == .charged(bytes: max(image, video), footprintBytes: image))
+            == .charged(bytes: max(image, video)))
     }
 
     /// A real clip's plan admits its prompt at the pruned length and reserves

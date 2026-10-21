@@ -134,9 +134,9 @@ enum CapacityQuoteEngine {
             guard capacity.freeForLoadGb >= max(0, model.estimatedMemoryGb) else {
                 return reject(.memoryCap)
             }
-            // The footprint already holds one single-image request.
-            if case .charged(let bytes, let footprintBytes) = superMedia,
-                capacity.freeForLoadGb - max(0, model.estimatedMemoryGb) < gib(bytes - footprintBytes) {
+            // The footprint holds no media: the probe's whole charge must fit beside it.
+            if case .charged(let bytes) = superMedia,
+                capacity.freeForLoadGb - max(0, model.estimatedMemoryGb) < gib(bytes) {
                 return reject(.memoryCap)
             }
             if probe.deadlineRemainingMs <= 0 {
@@ -183,7 +183,7 @@ enum CapacityQuoteEngine {
         // A resident slot's media must fit the published room that credits no
         // resident model as reclaimable, net of the load headroom. Its 1 GiB
         // minimum-KV part is margin: the slot's KV is already granted.
-        if case .charged(let bytes, _) = superMedia {
+        if case .charged(let bytes) = superMedia {
             guard let usable = capacity.loadUsableGb, let headroom = capacity.loadHeadroomGb,
                 usable - headroom >= gib(bytes)
             else { return reject(.memoryCap) }
@@ -201,9 +201,8 @@ enum CapacityQuoteEngine {
         /// More images than the Super image binding admits, or a one-part
         /// probe without a video bound.
         case refused
-        /// The binding's worst-case reservation for the probe, and the
-        /// single-image charge the discovery footprint already includes.
-        case charged(bytes: UInt64, footprintBytes: UInt64)
+        /// The binding's worst-case reservation for the probe.
+        case charged(bytes: UInt64)
     }
 
     /// Pure and Super-specific. A probe without an image count is charged
@@ -218,12 +217,11 @@ enum CapacityQuoteEngine {
             NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
         else { return .notApplicable }
         let images = probe.visionImageCount > 0 ? probe.visionImageCount : NemotronSuperServingPolicy.maximumImages
-        guard let imageBytes = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images),
-            let single = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1)
+        guard let imageBytes = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images)
         else { return .refused }
-        guard images == 1 else { return .charged(bytes: imageBytes, footprintBytes: single) }
+        guard images == 1 else { return .charged(bytes: imageBytes) }
         guard let video = NemotronSuperServingPolicy.videoMediaChargeBytes else { return .refused }
-        return .charged(bytes: max(imageBytes, video), footprintBytes: single)
+        return .charged(bytes: max(imageBytes, video))
     }
 
     private static func gib(_ bytes: UInt64) -> Double { Double(bytes) / 1_073_741_824 }

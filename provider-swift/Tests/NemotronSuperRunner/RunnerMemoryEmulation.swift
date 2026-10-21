@@ -76,8 +76,9 @@ struct RunnerMemoryEmulation {
     }
 
     func loadGate(budget: GlobalKVCacheBudget) -> (admits: Bool, json: RunnerJSON) {
-        // The footprint's GiB do not depend on the checkpoint size argument.
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0)
+        // The footprint's GiB do not depend on the checkpoint size argument;
+        // they credit the emulated Mac's load reserve.
+        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0, physicalBytes: physicalBytes)
         let headroom = UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [NemotronSuperServingPolicy.modelID])
         let required = footprint.estimatedMemoryGb + Double(headroom) / 1_073_741_824
         let available = budget.availableForLoadGb()

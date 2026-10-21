@@ -10,6 +10,9 @@ extension GlobalKVCacheBudget {
     struct PendingLoadRecord: Sendable {
         let requestID: String
         let minimumKVBytes: UInt64
+        /// The OS reserve this load keeps beside its charge at admission and
+        /// every recheck (`loadReserveBytes` unless the claim chose its own).
+        let systemReserveBytes: UInt64
         let createdAt: ContinuousClock.Instant
         var state: ProcessMemoryLedger.OwnerState
     }
@@ -18,10 +21,14 @@ extension GlobalKVCacheBudget {
     /// and one-request setup headroom. Activation is already in ledger policy.
     /// The additional OS reserve preserves the stricter existing LOAD policy at
     /// admission/recheck; normal runtime KV admissions keep their own formula.
+    /// `systemReserveBytes` replaces that reserve for a load whose policy
+    /// sizes its own (the managed Nemotron Super load); nil keeps it.
     func claimPendingLoad(
         requestID: String, weightBytes: UInt64,
-        minimumKVBytes: UInt64 = UnifiedMemoryCap.minimumLoadKVBytes
+        minimumKVBytes: UInt64 = UnifiedMemoryCap.minimumLoadKVBytes,
+        systemReserveBytes: UInt64? = nil
     ) -> PendingModelLoadLease? {
+        let systemReserveBytes = systemReserveBytes ?? loadReserveBytes
         guard weightBytes > 0, !reservationExists(requestID) else { return nil }
         let (chargedBytes, overflow) = weightBytes.addingReportingOverflow(minimumKVBytes)
         guard !overflow else { return nil }
@@ -30,10 +37,10 @@ extension GlobalKVCacheBudget {
             let accepted = try processLedger.replaceCharge(
                 owner: owner.owner, expectedRevision: owner.revision,
                 expectedPolicyEpoch: processLedger.policySnapshot().epoch,
-                chargedBytes: chargedBytes, additionalSystemReserveBytes: loadReserveBytes)
+                chargedBytes: chargedBytes, additionalSystemReserveBytes: systemReserveBytes)
             pendingLoads[owner.owner] = PendingLoadRecord(
                 requestID: requestID, minimumKVBytes: minimumKVBytes,
-                createdAt: reservationClockNow(), state: accepted)
+                systemReserveBytes: systemReserveBytes, createdAt: reservationClockNow(), state: accepted)
             pendingLoadIDs[requestID] = owner.owner
         } catch {
             _ = processLedger.retire(owner.owner)
@@ -52,7 +59,7 @@ extension GlobalKVCacheBudget {
             try processLedger.recheckCharge(
                 owner: lease.owner, expectedRevision: current.state.revision,
                 expectedPolicyEpoch: processLedger.policySnapshot().epoch,
-                additionalSystemReserveBytes: loadReserveBytes)
+                additionalSystemReserveBytes: current.systemReserveBytes)
             return true
         } catch {
             recordReservationRefusal(bytes: current.state.chargedBytes)

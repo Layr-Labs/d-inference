@@ -115,10 +115,13 @@ enum RunnerCheckpointLoad {
         return [
             "attempts": .array(attempts.map {
                 ["requests": .count($0.requests), "prefix_bank_bytes": .bytes($0.prefixBankBytes),
-                 "claim_bytes": .bytes($0.claimBytes), "admitted": .bool($0.admitted)]
+                 "chunk_tokens": .count($0.chunkTokens), "claim_bytes": .bytes($0.claimBytes),
+                 "admitted": .bool($0.admitted)]
             }),
             "served_requests": loaded ? attempts.last(where: \.admitted).map { .count($0.requests) } ?? .null : .null,
             "admission_slack_bytes": .bytes(NemotronSuperLoadFit.admissionSlackBytes),
+            "system_reserve_bytes": .bytes(NemotronSuperLoadFit.systemReserveBytes),
+            "minimum_available_bytes": .bytes(NemotronSuperLoadFit.minimumAvailableBytes),
             "load_reserve_bytes": .bytes(budget.loadReserveBytes),
             "available_for_load_gb": .double(budget.availableForLoadGb()),
             "ledger": RunnerMemorySampler.ledger(headroom),

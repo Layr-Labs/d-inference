@@ -30,26 +30,23 @@ staging with its 2 GiB backend allowance (8,903,163,904 bytes) and the head's
 construction allowance (7,078,617,184 bytes), never both, because each phase
 returns its freed buffers from MLX's cache before the next phase or serving
 uses that room; for the default configuration the room is larger, so the
-transient adds nothing. Its discovery footprint, 88.0 GiB, is the narrowest
-owner the managed load serves (one speculative request at the whole context,
-no prefix bank; `NemotronSuperLoadFit`), so the load gate admits every load
-the managed claim would serve: the resident payloads plus that owner's serving
-room with the worst-case media reservation
-of one single-image request (`NemotronSuperServingPolicy.mediaChargeBytes`,
-3.62 GiB: a 64 Mi-pixel decode workspace, the encoded body copies, a
-13,312-patch image's tokens and its tower and projector bound), so a loaded
-slot can serve an image at once, or a video, whose largest charge
-(`NemotronSuperServingPolicy.videoMediaChargeBytes`, 3.49 GiB) is smaller. With Super's measured 2 GiB activation floor
-(below) and 1 GiB minimum KV the load gate needs 91.0 GiB free for loading
-(memory macOS reports available, less the 10% load reserve). The LOAD gate
-admits a configuration with its claim, 3 GiB of admission slack and the 2 GiB
-activation reserve within that room. The default owner (eight requests and a
-prefix bank) claims about 99 GiB and needs about 117 GiB available on a
-128 GB Mac; when less is available the load drops the bank (eight requests,
-111.8 GiB), then serves four (108.1), two (103.6) or one (102.1) concurrent
-requests, so a 128 GB Mac running other work loads a narrower owner instead of
-refusing. The eight-request load gate would be 100.6 GiB under the
-90% cap; a 16-image request (24.5 GiB of media) does not fit beside it on 128 GB.
+transient adds nothing. Super's LOAD claims keep no OS reserve beyond 3 GiB of
+admission slack and its measured 2 GiB activation floor (below), in place of
+the provider's 10% load reserve (`NemotronSuperLoadFit`). Available memory
+(what macOS reports) a 128 GB Mac needs: about 104 GiB for the default owner
+(eight requests and a prefix bank, about 99 GiB claimed); with less the load
+drops the bank (eight requests, 99.0 GiB), then serves four (95.3), two
+(90.8) or one (89.3) concurrent request, then one with 1,024-token prompt
+chunks (85.6 GiB, `NemotronSuperLoadFit.minimumAvailableBytes`), so a 128 GB
+Mac running other work loads a narrower owner instead of refusing. The
+discovery footprint is that minimum less the load reserve and the 3 GiB load
+headroom the ordinary gates add back (69.8 GiB on 128 GB), so every gate
+admits from 85.6 GiB available; it holds no media, and an image request is
+charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
+3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
+copies, a 13,312-patch image's tokens and its tower and projector bound; a
+video's largest, `videoMediaChargeBytes`, is 3.49 GiB). A 16-image request
+(24.5 GiB of media) does not fit beside the default owner on 128 GB.
 At 65,536 tokens the round work would be 4.7 GiB and the gate 96.1 GiB. 192 GB
 leaves 72.2 GiB under the cap. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX

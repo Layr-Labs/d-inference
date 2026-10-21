@@ -4,11 +4,11 @@
   pinned NVIDIA NVFP4 checkpoint with its embedded MTP head. The registry id
   with an unpinned `config.json` or index is withheld; every other
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
-  the resident checkpoint plus the larger of its load transient and the
-  serving room (prefill lane, requests' KV headroom and one image request's
-  media charge; 88.0 GiB for the narrowest owner it serves, one request), and it advertises image and video
-  input; capacity quotes for media probes charge their images, a one-part
-  probe the larger of one image and one video.
+  what the ordinary load gates must see so that the managed load's narrowest
+  owner has 85.6 GiB available (69.8 GiB on a 128 GB Mac, after the load
+  reserve and headroom those gates add back), and it advertises image and
+  video input; capacity quotes for media probes charge their images' whole
+  reservation, a one-part probe the larger of one image and one video.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
   re-slice, one LOAD claim covering the installation, the head, the
   speculating owner's round work once and the configured requests' KV
@@ -23,14 +23,15 @@
   two to four and one beyond (the fastest depth measured at each width on the
   full checkpoint); `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves the
   plain owner, and an explicit `engine_v2_max_concurrent` bounds the width.
-  When the memory free beside the load reserve cannot hold that owner (a
-  128 GB Mac running other work), the load serves the widest narrower one
-  that fits instead of refusing: no prefix bank, then four, two or one
-  concurrent requests, with every measured bound and the full context kept
-  (one request claims about 84.3 GiB and loads with about 102 GiB
-  available), and logs the width it chose. Each configuration is admitted
-  only with 3 GiB to spare, so a load that barely fits steps down instead of
-  losing its admission after the weights are installed.
+  When available memory cannot hold that owner (a 128 GB Mac running other
+  work), the load serves the widest narrower one that fits instead of
+  refusing: no prefix bank, then four, two or one concurrent requests, then
+  one with 1,024-token prompt chunks, with every measured bound and the full
+  context kept, and logs what it chose. Super loads keep no OS reserve beyond
+  3 GiB of admission slack and the 2 GiB activation reserve, so the model
+  loads with 85.6 GiB available (about 104 GiB for the default), and a
+  configuration that barely fits steps down instead of losing its admission
+  after the weights are installed.
   Either owner reuses exact prompt prefixes when the grant holds its bank; a
   restored speculative request drafts from the same prompt history as a cold
   one, and an image turn reuses only checkpoints of the same image features.

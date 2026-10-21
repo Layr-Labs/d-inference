@@ -465,41 +465,32 @@ struct NemotronSuperServingPolicyTests {
             + "activation=\(gib(Int(activation))) footprint=\(gib(footprint)) gate=\(gib(gate)) cap=\(gib(cap))")
     }
 
-    @Test func discoveryFootprintCoversTheNarrowestServedLoadAndOneImage() throws {
+    @Test func discoveryFootprintIsTheNarrowestLoadNetOfTheGateCredits() throws {
         // The ship-check claim at a 28 GiB grant: installation, head and grant.
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
             + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_033_369_216)
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
-        // Media is a serving reservation, not LOAD transient. The LOAD claim
-        // holds both payloads and the larger of the two sequential transients
-        // (the installation's 8,903,163,904-byte staging, not the head's
-        // 7,078,617,184-byte construction), which runs in the serving room
-        // (lane, admission KV, one image) before anything is served.
+        // The LOAD claim holds both payloads and the larger of the two
+        // sequential transients (the installation's 8,903,163,904-byte
+        // staging, not the head's 7,078,617,184-byte construction).
         #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_889_980_960)
+        let physical: UInt64 = 128 << 30
+        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240,
+                                                                      physicalBytes: physical)
         #expect(footprint.nativeLoadTransientBytes == 8_879_792_720)
-        let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: 2048))
-        // One speculative request at the whole context without a bank: the
-        // narrowest owner the managed load serves (`NemotronSuperLoadFit`).
-        let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 1, speculates: true))
-        let serving = lane + admission + media
-        #expect(serving > 8_903_163_904)
-        let expected = Double(73_217_162_760 + 1_769_654_296 + serving) / 1_073_741_824
-        #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        // 86.833 GiB at 65,536 tokens; the served 262,144 adds exactly 1.125 GiB of
-        // history copies. The eight-request default would be 97.646 GiB.
-        #expect(abs(footprint.estimatedMemoryGb - 87.958_256_270_736_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
-        let widest = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
-        #expect(abs(footprint.estimatedMemoryGb + Double(widest - admission) / 1_073_741_824
-            - 97.645_756_270_736_46) < 1e-9)
-        let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
-            configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
-        // The plain owner's scan-time equivalent (no head, no bank) is smaller.
-        let plainServing = lane + UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: plain.requests,
-            speculates: false)) + media
-        let plainBytes = NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false,
-            servingBytes: Int(plainServing)) + plainServing
-        #expect(Double(plainBytes) / 1_073_741_824 < footprint.estimatedMemoryGb)
+        // The ordinary gate admits when available memory less the load reserve
+        // covers the footprint and the load headroom: exactly the narrowest
+        // configuration's 91,898,250,784 bytes (85.59 GiB) available.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(physicalBytes: physical, configReserveBytes: 0)
+        let headroom = UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [NemotronSuperServingPolicy.modelID])
+        #expect(reserve == 13_743_895_348 && headroom == 3 << 30)
+        let gate = footprint.estimatedMemoryGb * 1_073_741_824 + Double(reserve + headroom)
+        #expect(abs(gate - Double(NemotronSuperLoadFit.minimumAvailableBytes)) < 1)
+        #expect(abs(footprint.estimatedMemoryGb - 69.786_915_522_068_74) < 1e-9, "\(footprint.estimatedMemoryGb)")
+        // A Mac with a larger reserve credits it the same way.
+        let large = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0, physicalBytes: 256 << 30)
+        #expect(abs(large.estimatedMemoryGb * 1_073_741_824
+            + Double(UnifiedMemoryCap.loadReserveBytes(physicalBytes: 256 << 30, configReserveBytes: 0) + headroom)
+            - Double(NemotronSuperLoadFit.minimumAvailableBytes)) < 1)
     }
 
     /// Super's requests, prefill lane and media charges carry its decode,
@@ -588,25 +579,21 @@ struct NemotronSuperServingPolicyTests {
     @Test func coldQuotesUseTheManagedLoadFootprint() {
         let footprintGb = Self.footprint.estimatedMemoryGb
         #expect(Self.quote(freeForLoadGb: footprintGb).admissibleNow)
-        #expect(Self.quote(freeForLoadGb: footprintGb, vision: true, images: 1).admissibleNow)
-        // The shard bytes alone would fit; the full managed LOAD does not.
-        let shardsOnly = Self.quote(freeForLoadGb: 75_010_188_240 * 1.2 / 1_073_741_824)
-        #expect(!shardsOnly.admissibleNow && shardsOnly.rejectionReason == .memoryCap)
-        for (vision, images) in [(false, 0), (true, 0), (true, 1), (false, 3)] {
+        for (vision, images) in [(false, 0), (false, 3)] {
             #expect(Self.quote(freeForLoadGb: footprintGb - 0.01, vision: vision, images: images)
                 .rejectionReason == .memoryCap)
         }
-        // Further images need their charge beyond the footprint's single image.
-        let single = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1)
-        for images in [2, 4, 16] {
-            let extraGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images)) - Self.gib(single)
-            #expect(extraGb > 0)
-            #expect(Self.quote(freeForLoadGb: footprintGb + extraGb, vision: true, images: images).admissibleNow)
-            #expect(Self.quote(freeForLoadGb: footprintGb + extraGb - 0.01, vision: true, images: images)
+        // The footprint holds no media: every image probe needs its whole charge beside it.
+        for images in [1, 2, 4, 16] {
+            let mediaGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
+            let charge = images == 1
+                ? max(mediaGb, Self.gib(NemotronSuperServingPolicy.videoMediaChargeBytes)) : mediaGb
+            #expect(Self.quote(freeForLoadGb: footprintGb + charge, vision: true, images: images).admissibleNow)
+            #expect(Self.quote(freeForLoadGb: footprintGb + charge - 0.01, vision: true, images: images)
                 .rejectionReason == .memoryCap)
         }
         // A probe without an image count is charged the binding's maximum.
-        let maximumGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 16)) - Self.gib(single)
+        let maximumGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 16))
         #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb - 0.01, vision: true).rejectionReason == .memoryCap)
         #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb, vision: true).admissibleNow)
     }
@@ -680,7 +667,7 @@ struct NemotronSuperServingPolicyTests {
             kvBytesCapacity: grant, physicalBytes: 128 << 30)
         let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
             admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
-        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1])
+        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1, 1])
         #expect(candidates[0] == .init(environment: plan.environment, admissionKVBytes: plan.admissionKVBytes,
                                        requests: 8))
         for candidate in candidates.dropFirst() {
@@ -689,17 +676,30 @@ struct NemotronSuperServingPolicyTests {
                 == String(candidate.requests))
             #expect(candidate.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
         }
+        // Only the last serves 1,024-token prompt chunks; the rest keep the default.
+        #expect(candidates.map { NemotronSuperLocalPrefill.requestedChunkTokens(environment: $0.environment) }
+            == [2048, 2048, 2048, 2048, 2048, 1024])
         #expect(candidates.dropFirst().map(\.admissionKVBytes)
-            == [16_844_324_864, 12_817_793_024, 8_053_063_680, 6_442_450_944])
+            == [16_844_324_864, 12_817_793_024, 8_053_063_680, 6_442_450_944, 6_442_450_944])
         #expect(NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8) == 9_865_003_008)
-        let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens)
-        let narrowest = candidates[4].admissionKVBytes + lane
+        // The narrowest claim: both payloads, the 1,024-token lane (4.75 GiB) and one request's admission.
+        let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: NemotronSuperLoadFit.narrowestChunkTokens)
+        #expect(lane == 5_100_273_664)
+        let narrowest = candidates[5].admissionKVBytes + lane
         let claim = Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: narrowest))
             + narrowest
-        #expect(claim == 90_556_073_504)
+        #expect(claim == 86_529_541_664)
+        // With the 3 GiB slack and the 2 GiB activation reserve: 85.59 GiB available.
+        #expect(NemotronSuperLoadFit.minimumAvailableBytes == 91_898_250_784)
         let whole = try NemotronSuperLoadFit.candidates(environment: plan.environment, admissionKVBytes: nil,
             kvBytesCapacity: grant, speculates: true, contextTokens: context)
         #expect(whole == [.init(environment: plan.environment, admissionKVBytes: grant, requests: 8)])
+        // An owner already at 1,024-token chunks gets no further rung.
+        var small = plan.environment
+        small[NemotronSuperLocalPrefill.chunkKey] = "1024"
+        let smallChunk = try NemotronSuperLoadFit.candidates(environment: small,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        #expect(smallChunk.map(\.requests) == [8, 8, 4, 2, 1])
     }
 
     /// Forced `tool_choice` is advertised for the registry id only: the owner

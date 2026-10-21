@@ -91,9 +91,11 @@ enum NemotronSuperOrderedJSON {
             var start = index
             func flush(_ end: Int) throws {
                 guard start < end else { return }
-                guard let text = String(bytes: bytes[start..<end], encoding: .utf8) else {
-                    throw Failure.invalid
-                }
+                // `String(bytes:encoding:)` would drop a leading U+FEFF. Decode
+                // exactly and refuse bytes the decoder had to replace.
+                let segment = bytes[start..<end]
+                let text = String(decoding: segment, as: UTF8.self)
+                guard text.utf8.elementsEqual(segment) else { throw Failure.invalid }
                 scalars.append(contentsOf: text.unicodeScalars)
             }
             while index < bytes.count {

@@ -235,6 +235,20 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(deep))
     }
 
+    /// String bytes decode exactly, as Python's `json.loads` reads them: a
+    /// U+FEFF that starts a raw segment survives, and invalid UTF-8 (a stray
+    /// byte, an encoded surrogate, an overlong or truncated sequence) is refused.
+    func testOrderedJSONKeepsByteOrderMarksAndRefusesInvalidUTF8() throws {
+        XCTAssertEqual(try NemotronSuperOrderedJSON.parse("{\"\u{FEFF}k\": \"\u{FEFF}v\\n\u{FEFF}w\"}"),
+                       .object(["\u{FEFF}k": .string("\u{FEFF}v\n\u{FEFF}w")]))
+        for bytes: [UInt8] in [[0x22, 0xFF, 0x22], [0x22, 0xED, 0xA0, 0x80, 0x22], [0x22, 0xC0, 0xAF, 0x22],
+                               [0x22, 0xE2, 0x82, 0x22]] {
+            XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(Data(bytes)), "\(bytes)") {
+                XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .invalid)
+            }
+        }
+    }
+
     /// Expected strings were produced by CPython 3.14 `repr`, `str`,
     /// `json.dumps(ensure_ascii=False)` and `str.strip`.
     func testTemplateFiltersMatchPython() throws {

@@ -468,8 +468,9 @@ struct NemotronSuperLocalPrefixCacheTests {
         }
     }
 
-    /// MLX buffer-cache bytes a scripted budget reports until its flush runs.
-    final class ScriptedCache: @unchecked Sendable {
+    /// Bytes a scripted budget reports (MLX's buffer cache, live usage) until
+    /// the test or a flush changes them.
+    final class ScriptedBytes: @unchecked Sendable {
         private let lock = NSLock()
         private var stored: UInt64 = 0
         var bytes: UInt64 {
@@ -482,7 +483,9 @@ struct NemotronSuperLocalPrefixCacheTests {
     /// narrowed: the load returns them once and asks again, and builds the
     /// planned owner (a refusal alone only schedules the reclaimer's flush,
     /// too late for the next configuration, which would serve without the
-    /// bank).
+    /// bank). Nor is it narrowed when that flush returns the buffers before
+    /// the load looks at the cache again: here the budget's own reclaimer
+    /// may win that race.
     @Test(.timeLimit(.minutes(5)))
     func cachedBuffersAreReturnedBeforeNarrowing() async throws {
         let grant: Int = 40 << 30
@@ -500,7 +503,7 @@ struct NemotronSuperLocalPrefixCacheTests {
             try NemotronSuperLoadClaim.bytes(installation: quote, head: nil,
                 sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers(), servingBytes: $0)
         })
-        let cache = ScriptedCache()
+        let cache = ScriptedBytes()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 64 << 30, active: 0, cache: cache.bytes, systemAvailable: .max) },
             clearCache: { cache.bytes = 0 })
@@ -519,12 +522,215 @@ struct NemotronSuperLocalPrefixCacheTests {
             kvBytesCapacity: grant, admissionKVBytes: admission, backendAllowanceBytes: 1 << 20,
             modelID: NemotronSuperLocalBinding.modelID, environment: environment)
         #expect(cache.bytes == 0)
-        #expect(await transaction.fitAttempts == [.init(requests: 8, prefixBankBytes: 4 << 30,
-            claimBytes: fit.chargedBytes, admitted: true)])
+        let attempts = await transaction.fitAttempts
+        #expect(attempts == [.init(requests: 8, prefixBankBytes: 4 << 30, claimBytes: fit.chargedBytes,
+                                   admitted: true)])
         #expect(await bridge.maxConcurrentRequests == 8)
         try await transaction.closeAfterDrain()
         await budget.release(requestID: "ballast")
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// What a pinned-fixture load did after its room fell while the weights
+    /// installed (`loadLosingRoomWhileInstalling`).
+    private struct RoomLostLoad {
+        let transaction: NemotronSuperLocalLoad
+        let budget: GlobalKVCacheBudget
+        /// Each configuration's claim, in the order the load tries them.
+        let fits: [NemotronSuperLoadFit.Claim]
+        let ballast: UInt64
+        let installs: Int
+        let headLoads: Int
+        let bridge: EngineV2Bridge?
+        let failure: Error?
+    }
+
+    /// A pinned-fixture load on a scripted budget whose room falls while the
+    /// weights install, as when other processes take memory: before
+    /// installation exactly the first configuration's requirement is free
+    /// beside the ballast; once installed, live usage leaves `room(serving)`,
+    /// where `serving` is what each configuration holds beside the resident
+    /// weights (owner shares and KV floor), in the order the load tries them.
+    /// With `roomWhileBuilding` it falls again to `roomWhileBuilding(serving)`
+    /// once the budget accepts the first reservation after installation: the
+    /// first owner's prefill lane, after its bridge is built.
+    private static func loadLosingRoomWhileInstalling(environment: [String: String], admissionKVBytes: Int?,
+                                                      speculates: Bool, room: ([UInt64]) -> UInt64,
+                                                      roomWhileBuilding: (([UInt64]) -> UInt64)? = nil)
+        async throws -> RoomLostLoad {
+        let grant: Int = 40 << 30
+        let context = 1024
+        let candidates = try NemotronSuperLoadFit.candidates(environment: environment,
+            admissionKVBytes: admissionKVBytes, kvBytesCapacity: grant, speculates: speculates, contextTokens: context)
+        let base = try SuperMTPInstalledFixture().staging()
+        let quote = try NemotronSuperInstallation.loadQuote(source: base.source, backendAllowanceBytes: 1 << 20)
+        let headQuote = speculates ? try base.head?.quote() : nil
+        let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
+        let fits: [NemotronSuperLoadFit.Claim] = try candidates.map { candidate in
+            let shares = try Builder.pinnedOwnerShares(environment: candidate.environment, kvBytesCapacity: grant,
+                speculates: speculates, contextTokens: context)
+            return try #require(try NemotronSuperLoadFit.claim(candidate, kvBytesCapacity: grant, shares: shares) {
+                try NemotronSuperLoadClaim.bytes(installation: quote, head: headQuote, sequential: sequential,
+                                                 servingBytes: $0)
+            })
+        }
+        let serving = fits.map { UInt64($0.ownerBytes + $0.kvFloorBytes) }
+        let usageAfterInstallation = fits[0].requiredBytes - room(serving)
+        let usageWhileBuilding = roomWhileBuilding.map { fits[0].requiredBytes - $0(serving) }
+        let installs = SuperPrefixInstallCount(), headLoads = SuperPrefixInstallCount()
+        let fallsWhileBuilding = SuperPrefixInstallCount()
+        let usage = ScriptedBytes()
+        // The budget stamps each reservation it accepts, and each refusal, with
+        // `clockNow`: after installation the first stamp is the first owner's
+        // lane when the builder's recheck passed.
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 64 << 30, active: usage.bytes, cache: 0, systemAvailable: .max) },
+            clockNow: {
+                if let usageWhileBuilding, installs.count == 1, fallsWhileBuilding.count == 0 {
+                    fallsWhileBuilding.increment()
+                    usage.bytes = usageWhileBuilding
+                }
+                return .now
+            })
+        let ballast = await Self.freeBytes(budget) - fits[0].requiredBytes
+        #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
+        let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
+            installs.increment()
+            let installed = try base.install($0, $1, $2)
+            usage.bytes = usageAfterInstallation
+            return installed
+        }, head: base.head.map { head in
+            .init(quote: head.quote, load: {
+                headLoads.increment()
+                return try head.load($0, $1, $2)
+            })
+        }, pinned: true)
+        let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+        let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+            maxContextLength: context, defaultMaxTokens: 16)
+        let transaction = NemotronSuperLocalLoad(budget: budget)
+        var bridge: EngineV2Bridge?
+        var failure: Error?
+        do {
+            bridge = try await transaction.load(staging: { staging },
+                tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
+                kvBytesCapacity: grant, admissionKVBytes: admissionKVBytes, backendAllowanceBytes: 1 << 20,
+                modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+        } catch {
+            failure = error
+        }
+        return RoomLostLoad(transaction: transaction, budget: budget, fits: fits, ballast: ballast,
+                            installs: installs.count, headLoads: headLoads.count, bridge: bridge, failure: failure)
+    }
+
+    /// The gate can admit a configuration whose room is gone once its
+    /// weights are installed (other processes grew meanwhile), so the
+    /// builder's recheck refuses it. The load keeps the installation and any
+    /// head and serves the next narrower configuration the gate admits
+    /// beside them, asked for its owner shares, KV floor and slack only:
+    /// with room for four requests, eight without the bank are refused too.
+    @Test(.timeLimit(.minutes(5)), arguments: [false, true])
+    func ownerLostAfterInstallationNarrowsWithoutReinstalling(speculates: Bool) async throws {
+        let slack = UInt64(NemotronSuperLoadFit.admissionSlackBytes)
+        let speculation = speculates
+            ? [NemotronSuperLocalMTP.enabledKey: "1", NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"] : [:]
+        let environment = speculation.merging([Builder.maxConcurrentKey: "8", Self.memoryKey: "1",
+            "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(4 << 30)]) { $1 }
+        let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: speculates,
+            environment: environment, contextTokens: 1024, kvBytesCapacity: 40 << 30, bankBytes: 4 << 30)
+        let load = try await Self.loadLosingRoomWhileInstalling(environment: environment,
+            admissionKVBytes: admission, speculates: speculates) { $0[2] + slack }
+        #expect(load.failure == nil, "\(load.failure.map { "\($0)" } ?? "")")
+        #expect(load.installs == 1 && load.headLoads == (speculates ? 1 : 0), "installed once")
+        #expect(await load.transaction.fitAttempts == [
+            .init(requests: 8, prefixBankBytes: 4 << 30, claimBytes: load.fits[0].chargedBytes, admitted: true,
+                  lostAfterInstallation: true),
+            .init(requests: 8, prefixBankBytes: 0, claimBytes: load.fits[1].chargedBytes, admitted: false),
+            .init(requests: 4, prefixBankBytes: 0, claimBytes: load.fits[2].chargedBytes, admitted: true),
+        ])
+        #expect(await load.bridge?.maxConcurrentRequests == 4)
+        // No claim is left: only the served owner's reservations (no bank) and the ballast.
+        let held = await load.budget.reservationBytesSnapshot()
+        #expect(held.keys.allSatisfy { !Prefix.isBankReservationID($0) })
+        #expect(await load.budget.outstandingReservedBytes() == held.values.reduce(0, +))
+        try await load.transaction.closeAfterDrain()
+        await load.budget.release(requestID: "ballast")
+        #expect(await load.budget.outstandingReservedBytes() == 0)
+    }
+
+    /// A refusal after the first owner's bridge is built: the room passes the
+    /// builder's recheck exactly, then falls once the lane is reserved, below
+    /// what paged storage's decode rows need. (The fixture's lane is far below
+    /// the claim's 8.5 GiB lane share, so a room that passes the recheck also
+    /// holds the rows.) The builder retires that bridge and releases its lane;
+    /// the load builds eight requests without the bank in a second native
+    /// setup over the same installation and any head. A 16 GiB bank, more than
+    /// the lane share and the slack, leaves room for that configuration where
+    /// the first owner's rows had none.
+    @Test(.timeLimit(.minutes(5)), arguments: [false, true])
+    func ownerRefusedAfterItsBridgeIsBuiltIsRebuiltNarrower(speculates: Bool) async throws {
+        let slack = UInt64(NemotronSuperLoadFit.admissionSlackBytes)
+        let bank: Int = 16 << 30
+        let speculation = speculates
+            ? [NemotronSuperLocalMTP.enabledKey: "1", NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"] : [:]
+        let environment = speculation.merging([Builder.maxConcurrentKey: "8", Self.memoryKey: "1",
+            "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank), NemotronSuperLocalKVBackend.key: "paged"]) { $1 }
+        let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: speculates,
+            environment: environment, contextTokens: 1024, kvBytesCapacity: 40 << 30, bankBytes: bank)
+        // 64-wide attention heads, the paged kernels' minimum.
+        let load = try await SuperMTPInstalledFixture.$attentionHeadDim.withValue(64) {
+            try await Self.loadLosingRoomWhileInstalling(environment: environment, admissionKVBytes: admission,
+                speculates: speculates, room: { $0[0] }, roomWhileBuilding: { $0[1] + slack })
+        }
+        #expect(load.failure == nil, "\(load.failure.map { "\($0)" } ?? "")")
+        #expect(load.installs == 1 && load.headLoads == (speculates ? 1 : 0), "installed once")
+        #expect(await load.transaction.fitAttempts == [
+            .init(requests: 8, prefixBankBytes: bank, claimBytes: load.fits[0].chargedBytes, admitted: true,
+                  lostAfterInstallation: true),
+            .init(requests: 8, prefixBankBytes: 0, claimBytes: load.fits[1].chargedBytes, admitted: true),
+        ])
+        #expect(await load.bridge?.maxConcurrentRequests == 8)
+        #expect(await load.bridge?.kvBackendKind == .paged)
+        // The refused owner's lane is released and no claim is left: only the
+        // served owner's reservations (one lane, one set of rows, no bank) and the ballast.
+        let held = await load.budget.reservationBytesSnapshot()
+        #expect(held.keys.filter(NemotronSuperLocalPrefill.isLaneReservationID).count == 1)
+        #expect(held.keys.filter(NemotronSuperLocalKVBackend.isDecodeRowsReservationID).count == 1)
+        #expect(held.keys.allSatisfy { !Prefix.isBankReservationID($0) })
+        #expect(await load.budget.outstandingReservedBytes() == held.values.reduce(0, +))
+        try await load.transaction.closeAfterDrain()
+        await load.budget.release(requestID: "ballast")
+        #expect(await load.budget.outstandingReservedBytes() == 0)
+    }
+
+    /// When nothing narrower fits beside the installed weights, the builder's
+    /// refusal surfaces and nothing stays held. A managed load asks every
+    /// narrower configuration (the narrowest with one byte less free than its
+    /// owner shares, KV floor and slack: the slack is still required); a
+    /// whole-grant claim has only its own.
+    @Test(.timeLimit(.minutes(5)), arguments: [true, false])
+    func ownerLostAfterInstallationFailsWhenNothingNarrowerFits(managed: Bool) async throws {
+        let slack = UInt64(NemotronSuperLoadFit.admissionSlackBytes)
+        let environment = [Builder.maxConcurrentKey: "8", Self.memoryKey: "1",
+                           "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(4 << 30)]
+        let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: false) + (4 << 30)
+        let load = try await Self.loadLosingRoomWhileInstalling(environment: environment,
+            admissionKVBytes: managed ? admission : nil, speculates: false) { serving in
+            managed ? serving[serving.count - 1] + slack - 1 : serving[0] - 1
+        }
+        #expect((load.failure as? Builder.Failure) == .loadAdmissionLost, "\(load.failure.map { "\($0)" } ?? "")")
+        #expect(load.installs == 1)
+        let attempts = await load.transaction.fitAttempts
+        #expect(attempts.count == (managed ? 6 : 1) && attempts.count == load.fits.count)
+        #expect(attempts.map(\.claimBytes) == load.fits.map(\.chargedBytes))
+        #expect(attempts.first?.admitted == true && attempts.first?.lostAfterInstallation == true)
+        #expect(attempts.dropFirst().allSatisfy { !$0.admitted })
+        #expect(await load.transaction.phase == .closed)
+        #expect(await load.transaction.residencySnapshot?.usedBytes == 0, "the installation is released")
+        #expect(await load.budget.reservationBytesSnapshot().keys.sorted() == ["ballast"])
+        #expect(await load.budget.outstandingReservedBytes() == load.ballast, "no claim is left")
+        await load.budget.release(requestID: "ballast")
+        #expect(await load.budget.outstandingReservedBytes() == 0)
     }
 
     /// A co-resident slot's small grant holds every request's fixed bytes and

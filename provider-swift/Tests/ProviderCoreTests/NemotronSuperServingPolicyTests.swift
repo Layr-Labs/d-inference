@@ -765,6 +765,43 @@ struct NemotronSuperServingPolicyTests {
         #expect(smallChunk.map(\.requests) == [8, 8, 4, 2, 1])
     }
 
+    /// Once the pinned weights are installed, a narrower configuration is
+    /// asked only for its owner shares and the admission slack beside its KV
+    /// floor: with both resident payloads beside them, exactly what the gate
+    /// required of it before installation (no transient outgrows a rung's
+    /// serving room), so the narrowest still needs `narrowestRequirementBytes`
+    /// and, with the activation reserve, `minimumAvailableBytes`. A fixture's
+    /// claim, whose lease keeps the installation, is asked whole again.
+    @Test func claimsAfterInstallationLeaveOutOnlyTheResidentPayloads() throws {
+        let grant = 40 << 30
+        let physical: UInt64 = 128 << 30
+        let context = NemotronSuperServingPolicy.contextTokens
+        let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: physical)
+        #expect(plan.speculates)
+        let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        let installation: (Int) -> Int = {
+            Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: $0))
+        }
+        let fits: [NemotronSuperLoadFit.Claim] = try candidates.map { candidate in
+            let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: candidate.environment,
+                kvBytesCapacity: grant, speculates: true, contextTokens: context, physicalBytes: physical)
+            return try #require(NemotronSuperLoadFit.claim(candidate, kvBytesCapacity: grant, shares: shares,
+                                                           installationBytes: installation))
+        }
+        let payloads = NemotronSuperServingPolicy.pinnedInstallationPayloadBytes
+            + NemotronSuperServingPolicy.pinnedHeadPayloadBytes
+        let installed = fits.map { payloads + $0.installedAskedWeightBytes + UInt64($0.kvFloorBytes) }
+        let required = try NemotronSuperLoadFit.pinnedRequirements(plan: plan, kvBytesCapacity: grant,
+                                                                  physicalBytes: physical)
+        #expect(installed == required)
+        #expect(installed.last == NemotronSuperLoadFit.narrowestRequirementBytes)
+        let fixture = try #require(NemotronSuperLoadFit.claim(candidates[0], kvBytesCapacity: grant, shares: nil,
+                                                              installationBytes: installation))
+        #expect(fixture.installedAskedWeightBytes == fixture.askedWeightBytes)
+    }
+
     /// Forced `tool_choice` is advertised for the registry id only: the owner
     /// prompt-forces and validates the call. Other ids of the type are not.
     @Test func forcedToolChoiceIsAdvertisedForTheRegistryIDOnly() {

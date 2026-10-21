@@ -104,10 +104,12 @@ extension ProviderLoop {
             served.requests < plan.requests || served.prefixBankBytes < plan.prefixBankBytes
                 || served.chunkTokens < plannedChunk ?? served.chunkTokens {
             let gib = Double(served.claimBytes) / 1_073_741_824
+            let lostAfterInstallation = owner.fitAttempts.contains(where: \.lostAfterInstallation)
             logger.warning("""
                 Nemotron Super loaded \(served.requests) concurrent request(s), \
                 prefix bank \(served.prefixBankBytes > 0 ? "on" : "off"), \(served.chunkTokens)-token prompt chunks \
-                (LOAD claim \(String(format: "%.1f", gib)) GiB): the configured policy did not fit available memory
+                (LOAD claim \(String(format: "%.1f", gib)) GiB): the configured policy did not fit available memory\
+                \(lostAfterInstallation ? " (a wider owner no longer fit once the weights were installed)" : "")
                 """)
         }
         do {

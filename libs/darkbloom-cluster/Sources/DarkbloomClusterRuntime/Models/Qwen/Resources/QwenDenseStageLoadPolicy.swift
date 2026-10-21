@@ -182,11 +182,8 @@ enum QwenDenseStageLoadPolicy {
     static let minimumTrulyFreeBytes = 16 * 1024 * 1024
     /// XNU keeps this share of non-compressed pageable memory as file cache
     /// before it turns to anonymous pages (`vps_calculate_filecache_min`).
+    /// Recorded as a diagnostic only: admission counts all file cache.
     static let fileCacheReserveNumerator = 10, fileCacheReserveDenominator = 27
-    /// Share of the file cache above the reserve that one decision may count.
-    static let countedFileCacheNumerator = 3, countedFileCacheDenominator = 4
-    /// No decision counts more file cache than this, whatever the Mac holds.
-    static let maximumCountedReclaimableBytes = 32 * gib
     /// The pageout scan takes anonymous pages once fewer than this share of
     /// the file cache is inactive (`VM_PAGE_INACTIVE_TARGET(avail)` is
     /// `avail * 1 / 2` in `vps_choose_victim_page`).
@@ -284,17 +281,22 @@ enum QwenDenseStageLoadPolicy {
         let harmed = (compressed ?? 0) > maximumCompressedSinceFirstSampleBytes
             || (swappedOut ?? 0) > maximumSwappedOutSinceFirstSampleBytes
         let pressureNormal = os.pressureLevel == normalPressureLevel
-        func threeQuarters(_ bytes: Int) throws -> Int {
-            min(maximumCountedReclaimableBytes,
-                try product([bytes, countedFileCacheNumerator]) / countedFileCacheDenominator)
-        }
-        let counted = pressureNormal && !harmed ? try threeQuarters(countableBytes) : 0
-        let admissible = try sum([os.actualFreeBytes, counted])
         let fileBacked = try product([os.fileBackedPages, page]), reserve = try product([reservePages, page])
+        // Cached file pages are available memory: the kernel drops clean file
+        // pages on demand, so a load counts all of them, with no kernel reserve,
+        // no fraction and no cap. Only harm withdraws them: memory pressure above
+        // normal, or compression or swap-out since the first sample. (The reserve,
+        // the before-anonymous bound and the countable figure above stay in the
+        // record as diagnostics.) Both Macs of a pair keep the model's weights in
+        // the file cache after any load or test, often 100+ GiB of a 256 GiB Mac;
+        // counting a capped fraction of it refused a 157 GiB GLM tensor-parallel
+        // rank with 238 GiB not in use (2026-10-21).
+        let counted = pressureNormal && !harmed ? fileBacked : 0
+        let admissible = try sum([os.actualFreeBytes, counted])
         // The best this Mac could do with its anonymous memory as it is: every
-        // other pageable page file cache, all of it inactive.
-        let otherPages = max(0, pageablePages - os.anonymousPages - os.freePages - reservePages)
-        let largest = try threeQuarters(try product([otherPages, page]))
+        // other pageable page is file cache.
+        let otherPages = max(0, pageablePages - os.anonymousPages - os.freePages)
+        let largest = try product([otherPages, page])
         let structural = required > (try sum([os.actualFreeBytes, largest]))
         var refusal: String?
         if os.actualFreeBytes < minimumTrulyFreeBytes {
@@ -312,15 +314,9 @@ enum QwenDenseStageLoadPolicy {
             } else if !pressureNormal {
                 cache = "no file cache, which is counted only at normal memory pressure (level \(os.pressureLevel) now; "
                     + "\(gibText(fileBacked)) file-backed)"
-            } else if beforeAnonymousPages == nil {
-                cache = "no file cache, because this kernel does not report how much of it is inactive "
-                    + "(\(gibText(fileBacked)) file-backed)"
             } else {
-                cache = "\(gibText(counted)) of file cache counted (three quarters of the \(gibText(countableBytes)) "
-                    + "the kernel can take before anonymous memory: \(gibText(aboveBytes)) above the "
-                    + "\(gibText(reserve)) reserve, \(gibText(try product([beforeAnonymousPages ?? 0, page]))) before half "
-                    + "of the cache is active; at most \(gibText(maximumCountedReclaimableBytes)); "
-                    + "\(gibText(fileBacked)) file-backed)"
+                cache = "\(gibText(counted)) of file cache counted (all of the file-backed pages; the kernel drops "
+                    + "them on demand)"
             }
             refusal = "\(purpose) needs \(gibText(required)) of admissible memory and has \(gibText(admissible)): "
                 + "\(gibText(os.actualFreeBytes)) free plus \(cache)"

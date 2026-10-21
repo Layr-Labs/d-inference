@@ -15,6 +15,16 @@ Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
 
+## Provider Terminal And Stop Signals
+
+After rebuilding the provider test products, run the focused
+`ModelPickerInputEndTests|ProviderSignalTests|ProviderStopSignalsTests` selector
+through the isolated provider test runner. The suites cover closed input,
+invalid descriptors, interrupted and temporarily unavailable reads, terminal
+hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
+ignored-hangup behavior and exercise signal handling across process replacement.
+No model weights or live provider state are needed.
+
 ## Provider And SDK
 
 ```bash
@@ -219,6 +229,25 @@ swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|L
 Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
+
+## Watchdog Launch Acknowledgement
+
+`WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
+actual `LaunchAgent.kickstartIfLoaded` adapter, `WatchdogRecoveryService` and
+the disk-backed crash-loop guard with a temporary install and scripted
+`LaunchctlControl`.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'WatchdogLaunchAdapterTests|LaunchAgentLifecycleTests|refusedKickstartRollsBackTrip|rollbackRestoresPreexistingGuard'
+```
+
+A missing-service response after a successful loaded check (exit 3 text or
+launchctl's exit-113 `Could not find service`) must return
+`noLongerLoaded`, restore the exact prior guard bytes and invoke no trip
+callback. Controls cover an already absent job, a successful kickstart,
+permission errors and manual restart reload. No real launchctl, model or GPU is
+used; the scripted interleaving does not measure native race frequency.
 
 ## App Attest Provider Dispatch
 

@@ -268,7 +268,7 @@ actor NemotronSuperLocalImageBinding {
             contextLength <= NemotronSuperServingPolicy.maximumContextTokens else {
             throw Failure.invalidInput
         }
-        var total: UInt64 = 0, features = 0, tokens = 0
+        var retained: UInt64 = 0, workspace: UInt64 = 0, features = 0, tokens = 0
         var planned: [NemotronSuperImageDecode.Plan] = []
         for data in images {
             try Task.checkCancellation()
@@ -278,13 +278,16 @@ actor NemotronSuperLocalImageBinding {
             guard grid.tokens <= contextLength - tokens else { throw Failure.capacity }
             tokens += grid.tokens
             let featureBytes = grid.tokens * 4096 * 4
-            // Full SDK workspace plus BOTH retained CPU Float32 and MLX copies.
-            let charge = UInt64(image.quote.normalizationWorkspaceBytes) + UInt64(grid.width * grid.height) * 24
-                + UInt64(featureBytes)
-            total = try sum(total, charge); features += featureBytes; planned.append(image)
+            // Images decode and normalize one at a time, so the largest decoder
+            // and full SDK workspace is charged once; BOTH retained CPU Float32
+            // and MLX copies and the features are charged for every image.
+            workspace = max(workspace, UInt64(image.quote.normalizationWorkspaceBytes))
+            retained = try sum(retained, UInt64(grid.width * grid.height) * 24 + UInt64(featureBytes))
+            features += featureBytes; planned.append(image)
         }
         let activation = try towerActivationBytes(planned.map { ($0.grid.heightPatches, $0.grid.widthPatches) })
-        return EncodedPlan(images: planned, totalBytes: try sum(total, activation), featureBytes: features)
+        return EncodedPlan(images: planned, totalBytes: try sum(try sum(retained, workspace), activation),
+                           featureBytes: features)
     }
 
     /// Tower and projector working memory of the largest image: preparation

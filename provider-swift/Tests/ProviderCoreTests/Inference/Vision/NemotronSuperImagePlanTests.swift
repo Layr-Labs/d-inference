@@ -6,7 +6,8 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-/// What the encoded image route refuses before reserving or decoding.
+/// What the encoded image route refuses before reserving or decoding, and
+/// what it reserves for the images it admits.
 struct NemotronSuperImagePlanTests {
     private typealias Binding = NemotronSuperLocalImageBinding
 
@@ -63,6 +64,35 @@ struct NemotronSuperImagePlanTests {
         #expect(plan.quote.width == 100 && plan.quote.height == 4000)
         #expect(plan.grid == (try NemotronSuperImagePreprocessing.grid(width: 100, height: 4000)))
         #expect(plan.grid != (try NemotronSuperImagePreprocessing.grid(width: 4000, height: 100)))
+    }
+
+    /// Images decode and normalize one at a time: the largest decoder and SDK
+    /// workspace is charged once, every image's normalized copies and
+    /// features in full.
+    @Test func encodedPlanChargesTheLargestWorkspaceOnce() throws {
+        let images = [Self.jpeg(width: 2048, height: 1664), Self.png(width: 640, height: 480),
+                      Self.jpeg(width: 64, height: 48)]
+        let plan = try Binding.encodedPlan(images, contextLength: NemotronSuperServingPolicy.contextTokens)
+        let workspace = try images.map {
+            UInt64(try NemotronSuperImageDecode.inspect($0, orientation: .applyEXIF).normalizationWorkspaceBytes)
+        }
+        let retained = plan.grids.reduce(UInt64(0)) {
+            $0 + UInt64($1.width * $1.height) * 24 + UInt64($1.tokens * 4096 * 4)
+        }
+        let activation = try Binding.towerActivationBytes(plan.grids.map { ($0.heightPatches, $0.widthPatches) })
+        #expect(plan.totalBytes == (workspace.max() ?? 0) + retained + activation)
+        #expect(plan.featureBytes == plan.grids.reduce(0) { $0 + $1.tokens * 4096 * 4 })
+        // Sixteen small images reserve one workspace (with its 256 MiB SDK budget), not sixteen.
+        let small = Self.jpeg(width: 64, height: 48)
+        let sixteen = try Binding.encodedPlan(Array(repeating: small, count: 16),
+                                              contextLength: NemotronSuperServingPolicy.contextTokens)
+        let smallWorkspace = UInt64(try NemotronSuperImageDecode.inspect(small, orientation: .applyEXIF)
+            .normalizationWorkspaceBytes)
+        let grid = try #require(sixteen.grids.first)
+        let smallActivation = try Binding.towerActivationBytes([(grid.heightPatches, grid.widthPatches)])
+        let perImage = UInt64(grid.width * grid.height) * 24 + UInt64(grid.tokens * 4096 * 4)
+        #expect(sixteen.totalBytes == smallWorkspace + 16 * perImage + smallActivation)
+        #expect(sixteen.totalBytes - smallActivation < 2 * smallWorkspace)
     }
 
     /// Through the owner's encoded route, with room for the request's ingress

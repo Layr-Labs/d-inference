@@ -168,16 +168,16 @@ public struct WeightHasher: Sendable {
     /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
     /// so callers can either hex-encode it or feed it into another hasher.
     ///
-    /// Tries the reusable-buffer `InputStream` reader first by default, retaining
-    /// `FileHandle`, retry and size-bounded `Data(contentsOf:)` fallbacks.
+    /// Tries the uncached descriptor reader first, then the reusable-buffer
+    /// `InputStream` reader by default, retaining `FileHandle`, retry and
+    /// size-bounded `Data(contentsOf:)` fallbacks.
     /// `FileHandle` can fail for files moved from URLSession
     /// download temp locations — they retain NSFileProtectionComplete extended
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
-        // The cache-off reader first: same bytes, same digest, nothing left
-        // resident (see `hashSingleFileUncached`). Every reader below stays
-        // as the fallback for files a raw open() cannot read.
+        // Uncached reads first: hashing must not pull a second copy of the
+        // weights through the file cache while the loaded copy is resident.
         if let digest = hashSingleFileUncached(at: url) {
             return digest
         }
@@ -209,35 +209,6 @@ public struct WeightHasher: Sendable {
         return hasher.finalize()
     }
 
-    /// Reads with the file cache off (`F_NOCACHE`), in chunks of the largest
-    /// streaming buffer allowed. A read through the cache leaves every byte it
-    /// read resident: hashing a 172 GB model on a 256 GB Mac fills the cache
-    /// with it, and the host memory gate of a cluster rank then refuses that
-    /// very model's load until the cache ages out (measured on an M5 Ultra
-    /// leader, 2026-10-13: 213 GiB of cache, 23 GiB free after the hash). The
-    /// cluster worker's verifier and the cable copy read the same way. Nil
-    /// when the file cannot be opened or read this way (the caller falls back).
-    static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
-        guard isStreamingBufferSizeAllowed(maxStreamingBufferSize) else { return nil }
-        let descriptor = open(url.resolvingSymlinksInPath().path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { return nil }
-        defer { close(descriptor) }
-        guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: maxStreamingBufferSize, alignment: 16_384)
-        defer { buffer.deallocate() }
-        var hasher = SHA256()
-        while true {
-            let count = read(descriptor, buffer, maxStreamingBufferSize)
-            if count < 0 {
-                if errno == EINTR { continue }
-                return nil
-            }
-            if count == 0 { break }
-            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
-        }
-        return hasher.finalize()
-    }
-
     static func isWholeFileFallbackAllowed(fileSizeBytes: UInt64) -> Bool {
         fileSizeBytes <= maxWholeFileFallbackBytes
     }
@@ -262,6 +233,42 @@ public struct WeightHasher: Sendable {
         return autoreleasepool(invoking: body)
         #else
         return body()
+        #endif
+    }
+
+    /// Reads from a descriptor with `F_NOCACHE`, so the bytes bypass the
+    /// unified buffer cache instead of competing with resident (wired) model
+    /// memory. Unaligned reads would still use the cache: the buffer is
+    /// page-aligned and its size a page multiple, so full reads keep every file
+    /// offset aligned. Nil on any open or read failure, including a directory,
+    /// leaving the cached readers as the fallback, for example for
+    /// file-protection attributes that refuse a raw open(). A cached read would
+    /// also leave every byte resident, and the host memory gate of a cluster
+    /// rank would then refuse that very model's load until the cache aged out
+    /// (M5 Ultra leader, 2026-10-13: 213 GiB of cache, 23 GiB free after the
+    /// hash). The cluster worker's verifier and the cable copy read the same way.
+    static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
+        #if canImport(Darwin)
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        guard fcntl(fd, F_NOCACHE, 1) == 0 else { return nil }
+        let chunk = maxStreamingBufferSize
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: chunk, alignment: Int(getpagesize()))
+        defer { buffer.deallocate() }
+        var hasher = SHA256()
+        while true {
+            let count = read(fd, buffer, chunk)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if count == 0 { break }
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
+        }
+        return hasher.finalize()
+        #else
+        return nil
         #endif
     }
 

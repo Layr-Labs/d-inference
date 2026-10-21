@@ -15,6 +15,16 @@ Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
 
+## Provider Terminal And Stop Signals
+
+After rebuilding the provider test products, run the focused
+`ModelPickerInputEndTests|ProviderSignalTests|ProviderStopSignalsTests` selector
+through the isolated provider test runner. The suites cover closed input,
+invalid descriptors, interrupted and temporarily unavailable reads, terminal
+hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
+ignored-hangup behavior and exercise signal handling across process replacement.
+No model weights or live provider state are needed.
+
 ## Provider And SDK
 
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
@@ -30,6 +40,71 @@ The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
+
+### Local Responses and reasoning regressions
+
+After building the exact provider/SDK test products, run these focused suites
+from `provider-swift/`. Keep the test state isolated as in
+`scripts/run-provider-tests.sh`; the helper/router fixtures use synthetic
+credentials and no live provider endpoint.
+
+```bash
+../scripts/run-nested-suite.sh 'LocalResponseConversationTests|ReasoningPromptProbeTests|LocalOpenAIObjectCompatibilityTests' --no-parallel
+```
+
+`LocalResponseConversationTests` executes the real helper and authenticated
+Hummingbird `.router` responder. Its acquisition counter must remain zero for
+non-null invalid ID types and unknown/empty strings, on both URL aliases and
+both response modes. Null and omitted IDs must reach acquisition. Retain the
+known-ID, tool-history, storage opt-out and bounded-LRU controls.
+`ReasoningPromptProbeTests` composes the actual prompt probe, service and
+continued history for a prompt-open length stop; it must retain reasoning and
+leave answer text empty. These sources are in
+`provider-swift/Tests/ProviderCoreTests/Server/LocalResponseConversationTests.swift`
+and `provider-swift/Tests/ProviderCoreTests/Inference/Prompting/ReasoningPromptProbeTests.swift`.
+
+Use an SDK revision whose `ReasoningParser.parseThinkTags` handles unclosed
+blocks. Run `CollectedReasoningTests` through the same suite runner from
+`libs/mlx-swift-lm/` after rebuilding its test product. Provider-only prompt
+seeding cannot close this regression against the older parser.
+`LocalOpenAIObjectCompatibilityTests` additionally requires stable fallback
+model creation values in `MLXOpenAIService` and flat tool configuration in
+`OpenAIResponsesProtocol` and `ResponsesStreamWriter`. A provider test host
+does not provide those SDK changes; select the corresponding immutable SDK
+revision before treating these assertions as a gate.
+
+Record actual discovered/executed counts and failures separately. Syntax
+parsing and extracted CPU probes do not execute the package router or scheduler.
+Keep full HTTP create/retrieve/continue, disconnect, cross-request/model
+isolation and retrieval-after-history-eviction checks in product qualification;
+the history LRU and object store have
+[different lifetimes](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### SSD test working volume
+
+Fixtures that call `SSDTestDirectory.parent()` use Foundation's resolved temporary
+directory unless `DARKBLOOM_SSD_TEST_TMPDIR` selects another test working volume.
+The shared SSD-prefix fixtures and bridge fixtures that require successful
+cache donations honor this selector. It does not configure the provider cache
+or change the process-wide `TMPDIR`.
+
+When the default volume lacks the free space required for real cache writes,
+create a task-owned directory on a suitable volume and pass its canonical,
+absolute path to the test runner. The parent directory must already exist and
+be writable. Empty, relative, missing, file and symlink paths are rejected;
+selection or directory-creation errors fail fixture setup instead of falling
+back silently.
+
+```bash
+mkdir -p "/Volumes/Test Scratch/darkbloom-tests"
+DARKBLOOM_SSD_TEST_TMPDIR="/Volumes/Test Scratch/darkbloom-tests" make provider-test
+```
+
+Leave the variable unset for the normal temporary directory. The production
+free-space checks, write limits, assertions and cleanup still apply. Raw-codec
+fixtures that do not call the selector keep their existing temporary paths.
+Rebuild changed test products before using `--skip-build`; see the
+[build guide](build.md#build).
 
 ### GLM5Next prerequisite tests
 
@@ -104,6 +179,20 @@ native vision. The fixture metadata's `media: false` is an evidence limit, not
 a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
 suffix rejection, including a valid call followed by malformed output, before
 fallback text or partial calls can escape.
+
+The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
+(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
+filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
+and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
+two suites exercise real files without creating MLX arrays. The loader suite
+creates arrays and belongs in an authorized native test window. Sources live in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
+Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
+`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
+descriptor-policy test initializer. An older SDK pin cannot compile this host;
+resolve the dependency in the SDK rather than weakening the tests or importing
+cluster-stage APIs. These tests retain full-artifact verification, aligned
+windows, mutation/truncation refusal, cancellation and resource charges.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`
@@ -216,6 +305,17 @@ rewrite helper. The fixture-path check occurs before that opt-in check, so an
 unprovisioned general run can fail rather than skip. Run these separately in the
 native lane; they verify refusal before native ownership, not successful FP32
 serving.
+
+#### MiMo tool-schema parity
+
+After building the current provider test product, use the
+[tool-schema ingress regression recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the five schema regressions, adjacent prompt/decode suites and nine current
+consumer cases. Required focused selections reject zero tests and any skip.
+The optional historical two-case corpus runs separately and cannot supply a
+passing result when absent. These metadata-only, scripted-generation checks
+exercise real provider preparation but do not load a model or prove live
+platform parity.
 
 #### Separate native and audio qualification
 
@@ -397,6 +497,25 @@ Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
 
+## Watchdog Launch Acknowledgement
+
+`WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
+actual `LaunchAgent.kickstartIfLoaded` adapter, `WatchdogRecoveryService` and
+the disk-backed crash-loop guard with a temporary install and scripted
+`LaunchctlControl`.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'WatchdogLaunchAdapterTests|LaunchAgentLifecycleTests|refusedKickstartRollsBackTrip|rollbackRestoresPreexistingGuard'
+```
+
+A missing-service response after a successful loaded check (exit 3 text or
+launchctl's exit-113 `Could not find service`) must return
+`noLongerLoaded`, restore the exact prior guard bytes and invoke no trip
+callback. Controls cover an already absent job, a successful kickstart,
+permission errors and manual restart reload. No real launchctl, model or GPU is
+used; the scripted interleaving does not measure native race frequency.
+
 ## App Attest Provider Dispatch
 
 `ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
@@ -492,6 +611,25 @@ This is not real Apple service validation. Physical smoke is optional for normal
 publication; official-build registration and runtime Apple authorization remain
 distinct. See [release](../operations/provider-release.md).
 
+## Watchdog Launch Evidence
+
+`WatchdogRecoveryIntegrationTests` exercises
+`WatchdogRecoveryService.observeHealthyProvider`, the real updater and the
+disk-backed recovery store with synthetic bundles, temporary install roots and
+loopback release HTTP. Launch snapshots, process liveness and restart callbacks
+are injected; no model or MLX kernel runs.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+```
+
+It covers missing and partial baseline evidence, intent retention before
+restart, later positive run-count or process-identity evidence, the startup
+timeout, one-time failure accounting and heartbeat promotion. It does not run
+native launchd, the controller cancellation interleaving or a signed release
+installation.
+
 ## Public Fixtures And Private Qualification
 
 Public protocol JSON and prompt golden vectors contain fixed inputs and expected
@@ -547,6 +685,17 @@ tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.
 
 ## Focused Tooling Checks
+
+For the PR reviewer, run the seven offline suites listed in
+[threat-review verification](threat-model-review.md#verify). They cover bounded
+change context, final-review integration, fail-closed merge decisions, failure
+classification and exclusion of private response text from diagnostics. Loopback
+HTTP tests need permission to bind a local port; none of these suites call paid
+models. Bedrock-shaped lifecycle fixtures exercise transport, scanner, saved
+reports and merge decisions together, including truncation, call limits,
+interruption and failed report/diagnostic writes. Selective integration tests
+enforce each model's source citation scope across fresh and cached results.
+Live smoke tests establish model compatibility separately.
 
 From the repository root:
 

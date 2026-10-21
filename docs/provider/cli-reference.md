@@ -48,7 +48,7 @@ Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
 runs through the native GLM media path; the embedded-MTP serving engine accepts
 prepared causal media, so image rows prefill and decode target-only (no MTP
-speculation, no prefix reuse). Video input is refused with HTTP 400.
+speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL) is sampled at 2 FPS and decoded target-only.
 This variable never advertises the local identity to the coordinator
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
 `GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves
@@ -180,6 +180,18 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+
+The ordinary catalog picker uses the selected models' shared activation reserve
+when checking each model's load estimate. Adding an unmeasured model can raise
+that reserve: the TUI refuses a toggle that would invalidate an existing choice,
+and numbered input validates the complete requested set. `all` first excludes
+models that cannot fit alone, then filters the remaining rows under their shared
+reserve. Total selected weights may exceed the budget because models can take
+turns. These are nominal estimates; [live admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission)
+still applies the configured reserve and current available memory. A resolved
+Autopilot opt-in retains the conservative flat picker reserve used by its separate
+inventory check (`Start.PickerReserveMode`, `Start.resolveFallbackSelection` in
+`provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`).
 
 Autopilot inventory verification names each cached model before checking its bytes.
 If another process holds that model’s update/verification lock, the check reports
@@ -381,7 +393,16 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-standalone local mode also waits for active HTTP response bodies. The signal
+standalone local mode also waits for active HTTP response bodies. `SIGHUP`
+enters it too for a provider started by hand (`start --local`, or
+`start --foreground` typed into a terminal), so closing its terminal window
+drains it instead of ending the process at once. `SIGHUP` is not a stop signal
+in two cases: the provider's launchd job does not take it, so it has whatever
+action launchd started the job with, and a start that arrived with `SIGHUP`
+ignored, for example under `nohup`, keeps ignoring it. A provider that
+re-executes itself in place for a self-update carries the same choice into the
+new process (`ProviderStopSignals` in
+`provider-swift/Sources/ProviderCore/Service/ProviderStopSignals.swift`). The signal
 deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Once local HTTP admission closes, new POST requests receive HTTP 503 with the

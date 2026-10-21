@@ -98,7 +98,11 @@ struct DiffusionGemmaReasoningEmissionTests {
                             headers: [.contentType: "application/json", .authorization: "Bearer \(token)"], body: body)
                         let text = String(buffer: response.body)
                         #expect(native.submissionCount == 1)
+                        // Responses objects echo the request's `tools` and `tool_choice`,
+                        // so there the tool name alone is not a leaked call; streamed
+                        // Responses frames are checked without that echo below.
                         #expect(!text.contains("Paris") && !text.contains("<|channel>"))
+                        #expect(!text.contains("\"function_call\"") && !text.contains("\"arguments\""))
                         if !responses || !streaming { #expect(!text.contains("get_weather")) }
                         #expect(!text.contains("reasoning_summary_text.delta") && !text.contains("reasoning_content"))
                         if streaming {

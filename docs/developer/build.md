@@ -59,6 +59,19 @@ Its derivation and equivalence evidence are in
 `fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
 rewrite another artifact's template to hide the parser limitation.
 
+The SSD test working-volume selector is runtime-only fixture configuration;
+it does not change the provider cache or Swift/native build inputs. Rebuild
+provider test products after fixture-source changes before using `--skip-build`,
+then apply the optional directory override at execution time as documented in
+[SSD test working volume](test.md#ssd-test-working-volume).
+
+MiMo tool-schema regression checks require a rebuilt provider test product after
+source changes. Reuse only an inactive, owned scratch directory with the selected
+public gitlinks and locked package graph; record the resulting test executable
+identity before any `--skip-build` selection. The [focused fixture recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+uses metadata and scripted generation, not a substitute native runtime or a
+binary copied from a different dependency composition.
+
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
 [checkpoint-storage gates](test.md#native-inference-checkpoint-storage-qualification);
@@ -241,6 +254,12 @@ configuration selects mock authentication. See [console architecture](../archite
 Retaining source or running a build does not authorize hosting or traffic changes.
 
 ## Verify
+
+For changes to the trusted PR reviewer, no provider build is required. Run the
+offline Python suites in [threat-review verification](threat-model-review.md#verify)
+and validate changed workflow YAML. The review workflow uploads content-free
+failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
+workflow change to merge.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.

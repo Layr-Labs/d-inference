@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -76,7 +76,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates; refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (a refused SSD store's typed reason reaches the bridge for local `/metrics` only); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -210,9 +210,15 @@ bytes at admission, and charges each step's scratch as a transient reservation
 when the step is built (`PagedKVBackend` step work, `AdmissionV2.reserveTransient`).
 Admission does not yet pre-reserve the per-token scratch, so a full ledger
 refuses the step rather than the request; that native change is deferred. Coordinator publication requires the slot pool to
-hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`),
-and a request whose reservation exceeds the whole pool is refused as
-`token_budget_exhausted: request_exceeds_slot_capacity` instead of queueing.
+hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`).
+The bridge refuses a request whose reservation exceeds the whole pool
+(`request_exceeds_slot_capacity`) or would not fit beside held requests
+(`slot_capacity_committed`) instead of queueing it: `EngineV2Bridge.submitTokenized`
+throws `MultiModelBatchSchedulerEngineError.tokenBudgetExhausted`
+(`EngineV2Bridge.glm5NextSlotRefusal`) before any stream exists. Local HTTP
+answers 503 with the fixed capacity message before response headers
+(`CORSResponder`), and the coordinator receives a pre-stream `inference_error`
+503 with `failure_code` `capacity` and `error_reason` `token_budget_exhausted`.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits
@@ -242,28 +248,38 @@ serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
 one-partial-prefill default. The bridge advertises the enforced
 context, so an over-length request is refused with 400 before native admission,
-and an omitted `max_tokens` defaults to half the bound. Omitted sampling fields
+and an omitted `max_tokens` defaults to the smaller of the model's default output budget (4,096 for this artifact) and half the bound (`GLM5NextCoordinatorServing.boundedSizing`). Omitted sampling fields
 use the artifact's `generation_config.json` (`EngineV2SamplingDefaults`).
 
 GLM images use ordinary causal token positions: the text tower has no
 positional encoding, so a submission carries causal spans and no position
 state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
 The original request is normalized by the GLM prompt policy exactly as text is,
-with symbolic image parts, and the processor expands each `<|image|>` to its
-feature count (16 to 8000 per image). Every placement is validated before tower
-work; the tower then runs one image at a time with MLX fused attention on the
+with symbolic image and video parts, and the processor expands each `<|image|>`
+to its feature count (16 to 8000 per image). A video's single constant-frame-rate
+MP4 or QuickTime track is read frame by frame, and only its 2 FPS official
+sample is converted to RGB8 and kept, within the processor's decoded-frame cap
+(`maximumDecodedBytes`, 512 MiB; `GLM5NextProcessor.decodeAsset`); each
+pair of sampled frames becomes one image-token span between
+`<|begin_of_image|>` and `<|end_of_image|>`, followed by its timestamp text
+(`GLM5NextProcessor.expandPrompt`). Every placement is validated before tower
+work; the tower then runs one image or frame pair at a time with MLX fused attention on the
 GPU (`GLM5NextVisionAttentionKernel.automatic`; query-tiled elsewhere), so no
 frame-square score tensor is allocated, and every evaluation checks the scoped
 MLX fault box. The reservation below still prices the tiled working set. The scheduler's `VisionMemoryGate` reservation adds the
 processor's prepared-pixel cap, the tower working set of a full 32,000-patch
-frame and every image at its token cap (`GLM5NextVisionBudget.mediaReservation`).
-Processor refusals are deterministic 400s; tower and MLX faults keep the
+frame, every image at its token cap, every video at its token ceiling and,
+because videos decode one at a time, one decoded-frame cap when any video is
+present (`GLM5NextVisionBudget.mediaReservation`,
+`GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
+processor's prepared-pixel cap of 28,532 visual tokens.
+Processor refusals, including variable-frame-rate video, are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
-(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images, and
-they decode without MTP speculation. A GLM slot serves images only when its
+(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
+they decode without MTP speculation. A GLM slot serves media only when its
 engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the
-embedded-MTP native engine issues that permission, so image rows prefill and
-decode target-only next to speculating text rows. Video is refused with 400.
+embedded-MTP native engine issues that permission, so media rows prefill and
+decode target-only next to speculating text rows.
 
 An unproven retirement, including one during a post-build unwind, retains the
 bridge, newcomer, artifact ownership, pending-load lease, loading marker and
@@ -901,7 +917,15 @@ Other model identities keep the legacy defaults in the table byte-for-byte. `do_
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
-### Streaming reasoning state
+### Collected and streaming reasoning state
+
+The local HTTP responder selects an omitted reasoning parser from the model
+type supplied by its application, using `ProviderLoop.inferReasoningParser`.
+An explicit parser, including `none`, is preserved, and selecting a Responses
+parser preserves the request's reasoning effort. The raw request wrappers keep
+template controls while allowing parser selection before service creation
+(`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`resolveReasoningParser`, `respond`; `LocalChatRequest`, `LocalResponseRequest`).
 
 `NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
 markers. It emits unclosed-frame payload incrementally and retains only a
@@ -930,12 +954,27 @@ probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker. Explicit `.none`, other
-parser families and unrecognized prompt tails receive no prefix. Unknown tails
-preserve legacy close-only reasoning parsing. For a token-limit stop inside an
-open think block, the collected SDK parser keeps the unfinished text in
-`reasoning_content`, with empty answer text when no answer was generated.
-Chat and Responses collection, retrieval and continued history preserve that
-separation; usage and the length-stop status still describe generated tokens.
+parser families and unrecognized prompt tails receive no prefix from the
+probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
+for a streamed think-format request with an unknown tail, `contentSeed` starts
+the parser in content mode. A generated `<think>` can still open reasoning.
+Other callers keep the default fallback disabled. Native parsed channels
+bypass this synthetic prefix (`MultiModelBatchSchedulerEngine.makeEventStream`).
+
+For a token-limit stop inside an open think block, the collected SDK parser
+keeps the unfinished text in `reasoning_content`, retaining any answer text
+that preceded the block. Chat and Responses collection, retrieval and continued
+history preserve that separation; usage and the length-stop status still
+describe generated tokens (`libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/ReasoningParser.swift`,
+`parseThinkTags`; `MLXOpenAIService.collectChatOutput`, `responseObject`).
+This requires the SDK parser's unclosed-block handling as well as the provider
+prompt seed. The [local API tests](../developer/test.md#local-responses-and-reasoning-regressions)
+check their composition.
+
+Responses continuation reconstructs input history before tokenization; it does
+not restore native KV state or grant model capacity. Its application-local
+history LRU and the SDK response-object store have different retention rules;
+see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
 ### Tool-call parsers
 
@@ -959,6 +998,14 @@ Resolution happens before submit so a bad parser name never orphans a request.
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
 
 ### Chat-template render check
+
+The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
+`qwen3_5_moe`, `prism_hadamard_qwen35`) raise "No user query found in
+messages." when no user turn is more than a `<tool_response>` wrapper. Such
+histories are refused before rendering with the typed HTTP 400
+`missingUserQuery` instead of a provider-fault 500 `template_render`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift`,
+`validateUserQuery`).
 
 At scan time `TemplateRenderCheck.renderOK(at:)` compiles every template
 source in runtime precedence (`chat_template.jinja`, `chat_template.json`,
@@ -1193,6 +1240,32 @@ native frontend then resamples and mixes. The decoder honors one container trim,
 including AAC priming, and validates contiguous output timing and the complete
 presented sample count. Multiple tracks, gaps and retiming remain refused.
 
+Native MiMo preserves original function-tool schemas across model-blind provider
+and local Chat ingress. `MiMoV26ToolEvidence` captures typed declarations beside
+`ChatTemplateControls`; after the loaded model resolves to exact `mimo_v2`,
+`restoring` replaces normalized tools before tool-choice preparation in serving,
+provider-body tokenization, prompt recount and benchmark rendering. Typeless
+enums and Boolean property schemas consequently reach the native template with
+their original values. Other model families keep their existing normalization.
+
+Capture shares `InboundChatNormalization.isRepresentableTool` with ingress
+repair: entries with a function object or string name are retained for SDK
+decoding, while unrepresentable hosted entries follow the existing fallback.
+Malformed retained declarations fail. Client-supplied reserved schema metadata
+is rejected before tool-choice handling, including `none`; restoring original
+schemas grants no tool, media or memory-admission bypass. The bounded raw-control
+refusal capsule remains separate from the typed tool declarations.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift`
+(`MiMoV26ToolEvidence.restoring`),
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
+(`tokenizeProviderBody`),
+`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`
+(`promptTokenFloor`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
+(`benchmarkPrompt`). See the [schema regression procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the public fixture boundary.
+
 MiMo accepts the Boolean `chat_template_kwargs.thinking` alias used by OpenRouter.
 `reasoning.enabled` takes precedence, followed by top-level `enable_thinking`,
 kwargs `enable_thinking`, then kwargs `thinking`. Every supplied value is type
@@ -1406,6 +1479,7 @@ cleanup path. `QwenBatchLaneBook` releases only the withdrawn lane's reservation
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
+| `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
 

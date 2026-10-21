@@ -18,11 +18,19 @@ enum GLM5NextPromptPolicy {
         modelType == "glm5_next" || modelType == "glm5_next_text" || modelType == "glm5_next_mtp"
     }
 
+    /// Fixed client text for every thinking-off or reasoning-exclusion request.
+    /// It never echoes request content.
+    static let reasoningCannotBeDisabledMessage =
+        "GLM-5.3-Flash always reasons and returns its reasoning; reasoning cannot be disabled or excluded. Use reasoning_effort minimal, low, medium, high, xhigh or max."
+
     /// The template renders low, high or max. The other OpenAI effort names map
     /// to the nearest of those, matching the platform prompt sidecar. GLM has
-    /// no thinking-off level, so `none` and unknown values are refused.
-    enum Effort: String, Sendable, Equatable, Decodable {
+    /// no thinking-off level: `none`/`off` are thinking-off requests and other
+    /// unknown values are refused.
+    enum Effort: String, Sendable, Equatable {
         case low, high, max
+
+        static let disablingRequests: Set<String> = ["none", "off"]
 
         init?(requested: String) {
             switch requested {
@@ -33,13 +41,11 @@ enum GLM5NextPromptPolicy {
             }
         }
 
-        init(from decoder: any Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            guard let effort = Self(requested: try container.decode(String.self)) else {
-                throw DecodingError.dataCorruptedError(
-                    in: container, debugDescription: "unsupported GLM reasoning effort")
-            }
-            self = effort
+        /// A `reasoning.max_tokens` budget selects the nearest level using the
+        /// budgets OpenAI-compatible APIs conventionally give `low` (1,024) and
+        /// `medium` (8,192). The template cannot enforce a token budget.
+        init(reasoningBudget tokens: Int) {
+            self = tokens <= 1024 ? .low : tokens <= 8192 ? .high : .max
         }
     }
 
@@ -49,6 +55,9 @@ enum GLM5NextPromptPolicy {
     /// A malformed shadowed alias must not disappear in permissive decoding.
     struct RawControls: Sendable, Equatable, Decodable {
         var invalid = false
+        /// An explicit thinking-off or reasoning-exclusion request. Kept apart
+        /// from `invalid` so its refusal can tell the caller what to send.
+        var disablesReasoning = false
         var effort: Effort?
         var clearThinking: Bool?
         var hasOriginalTools = false
@@ -78,36 +87,71 @@ enum GLM5NextPromptPolicy {
                     result.originalTools, allowInternalSchemaMetadata: false)
                 func effort(_ values: KeyedDecodingContainer<Key>, _ key: String) throws -> Effort? {
                     guard values.contains(Key(key)) else { return nil }
-                    return try values.decode(Effort.self, forKey: Key(key))
+                    let requested = try values.decode(String.self, forKey: Key(key))
+                    if Effort.disablingRequests.contains(requested) {
+                        result.disablesReasoning = true
+                        return nil
+                    }
+                    guard let effort = Effort(requested: requested) else {
+                        throw GLM5NextPromptPolicy.invalid("unsupported reasoning effort")
+                    }
+                    return effort
                 }
                 func clear(_ values: KeyedDecodingContainer<Key>) throws -> Bool? {
                     guard values.contains(Key("clear_thinking")) else { return nil }
                     return try values.decode(Bool.self, forKey: Key("clear_thinking"))
                 }
-                if ["enable_thinking", "preserve_thinking", "thinking"].contains(where: {
-                    root.contains(Key($0))
-                }) { result.invalid = true }
+                // OpenRouter and template-kwargs reasoning switches. The value
+                // that keeps reasoning on and visible is a no-op: the template
+                // always reasons. The opposite value cannot be honored.
+                func reasoningSwitch(
+                    _ values: KeyedDecodingContainer<Key>, _ key: String, disablingValue: Bool
+                ) throws {
+                    guard values.contains(Key(key)) else { return }
+                    if try values.decode(Bool.self, forKey: Key(key)) == disablingValue {
+                        result.disablesReasoning = true
+                    }
+                }
+                if ["preserve_thinking", "thinking"].contains(where: { root.contains(Key($0)) }) {
+                    result.invalid = true
+                }
+                try reasoningSwitch(root, "enable_thinking", disablingValue: false)
+                try reasoningSwitch(root, "include_reasoning", disablingValue: false)
                 let topEffort = try effort(root, "reasoning_effort")
                 let topClear = try clear(root)
                 var nestedEffort: Effort?
+                var budgetEffort: Effort?
                 if root.contains(Key("reasoning")) {
                     let reasoning = try root.nestedContainer(keyedBy: Key.self, forKey: Key("reasoning"))
-                    if reasoning.allKeys.contains(where: { $0.stringValue != "effort" }) {
-                        result.invalid = true
-                    }
+                    if reasoning.allKeys.contains(where: {
+                        !["effort", "enabled", "exclude", "max_tokens"].contains($0.stringValue)
+                    }) { result.invalid = true }
                     nestedEffort = try effort(reasoning, "effort")
+                    try reasoningSwitch(reasoning, "enabled", disablingValue: false)
+                    try reasoningSwitch(reasoning, "exclude", disablingValue: true)
+                    if reasoning.contains(Key("max_tokens")) {
+                        let budget = try reasoning.decode(Int.self, forKey: Key("max_tokens"))
+                        guard budget > 0 else {
+                            throw GLM5NextPromptPolicy.invalid("reasoning budget must be positive")
+                        }
+                        budgetEffort = Effort(reasoningBudget: budget)
+                    }
                 }
                 var kwargsEffort: Effort?
                 var kwargsClear: Bool?
                 if root.contains(Key("chat_template_kwargs")) {
                     let kwargs = try root.nestedContainer(keyedBy: Key.self, forKey: Key("chat_template_kwargs"))
                     if kwargs.allKeys.contains(where: {
-                        !["reasoning_effort", "clear_thinking"].contains($0.stringValue)
+                        !["reasoning_effort", "clear_thinking", "enable_thinking", "thinking"]
+                            .contains($0.stringValue)
                     }) { result.invalid = true }
                     kwargsEffort = try effort(kwargs, "reasoning_effort")
                     kwargsClear = try clear(kwargs)
+                    try reasoningSwitch(kwargs, "enable_thinking", disablingValue: false)
+                    try reasoningSwitch(kwargs, "thinking", disablingValue: false)
                 }
-                result.effort = nestedEffort ?? topEffort ?? kwargsEffort
+                // An explicit effort, under any alias, wins over a budget.
+                result.effort = nestedEffort ?? topEffort ?? kwargsEffort ?? budgetEffort
                 result.clearThinking = topClear ?? kwargsClear
             } catch {
                 result.invalid = true
@@ -118,7 +162,10 @@ enum GLM5NextPromptPolicy {
         func validate() throws {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
-                    "controls require reasoning_effort minimal/low/medium/high/xhigh/max and Boolean clear_thinking; binary thinking controls are unsupported")
+                    "controls require reasoning_effort minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, and Boolean clear_thinking and reasoning switches")
+            }
+            guard !disablesReasoning else {
+                throw MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled
             }
         }
     }
@@ -127,11 +174,15 @@ enum GLM5NextPromptPolicy {
         request: OpenAIChatCompletionRequest, controls: ChatTemplateControls
     ) throws -> [String: any Sendable] {
         try controls.rawGLM5Controls.validate()
-        guard request.reasoning?.enabled == nil, controls.enableThinking == nil,
-            controls.preserveThinking == nil
-        else { throw invalid("binary thinking controls are unsupported; use reasoning_effort") }
+        guard controls.preserveThinking == nil else { throw invalid("preserve_thinking is unsupported") }
+        guard request.reasoning?.enabled != false, controls.enableThinking != false else {
+            throw MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled
+        }
         func checked(_ value: String?) throws -> Effort? {
             guard let value else { return nil }
+            guard !Effort.disablingRequests.contains(value) else {
+                throw MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled
+            }
             guard let effort = Effort(requested: value) else {
                 throw invalid("reasoning_effort must be minimal, low, medium, high, xhigh or max")
             }

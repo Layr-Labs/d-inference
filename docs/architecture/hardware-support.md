@@ -32,6 +32,14 @@ Weights, KV cache and activations share unified memory, so the provider owns one
 byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`).
 
+Local HTTP Responses also retain host-side JSON. The continuation-history LRU
+limits its saved histories, while the SDK response-object store has an
+independent lifetime and no matching eviction. In-flight request copies are
+outside that history cap. Treat these as application memory when assessing
+process usage; the history limit is not a native KV grant or a total process
+bound. [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention)
+owns the limits and their source mappings.
+
 ## Mechanism
 
 ### Constants
@@ -238,6 +246,16 @@ standalone server runs the same sequence in
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
   refuses work.
+
+### MiMo prompt recount
+
+For exact `mimo_v2`, `ProviderLoop.promptTokenFloor` restores captured original
+tool schemas before the shared native tokenization path. The floor therefore
+counts the schema rendered by serving rather than the model-blind normalized
+schema (`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
+This changes prompt-count correctness, not the load allowance, activation
+reserve, KV byte rate or ownership gates below. See the
+[native MiMo prompt contract](inference.md#native-mimo-v26-candidate).
 
 ### KV slot grants
 

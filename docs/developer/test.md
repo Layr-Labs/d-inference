@@ -377,6 +377,17 @@ is historical context, not the current backend source authority.
 
 ## Focused Tooling Checks
 
+For the PR reviewer, run the seven offline suites listed in
+[threat-review verification](threat-model-review.md#verify). They cover bounded
+change context, final-review integration, fail-closed merge decisions, failure
+classification and exclusion of private response text from diagnostics. Loopback
+HTTP tests need permission to bind a local port; none of these suites call paid
+models. Bedrock-shaped lifecycle fixtures exercise transport, scanner, saved
+reports and merge decisions together, including truncation, call limits,
+interruption and failed report/diagnostic writes. Selective integration tests
+enforce each model's source citation scope across fresh and cached results.
+Live smoke tests establish model compatibility separately.
+
 From the repository root:
 
 ```bash

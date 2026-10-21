@@ -50,17 +50,18 @@ Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
 `prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
 a four-row recurrence kernel
 (`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`, `GatedDeltaPrefill`).
-The first such window of each kernel instantiation (input dtype and head
-geometry) tries the candidates in order on a fixed probe window and keeps the
-first that reproduces `gated_delta_step` bit for bit on the GPU, or else the
-stock kernel.
+In each process, the first such window of each kernel instantiation (input
+dtype and head geometry) tries the `packed` and then the `rows` kernel on a
+fixed probe window and keeps the first that reproduces `gated_delta_step` bit
+for bit on the GPU, or else the stock kernel.
 Decode, MTP verification, masked updates and shorter windows always run the
 stock kernel; because a selected kernel matches it bit for bit, mixing kernels
 across chunks cannot change the recurrent state that
 [checkpoint capture](prefix-cache.md#streamed-complete-checkpoints) relies on.
-`qwen4_exp` and `qwen4_exp_text` keep their blocked-seq path. `DARKBLOOM_TTFT_GDN_BLOCKED`
+`qwen4_exp` and `qwen4_exp_text` keep their blocked-seq path.
+`DARKBLOOM_TTFT_GDN_BLOCKED`
 ([configuration](../reference/configuration.md#engine-and-scheduler)) keeps the
-stock kernel or forces one candidate for A/B measurement.
+stock kernel or forces `packed` or `rows` for A/B measurement.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads

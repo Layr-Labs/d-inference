@@ -42,7 +42,8 @@ public enum ModelFitDiagnostic {
     /// The memory (GB) the provider would actually have free to load a model,
     /// via `ModelLoadAdmission.freeForLoadGb`: real free RAM (clamped to what the
     /// OS reports available when known) minus the OS reserve and resident MLX
-    /// memory. Shared with `ProviderLoop.availableMemoryGb()` so they agree.
+    /// memory. Uses the same arithmetic as `ProviderLoop.availableMemoryGb()`,
+    /// without the daemon's unmaterialized KV commitments.
     ///
     /// - Parameters:
     ///   - systemAvailableGb: real OS-reported available memory (doctor reads it
@@ -57,8 +58,8 @@ public enum ModelFitDiagnostic {
     ) -> Double {
         let totalBytes = bytes(totalGb)
         // Same cap-implied reserve the running gate uses (max(configReserve,
-        // physical − 90% cap)), so the doctor verdict matches what the daemon
-        // actually enforces and never reports "fits" for a model the cap refuses.
+        // physical − 90% cap)), so the doctor applies the daemon's cap reserve;
+        // the daemon's KV commitments can still lower the budget at load time.
         let reserve = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: totalBytes, configReserveBytes: bytes(reserveGb))
         return ModelLoadAdmission.freeForLoadGb(
@@ -85,7 +86,7 @@ public enum ModelFitDiagnostic {
     /// are locally-available models, used to suggest a fit. `servingSetIDs` is
     /// the box's ACTUAL serving set (the daemon's load gate carves the max
     /// floor over that whole set, not the target's own) — pass it so the
-    /// verdict matches what the daemon enforces; nil falls back to the target
+    /// verdict uses the daemon's serving-set reserve; nil falls back to the target
     /// alone (a single-model box, where the two coincide).
     public static func diagnose(
         modelID: String,

@@ -48,7 +48,20 @@ actor NemotronSuperLocalLoad {
         }
     }
 
+    /// One configuration the LOAD gate weighed (`NemotronSuperLoadFit`): its
+    /// concurrent requests, prefix bank and whole claim (installation, head,
+    /// owner shares and KV floor).
+    struct FitAttempt: Equatable, Sendable {
+        let requests: Int
+        let prefixBankBytes: Int
+        let claimBytes: UInt64
+        let admitted: Bool
+    }
+
     private(set) var phase: Phase = .idle
+    /// Every configuration the load asked the gate for, in order; the last
+    /// one is the served configuration when the load was admitted.
+    private(set) var fitAttempts: [FitAttempt] = []
     private let budget: GlobalKVCacheBudget
     private let construction = NativeConstructionScope()
     private var lease: PendingModelLoadLease?
@@ -69,6 +82,10 @@ actor NemotronSuperLocalLoad {
     /// and the requests' KV. Once the weights are resident (MLX usage) their
     /// share is handed over to live usage, and the builder hands the lane and
     /// bank shares to their reservations, so each byte is counted once.
+    /// When the gate refuses a managed claim, the load first tries
+    /// `NemotronSuperLoadFit`'s narrower configurations (no prefix bank, then
+    /// fewer concurrent requests) and builds the first admitted one;
+    /// `fitAttempts` records each.
     func load(configData: Data, source: ModelOptCheckpointSource,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
@@ -105,28 +122,50 @@ actor NemotronSuperLocalLoad {
                 return try head.quote()
             }
             if let headQuote { _ = try NemotronSuperLocalMTP.loadSupplementBytes(headQuote) }
-            let shares = staging.pinned
-                ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: environment,
-                    kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil,
-                    contextTokens: sizing.maxContextLength, physicalBytes: physicalBytes)
-                : nil
-            guard let ownerBytes = shares.map({ $0.total }) ?? 0 else { throw Failure.capacity }
-            // The bank and the round are part of the admission; the claim holds
-            // each once, as a share.
-            let admission = admissionKVBytes ?? kvBytesCapacity
-            let kvFloor = admission - (shares?.bank ?? 0) - (shares?.round ?? 0)
             // With reclamation the load transients are sequential and run in
             // the serving room (owner shares, the round's included, and the KV
             // floor) before any of it is allocated.
             let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
-            let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
-                sequential: sequential, servingBytes: max(0, ownerBytes + kvFloor))
-            let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
-            guard !ownerOverflow, kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
-                kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
+            var admitted: (environment: [String: String], shares: NemotronSuperLocalBridgeBuilder.OwnerShares?,
+                           ownerBytes: Int, kvFloor: Int, claim: PendingModelLoadLease)?
+            for candidate in try NemotronSuperLoadFit.candidates(environment: environment,
+                admissionKVBytes: admissionKVBytes, kvBytesCapacity: kvBytesCapacity,
+                speculates: speculation != nil, contextTokens: sizing.maxContextLength) {
+                let shares = staging.pinned
+                    ? try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: candidate.environment,
+                        kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil,
+                        contextTokens: sizing.maxContextLength, physicalBytes: physicalBytes)
+                    : nil
+                guard let ownerBytes = shares.map({ $0.total }) ?? 0 else { throw Failure.capacity }
+                // The bank and the round are part of the admission; the claim
+                // holds each once, as a share.
+                let kvFloor = candidate.admissionKVBytes - (shares?.bank ?? 0) - (shares?.round ?? 0)
+                let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+                    sequential: sequential, servingBytes: max(0, ownerBytes + kvFloor))
+                let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
+                let (chargedBytes, chargeOverflow) = claimBytes.addingReportingOverflow(max(0, kvFloor))
+                // The gate is asked for the slack too; it is released with the
+                // installation's share (pinned) or when the load finishes.
+                let (askedBytes, slackOverflow) = claimBytes.addingReportingOverflow(
+                    NemotronSuperLoadFit.admissionSlackBytes)
+                guard !ownerOverflow, !chargeOverflow, !slackOverflow,
+                    kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
+                    kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes)
+                else { continue }
+                let charged = UInt64(chargedBytes)
+                // A candidate the gate already weighed (no bank to drop) is not asked again.
+                guard !fitAttempts.contains(where: { $0.requests == candidate.requests && $0.claimBytes == charged })
+                else { continue }
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
-                    weightBytes: UInt64(claimBytes), minimumKVBytes: UInt64(kvFloor))
-            else { throw Failure.capacity }
+                    weightBytes: UInt64(askedBytes), minimumKVBytes: UInt64(kvFloor))
+                fitAttempts.append(FitAttempt(requests: candidate.requests, prefixBankBytes: shares?.bank ?? 0,
+                                              claimBytes: charged, admitted: claim != nil))
+                guard let claim else { continue }
+                admitted = (candidate.environment, shares, ownerBytes, kvFloor, claim)
+                break
+            }
+            guard let admitted else { throw Failure.capacity }
+            let (servedEnvironment, shares, ownerBytes, kvFloor, claim) = admitted
             lease = claim
             try Task.checkCancellation()
             let ledger = try NemotronSuperResidency(capacityBytes: quote, maximumRequests: 1)
@@ -158,7 +197,7 @@ actor NemotronSuperLocalLoad {
                 tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity, admissionKVBytes: kvFloor, kvBudget: budget,
                 loadLease: claim, construction: construction, mtp: head, modelID: modelID,
-                environment: environment, physicalBytes: physicalBytes, leaseShares: shares)
+                environment: servedEnvironment, physicalBytes: physicalBytes, leaseShares: shares)
             owner = built
             try Task.checkCancellation()
             // Installation/setup has fenced. The standard ledger now sees live

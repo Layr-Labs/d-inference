@@ -20,6 +20,8 @@ final class NemotronSuperSlotOwner: Sendable {
     let bridge: EngineV2Bridge
     let tokenizer: TokenizerHandle
     let sizing: SlotSizingSnapshot
+    /// The configurations the LOAD gate weighed; the last is the one served.
+    let fitAttempts: [NemotronSuperLocalLoad.FitAttempt]
     private let transaction: NemotronSuperLocalLoad
     private let chat: NemotronSuperLocalImageHTTP
 
@@ -32,6 +34,7 @@ final class NemotronSuperSlotOwner: Sendable {
             try? await transaction.closeAfterDrain()
             throw error
         }
+        fitAttempts = await transaction.fitAttempts
         self.transaction = transaction
         self.bridge = bridge
         self.tokenizer = tokenizer

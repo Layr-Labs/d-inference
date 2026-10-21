@@ -361,11 +361,35 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
 
-    /// The LOAD claim refuses before allocation; nothing is installed or held.
+    /// Where the configured owner (eight speculating requests and a bank)
+    /// does not fit, the load serves the widest narrower owner the LOAD gate
+    /// admits (here the same width without the bank), built and reported at
+    /// that width, and unloads it completely.
+    @Test(.timeLimit(.minutes(1)))
+    func loadAdmissionFallsBackToANarrowerOwner() async throws {
+        let fixture = try await Self.fixture(mode: .auto, totalGiB: 16)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                                 revisionDirectory: fixture.directory)
+        let owner = try #require(await fixture.loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
+        let attempts = owner.fitAttempts
+        let served = try #require(attempts.last)
+        #expect(attempts.count >= 2 && served.admitted && attempts.dropLast().allSatisfy { !$0.admitted })
+        #expect(attempts[0].requests == 8 && served.claimBytes < attempts[0].claimBytes)
+        let banks = await fixture.budget.reservationBytesSnapshot()
+            .filter { NemotronSuperLocalPrefixCache.isBankReservationID($0.key) }
+        #expect(banks.isEmpty, "every fallback drops the bank")
+        #expect(await owner.bridge.maxConcurrentRequests == served.requests)
+        #expect(await fixture.loop.unloadModel(Self.modelID))
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+    }
+
+    /// The LOAD claim refuses before allocation when not even one request
+    /// fits; nothing is installed or held.
     @Test(.timeLimit(.minutes(1)))
     func loadAdmissionRefusalInstallsNothing() async throws {
-        // The ordinary load gate passes; the managed claim's 22 GiB KV headroom does not.
-        let fixture = try await Self.fixture(mode: .auto, totalGiB: 16)
+        // The ordinary load gate passes; no configuration's KV headroom does.
+        let fixture = try await Self.fixture(mode: .auto, totalGiB: 6)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         var refusal: Error?
         do {

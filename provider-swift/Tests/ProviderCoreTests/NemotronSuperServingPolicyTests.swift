@@ -465,7 +465,7 @@ struct NemotronSuperServingPolicyTests {
             + "activation=\(gib(Int(activation))) footprint=\(gib(footprint)) gate=\(gib(gate)) cap=\(gib(cap))")
     }
 
-    @Test func discoveryFootprintCoversTheLargestDefaultLoadAndOneImage() throws {
+    @Test func discoveryFootprintCoversTheNarrowestServedLoadAndOneImage() throws {
         // The ship-check claim at a 28 GiB grant: installation, head and grant.
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
             + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_033_369_216)
@@ -479,13 +479,19 @@ struct NemotronSuperServingPolicyTests {
         #expect(footprint.nativeLoadTransientBytes == 8_879_792_720)
         let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
         let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: 2048))
-        let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
+        // One speculative request at the whole context without a bank: the
+        // narrowest owner the managed load serves (`NemotronSuperLoadFit`).
+        let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 1, speculates: true))
         let serving = lane + admission + media
         #expect(serving > 8_903_163_904)
         let expected = Double(73_217_162_760 + 1_769_654_296 + serving) / 1_073_741_824
         #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        // 93.146 GiB at 65,536 tokens; the served 262,144 adds exactly 4.5 GiB of history copies.
-        #expect(abs(footprint.estimatedMemoryGb - 97.645_756_270_736_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
+        // 86.833 GiB at 65,536 tokens; the served 262,144 adds exactly 1.125 GiB of
+        // history copies. The eight-request default would be 97.646 GiB.
+        #expect(abs(footprint.estimatedMemoryGb - 87.958_256_270_736_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
+        let widest = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
+        #expect(abs(footprint.estimatedMemoryGb + Double(widest - admission) / 1_073_741_824
+            - 97.645_756_270_736_46) < 1e-9)
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
         // The plain owner's scan-time equivalent (no head, no bank) is smaller.
@@ -658,6 +664,42 @@ struct NemotronSuperServingPolicyTests {
         #expect(TemplateRenderCheck.configDeclaresVision(at: directory, modelID: Self.superID))
         #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.superID) == true)
         #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.hfID) == true)
+    }
+
+    /// The managed load's fallbacks under the default policy at the whole
+    /// context: the planned owner, then no prefix bank at eight, four, two and
+    /// one requests, each with every measured bound (the round at 262,144
+    /// tokens: 9,865,003,008 bytes at eight). One request claims 84.3 GiB
+    /// (the default about 99), so a 128 GB Mac with about 102.1 GiB available
+    /// (the claim, the admission slack and the activation and load reserves)
+    /// loads it. A whole-grant claim keeps only its own configuration.
+    @Test func managedLoadFallsBackToNarrowerOwners() throws {
+        let grant = 40 << 30
+        let context = NemotronSuperServingPolicy.contextTokens
+        let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: 128 << 30)
+        let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1])
+        #expect(candidates[0] == .init(environment: plan.environment, admissionKVBytes: plan.admissionKVBytes,
+                                       requests: 8))
+        for candidate in candidates.dropFirst() {
+            #expect(candidate.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "0")
+            #expect(candidate.environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey]
+                == String(candidate.requests))
+            #expect(candidate.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
+        }
+        #expect(candidates.dropFirst().map(\.admissionKVBytes)
+            == [16_844_324_864, 12_817_793_024, 8_053_063_680, 6_442_450_944])
+        #expect(NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8) == 9_865_003_008)
+        let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens)
+        let narrowest = candidates[4].admissionKVBytes + lane
+        let claim = Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: narrowest))
+            + narrowest
+        #expect(claim == 90_556_073_504)
+        let whole = try NemotronSuperLoadFit.candidates(environment: plan.environment, admissionKVBytes: nil,
+            kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        #expect(whole == [.init(environment: plan.environment, admissionKVBytes: grant, requests: 8)])
     }
 
     /// Forced `tool_choice` is advertised for the registry id only: the owner

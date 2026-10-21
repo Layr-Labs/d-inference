@@ -6,7 +6,7 @@
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
   the resident checkpoint plus the larger of its load transient and the
   serving room (prefill lane, requests' KV headroom and one image request's
-  media charge; 97.6 GiB for the default configuration), and it advertises image and video
+  media charge; 88.0 GiB for the narrowest owner it serves, one request), and it advertises image and video
   input; capacity quotes for media probes charge their images, a one-part
   probe the larger of one image and one video.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
@@ -23,6 +23,14 @@
   two to four and one beyond (the fastest depth measured at each width on the
   full checkpoint); `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves the
   plain owner, and an explicit `engine_v2_max_concurrent` bounds the width.
+  When the memory free beside the load reserve cannot hold that owner (a
+  128 GB Mac running other work), the load serves the widest narrower one
+  that fits instead of refusing: no prefix bank, then four, two or one
+  concurrent requests, with every measured bound and the full context kept
+  (one request claims about 84.3 GiB and loads with about 102 GiB
+  available), and logs the width it chose. Each configuration is admitted
+  only with 3 GiB to spare, so a load that barely fits steps down instead of
+  losing its admission after the weights are installed.
   Either owner reuses exact prompt prefixes when the grant holds its bank; a
   restored speculative request drafts from the same prompt history as a cold
   one, and an image turn reuses only checkpoints of the same image features.

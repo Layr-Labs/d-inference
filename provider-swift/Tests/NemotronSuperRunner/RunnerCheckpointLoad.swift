@@ -68,8 +68,10 @@ enum RunnerCheckpointLoad {
                 admissionKVBytes: settings.admissionKVBytes,
                 backendAllowanceBytes: settings.backendAllowanceBytes, environment: settings.engineEnvironment)
             phases.finish("native_load", start: started, outcome: "ok")
+            log.emit("load.fit", await fitJSON(transaction, budget: budget, loaded: true).asFields)
         } catch {
             phases.finish("native_load", start: started, outcome: "failed")
+            log.emit("load.fit", await fitJSON(transaction, budget: budget, loaded: false).asFields)
             log.emit("load.transaction", ["phase": .string(String(describing: await transaction.phase))])
             throw error
         }
@@ -88,6 +90,7 @@ enum RunnerCheckpointLoad {
             "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": true,
             "speculation": RunnerLoadSettings.speculationJSON(speculation),
             "kv_grant": await RunnerKVGrant.json(bridge: bridge, grantBytes: settings.kvCapacityBytes),
+            "fit": await fitJSON(transaction, budget: budget, loaded: true),
             "request_charge": await RunnerRequestCharge.json(bridge: bridge,
                 environment: settings.engineEnvironment, contextTokens: settings.maxContextLength),
         ])
@@ -98,5 +101,27 @@ enum RunnerCheckpointLoad {
                 return ["transaction_phase": .string(String(describing: await transaction.phase)),
                         "installation_residency_used_bytes": residency.map { .bytes($0.usedBytes) } ?? .null]
             })
+    }
+
+    /// Each configuration the LOAD gate weighed (`NemotronSuperLoadFit`) with
+    /// the gate's own terms: the gate admits a claim within
+    /// min(cap - used, system available - load reserve) - activation reserve.
+    /// `served_requests` is the admitted configuration's width only when the
+    /// load completed; `admitted` alone means the gate accepted that claim.
+    private static func fitJSON(_ transaction: NemotronSuperLocalLoad, budget: GlobalKVCacheBudget,
+                                loaded: Bool) async -> RunnerJSON {
+        let attempts = await transaction.fitAttempts
+        let headroom = budget.memoryHeadroomSnapshot()
+        return [
+            "attempts": .array(attempts.map {
+                ["requests": .count($0.requests), "prefix_bank_bytes": .bytes($0.prefixBankBytes),
+                 "claim_bytes": .bytes($0.claimBytes), "admitted": .bool($0.admitted)]
+            }),
+            "served_requests": loaded ? attempts.last(where: \.admitted).map { .count($0.requests) } ?? .null : .null,
+            "admission_slack_bytes": .bytes(NemotronSuperLoadFit.admissionSlackBytes),
+            "load_reserve_bytes": .bytes(budget.loadReserveBytes),
+            "available_for_load_gb": .double(budget.availableForLoadGb()),
+            "ledger": RunnerMemorySampler.ledger(headroom),
+        ]
     }
 }

@@ -284,13 +284,15 @@ struct NemotronSuperLocalPrefixCacheTests {
     /// owner: the installation and any head (their transients only beyond
     /// the serving room), the lane share (the measured whole-chunk bound), a
     /// speculating owner's round share, the bank and the requests' KV floor.
-    /// With one byte less free the load is refused before anything is
-    /// installed. With exactly that much free it loads: the installation's
-    /// share passes to live usage once resident, and the lane, round and bank
-    /// shares pass to their own reservations, so neither the 8.5 GiB lane
-    /// share nor the 16 GiB bank is ever counted twice (counting the bank
-    /// twice would need 4 GiB more than is free). The round share passes to
-    /// the engine's exact round reservation.
+    /// With one byte less free than the claim and the admission slack, that
+    /// configuration is refused before anything is installed and the load
+    /// serves its fallback without the bank (`NemotronSuperLoadFit`). With
+    /// exactly that much free it loads: the installation's share passes to
+    /// live usage once resident, and the lane, round and bank shares pass to
+    /// their own reservations, so neither the 8.5 GiB lane share nor the
+    /// 16 GiB bank is ever counted twice (that would need the bank again, far
+    /// more than the 3 GiB admission slack left free). The round share passes to the engine's exact
+    /// round reservation.
     @Test(.timeLimit(.minutes(5)))
     func oneLoadClaimHoldsThePinnedOwnerOnce() async throws {
         for speculates in [false, true] {
@@ -340,7 +342,8 @@ struct NemotronSuperLocalPrefixCacheTests {
                 let budget = Self.budget()
                 let free = await Self.freeBytes(budget)
                 #expect(free > claim)
-                let ballast: UInt64 = free - claim + (short ? 1 : 0)
+                let slack = UInt64(NemotronSuperLoadFit.admissionSlackBytes)
+                let ballast: UInt64 = free - claim - slack + (short ? 1 : 0)
                 #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
                 let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
                 let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
@@ -356,9 +359,17 @@ struct NemotronSuperLocalPrefixCacheTests {
                 } catch {
                     failure = error
                 }
+                let attempts = await transaction.fitAttempts
+                #expect(attempts.first == .init(requests: 1, prefixBankBytes: bank, claimBytes: claim,
+                                                admitted: !short))
                 if short {
-                    #expect((failure as? NemotronSuperLocalLoad.Failure) == .capacity)
-                    #expect(installs.count == 0, "refused before allocation")
+                    #expect(failure == nil)
+                    #expect(installs.count == 1, "installed once, after the fallback's claim")
+                    #expect(attempts.count == 2 && attempts[1].admitted && attempts[1].prefixBankBytes == 0)
+                    #expect(attempts[1].claimBytes < claim)
+                    let held = await budget.reservationBytesSnapshot()
+                    #expect(held.keys.allSatisfy { !Prefix.isBankReservationID($0) }, "no bank")
+                    try await transaction.closeAfterDrain()
                 } else {
                     #expect(failure == nil)
                     #expect(installs.count == 1)
@@ -379,6 +390,81 @@ struct NemotronSuperLocalPrefixCacheTests {
                 await budget.release(requestID: "ballast")
                 #expect(await budget.outstandingReservedBytes() == 0)
             }
+        }
+    }
+
+    /// A managed claim that fits only at a narrower width serves that width:
+    /// the load drops the bank, then halves eight requests until the gate
+    /// admits a configuration (here two) and builds the bridge for it. With
+    /// one byte less free than the narrowest (one request, no bank) nothing
+    /// is installed and the load is refused.
+    @Test(.timeLimit(.minutes(5)))
+    func managedLoadServesTheWidestConfigurationTheGateAdmits() async throws {
+        let grant: Int = 40 << 30
+        let context = 1024
+        let environment = [Builder.maxConcurrentKey: "8", Self.memoryKey: "1",
+                           "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(4 << 30)]
+        let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: false) + (4 << 30)
+        let candidates = try NemotronSuperLoadFit.candidates(environment: environment,
+            admissionKVBytes: admission, kvBytesCapacity: grant, speculates: false, contextTokens: context)
+        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1])
+        let quote = try NemotronSuperInstallation.loadQuote(
+            source: try SuperMTPInstalledFixture().staging().source, backendAllowanceBytes: 1 << 20)
+        let claims: [UInt64] = try candidates.map { candidate in
+            let shares = try Builder.pinnedOwnerShares(environment: candidate.environment,
+                kvBytesCapacity: grant, speculates: false, contextTokens: context)
+            // Lane and bank shares plus the KV floor (the admission less the
+            // bank); a plain owner has no round.
+            let serving = shares.lane + candidate.admissionKVBytes
+            let install = try NemotronSuperLoadClaim.bytes(installation: quote, head: nil,
+                sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers(), servingBytes: serving)
+            return UInt64(install + serving)
+        }
+        #expect(claims == claims.sorted(by: >) && Set(claims).count == claims.count)
+        // The gate must also hold the admission slack beside each claim.
+        let slack = UInt64(NemotronSuperLoadFit.admissionSlackBytes)
+        for (free, served) in [(claims[3] + slack, 2), (claims[4] + slack - 1, nil)] {
+            let base = try SuperMTPInstalledFixture().staging()
+            let installs = SuperPrefixInstallCount()
+            let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
+                installs.increment()
+                return try base.install($0, $1, $2)
+            }, head: base.head, pinned: true)
+            let budget = Self.budget()
+            let ballast = await Self.freeBytes(budget) - free
+            #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
+            let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+            let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: context, defaultMaxTokens: 16)
+            let transaction = NemotronSuperLocalLoad(budget: budget)
+            var bridge: EngineV2Bridge?
+            var failure: Error?
+            do {
+                bridge = try await transaction.load(staging: { staging },
+                    tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
+                    kvBytesCapacity: grant, admissionKVBytes: admission, backendAllowanceBytes: 1 << 20,
+                    modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+            } catch {
+                failure = error
+            }
+            let attempts = await transaction.fitAttempts
+            #expect(attempts.map(\.claimBytes) == Array(claims.prefix(attempts.count)))
+            #expect(attempts.dropLast().allSatisfy { !$0.admitted })
+            #expect(attempts.first?.prefixBankBytes == 4 << 30)
+            #expect(attempts.dropFirst().allSatisfy { $0.prefixBankBytes == 0 })
+            if let served {
+                #expect(failure == nil && installs.count == 1)
+                #expect(attempts.last == .init(requests: served, prefixBankBytes: 0, claimBytes: claims[3],
+                                               admitted: true))
+                #expect(await bridge?.maxConcurrentRequests == served)
+                try await transaction.closeAfterDrain()
+            } else {
+                #expect((failure as? NemotronSuperLocalLoad.Failure) == .capacity)
+                #expect(installs.count == 0, "refused before allocation")
+                #expect(attempts.count == candidates.count && attempts.allSatisfy { !$0.admitted })
+            }
+            await budget.release(requestID: "ballast")
+            #expect(await budget.outstandingReservedBytes() == 0)
         }
     }
 

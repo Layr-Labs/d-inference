@@ -89,6 +89,15 @@ extension ProviderLoop {
             }
             throw error
         }
+        if let served = owner.fitAttempts.last(where: \.admitted),
+            served.requests < plan.requests || served.prefixBankBytes < plan.prefixBankBytes {
+            let gib = Double(served.claimBytes) / 1_073_741_824
+            logger.warning("""
+                Nemotron Super loaded \(served.requests) concurrent request(s), \
+                prefix bank \(served.prefixBankBytes > 0 ? "on" : "off") (LOAD claim \(String(format: "%.1f", gib)) GiB): \
+                the configured policy did not fit the memory free beside the load reserve
+                """)
+        }
         do {
             try await publishNemotronSuperSlot(owner, modelID: modelID, directory: directory,
                 modelType: modelInfo.modelType, before: before, reslice: reslice, started: started)

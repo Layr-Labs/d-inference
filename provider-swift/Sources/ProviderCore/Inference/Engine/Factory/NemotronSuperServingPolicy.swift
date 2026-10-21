@@ -314,25 +314,26 @@ enum NemotronSuperServingPolicy {
     }
 
     struct DiscoveryFootprint: Equatable {
-        /// The default configuration's resident installation and head, and
-        /// the larger of their load transient and the serving room (owner-wide
-        /// prefill lane, admission KV and the media charge of one single-image
-        /// request), in GiB.
+        /// The narrowest served configuration's resident installation and
+        /// head, and the larger of their load transient and the serving room
+        /// (owner-wide prefill lane, admission KV and the media charge of one
+        /// single-image request), in GiB.
         let estimatedMemoryGb: Double
         /// LOAD bytes above the shard bytes: staging, backend allowance and
         /// head construction. Not activation, KV or media.
         let nativeLoadTransientBytes: UInt64
     }
 
-    /// Scan-time requirement of the largest default configuration (eight
-    /// speculative requests; the plain owner needs less), so a cold quote or
-    /// pre-accept check never admits a load the managed claim then refuses,
-    /// and the load leaves room for an image. The prefix bank is not part of
-    /// it: `loadPlan` enables the bank only when the grant also holds it.
+    /// Scan-time requirement of the narrowest configuration the managed load
+    /// serves before refusing (`NemotronSuperLoadFit`: one speculative
+    /// request at the whole context, no prefix bank; the plain owner needs
+    /// less), so a cold quote or pre-accept check never admits a load the
+    /// managed claim then refuses, never refuses one it would serve, and the
+    /// load leaves room for an image. A Mac with more room loads a wider owner.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
         let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(
             chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens))
-        let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))
+        let kv = UInt64(admissionKVBytes(requests: 1, speculates: true))
         // Unreachable unless the binding refuses its own largest image; the
         // footprint then fails closed instead of advertising room it lacks.
         let media = mediaChargeBytes(imageCount: 1) ?? UInt64(Int.max)

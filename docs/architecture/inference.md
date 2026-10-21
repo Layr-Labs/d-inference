@@ -326,6 +326,22 @@ above the grant. For the pinned checkpoint the same claim also holds the prefill
 lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
+Before refusing, the transaction tries narrower configurations in order
+(`NemotronSuperLoadFit`): the same policy without the prefix bank, then half
+the concurrent requests at a time down to one, each with every measured bound
+(installation, head, lane, per-request bytes, the round at the whole context,
+the load reserve). It builds the first one the gate admits with
+`NemotronSuperLoadFit.admissionSlackBytes` (3 GiB) to spare beside the claim:
+while the claim is held the process grows up to 2.6 GB past the installation's
+quote, and a configuration admitted with 1.9 GB to spare lost its admission
+after its weights were installed. Every attempt is recorded (`fitAttempts`;
+the provider logs a narrower owner, the qualification runner's `load.fit`
+event lists each claim beside the gate's reserves). The default (eight
+requests and a bank) claims about 99 GiB; one request at the whole context
+84.3 GiB, which loads on a 128 GB Mac with about 102 GiB available (the claim,
+the slack, the 2 GiB activation reserve and the 10% load reserve). The bridge
+reports the width it was built with, so capacity quotes route no more
+concurrent work to it.
 The load's transient (`NemotronSuperLoadClaim`) is the larger of the
 installation's staging with its 2 GiB backend allowance and the head's
 construction allowance, and the claim adds only the part beyond that serving

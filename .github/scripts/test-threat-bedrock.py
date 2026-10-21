@@ -12,7 +12,8 @@ from threat_review.bedrock import BedrockCalls, MODELS
 from threat_review.budget_scan import SCHEMA
 from threat_review.budget_runner import status_body
 from threat_review.client import APIError, ReviewUnavailable, ScanTimeout
-from threat_review.context import SONNET
+from threat_review.context import SONNET, SOL
+from threat_review.structured_output import bedrock_schema
 from threat_review.merge_policy import clean, manual_override
 from threat_review.membership import active_member, ORGANIZATION_ID
 from threat_review.state import BudgetStopped
@@ -75,7 +76,8 @@ class BedrockTests(unittest.TestCase):
         request = self.client.requests[0]
         self.assertTrue(request["modelId"].endswith("/sonnet"))
         self.assertIn('"type": "object"', request["system"][0]["text"])
-        self.assertNotIn("outputConfig", request)
+        self.assertEqual(json.loads(request["outputConfig"]["textFormat"]["structure"]["jsonSchema"]["schema"]),
+                         {"type": "object"})
         self.assertEqual(result["choices"][0]["message"]["content"], '{"findings":[]}')
         ledger = self.path.read_text()
         for private in ("private source code", "private reasoning", "synthetic", "system instructions"):
@@ -91,6 +93,27 @@ class BedrockTests(unittest.TestCase):
         self.assertEqual(len(self.calls.fallback.calls), 1)
         self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 1)
         self.assertNotIn("private provider detail", self.path.read_text())
+
+    def test_native_schema_preserves_structure_and_local_constraints_for_every_model(self):
+        original = copy.deepcopy(SCHEMA)
+        self.payload["response_format"]["json_schema"]["schema"] = SCHEMA
+        for model in MODELS:
+            self.payload["model"] = model
+            self.invoke()
+            request = self.client.requests[-1]
+            native = json.loads(request["outputConfig"]["textFormat"]["structure"]["jsonSchema"]["schema"])
+            self.assertEqual(native, bedrock_schema(SCHEMA))
+            self.assertEqual(native["required"], SCHEMA["required"])
+            self.assertFalse(native["additionalProperties"])
+            self.assertEqual(native["properties"]["needs_deeper_review"], {"type": "boolean"})
+            self.assertNotIn("maxLength", native["properties"]["analysis"])
+            self.assertIn('"minLength": 1', native["properties"]["analysis"]["description"])
+            self.assertEqual(self.calls.last_request["response_format"], "json_schema")
+            if model == SOL:
+                self.assertEqual(request["additionalModelRequestFields"], {"text": {"format": {"strict": True}}})
+            else:
+                self.assertNotIn("additionalModelRequestFields", request)
+        self.assertEqual(SCHEMA, original)
 
     def test_sonnet_availability_fallback_preserves_selected_model_identity(self):
         self.client.error = SDKError("AccessDeniedException")

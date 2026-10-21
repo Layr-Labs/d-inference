@@ -1,6 +1,6 @@
 # Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
@@ -78,8 +78,11 @@ Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 Maintainers can request depth through **Actions → Threat Model Review (advisory)
 → Run workflow**, supplying a PR number targeting the default branch. Current
 GitHub write/maintain/admin permission is checked before spending, and all caps
-still apply. PR text and labels cannot request extra spend. Only trusted
-base/default-branch code runs; PR blobs are data, never checked out or executed.
+still apply. PR text and labels cannot request extra spend. Scanner code comes
+from the current trusted default branch, so older PR base SHAs cannot roll back
+merged fixes. The canonical threat model is fetched separately as an immutable
+Git blob at the exact PR base SHA and read as data. PR head code is never checked
+out or executed.
 
 ## Verify
 
@@ -98,6 +101,19 @@ without external services, real keys or paid calls. The budget suite exercises
 real local HTTP, conflicting SHA writes, reconciliation, permissions, cache
 invalidation, escalation, partial failures and comment delivery. Earlier suites
 protect immutable-source collection, validation and legacy report helpers.
+
+Integration calls also receive up to 16,000 JSON-encoded bytes of exact source
+units already validated in that model's source passes. This lets a stateless
+final reviewer check the analyses against source instead of requesting human
+review merely because only summaries were supplied. Patches and metadata have
+priority, followed by head and base source. Units retain their numbered lines
+and are never clipped; omitted units and replay completeness are explicit.
+Replay completeness describes that model's selected scope, not the whole PR.
+The original source acknowledgments remain the coverage authority, and the
+integration response acknowledges its summary units separately. Cached source
+results reconstruct the same scope; integration cache identity includes the
+replayed content. Content-free diagnostics record replayed/omitted unit counts.
+Material uncertainty still requires human review; no model flag is overridden.
 
 | Pilot check | Expected behavior |
 |---|---|
@@ -127,6 +143,18 @@ are reconciled through dedicated profile tags and the usage metadata artifact.
 Fork PRs keep the capped OpenRouter route unless a maintainer explicitly sets
 `BEDROCK_SCAN_ALLOW_FORKS=true` or manually dispatches their review; they do not
 receive AWS capacity by default.
+
+Bedrock requests include native `outputConfig.textFormat` JSON-schema constraints,
+in addition to the original schema in the prompt. `structured_output.py` projects
+unsupported length/count/numeric bounds into descriptions for the provider; local
+validation still enforces every original bound, coverage ID, citation and review
+decision. Empty or whitespace-only analysis is invalid even for a clean batch.
+Sol also sets the required `additionalModelRequestFields.text.format.strict=true`
+([AWS model contract](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html));
+that model-specific field is not sent to Claude.
+Native schema rejection stops the attempt instead of silently downgrading to
+prompt-only output or switching models. Verify the configured profiles with the
+bounded smoke workflow before claiming live compatibility.
 
 Explicit availability rejections or unavailable AWS credentials can invoke the
 same model once through OpenRouter, with its existing durable caps below. Each
@@ -190,7 +218,10 @@ the provider has credits.
 
 `state.py` reserves integer microdollars in one ledger **before** transport.
 GitHub Contents SHA compare-and-swap rejects stale concurrent writes; retries
-reread and recheck every cap. Missing state, write failures and ambiguous writes
+reread and recheck every cap. Different report/cache files share the same branch
+and can also conflict. Explicit HTTP 409 writes retry with bounded backoff, up to
+eight attempts, without repeating a paid call. Cache entries remain immutable.
+Missing state, permission failures and ambiguous writes
 cannot authorize a request. Interrupted or unreconciled reservations never
 expire and also count against later days until reconciled from billing evidence.
 
@@ -227,6 +258,11 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    without exposing their names. Findings and raw response text are excluded.
    Coverage mismatches include missing, unexpected and duplicate unit counts;
    analysis-length and decision-type failures have separate codes.
+   The artifact also records distinct scanner and canonical-context commit SHAs.
+   `STATE_WRITE_FAILED` identifies report/cache/ledger writes and HTTP status;
+   `GITHUB_API_ERROR` identifies the API operation, while
+   `OPENROUTER_API_ERROR` identifies completion transport. An initial report-write
+   failure has lifecycle phase `initial_checkpoint`, before any model request.
 3. Correlate Bedrock failures with `bedrock-usage-*`: the call number, allowlisted
    AWS error code, request ID, stop reason and latency distinguish access errors,
    refusal/truncation, invalid JSON and local validation. Missing metadata stays

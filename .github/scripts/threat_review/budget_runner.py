@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import quote
 from .client import GitHub, ReviewUnavailable
 from .budget_scan import Scanner, failure
-from .context import ThreatContext
+from .context import ThreatContext, canonical_at
 from .paid import PaidCalls
 from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render
 from .runner import same_revision, verify_diff
@@ -67,7 +67,7 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
     return body
 
 
-def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
+def run(event, env, github=None, state=None, paid_factory=PaidCalls):
     repository = event["repository"]["full_name"]
     pr = event["pull_request"]
     head, base, number = pr["head"]["sha"], pr["base"]["sha"], pr["number"]
@@ -92,6 +92,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     snapshot = {"errors": [], "findings": []}
     scanner = None
     publication_uncertain = False
+    lifecycle_phase = "setup"
 
     def alive():
         current = github.pull()
@@ -159,11 +160,14 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             raise ReviewUnavailable("Review key missing")
         # A large PR can take time to collect. Acknowledge it and archive prior
         # advice before those reads, rather than leaving the author waiting.
+        lifecycle_phase = "initial_checkpoint"
         checkpoint(snapshot)
+        lifecycle_phase = "collect_source"
         files = github.files(current["changed_files"])
         alive()
         files = complete_files(github, files, diff_base, head)
-        context = ThreatContext((root / "docs/threat-model.yaml").read_text())
+        lifecycle_phase = "canonical_context"
+        context = ThreatContext(canonical_at(github, base))
         if bedrock:
             from .bedrock import BedrockCalls
             paid = BedrockCalls(state, number, run_id, key, context.prefix(), env, alive=alive)
@@ -175,12 +179,14 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         # advice remains useful for advisory mode but cannot grant auto-merge.
         scanner.use_cache = env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") != "true"
         evidence = scanner.evidence
+        lifecycle_phase = "scan"
         checkpoint(scanner.snapshot())
         snapshot = scanner.run(force_deep)
     except Exception as error:
         snapshot = scanner.snapshot() if scanner else snapshot
         snapshot.setdefault("errors", []).append(failure(error))
-        snapshot.setdefault("diagnostics", []).append(failure_record(error, {"stage": "lifecycle"}))
+        snapshot.setdefault("diagnostics", []).append(failure_record(
+            error, {"stage": "lifecycle", "phase": lifecycle_phase}))
         try:
             checkpoint(snapshot)
         except Exception:

@@ -42,6 +42,12 @@ class LocalService:
         self.fail_write = False
         self.conflicts = 0
         self.verified = True
+        self.branch_version = 0
+        self.write_barrier = None
+        self.barrier_writers = 0
+        self.branch_conflicts = 0
+        self.conflict_path = None
+        self.write_attempts = []
         service = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -65,15 +71,29 @@ class LocalService:
                 path = self.path.split("/contents/", 1)[-1]
                 self.assert_branch(body)
                 with service.lock:
+                    branch_version = service.branch_version
+                    barrier = service.write_barrier if service.barrier_writers else None
+                    if barrier:
+                        service.barrier_writers -= 1
+                if barrier:
+                    barrier.wait(timeout=5)
+                with service.lock:
+                    service.write_attempts.append(path)
                     old = service.files.get(path)
                     if service.fail_write:
                         return self.send(403, {"message": "secret provider payload"})
+                    if branch_version != service.branch_version or (service.branch_conflicts and
+                            (service.conflict_path is None or path == service.conflict_path)):
+                        service.branch_conflicts = max(0, service.branch_conflicts - 1)
+                        service.conflicts += 1
+                        return self.send(409, {})
                     if (old and body.get("sha") != old["sha"]) or (not old and "sha" in body):
                         service.conflicts += 1
                         return self.send(409, {})
                     raw = base64.b64decode(body["content"])
                     sha = hashlib.sha1(raw).hexdigest()
                     service.files[path] = {"sha": sha, "encoding": "base64", "size": len(raw), "content": body["content"]}
+                    service.branch_version += 1
                 return self.send(200, {"commit": {"sha": sha}})
 
             def assert_branch(self, body):
@@ -120,6 +140,55 @@ class BudgetTests(unittest.TestCase):
         self.service = LocalService()
         self.addCleanup(self.service.close)
         self.state = self.service.state
+
+    def test_different_report_files_recover_shared_branch_conflict(self):
+        self.service.write_barrier = threading.Barrier(2)
+        self.service.barrier_writers = 2
+        with ThreadPoolExecutor(2) as pool:
+            urls = list(pool.map(lambda n: self.state.checkpoint(f"{n}-1", {"progress": n}), (1, 2)))
+        self.assertEqual(self.service.conflicts, 1)
+        self.assertEqual(len(urls), 2)
+        for n in (1, 2):
+            self.assertEqual(self.state.read(f"reports/{n}-1.json")[0], {"progress": n})
+
+    def test_cache_creation_retries_branch_conflict_without_overwriting_existing_cache(self):
+        key = "a" * 64
+        self.service.branch_conflicts = 1
+        self.state.save_cache(key, {"analysis": "original"})
+        self.assertEqual(self.service.conflicts, 1)
+        self.state.save_cache(key, {"analysis": "replacement"})
+        self.assertEqual(self.state.cached(key), {"analysis": "original"})
+
+    def test_report_conflict_exhaustion_has_bounded_attempts_and_safe_diagnostics(self):
+        self.service.branch_conflicts = 100
+        with patch("threat_review.state.conflict_backoff"), self.assertRaises(APIError) as caught:
+            self.state.checkpoint("1-1", {"private": "source"})
+        self.assertEqual(self.service.write_attempts.count("reports/1-1.json"), 8)
+        self.assertEqual(caught.exception.diagnostic, {
+            "code": "STATE_WRITE_FAILED", "service": "github", "operation": "report", "http_status": 409})
+
+    def test_unknown_checkpoint_failure_is_never_retried(self):
+        transport = self.service.github.transport
+        attempts = []
+        def timed_out(url, token, body=None, method=None):
+            if method == "PUT":
+                attempts.append(url)
+                raise TimeoutError("private error")
+            return transport(url, token, body, method)
+        self.service.github.transport = timed_out
+        with self.assertRaises(TimeoutError):
+            self.state.checkpoint("1-1", {})
+        self.assertEqual(len(attempts), 1)
+
+    def test_exhausted_ledger_conflicts_preserve_operation_and_never_admit_spending(self):
+        before = self.state.read_ledger()
+        self.service.branch_conflicts = 100
+        with patch("threat_review.state.conflict_backoff"), self.assertRaises(BudgetStopped) as caught:
+            self.state.reserve(12, "1-1", "normal", 100_000)
+        self.assertEqual(self.state.read_ledger(), before)
+        self.assertEqual(caught.exception.diagnostic, {
+            "code": "STATE_WRITE_FAILED", "service": "github", "operation": "ledger",
+            "http_status": 409, "write_attempts": 8})
 
     def test_atomic_reservations_for_same_run_over_real_http(self):
         # Both clients read the SAME ledger version before either writes it.
@@ -686,19 +755,76 @@ class LifecycleTests(unittest.TestCase):
         self.env = {"GH_TOKEN": "synthetic", "OPENROUTER_API_KEY": "synthetic",
                     "GITHUB_RUN_ID": "123", "THREAT_REVIEW_ENABLED": "true"}
         self.github = fixtures.FakeGitHub()
+        original_call = self.github.call
+        def canonical_call(path, *args):
+            if path == "/git/trees/" + "e" * 40:
+                return {"tree": [{"path": "threat-model.yaml", "type": "blob", "mode": "100644", "sha": "f" * 40}]}
+            if path == "/git/blobs/" + "f" * 40:
+                raw = fixtures.THREAT.encode()
+                return {"encoding": "base64", "size": len(raw), "content": base64.b64encode(raw).decode()}
+            result = original_call(path, *args)
+            if path == "/git/trees/" + "1" * 40:
+                result = copy.deepcopy(result)
+                result["tree"].append({"path": "docs", "type": "tree", "sha": "e" * 40})
+            return result
+        self.github.call = canonical_call
         def factory(*args, **kwargs):
             return PaidCalls(*args, **kwargs, transport=self.service.transport)
         self.factory = factory
 
     def run_review(self, event=fixtures.EVENT):
-        return run(event, self.root, self.env, self.github, self.service.state, self.factory)
+        return run(event, self.env, self.github, self.service.state, self.factory)
+
+    def test_scan_continues_after_initial_checkpoint_conflict_without_repeating_provider_calls(self):
+        self.service.branch_conflicts = 1
+        self.service.conflict_path = "reports/123-1.json"
+        body = self.run_review()
+        self.assertIn("cross-file integration complete", body)
+        self.assertEqual(self.service.conflicts, 1)
+        identities = [(body["model"], json.loads(body["messages"][1]["content"])["stage"])
+                      for body in self.service.calls]
+        self.assertEqual(identities, [(SONNET, "source"), (SONNET, "integration"), (OPUS, "source")])
+
+    def test_current_scanner_reads_canonical_context_from_pinned_base_blob(self):
+        (self.root / "docs/threat-model.yaml").unlink()
+        self.assertIn("cross-file integration complete", self.run_review())
+
+    def test_missing_canonical_context_retains_comment_and_diagnostics_before_spend(self):
+        original_call = self.github.call
+        def missing_context(path, *args):
+            if path == "/git/trees/" + "e" * 40:
+                raise APIError(404)
+            return original_call(path, *args)
+        self.github.call = missing_context
+        diagnostics = self.root / "diagnostics.json"
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(diagnostics)
+        body = self.run_review()
+        self.assertIn("HTTP 404", body)
+        self.assertIn("HTTP 404", self.github.posts[-1][1])
+        self.assertEqual(self.service.calls, [])
+        failure = json.loads(diagnostics.read_text())["diagnostics"][0]
+        self.assertEqual(failure["phase"], "canonical_context")
+        self.assertEqual(failure["http_status"], 404)
+
+    def test_initial_conflict_exhaustion_is_diagnosed_before_any_provider_request(self):
+        diagnostics = self.root / "diagnostics.json"
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(diagnostics)
+        self.service.branch_conflicts = 100
+        self.service.conflict_path = "reports/123-1.json"
+        with patch("threat_review.state.conflict_backoff"):
+            self.run_review()
+        self.assertEqual(self.service.calls, [])
+        failure = json.loads(diagnostics.read_text())["diagnostics"][0]
+        self.assertEqual(failure["phase"], "initial_checkpoint")
+        self.assertEqual(failure["operation"], "report")
+        self.assertEqual(failure["http_status"], 409)
 
     def test_runner_uses_trusted_daily_policy_for_funded_review_after_pilot(self):
         for pr in range(100, 110):
             self.service.state.admit(pr)
         self.env.update(THREAT_REVIEW_BUDGET_MODE="daily", THREAT_REVIEW_STATE_TOKEN="synthetic")
         with patch("threat_review.budget_runner.GitHub", return_value=self.service.github):
-            result = run(fixtures.EVENT, self.root, self.env, self.github, paid_factory=self.factory)
+            result = run(fixtures.EVENT, self.env, self.github, paid_factory=self.factory)
         self.assertIn("cross-file integration complete", result)
         self.assertTrue(self.service.calls)
         self.assertGreater(len(self.service.state.read("ledger.json")[0]["prs"]), 10)

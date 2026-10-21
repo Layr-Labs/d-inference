@@ -729,11 +729,16 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("\nconcurrency:", source)
         self.assertIn("\n    concurrency:\n", source)
 
-    def test_secret_bearing_workflow_uses_only_trusted_base_code(self):
+    def test_secret_bearing_workflow_separates_current_scanner_from_pinned_base_context(self):
         source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
         self.assertIn("pull_request_target:", source)
         self.assertNotIn("pull_request:\n", source)
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}", source)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", source)
+        self.assertIn("THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha || env.THREAT_REVIEW_BASE_SHA }}", source)
+        scanner_checkout = source.split("name: Check out the current trusted scanner", 1)[1].split(
+            "name: Record scanner revision", 1)[0]
+        self.assertNotIn("base.sha", scanner_checkout)
+        self.assertNotIn("ref: ${{ env.THREAT_REVIEW_BASE_SHA }}", source)
         self.assertNotIn("head.sha", source)
         self.assertNotIn("head.ref", source)
         self.assertIn("persist-credentials: false", source)
@@ -748,7 +753,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("run: python3 .github/scripts/threat-model-review.py", source)
         install = "python3 -m pip install --require-hashes -r .github/scripts/requirements-bedrock.txt"
         self.assertEqual([line.strip() for line in source.splitlines() if "pip install" in line], ["run: " + install])
-        self.assertLess(source.index("Pin manual review to its exact trusted base"), source.index(install))
+        self.assertLess(source.index("Check out the current trusted scanner"), source.index(install))
         self.assertLess(source.index(install), source.index("Obtain short-lived Bedrock credentials"))
         dependencies = Path(__file__).with_name("requirements-bedrock.txt").read_text().splitlines()
         self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9_]+==[0-9A-Za-z.]+ --hash=sha256:[a-f0-9]{64}", line)

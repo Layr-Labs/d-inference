@@ -14,6 +14,7 @@ from .context import SONNET, OPUS, SOL
 from .paid import PaidCalls
 from .state import BudgetStopped
 from .diagnostics import ReviewFailure, request_id
+from .structured_output import bedrock_schema
 
 MODELS = {SONNET: "sonnet", OPUS: "opus", SOL: "sol"}
 PROFILE = re.compile(r"arn:aws:bedrock:[a-z0-9-]+:\d{12}:application-inference-profile/[A-Za-z0-9]+")
@@ -99,14 +100,20 @@ class BedrockCalls:
                    "system": [{"text": system + "\nReturn only JSON matching this schema:\n" + json.dumps(schema)}],
                    "messages": [{"role": "user", "content": [{"text": payload["messages"][1]["content"]}]}],
                    "inferenceConfig": {"maxTokens": self.output_tokens},
+                   "outputConfig": {"textFormat": {"type": "json_schema", "structure": {
+                       "jsonSchema": {"name": "threat_review", "schema": json.dumps(bedrock_schema(schema))}}}},
                    "requestMetadata": {"repository": self.env["GITHUB_REPOSITORY"],
                                        "run": self.env["GITHUB_RUN_ID"], "model": alias}}
+        if payload["model"] == SOL:
+            # Sol's Converse contract requires strict mode separately from
+            # outputConfig; Claude does not accept OpenAI-specific fields.
+            request["additionalModelRequestFields"] = {"text": {"format": {"strict": True}}}
         if len(json.dumps(request, ensure_ascii=False).encode()) > 180_000:
             raise BudgetStopped("Bedrock request exceeds conservative context bound")
-        # Prompt schema plus the scanner's strict validator works uniformly;
-        # native structured output is not assumed to work for every model.
+        # Constrain JSON generation; the original local validator still checks
+        # omitted bounds, exact coverage, citations and the review decision.
         self.calls += 1
-        self.last_request = {"provider": "bedrock", "call": self.calls}
+        self.last_request = {"provider": "bedrock", "call": self.calls, "response_format": "json_schema"}
         self.record(event="attempt", model=alias, profile=self.profiles[alias])
         self.unknown += 1
         started = time.monotonic()

@@ -2,6 +2,7 @@
 """Failure classification, public-log privacy, and bounded change-context tests."""
 import json
 import io
+import base64
 from contextlib import redirect_stderr
 from pathlib import Path
 import tempfile
@@ -12,8 +13,46 @@ from threat_review.change_context import batch_changes, changed_ranges, file_cha
 from threat_review.diagnostics import ReviewFailure, failure_record, parse_object, request_id, write_diagnostics
 from threat_review.review import model_call
 from threat_review.budget_scan import Scanner
-from threat_review.context import SOL
+from threat_review.context import SOL, canonical_at
+from threat_review.client import ReviewUnavailable
 from types import SimpleNamespace
+
+
+class CanonicalContextTests(unittest.TestCase):
+    def setUp(self):
+        self.base, self.root, self.docs, self.blob = (c * 40 for c in "abcd")
+        self.calls = []
+        raw = b"threats:\n  - id: T-BASE\n"
+        self.entry = {"path": "threat-model.yaml", "type": "blob", "mode": "100644", "sha": self.blob}
+        self.responses = {
+            f"/git/commits/{self.base}": {"tree": {"sha": self.root}},
+            f"/git/trees/{self.root}": {"tree": [{"path": "docs", "type": "tree", "sha": self.docs}]},
+            f"/git/trees/{self.docs}": {"tree": [self.entry]},
+            f"/git/blobs/{self.blob}": {"encoding": "base64", "size": len(raw),
+                                      "content": base64.b64encode(raw).decode()},
+        }
+        def call(path):
+            self.calls.append(path)
+            return self.responses[path]
+        self.github = SimpleNamespace(call=call)
+
+    def test_canonical_model_uses_exact_immutable_base_objects(self):
+        self.assertIn("T-BASE", canonical_at(self.github, self.base))
+        self.assertEqual(self.calls, list(self.responses))
+
+    def test_invalid_revision_cannot_select_a_mutable_or_pr_controlled_ref(self):
+        for base in ("master", "refs/pull/1/head", "../private", None):
+            with self.assertRaises(ReviewUnavailable):
+                canonical_at(self.github, base)
+        self.assertEqual(self.calls, [])
+
+    def test_canonical_file_must_be_regular_and_bounded(self):
+        self.entry["mode"] = "120000"
+        with self.assertRaises(ReviewUnavailable):
+            canonical_at(self.github, self.base)
+        self.entry["mode"] = "100644"
+        with patch("threat_review.context.MAX_THREAT_MODEL", 1), self.assertRaises(ReviewUnavailable):
+            canonical_at(self.github, self.base)
 
 
 class DiagnosticsTests(unittest.TestCase):
@@ -77,6 +116,8 @@ class DiagnosticsTests(unittest.TestCase):
             ({"covered_units": ["a", "PRIVATE_ID"]}, "BATCH_ACKNOWLEDGMENT_INVALID"),
             ({"covered_units": ["a", "a"]}, "BATCH_ACKNOWLEDGMENT_INVALID"),
             ({"analysis": " " * 4001}, "BATCH_ANALYSIS_INVALID"),
+            ({"analysis": ""}, "BATCH_ANALYSIS_INVALID"),
+            ({"analysis": "   "}, "BATCH_ANALYSIS_INVALID"),
             ({"needs_deeper_review": "PRIVATE_DECISION"}, "BATCH_DECISION_INVALID"),
         ):
             with self.subTest(code=code), self.assertRaises(ReviewFailure) as caught:
@@ -87,7 +128,19 @@ class DiagnosticsTests(unittest.TestCase):
             if "covered_units" in mutation:
                 self.assertEqual(detail["missing_units"], 1)
             elif "analysis" in mutation:
-                self.assertEqual(detail["analysis_characters"], 4001)
+                self.assertEqual(detail["analysis_characters"], len(mutation["analysis"]))
+
+    def test_artifact_records_distinct_validated_scanner_and_context_revisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "diagnostics.json"
+            env = {"THREAT_REVIEW_DIAGNOSTICS_FILE": str(path),
+                   "THREAT_REVIEW_SCANNER_SHA": "a" * 40, "THREAT_REVIEW_BASE_SHA": "b" * 40}
+            write_diagnostics(env, {})
+            self.assertEqual(json.loads(path.read_text())["revisions"],
+                             {"scanner": "a" * 40, "threat_model": "b" * 40})
+            env["THREAT_REVIEW_SCANNER_SHA"] = "PRIVATE_SECRET"
+            write_diagnostics(env, {})
+            self.assertNotIn("PRIVATE_SECRET", path.read_text())
 
     def test_interrupted_diagnostic_write_preserves_previous_complete_artifact(self):
         with tempfile.TemporaryDirectory() as directory:

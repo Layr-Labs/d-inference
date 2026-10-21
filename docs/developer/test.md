@@ -15,6 +15,16 @@ Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
 
+## Provider Terminal And Stop Signals
+
+After rebuilding the provider test products, run the focused
+`ModelPickerInputEndTests|ProviderSignalTests|ProviderStopSignalsTests` selector
+through the isolated provider test runner. The suites cover closed input,
+invalid descriptors, interrupted and temporarily unavailable reads, terminal
+hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
+ignored-hangup behavior and exercise signal handling across process replacement.
+No model weights or live provider state are needed.
+
 ## Provider And SDK
 
 ```bash

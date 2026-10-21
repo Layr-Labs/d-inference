@@ -69,6 +69,13 @@
   on deployment engines instead of becoming NaN, so images whose embeddings
   exceed the text-calibrated scales are answered instead of decoding as
   `<unk>`; non-finite image features fail the request.
+- Image ingress refuses with 400, before the media reservation and any
+  decode, a source whose resize workspace exceeds the SDK's 256 MiB (above
+  about 33 megapixels, for example 8192 × 8192, which was reserved and decoded
+  first), a PNG with more than 64 compressed text or ICC chunks or more than
+  16 MiB inflated from them, and a JPEG whose scans would decode a coefficient
+  again. ImageIO is given only the primary JPEG image, and a request reserves
+  its largest image's decode workspace once instead of once per image.
 - Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
   `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
   reference serving samples it: 2 frames per second, at most 256, paired into

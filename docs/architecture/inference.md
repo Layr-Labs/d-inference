@@ -369,7 +369,13 @@ their own reservations right before taking them, so no byte is counted twice.
 The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
-registered and the slot installed.
+registered and the slot installed. The lane, any paged decode rows and the
+round sit in the shared budget beside the grant (only the bank is carved from
+it), so the re-slice (`fleetKVBudgetBytes`) and the heartbeat clamp count them
+as resident, like weights (`NemotronSuperSlotOwner.reservedBesideGrantBytes`):
+the newcomer's re-slice counts the planned lane and round, and publication
+re-slices every grant with the actual reservations, so Super's engine ceiling
+and advertised token budget stay within what the ledger holds beside them.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
@@ -461,7 +467,7 @@ The generic local engine refuses Super; only chat completions serve it.
 `retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner
 (bindings, bridge, prefill lane, any bank, installation), then regrows
 survivors. A wedged slot is retired, never rebuilt. An owner whose native work
-did not retire keeps its weights in the fleet KV budget
+did not retire keeps its weights, reservations and bank in the fleet KV budget
 (`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
 restart. Sources:
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,

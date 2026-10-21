@@ -119,6 +119,11 @@ extension ProviderLoop {
                 let (sum, overflow) = totalResidentWeightBytes.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
                 totalResidentWeightBytes = overflow ? .max : sum
             }
+            // Super owners' lanes, decode rows and rounds sit beside their
+            // grants in the same ledger: resident, never KV room.
+            let (withSuperReservations, reservationOverflow) = totalResidentWeightBytes
+                .addingReportingOverflow(nemotronSuperReservedBesideGrantBytes())
+            totalResidentWeightBytes = reservationOverflow ? .max : withSuperReservations
             // Physical memory MUST come from the same source the re-slice
             // grant arithmetic uses (`fleetKVBudgetBytes`): the test hooks'
             // override when installed, the machine's real memory otherwise.

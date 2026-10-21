@@ -242,6 +242,12 @@ actor NemotronSuperLocalLoad {
     /// Read-only installation residency for diagnostics, kept after close.
     var residencySnapshot: NemotronSuperResidency.Snapshot? { residency?.snapshot }
 
+    /// The built owner's shared-budget reservations beside its KV grant and
+    /// its prefix bank; zero without an owner.
+    var ownerReservations: (besideGrant: Int, bank: Int) {
+        (owner?.reservedBesideGrantBytes ?? 0, owner?.prefixBankBytes ?? 0)
+    }
+
     /// Host must first close acquisition and drain all bindings. Concurrent close
     /// while loading is rejected; cancellation belongs to the load task's owner.
     func closeAfterDrain() async throws {

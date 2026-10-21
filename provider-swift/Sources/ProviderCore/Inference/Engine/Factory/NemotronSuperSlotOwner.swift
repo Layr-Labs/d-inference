@@ -22,6 +22,12 @@ final class NemotronSuperSlotOwner: Sendable {
     let sizing: SlotSizingSnapshot
     /// The configurations the LOAD gate weighed; the last is the one served.
     let fitAttempts: [NemotronSuperLocalLoad.FitAttempt]
+    /// Held in the shared budget beside the KV grant until native retirement:
+    /// the prefill lane, paged decode rows and MTP round work. Resident like
+    /// weights to the re-slice and the heartbeat.
+    let reservedBesideGrantBytes: Int
+    /// The prefix bank's reservation, carved from the KV grant.
+    let prefixBankBytes: Int
     private let transaction: NemotronSuperLocalLoad
     private let chat: NemotronSuperLocalImageHTTP
 
@@ -35,6 +41,7 @@ final class NemotronSuperSlotOwner: Sendable {
             throw error
         }
         fitAttempts = await transaction.fitAttempts
+        (reservedBesideGrantBytes, prefixBankBytes) = await transaction.ownerReservations
         self.transaction = transaction
         self.bridge = bridge
         self.tokenizer = tokenizer

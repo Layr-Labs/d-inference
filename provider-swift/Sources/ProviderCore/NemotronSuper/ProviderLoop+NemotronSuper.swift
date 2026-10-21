@@ -10,8 +10,10 @@ import MLX
 /// load gates. The KV grant comes from the ordinary re-slice, held under the
 /// re-slice gate until the slot is installed; `NemotronSuperLocalLoad` claims
 /// LOAD, stages the pinned shards, builds the owner and checks the grant; the
-/// slot retires only through its owner. A retained native fault keeps the
-/// slot's weights in the fleet budget and refuses later Super loads.
+/// slot retires only through its owner. The owner's lane, decode rows and
+/// round sit beside its grant and count as resident in every grant. A
+/// retained native fault keeps the slot's memory in the fleet budget and
+/// refuses later Super loads.
 extension ProviderLoop {
     func isNemotronSuperSlot(_ modelID: String) -> Bool {
         modelSlots[modelID]?.modelContainer.nemotronSuper != nil
@@ -68,14 +70,22 @@ extension ProviderLoop {
     private func installNemotronSuperSlot(modelID: String, directory: URL, modelInfo: ModelInfo,
         fp16KVBytesPerToken: Int, before: WeightHashSnapshot, started: ContinuousClock.Instant
     ) async throws {
+        // Survivors shrink for the planned lane and round before anything is
+        // reserved. The owner sizes its plan from its grant with them, the
+        // whole fleet budget of a lone slot; publication then shrinks the
+        // engine to the grant beside its actual reservations.
+        let planned = nemotronSuperPlannedBesideGrantBytes(modelID: modelID)
+        let (resident, residentOverflow) = Int(clamping: modelInfo.sizeBytes).addingReportingOverflow(planned)
         let reslice = try await resliceShrinkingForNewcomer(modelId: modelID,
-            weightBytes: Int(clamping: modelInfo.sizeBytes), fp16KVBytesPerToken: fp16KVBytesPerToken,
+            weightBytes: residentOverflow ? .max : resident, fp16KVBytesPerToken: fp16KVBytesPerToken,
             maxContextLength: NemotronSuperServingPolicy.contextTokens)
-        let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: reslice.grantBytes)
+        let (room, roomOverflow) = reslice.grantBytes.addingReportingOverflow(planned)
+        let kvBytesCapacity = roomOverflow ? Int.max : room
+        let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: kvBytesCapacity)
         let owner: NemotronSuperSlotOwner
         do {
             owner = try await nemotronSuperSlotLoader.load(.init(modelID: modelID, directory: directory,
-                kvBytesCapacity: reslice.grantBytes, admissionKVBytes: plan.admissionKVBytes,
+                kvBytesCapacity: kvBytesCapacity, admissionKVBytes: plan.admissionKVBytes,
                 defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
                 environment: plan.environment, budget: kvBudget,
                 physicalBytes: nemotronSuperSlotLoader.physicalBytes))
@@ -102,7 +112,7 @@ extension ProviderLoop {
         }
         do {
             try await publishNemotronSuperSlot(owner, modelID: modelID, directory: directory,
-                modelType: modelInfo.modelType, before: before, reslice: reslice, started: started)
+                modelType: modelInfo.modelType, before: before, started: started)
         } catch {
             if await retireUnpublishedNemotronSuper(owner) { await restoreNewcomerReslice(reslice) }
             throw error
@@ -111,8 +121,7 @@ extension ProviderLoop {
 
     /// Post-build checks and publication. Caller holds the re-slice gate.
     private func publishNemotronSuperSlot(_ owner: NemotronSuperSlotOwner, modelID: String,
-        directory: URL, modelType: String?, before: WeightHashSnapshot, reslice: NewcomerReslice,
-        started: ContinuousClock.Instant
+        directory: URL, modelType: String?, before: WeightHashSnapshot, started: ContinuousClock.Instant
     ) async throws {
         // The same measured post-build guard every engine passes.
         clearCacheAfterConfirmedNativeOwnership()
@@ -150,7 +159,9 @@ extension ProviderLoop {
             // The owner's image binding serves inline images; generic VLM
             // routes never see this container.
             isVLM: true, modelType: modelType, lastInferenceAt: .now)
-        await completeNewcomerReslice(reslice)
+        // Every grant again with the owner's actual reservations resident:
+        // its own engine shrinks to what the ledger holds beside them.
+        await resliceGrowSurvivorsLocked()
     }
 
     /// Provider policy under this grant: `mtp_mode` and the kill switch pick
@@ -180,23 +191,23 @@ extension ProviderLoop {
     }
 
     /// An owner that never became a slot. False when native work did not
-    /// retire: its weights stay in the fleet budget and the grants stay shrunk.
+    /// retire: its memory stays in the fleet budget and the grants stay shrunk.
     private func retireUnpublishedNemotronSuper(_ owner: NemotronSuperSlotOwner) async -> Bool {
         do {
             try await owner.retire()
             clearCacheAfterConfirmedNativeOwnership()
             return true
         } catch {
-            nemotronSuperRetainedWeightBytes += UInt64(max(0, owner.sizing.weightsBytes))
+            retainNemotronSuperOwner(owner)
             return false
         }
     }
 
     /// The `unloadModel` path of a Super slot: unregister, drain and close the
-    /// owner, then regrow survivors. A retained fault keeps its weights in the
+    /// owner, then regrow survivors. A retained fault keeps its memory in the
     /// fleet budget; the slot still leaves serving.
     func retireNemotronSuperSlot(_ modelID: String) async -> Bool {
-        guard let slot = modelSlots[modelID], let owner = slot.modelContainer.nemotronSuper,
+        guard let owner = modelSlots[modelID]?.modelContainer.nemotronSuper,
             !modelsUnloading.contains(modelID) else { return false }
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity.finish() }
@@ -205,7 +216,7 @@ extension ProviderLoop {
         var retired = true
         do { try await owner.retire() } catch {
             retired = false
-            nemotronSuperRetainedWeightBytes += UInt64(max(0, slot.sizing.weightsBytes))
+            retainNemotronSuperOwner(owner)
             recordModelLoadError(model: modelID,
                 message: "Nemotron Super owner did not retire; its memory stays charged until restart")
         }
@@ -224,6 +235,29 @@ extension ProviderLoop {
         logger.info("Unloaded model: \(modelID) (\(modelSlots.count) model(s) remaining)")
         await retryReserveDeferredPrefetches()
         return true
+    }
+
+    /// Native work that did not retire keeps the owner's weights, the
+    /// reservations beside its grant and its bank charged until restart.
+    private func retainNemotronSuperOwner(_ owner: NemotronSuperSlotOwner) {
+        for bytes in [owner.sizing.weightsBytes, owner.reservedBesideGrantBytes, owner.prefixBankBytes] {
+            let (sum, overflow) = nemotronSuperRetainedWeightBytes.addingReportingOverflow(UInt64(max(0, bytes)))
+            nemotronSuperRetainedWeightBytes = overflow ? .max : sum
+        }
+    }
+
+    /// The pinned owner's planned lane and round (`pinnedOwnerShares`, as its
+    /// LOAD claim counts them; neither depends on the grant). Its decode rows
+    /// are known once built, and other loaders plan none: publication
+    /// re-slices every grant with the owner's actual reservations.
+    private func nemotronSuperPlannedBesideGrantBytes(modelID: String) -> Int {
+        guard nemotronSuperSlotLoader.pinned else { return 0 }
+        let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: 0)
+        guard let shares = try? NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(
+            environment: plan.environment, kvBytesCapacity: 0, speculates: plan.speculates,
+            physicalBytes: nemotronSuperSlotLoader.physicalBytes) else { return 0 }
+        let (bytes, overflow) = shares.lane.addingReportingOverflow(shares.round)
+        return overflow ? .max : bytes
     }
 
     /// Coordinator-visible load failures stay the transient 503 shape; the

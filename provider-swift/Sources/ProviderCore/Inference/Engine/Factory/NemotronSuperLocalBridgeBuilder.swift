@@ -61,6 +61,9 @@ enum NemotronSuperLocalBridgeBuilder {
         /// MTP admission) and reserved in the shared budget like the lane.
         let mtpRoundBytes: Int
         private let mtpRoundID: String?
+        /// The shared-budget bytes reserved beside the KV grant: the lane, any
+        /// decode rows and any round. The bank is carved from the grant.
+        var reservedBesideGrantBytes: Int { prefillLaneBytes + decodeRowsBytes + mtpRoundBytes }
         /// EVS pruning rate of video requests (`NemotronSuperVideoFeatures.pruningKey`).
         let videoPruningRate: Double
 

@@ -516,7 +516,8 @@ unavailable hardware honestly. Local validation does not authorize deployment.
 ## Flint native validation
 
 Run `make provider-test` for repository checks. Focused provider suites are
-`FlintPolicyTests`, `FlintDiscoveryTests` and `FlintTemplateReplayTests`; SDK suites
+`FlintPolicyTests`, `FlintDiscoveryTests`, `FlintTemplateReplayTests` and
+`FlintContextAdmissionTests`; SDK suites
 are `FlintTests`, `FlintToolTests`, `FlintPrefixTests` and
 `ToolCallParserIntegrationTests`. The SDK fixture is generated independently by
 `libs/mlx-swift-lm/scripts/generate-flint-oracle.py` with NumPy and credits the pinned mlx-vlm

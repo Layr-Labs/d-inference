@@ -270,6 +270,11 @@ enum EngineV2SlotFactory {
         }
         let snapshot = prepared.snapshot
         let servingModel = prepared.servingModel
+        // Flint's decoded configuration validates the artifact context bound.
+        // Keep backend sizing and pre-submit admission on that same authority,
+        // even when the generic sizing snapshot is absent or stale.
+        let flintContextTokens = (servingModel as? FlintModel)?.configuration.maxPositionEmbeddings
+        let maxContextLength = flintContextTokens ?? sizing.maxContextLength
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
@@ -363,8 +368,7 @@ enum EngineV2SlotFactory {
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
-                    maxContextLength: sizing.maxContextLength > 0
-                        ? sizing.maxContextLength : nil,
+                    maxContextLength: maxContextLength > 0 ? maxContextLength : nil,
                     environment: environment,
                     residentPrefixCache: residentPrefixCache,
                     hybridPrefixCache: hybridPrefixCache,
@@ -509,7 +513,7 @@ enum EngineV2SlotFactory {
         // evidence can never feed back into these construction decisions.
         let deadlineRuntime = preparedBackend.map { backend in
             DeadlineRuntimeConfiguration(
-                configuredContextTokens: sizing.maxContextLength,
+                configuredContextTokens: maxContextLength,
                 effectiveMaxConcurrency: backend.schedulerConfig.maxConcurrentRequests,
                 prefillChunkSize: backend.schedulerConfig.prefillChunkSize,
                 maxConcurrentPartialPrefills: backend.schedulerConfig.maxConcurrentPartialPrefills ?? 0,
@@ -553,7 +557,7 @@ enum EngineV2SlotFactory {
             unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
-            advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
+            advertisedContextTokens: flintContextTokens ?? Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
                 ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,

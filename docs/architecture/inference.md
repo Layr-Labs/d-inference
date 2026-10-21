@@ -1209,9 +1209,11 @@ arguments; syntactically indistinguishable generated frames cannot be recovered
 unambiguously. Arbitrary delimiter-bearing strings are not a supported
 round-trip contract. Malformed or incomplete frames fail closed.
 
-The published context bound is read from the artifact, not replaced with the
-largest locally tested prompt. Native memory admission still bounds executable
-work on the current host. [Physical validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+The loaded Flint configuration supplies the context bound to both backend
+sizing and bridge admission. Prompt tokens plus the reserved output budget
+must fit that bound; excess requests return HTTP 400 before success or SSE
+headers. The limit is not replaced with the largest locally tested prompt.
+Native memory admission still bounds executable work on the current host. [Physical validation scope](../provider/hardware-requirements.md#flint-validation-scope)
 is separate from architecture registration and public catalog activation.
 
 Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,

@@ -15,10 +15,16 @@ extension NemotronSuperManagedSlotTests {
     struct CoResidentFixture {
         let loop: ProviderLoop
         let budget: GlobalKVCacheBudget
-        /// The co-resident model's engine; shut down when it is evicted.
-        let idle: InertStubEngine
+        /// The co-resident models' engines in `coResidentID(_:)` order; each
+        /// shuts down when its model is evicted.
+        let engines: [InertStubEngine]
         let directory: URL
+        /// The first co-resident model's engine.
+        var idle: InertStubEngine { engines[0] }
     }
+
+    /// The id of co-resident model `index`; the first is `coResidentID`.
+    static func coResidentID(_ index: Int) -> String { index == 0 ? coResidentID : "\(coResidentID)-\(index)" }
 
     /// The co-resident model keeps `weightsGiB` of MLX memory resident, and
     /// the OS reports `availableGiB` available, until its engine shuts down;
@@ -28,14 +34,22 @@ extension NemotronSuperManagedSlotTests {
     /// checkpoint's on 128 GiB, and a fixture loads.
     static func coResidentFixture(weightsGiB: Double, availableGiB: Double,
                                   configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
-        let stub = makeInertStubBridge(modelId: coResidentID)
-        let engine = stub.engine
-        let weights = UInt64(weightsGiB * 1_073_741_824), available = UInt64(availableGiB * 1_073_741_824)
+        try await coResidentFixture(weightsGiB: [weightsGiB], availableGiB: availableGiB,
+                                    configReserveBytes: configReserveBytes)
+    }
+
+    /// One co-resident model per entry of `weightsGiB`, each as above, the
+    /// first least recently used.
+    static func coResidentFixture(weightsGiB: [Double], availableGiB: Double,
+                                  configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
+        let stubs = weightsGiB.indices.map { makeInertStubBridge(modelId: coResidentID($0)) }
+        let engines = stubs.map(\.engine)
+        let weights = weightsGiB.map { UInt64($0 * 1_073_741_824) }, available = UInt64(availableGiB * 1_073_741_824)
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
                                          configReserveBytes: configReserveBytes) {
-            let resident = engine.shutdownCalls == 0
-            return .init(total: 128 << 30, active: resident ? weights : 0, cache: 0,
-                         systemAvailable: resident ? available : available + weights)
+            let resident = zip(engines, weights).reduce(UInt64(0)) { $0 + ($1.0.shutdownCalls == 0 ? $1.1 : 0) }
+            return .init(total: 128 << 30, active: resident, cache: 0,
+                         systemAvailable: available + weights.reduce(0, +) - resident)
         }
         let hardware = HardwareInfo(machineModel: "Mac15,14", chipName: "Apple M3 Ultra",
             chipFamily: .m3, chipTier: .ultra, memoryGb: 128, memoryAvailableGb: 128,
@@ -43,10 +57,12 @@ extension NemotronSuperManagedSlotTests {
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
         let superModel = ModelInfo(id: modelID, modelType: "nemotron_h_omni", sizeBytes: 1 << 20,
             estimatedMemoryGb: footprint.estimatedMemoryGb, nativeLoadTransientBytes: footprint.nativeLoadTransientBytes)
-        let coResident = ModelInfo(id: coResidentID, modelType: "gpt_oss", sizeBytes: weights,
-                                   estimatedMemoryGb: weightsGiB)
+        let coResident = weightsGiB.indices.map {
+            ModelInfo(id: coResidentID($0), modelType: "gpt_oss", sizeBytes: weights[$0],
+                      estimatedMemoryGb: weightsGiB[$0])
+        }
         let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
-            hardware: hardware, models: [superModel, coResident],
+            hardware: hardware, models: [superModel] + coResident,
             config: .init(provider: .init(name: "super-gate"),
                 backend: .init(idleTimeoutMins: 0, maxModelSlots: 3, mtpMode: .auto),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
@@ -57,13 +73,16 @@ extension NemotronSuperManagedSlotTests {
             loader(tokenizer: TokenizerHandle(SuperScriptedTokenizer(script: SuperOutputScript())),
                    template: template, physicalBytes: 128 << 30, pinned: true),
             environment: [:])
-        await loop.modelLoadingInstallSlot(coResidentID, bridge: stub.bridge, weightsBytes: Int(weights))
+        for (index, stub) in stubs.enumerated() {
+            await loop.modelLoadingInstallSlot(coResidentID(index), bridge: stub.bridge,
+                weightsBytes: Int(weights[index]), lastInferenceAt: ContinuousClock.now - .seconds(stubs.count - index))
+        }
         await loop.refreshActivationReserve()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("super-gate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         try Data(#"{"model_type":"nemotron_h_omni"}"#.utf8).write(to: directory.appendingPathComponent("config.json"))
-        return CoResidentFixture(loop: loop, budget: budget, idle: engine, directory: directory)
+        return CoResidentFixture(loop: loop, budget: budget, engines: engines, directory: directory)
     }
 
     /// 128 GiB, an idle 30 GiB co-resident model and 92 GiB available: the
@@ -147,6 +166,52 @@ extension NemotronSuperManagedSlotTests {
         await loop.setEngineV2LastRecoveryAtForTesting(
             modelId: Self.modelID, at: ContinuousClock.now - ProviderLoop.engineV2RecoveryCooldown)
         #expect(await loop.fastAdmissionReject(modelId: Self.modelID) == false)
+    }
+
+    /// The idle model chosen for eviction takes a request while its unload
+    /// waits (here behind an MTP upgrade transition) and so declines it: the
+    /// eviction plans again from the model still idle instead of refusing
+    /// the load. Room 69.7 GiB of 128 GiB beside two idle 20 GiB models: both
+    /// evictions reach the planned owner, the one left reaches two requests.
+    @Test(.timeLimit(.minutes(1)))
+    func evictionPlansAgainWhenItsVictimTakesWork() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: [20, 20], availableGiB: 80)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        let requirements = await loop.nemotronSuperLoadRequirements(model)
+        let busy = Self.coResidentID(0)
+        await loop.beginMTPUpgradeTransitionForTesting(busy)
+        let eviction = Task { try await loop.evictUntilNemotronSuperFits(model, allowEviction: true) }
+        #expect(await Self.eventually(within: .seconds(10)) { await loop.mtpUpgradeWaiterCountForTesting(busy) > 0 },
+                "the least recently used model's eviction waits behind its transition")
+        await loop.modelLoadingSetRequest("busy", model: busy)
+        await loop.finishMTPUpgradeTransition(busy)
+        try await eviction.value
+        #expect(fixture.engines[0].shutdownCalls == 0, "the model that took work stays")
+        #expect(fixture.engines[1].shutdownCalls == 1, "the model still idle was evicted instead")
+        #expect(await loop.modelLoadingResidentIDs() == [busy])
+        // The configuration that eviction reached is admitted.
+        let room = await loop.nemotronSuperClaimRoomBytes()
+        let reached = try #require(requirements.first { $0 <= room })
+        #expect(reached < requirements[0], "evicting one model reaches a fallback, not the planned owner")
+        #expect(await Self.claimAdmits(reached, fixture.budget))
+    }
+
+    /// A victim that keeps declining (here an autopilot transaction owns
+    /// residency) refuses the load after a bounded number of plans instead of
+    /// retrying forever; nothing is evicted.
+    @Test(.timeLimit(.minutes(1)))
+    func evictionGivesUpWhenItsVictimKeepsDeclining() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 30, availableGiB: 92)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        await loop.holdAutopilotResidencyForTesting()
+        var refusal: Error?
+        do { try await loop.evictUntilNemotronSuperFits(model, allowEviction: true) } catch { refusal = error }
+        #expect("\(try #require(refusal))".contains("became unavailable"))
+        #expect(fixture.idle.shutdownCalls == 0)
     }
 
     /// Eviction targets the widest configuration that evicting every idle
@@ -258,4 +323,15 @@ extension NemotronSuperManagedSlotTests {
 extension ProviderLoop {
     /// Charges `bytes` as a Super owner whose native work did not retire.
     func retainNemotronSuperBytesForTesting(_ bytes: UInt64) { nemotronSuperRetainedWeightBytes += bytes }
+
+    /// Starts an MTP upgrade transition of `modelID`, which its unload waits behind.
+    func beginMTPUpgradeTransitionForTesting(_ modelID: String) { mtpUpgradeTransitions.insert(modelID) }
+
+    func mtpUpgradeWaiterCountForTesting(_ modelID: String) -> Int { mtpUpgradeWaiters[modelID]?.count ?? 0 }
+
+    /// An autopilot transaction owning residency: other callers' evictions decline.
+    func holdAutopilotResidencyForTesting() {
+        autopilotCommand = .init(commandId: "owns-residency",
+            expiresAtMs: Int64(Date().timeIntervalSince1970 * 1_000) + 60_000)
+    }
 }

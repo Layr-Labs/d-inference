@@ -375,14 +375,17 @@ would be admitted with (`GlobalKVCacheBudget.HeadroomSnapshot.loadClaimRemaining
 the ledger's own admission with Super's system reserve) against what each
 configuration requires (`NemotronSuperLoadFit.Claim.requiredBytes`; for the
 pinned checkpoint `pinnedRequirements`, the plan sized for a lone slot
-first). Pre-accept refuses only when evicting every idle model cannot make
-room for the narrowest configuration. Eviction removes idle models, least
-recently used first, until the room holds the widest configuration such
-eviction can reach, so an idle model yields to the planned owner rather than
-to a narrower one, and refuses without evicting when not even the narrowest
-is reachable. Startup preload, which never evicts, admits Super by the same
-room and orders it by its planned requirement. The discovery footprint
-(`estimated_memory_gb`) is the narrowest configuration's requirement itself,
+first). On memory, pre-accept refuses only when evicting every idle model
+cannot make room for the narrowest configuration. Eviction removes idle
+models, least recently used first, until the room holds the widest
+configuration such eviction can reach, so an idle model yields to the
+planned owner rather than to a narrower one, and refuses without evicting
+when not even the narrowest is reachable. A victim that takes work while its
+unload suspends declines it, and eviction plans again from the models still
+idle; the third decline refuses the load. Startup preload, which never
+evicts, admits Super by the same room and orders it by its planned
+requirement. The discovery footprint (`estimated_memory_gb`) is the
+narrowest configuration's requirement itself,
 89,750,767,136 bytes (83.6 GiB) on every Mac. Cold capacity quotes and the
 coordinator's cold-load routing compare it and the load headroom with free
 memory less the provider's load reserve (`free_for_load_gb`), so they stay

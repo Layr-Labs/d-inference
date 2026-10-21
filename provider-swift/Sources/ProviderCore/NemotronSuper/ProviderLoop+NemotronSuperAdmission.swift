@@ -51,6 +51,9 @@ extension ProviderLoop {
             throw InferenceError.modelLoadFailed(
                 "Insufficient memory for '\(modelInfo.id)': no configuration holds the minimum KV on this Mac")
         }
+        let unavailable = InferenceError.modelLoadFailed(
+            "Insufficient memory for '\(modelInfo.id)': the idle model chosen for eviction became unavailable")
+        var declinedEvictions = 0
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -61,8 +64,12 @@ extension ProviderLoop {
             let target = requirements.first { $0 <= (overflow ? .max : reachable) }
             if let target, room >= target { return }
             // The same bounded recheck as the ordinary gate while macOS
-            // returns a retired Super owner's pages.
-            if let retirement = nemotronSuperMemoryRetirement, try await retirement.pauseForRecheck() { continue }
+            // returns a retired Super owner's pages. Its pause suspends, so
+            // the room and the idle models are sampled again after it.
+            if let retirement = nemotronSuperMemoryRetirement, retirement.nextDelay() != nil {
+                _ = try await retirement.pauseForRecheck()
+                continue
+            }
             guard target != nil else {
                 if !evictable.isEmpty {
                     throw InferenceError.modelLoadFailed("Insufficient memory (\(Self.gb(room)) GB of LOAD room, "
@@ -79,14 +86,19 @@ extension ProviderLoop {
                         : "to load without evicting resident models"))
             }
             // The room is short of what idle eviction reaches: an idle model exists.
-            let unavailable = InferenceError.modelLoadFailed(
-                "Insufficient memory for '\(modelInfo.id)': the idle model chosen for eviction became unavailable")
             guard let victim = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })?.key
             else { throw unavailable }
             logger.info("Evicting idle model \(victim) to make room for Nemotron Super")
-            guard await unloadModel(victim, forEviction: true) else { throw unavailable }
+            if await unloadModel(victim, forEviction: true) { continue }
+            // The victim took work while its unload suspended: plan again
+            // from the models still idle, a bounded number of times.
+            declinedEvictions += 1
+            guard declinedEvictions < Self.nemotronSuperDeclinedEvictionLimit else { throw unavailable }
         }
     }
+
+    /// The declined eviction at which the Super load stops planning again.
+    private static let nemotronSuperDeclinedEvictionLimit = 3
 
     /// `fastAdmissionReject`'s verdict for the managed Super load, on the same
     /// room and requirements as `evictUntilNemotronSuperFits`: certain to fail

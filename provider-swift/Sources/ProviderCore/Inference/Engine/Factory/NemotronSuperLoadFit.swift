@@ -40,16 +40,21 @@ enum NemotronSuperLoadFit {
     /// Prompt chunk of the last configuration.
     static let narrowestChunkTokens = 1_024
 
-    /// Available memory the pinned checkpoint's narrowest configuration needs:
-    /// its claim (installation and head payloads, the `narrowestChunkTokens`
-    /// lane, one speculating request's admission at the whole context), the
-    /// admission slack and Super's activation reserve.
-    static var minimumAvailableBytes: UInt64 {
+    /// What the gate must admit for the pinned checkpoint's narrowest
+    /// configuration (`Claim.requiredBytes`): its claim (installation and head
+    /// payloads, the `narrowestChunkTokens` lane, one speculating request's
+    /// admission at the whole context) and the admission slack.
+    static var narrowestRequirementBytes: UInt64 {
         let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: narrowestChunkTokens)
         let serving = lane + NemotronSuperServingPolicy.admissionKVBytes(requests: 1, speculates: true)
-        let claim = NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: serving)
-            + UInt64(serving)
-        return claim + UInt64(admissionSlackBytes)
+        return NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: serving)
+            + UInt64(serving) + UInt64(admissionSlackBytes)
+    }
+
+    /// Available memory the narrowest configuration needs: its requirement
+    /// and Super's activation reserve.
+    static var minimumAvailableBytes: UInt64 {
+        narrowestRequirementBytes
             + UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [NemotronSuperServingPolicy.modelID])
     }
 
@@ -95,5 +100,67 @@ enum NemotronSuperLoadFit {
             result.append(Candidate(environment: smaller, admissionKVBytes: last.admissionKVBytes, requests: 1))
         }
         return result
+    }
+
+    /// One configuration's LOAD claim as the transaction asks the gate for
+    /// it: the installation and any head (with the part of their larger
+    /// transient beyond the serving room), the owner shares a pinned
+    /// checkpoint's claim holds (nil for a fixture, whose shares are admitted
+    /// on their own) and the KV floor, the admission less the bank and round
+    /// it already contains.
+    struct Claim: Equatable, Sendable {
+        let shares: NemotronSuperLocalBridgeBuilder.OwnerShares?
+        /// Lane, round and bank: handed to their own reservations.
+        let ownerBytes: Int
+        let kvFloorBytes: Int
+        /// Everything the lease holds (`NemotronSuperLocalLoad.FitAttempt.claimBytes`).
+        let chargedBytes: UInt64
+        /// The claim's weight part (installation, head and owner shares) and
+        /// `admissionSlackBytes`, asked for beside the KV floor.
+        let askedWeightBytes: UInt64
+        /// What the gate must admit for this configuration.
+        var requiredBytes: UInt64 { askedWeightBytes + UInt64(kvFloorBytes) }
+    }
+
+    /// nil when the configuration cannot hold the minimum KV or its bytes
+    /// overflow. `installationBytes` gives the installation's and any head's
+    /// LOAD bytes beside a serving room.
+    static func claim(_ candidate: Candidate, kvBytesCapacity: Int,
+                      shares: NemotronSuperLocalBridgeBuilder.OwnerShares?,
+                      installationBytes: (_ servingBytes: Int) throws -> Int) rethrows -> Claim? {
+        let minimum = Int(UnifiedMemoryCap.minimumLoadKVBytes)
+        let kvFloor = candidate.admissionKVBytes - (shares?.bank ?? 0) - (shares?.round ?? 0)
+        guard kvBytesCapacity >= minimum, kvFloor >= minimum,
+            let ownerBytes = shares.map({ $0.total }) ?? 0
+        else { return nil }
+        let (serving, servingOverflow) = ownerBytes.addingReportingOverflow(kvFloor)
+        guard !servingOverflow else { return nil }
+        let (weight, weightOverflow) = try installationBytes(serving).addingReportingOverflow(ownerBytes)
+        let (charged, chargeOverflow) = weight.addingReportingOverflow(kvFloor)
+        let (asked, askedOverflow) = weight.addingReportingOverflow(admissionSlackBytes)
+        let (_, requiredOverflow) = asked.addingReportingOverflow(kvFloor)
+        guard !weightOverflow, !chargeOverflow, !askedOverflow, !requiredOverflow else { return nil }
+        return Claim(shares: shares, ownerBytes: ownerBytes, kvFloorBytes: kvFloor,
+                     chargedBytes: UInt64(charged), askedWeightBytes: UInt64(asked))
+    }
+
+    /// What the gate must admit (`Claim.requiredBytes`) for each of the
+    /// pinned checkpoint's configurations under `plan` and its grant, in the
+    /// order the load tries them, from the serving policy's recorded quotes;
+    /// a configuration that cannot hold the minimum KV is left out.
+    static func pinnedRequirements(plan: NemotronSuperServingPolicy.LoadPlan, kvBytesCapacity: Int,
+                                   physicalBytes: UInt64) throws -> [UInt64] {
+        let context = NemotronSuperServingPolicy.contextTokens
+        return try candidates(environment: plan.environment, admissionKVBytes: plan.admissionKVBytes,
+                              kvBytesCapacity: kvBytesCapacity, speculates: plan.speculates,
+                              contextTokens: context).compactMap { candidate in
+            let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: candidate.environment,
+                kvBytesCapacity: kvBytesCapacity, speculates: plan.speculates, contextTokens: context,
+                physicalBytes: physicalBytes)
+            return claim(candidate, kvBytesCapacity: kvBytesCapacity, shares: shares) {
+                Int(clamping: NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: plan.speculates,
+                                                                              servingBytes: $0))
+            }?.requiredBytes
+        }
     }
 }

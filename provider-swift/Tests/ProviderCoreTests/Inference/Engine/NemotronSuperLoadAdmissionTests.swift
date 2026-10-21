@@ -23,6 +23,31 @@ struct NemotronSuperLoadAdmissionTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    /// The room the Super gate reads is the ledger's own LOAD admission: with
+    /// the same system reserve, a claim of exactly that room is admitted and
+    /// one byte more is refused; without one it is the runtime room. Here
+    /// min(115.2 GiB cap - 22 GiB used, 90 GiB available - reserve) less the
+    /// 3 GiB activation reserve and 5 GiB not yet materialized.
+    @Test(arguments: [0, 12 << 30] as [UInt64])
+    func claimRoomIsTheLedgersOwnAdmission(systemReserve: UInt64) async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 3 << 30,
+            memorySnapshot: { .init(total: 128 << 30, active: 20 << 30, cache: 2 << 30, systemAvailable: 90 << 30) })
+        #expect(await budget.reserveBytes(requestID: "outstanding", bytes: 5 << 30))
+        let sample = budget.memoryHeadroomSnapshot()
+        let room = sample.loadClaimRemainingBytes(systemReserveBytes: systemReserve)
+        #expect(room == (systemReserve == 0 ? 82 << 30 : 70 << 30))
+        if systemReserve == 0 { #expect(room == sample.runtimeRemainingBytes) }
+        let kv: UInt64 = 1 << 30
+        #expect(await budget.claimPendingLoad(requestID: "over", weightBytes: room + 1 - kv, minimumKVBytes: kv,
+            systemReserveBytes: systemReserve) == nil)
+        let lease = try #require(await budget.claimPendingLoad(requestID: "exact", weightBytes: room - kv,
+            minimumKVBytes: kv, systemReserveBytes: systemReserve))
+        #expect(budget.memoryHeadroomSnapshot().loadClaimRemainingBytes(systemReserveBytes: systemReserve) == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        await budget.release(requestID: "outstanding")
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// A Super LOAD claim keeps its own OS reserve (none) beside its charge,
     /// at admission and at every recheck; any other load keeps the provider's
     /// load reserve. 90 GiB fits 100 GiB available only without that reserve.

@@ -130,8 +130,8 @@ actor NemotronSuperLocalLoad {
             // the serving room (owner shares, the round's included, and the KV
             // floor) before any of it is allocated.
             let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
-            var admitted: (environment: [String: String], shares: NemotronSuperLocalBridgeBuilder.OwnerShares?,
-                           ownerBytes: Int, kvFloor: Int, claim: PendingModelLoadLease)?
+            var admitted: (environment: [String: String], fit: NemotronSuperLoadFit.Claim,
+                           claim: PendingModelLoadLease)?
             for candidate in try NemotronSuperLoadFit.candidates(environment: environment,
                 admissionKVBytes: admissionKVBytes, kvBytesCapacity: kvBytesCapacity,
                 speculates: speculation != nil, contextTokens: sizing.maxContextLength) {
@@ -140,38 +140,32 @@ actor NemotronSuperLocalLoad {
                         kvBytesCapacity: kvBytesCapacity, speculates: speculation != nil,
                         contextTokens: sizing.maxContextLength, physicalBytes: physicalBytes)
                     : nil
-                guard let ownerBytes = shares.map({ $0.total }) ?? 0 else { throw Failure.capacity }
                 // The bank and the round are part of the admission; the claim
-                // holds each once, as a share.
-                let kvFloor = candidate.admissionKVBytes - (shares?.bank ?? 0) - (shares?.round ?? 0)
-                let installBytes = try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
-                    sequential: sequential, servingBytes: max(0, ownerBytes + kvFloor))
-                let (claimBytes, ownerOverflow) = installBytes.addingReportingOverflow(ownerBytes)
-                let (chargedBytes, chargeOverflow) = claimBytes.addingReportingOverflow(max(0, kvFloor))
-                // The gate is asked for the slack too; it is released with the
-                // installation's share (pinned) or when the load finishes.
-                let (askedBytes, slackOverflow) = claimBytes.addingReportingOverflow(
-                    NemotronSuperLoadFit.admissionSlackBytes)
-                guard !ownerOverflow, !chargeOverflow, !slackOverflow,
-                    kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes),
-                    kvBytesCapacity >= Int(UnifiedMemoryCap.minimumLoadKVBytes)
+                // holds each once, as a share. The gate is asked for the slack
+                // too; it is released with the installation's share (pinned)
+                // or when the load finishes.
+                guard let fit = try NemotronSuperLoadFit.claim(candidate, kvBytesCapacity: kvBytesCapacity,
+                    shares: shares, installationBytes: {
+                        try NemotronSuperLoadClaim.bytes(installation: installation, head: headQuote,
+                            sequential: sequential, servingBytes: $0)
+                    })
                 else { continue }
-                let charged = UInt64(chargedBytes)
                 // A candidate the gate already weighed (no bank to drop) is not asked again.
-                guard !fitAttempts.contains(where: { $0.requests == candidate.requests && $0.claimBytes == charged })
-                else { continue }
+                guard !fitAttempts.contains(where: {
+                    $0.requests == candidate.requests && $0.claimBytes == fit.chargedBytes
+                }) else { continue }
                 let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
-                    weightBytes: UInt64(askedBytes), minimumKVBytes: UInt64(kvFloor),
+                    weightBytes: fit.askedWeightBytes, minimumKVBytes: UInt64(fit.kvFloorBytes),
                     systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes)
                 let chunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: candidate.environment) ?? 0
                 fitAttempts.append(FitAttempt(requests: candidate.requests, prefixBankBytes: shares?.bank ?? 0,
-                    claimBytes: charged, admitted: claim != nil, chunkTokens: chunk))
+                    claimBytes: fit.chargedBytes, admitted: claim != nil, chunkTokens: chunk))
                 guard let claim else { continue }
-                admitted = (candidate.environment, shares, ownerBytes, kvFloor, claim)
+                admitted = (candidate.environment, fit, claim)
                 break
             }
             guard let admitted else { throw Failure.capacity }
-            let (servedEnvironment, shares, ownerBytes, kvFloor, claim) = admitted
+            let (servedEnvironment, fit, claim) = admitted
             lease = claim
             try Task.checkCancellation()
             let ledger = try NemotronSuperResidency(capacityBytes: quote, maximumRequests: 1)
@@ -195,15 +189,15 @@ actor NemotronSuperLocalLoad {
             // usage now: as the ordinary managed load does, hand their share of
             // the claim over to that live view, keeping the owner shares and the
             // KV floor until the builder takes them.
-            if shares != nil {
-                guard await budget.reducePendingLoad(claim, remainingWeightBytes: UInt64(ownerBytes))
+            if fit.shares != nil {
+                guard await budget.reducePendingLoad(claim, remainingWeightBytes: UInt64(fit.ownerBytes))
                 else { throw Failure.capacity }
             }
             let built = try await NemotronSuperLocalBridgeBuilder.make(installed: candidate,
                 tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
-                kvBytesCapacity: kvBytesCapacity, admissionKVBytes: kvFloor, kvBudget: budget,
+                kvBytesCapacity: kvBytesCapacity, admissionKVBytes: fit.kvFloorBytes, kvBudget: budget,
                 loadLease: claim, construction: construction, mtp: head, modelID: modelID,
-                environment: servedEnvironment, physicalBytes: physicalBytes, leaseShares: shares)
+                environment: servedEnvironment, physicalBytes: physicalBytes, leaseShares: fit.shares)
             owner = built
             try Task.checkCancellation()
             // Installation/setup has fenced. The standard ledger now sees live

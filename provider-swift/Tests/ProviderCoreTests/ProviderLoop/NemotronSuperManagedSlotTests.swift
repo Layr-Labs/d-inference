@@ -112,10 +112,11 @@ struct NemotronSuperManagedSlotTests {
     /// The latent-MoE fixture and its embedded head, staged through the real
     /// transaction under the provider's grant, admission and environment.
     /// 64-wide attention heads, the paged kernels' minimum: the managed plan
-    /// selects paged KV.
+    /// selects paged KV. `pinned` plans and gates the load as the pinned
+    /// checkpoint's; the fixture is still what loads.
     static func loader(tokenizer: TokenizerHandle, template: Data, physicalBytes: UInt64,
-                       probe: InstallationProbe? = nil) -> NemotronSuperSlotLoader {
-        NemotronSuperSlotLoader(pinned: false, physicalBytes: physicalBytes,
+                       probe: InstallationProbe? = nil, pinned: Bool = false) -> NemotronSuperSlotLoader {
+        NemotronSuperSlotLoader(pinned: pinned, physicalBytes: physicalBytes,
                                 kvBytesPerToken: { _ in 64 }) { request in
             try await SuperMTPInstalledFixture.$attentionHeadDim.withValue(64) {
                 try await load(request, tokenizer: tokenizer, template: template, probe: probe)

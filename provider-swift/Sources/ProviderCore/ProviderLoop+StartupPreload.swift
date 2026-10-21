@@ -111,7 +111,8 @@ extension ProviderLoop {
     /// Build the ordered startup preload plan:
     ///   * `preload_models` non-empty → that list, in operator order;
     ///   * otherwise → the persisted previously-served set, biggest first
-    ///     (the largest model loads while memory is emptiest);
+    ///     (the largest model loads while memory is emptiest; the managed
+    ///     Super slot by its planned configuration's requirement);
     ///   * append newly selected models so a fresh start warms them without
     ///     waiting for their first request, regardless of idle-unload policy.
     /// Enrollment expands advertised inventory, not implicit warmup preferences:
@@ -126,8 +127,7 @@ extension ProviderLoop {
             ids = backend.preloadModels
         } else {
             ids = LoadedModelsStore.read(from: loadedModelsFileURL()).sorted {
-                (advertisedModels[$0]?.estimatedMemoryGb ?? 0)
-                    > (advertisedModels[$1]?.estimatedMemoryGb ?? 0)
+                plannedLoadGb($0) > plannedLoadGb($1)
             }
             ids.append(contentsOf: loopConfig.models.map(\.id))
             if autopilotConsented {
@@ -160,14 +160,29 @@ extension ProviderLoop {
     /// The LIVE preload requirement for a candidate: measured-or-padded
     /// weights plus the CURRENT serving-set headroom. Consulted at each
     /// preloader admission step because a fail-closed retirement earlier in
-    /// the run can relax the floor the plan-time figure captured. nil when
-    /// the id left the advertised set (the preloader then keeps its planned
-    /// figure; the load itself re-guards).
-    internal func livePreloadRequiredGb(_ modelId: String) -> Double? {
+    /// the run can relax the floor the plan-time figure captured. The managed
+    /// Super slot's comes from its own LOAD gate
+    /// (`nemotronSuperPreloadRequiredGb`). nil when the id left the
+    /// advertised set (the preloader then keeps its planned figure; the load
+    /// itself re-guards).
+    internal func livePreloadRequiredGb(_ modelId: String) async -> Double? {
         guard let info = advertisedModels[modelId] else { return nil }
+        if isNemotronSuperIdentity(modelId) {
+            return nemotronSuperPreloadRequiredGb(info, freeGb: await startupPreloadFreeMemoryGb())
+        }
         return ModelLoadAdmission.requiredToLoadGb(
             weightsGb: info.estimatedMemoryGb,
             headroomGb: loadHeadroomGb)
+    }
+
+    /// A persisted model's size for the biggest-first order: the scanner's
+    /// estimate, or for the managed Super slot its widest configuration's
+    /// requirement, which the emptiest memory serves.
+    private func plannedLoadGb(_ modelId: String) -> Double {
+        guard let info = advertisedModels[modelId] else { return 0 }
+        guard isNemotronSuperIdentity(modelId), let widest = nemotronSuperLoadRequirements(info).first
+        else { return info.estimatedMemoryGb }
+        return Double(widest) / 1_073_741_824
     }
 
     // MARK: - Readiness gate

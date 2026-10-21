@@ -723,6 +723,8 @@ struct NemotronSuperServingPolicyTests {
         let claim = Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: narrowest))
             + narrowest
         #expect(claim == 86_529_541_664)
+        #expect(NemotronSuperLoadFit.narrowestRequirementBytes
+            == UInt64(claim + NemotronSuperLoadFit.admissionSlackBytes))
         // With the 3 GiB slack and the 2 GiB activation reserve: 85.59 GiB available.
         #expect(NemotronSuperLoadFit.minimumAvailableBytes == 91_898_250_784)
         let whole = try NemotronSuperLoadFit.candidates(environment: plan.environment, admissionKVBytes: nil,

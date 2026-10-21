@@ -408,9 +408,15 @@ extension ProviderLoop {
                 estimatedWeightsGb: nativeLoad?.estimatedWeightsGb ?? modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
             do {
-                try await evictUntilAvailable(
-                    weightsGb: targetWeightsGb, allowEviction: allowEviction,
-                    waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                // Super's LOAD claim keeps its own system reserve; its gate
+                // evaluates that claim's ledger room instead.
+                if managedSuper {
+                    try await evictUntilNemotronSuperFits(modelInfo, allowEviction: allowEviction)
+                } else {
+                    try await evictUntilAvailable(
+                        weightsGb: targetWeightsGb, allowEviction: allowEviction,
+                        waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                }
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -1150,9 +1156,16 @@ extension ProviderLoop {
     }
 
     private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
-        slots.reduce(0.0) {
-            $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-        } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+        Double(reclaimableMemoryBytes(from: slots)) / 1_073_741_824.0
+    }
+
+    /// What unloading `slots` and clearing MLX's buffer cache hands back:
+    /// their resident weights and the cache.
+    func reclaimableMemoryBytes(from slots: [String: ModelSlot]) -> UInt64 {
+        slots.values.reduce(UInt64(max(0, MLX.Memory.cacheMemory))) { total, slot in
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+            return overflow ? .max : sum
+        }
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1291,6 +1304,9 @@ extension ProviderLoop {
         // post-accept path surface the proper 404 rather than guessing.
         guard let modelInfo = advertisedModels[modelId] else {
             return false
+        }
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: modelId, modelType: modelInfo.modelType) {
+            return nemotronSuperLoadIsCertainToFail(modelInfo)
         }
         // The optional assistant deliberately plays NO role here: it cannot
         // cause a fast rejection (a target that fits must remain loadable and

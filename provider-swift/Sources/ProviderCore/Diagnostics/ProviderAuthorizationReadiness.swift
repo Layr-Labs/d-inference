@@ -82,7 +82,7 @@ public enum ProviderAuthorizationReadiness {
                   removalReady(removalAuthorization, now: now) else {
                 return serving + "Darkbloom MDM removal needs fresh coordinator readiness; keep existing management profiles installed."
             }
-            return serving + "Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."
+            return serving + "Darkbloom MDM removal is available: run \(BuildEnvironment.current.cliName) unenroll and choose App Attest."
         }
         if authorization.path == "legacy" {
             return "Serving through legacy verification; keep the Darkbloom MDM profile."
@@ -93,7 +93,7 @@ public enum ProviderAuthorizationReadiness {
         }
         if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
             return "This coordinator has not enabled App Attest serving. New macOS 27+ setup remains pending; "
-                + "check `darkbloom doctor` and contact support. Keep existing management profiles installed."
+                + "check `\(BuildEnvironment.current.cliName) doctor` and contact support. Keep existing management profiles installed."
         }
         return "This coordinator has not enabled App Attest serving; legacy enrollment is still required on older macOS. "
             + ProviderOnboardingPolicy.retirementNotice

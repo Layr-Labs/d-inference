@@ -99,7 +99,7 @@ struct CachePromptParityTests {
         let files = FileManager.default
         while root != root.deletingLastPathComponent() {
             if files.fileExists(atPath: root.appendingPathComponent("provider-swift/Package.swift").path),
-               files.fileExists(atPath: root.appendingPathComponent("go.mod").path) {
+               files.fileExists(atPath: root.appendingPathComponent("fixtures/prompt-contract/v1").path) {
                 return root.appendingPathComponent("fixtures/prompt-contract/v1").appendingPathComponent(name)
             }
             root.deleteLastPathComponent()

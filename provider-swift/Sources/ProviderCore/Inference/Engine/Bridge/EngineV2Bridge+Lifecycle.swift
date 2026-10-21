@@ -158,7 +158,7 @@ extension EngineV2Bridge {
         prefixCacheTelemetry.close()
         statsTask?.cancel()
         slotPostureClosed = true
-        let calibrationTask = cancelMimoCalibration()
+        let calibrationTask = cancelModelCalibration()
         let postureTask = slotPostureTask
         slotPostureTask = nil
         postureTask?.cancel()

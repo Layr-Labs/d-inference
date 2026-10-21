@@ -34,6 +34,7 @@ extension PrefixCachePolicy {
         var defaultEnabled = EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
             || EngineV2SupportedModels.isQwen4ExpListingModelID(modelId)
             || EngineV2SupportedModels.isBonsai2ListingModelID(modelId)
+            || Bonsai9BModelPolicy.matchesModelID(modelId)
             || isMiMoDefaultModel(modelId)
         switch modelId {
         case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",

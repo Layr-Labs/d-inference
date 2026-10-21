@@ -66,11 +66,14 @@ struct NemotronDemandedShortCheckpointTests {
         let model = NemotronH35Model(fixture.configuration)
         #expect(!model.cbv2RecurrentStateSpec.layers.isEmpty)
         for floor in [1_024, 2_048] {
-            let store = try fixture.store(floor: floor)
-            for purpose in [EngineV2Factory.ConstructionPurpose.serving, .benchmark] {
-                #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
-                    model: model, backend: .paged, store: store,
-                    constructionPurpose: purpose, checkpointPartition: .production) == floor)
+            for layout in [CBv2CompleteCheckpointManifest.pagedLayout,
+                           CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout] {
+                let store = try fixture.store(floor: floor, layout: layout)
+                for purpose in [EngineV2Factory.ConstructionPurpose.serving, .benchmark] {
+                    #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+                        model: model, backend: .paged, store: store,
+                        constructionPurpose: purpose, checkpointPartition: .production) == floor)
+                }
             }
         }
     }

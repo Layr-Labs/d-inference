@@ -424,10 +424,10 @@ public struct WatchdogRecoveryService: Sendable {
                 deps.log(
                     "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
                         + "restarts — `.auto` resolves contiguous on this box until the next "
-                        + "release or `darkbloom doctor --clear-backend-guard`")
+                        + "release or `\(BuildEnvironment.current.cliName) doctor --clear-backend-guard`")
             } else {
                 deps.log(
-                    "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
+                    "crash-loop backend guard could not be persisted (check ~/\(BuildEnvironment.current.installDirectoryName)) — "
                         + "a slot with an explicit paged selection will keep resolving "
                         + "paged and the crash loop may continue")
             }

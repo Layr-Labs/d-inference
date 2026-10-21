@@ -146,7 +146,7 @@ struct ReportCommandRunTests {
         let report = try #require(try Darkbloom.parseAsRoot(["report"]) as? Report)
         #expect(report.last == "24h")
         #expect(!report.dryRun)
-        #expect(Report.subsystem == "dev.darkbloom.provider")
+        #expect(Report.subsystem == BuildEnvironment.current.serviceLogSubsystem)
     }
 
     @Test("an upload response without a report ID is rejected")

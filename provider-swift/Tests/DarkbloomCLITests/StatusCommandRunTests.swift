@@ -81,7 +81,11 @@ struct StatusCommandRunTests {
         #expect(trusted.contains("\nNot loaded (loads on request): acme/Alpha-4bit\n"))
         #expect(trusted.contains("\nRequests served: 12  |  tokens: 3400\n"))
         #expect(trusted.contains("\nLast model-load error: acme/Alpha-4bit: weights unreadable\n"))
-        #expect(trusted.contains("\nKV-backend guard: ACTIVE — `.auto` serves contiguous on this box "))
+        #expect(trusted.contains("\nKV-backend guard: ACTIVE — packed autoregressive `.auto` (`balanced`/`k8v4`/`k8v8`) "))
+        #expect(trusted.contains("requires paged and is refused while guarded"))
+        #expect(trusted.contains("--clear-backend-guard` to permit a paged retry"))
+        #expect(trusted.contains("default live `native` precision permits contiguous `.auto`"))
+        #expect(!trusted.contains("serves contiguous on this box"))
 
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
         #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection. "))
@@ -114,8 +118,8 @@ struct StatusCommandRunTests {
             ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
     }
 
-    /// Renewals of the ~30 s App Attest lease arrive every few seconds with
-    /// jitter; one that is 15 s late must not turn status into legacy trust.
+    /// A renewal received 15 s ago with an unexpired lease must not turn
+    /// status into legacy trust or offer removal without fresh readiness.
     @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")
     func lateLeaseRenewalStillAuthorizes() async throws {
         let result = try await #require(
@@ -124,7 +128,7 @@ struct StatusCommandRunTests {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             let now = Date().timeIntervalSince1970
-            var authorization = CLICommandSandbox.appAttestAuthorization(now: now)
+            var authorization = CLICommandSandbox.appAttestAuthorization(now: now, removalReady: true)
             authorization.expiresAt = now + 15
             sandbox.writeState(try CLICommandSandbox.runningState(
                 now: now,
@@ -136,5 +140,8 @@ struct StatusCommandRunTests {
 
         #expect(output.contains("\nAuthorization: App Attest authorizes this connection. "))
         #expect(!output.contains("\nTrust: self_signed / online\n"))
+        #expect(output.contains("MDM removal needs fresh coordinator readiness"))
+        #expect(!output.contains("removal is available"))
+        #expect(!output.contains("run \(BuildEnvironment.current.cliName) unenroll"))
     }
 }

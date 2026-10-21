@@ -97,8 +97,7 @@ import Testing
         #expect(ProviderAuthorizationReadiness.removalReady(current(receivedAt: 99), now: 100))
     }
 
-    /// The coordinator renews a ~30 s App Attest lease every few seconds with
-    /// jitter. A renewal older than `snapshotMaxAge` is still the coordinator's
+    /// A renewal older than `snapshotMaxAge` is still the coordinator's
     /// grant until `expiresAt`; status and doctor must not drop to legacy trust.
     @Test func displayKeepsAnUnexpiredLeaseWhoseRenewalIsLate() {
         let identity = ProcessIdentity(pid: 41, startTimeMicros: 9)
@@ -160,7 +159,7 @@ import Testing
         print("APP_ATTEST_LATE_LEASE_WITNESS displayed=\(displayed.path) fresh_removal=\(current != nil) summary=\(summary)")
         #expect(summary.contains("App Attest authorizes this connection"))
         #expect(!summary.contains("removal is available"))
-        #expect(!summary.contains("run darkbloom unenroll"))
+        #expect(!summary.contains("run \(BuildEnvironment.current.cliName) unenroll"))
         #expect(summary.contains("needs fresh coordinator readiness"))
         #expect(summary.contains("keep existing management profiles installed"))
     }
@@ -204,7 +203,7 @@ import Testing
 
             #expect(summary.contains("App Attest authorizes this connection"))
             #expect(summary.contains("removal is available") == (receivedAt == 90))
-            #expect(summary.contains("run darkbloom unenroll") == (receivedAt == 90))
+            #expect(summary.contains("run \(BuildEnvironment.current.cliName) unenroll") == (receivedAt == 90))
             #expect(summary.contains("needs fresh coordinator readiness") == (receivedAt == 89.999))
         }
     }
@@ -218,7 +217,7 @@ import Testing
             #expect(summary.contains("App Attest authorizes this connection"))
             #expect(summary.contains("removal is not enabled"))
             #expect(!summary.contains("needs fresh coordinator readiness"))
-            #expect(!summary.contains("run darkbloom unenroll"))
+            #expect(!summary.contains("run \(BuildEnvironment.current.cliName) unenroll"))
         }
     }
 
@@ -245,7 +244,7 @@ import Testing
             #expect(summary.contains("needs fresh coordinator readiness"))
             #expect(summary.contains("keep existing management profiles installed"))
             #expect(!summary.contains("removal is available"))
-            #expect(!summary.contains("run darkbloom unenroll"))
+            #expect(!summary.contains("run \(BuildEnvironment.current.cliName) unenroll"))
         }
     }
 
@@ -256,7 +255,7 @@ import Testing
                 displayed, removalAuthorization: status(), now: 100)
             #expect(!summary.contains("App Attest authorizes this connection"))
             #expect(!summary.contains("removal is available"))
-            #expect(!summary.contains("run darkbloom unenroll"))
+            #expect(!summary.contains("run \(BuildEnvironment.current.cliName) unenroll"))
         }
     }
 
@@ -266,6 +265,7 @@ import Testing
         let summary = ProviderAuthorizationReadiness.summary(
             disabled, removalAuthorization: disabled, now: 100, macOSMajorVersion: 27)
         #expect(summary.contains("setup remains pending"))
+        #expect(summary.contains("check `\(BuildEnvironment.current.cliName) doctor`"))
         #expect(!summary.contains("enrollment is still required"))
         #expect(!ProviderAuthorizationReadiness.removalReady(disabled, now: 100))
     }

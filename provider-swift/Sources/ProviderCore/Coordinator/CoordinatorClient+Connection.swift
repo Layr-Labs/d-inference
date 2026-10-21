@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+import Sodium
 
 extension CoordinatorClient {
     // MARK: - Connection Loop
@@ -93,6 +94,9 @@ extension CoordinatorClient {
         // and the coordinator's WS route would reject it.
         let connection = NWConnection(to: .url(url), using: params)
         self.nwConnection = connection
+        self.appAttestResumeNonce = appAttestResumeResponder == nil ? nil
+            : Data(Sodium().randomBytes.buf(length: 32)!).base64EncodedString()
+        self.appAttestResumeAnswered = false
 
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
@@ -104,6 +108,8 @@ extension CoordinatorClient {
             // Nil the stored reference so sendOnCurrentConnection fast-returns
             // during the reconnect window instead of firing on a cancelled connection.
             self.nwConnection = nil
+            self.appAttestResumeNonce = nil
+            self.appAttestResumeAnswered = false
             // Routing v2: this connection's capacity-seq session is over. A
             // reconnect re-registers and restarts seq at 1; the published
             // quote snapshot is dropped with it so quotes never answer from a
@@ -366,6 +372,7 @@ extension CoordinatorClient {
 
     private func receiveLoop(connection: NWConnection) async throws {
         while !shutdownRequested {
+            guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
             // NWProtocolWebSocket delivers one complete WebSocket message per
             // receiveMessage call. Wrap the callback in a continuation so the loop
             // reads sequentially, matching the old `try await ws.receive()` shape.
@@ -401,6 +408,8 @@ extension CoordinatorClient {
                     connection.cancel()
                 }
 
+            guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
+
             // Extract WS metadata for opcode inspection.
             let wsMeta = context?.protocolMetadata(
                 definition: NWProtocolWebSocket.definition
@@ -429,7 +438,8 @@ extension CoordinatorClient {
             }
 
             await handleIncomingFrame(
-                data, receivedAt: receivedAt, profileAnchor: profileAnchor)
+                data, receivedAt: receivedAt, profileAnchor: profileAnchor,
+                connection: connection)
         }
     }
 

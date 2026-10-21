@@ -89,7 +89,7 @@ struct BonsaiEncryptedCheckpointLiveTests {
         let built = try EngineV2Factory.makeProductionBuild(model: model,
             modelID: "ternary-bonsai-2-27b", tokenizer: tokenizer,
             kvBytesCapacity: 4 << 30, maxConcurrentRequests: 2,
-            completePrefixCache: store, kvBackend: .paged, maxContextLength: 8192)
+            completePrefixCache: store, kvBackend: .paged, checkpointQuantization: .native, maxContextLength: 8192)
         #expect(built.kvBackendKind == .paged)
         #expect(built.kvBackendFallbackReason == nil)
         let engine = try #require(built.engine as? EngineV2)
@@ -198,7 +198,7 @@ struct BonsaiEncryptedCheckpointLiveTests {
         let built = try EngineV2Factory.makeProductionBuild(model: model,
             modelID: "ternary-bonsai-2-27b", tokenizer: tokenizer.inner,
             kvBytesCapacity: 4 << 30, maxConcurrentRequests: 1,
-            completePrefixCache: damaged, kvBackend: .paged, maxContextLength: 8192)
+            completePrefixCache: damaged, kvBackend: .paged, checkpointQuantization: .native, maxContextLength: 8192)
         let engine = try #require(built.engine as? EngineV2)
         let request = CBv2Request(id: .init(21), promptTokens: (0..<(checkpointTokens + 7)).map { 37 + $0 % 500 },
             sampling: .init(temperature: 0), maxTokens: 16, cacheSalt: "synthetic-tenant-a",

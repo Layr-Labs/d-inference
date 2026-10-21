@@ -4,6 +4,7 @@ import json
 import re
 from .client import ReviewUnavailable
 from .review import ID_DEFINITION, MAX_THREAT_MODEL
+from .source import Sources
 
 VERSION = "budgeted-v3"
 SONNET = "anthropic/claude-sonnet-5.5"
@@ -15,6 +16,16 @@ CRITICAL = re.compile(r"attest|encrypt|crypt|\.github/workflows/", re.I)
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+
+
+def canonical_at(github, base):
+    """Read the exact base's model as an immutable blob, never as executable code."""
+    if not isinstance(base, str) or not re.fullmatch(r"[0-9a-f]{40}", base):
+        raise ReviewUnavailable("Invalid canonical threat-model revision")
+    text, mode = Sources(github).read(base, "docs/threat-model.yaml")
+    if mode not in ("100644", "100755") or len(text) > MAX_THREAT_MODEL:
+        raise ReviewUnavailable("Invalid canonical threat-model file")
+    return text
 
 
 class ThreatContext:

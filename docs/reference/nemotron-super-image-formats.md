@@ -1,6 +1,6 @@
 # Nemotron Super image formats
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Reference for the inline image encodings that the unregistered Nemotron Super
 image owner decodes, how each becomes RGB8, and how that compares with the
@@ -40,8 +40,11 @@ each sample:
 
 Every chunk CRC is checked. Ancillary chunks other than `eXIf`, XMP text and
 the APNG frame chunks do not affect pixels, as in Pillow; compressed text and
-ICC chunks are inflated only to apply Pillow's size limits. Text and ICC rules
-are in `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGText.swift`
+ICC chunks are inflated only to apply Pillow's size limits. As hardening, one
+image inflates at most 64 such chunks and 16 MiB from them in all
+(`maximumCompressedChunks`, `maximumInflatedBytes`), whatever their keyword or
+validity; Pillow counts only text it stores. Text and ICC rules are in
+`provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGText.swift`
 (`NemotronSuperPNGText`).
 
 ## JPEG
@@ -79,7 +82,7 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 | PNG whose zlib stream is truncated, longer than the raster or has an Adler-32 mismatch, or with an invalid filter type or palette index | `invalidRaster` |
 | JPEG with 12-bit precision, a lossless, hierarchical or arithmetic process, DNL, 2 components, YCCK, JFIF combined with Adobe transform 0, `R`,`G`,`B` component IDs without Adobe transform 0, other sampling, or more than 500 scans (hardening beyond the reference: ImageIO's decode cannot be cancelled) | `unsupportedEncoding` |
 | JPEG without a frame or EOI, or with a reserved marker | `invalidHeader` |
-| Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`) | `sizeLimit` |
+| Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`); more than 64 compressed chunks, or more than 16 MiB inflated from them, in one image, unkeyed, corrupt and non-UTF-8 chunks included (hardening: Pillow accepts these) | `sizeLimit` |
 
 ## Limits and admission
 

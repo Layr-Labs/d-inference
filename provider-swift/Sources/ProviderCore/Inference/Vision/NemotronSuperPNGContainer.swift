@@ -173,7 +173,7 @@ struct NemotronSuperPNGContainer {
                 // inflate work; Pillow would read every copy.
                 guard !profile else { throw Failure.invalidHeader }
                 profile = true
-                try NemotronSuperPNGText.checkProfile(UnsafeRawBufferPointer(rebasing: bytes[body]))
+                try text.checkProfile(UnsafeRawBufferPointer(rebasing: bytes[body]))
             }
             offset = body.upperBound + 4
         }

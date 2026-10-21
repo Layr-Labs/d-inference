@@ -278,9 +278,6 @@ extension NemotronSuperImageDecodeTests {
                 + Array("en".utf8) + [0, 0, 0xff, 0xfe])]),
             ("iCCP of exactly 1 MiB", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(mebibyte)))]),
             ("corrupt iCCP", [SuperImageTestPNG.chunk("iCCP", keyed("icc", corrupt))]),
-            ("text totalling exactly 64 MiB", (0..<64).map {
-                SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte - 1)))
-            } + [SuperImageTestPNG.chunk("tEXt", Array("x".utf8) + [0] + [UInt8](repeating: 32, count: 64))]),
         ]
         for (name, chunks) in accepted {
             #expect(try NemotronSuperImageDecode.decode(image(chunks), orientation: .applyEXIF).rgb
@@ -293,10 +290,6 @@ extension NemotronSuperImageDecodeTests {
             ("compressed iTXt over 1 MiB", [SuperImageTestPNG.chunk("iTXt", Array("Desc".utf8) + [0, 1, 0]
                 + Array("en".utf8) + [0, 0] + spaces(mebibyte + 1))], .sizeLimit),
             ("iCCP over 1 MiB", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(mebibyte + 1)))], .sizeLimit),
-            ("text over 64 MiB", (0..<64).map {
-                SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte - 1)))
-            } + [SuperImageTestPNG.chunk("tEXt", Array("x".utf8) + [0] + [UInt8](repeating: 32, count: 65))],
-             .sizeLimit),
             ("second iCCP", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(10))),
                              SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(10)))], .invalidHeader),
         ]
@@ -305,6 +298,20 @@ extension NemotronSuperImageDecodeTests {
                 try NemotronSuperImageDecode.inspect(image(chunks), orientation: .applyEXIF)
             }
         }
+        // Stored text may total exactly 64 MiB. An image inflates at most
+        // 16 MiB (`NemotronSuperPNGTextTests`), so the rest is plain tEXt,
+        // which needs the decoder's 64 MiB encoded ceiling.
+        func plain(_ keyword: String, _ characters: Int) -> Data {
+            SuperImageTestPNG.chunk("tEXt", Array(keyword.utf8) + [0] + [UInt8](repeating: 32, count: characters))
+        }
+        let stored = (0..<16).map { SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte))) }
+            + [plain("x", 48 * mebibyte - 1)]
+        func text(last characters: Int) throws -> NemotronSuperImageDecode.Quote {
+            try NemotronSuperImageDecode.inspect(image(stored + [plain("y", characters)]), orientation: .applyEXIF,
+                                                 maxEncodedBytes: 64 * mebibyte)
+        }
+        #expect(try text(last: 1).width == 2, "text totalling exactly 64 MiB")
+        #expect(throws: Failure.sizeLimit, "text over 64 MiB") { try text(last: 2) }
     }
 
     @Test func progressiveScanCountIsCapped() throws {

@@ -206,9 +206,10 @@ actor NemotronSuperLocalImageBinding {
     }
     /// Small local ingress ceiling, separate from per-raster decode admission.
     /// Includes concurrent JSON/template/base64 copies and bounded metadata scratch.
+    /// A body or template outside the bounds is refused as invalid: no retry fits it.
     static func encodedHeaderQuote(bodyBytes: Int, templateBytes: Int) throws -> UInt64 {
         guard bodyBytes > 0, bodyBytes <= 8 * 1024 * 1024,
-              templateBytes > 0, templateBytes <= 1024 * 1024 else { throw Failure.capacity }
+              templateBytes > 0, templateBytes <= 1024 * 1024 else { throw Failure.invalidInput }
         return UInt64(bodyBytes) * 32 + UInt64(templateBytes) * 4 + 16 * 1024 * 1024
     }
 
@@ -275,7 +276,8 @@ actor NemotronSuperLocalImageBinding {
             // Refuses an oversize resize workspace before any reservation or decode.
             let image = try NemotronSuperImageDecode.plan(data, orientation: .applyEXIF, imageCount: images.count)
             let grid = image.grid
-            guard grid.tokens <= contextLength - tokens else { throw Failure.capacity }
+            // Visual tokens beyond the context are the request's own fault.
+            guard grid.tokens <= contextLength - tokens else { throw Failure.invalidInput }
             tokens += grid.tokens
             let featureBytes = grid.tokens * 4096 * 4
             // Images decode and normalize one at a time, so the largest decoder

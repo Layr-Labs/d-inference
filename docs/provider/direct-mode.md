@@ -214,6 +214,7 @@ frame-timestamp label.
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 before the body is decoded or any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
+| A media request body over 8 MiB, or visual tokens or an image prompt beyond the context | 400 before decoding; nothing stays reserved |
 | A second video, a video with images, another container, an undecodable movie, frames above `4096 * 2160` pixels or an extreme aspect ratio | 400 before any frame decodes |
 
 Image and video requests still refuse `tools` and `response_format`; formats outside the

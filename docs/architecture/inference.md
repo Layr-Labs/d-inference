@@ -119,9 +119,10 @@ frames and tower activation, its five-tubelet EVS scoring window at
 `NemotronSuperServingPolicy.videoScoringBytesPerRow`, and three Float32 copies
 of every projected row) is then reserved; its maximum,
 `NemotronSuperServingPolicy.videoMediaChargeBytes`, stays below one largest
-image's charge. As for images, a prompt over the context, a body over
-`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) or a charge the
-shared budget cannot hold returns the media-memory 503.
+image's charge. As for images, a body over
+`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) returns the
+invalid-media 400 and a charge the shared budget cannot hold returns the
+media-memory 503, as does a video prompt over the context.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames and converts only the sampled ones (presentation order, the track's
 rotation applied, BGRA to RGB8), normalizing them with the image resize; an odd
@@ -444,7 +445,9 @@ keep speculating in the same steps. The image's media reservation (decode,
 normalization, features and the largest image's tower and projector bound) is
 taken from the shared budget before decoding and held until the request
 retires; one that does not fit is refused with 503 before anything is
-allocated. One image request runs at a time per owner, beside text requests; a
+allocated. A body over 8 MiB, visual tokens beyond the context or a prompt
+that overflows it is the request's own fault: 400, never a retryable 503.
+One image request runs at a time per owner, beside text requests; a
 second concurrent one gets 429 before any response starts. The Super model
 quantizes activations with deployment (SATFINITE) overflow semantics: an image
 embedding beyond a layer's text-calibrated activation scale saturates as on

@@ -39,7 +39,7 @@ struct NemotronSuperMediaChargeTests {
             #expect(other.heightPatches * other.widthPatches <= 13_312, "\(width)x\(height)")
         }
         #expect(admitted >= 3)
-        #expect(throws: Binding.Failure.capacity) {
+        #expect(throws: Binding.Failure.invalidInput) {
             try Binding.encodedHeaderQuote(bodyBytes: Policy.maximumEncodedBodyBytes + 1,
                                            templateBytes: Policy.pinnedTemplateBytes)
         }

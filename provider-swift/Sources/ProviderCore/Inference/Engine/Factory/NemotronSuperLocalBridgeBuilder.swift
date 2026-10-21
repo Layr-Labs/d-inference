@@ -177,14 +177,13 @@ enum NemotronSuperLocalBridgeBuilder {
             guard imageCount == featureCounts.count else {
                 throw NemotronSuperLocalImageBinding.Failure.invalidInput
             }
-            // Context overflow keeps the image path's capacity status.
+            // Overflowing the context is the request's own fault, not capacity.
             do {
                 return try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
                     body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
                     featureCounts: featureCounts, contextLength: contextLength)
-            } catch NemotronSuperPromptContract.Failure.contextExceeded {
-                throw NemotronSuperLocalImageBinding.Failure.capacity
-            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
+            } catch NemotronSuperPromptContract.Failure.contextExceeded,
+                NemotronSuperPromptContract.Failure.unsupportedMedia {
                 throw NemotronSuperLocalImageBinding.Failure.invalidInput
             }
         }

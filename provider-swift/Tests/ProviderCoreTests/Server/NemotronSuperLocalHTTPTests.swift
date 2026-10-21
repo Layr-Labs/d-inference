@@ -218,6 +218,65 @@ extension NemotronSuperLocalHTTPTests {
 
 
 extension NemotronSuperLocalHTTPTests {
+    /// Size and context bounds are the request's own, so a retry elsewhere
+    /// cannot help: each refusal is 400, not the retryable 503, and holds no
+    /// reservation. One image is at least 256 visual tokens, so a 256-token
+    /// context admits its tokens but never its prompt.
+    @Test(.timeLimit(.minutes(2))) func imageRequestsOutsideTheirBoundsAreRefusedWith400() async throws {
+        let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+            channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
+        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: dimensions).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-image-http-bounds",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let tokenizer = TokenizerHandle(SuperSyntheticImageTokenizer())
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: tokenizer, eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 256, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
+        let token = "synthetic-super-bounds"
+        let app = makeLocalInferenceApplication(
+            config: .init(host: "127.0.0.1", port: 0, authToken: token), defaultMaxTokens: 2,
+            acquire: { id in throw MultiModelBatchSchedulerEngineError.modelNotLoaded(id) },
+            tokenizerProvider: { _ in .init(tokenizer: tokenizer, modelType: "nemotron_h_omni") },
+            availableModels: { [] }, mtpSlots: { [] },
+            modelTypeProvider: { _ in "nemotron_h_omni" }, nemotronSuperImageHTTP: hook)
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
+        func body(images: Int, text: String = "fixture") throws -> ByteBuffer {
+            let parts: [[String: Any]] = [["type": "text", "text": text]]
+                + Array(repeating: ["type": "image_url", "image_url": ["url": png]], count: images)
+            return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: [
+                "model": NemotronSuperLocalBinding.modelID, "stream": true, "temperature": 0,
+                "max_tokens": 2, "enable_thinking": false, "messages": [["role": "user", "content": parts]]]))
+        }
+        let refusals = [
+            ("body over the 8 MiB encoded ceiling", try body(images: 1, text: String(repeating: "x", count: 8 << 20))),
+            ("512 visual tokens beyond the context", try body(images: 2)),
+            ("prompt beyond the context", try body(images: 1)),
+        ]
+        let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
+        let baseline = await budget.outstandingReservedBytes()
+        try await app.test(.live) { client in
+            for (name, request) in refusals {
+                try await client.execute(uri: "/v1/chat/completions", method: .post,
+                    headers: headers, body: request) { response in
+                    #expect(response.status == .badRequest, "\(name)")
+                    #expect(String(buffer: response.body).contains("\"error\""), "\(name)")
+                }
+                #expect(await budget.outstandingReservedBytes() == baseline, "\(name)")
+            }
+        }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     @Test(.timeLimit(.minutes(1))) func imageHTTPResetRetainsChargeUntilTerminalRetires() async throws {
         let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
             channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)

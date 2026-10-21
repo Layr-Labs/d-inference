@@ -247,8 +247,9 @@ extension NemotronSuperLocalOwnerTests {
                 ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]]]]]])
         #expect(try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
             == [1, 19, 18, 18, 18, 20, 2])
-        // The framed span must fit the context: 62 features plus 2 markers do not.
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.capacity) {
+        // The framed span must fit the context: 62 features plus 2 markers do
+        // not, which is the request's own fault (400), not capacity.
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
             try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [62])
         }
         #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {

@@ -13,11 +13,16 @@ struct NemotronSuperLocalImageBindingTests {
         return try JSONSerialization.data(withJSONObject: value)
     }
 
+    /// Bounds the request cannot meet anywhere are invalid input (400), not
+    /// retryable capacity.
     @Test func encodedHeaderAdmissionIsBoundedBeforeParsing() throws {
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.capacity) {
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
             try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 8 * 1024 * 1024 + 1, templateBytes: 1)
         }
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.capacity) {
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
+            try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 1, templateBytes: 1024 * 1024 + 1)
+        }
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
             try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 1, templateBytes: 0)
         }
         #expect(try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 100, templateBytes: 20)

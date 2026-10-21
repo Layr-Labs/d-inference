@@ -228,7 +228,7 @@ private extension EngineV2Bridge {
         modelCalibration.shapeWarmupModeOverride = mode
     }
     func shaderCacheProbeTest() -> (cold: Bool?, runs: Int) {
-        (modelCalibration.shaderCacheCold, modelCalibration.shaderCacheProbe.count)
+        (modelCalibration.shaderCacheCold, modelCalibration.shaderCacheProbeRuns.count)
     }
     func scheduledShapeWarmupTest() -> Bool { modelCalibration.task != nil }
     func waitForPumpRetirement(requestId: String) async { await pumpTasks[requestId]?.value }

@@ -71,9 +71,7 @@ extension EngineV2Bridge {
     func runShapeWarmupIfNeeded(requireNominalPosture: Bool, grace: Bool = true) async {
         guard shapeWarmupDue else { return }
         modelCalibration.shapeWarmupAttempts += 1
-        if grace {
-            try? await Task.sleep(nanoseconds: UInt64(ModelCalibrationPolicy.shapeWarmupGraceSeconds * 1_000_000_000))
-        }
+        if grace { try? await Task.sleep(for: ModelCalibrationPolicy.shapeWarmupGrace) }
         let runtime = deadlineRuntimeConfiguration
         let context = [advertisedContextTokens, runtime?.configuredContextTokens].compactMap { $0 }.min()
         let cells = ModelCalibrationPolicy.shapeWarmup(stripeTokens: runtime?.soloPrefillStripeTokens,
@@ -109,7 +107,7 @@ extension EngineV2Bridge {
                 continue
             }
             // A partial first probe may have compiled kernels the repeat would reuse.
-            if probing, modelCalibration.shaderCacheProbe.isEmpty { modelCalibration.shaderCacheCold = true }
+            if probing, modelCalibration.shaderCacheProbeRuns.isEmpty { modelCalibration.shaderCacheCold = true }
             preemption = shapeWarmupPreemption(requireNominalPosture: requireNominalPosture, requireIdle: false)
             outcome = modelCalibration.interrupted ? "budget" : "refused"
             break
@@ -122,7 +120,7 @@ extension EngineV2Bridge {
         let elapsedMs = Int((WedgeMonitor.seconds(clock.now - started) * 1_000).rounded())
         let finished = min(modelCalibration.shapeWarmupCellsCompleted, cells.count)
         let summary = preemption.map { "preempted (\($0))" } ?? outcome
-        let probe = modelCalibration.shaderCacheProbe.map {
+        let probe = modelCalibration.shaderCacheProbeRuns.map {
             String(Int((WedgeMonitor.seconds($0) * 1_000).rounded()))
         }
         let detail = "attempt \(modelCalibration.shapeWarmupAttempts)"
@@ -132,8 +130,8 @@ extension EngineV2Bridge {
     }
 
     private func recordShaderCacheProbe(_ took: Duration) {
-        modelCalibration.shaderCacheProbe.append(took)
-        let runs = modelCalibration.shaderCacheProbe
+        modelCalibration.shaderCacheProbeRuns.append(took)
+        let runs = modelCalibration.shaderCacheProbeRuns
         guard runs.count == 2 else { return }
         modelCalibration.shaderCacheCold = ModelCalibrationPolicy.shaderCacheLooksCold(
             first: runs[0], repeated: runs[1])

@@ -174,13 +174,13 @@ caches the compiled libraries per app, keyed by source and GPU compiler. With a
 cold cache (a new install, or the first start after macOS or the MLX kernel
 sources change), the first long customer prompt paid those compiles. On an M3
 Ultra the first 8K-token request took 4.4 s for Gemma 4 QAT and 4.1-4.2 s for
-GPT-OSS without the warmup, and 2.9 s and 3.4 s with it, the same as later
+GPT-OSS without the warmup, and 2.9-3.0 s and 3.4 s with it, the same as later
 requests. On a shared M5 Ultra it took 3.2 s and 5.3 s without it, 1.1 s and
 1.6 s with it. A warm cache leaves no measurable first-request penalty, so the
 warmup first runs a greedy 128-token probe twice. Only a first run that
 exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
 shape cells; otherwise they are skipped. Cold first runs measured 1.2-1.6 s on
-an M3 Ultra and 2.3-2.7 s on an M5 Ultra, warm ones at most 0.41 s. On a cold cache
+an M3 Ultra and 2.3-2.7 s on an M5 Ultra, warm ones at most 0.44 s. On a cold cache
 the whole warmup took 5.4-7.4 s per engine. One solo prompt covers stripe-wide
 chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
 One cell at the served width covers plain chunks beside decoding rows and decode
@@ -189,7 +189,7 @@ or cell trains a rate or counter. They share a 20-second wall budget. A timeout
 or refusal completes the attempt; only preemption leaves it due, and the retry
 resumes after the probes and cells already finished.
 
-The startup preload runs the warmup for each model after its self-test, before
+The startup preload warms each loaded model after any passing self-test, before
 registration (or before a standalone listener opens), so routed traffic cannot
 preempt it; a local-endpoint request still can. Posture does not gate this pass
 because it measures nothing, and the registration gate's timeout still bounds

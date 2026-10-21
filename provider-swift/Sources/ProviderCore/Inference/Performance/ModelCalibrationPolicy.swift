@@ -24,7 +24,7 @@ enum ModelCalibrationPolicy {
     static let shapeWarmupBudgetSeconds = 20.0
     /// A request that triggered the load submits during this pause and
     /// preempts the session before any stripe-sized step is in flight.
-    static let shapeWarmupGraceSeconds = 0.5
+    static let shapeWarmupGrace: Duration = .milliseconds(500)
     /// MLX switches softmax rows to the looped kernel above this many keys.
     static let attentionLoopedKeys = 4_096
     /// Bound on waiting for the startup self-test's service charge to retire.
@@ -54,8 +54,9 @@ enum ModelCalibrationPolicy {
     /// the decode kernels while prefill dominates the probe's cost.
     static let shaderCacheProbe = Cell(promptTokens: 128, outputTokens: 2, width: 1, warmup: true)
     /// The first probe must exceed the repeat by this much and by the repeat
-    /// itself. On an M5 Ultra cold caches cost 2.3-2.6 s; a fresh engine's other
-    /// first-use work under a warm cache cost at most ~340 ms.
+    /// itself. Cold caches cost 1.1-1.5 s on an M3 Ultra and 2.3-2.6 s on an
+    /// M5 Ultra; a fresh engine's other first-use work under a warm cache cost
+    /// at most ~340 ms.
     static let shaderCacheColdMargin: Duration = .milliseconds(750)
 
     static func shaderCacheLooksCold(first: Duration, repeated: Duration) -> Bool {
@@ -130,14 +131,14 @@ struct ModelCalibrationState {
     var requests: [String: ModelCalibrationPolicy.Cell] = [:]
     var pendingObservations: [String: [EngineRateObservation]] = [:]
     var bootstrapCompleted = false
-    /// Set by any attempt foreground work did not preempt.
+    /// Set by any attempt nothing preempted; a timeout or refusal completes it too.
     var shapeWarmupCompleted = false
     /// Shape cells already run; a preempted attempt resumes after them.
     var shapeWarmupCellsCompleted = 0
     /// Attempts started on this engine, for the outcome log.
     var shapeWarmupAttempts = 0
     /// Finished shader-cache probe runs on this engine: first, then repeat.
-    var shaderCacheProbe: [Duration] = []
+    var shaderCacheProbeRuns: [Duration] = []
     /// Undecided until both probes finish. A first probe interrupted after it
     /// was submitted may have compiled kernels, so it decides cold.
     var shaderCacheCold: Bool?

@@ -58,7 +58,7 @@ extension StandaloneServer {
     /// session at a time; any request preempts it. The sweep tick retries
     /// sessions a request, device work or posture deferred, and warms a lazy
     /// load or an MTP replacement engine once the server is idle.
-    func scheduleShapeWarmups() async {
+    private func scheduleShapeWarmups() async {
         for key in slots.keys.sorted() {
             guard let bridge = slots[key]?.bridge else { continue }
             if await bridge.startShapeWarmupIfNeeded(onRetired: { [weak self] in

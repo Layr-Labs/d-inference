@@ -79,6 +79,26 @@ struct KVPoolSweepWiringTests {
         }
         #expect(quiesced, "the sweep task must stop with the server")
     }
+
+    @Test("the proactive sweep waits for an idle calibration or shape warmup session")
+    func sweepWaitsForIdleCalibrationSession() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let reclaimer = await budget.reclaimerForTesting
+        let (held, release) = AsyncStream<Void>.makeStream()
+        let session = try #require(budget.serviceBudget.idleCalibration.startIfIdle(isIdle: { true }) {
+            for await _ in held {}
+        })
+        // A flush is device work and would cancel the session mid-cell.
+        budget.proactiveReclaimSweep()
+        try? await taskSleep(.milliseconds(50))
+        #expect(await reclaimer.sweepSignalCount == 0)
+        release.finish()
+        await session.value
+        budget.proactiveReclaimSweep()
+        #expect(await pollUntil { await reclaimer.sweepSignalCount == 1 })
+    }
 }
 
 private func makeSweepWiringLoop() throws -> ProviderLoop {

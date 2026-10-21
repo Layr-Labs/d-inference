@@ -536,11 +536,12 @@ public actor StandaloneServer {
         }
         kvSweepTask?.cancel()
         let sweepInterval = kvSweepInterval
-        kvSweepTask = Task { [kvBudget] in
+        kvSweepTask = Task { [weak self, kvBudget] in
             while !Task.isCancelled {
                 try? await taskSleep(sweepInterval)
                 if Task.isCancelled { break }
                 kvBudget.proactiveReclaimSweep()
+                await self?.retryShapeWarmups()
             }
         }
         lifecycleState = .running

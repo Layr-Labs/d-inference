@@ -49,6 +49,135 @@ struct ProductionModelCalibrationTests {
         }
     }
 
+    @Test("the excluded shape warmup precedes calibration once and trains no rate")
+    func shapeWarmupPrecedesCalibrationWithoutEvidence() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = try await makeQwenBridge(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget)
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        await bridge.setShapeWarmupModeTest(.always)
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
+        await bridge.awaitProductionCalibration()
+        #expect(await bridge.shapeWarmupCompletedTest())
+        let measurements = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(measurements.isolatedPrefill?.sampleCount == 2, "\(measurements)")
+        #expect(measurements.decode?.sampleCount == 2)
+        #expect(measurements.workloadBuckets.allSatisfy { $0.promptTokenBucket == 1_024 })
+        #expect(await bridge.productionCalibrationWorkCounters() == [0, 0, 0, 0])
+        // Calibration alone decodes 7 + 31 + 31 rows; the solo (16) and width-2
+        // (2 x 12) warmup cells add 15 + 22 more.
+        #expect(engine.capacity().decodeRowsTotal >= 69 + 30, "\(engine.capacity().decodeRowsTotal)")
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        #expect(!(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false)))
+        await bridge.shutdown()
+    }
+
+    @Test("a foreground request preempts the shape warmup, which a later session completes")
+    func foregroundPreemptsShapeWarmupUntilRetry() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = try await makeQwenBridge(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
+            budget: budget)
+        #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false))
+        // Lands inside the grace pause: the session ends before any warmup step.
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: 64),
+            request: ChatCompletionRequest(model: "foreground", messages: [], max_tokens: 4),
+            requestId: "foreground-preemption", cacheEnabled: false)
+        for await event in stream {
+            if case .error(let error) = event { Issue.record("foreground request failed: \(error)") }
+        }
+        await bridge.awaitProductionCalibration()
+        #expect(!(await bridge.shapeWarmupCompletedTest()))
+        #expect(!(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false)),
+            "preemption backs off before a retry")
+        await bridge.waitForPumpRetirement(requestId: "foreground-preemption")
+        #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false, now: .now + .seconds(3_600)))
+        await bridge.awaitProductionCalibration()
+        #expect(await bridge.shapeWarmupCompletedTest())
+        let measurements = await bridge.backendSlotCapacity().performanceMeasurements
+        #expect(measurements?.isolatedPrefill?.sampleCount ?? 0 <= 1, "only the foreground sample")
+        await bridge.shutdown()
+    }
+
+    @Test("a shape warmup retry resumes after the cells an earlier attempt finished")
+    func shapeWarmupRetryResumesAfterFinishedCells() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = try await makeQwenBridge(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget)
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        // As if a request preempted the width cell after the solo cell finished.
+        await bridge.setShapeWarmupModeTest(.always)
+        await bridge.setShapeWarmupCellsCompletedTest(1)
+        let before = engine.capacity().decodeRowsTotal
+        #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false))
+        await bridge.awaitProductionCalibration()
+        #expect(await bridge.shapeWarmupCompletedTest())
+        // The width-2 cell decodes 2 x 11 rows; rerunning the solo cell adds 15.
+        let rows = engine.capacity().decodeRowsTotal - before
+        #expect(rows > 0 && rows < 22 + 15, "\(rows)")
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("a warm shader-cache probe skips the shape cells and trains no rate")
+    func warmShaderCacheProbeSkipsShapeCells() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        // The first engine's probes compile the probe kernels in this process,
+        // whatever the OS shader cache held.
+        let first = try await makeQwenBridge(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget)
+        await first.setShapeWarmupModeTest(.probed)
+        await first.runShapeWarmupBeforeServing()
+        #expect(await first.shapeWarmupCompletedTest())
+        await first.shutdown()
+
+        let bridge = try await makeQwenBridge(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget)
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        await bridge.setShapeWarmupModeTest(.probed)
+        #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false))
+        await bridge.awaitProductionCalibration()
+        #expect(await bridge.shapeWarmupCompletedTest())
+        let probes = await bridge.shaderCacheProbeTest()
+        #expect(probes.cold == false && probes.runs == 2, "\(probes)")
+        // Each greedy 2-token probe decodes one row; no shape cell ran.
+        #expect(engine.capacity().decodeRowsTotal == 2, "\(engine.capacity().decodeRowsTotal)")
+        #expect(await bridge.backendSlotCapacity().performanceMeasurements?.isolatedPrefill == nil)
+        #expect(await bridge.productionCalibrationWorkCounters() == [0, 0, 0, 0])
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("the startup warmup is awaited before serving and cancelling it leaves the warmup due")
+    func startupShapeWarmupIsAwaitedAndCancellable() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = try await makeQwenBridge(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
+            budget: budget)
+        await bridge.setShapeWarmupModeTest(.always)
+        let cancelled = Task { await bridge.runShapeWarmupBeforeServing() }
+        cancelled.cancel()
+        await cancelled.value
+        #expect(!(await bridge.shapeWarmupCompletedTest()))
+        #expect(await bridge.scheduledShapeWarmupTest() == false)
+
+        let other = try await makeQwenBridge(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
+            budget: budget)
+        await other.setShapeWarmupModeTest(.always)
+        await other.runShapeWarmupBeforeServing()
+        // No grace pause and no session left behind: the caller serves next.
+        #expect(await other.shapeWarmupCompletedTest())
+        #expect(await other.scheduledShapeWarmupTest() == false)
+        #expect(await other.backendSlotCapacity().performanceMeasurements?.isolatedPrefill == nil)
+        #expect(budget.serviceBudget.count == 0 && !budget.serviceBudget.idleCalibration.hasSession)
+        await bridge.shutdown()
+        await other.shutdown()
+    }
+
     private func makeQwenBridge(modelID: String, backend: String,
         budget: GlobalKVCacheBudget) async throws -> EngineV2Bridge {
         let experts = modelID.contains("27B") ? 0 : 4
@@ -93,6 +222,16 @@ private struct CalibrationFixtureProcessor: UserInputProcessor {
 
 private extension EngineV2Bridge {
     func awaitProductionCalibration() async { await modelCalibration.task?.value }
+    func shapeWarmupCompletedTest() -> Bool { modelCalibration.shapeWarmupCompleted }
+    func setShapeWarmupCellsCompletedTest(_ cells: Int) { modelCalibration.shapeWarmupCellsCompleted = cells }
+    func setShapeWarmupModeTest(_ mode: ModelCalibrationPolicy.ShapeWarmupMode) {
+        modelCalibration.shapeWarmupModeOverride = mode
+    }
+    func shaderCacheProbeTest() -> (cold: Bool?, runs: Int) {
+        (modelCalibration.shaderCacheCold, modelCalibration.shaderCacheProbe.count)
+    }
+    func scheduledShapeWarmupTest() -> Bool { modelCalibration.task != nil }
+    func waitForPumpRetirement(requestId: String) async { await pumpTasks[requestId]?.value }
     func productionCalibrationWorkCounters() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
     }

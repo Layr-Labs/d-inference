@@ -35,6 +35,9 @@ extension EngineV2Bridge {
 
     func runModelCalibration(continuous: Bool, requireNominalPosture: Bool = true) async {
         modelCalibration.interrupted = false
+        // Excluded first-use shapes precede the measured cells. Preemption
+        // cancels this task, so the loop below stops and the session retries.
+        if !continuous { await runShapeWarmupIfNeeded(requireNominalPosture: requireNominalPosture) }
         let cells = continuous
             ? (modelCalibration.bootstrapCompleted ? ModelCalibrationPolicy.maintenance
                 : ModelCalibrationPolicy.bootstrap(maximumConcurrency: effectiveServingConcurrency))

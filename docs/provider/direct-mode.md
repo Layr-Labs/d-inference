@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -45,8 +45,13 @@ Requests never leave the machine and are never billed.
    when `[backend] startup_preload` is enabled (the default). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
    model, which still loads on request. Standalone preload does not run the
-   coordinator-serving one-token startup self-test, so the first local request
-   may still compile Metal kernels. Ctrl-C during preload cancels startup
+   coordinator-serving one-token startup self-test. Each preloaded model does run
+   the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
+   before the listener opens: a short shader-cache probe, plus the shape cells
+   after a new install or a macOS or MLX kernel update. The 5-second sweep tick
+   warms a deferred, lazily loaded or MTP-upgraded engine once the server is
+   idle; a request that arrives first preempts it and may still compile Metal
+   kernels. `DARKBLOOM_TTFT_SHAPE_WARMUP=0` disables the warmup. Ctrl-C during preload cancels startup
    without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the

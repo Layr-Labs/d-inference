@@ -356,7 +356,11 @@ public actor GlobalKVCacheBudget {
     /// Non-blocking and `nonisolated` (it touches no actor state — only the
     /// immutable reclaimer). Driven periodically by ProviderLoop's
     /// capacity-refresh tick and StandaloneServer's sweep task.
+    /// A flush is device work that cancels an idle calibration or shape
+    /// warmup; a long warmup cell would then never finish between ticks.
+    /// The session's bounded transient buffers wait for the next tick.
     public nonisolated func proactiveReclaimSweep() {
+        guard !serviceBudget.idleCalibration.hasSession else { return }
         reclaimer.scheduleSweep()
     }
 

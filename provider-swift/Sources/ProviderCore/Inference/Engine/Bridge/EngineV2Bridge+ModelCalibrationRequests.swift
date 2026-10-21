@@ -2,11 +2,12 @@ import Foundation
 
 extension EngineV2Bridge {
     func runModelCalibrationCell(_ cell: ModelCalibrationPolicy.Cell, tokens: [Int],
-        requireNominalPosture: Bool) async -> Bool {
+        requireNominalPosture: Bool,
+        timeoutSeconds: Double = ModelCalibrationPolicy.maximumGroupSeconds) async -> Bool {
         let ids = (0..<cell.width).map { _ in "calibration-" + UUID().uuidString }
         for id in ids { modelCalibration.requests[id] = cell }
         let timer = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: UInt64(ModelCalibrationPolicy.maximumGroupSeconds * 1_000_000_000)) }
+            do { try await Task.sleep(nanoseconds: UInt64(max(0, timeoutSeconds) * 1_000_000_000)) }
             catch { return }
             await self?.interruptModelCalibration(ids)
         }
@@ -47,8 +48,8 @@ extension EngineV2Bridge {
     private func runModelCalibrationRequest(_ id: String, cell: ModelCalibrationPolicy.Cell,
         tokens: [Int]) async -> Bool {
         guard !Task.isCancelled else { return false }
-        let request = ChatCompletionRequest(model: modelId, messages: [], temperature: 0,
-            max_tokens: cell.outputTokens, seed: 42)
+        let request = ChatCompletionRequest(model: modelId, messages: [],
+            temperature: cell.sampled ? nil : 0, max_tokens: cell.outputTokens, seed: 42)
         let stream = await submitTokenized(promptTokens: tokens, request: request, requestId: id,
             cacheEnabled: false)
         var success = false

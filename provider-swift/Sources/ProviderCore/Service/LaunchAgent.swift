@@ -277,6 +277,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
     /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
     /// verification is the MiMo default; each rollback must reach the job.
+    /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
+    /// default; its `0` rollback must reach the job too.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
@@ -284,6 +286,7 @@ public enum LaunchAgent: Sendable {
         MiMoV26WiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

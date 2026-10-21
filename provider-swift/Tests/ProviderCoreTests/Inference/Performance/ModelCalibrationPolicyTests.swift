@@ -13,6 +13,62 @@ struct ModelCalibrationPolicyTests {
         #expect(cells.allSatisfy { $0.width == 1 })
     }
 
+    @Test func shapeWarmupReachesStripeLoopedKeysAndServedWidth() {
+        typealias Policy = ModelCalibrationPolicy
+        for stripe in [2_048, 4_096] {
+            let cells = Policy.shapeWarmup(stripeTokens: stripe, chunkTokens: 512, width: 8,
+                contextTokens: 262_144)
+            #expect(cells.map(\.promptTokens) == [4_796, 576])
+            #expect(cells.map(\.width) == [1, 8])
+            #expect(cells.map(\.outputTokens) == [16, 24])
+            #expect(cells.allSatisfy { $0.warmup && $0.sampled })
+            // Full stripes, keys past MLX's looped-softmax limit, an unaligned tail.
+            #expect(cells[0].promptTokens >= stripe + 512)
+            #expect(cells[0].promptTokens > Policy.attentionLoopedKeys + 512)
+            #expect(!cells[0].promptTokens.isMultiple(of: 64))
+            // The first decoding row outlives the last row's two prefill steps.
+            #expect(cells[1].outputTokens > 2 * (cells[1].width - 1))
+        }
+        #expect(Policy.shapeWarmup(stripeTokens: nil, chunkTokens: 512, width: 1,
+            contextTokens: nil).map(\.width) == [1])
+        #expect(Policy.shapeWarmup(stripeTokens: 2_048, chunkTokens: 512, width: 4,
+            contextTokens: 2_048).map(\.promptTokens) == [2_032, 576])
+        #expect(Policy.shapeWarmup(stripeTokens: 2_048, chunkTokens: 512, width: 4,
+            contextTokens: 400).isEmpty)
+    }
+
+    @Test func shapeWarmupKillSwitchReachesTheProviderJob() {
+        typealias Policy = ModelCalibrationPolicy
+        let key = Policy.shapeWarmupEnvironmentKey
+        #expect(key == "DARKBLOOM_TTFT_SHAPE_WARMUP")
+        for probed in [[:], [key: "1"], [key: ""], [key: "on"]] {
+            #expect(Policy.shapeWarmupMode(environment: probed) == .probed)
+        }
+        #expect(Policy.shapeWarmupMode(environment: [key: " Always "]) == .always)
+        for rollback in ["0", "false", " OFF ", "no"] {
+            #expect(Policy.shapeWarmupMode(environment: [key: rollback]) == .off)
+        }
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"]) == [key: "0"])
+    }
+
+    @Test func shaderCacheProbeSeparatesCompilesFromFirstUseNoise() {
+        typealias Policy = ModelCalibrationPolicy
+        #expect(Policy.shaderCacheProbe.promptTokens == 128 && Policy.shaderCacheProbe.outputTokens == 2)
+        #expect(Policy.shaderCacheProbe.width == 1)
+        #expect(Policy.shaderCacheProbe.warmup && !Policy.shaderCacheProbe.sampled)
+        // Warm cache: a fresh engine's other first-use work adds up to a few hundred ms.
+        #expect(!Policy.shaderCacheLooksCold(first: .milliseconds(120), repeated: .milliseconds(80)))
+        #expect(!Policy.shaderCacheLooksCold(first: .milliseconds(410), repeated: .milliseconds(73)))
+        #expect(!Policy.shaderCacheLooksCold(first: .milliseconds(800), repeated: .milliseconds(90)))
+        // A slow Mac's repeat is long; only a gap beyond the repeat itself counts.
+        #expect(!Policy.shaderCacheLooksCold(first: .milliseconds(1_100), repeated: .milliseconds(600)))
+        // Cold cache: tens of kernels compile from source in the first run.
+        #expect(Policy.shaderCacheLooksCold(first: .milliseconds(2_340), repeated: .milliseconds(69)))
+        #expect(Policy.shaderCacheLooksCold(first: .milliseconds(1_000), repeated: .milliseconds(90)))
+        #expect(Policy.shaderCacheLooksCold(first: .milliseconds(4_000), repeated: .milliseconds(950)))
+        #expect(!Policy.shaderCacheLooksCold(first: .milliseconds(90), repeated: .milliseconds(1_400)))
+    }
+
     @Test func expensiveCellsRequireMeasuredRatesAndStayWithinExistingCap() {
         let cells = ModelCalibrationPolicy.bootstrap(maximumConcurrency: 3)
         #expect(cells.allSatisfy { $0.width <= 3 })

@@ -167,6 +167,40 @@ probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo
 maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
 
+Before those probes, ordinary `EngineV2` slots run an excluded shape warmup
+once per loaded engine (`ModelCalibrationPolicy.shapeWarmup`). MLX compiles
+each kernel specialization from source on first use in a process, and macOS
+caches the compiled libraries per app, keyed by source and GPU compiler. With a
+cold cache (a new install, or the first start after macOS or the MLX kernel
+sources change), the first long customer prompt paid those compiles. On an M3
+Ultra the first 8K-token request took 4.4 s for Gemma 4 QAT and 4.1-4.2 s for
+GPT-OSS without the warmup, and 2.9 s and 3.4 s with it, the same as later
+requests. On a shared M5 Ultra it took 3.2 s and 5.3 s without it, 1.1 s and
+1.6 s with it. A warm cache leaves no measurable first-request penalty, so the
+warmup first runs a greedy 128-token probe twice. Only a first run that
+exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
+shape cells; otherwise they are skipped. Cold first runs measured 1.2-1.6 s on
+an M3 Ultra and 2.3-2.7 s on an M5 Ultra, warm ones at most 0.41 s. On a cold cache
+the whole warmup took 5.4-7.4 s per engine. One solo prompt covers stripe-wide
+chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
+One cell at the served width covers plain chunks beside decoding rows and decode
+or MTP verify at that width. Both use the artifact's default sampling. No probe
+or cell trains a rate or counter. They share a 20-second wall budget. A timeout
+or refusal completes the attempt; only preemption leaves it due, and the retry
+resumes after the probes and cells already finished.
+
+The startup preload runs the warmup for each model after its self-test, before
+registration (or before a standalone listener opens), so routed traffic cannot
+preempt it; a local-endpoint request still can. Posture does not gate this pass
+because it measures nothing, and the registration gate's timeout still bounds
+the preload. Later engines (lazy loads, MTP replacement engines) run it in the
+idle calibration session after a 0.5-second pause that lets a triggering request
+preempt first. Slots with a reviewed deadline profile run it alone under the same
+idle gate, and standalone servers retry deferred engines from their 5-second
+sweep tick. Each attempt logs its outcome, duration and probe times.
+`DARKBLOOM_TTFT_SHAPE_WARMUP=0` restores the plain probes and `always` skips the
+shader-cache probe; the launchd job forwards it.
+
 Transaction-owned native MiMo slots retain the wider bootstrap and periodic
 maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
 affordable concurrency sweeps and solo refresh after 90 seconds. The existing

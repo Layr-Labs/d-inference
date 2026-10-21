@@ -114,9 +114,15 @@
   sampled one decodes; ten minutes of 30 fps 1080p fits), extreme aspect
   ratios and undecodable movies are refused with 400, as is a movie that
   keeps the decoder busy past its allowance (at most two minutes).
-  Cancelling a video request stops its decoder at once. A malformed pruning
-  rate fails the load before installing. The checkpoint's video
-  embedder is now loaded, adding 3,932,160 bytes to the resident installation.
+  Cancelling a video request stops waiting on its decoder at once. A
+  malformed pruning rate fails the load before installing. The checkpoint's
+  video embedder is now loaded, adding 3,932,160 bytes to the resident
+  installation.
+- Video decoding no longer crashes when a request is cancelled or its decode
+  allowance runs out mid-frame: the reader was cancelled from another thread
+  while a read was blocked in AVFoundation. Reads and the reader's
+  cancellation now run in order on one queue, so the reader stops once the
+  read in progress returns.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
 - A wedged Super slot leaves serving at once and retires without stalling the
@@ -140,12 +146,14 @@
   parallel 12K prompts by 5.3 instead of 9.2 GiB. Weight hashing and shard
   loading read around the file cache, so loading no longer leaves a second
   cached copy of the checkpoint resident beside the loaded weights.
-- Paged attention KV by default (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`, `paged`
-  unless set to `contiguous`): the segmented native paged backend, charged by
-  the engine's process-memory owner, with the decode rows reserved for the
-  owner's lifetime; it never falls back to contiguous storage. Exact prefix
-  reuse works on it: the bank keeps its own copy of a donor's prompt KV and a
-  restore writes it into fresh pages.
+- Serves paged attention KV only: the segmented native paged backend, charged
+  by the engine's process-memory owner, with the decode rows reserved for the
+  owner's lifetime. Contiguous KV is no longer supported:
+  `DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=contiguous`, any value other than
+  `paged`, or `DARKBLOOM_CBV2_PAGED_KV` disabling paged KV fails the load
+  before anything is installed; the owner never falls back to contiguous
+  storage. Exact prefix reuse works on it: the bank keeps its own copy of a
+  donor's prompt KV and a restore writes it into fresh pages.
 - Serves its whole verified context, 262,144 tokens, prompt plus output (was
   16,384); the coordinator, not the provider, decides whether a long prompt's
   prefill time suits a request. The speculating owner charges each request its

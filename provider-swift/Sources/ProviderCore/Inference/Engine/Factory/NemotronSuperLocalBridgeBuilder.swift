@@ -51,9 +51,9 @@ enum NemotronSuperLocalBridgeBuilder {
         /// budget like the lane; zero without prefix reuse.
         let prefixBankBytes: Int
         private let prefixBankID: String?
-        /// Paged storage only: every request's decode-row workspace, reserved
-        /// in the shared budget like the lane; zero on contiguous storage,
-        /// where the bridge reserves it with each request.
+        /// Every request's decode-row workspace, reserved in the shared budget
+        /// like the lane (the paged bridge reserves no request bytes); zero
+        /// without a row quote.
         let decodeRowsBytes: Int
         private let decodeRowsID: String?
         /// Speculating owners: the assistant's round work and the captured
@@ -61,7 +61,7 @@ enum NemotronSuperLocalBridgeBuilder {
         /// MTP admission) and reserved in the shared budget like the lane.
         let mtpRoundBytes: Int
         private let mtpRoundID: String?
-        /// The shared-budget bytes reserved beside the KV grant: the lane, any
+        /// The shared-budget bytes reserved beside the KV grant: the lane, the
         /// decode rows and any round. The bank is carved from the grant.
         var reservedBesideGrantBytes: Int { prefillLaneBytes + decodeRowsBytes + mtpRoundBytes }
         /// EVS pruning rate of video requests (`NemotronSuperVideoFeatures.pruningKey`).
@@ -310,7 +310,7 @@ enum NemotronSuperLocalBridgeBuilder {
     /// one claim before allocation covers everything the loaded owner keeps:
     /// the prefill lane at the measured whole-chunk bound, a speculating
     /// owner's round work (`NemotronSuperServingPolicy.speculativeOwnerBoundBytes`)
-    /// and the default (or operator) prefix bank on either KV backend.
+    /// and the default (or operator) prefix bank.
     struct OwnerShares: Equatable, Sendable {
         let lane: Int
         var round = 0
@@ -443,6 +443,12 @@ enum NemotronSuperLocalBridgeBuilder {
                 })
             return (bridge, prefill, laneBytes, workspace)
         }
+        // A policy veto can degrade even an explicit paged selection; Super
+        // serves no other storage, so the load fails instead.
+        guard await bridge.kvBackendKind == .paged else {
+            try await retireUnpublished(bridge, budget: kvBudget, releasing: [])
+            throw NemotronSuperLocalKVBackend.Failure.storageNotPaged
+        }
         // Fixed request bytes and any checkpoint bank are carved from the KV
         // grant before this check; a grant that cannot serve every configured
         // request beside them fails the load.
@@ -470,10 +476,7 @@ enum NemotronSuperLocalBridgeBuilder {
         }
         // Paged storage is charged by the engine's process-memory owner and
         // the bridge reserves no request bytes; reserve the decode rows here.
-        let built = await bridge.kvBackendKind
-        let rowsBytes = try? NemotronSuperLocalKVBackend.decodeRowsBytes(
-            selection: built == .paged ? .paged : .contiguous, requests: requests,
-            rowBytes: workspace)
+        let rowsBytes = try? NemotronSuperLocalKVBackend.decodeRowsBytes(requests: requests, rowBytes: workspace)
         var rows: (id: String, bytes: Int)?
         if rowsBytes != 0 {
             let id = NemotronSuperLocalKVBackend.decodeRowsReservationID()
@@ -536,7 +539,7 @@ enum NemotronSuperLocalBridgeBuilder {
         // The dedicated image binding uses causal embeddings and no checkpoint
         // identity; with speculation installed the engine runs each image
         // request target-only, with no draft state. Image prompts prefill on
-        // whichever KV storage the owner selected.
+        // the owner's paged storage.
         return Owner(bridge: bridge, modelID: modelID, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,

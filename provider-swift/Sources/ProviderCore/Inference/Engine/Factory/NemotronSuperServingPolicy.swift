@@ -98,16 +98,16 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Speculation and concurrency come from provider policy and replace any
-    /// value of those keys; the depth defaults to `defaultDepthByRequests`
-    /// and KV storage to segmented paged. Verification, prefill chunk,
-    /// decode-step and KV storage keys keep the operator's value, else the
-    /// default above or the builder's. Either owner, on either KV backend,
-    /// turns exact prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the
-    /// grant has room for a `defaultPrefixBankBytes` bank (or an
-    /// operator-sized one) beside every request's fixed bytes
-    /// (`grantKVBytes`); an operator value, including the global kill
-    /// switch, wins. The builder sizes the same bank from the same grant,
-    /// requests and keys.
+    /// value of those keys; the depth defaults to `defaultDepthByRequests`.
+    /// Verification, prefill chunk, decode-step and KV storage keys keep the
+    /// operator's value, else the default above or the builder's; the builder
+    /// serves paged KV only and refuses other storage
+    /// (`NemotronSuperLocalKVBackend`). Either owner turns exact prefix reuse
+    /// on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant has room for a
+    /// `defaultPrefixBankBytes` bank (or an operator-sized one) beside every
+    /// request's fixed bytes (`grantKVBytes`); an operator value, including
+    /// the global prefix-cache kill switch, wins. The builder sizes the same
+    /// bank from the same grant, requests and keys.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
                          kvBytesCapacity: Int, pinned: Bool = true,
                          physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
@@ -123,9 +123,6 @@ enum NemotronSuperServingPolicy {
             }
         } else {
             environment.removeValue(forKey: NemotronSuperLocalMTP.enabledKey)
-        }
-        if environment[NemotronSuperLocalKVBackend.key] == nil {
-            environment[NemotronSuperLocalKVBackend.key] = "paged"
         }
         let flag = PrefixCachePolicy.memoryEnvironmentFlag
         var candidate = environment

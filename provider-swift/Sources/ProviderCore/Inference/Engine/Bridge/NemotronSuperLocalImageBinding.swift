@@ -134,7 +134,8 @@ actor NemotronSuperLocalImageBinding {
     /// final length, and the whole charge (`encodedVideoPlan`) is reserved
     /// before any frame decodes. Frames then decode one at a time into the
     /// tower's tubelet batches; cancelling the request, as `drain` does,
-    /// also stops a read blocked in the decoder.
+    /// ends a wait on the decoder at once, and the reader stops once the read
+    /// in progress returns.
     private static func executeEncodedVideo(_ uri: String, body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?,

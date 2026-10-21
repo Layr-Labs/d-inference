@@ -25,7 +25,13 @@ _spec.loader.exec_module(client)
 
 SCHEMA = "nemotron-super-memory-calibration/1"
 MIB = 1 << 20
-REQUEST_KINDS = ("media_ingress", "media", "kv", "prefill_lane")
+# The kinds the runner sums into sampled_max_request_charges_held. The prefill
+# lane, decode rows and MTP round are owner reservations held from ready to
+# retirement; only media_ingress, media and kv (the runner's kind for any other
+# request ID) are a request's own. The owner's paged bridge reserves no request
+# bytes: the engine's process-memory owner charges its KV pages and recurrent
+# rows outside these rows (unattributed_bytes).
+HELD_KINDS = ("media_ingress", "media", "kv", "prefill_lane", "decode_rows", "mtp_round")
 
 
 class Calibration:
@@ -93,12 +99,16 @@ class Calibration:
         window = after["window"]
         reserved = window["sampled_max_charge_by_kind"]
         request_bytes = window["sampled_max_request_charges_held"]
-        idle_request_kinds = sum(before["charges"]["by_kind"].get(kind, 0) for kind in REQUEST_KINDS)
-        incremental_request_bytes = max(0, request_bytes - idle_request_kinds)
-        # Managed owners retain the prefill lane, MTP workspace and prefix bank
-        # across requests. Their held capacity also covers transient allocations
-        # and newly retained cache entries; it is not a leaked request charge.
+        idle_held_bytes = sum(before["charges"]["by_kind"].get(kind, 0) for kind in HELD_KINDS)
+        incremental_request_bytes = max(0, request_bytes - idle_held_bytes)
+        # Managed owners retain the prefill lane, decode rows, MTP workspace and
+        # prefix bank across requests. Their held capacity also covers transient
+        # allocations and newly retained cache entries; it is not a leaked
+        # request charge.
         owner_and_request_bytes = window["sampled_max_ledger_charged"]
+        # Includes the engine owner's paged KV pages and recurrent rows, which
+        # no reservation row shows.
+        incremental_charged_bytes = max(0, owner_and_request_bytes - before["ledger"]["charged"])
         active_before = before["memory"]["mlx_active"]
         mlx_delta = window["mlx_peak"] - active_before
         footprint_delta = (window["kernel_max_phys_footprint"] or window["sampled_max_phys_footprint"]) \
@@ -109,8 +119,14 @@ class Calibration:
                "reserved_by_kind_sampled_max": reserved, "request_reserved_bytes": request_bytes,
                "incremental_request_reserved_bytes": incremental_request_bytes,
                "owner_and_request_reserved_bytes": owner_and_request_bytes,
+               "incremental_ledger_charged_bytes": incremental_charged_bytes,
                "request_reserved_bytes_definition":
-                   "max over samples of media_ingress+media+kv+prefill_lane held at once",
+                   "max over samples of media_ingress+media+kv+prefill_lane+decode_rows+mtp_round held at once",
+               "incremental_request_reserved_bytes_definition":
+                   "request_reserved_bytes minus the same kinds held before the request",
+               "incremental_ledger_charged_bytes_definition":
+                   "max over samples of the whole ledger charge, engine-owned pages included,"
+                   " minus the charge before the request",
                "activation_reserve_bytes": reserve,
                "measured_mlx_peak_delta_bytes": mlx_delta,
                "measured_phys_footprint_delta_bytes": footprint_delta,
@@ -193,8 +209,8 @@ class Calibration:
         deadline = time.perf_counter() + self.args.request_timeout
         while thread.is_alive() and time.perf_counter() < deadline and observed is None:
             snapshot = self.runner.memory()
-            kinds = {row["kind"] for row in snapshot["charges"]["rows"]}
-            current = current_phase(kinds, first.is_set())
+            kinds = {row["kind"] for row in incremental_rows(snapshot, self.baseline)}
+            current = current_phase(kinds, first.is_set(), snapshot["context"]["bridge_active_requests"])
             if phase == "decode" and abort.aborted_at is not None:
                 observed, at_abort = "decode", snapshot
             elif current == phase:
@@ -207,6 +223,9 @@ class Calibration:
             observed, at_abort = "decode", self.runner.memory()
         timeline = []
         start = time.perf_counter()
+        # A paged owner's text request holds no reservation row: its KV is the
+        # engine owner's charge, which settlement compares with the idle ledger.
+        held = bool(at_abort and incremental_rows(at_abort, self.baseline))
         charge_gone = bridge_idle = http_idle = None
         while time.perf_counter() - start < 120:
             snapshot = self.runner.memory()
@@ -214,29 +233,34 @@ class Calibration:
             context = snapshot["context"]
             now = time.perf_counter() - start
             timeline.append({"t_s": now, "request_charges": len(request_rows),
+                             "unattributed_bytes": snapshot["charges"].get("unattributed_bytes"),
                              "bridge_active": context["bridge_active_requests"],
                              "http_active": context["http_active_responses"]})
-            if charge_gone is None and not request_rows:
+            held = held or bool(request_rows)
+            if held and charge_gone is None and not request_rows:
                 charge_gone = now
             if bridge_idle is None and context["bridge_active_requests"] == 0:
                 bridge_idle = now
             if http_idle is None and context["http_active_responses"] == 0:
                 http_idle = now
-            if charge_gone is not None and bridge_idle is not None and http_idle is not None:
+            if not request_rows and bridge_idle is not None and http_idle is not None:
                 break
             time.sleep(0.005)
         thread.join(timeout=self.args.request_timeout)
         settle = self.settled()
-        # A charge refunded while the bridge still reports the request active is
-        # an early refund; one sample interval of slack separates the two reads.
-        # Before bridge submission (ingress/media) the HTTP response lease is the
-        # only outside view of live work, so its idle time is recorded too.
-        early = charge_gone is not None and bridge_idle is not None and charge_gone + 0.02 < bridge_idle
+        # A reservation row refunded while the bridge still reports the request
+        # active is an early refund; one sample interval of slack separates the
+        # two reads. Without a row there is no refund to time (None). Before
+        # bridge submission (ingress/media) the HTTP response lease is the only
+        # outside view of live work, so its idle time is recorded too.
+        early = (None if not held else
+                 charge_gone is not None and bridge_idle is not None and charge_gone + 0.02 < bridge_idle)
         verdict = ("not_observed" if observed is None else
                    "fail" if early or not settle["settled"] else leak_verdict(settle))
         self.record(f"cancellation.{name}.{phase}", verdict, {
-            "observed_phase": observed, "early_refund": early, "charge_gone_s": charge_gone,
-            "bridge_idle_s": bridge_idle, "http_idle_s": http_idle, "settled": settle["settled"]})
+            "observed_phase": observed, "request_reservations_held": held, "early_refund": early,
+            "charge_gone_s": charge_gone, "bridge_idle_s": bridge_idle, "http_idle_s": http_idle,
+            "settled": settle["settled"]})
         return {"workload": name, "target_phase": phase, "observed_phase": observed,
                 "charges_at_abort": at_abort and at_abort["charges"], "request": holder,
                 "timeline": timeline[:400], "settle": settle}
@@ -330,10 +354,15 @@ def leak_verdict(settle):
     return "pass" if settle["leak"] == "none" else "review"
 
 
-def current_phase(kinds, streamed):
+def current_phase(kinds, streamed, bridge_active):
+    """The request's phase from its own charge kinds, the bridge and the stream.
+
+    Prefill is a request the bridge holds before its first token: the paged
+    bridge reserves no KV row, and an image request keeps its media rows.
+    """
     if streamed:
         return "decode"
-    if "kv" in kinds:
+    if bridge_active or "kv" in kinds:
         return "prefill"
     if "media" in kinds:
         return "media"
@@ -400,7 +429,8 @@ def run(args):
             receipt["near_limit"] = calibration.near_limit(reference["workload"], make,
                                                            reference["incremental_request_reserved_bytes"])
         else:
-            calibration.record("near_limit_boundary", "not_exercised", "no request reservation was observed")
+            calibration.record("near_limit_boundary", "not_exercised",
+                               "no request reservation row was observed (the paged bridge reserves none for text)")
         receipt["cancellation"] = []
         images = client.parse_images(args.images)
         contexts = client.parse_contexts(args.contexts)

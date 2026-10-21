@@ -134,8 +134,9 @@ actor NemotronSuperLocalLoad {
             let installation = try NemotronSuperInstallation.loadQuote(
                 source: source, backendAllowanceBytes: backendAllowanceBytes)
             let quote = installation.totalBytes
-            // Refused before the claim and installation; the builder reads it again.
+            // Refused before the claim and installation; the builder reads them again.
             _ = try NemotronSuperVideoFeatures.validatedPruningRate(environment: environment)
+            _ = try NemotronSuperLocalKVBackend.resolve(environment: environment)
             // Speculation adds the embedded head's payload and loader
             // construction allowance to the same LOAD claim, before allocation.
             let speculation = try NemotronSuperLocalMTP.Setting.resolve(environment: environment)

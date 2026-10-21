@@ -438,6 +438,8 @@ extension ProviderLoop {
         case NemotronSuperLocalPrefill.Failure.laneRefused: return "insufficient memory for the prefill lane"
         case NemotronSuperLocalKVBackend.Failure.decodeRowsRefused:
             return "insufficient memory for the decode rows"
+        case NemotronSuperLocalKVBackend.Failure.storageNotPaged:
+            return "the engine built attention KV storage other than paged; Super serves paged attention KV only"
         case NemotronSuperLocalPrefixCache.Failure.bankRefused: return "insufficient memory for the prefix bank"
         case NemotronSuperLocalPrefixCache.Failure.unavailable: return "the engine did not construct the prefix bank"
         case NemotronSuperLocalMTP.Failure.roundRefused: return "insufficient memory for the MTP round"
@@ -459,7 +461,13 @@ extension ProviderLoop {
         case NemotronSuperLocalPrefill.Failure.invalidDecodeSteps:
             return "\(NemotronSuperLocalPrefill.decodeStepsKey) is malformed or out of range"
         case NemotronSuperLocalKVBackend.Failure.invalidBackend:
-            return "\(NemotronSuperLocalKVBackend.key) is neither contiguous nor paged"
+            return "\(NemotronSuperLocalKVBackend.key) is malformed; Super serves paged attention KV only"
+        case NemotronSuperLocalKVBackend.Failure.contiguousUnsupported:
+            return "\(NemotronSuperLocalKVBackend.key)=contiguous is no longer supported;"
+                + " Super serves paged attention KV only"
+        case NemotronSuperLocalKVBackend.Failure.pagedDisabled:
+            return "\(EngineV2KVBackendPolicy.killSwitchEnvKey) disables paged attention KV;"
+                + " Super serves paged attention KV only"
         case NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency:
             return "\(NemotronSuperLocalBridgeBuilder.maxConcurrentKey) is malformed or above what the owner serves"
                 + " (one request with serial verification)"

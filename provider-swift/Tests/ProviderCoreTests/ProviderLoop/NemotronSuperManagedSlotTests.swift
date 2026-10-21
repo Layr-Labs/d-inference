@@ -75,9 +75,11 @@ struct NemotronSuperManagedSlotTests {
     /// `physicalGiB` (default `totalGiB`) is the machine memory the slot
     /// loader sizes its prefix bank for, so no result depends on the host.
     /// `decodeGate` holds the engine's detokenization while closed.
+    /// `environment` is the provider process environment the plan reads.
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
                         memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
-                        decodeGate: DecodeGate? = nil) async throws -> Fixture {
+                        decodeGate: DecodeGate? = nil,
+                        environment: [String: String] = [:]) async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
                   systemAvailable: memory?.available(total: totalGiB << 30) ?? totalGiB << 30)
@@ -101,7 +103,7 @@ struct NemotronSuperManagedSlotTests {
         await loop.setNemotronSuperSlotLoaderForTesting(
             loader(tokenizer: TokenizerHandle(tokenizer), template: template,
                    physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe),
-            environment: [:])
+            environment: environment)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -111,16 +113,13 @@ struct NemotronSuperManagedSlotTests {
 
     /// The latent-MoE fixture and its embedded head, staged through the real
     /// transaction under the provider's grant, admission and environment.
-    /// 64-wide attention heads, the paged kernels' minimum: the managed plan
-    /// selects paged KV. `pinned` plans and gates the load as the pinned
-    /// checkpoint's; the fixture is still what loads.
+    /// `pinned` plans and gates the load as the pinned checkpoint's; the
+    /// fixture is still what loads.
     static func loader(tokenizer: TokenizerHandle, template: Data, physicalBytes: UInt64,
                        probe: InstallationProbe? = nil, pinned: Bool = false) -> NemotronSuperSlotLoader {
         NemotronSuperSlotLoader(pinned: pinned, physicalBytes: physicalBytes,
                                 kvBytesPerToken: { _ in 64 }) { request in
-            try await SuperMTPInstalledFixture.$attentionHeadDim.withValue(64) {
-                try await load(request, tokenizer: tokenizer, template: template, probe: probe)
-            }
+            try await load(request, tokenizer: tokenizer, template: template, probe: probe)
         }
     }
 
@@ -411,6 +410,31 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
 
+    /// Super serves paged attention KV only: a provider environment naming
+    /// contiguous storage, or disabling paged KV fleet-wide, fails the
+    /// managed load with its named reason before any LOAD claim or
+    /// installation.
+    @Test(.timeLimit(.minutes(1)), arguments: [
+        ([NemotronSuperLocalKVBackend.key: "contiguous"],
+         "DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=contiguous is no longer supported"),
+        ([EngineV2KVBackendPolicy.killSwitchEnvKey: "0"], "DARKBLOOM_CBV2_PAGED_KV disables paged attention KV"),
+    ])
+    func storageOtherThanPagedFailsTheManagedLoad(environment: [String: String], reason: String) async throws {
+        let fixture = try await Self.fixture(mode: .auto, environment: environment)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        var refusal: Error?
+        do {
+            try await fixture.loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                                     revisionDirectory: fixture.directory)
+        } catch { refusal = error }
+        let error = try #require(refusal)
+        #expect(ProviderLoop.loadErrorStatusCode(for: error) == 503)
+        #expect("\(error)".contains(reason), "\(error)")
+        #expect(await fixture.loop.nemotronSuperOwnerForTesting(modelId: Self.modelID) == nil)
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+        #expect(await fixture.loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
+    }
+
     /// The slot's planned bank is the bank its builder builds and holds,
     /// whatever machine memory the loader sizes it for: the fixture owner's
     /// generic 1 GiB bank on a 64 GiB and a 256 GiB machine.
@@ -450,7 +474,14 @@ struct NemotronSuperManagedSlotTests {
             (NemotronSuperLocalPrefill.Failure.invalidDecodeSteps,
              "DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS is malformed or out of range"),
             (NemotronSuperLocalKVBackend.Failure.invalidBackend,
-             "DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND is neither contiguous nor paged"),
+             "DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND is malformed; Super serves paged attention KV only"),
+            (NemotronSuperLocalKVBackend.Failure.contiguousUnsupported,
+             "DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=contiguous is no longer supported;"
+                 + " Super serves paged attention KV only"),
+            (NemotronSuperLocalKVBackend.Failure.pagedDisabled,
+             "DARKBLOOM_CBV2_PAGED_KV disables paged attention KV; Super serves paged attention KV only"),
+            (NemotronSuperLocalKVBackend.Failure.storageNotPaged,
+             "the engine built attention KV storage other than paged; Super serves paged attention KV only"),
             (NemotronSuperLocalBridgeBuilder.Failure.invalidConcurrency,
              "DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT is malformed or above what the owner serves"
                  + " (one request with serial verification)"),

@@ -583,22 +583,13 @@ struct WatchdogRecoveryIntegrationTests {
                     pid: predecessor.pid, version: "1.0.0", writtenAt: now, startedAt: 50),
                 now: now)
             state = try store.loadState()
-            print("LAUNCH_REVIEW scenario=\(scenario) now=\(now) health=\(lastHealth) intent=\(String(describing: state.candidate?.launchIntent?.id)) pending=\(String(describing: state.candidate?.pendingAttemptID)) started=\(String(describing: state.candidate?.attemptStartedAt)) failures=\(String(describing: state.candidate?.failureCount))")
             #expect(lastHealth == .stabilizing(since: nil))
         }
         #expect(state.candidate?.launchIntent?.id == intentID)
         #expect(state.candidate?.pendingAttemptID == nil)
         #expect(state.candidate?.attemptStartedAt == nil)
         #expect(state.candidate?.failureCount == 0)
-        // Exercise the real recovery owner only when the actual health verdict
-        // requests it, matching WatchdogCommand's inactive-candidate branch.
-        if case .inactiveCandidate = lastHealth {
-            let result = await watchdog.recoverDownProvider(
-                autoUpdateEnabled: false, providerProcessAlive: true, now: 1_000)
-            print("LAUNCH_REVIEW scenario=\(scenario) recovery=\(result)")
-        }
         state = try store.loadState()
-        print("LAUNCH_REVIEW scenario=\(scenario) final_failures=\(String(describing: state.candidate?.failureCount)) restart_delta=\(context.restarts.value - restartsBefore)")
         #expect(state.candidate?.failureCount == 0)
         #expect(context.restarts.value == restartsBefore)
         #expect(state.quarantine == nil)
@@ -633,7 +624,6 @@ struct WatchdogRecoveryIntegrationTests {
             daemonState: DaemonState(pid: 4242, version: "1.0.0", writtenAt: 150, startedAt: 50),
             now: 150) == .stabilizing(since: nil))
         state = try store.loadState()
-        print("LAUNCH_REVIEW prelaunch process_changed=\(processChanged) intent_retained=\(state.candidate?.launchIntent?.id == intentID) pending=\(String(describing: state.candidate?.pendingAttemptID))")
         #expect(state.candidate?.launchIntent?.id == intentID)
         #expect(state.candidate?.pendingAttemptID == nil)
         // Recreate the service, forcing recovery to rely on durable evidence.
@@ -643,7 +633,6 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(watchdog.observeHealthyProvider(
             providerRunning: true, daemonState: nil, now: 200) == .stabilizing(since: nil))
         state = try store.loadState()
-        print("LAUNCH_REVIEW after_launch process_changed=\(processChanged) now=200 pending_matches=\(state.candidate?.pendingAttemptID == intentID) started=\(String(describing: state.candidate?.attemptStartedAt))")
         #expect(state.candidate?.pendingAttemptID == intentID)
         #expect(state.candidate?.attemptStartedAt == 200)
         #expect(watchdog.observeHealthyProvider(
@@ -652,7 +641,6 @@ struct WatchdogRecoveryIntegrationTests {
         for now in [501.0, 1_000.0] {
             lastHealth = watchdog.observeHealthyProvider(
                 providerRunning: true, daemonState: nil, now: now)
-            print("LAUNCH_REVIEW after_launch process_changed=\(processChanged) now=\(now) health=\(lastHealth)")
             #expect(lastHealth == .inactiveCandidate(attemptStartedAt: 200))
         }
         #expect(try store.loadState().candidate?.failureCount == 0)
@@ -663,7 +651,6 @@ struct WatchdogRecoveryIntegrationTests {
             #expect(result == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         }
         state = try store.loadState()
-        print("LAUNCH_REVIEW after_launch process_changed=\(processChanged) final_failures=\(String(describing: state.candidate?.failureCount)) restart_delta=\(context.restarts.value - restartsBefore)")
         #expect(state.candidate?.failureCount == 1)
         #expect(context.restarts.value == restartsBefore + 1)
         #expect(watchdog.observeHealthyProvider(

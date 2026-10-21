@@ -468,6 +468,48 @@ struct NemotronSuperLocalPrefixCacheTests {
         }
     }
 
+    /// A co-resident slot's small grant holds every request's fixed bytes and
+    /// the minimum KV, not the round work, which the claim holds whole beside
+    /// it as the round share: eight speculating requests load on a 3 GiB
+    /// grant, below their 3.19 GiB round, at the configured width (with the
+    /// round clamped into the grant, only one request kept a KV floor).
+    @Test(.timeLimit(.minutes(5)))
+    func smallCoResidentGrantServesTheConfiguredWidth() async throws {
+        let grant: Int = 3 << 30
+        let context = 1024
+        let environment = [Builder.maxConcurrentKey: "8", NemotronSuperLocalMTP.enabledKey: "1",
+                           NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"]
+        let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true,
+            environment: environment, contextTokens: context, kvBytesCapacity: grant)
+        let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
+            speculates: true, contextTokens: context)
+        #expect(shares.round > grant, "the round alone exceeds the grant")
+        #expect(admission == grant + shares.round)
+        let base = try SuperMTPInstalledFixture().staging()
+        let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: base.install,
+                                                     head: base.head, pinned: true)
+        let quote = try NemotronSuperInstallation.loadQuote(source: base.source, backendAllowanceBytes: 1 << 20)
+        let headQuote = try #require(try base.head?.quote())
+        let serving = try #require(shares.total) + grant
+        let install = try NemotronSuperLoadClaim.bytes(installation: quote, head: headQuote,
+            sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers(), servingBytes: serving)
+        let budget = Self.budget()
+        let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+        let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+            maxContextLength: context, defaultMaxTokens: 16)
+        let transaction = NemotronSuperLocalLoad(budget: budget)
+        let bridge = try await transaction.load(staging: { staging },
+            tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
+            kvBytesCapacity: grant, admissionKVBytes: admission, backendAllowanceBytes: 1 << 20,
+            modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+        // One attempt: the configured eight, the grant as KV floor beside the shares.
+        #expect(await transaction.fitAttempts == [.init(requests: 8, prefixBankBytes: 0,
+            claimBytes: UInt64(install + serving), admitted: true)])
+        #expect(await bridge.maxConcurrentRequests == 8)
+        try await transaction.closeAfterDrain()
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// A bank that does not fit the shared budget fails the load after the
     /// engine retired, refunding the lane already reserved.
     @Test(.timeLimit(.minutes(2))) func bankThatDoesNotFitFailsTheLoadAndRefundsTheLane() async throws {

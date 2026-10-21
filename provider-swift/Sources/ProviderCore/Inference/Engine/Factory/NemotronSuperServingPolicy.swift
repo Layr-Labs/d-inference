@@ -91,7 +91,9 @@ enum NemotronSuperServingPolicy {
         let requests: Int
         /// The owner's exact prefix checkpoint bank; zero when absent.
         let prefixBankBytes: Int
-        /// KV headroom the LOAD claim requires, never above the grant.
+        /// KV headroom the LOAD claim requires: the part the grant holds
+        /// (`grantKVBytes` and the bank) within the grant, and a speculating
+        /// owner's round work beside it.
         let admissionKVBytes: Int
     }
 
@@ -102,9 +104,10 @@ enum NemotronSuperServingPolicy {
     /// default above or the builder's. Either owner, on either KV backend,
     /// turns exact prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the
     /// grant has room for a `defaultPrefixBankBytes` bank (or an
-    /// operator-sized one) beside every request's fixed bytes; an operator
-    /// value, including the global kill switch, wins. The builder sizes the
-    /// same bank from the same grant, requests and keys.
+    /// operator-sized one) beside every request's fixed bytes
+    /// (`grantKVBytes`); an operator value, including the global kill
+    /// switch, wins. The builder sizes the same bank from the same grant,
+    /// requests and keys.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
                          kvBytesCapacity: Int, pinned: Bool = true,
                          physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
@@ -131,8 +134,7 @@ enum NemotronSuperServingPolicy {
             let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
                 kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
                 pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
-            kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates,
-                environment: environment) + bank {
+            bank <= kvBytesCapacity - grantKVBytes(requests: requests, speculates: speculates) {
             environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
@@ -140,8 +142,8 @@ enum NemotronSuperServingPolicy {
             pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
         return LoadPlan(environment: environment, speculates: speculates, requests: requests,
             prefixBankBytes: bank,
-            admissionKVBytes: min(kvBytesCapacity,
-                admissionKVBytes(requests: requests, speculates: speculates, environment: environment) + bank))
+            admissionKVBytes: admissionKVBytes(requests: requests, speculates: speculates,
+                environment: environment, kvBytesCapacity: kvBytesCapacity, bankBytes: bank))
     }
 
     /// Fixed bytes one request reserves (recurrent state, request workspace,
@@ -219,24 +221,43 @@ enum NemotronSuperServingPolicy {
         return overflow ? Int.max : rounded
     }
 
-    /// KV headroom the LOAD claim requires: every configured request's fixed
-    /// bytes, with speculation the owner's round work once
-    /// (`speculativeOwnerBoundBytes` for the environment's depth table at
-    /// `contextTokens`), plus 2 GiB for KV and the admission watermark. The
-    /// built bridge's exact grant check (`UnserviceableGrant`) and the
-    /// builder's exact round reservation stay authoritative.
+    /// The part of the LOAD claim's KV headroom the KV grant holds: every
+    /// configured request's fixed bytes plus 2 GiB for KV and the admission
+    /// watermark. A speculating owner's round work is reserved apart from
+    /// the grant (EngineV2 keeps it out of every request's fixed bytes).
+    static func grantKVBytes(requests: Int, speculates: Bool) -> Int {
+        let perRequest = speculates ? speculativeRequestBoundBytes : plainRequestBoundBytes
+        let (fixed, fixedOverflow) = max(1, requests).multipliedReportingOverflow(by: perRequest)
+        let (total, overflow) = fixed.addingReportingOverflow(2 << 30)
+        return fixedOverflow || overflow ? Int.max : total
+    }
+
+    /// KV headroom the LOAD claim requires: `grantKVBytes` and, with
+    /// speculation, the owner's round work once (`speculativeOwnerBoundBytes`
+    /// for the environment's depth table at `contextTokens`). The built
+    /// bridge's exact grant check (`UnserviceableGrant`) and the builder's
+    /// exact round reservation stay authoritative.
     static func admissionKVBytes(requests: Int, speculates: Bool, environment: [String: String] = [:],
                                  contextTokens: Int = contextTokens) -> Int {
-        let requests = max(1, requests)
-        let perRequest = speculates ? speculativeRequestBoundBytes : plainRequestBoundBytes
-        let owner = speculates
-            ? speculativeOwnerBoundBytes(requests: requests, environment: environment,
+        admissionKVBytes(requests: requests, speculates: speculates, environment: environment,
+                         contextTokens: contextTokens, kvBytesCapacity: .max)
+    }
+
+    /// The same headroom under a KV grant: `grantKVBytes` and `bankBytes`,
+    /// which the grant holds, within the grant; the round work beside it,
+    /// whatever the grant's size.
+    static func admissionKVBytes(requests: Int, speculates: Bool, environment: [String: String] = [:],
+                                 contextTokens: Int = contextTokens, kvBytesCapacity: Int,
+                                 bankBytes: Int = 0) -> Int {
+        let (held, heldOverflow) = grantKVBytes(requests: requests, speculates: speculates)
+            .addingReportingOverflow(max(0, bankBytes))
+        let round = speculates
+            ? speculativeOwnerBoundBytes(requests: max(1, requests), environment: environment,
                 contextTokens: contextTokens)
             : 0
-        let (fixed, fixedOverflow) = requests.multipliedReportingOverflow(by: perRequest)
-        let (withOwner, ownerOverflow) = fixed.addingReportingOverflow(owner)
-        let (total, overflow) = withOwner.addingReportingOverflow(2 << 30)
-        return fixedOverflow || ownerOverflow || overflow ? Int.max : total
+        let (total, overflow) = min(max(0, kvBytesCapacity), heldOverflow ? .max : held)
+            .addingReportingOverflow(round)
+        return overflow ? Int.max : total
     }
 
     // MARK: - Prefix checkpoint bank

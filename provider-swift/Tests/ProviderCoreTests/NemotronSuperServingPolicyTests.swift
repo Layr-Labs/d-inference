@@ -165,11 +165,43 @@ struct NemotronSuperServingPolicyTests {
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(plain.requests == 16 && !plain.speculates)
-        // A grant below the policy bound caps the claim at the grant itself
-        // and leaves no room for the bank.
+        // A grant below the policy bound caps the part the grant holds at the
+        // grant itself and leaves no room for the bank; the round work stays
+        // whole beside it.
         let small = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: nil, kvBytesCapacity: 4 << 30)
-        #expect(small.admissionKVBytes == 4 << 30 && small.prefixBankBytes == 0)
+        #expect(small.admissionKVBytes == (4 << 30) + 9_865_003_008 && small.prefixBankBytes == 0)
+    }
+
+    /// A co-resident Super slot's grant holds only every request's fixed
+    /// bytes, 2 GiB and any bank; the round work is reserved beside it. At
+    /// any grant of at least the 1 GiB minimum KV, the plan and each fallback
+    /// keep their KV floor (admission less the round and the bank) within the
+    /// grant and above that minimum, so no width is skipped for want of grant
+    /// while memory is free (before, eight speculating requests needed a
+    /// 10.19 GiB grant and one request 4.44 GiB).
+    @Test(arguments: [1, 3, 6, 40] as [Int])
+    func roundStaysBesideASmallGrant(grantGiB: Int) throws {
+        typealias Policy = NemotronSuperServingPolicy
+        let grant: Int = grantGiB << 30
+        let plan = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: 128 << 30)
+        let round8 = Policy.speculativeOwnerBoundBytes(requests: 8, environment: plan.environment)
+        #expect(plan.admissionKVBytes - round8
+            == min(grant, Policy.grantKVBytes(requests: 8, speculates: true) + plan.prefixBankBytes))
+        let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true,
+            contextTokens: Policy.contextTokens)
+        for candidate in candidates {
+            let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: candidate.environment,
+                kvBytesCapacity: grant, speculates: true, physicalBytes: 128 << 30)
+            #expect(shares.round == Policy.speculativeOwnerBoundBytes(requests: candidate.requests,
+                environment: candidate.environment))
+            let kvFloor = candidate.admissionKVBytes - shares.bank - shares.round
+            #expect(kvFloor == min(grant - shares.bank, Policy.grantKVBytes(requests: candidate.requests,
+                speculates: true)), "\(grantGiB) GiB, \(candidate.requests)")
+            #expect(kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes), "\(grantGiB) GiB, \(candidate.requests)")
+        }
     }
 
     @Test func plainOwnerReusesExactTextPrefixesWhenTheGrantHoldsTheBank() {
@@ -361,8 +393,10 @@ struct NemotronSuperServingPolicyTests {
                         pinned: pinned, physicalBytes: physical)?.maximumBytes ?? 0
                     let label = "\(physicalGiB) GiB pinned=\(pinned) \(mode) grant \(grantGiB) GiB"
                     #expect(built == plan.prefixBankBytes, "\(label)")
+                    let round = plan.speculates ? Policy.speculativeOwnerBoundBytes(requests: requests) : 0
                     #expect(plan.admissionKVBytes == min(grant,
-                        Policy.admissionKVBytes(requests: requests, speculates: plan.speculates) + built), "\(label)")
+                        Policy.grantKVBytes(requests: requests, speculates: plan.speculates) + built) + round,
+                        "\(label)")
                 }
             }
         }

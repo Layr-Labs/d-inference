@@ -56,7 +56,8 @@ enum NemotronSuperLoadFit {
     struct Candidate: Equatable, Sendable {
         /// Runtime policy the builder receives for this configuration.
         let environment: [String: String]
-        /// KV headroom its LOAD claim holds, the prefix bank included.
+        /// KV headroom its LOAD claim holds, the prefix bank and any round
+        /// work included.
         let admissionKVBytes: Int
         let requests: Int
     }
@@ -64,8 +65,10 @@ enum NemotronSuperLoadFit {
     /// The configured candidate, then, for a managed claim (`admissionKVBytes`
     /// non-nil), the same policy without a prefix bank at the configured
     /// width and at each halved width down to one, and that one request with
-    /// `narrowestChunkTokens` chunks when its chunk is larger. A whole-grant
-    /// claim (the qualification runner's explicit contract) keeps only its own.
+    /// `narrowestChunkTokens` chunks when its chunk is larger. Each narrower
+    /// admission clamps only the part a grant holds to the grant; the round
+    /// work stays whole beside it. A whole-grant claim (the qualification
+    /// runner's explicit contract) keeps only its own.
     static func candidates(environment: [String: String], admissionKVBytes: Int?,
                            kvBytesCapacity: Int, speculates: Bool, contextTokens: Int) throws -> [Candidate] {
         let configured = try NemotronSuperLocalBridgeBuilder.concurrentRequests(
@@ -79,8 +82,9 @@ enum NemotronSuperLoadFit {
         var result = [base] + widths.map { requests in
             var reduced = withoutBank
             reduced[NemotronSuperLocalBridgeBuilder.maxConcurrentKey] = String(requests)
-            let admission = min(kvBytesCapacity, NemotronSuperServingPolicy.admissionKVBytes(
-                requests: requests, speculates: speculates, environment: reduced, contextTokens: contextTokens))
+            let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: requests,
+                speculates: speculates, environment: reduced, contextTokens: contextTokens,
+                kvBytesCapacity: kvBytesCapacity)
             return Candidate(environment: reduced, admissionKVBytes: admission, requests: requests)
         }
         if let last = result.last,

@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -219,8 +219,11 @@ Retaining source or running a build does not authorize hosting or traffic change
 For changes to the trusted PR reviewer, no provider build is required. Run the
 offline Python suites in [threat-review verification](threat-model-review.md#verify)
 and validate changed workflow YAML. The review workflow uploads content-free
-failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
-workflow change to merge.
+failure diagnostics and last-request progress, including scanner and canonical
+context revisions. After merge, new runs use current default-branch scanner code
+and separately read the PR base threat model. Integration replays bounded exact
+source from each model's own reviewed scope. Native Bedrock response-format
+compatibility requires the bounded live smoke check in addition to offline tests.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.

@@ -10,6 +10,9 @@ import Foundation
 /// bank, then halves the concurrent requests down to one, then serves that
 /// request with `narrowestChunkTokens` prompt chunks (a 4.75 GiB prefill lane
 /// instead of 8.5 GiB), and builds the first configuration the gate admits.
+/// When that owner no longer fits once the weights are installed, the next
+/// narrower configurations are asked the same way beside the installation,
+/// which is kept (`Claim.installedAskedWeightBytes`).
 /// Each keeps every measured bound: the installation, the head, the prefill
 /// lane of its chunk, each request's fixed bytes and the round at the slot's
 /// whole context. The bridge reports the width it was built with, so the
@@ -128,6 +131,14 @@ enum NemotronSuperLoadFit {
         let askedWeightBytes: UInt64
         /// What the gate must admit for this configuration.
         var requiredBytes: UInt64 { askedWeightBytes + UInt64(kvFloorBytes) }
+        /// `askedWeightBytes` once the installation and any head are
+        /// resident and their load transients are over: live usage counts a
+        /// pinned configuration's payloads, so it asks for its owner shares
+        /// and the slack; a fixture's lease must still hold them
+        /// (`NemotronSuperLocalBridgeBuilder.make`).
+        var installedAskedWeightBytes: UInt64 {
+            shares == nil ? askedWeightBytes : UInt64(ownerBytes) + UInt64(admissionSlackBytes)
+        }
     }
 
     /// nil when the configuration cannot hold the minimum KV or its bytes

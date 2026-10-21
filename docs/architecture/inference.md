@@ -360,7 +360,15 @@ bytes, the round at the whole context). It builds the first one the gate
 admits with `NemotronSuperLoadFit.admissionSlackBytes` (3 GiB) to spare
 beside the claim: while the claim is held the process grows up to 2.6 GB past
 the installation's quote, and a configuration admitted with 1.9 GB to spare
-lost its admission after its weights were installed. Super's claims keep no
+lost its admission after its weights were installed. If memory still drops
+by more than the slack while the weights install (other applications
+swapping), the owner build's memory refusal (`loadAdmissionLost`, or a refused
+lane, decode rows, round or bank) does not retire the load: the transaction
+keeps the installed weights and head, finishes that claim (its attempt is
+marked `lostAfterInstallation`) and asks the gate for each next narrower
+configuration's owner shares, KV floor and slack
+(`NemotronSuperLoadFit.Claim.installedAskedWeightBytes`), failing with the
+builder's last refusal when none fits. Super's claims keep no
 OS reserve beyond that slack and the activation reserve
 (`NemotronSuperLoadFit.systemReserveBytes`, in place of the provider's 10%
 load reserve) unless the operator raised `memory_reserve_gb` above its 4 GiB

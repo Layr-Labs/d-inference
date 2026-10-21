@@ -29,9 +29,13 @@
   `memory_reserve_gb` raised above its 4 GiB default stays free), so the model
   loads with 85.6 GiB available (about 104 GiB for the default), and a
   configuration that barely fits steps down instead of losing its admission
-  after the weights are installed. The provider accepts, evicts for and
-  preloads Super on that same rule: an idle co-resident model is evicted when
-  that lets the planned owner (or the widest reachable fallback) load,
+  after the weights are installed. If memory still drops while the weights
+  install (other applications swapping on a 128 GB Mac), the load keeps the
+  installed weights and serves the widest narrower configuration that still
+  fits instead of failing and reading the checkpoint again. The provider
+  accepts, evicts for and preloads Super on that same rule: an idle
+  co-resident model is evicted when that lets the planned owner (or the
+  widest reachable fallback) load,
   instead of the request being accepted and then refused with 503, and a load
   that cannot fit even after evicting every idle model is refused before it
   is accepted. MLX's cached buffers are returned before the load steps down,

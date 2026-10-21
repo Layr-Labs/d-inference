@@ -109,7 +109,11 @@ enum RunnerCheckpointLoad {
     /// activation reserve and unmaterialized commitments
     /// (`loadClaimRemainingBytes`); the provider's load reserve is not among
     /// them. `served_requests` is the admitted configuration's width only when
-    /// the load completed; `admitted` alone means the gate accepted that claim.
+    /// the load completed; `admitted` alone means the gate accepted that claim,
+    /// and `lost_after_installation` that the builder then refused its owner
+    /// beside the installed weights. Any later attempt reused them; its
+    /// `claim_bytes` stays the whole claim, though the gate weighed it less
+    /// the resident payloads.
     private static func fitJSON(_ transaction: NemotronSuperLocalLoad, budget: GlobalKVCacheBudget,
                                 loaded: Bool) async -> RunnerJSON {
         let attempts = await transaction.fitAttempts
@@ -118,7 +122,7 @@ enum RunnerCheckpointLoad {
             "attempts": .array(attempts.map {
                 ["requests": .count($0.requests), "prefix_bank_bytes": .bytes($0.prefixBankBytes),
                  "chunk_tokens": .count($0.chunkTokens), "claim_bytes": .bytes($0.claimBytes),
-                 "admitted": .bool($0.admitted)]
+                 "admitted": .bool($0.admitted), "lost_after_installation": .bool($0.lostAfterInstallation)]
             }),
             "served_requests": loaded ? attempts.last(where: \.admitted).map { .count($0.requests) } ?? .null : .null,
             "admission_slack_bytes": .bytes(NemotronSuperLoadFit.admissionSlackBytes),

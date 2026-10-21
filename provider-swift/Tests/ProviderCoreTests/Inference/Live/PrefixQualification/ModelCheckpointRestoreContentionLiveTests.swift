@@ -79,6 +79,10 @@ struct ModelCheckpointRestoreContentionLiveTests {
         try #require(specification.resolvedLiveKVQuantization == "native"
             && specification.resolvedCheckpointQuantization == "native",
             "the contention gate uses native live/storage; lossy profiles belong in ModelCheckpointStorageLiveTests")
+        // MiMo loads through the native engine, whose native-bound imports keep
+        // device allocation; the stage gate qualifies provider-staged imports.
+        try #require(specification.modelType != "mimo_v2",
+            "native-bound MiMo imports are outside the provider-staged staging contract")
         let fixture = try await ModelPrefixBenchmarkFixture(specification)
         var report = Report(modelID: specification.modelID, weightHash: specification.expectedWeightHash)
         do {

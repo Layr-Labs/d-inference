@@ -211,8 +211,10 @@ two seconds after the foreign prefill starts, so pick a `donorTokens` long
 enough to still be prefilling then. The report records the session's runtime
 identity (`runtime`, from `makeReport`) and keeps every sample, including the
 foreign requests that create each condition. It is rewritten atomically after
-each one, so an interrupted run keeps its completed samples, and its `failure`
-records contract violations, thrown errors and teardown errors alike.
+each measured run, so an interrupted run keeps every completed run's samples,
+and its `failure` records contract violations, thrown errors and teardown
+errors alike. The test qualifies provider-staged imports only, so it refuses
+MiMo specifications, which load through the native engine.
 
 ## Runtime Generation Comparisons
 

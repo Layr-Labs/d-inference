@@ -31,6 +31,9 @@ struct ModelCheckpointRestoreContentionLiveTests {
     struct Report: Codable {
         let modelID: String
         let weightHash: String
+        /// Backend, MTP, live/checkpoint precision and build identity, so a
+        /// retained report identifies its import path without the input spec.
+        var runtime: ModelPrefixBenchmarkReport?
         var sharedTokens = 0
         var demandedTokens = 0
         var samples: [Sample] = []
@@ -61,9 +64,16 @@ struct ModelCheckpointRestoreContentionLiveTests {
         try #require(output.hasPrefix("/") && !FileManager.default.fileExists(atPath: output),
             "the report output must be a new absolute path")
         let specification = try ModelPrefixBenchmarkSpecification.load()
+        // A lossy checkpoint can legitimately restore slower than recompute
+        // (docs/reports/2026-10-11-native-inference-checkpoint-storage.md), so
+        // the restore-versus-cold gate only qualifies native storage.
+        try #require(specification.resolvedLiveKVQuantization == "native"
+            && specification.resolvedCheckpointQuantization == "native",
+            "the contention gate uses native live/storage; lossy profiles belong in ModelCheckpointStorageLiveTests")
         let fixture = try await ModelPrefixBenchmarkFixture(specification)
         var report = Report(modelID: specification.modelID, weightHash: specification.expectedWeightHash)
         do {
+            report.runtime = await fixture.makeReport(comparison: "restore_contention")
             let cell = try #require(specification.cases.first)
             let prompts = try ModelCheckpointStoragePrompts(fixture: fixture, cell: cell)
             report.sharedTokens = prompts.sharedTokens
@@ -84,7 +94,13 @@ struct ModelCheckpointRestoreContentionLiveTests {
                     }
                 }
             }
-            try Self.requireRestoreNeverSlower(report)
+            // Record violations in the retained report before failing the test.
+            let violations = try Self.restoreContractViolations(report)
+            if !violations.isEmpty {
+                report.failure = violations.joined(separator: "; ")
+                try report.save(to: output)
+            }
+            #expect(violations.isEmpty, "\(violations.joined(separator: "; "))")
         } catch {
             let failure = error
             report.failure = String(describing: failure)
@@ -92,7 +108,11 @@ struct ModelCheckpointRestoreContentionLiveTests {
             try report.save(to: output)
             throw failure
         }
-        try await fixture.close()
+        do { try await fixture.close() } catch {
+            report.failure = [report.failure, "teardown: \(error)"].compactMap { $0 }.joined(separator: "; ")
+            try report.save(to: output)
+            throw error
+        }
     }
 
     /// Serves the fork once, restored or cold, under one condition and returns
@@ -133,7 +153,9 @@ struct ModelCheckpointRestoreContentionLiveTests {
         return samples
     }
 
-    private static func requireRestoreNeverSlower(_ report: Report) throws {
+    /// Returns every contract violation; a missing sample throws.
+    private static func restoreContractViolations(_ report: Report) throws -> [String] {
+        var violations: [String] = []
         for pair in Set(report.samples.map(\.pair)).sorted() where pair >= 0 {
             let idle = try #require(report.samples.first {
                 $0.pair == pair && $0.role == Condition.idle.role(cache: true)
@@ -145,16 +167,21 @@ struct ModelCheckpointRestoreContentionLiveTests {
                 let cold = try #require(report.samples.first {
                     $0.pair == pair && $0.role == condition.role(cache: false)
                 })
-                #expect(restore.stageDisposition == "staged" && restore.restoredTokens >= report.demandedTokens,
-                    "pair \(pair) \(condition.rawValue): restore must reach the demanded boundary")
-                #expect(restore.firstOutputSeconds <= cold.firstOutputSeconds,
-                    "pair \(pair) \(condition.rawValue): restore TTFT \(restore.firstOutputSeconds)s exceeds cold TTFT \(cold.firstOutputSeconds)s")
+                let label = "pair \(pair) \(condition.rawValue)"
+                if restore.stageDisposition != "staged" || restore.restoredTokens < report.demandedTokens {
+                    violations.append("\(label): restore must reach the demanded boundary")
+                }
+                if restore.firstOutputSeconds > cold.firstOutputSeconds {
+                    violations.append("\(label): restore TTFT \(restore.firstOutputSeconds)s exceeds cold TTFT \(cold.firstOutputSeconds)s")
+                }
                 // Waiting on evalLock costs a whole foreign prefill chunk (2.6-3.8 s
                 // measured on M5 Max) on top of the 0.3 s idle stage.
-                #expect(restore.stageMilliseconds <= idle.stageMilliseconds + 1_000,
-                    "pair \(pair) \(condition.rawValue): stage \(restore.stageMilliseconds)ms vs idle \(idle.stageMilliseconds)ms")
+                if restore.stageMilliseconds > idle.stageMilliseconds + 1_000 {
+                    violations.append("\(label): stage \(restore.stageMilliseconds)ms vs idle \(idle.stageMilliseconds)ms")
+                }
             }
         }
+        return violations
     }
 
     /// Engine sampling IDs must be distinct while two submissions overlap.

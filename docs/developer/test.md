@@ -178,7 +178,9 @@ specifications before loading; keep those output-hash assertions unchanged.
 (`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointRestoreContentionLiveTests.swift`)
 is the opt-in real-model regression for complete-checkpoint SSD restore TTFT on
 a shared engine. It reads the first case of the same standalone
-`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache. For each
+`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache, and
+requires native live and checkpoint precision: a lossy checkpoint can restore
+slower than recompute, which belongs in `ModelCheckpointStorageLiveTests`. For each
 pair it serves the fork prompt restored and cold under three conditions: idle,
 while another tenant's long prefill is running, and right after another
 tenant's donor completes. It fails when a restore does not reach
@@ -201,10 +203,11 @@ Pick `demandedTokens` at or below the deepest checkpoint that fits
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`; a deeper demand fails the boundary
 check rather than measuring restore latency. The contended fork is submitted
 two seconds after the foreign prefill starts, so pick a `donorTokens` long
-enough to still be prefilling then. The report keeps every sample, including
-the foreign requests that create each condition, and is rewritten atomically
-after each one, so an interrupted run keeps its completed samples and records
-the `failure`, including any teardown error.
+enough to still be prefilling then. The report records the session's runtime
+identity (`runtime`, from `makeReport`) and keeps every sample, including the
+foreign requests that create each condition. It is rewritten atomically after
+each one, so an interrupted run keeps its completed samples, and its `failure`
+records contract violations, thrown errors and teardown errors alike.
 
 ## Runtime Generation Comparisons
 

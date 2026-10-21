@@ -7,16 +7,24 @@ import Testing
 
 extension ModelPrefixBenchmarkFixture {
     func run(cell: String, pair: Int, role: String, tokens: [Int], scope: String,
-             target: Int?, cacheEnabled: Bool) async throws -> ModelPrefixBenchmarkRow {
+             target: Int?, cacheEnabled: Bool, observeStorage: Bool = false,
+             expectedMarker: String? = nil, recordPrefillRanges: Bool = false) async throws -> ModelPrefixBenchmarkRow {
         let before = await session.cacheSnapshot().checkpoints ?? SSDHybridCheckpointStats()
         let configuration = schedulerConfiguration
         let mtpBefore = session.rawEngine.mtpMetricsSnapshot()
         let captureDiagnostics = specification.captureTokenDiagnostics == true
-        let request = CBv2Request(id: .init(11), promptTokens: tokens,
-            sampling: .init(temperature: 0, topLogprobs: captureDiagnostics ? 2 : 0),
-            maxTokens: specification.outputTokens,
-            stopTokens: [], cacheSalt: scope, prefixCacheEnabled: cacheEnabled,
-            prefixCheckpointTargetTokens: target)
+        var request = Self.benchmarkRequest(tokens: tokens, scope: scope, target: target,
+            cacheEnabled: cacheEnabled, outputTokens: specification.outputTokens,
+            captureDiagnostics: captureDiagnostics)
+        let trace = recordPrefillRanges ? try prefillTraceRecorder() : nil
+        let capture = try trace?.begin(requestID: request.id, promptTokens: tokens.count)
+        defer { if let capture { trace?.end(capture) } }
+        let memory = observeStorage ? ModelPrefixBenchmarkPrefillMemoryCapture(requestID: request.id) : nil
+        if let memory {
+            request.onPrefillCompleted = { [weak engine = session.rawEngine] usage in
+                if let engine { memory.record(usage: usage, engine: engine) }
+            }
+        }
         let started = ContinuousClock.now
         let submitted = try await session.submit(request)
         var outputTiming = ModelPrefixBenchmarkOutputTiming()
@@ -62,7 +70,7 @@ extension ModelPrefixBenchmarkFixture {
         let digest = SHA256.hash(data: Data(outputBytes)).map { String(format: "%02x", $0) }.joined()
         let diagnostics = captureDiagnostics
             ? try ModelPrefixBenchmarkTokenDiagnostics(tokens: output, logprobs: observedLogprobs) : nil
-        return ModelPrefixBenchmarkRow(cell: cell, pair: pair, role: role,
+        var row = ModelPrefixBenchmarkRow(cell: cell, pair: pair, role: role,
             promptTokens: tokens.count, completedOutputTokens: output.count,
             firstOutputTokenCount: outputTiming.firstOutputTokenCount,
             outputEventCount: outputTiming.outputEventCount, targetTokens: target,
@@ -87,6 +95,42 @@ extension ModelPrefixBenchmarkFixture {
             preemptions: usage.timing.preemptions, peakStagingBytes: after.peakStagingReservationBytes,
             peakWriteHostBytes: after.peakWriteHostBytes,
             schedulerConfiguration: configuration, tokenDiagnostics: diagnostics, mtp: mtp)
+        row.memoryAtPrefillCompletion = try memory?.snapshot()
+        if observeStorage {
+            row.memoryAfterRetirement = memoryObservation()
+        }
+        if let expectedMarker {
+            let text = tokenizer.inner.decode(tokenIds: output)
+            row.publicOutput = ModelPrefixBenchmarkPublicOutput(expectedMarker: expectedMarker,
+                containsExpectedMarker: text.contains(expectedMarker), decodedText: text, tokenIDs: output)
+        }
+        row.stageConsumptionsDelta = after.stageConsumptions - before.stageConsumptions
+        row.stagedBytesAfterRetirement = after.stagedBytesInUse
+        row.writeHostBytesAfterRetirement = after.writeHostBytesInUse
+        row.promptSHA256 = try ModelCheckpointStoragePrompts.digest(tokens)
+        row.decodeSteps = usage.timing.decodeSteps
+        row.chainedDecodeSteps = usage.timing.chainedDecodeSteps
+        row.prefixCacheEnabled = request.prefixCacheEnabled
+        row.samplingRequestID = request.id.raw
+        row.samplingTemperature = request.sampling.temperature
+        row.stopTokenCount = request.stopTokens.count
+        row.cacheScopeSHA256 = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        if let trace, let capture {
+            let ranges = trace.snapshot(capture)
+            try ModelCheckpointPrefillRange.validate(ranges, promptTokens: tokens.count,
+                prefillChunks: usage.timing.prefillChunks, packedPrefillChunks: usage.timing.packedPrefillChunks,
+                preemptions: usage.timing.preemptions)
+            row.prefillRanges = ranges
+        }
+        return row
+    }
+
+    static func benchmarkRequest(tokens: [Int], scope: String, target: Int?, cacheEnabled: Bool,
+                                 outputTokens: Int, captureDiagnostics: Bool = false) -> CBv2Request {
+        CBv2Request(id: .init(11), promptTokens: tokens,
+            sampling: .init(temperature: 0, topLogprobs: captureDiagnostics ? 2 : 0),
+            maxTokens: outputTokens, stopTokens: [], cacheSalt: scope, prefixCacheEnabled: cacheEnabled,
+            prefixCheckpointTargetTokens: target)
     }
 
     private func seconds(_ duration: Duration) -> Double {

@@ -17,6 +17,7 @@ enum FanServiceManagerError: Error, CustomStringConvertible {
     case launchctlFailed(String)
     case unsupported(String)
     case restoreFailed(String)
+    case newerHelperInstalled(String)
 
     var description: String {
         switch self {
@@ -33,6 +34,9 @@ enum FanServiceManagerError: Error, CustomStringConvertible {
         case .launchctlFailed(let detail): return "fan launchd operation failed: \(detail)"
         case .unsupported(let detail): return "fan control is unavailable: \(detail)"
         case .restoreFailed(let detail): return "could not verify automatic fan control: \(detail)"
+        case .newerHelperInstalled(let installed):
+            return "the running fan helper is version \(installed), newer than this build's version "
+                + "\(FanIPC.helperVersion); update this provider instead of replacing the helper with an older one"
         }
     }
 }
@@ -64,6 +68,12 @@ struct FanServiceManager {
         let source = try bundledHelperURL()
         try verifyRegularExecutable(source)
         try verifyHelperSignature(source)
+        // The helper serves every provider on the Mac. Never replace it with
+        // an older one from an older install.
+        if let running = try? host.helperStatus(),
+           FanIPC.compareHelperVersion(running.helperVersion) == .orderedDescending {
+            throw FanServiceManagerError.newerHelperInstalled(running.helperVersion)
+        }
 
         do {
             // An existing helper may own the fans. Keep this preflight inside

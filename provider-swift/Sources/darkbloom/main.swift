@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import ProviderAppAttest
 import ProviderCore
 
 // Entry point. The long-running serve modes (start --foreground / --local) are
@@ -11,6 +12,20 @@ import ProviderCore
 // here instead of via @main on Darkbloom.
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
+
+// A worker never enters AppKit, CLI lifecycle, inference or update startup.
+if rawArgs.first == AppAttestWorkerHost.argument {
+    await AppAttestWorkerCommand.runIfRequested(rawArgs)
+}
+if rawArgs.first == NativeServeQualificationCommand.argument {
+    NativeServeQualificationCommand.runHosted(rawArgs)
+}
+if AppAttestQualificationCommand.requestsAppKitHost(rawArgs) {
+    AppAttestQualificationCommand.runHosted(rawArgs)
+}
+if rawArgs.first == AppAttestQualificationCommand.argument {
+    await AppAttestQualificationCommand.runIfRequested(rawArgs)
+}
 
 // Before parsing (including help/version/errors) and before the AppKit serve
 // branch, so no subcommand has to remember to print this notice. Keep stdout

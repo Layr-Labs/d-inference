@@ -17,7 +17,14 @@ enum SSDHybridCheckpointStoreFactory {
             PromptContractIdentity.blockSize == UInt32(PrefixCachePolicy.blockSize),
             backendLayout == CBv2CompleteCheckpointManifest.layout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedLayout
-                || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                || backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.quantizedHistoricalLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricMTPLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
@@ -67,8 +74,9 @@ enum SSDHybridCheckpointStoreFactory {
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
                 nativePrefillChunkSize: nativePrefillChunkSize,
                 root: root, dedicatedRoot: wholeRoot,
-                epochStore: epoch, maxReadBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
-                maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
+                epochStore: epoch,
+                maxReadBytes: SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: environment),
+                maxStageMillis: SSDPrefixCachePolicy.completeCheckpointMaxStageMillis(environment: environment),
                 minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
                 ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
                 nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,

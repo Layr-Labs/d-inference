@@ -5,9 +5,11 @@ import Image from "next/image";
 import { SiteNav } from "./SiteNav";
 import { PageWithFooter } from "./Footer";
 import { GridMap } from "./GridMap";
+import { bindStoryGestures } from "./storyGestures";
 import { GridChat, type GridChatHandle } from "./GridChat";
 import { STORY_CELL } from "../content/grid";
 import { socialLinks, stories } from "../content/site";
+import { homepageOverview } from "../content/public-pages";
 
 type NetworkSnapshot = {
   available: boolean;
@@ -219,27 +221,12 @@ export function HomeExperience() {
   const gridMapShell = useRef<HTMLDivElement>(null);
   const storySection = useRef<HTMLElement>(null);
   const storyCarousel = useRef<HTMLDivElement>(null);
+  const storySurface = useRef<HTMLElement>(null);
   const storyCards = useRef<Array<HTMLElement | null>>([]);
   const storyScrollFrame = useRef<number | null>(null);
   const storyLoopTimer = useRef<number | null>(null);
   const storySettlingIndex = useRef<number | null>(null);
-  const storyDrag = useRef<{
-    active: boolean;
-    moved: boolean;
-    pointerId: number;
-    startIndex: number;
-    startScrollLeft: number;
-    startX: number;
-  }>({
-    active: false,
-    moved: false,
-    pointerId: -1,
-    startIndex: INITIAL_STORY_LOOP_INDEX,
-    startScrollLeft: 0,
-    startX: 0,
-  });
-  const suppressStoryClick = useRef(false);
-  const storyClickResetFrame = useRef<number | null>(null);
+  const storyDrag = useRef({ active: false, startIndex: INITIAL_STORY_LOOP_INDEX });
   const activeStoryItemRef = useRef<number>(INITIAL_STORY_LOOP_INDEX);
   const activeStoryRef = useRef<Story["slug"]>(stories[FEATURED_STORY_INDEX].slug);
   const closingSection = useRef<HTMLElement>(null);
@@ -278,7 +265,7 @@ export function HomeExperience() {
       const viewport = storyCarousel.current;
       if (!viewport) return;
 
-      // Keep the selected media and detail copy stable for the entire mouse
+      // Keep the selected media and detail copy stable for the entire browsing
       // gesture. Replacing an active card's image with its video while the rail
       // is moving forces the browser to tear down and recreate media nodes,
       // which presents as a full-content flicker. Programmatic snapping is
@@ -315,7 +302,6 @@ export function HomeExperience() {
       });
       commitStoryItem(closestIndex);
 
-      if (storyDrag.current.active) return;
       if (storyLoopTimer.current != null) window.clearTimeout(storyLoopTimer.current);
       storyLoopTimer.current = window.setTimeout(() => {
         if (closestIndex >= stories.length && closestIndex < stories.length * 2) return;
@@ -325,64 +311,26 @@ export function HomeExperience() {
     });
   }, [centerStoryItem, commitStoryItem]);
 
-  const handleStoryPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== "mouse" || event.button !== 0) return;
+  useEffect(() => {
+    const surface = storySurface.current;
     const viewport = storyCarousel.current;
-    if (!viewport) return;
-    if (storyLoopTimer.current != null) window.clearTimeout(storyLoopTimer.current);
-    storySettlingIndex.current = null;
-    storyDrag.current = {
-      active: true,
-      moved: false,
-      pointerId: event.pointerId,
-      startIndex: activeStoryItemRef.current,
-      startScrollLeft: viewport.scrollLeft,
-      startX: event.clientX,
-    };
-    viewport.classList.add("is-dragging");
-    try {
-      viewport.setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture is unavailable for synthetic or legacy pointer events;
-      // the gesture still works while the pointer remains over the rail.
-    }
-  }, []);
-
-  const handleStoryPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const viewport = storyCarousel.current;
-    const drag = storyDrag.current;
-    if (!viewport || !drag.active || drag.pointerId !== event.pointerId) return;
-    const travel = event.clientX - drag.startX;
-    if (Math.abs(travel) > 4) drag.moved = true;
-    viewport.scrollLeft = drag.startScrollLeft - travel;
-    event.preventDefault();
-  }, []);
-
-  const finishStoryDrag = useCallback((event: React.PointerEvent<HTMLDivElement>, cancelled = false) => {
-    const viewport = storyCarousel.current;
-    const drag = storyDrag.current;
-    if (!viewport || !drag.active || drag.pointerId !== event.pointerId) return;
-    const travel = event.clientX - drag.startX;
-    const moved = drag.moved;
-    const startIndex = drag.startIndex;
-    drag.active = false;
-    viewport.classList.remove("is-dragging");
-    if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
-
-    if (moved) {
-      suppressStoryClick.current = true;
-      if (storyClickResetFrame.current != null) cancelAnimationFrame(storyClickResetFrame.current);
-      storyClickResetFrame.current = requestAnimationFrame(() => {
-        suppressStoryClick.current = false;
-        storyClickResetFrame.current = null;
-      });
-    }
-
-    const direction = travel < 0 ? 1 : -1;
-    const targetIndex = !cancelled && Math.abs(travel) >= 48
-      ? Math.max(0, Math.min(LOOPED_STORIES.length - 1, startIndex + direction))
-      : startIndex;
-    centerStoryItem(targetIndex);
+    if (!surface || !viewport) return;
+    return bindStoryGestures(surface, viewport, {
+      onStart: () => {
+        if (storyLoopTimer.current != null) window.clearTimeout(storyLoopTimer.current);
+        storySettlingIndex.current = null;
+        storyDrag.current = { active: true, startIndex: activeStoryItemRef.current };
+      },
+      onEnd: (travel, cancelled) => {
+        const startIndex = storyDrag.current.startIndex;
+        storyDrag.current.active = false;
+        const direction = travel < 0 ? 1 : -1;
+        const targetIndex = !cancelled && Math.abs(travel) >= 48
+          ? Math.max(0, Math.min(LOOPED_STORIES.length - 1, startIndex + direction))
+          : startIndex;
+        centerStoryItem(targetIndex);
+      },
+    });
   }, [centerStoryItem]);
 
   useEffect(() => {
@@ -397,7 +345,6 @@ export function HomeExperience() {
       observer.disconnect();
       if (storyScrollFrame.current != null) cancelAnimationFrame(storyScrollFrame.current);
       if (storyLoopTimer.current != null) window.clearTimeout(storyLoopTimer.current);
-      if (storyClickResetFrame.current != null) cancelAnimationFrame(storyClickResetFrame.current);
     };
   }, [centerStoryItem]);
 
@@ -1005,8 +952,8 @@ export function HomeExperience() {
             <div className="hero-film-grain" />
           </div>
           <div className="hero-copy">
-            <h1 id="hero-title">The compute grid<br />powered by people.</h1>
-            <p>For the innovators pushing the frontier.</p>
+            <h1 id="hero-title">AI, powered by<br />your Macs.</h1>
+            <p>For the trailblazers pushing the frontier.</p>
             <a className="text-link" href="https://console.darkbloom.dev/" target="_blank" rel="noreferrer">
               Join the grid ↗
             </a>
@@ -1035,7 +982,7 @@ export function HomeExperience() {
             <span>Live grid</span>
           </div>
           <div className="network-narrative">
-            <p className="network-overview-title">Not a data center.<br />A network of people.</p>
+            <p className="network-overview-title">Many Macs.<br />One network.</p>
             <div className="network-route-copy">
               <p>Every request,<br />routed to a real machine.</p>
               <button
@@ -1104,16 +1051,17 @@ export function HomeExperience() {
         aria-labelledby="stories-heading"
         ref={storySection}
       >
-        <article className="story-article">
-          <h2 className="sr-only" id="stories-heading">Stories from the Darkbloom grid</h2>
+        <article
+          className="story-article"
+          ref={storySurface}
+          tabIndex={0}
+          aria-label="Provider stories. Swipe or use left and right arrow keys to browse."
+        >
+          <h2 className="story-section-heading" id="stories-heading">The people powering what comes next.</h2>
           <div
             className="story-gallery"
             ref={storyCarousel}
             onScroll={handleStoryScroll}
-            onPointerDown={handleStoryPointerDown}
-            onPointerMove={handleStoryPointerMove}
-            onPointerUp={(event) => finishStoryDrag(event)}
-            onPointerCancel={(event) => finishStoryDrag(event, true)}
             onDragStart={(event) => event.preventDefault()}
             aria-label="Provider stories. Drag left or right to browse."
           >
@@ -1126,9 +1074,7 @@ export function HomeExperience() {
                   isClone={index < stories.length || index >= stories.length * 2}
                   playing={index === playingStoryItemIndex}
                   cardRef={(node) => { storyCards.current[index] = node; }}
-                  onSelect={() => {
-                    if (!suppressStoryClick.current) centerStoryItem(index);
-                  }}
+                  onSelect={() => centerStoryItem(index)}
                   onPlay={() => setPlayingStoryItemIndex(index)}
                 />
               ))}
@@ -1172,7 +1118,7 @@ export function HomeExperience() {
         <div className="closing-content">
           <div className="closing-copy">
             <h2 id="closing-title">Your Mac<br />could be part<br />of the grid.</h2>
-            <p className="closing-subhead">Join thousands of nodes worldwide. Secure the network, earn rewards, and build the future of decentralized computing.</p>
+            <p className="closing-subhead">{homepageOverview} <a href="/developers">Explore the API</a> and <a href="/pricing">pricing</a>.</p>
             <a className="closing-join" href="https://console.darkbloom.dev/" target="_blank" rel="noreferrer">Join the grid ↗</a>
           </div>
           <div className="closing-laptop" aria-hidden="true">

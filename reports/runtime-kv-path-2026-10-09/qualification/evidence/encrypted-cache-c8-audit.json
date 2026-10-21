@@ -1,0 +1,23 @@
+{
+  "actualInputMatchesC7Bytes": true,
+  "actualSingleRowInputSHA256": "76aa226e9c2d5608aad65ae9cec9463b2d4a436e518ee43673d9d0d14bd620f4",
+  "archivedOriginalThreeRowInputSHA256": "9399b1650efe85e25cbc145cc70a98392ad434cbca13a795c324165d187f3aa7",
+  "inventoryFilesVerified": 92,
+  "profiles": [
+    {
+      "all21ReportedRetirementLedgersZero": true,
+      "exactOrCancellationPrefixPairsVerified": 21,
+      "nativeGenerationCountNotExposed": true,
+      "profile": "native",
+      "reportSHA256": "bc86d1d9c0149cbcead8ae5b2c4b8678cd2ebbf08d0d7b14a30afddda6eb2941"
+    },
+    {
+      "all21ReportedRetirementLedgersZero": true,
+      "exactOrCancellationPrefixPairsVerified": 21,
+      "nativeGenerationCountNotExposed": true,
+      "profile": "balanced",
+      "reportSHA256": "7a8d2c61f187f7ac2ef93fad676104fde80a0a14f85a6abcda079f246edcd584"
+    }
+  ],
+  "scope": "Independent root audit of raw file hashes, runtime/input/model identities, actual token arrays and retirement fields. Replay is deliberately limited to64 generated tokens, separate from semantic task accuracy."
+}

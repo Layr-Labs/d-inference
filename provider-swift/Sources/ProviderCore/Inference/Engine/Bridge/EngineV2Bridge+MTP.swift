@@ -7,7 +7,7 @@ import os
 extension EngineV2Bridge {
     #if canImport(os)
     private static let mtpLogger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2_mtp")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2_mtp")
     #endif
 
     /// Record MTP activation, emit the opening per-slot posture, and
@@ -113,6 +113,9 @@ extension EngineV2Bridge {
             // the fleet-side `kv_backend_fallback_reason` carry the SAME
             // string — a truncated tail on both rather than two variants.
             kvBackendFallbackReason: clampedKVBackendFallbackReason,
+            kvQuantization: kvQuantization.rawValue,
+            kvCheckpointQuantization: ssdHybridCheckpointStore == nil ? nil : kvCheckpointQuantization.rawValue,
+            checkpointBackendLayout: ssdHybridCheckpointStore?.config.backendLayout,
             mtpEnabled: snapshot.configured,
             mtpActive: snapshot.active,
             mtpInactiveReason: snapshot.fallbackReason?.rawValue)

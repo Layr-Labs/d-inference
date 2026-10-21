@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -171,11 +171,12 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 The watchdog writes `~/.darkbloom/kv-backend-guard.json` after
 `crashLoopTripThreshold` restarts ([runtime constants](./cli-reference.md#runtime-constants));
-while it matches the running version the
-engine forces `auto` selections to contiguous KV, without overriding explicit
-backend settings, and `doctor` shows `kv backend crash-loop guard`
+while it matches the running version it changes automatic backend selection,
+and `doctor` shows `kv backend crash-loop guard`
 (`provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift`;
 `provider-swift/Sources/darkbloom/Diagnostics/KVBackendGuardDiagnostics.swift`).
+The resulting fallback or refusal depends on live precision; see the
+[backend posture and recovery reference](./cli-reference.md#darkbloom-doctor-1).
 
 ```bash
 darkbloom doctor                        # read the guard record and the posture per slot
@@ -184,25 +185,19 @@ darkbloom restart
 ```
 
 A new binary version clears a stale record on start. Clearing the guard restores
-normal selection on the next model load: candidate `auto` retries paged only for
-the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); all other
-IDs remain contiguous. Automatic paged failures still fall back to contiguous.
-Explicit settings, capability/span-mask vetoes and `DARKBLOOM_CBV2_PAGED_KV=0`
-still apply, so clearing the guard does not guarantee paged service. The
-[Qwen-first rollout](../design/qwen-first-paged-ssd-rollout.md) is **not yet
-validated**; clearing a guard is not validation of that rollout.
+normal selection on the next model load. It does not bypass live precision,
+operator settings or loaded-model capability checks, and does not guarantee
+paged service or qualify a runtime.
+The [Qwen-first rollout](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md)
+is historical qualification evidence, not the current selection policy.
 
 `kv backend posture` ✗ means an explicit backend request was refused or the
-served backend differs from the request. An explicit
-`engine_v2_kv_backend = "paged"` (or per-model entry) refuses construction
-failures instead of falling back; a kill switch or capability veto can instead
-produce a contiguous slot. Read the reported reason. Set `"contiguous"` to pin
-that backend, or `"auto"` to allow model-aware selection and fallback; `"auto"`
-is not a contiguous pin for the cohort. Explicit `"paged"` bypasses the
-automatic crash-loop guard, not the kill switch or capability vetoes
-(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
-`degradesPagedFailure`; `EngineV2Factory+BackendPreparation.swift`,
-`prepareProductionBackend`).
+served backend differs from the request. Read the reported reason. For explicit
+contiguous recovery, first resolve live precision to `native`, then select
+`contiguous`; account for per-model and environment overrides using the
+[precision settings](./cli-reference.md#providertoml-keys-read-by-the-cli).
+The [backend posture reference](./cli-reference.md#darkbloom-doctor-1) defines
+the effects of explicit selection, capability vetoes and the paged kill switch.
 
 Paging rollback alone does not disable eligible Qwen SSD reuse on contiguous.
 SSD caching remains enabled by default with no resident retention; use

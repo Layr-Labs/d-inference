@@ -19,7 +19,9 @@ extension ModelPrefixBenchmarkFixture {
         do {
             native = try await NativeHistoricalPrefixArchitecture.load(modelID: specification.modelID,
                 directory: directory, verifiedWeightHash: verifiedHash, environment: environment,
-                mtpEnabled: specification.mtpEnabled ?? false)
+                mtpEnabled: specification.mtpEnabled ?? false, kvBackend: specification.resolvedKVBackend,
+                kvQuantizationConfig: specification.resolvedLiveKVQuantization,
+                checkpointQuantizationConfig: specification.resolvedCheckpointQuantization)
         } catch {
             Self.cleanupNativeRootAfterLoadFailure(root, error: error)
             throw error

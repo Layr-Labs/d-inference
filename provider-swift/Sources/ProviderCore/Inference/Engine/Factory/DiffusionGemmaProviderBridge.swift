@@ -21,28 +21,52 @@ enum DiffusionGemmaProviderBridge {
         prefixCache: DiffusionGemmaResidentPrefixConfiguration? = nil,
         completePrefixCache: SSDHybridCheckpointStore? = nil,
         retainMemoryPrefixes: Bool = true, prefillChunkSize: Int = 512,
-        prefixCacheStatus: PrefixCacheModelStatus? = nil, pageBacked: Bool = false
+        prefixCacheStatus: PrefixCacheModelStatus? = nil, pageBacked: Bool = false,
+        kvBackendFallbackReason: String? = nil,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) async throws -> Prepared {
+        try EngineV2KVQuantizationPolicy.requireResolvedBackend(
+            pageBacked ? .paged : .contiguous, selection: kvQuantization)
         guard !pageBacked || sharedBudget != nil else {
             throw CBv2KVError.backendIneligible(reason: "Native paged serving requires process memory admission")
         }
-        return try await container.perform { context in
+        return try await container.perform(nonSendable: pagedPreflightOverride) { context, pagedPreflightOverride in
             let config = context.model.configuration.textConfig
             let embedding = context.model.model.decoder.embedTokens
             let dtype = (embedding as? QuantizedEmbedding)?.scales.dtype ?? embedding.weight.dtype
             let fullLayers = config.layerTypes.filter { $0 == "full_attention" }.count
             let nominalRate = fullLayers * 2 * (config.globalKeyValueHeads ?? config.keyValueHeads)
                 * config.globalHeadDimension * 2
-            let nativeRate = nominalRate / 2 * dtype.size
+            let nativeRate: Int
+            if let format = kvQuantization.configuration {
+                let perLayer = try format.bytesPerToken(
+                    kvHeads: config.globalKeyValueHeads ?? config.keyValueHeads,
+                    headDim: config.globalHeadDimension)
+                let (rate, overflow) = fullLayers.multipliedReportingOverflow(by: perLayer)
+                guard !overflow else { throw EngineV2ProductionError.noKVHeadroom }
+                nativeRate = rate
+            } else { nativeRate = nominalRate / 2 * dtype.size }
             let weights = context.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
             let sizing = SlotSizingSnapshot(
                 weightsBytes: weights, fp16KVBytesPerToken: nominalRate,
                 maxContextLength: config.maxPositionEmbeddings,
                 defaultMaxTokens: context.generationConfiguration.maxNewTokens)
-            let pageConfig: PagedKVPoolConfig? = pageBacked ? .init(capacityBytes: kvBytesCapacity,
-                dtype: dtype, maxPrefillChunk: max(prefillChunkSize, context.model.configuration.canvasLength),
-                nominalMaxSequenceLength: config.maxPositionEmbeddings, segmentSizeBytes: 8 << 20,
-                layerDTypes: Array(repeating: dtype, count: config.layerCount)) : nil
+            let pageConfig: PagedKVPoolConfig? = pageBacked ? makePagedConfiguration(
+                configuration: context.model.configuration, kvBytesCapacity: kvBytesCapacity,
+                dtype: dtype, prefillChunkSize: prefillChunkSize, kvQuantization: kvQuantization) : nil
+            if let pageConfig, pageConfig.quantization != nil {
+                // Packed kernel compilation can terminate the process. Probe
+                // the loaded geometry in the existing child before owning a pool.
+                let layerKinds = config.diffusionPagedLayerKinds
+                if let pagedPreflightOverride {
+                    try pagedPreflightOverride(layerKinds)
+                } else {
+                    try PagedKernelPreflight.run(
+                        layerKinds: layerKinds, precision: kvQuantization,
+                        nativeLayerIndices: pageConfig.nativeLayerIndices)
+                }
+            }
             let engine = try context.makeNativeEngine(
                 kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
                 prefillChunkSize: prefillChunkSize,
@@ -60,12 +84,36 @@ enum DiffusionGemmaProviderBridge {
                 // Absolute deadline checks are unchanged; a native forecast and
                 // native phase leases remain required before serving qualification.
                 prefillDeadlineProjectionEnabled: false,
-                kvBytesPerToken: nativeRate, kvBudget: sharedBudget,
+                kvBytesPerToken: nativeRate,
+                // Quote the actual pool's worst-case native band once per
+                // active/prospective request, without reserving it again.
+                fixedRequestBytes: engine.maximumNativeRecentFeasibilityBytes,
+                kvBudget: sharedBudget,
                 ssdHybridCheckpointStore: completePrefixCache,
                 prefixCacheStatus: prefixCacheStatus,
-                kvBackendKind: pageBacked ? .paged : .contiguous, pagedPageSize: pageConfig?.pageSize,
+                kvBackendKind: pageBacked ? .paged : .contiguous, kvQuantization: kvQuantization,
+                pagedPageSize: pageConfig?.pageSize,
+                kvBackendFallbackReason: kvBackendFallbackReason,
                 advertisedContextTokens: config.maxPositionEmbeddings)
             return Prepared(bridge: bridge, tokenizer: tokenizer, sizing: sizing)
         }
+    }
+
+    /// Whole native visual blocks can exceed the ordinary text chunk. Quote
+    /// the existing closed block contract before pool construction; actual
+    /// media, Boolean masks and native generations retain their admission owners.
+    static func makePagedConfiguration(
+        configuration: DiffusionGemmaConfiguration, kvBytesCapacity: Int, dtype: DType,
+        prefillChunkSize: Int, kvQuantization: EngineV2KVQuantizationSelection
+    ) -> PagedKVPoolConfig {
+        let text = configuration.textConfig
+        let visualBound = configuration.visionConfig == nil
+            ? 0 : DiffusionGemmaPrefillGeometry.maximumVisualBlockTokens
+        return .init(
+            capacityBytes: kvBytesCapacity, dtype: dtype,
+            maxPrefillChunk: max(prefillChunkSize, configuration.canvasLength, visualBound),
+            nominalMaxSequenceLength: text.maxPositionEmbeddings, segmentSizeBytes: 8 << 20,
+            layerDTypes: Array(repeating: dtype, count: text.layerCount),
+            quantization: kvQuantization.configuration)
     }
 }

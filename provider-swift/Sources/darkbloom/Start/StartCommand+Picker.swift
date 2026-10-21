@@ -390,7 +390,7 @@ extension Start {
                     print("  \u{2713} Downloaded \(entry.displayName)")
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
-                    printError("hint: download manually with `darkbloom models download \(entry.id)`")
+                    printError("hint: download manually with `\(BuildEnvironment.current.cliName) models download \(entry.id)`")
                     throw ExitCode.failure
                 }
             }
@@ -466,7 +466,7 @@ extension Start {
                     print("  \(entry.displayName) downloaded.")
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
-                    printError("hint: download manually with `darkbloom models download \(entry.id)`")
+                    printError("hint: download manually with `\(BuildEnvironment.current.cliName) models download \(entry.id)`")
                     throw ExitCode.failure
                 }
             }

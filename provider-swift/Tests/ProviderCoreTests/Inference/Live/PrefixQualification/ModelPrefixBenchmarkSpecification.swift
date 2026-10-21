@@ -15,7 +15,16 @@ struct ModelPrefixBenchmarkSpecification: Codable, Sendable {
     var pairOffset: Int? = nil
     var soloPrefillStripeTokens: Int? = nil
     var captureTokenDiagnostics: Bool? = nil
+    var liveKVQuantization: String? = nil
+    var checkpointQuantization: String? = nil
+    var kvBackend: String? = nil
+    var warmupIterations: Int? = nil
     let cases: [Case]
+
+    // Existing exact-replay qualifications must not inherit a new lossy default.
+    var resolvedLiveKVQuantization: String { liveKVQuantization ?? "native" }
+    var resolvedCheckpointQuantization: String { checkpointQuantization ?? "native" }
+    var resolvedKVBackend: String { kvBackend ?? "auto" }
 
     struct Case: Codable, Sendable {
         let name: String
@@ -42,6 +51,7 @@ struct ModelPrefixBenchmarkSpecification: Codable, Sendable {
     enum ValidationFailure: Error {
         case invalidWorkloadBounds, invalidPairOffset, invalidPartition
         case invalidStripe, invalidCases, invalidTokenBounds, invalidAdjacentTokenBounds
+        case invalidPrecision, invalidBackend, invalidWarmupIterations
     }
 
     func validate() throws {
@@ -56,6 +66,14 @@ struct ModelPrefixBenchmarkSpecification: Codable, Sendable {
         if let stripe = soloPrefillStripeTokens, !(32...8_192).contains(stripe) {
             throw ValidationFailure.invalidStripe
         }
+        let precisions = ["native", "balanced", "k8v4", "k8v8"]
+        guard precisions.contains(resolvedLiveKVQuantization),
+            precisions.contains(resolvedCheckpointQuantization)
+        else { throw ValidationFailure.invalidPrecision }
+        guard ["auto", "paged", "contiguous"].contains(resolvedKVBackend)
+        else { throw ValidationFailure.invalidBackend }
+        guard (0...5).contains(warmupIterations ?? 1)
+        else { throw ValidationFailure.invalidWarmupIterations }
         guard !cases.isEmpty, cases.count <= 4 else { throw ValidationFailure.invalidCases }
         for cell in cases {
             guard cell.donorTokens > cell.sharedTokens, cell.forkTokens > cell.sharedTokens,
@@ -104,6 +122,13 @@ struct ModelPrefixBenchmarkReport: Codable, Sendable {
     var mtpEffectiveActive: Bool? = nil
     var mtpQualified: Bool? = nil
     var assistantIdentity: [String: String]? = nil
+    var requestedLiveKVQuantization: String? = nil
+    var requestedCheckpointQuantization: String? = nil
+    var liveKVQuantization: String? = nil
+    var checkpointQuantization: String? = nil
+    var checkpointBackendLayout: String? = nil
+    var runtimeIdentity: [String: String]? = nil
+    var executionStorage: ModelPrefixBenchmarkExecutionStorage? = nil
     var rows: [ModelPrefixBenchmarkRow] = []
     var comparisons: [ModelPrefixBenchmarkComparison] = []
     var adjacentComparisons: [ModelPrefixBenchmarkAdjacentComparison]? = nil
@@ -163,6 +188,21 @@ struct ModelPrefixBenchmarkRow: Codable, Sendable {
     let schedulerConfiguration: ModelPrefixBenchmarkSchedulerConfiguration
     let tokenDiagnostics: ModelPrefixBenchmarkTokenDiagnostics?
     let mtp: ModelPrefixBenchmarkMTPObservation
+    var memoryAtPrefillCompletion: ModelPrefixBenchmarkPrefillMemoryObservation? = nil
+    var memoryAfterRetirement: ModelPrefixBenchmarkMemoryObservation? = nil
+    var publicOutput: ModelPrefixBenchmarkPublicOutput? = nil
+    var stageConsumptionsDelta: Int? = nil
+    var stagedBytesAfterRetirement: Int? = nil
+    var writeHostBytesAfterRetirement: Int? = nil
+    var promptSHA256: String? = nil
+    var decodeSteps: UInt32? = nil
+    var chainedDecodeSteps: UInt32? = nil
+    var prefixCacheEnabled: Bool? = nil
+    var samplingRequestID: UInt64? = nil
+    var samplingTemperature: Float? = nil
+    var stopTokenCount: Int? = nil
+    var cacheScopeSHA256: String? = nil
+    var prefillRanges: [ModelCheckpointPrefillRange]? = nil
 }
 
 struct ModelPrefixBenchmarkComparison: Codable, Sendable {

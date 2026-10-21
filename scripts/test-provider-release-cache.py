@@ -24,8 +24,10 @@ SCRIPT = Path(__file__).resolve().with_name("provider-release-cache.py")
 
 
 def git(root, *arguments):
+    # Also applies to cloned submodules: no writer may outlive fixture cleanup.
     return subprocess.check_output(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+         "-c", "maintenance.auto=false", "-c", "gc.auto=0",
          "-c", "protocol.file.allow=always", "-C", str(root), *arguments],
         stderr=subprocess.PIPE, text=True,
     ).strip()
@@ -54,8 +56,6 @@ class RepositoryFixture(unittest.TestCase):
         self.write("provider-swift/Package.swift", "// manifest\n")
         self.write("provider-swift/Package.resolved", '{"pins":[]}\n')
         self.write("provider-swift/Sources/main.swift", 'print("before")\n')
-        self.write("coordinator/promptsidecar/Cargo.lock", "# lock\n")
-        self.write("coordinator/promptsidecar/Cargo.toml", '[package]\nname="test"\n')
         self.write("scripts/provider-release-cache.py", "# helper\n")
         self.write("scripts/provider_release_cache/identity.py", "# key recipe\n")
         self.write("scripts/provider-release-swift.sh", "# wrapper\n")
@@ -69,8 +69,6 @@ class RepositoryFixture(unittest.TestCase):
             "sdk": {"version": "27.0", "build": "26A100", "path": "/tools/SDKs/MacOSX27.0.sdk",
                     "files": {"SDKSettings.json": {"sha256": "settings-bytes"}}},
             "xcode": {"version": "Xcode 27.0\nBuild version 18A100", "developer_dir": "/Xcode"},
-            "rust": {"version": "rustc 1.88.0 (abc 2025-06-23)\ncommit-hash: abc",
-                     "compiler": {"sha256": "rust-bytes"}},
             "build_env": {"MACOSX_DEPLOYMENT_TARGET": "14.0"},
         }
 
@@ -84,12 +82,43 @@ class RepositoryFixture(unittest.TestCase):
         return identity.keys(root or self.root, lane, metadata or self.metadata)
 
 
+class FixtureProcessTests(unittest.TestCase):
+    def test_fixture_commits_do_not_launch_background_maintenance(self):
+        with tempfile.TemporaryDirectory(prefix="provider-cache-git-processes-") as directory:
+            root = Path(directory)
+            trace = root / "git-trace.jsonl"
+            global_config = root / "gitconfig"
+            global_config.write_text("[maintenance]\n\tauto = true\n[gc]\n\tautoDetach = true\n")
+            with patch.dict(os.environ, {
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TRACE2_EVENT": str(trace),
+            }):
+                checkout = root / "checkout"
+                init_repo(checkout)
+                (checkout / "tracked.txt").write_text("fixture\n")
+                commit(checkout)
+                cloned = root / "cloned"
+                git(root, "clone", "-q", str(checkout), str(cloned))
+                (cloned / "tracked.txt").write_text("changed fixture\n")
+                git(cloned, "add", ".")
+                git(cloned, "-c", "user.name=Cache Test", "-c",
+                    "user.email=cache-test@example.invalid", "commit", "-qm", "cloned fixture")
+            maintenance = [
+                event["argv"]
+                for line in trace.read_text().splitlines()
+                if (event := json.loads(line)).get("event") == "child_start"
+                and any(argument in {"maintenance", "gc"} for argument in event.get("argv", []))
+            ]
+            self.assertEqual(maintenance, [], "A detached Git writer can race fixture cleanup")
+
+
 class CacheIdentityTests(RepositoryFixture):
     def test_identical_inputs_have_identical_keys_and_narrow_prefixes(self):
         first = self.keys()
         self.assertEqual(first, self.keys())
         sha = git(self.root, "rev-parse", "HEAD")
-        for kind in ("swift", "rust"):
+        for kind in ("swift",):
             self.assertEqual(first[f"{kind}-key"], first[f"{kind}-prefix"] + sha)
             self.assertLess(len(first[f"{kind}-key"]), 512)
             self.assertEqual(first[f"{kind}-prefix"].count("\n"), 0)
@@ -99,7 +128,7 @@ class CacheIdentityTests(RepositoryFixture):
         self.write("provider-swift/Sources/main.swift", 'print("after")\n')
         commit(self.root)
         after = self.keys()
-        for kind in ("swift", "rust"):
+        for kind in ("swift",):
             self.assertEqual(before[f"{kind}-prefix"], after[f"{kind}-prefix"])
             self.assertNotEqual(before[f"{kind}-key"], after[f"{kind}-key"])
 
@@ -112,7 +141,6 @@ class CacheIdentityTests(RepositoryFixture):
             ("sdk", "files", "SDKSettings.json", "sha256"),
             ("arch",), ("os",), ("os_version",), ("os_build",),
             ("xcode", "version"), ("xcode", "developer_dir"),
-            ("rust", "version"), ("rust", "compiler", "sha256"),
             ("build_env", "MACOSX_DEPLOYMENT_TARGET"),
         ]
         for path in changes:
@@ -124,7 +152,6 @@ class CacheIdentityTests(RepositoryFixture):
                 field[path[-1]] += "changed"
                 after = self.keys(metadata=metadata)
                 self.assertNotEqual(before["swift-prefix"], after["swift-prefix"])
-                self.assertNotEqual(before["rust-prefix"], after["rust-prefix"])
 
     def test_checkout_path_and_lane_are_boundaries(self):
         before = self.keys()
@@ -139,7 +166,6 @@ class CacheIdentityTests(RepositoryFixture):
         before = self.keys()
         for relative in (
             "provider-swift/Package.swift", "provider-swift/Package.resolved",
-            "coordinator/promptsidecar/Cargo.lock", "coordinator/promptsidecar/Cargo.toml",
             "scripts/provider-release-cache.py", "scripts/provider_release_cache/identity.py",
             "scripts/provider-release-swift.sh", ".github/actions/provider-release-build/action.yml",
         ):
@@ -192,8 +218,7 @@ class SelectedToolchainTests(unittest.TestCase):
         self.swift = self.root / "toolchain/usr/bin/swift"
         self.clang = self.root / "xcode/usr/bin/clang"
         self.sdk = self.root / "sdk"
-        self.rust = self.root / "rust"
-        for path in (self.swift, self.clang, self.rust / "bin/rustc", self.rust / "bin/cargo"):
+        for path in (self.swift, self.clang):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("tool bytes\n")
         self.sdk.mkdir()
@@ -207,9 +232,6 @@ class SelectedToolchainTests(unittest.TestCase):
             ("sw_vers", "-buildVersion"): "25A100",
             ("xcodebuild", "-version"): "Xcode 27.0\nBuild version 18A100",
             ("xcode-select", "-p"): "/Applications/Xcode.app/Contents/Developer",
-            ("rustc", "+1.88.0", "--print", "sysroot"): str(self.rust),
-            ("rustc", "+1.88.0", "--version", "--verbose"): "rustc 1.88.0 (abc)\ncommit-hash: abc",
-            ("cargo", "+1.88.0", "--version"): "cargo 1.88.0 (abc)",
         }
         environment = {"PROVIDER_SWIFT": str(self.swift), "PROVIDER_SDKROOT": str(self.sdk)}
         self.enterContext(patch.dict(os.environ, environment, clear=True))
@@ -226,13 +248,24 @@ class SelectedToolchainTests(unittest.TestCase):
         (self.sdk / "SDKSettings.json").write_text('{"Version":"27.0","CanonicalName":"updated-sdk"}')
         third = identity.toolchain_metadata("qualification")
         self.assertNotEqual(identity.digest(second), identity.digest(third))
-        self.assertIn(("rustc", "+1.88.0", "--version", "--verbose"),
-                      [call.args for call in self.probe.call_args_list])
-
-    def test_release_does_not_require_or_probe_rust(self):
-        metadata = identity.toolchain_metadata("release")
-        self.assertNotIn("rust", metadata)
         self.assertFalse(any(call.args[0] in {"rustc", "cargo"} for call in self.probe.call_args_list))
+
+    def test_neither_lane_requires_or_probes_rust(self):
+        for lane in ("release", "qualification"):
+            metadata = identity.toolchain_metadata(lane)
+            self.assertNotIn("rust", metadata)
+            self.assertFalse(any(call.args[0] in {"rustc", "cargo"} for call in self.probe.call_args_list))
+
+    def test_release_environment_changes_identity_without_rust_inputs(self):
+        identities = []
+        for environment in ("", "dev", "prod"):
+            with patch.dict(os.environ, {"DARKBLOOM_RELEASE_ENVIRONMENT": environment}):
+                metadata = identity.toolchain_metadata("release")
+            self.assertEqual(metadata["build_env"]["DARKBLOOM_RELEASE_ENVIRONMENT"], environment)
+            self.assertFalse(set(metadata["build_env"]) &
+                             {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"})
+            identities.append(identity.digest(metadata))
+        self.assertEqual(len(set(identities)), 3)
 
     def test_frontend_bytes_are_checked_independently_of_driver(self):
         frontend = self.swift.with_name("swift-frontend")

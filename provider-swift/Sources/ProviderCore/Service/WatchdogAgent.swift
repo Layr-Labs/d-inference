@@ -19,7 +19,7 @@ import Foundation
 
 public enum WatchdogAgent: Sendable {
 
-    public static let label = "io.darkbloom.watchdog"
+    public static let label = BuildEnvironment.current.watchdogAgentLabel
     public static let checkIntervalSeconds = 60
 
     public static func plistPath() -> URL {
@@ -30,8 +30,8 @@ public enum WatchdogAgent: Sendable {
 
     /// `~/.darkbloom/watchdog.log` — kept separate from provider.log.
     public static func logPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/watchdog.log")
+        BuildEnvironment.current.installDirectory()
+            .appendingPathComponent("watchdog.log")
     }
 
     public static func isInstalled() -> Bool {

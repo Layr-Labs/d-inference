@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in d-inference (coordinator, provider, console UI, app, image bridge, etc.)
+description: Report a defect in the provider, native runtime, installer, or landing site
 title: "[bug] "
 labels: ["bug"]
 body:
@@ -16,12 +16,11 @@ body:
       label: Component
       description: Which part of the system is affected?
       options:
-        - coordinator (Go)
-        - provider (Rust, legacy)
         - provider-swift (Swift CLI)
-        - console-ui (Next.js)
+        - native runtime / MLX
+        - landing (Next.js)
         - enclave (Swift Secure Enclave helper)
-        - infra / deploy / CI
+        - CI / provider release
         - docs
         - not sure
     validations:
@@ -32,7 +31,7 @@ body:
     attributes:
       label: What happened?
       description: A clear description of the bug, including any error messages or unexpected output.
-      placeholder: e.g. provider crashed with X after running `eigeninference-provider serve` on a fresh M2 Air
+      placeholder: e.g. provider crashed with X after running `darkbloom start` on a fresh M2 Air
     validations:
       required: true
 
@@ -50,10 +49,9 @@ body:
       label: Steps to reproduce
       description: Minimal steps that reliably trigger the bug.
       placeholder: |
-        1. Install v0.3.5 via the install.sh one-liner
-        2. Run `eigeninference-provider serve --model llama-3.1-8b-instruct`
-        3. Send a chat completion from the console UI
-        4. Observe the failure
+        1. Install the provider via the install.sh one-liner
+        2. Run `darkbloom start`
+        3. Describe the request or local operation that fails
     validations:
       required: true
 
@@ -62,7 +60,7 @@ body:
     attributes:
       label: Environment
       description: |
-        Anything relevant to reproducing this — provider version (`eigeninference-provider --version`), macOS version, Mac model + RAM, browser (for console UI bugs), etc.
+        Anything relevant to reproducing this: provider version (`darkbloom --version`), macOS version, Mac model + RAM, browser (for landing bugs), etc.
       placeholder: |
         - provider: v0.3.5
         - macOS: 15.4 (Sequoia)
@@ -74,7 +72,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant log output. For provider crashes, include the last ~50 lines of `~/Library/Logs/eigeninference-provider/*.log`. Use code fences and redact anything sensitive.
+      description: Relevant provider log output. Use code fences and redact prompts, completions, credentials, and other sensitive data.
       render: shell
 
   - type: checkboxes

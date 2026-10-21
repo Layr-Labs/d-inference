@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "releaseVersionMarkers": {
+    "dev": "-dev.",
+    "staging": "-staging."
+  },
+  "swiftProducts": {
+    "cli": "darkbloom",
+    "enclave": "darkbloom-enclave"
+  },
+  "environments": {
+    "prod": {
+      "cliName": "darkbloom",
+      "enclaveName": "darkbloom-enclave",
+      "appBundleName": "Darkbloom.app",
+      "appDisplayName": "Darkbloom",
+      "installDirectoryName": ".darkbloom",
+      "configDirectoryName": ".config/darkbloom",
+      "legacyConfigDirectoryNames": [".config/eigeninference"],
+      "launchAgentLabel": "io.darkbloom.provider",
+      "watchdogAgentLabel": "io.darkbloom.watchdog",
+      "logSubsystem": "com.darkbloom.provider",
+      "serviceLogSubsystem": "dev.darkbloom.provider",
+      "defaultLocalPort": 8000,
+      "keychainServicePrefix": "io.darkbloom",
+      "encryptedCacheNamespace": "darkbloom",
+      "modelRevisionRef": "main",
+      "coordinatorHTTPURL": "https://api.darkbloom.dev",
+      "coordinatorWebSocketURL": "wss://api.darkbloom.dev/ws/provider",
+      "modelCDNURL": "https://models.darkbloom.ai"
+    },
+    "dev": {
+      "cliName": "darkbloom-dev",
+      "enclaveName": "darkbloom-enclave-dev",
+      "appBundleName": "Darkbloom Dev.app",
+      "appDisplayName": "Darkbloom Dev",
+      "installDirectoryName": ".darkbloom-dev",
+      "configDirectoryName": ".config/darkbloom-dev",
+      "legacyConfigDirectoryNames": [],
+      "launchAgentLabel": "io.darkbloom.provider.dev",
+      "watchdogAgentLabel": "io.darkbloom.watchdog.dev",
+      "logSubsystem": "com.darkbloom.provider.dev",
+      "serviceLogSubsystem": "dev.darkbloom.provider.dev",
+      "defaultLocalPort": 8001,
+      "keychainServicePrefix": "io.darkbloom.dev",
+      "encryptedCacheNamespace": "darkbloom-dev",
+      "modelRevisionRef": "darkbloom-dev",
+      "coordinatorHTTPURL": "https://api.dev.darkbloom.dev",
+      "coordinatorWebSocketURL": "wss://api.dev.darkbloom.dev/ws/provider",
+      "modelCDNURL": "https://models.darkbloom.ai"
+    },
+    "staging": {
+      "cliName": "darkbloom-staging",
+      "enclaveName": "darkbloom-enclave-staging",
+      "appBundleName": "Darkbloom Staging.app",
+      "appDisplayName": "Darkbloom Staging",
+      "installDirectoryName": ".darkbloom-staging",
+      "configDirectoryName": ".config/darkbloom-staging",
+      "legacyConfigDirectoryNames": [],
+      "launchAgentLabel": "io.darkbloom.provider.staging",
+      "watchdogAgentLabel": "io.darkbloom.watchdog.staging",
+      "logSubsystem": "com.darkbloom.provider.staging",
+      "serviceLogSubsystem": "dev.darkbloom.provider.staging",
+      "defaultLocalPort": 8002,
+      "keychainServicePrefix": "io.darkbloom.staging",
+      "encryptedCacheNamespace": "darkbloom-staging",
+      "modelRevisionRef": "darkbloom-staging",
+      "coordinatorHTTPURL": "https://api.staging.darkbloom.dev",
+      "coordinatorWebSocketURL": "wss://api.staging.darkbloom.dev/ws/provider",
+      "modelCDNURL": "https://models.darkbloom.ai"
+    }
+  }
+}

@@ -3,7 +3,7 @@
 import Foundation
 import os
 
-private let envLogger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
+private let envLogger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "security")
 
 /// Dangerous environment variables that could enable library injection,
 /// path hijacking, or process inspection.

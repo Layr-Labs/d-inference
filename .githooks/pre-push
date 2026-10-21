@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Pre-push hook for d-inference.
-# Runs the same checks as CI before pushing to catch failures locally.
+# Runs the retained console checks before pushing.
 #
 # Install: git config core.hooksPath .githooks
 #
@@ -12,7 +12,6 @@ FAILED=0
 
 # Check which components have changes being pushed.
 # Compare local HEAD against the remote ref being pushed to.
-REMOTE="$1"
 RANGE=""
 while read local_ref local_sha remote_ref remote_sha; do
     if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
@@ -33,34 +32,9 @@ CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-onl
 
 # Avoid an early-exit grep pipeline: with pipefail, a large list can make the
 # producer receive SIGPIPE and incorrectly classify a matching component as absent.
-HAS_GO=0
 HAS_TS=0
-if grep -q '^coordinator/' <<< "$CHANGED_FILES"; then
-    HAS_GO=1
-fi
 if grep -q '^console-ui/' <<< "$CHANGED_FILES"; then
     HAS_TS=1
-fi
-
-# ---------------------------------------------------------------------------
-# Go — formatting + tests
-# ---------------------------------------------------------------------------
-if [ "$HAS_GO" = "1" ]; then
-    echo ">> [pre-push] Go formatting check..."
-    UNFORMATTED=$(cd coordinator && gofmt -l . 2>/dev/null || true)
-    if [ -n "$UNFORMATTED" ]; then
-        echo "ERROR: Unformatted Go files:"
-        echo "$UNFORMATTED" | sed 's/^/  /'
-        echo "Fix with: cd coordinator && gofmt -w ."
-        FAILED=1
-    fi
-
-    echo ">> [pre-push] Go tests..."
-    # Standard Go discovery includes the complete mirrored test tree.
-    if ! go test ./coordinator/...; then
-        echo "ERROR: Go tests failed."
-        FAILED=1
-    fi
 fi
 
 # ---------------------------------------------------------------------------

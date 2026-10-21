@@ -579,8 +579,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 visionRequest, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
             if glmMedia, let container {
-                // GLM's tower runs inside this reservation, and one image can
-                // expand to its processor's full token cap.
+                // GLM's tower runs inside this reservation, and one image or
+                // video can expand to its processor's full token cap.
                 let reservation = await GLM5NextVisionBudget.mediaReservation(
                     container: container, request: visionRequest,
                     defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength)

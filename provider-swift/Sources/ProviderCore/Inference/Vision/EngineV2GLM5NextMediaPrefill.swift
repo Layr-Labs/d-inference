@@ -4,11 +4,13 @@
 //
 // GLM's text tower has no positional encoding, so visual tokens are ordinary
 // causal tokens at their cache offsets: the submission carries causal spans
-// and no position state. The tower runs ONE temporal pair (one still image)
-// at a time and tiles its attention queries, so no frame-square score tensor
-// is allocated; every evaluation checks the scoped MLX fault box. Geometry
-// and placements are validated before any tower work. Video is refused until
-// a real-model video check qualifies it.
+// and no position state. The tower runs ONE temporal pair (one still image or
+// two sampled video frames) at a time and tiles its attention queries, so no
+// frame-square score tensor is allocated; every evaluation checks the scoped
+// MLX fault box. The processor expands a video to one image-token span per
+// temporal pair, each followed by its timestamp text, so a pair is placed
+// exactly like an image. Geometry and placements are validated before any
+// tower work.
 
 import Foundation
 import MLX
@@ -74,9 +76,6 @@ extension EngineV2VisionPrefill {
         container: ModelContainer, request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls
     ) async throws -> PreparedSubmission {
-        guard !MediaIngest.hasVideo(request) else {
-            throw EngineV2VisionPrefillError.unsupportedMedia(glm5NextVideoUnsupportedDetail)
-        }
         let input = try await glm5NextUserInput(request: request, controls: templateControls)
         let limits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: input) { context, input in
@@ -100,8 +99,6 @@ extension EngineV2VisionPrefill {
             } catch let error as MLX.MLXError { throw visionPrefillError(for: error) }
         }
     }
-
-    static let glm5NextVideoUnsupportedDetail = "GLM video input is not qualified"
 
     /// Processor refusals are properties of the request (geometry, counts,
     /// budgets), identical on every provider. Their details are code literals.

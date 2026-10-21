@@ -23,6 +23,22 @@ private let pngDataURI =
     + "AAAAAaADAAQAAAABAAAAAQAAAAD5Ip3+AAAADElEQVQIHWP4z8AAAAMBAQBb2/lEAAAA"
     + "AElFTkSuQmCC"
 
+// A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames) — same
+// fixture as MediaIngestTests.
+private let tinyMP4DataURI =
+    "data:video/mp4;base64,"
+    + "AAAAHGZ0eXBtcDQyAAAAAWlzb21tcDQxbXA0MgAAAAFtZGF0AAAAAAAAAK4AAAA7BgUyR1ZK3FxMQz+U78URPNFDqAEAAAMAAQMAAAMAAQIAAeYACwAAAwAA"
+    + "AwAAAwAUDAOJJAEN/////4AAAAAxJbggH4AuSqwRNmYXSACJwyG5akafRwrPDoFqVCtjHBP+QvRWhyAAGk1PzfAEsEedgAAAABEh4QhfAoAvQrFXFN4ACQ7CtgA"
+    + "AABEBqIGK/1jQw/VufW+ACvdnuAAAAvFtb292AAAAbG12aGQAAAAA5lOws+ZTsLMAAAJYAAACWAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAA"
+    + "AAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACfXRyYWsAAABcdGtoZAAAAAHmU7Cz5lOwswAAAAEAAAAAAAACWAAAAAAAAAAA"
+    + "AAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAQAAAAEAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAAlgAAADIAAEAAAAAAfV"
+    + "tZGlhAAAAIG1kaGQAAAAA5lOws+ZTsLMAAAJYAAACWFXEAAAAAAAxaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAENvcmUgTWVkaWEgVmlkZW8AAAABnG1pbm"
+    + "YAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVxzdGJsAAAAoXN0c2QAAAAAAAAAAQAAAJFhdmMxAAAAAA"
+    + "AAAAEAAAAAAAAAAAAAAAAAAAAAAEAAQABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAJ2F2Y0MBZAAL/+EADCdkAA"
+    + "usVlDDeBBhFAEABCjuPLD9+PgAAAAACmZpZWwBAAAAAApjaHJtAAAAAAAYc3R0cwAAAAAAAAABAAAAAwAAAMgAAAAoY3R0cwAAAAAAAAADAAAAAQAAAMgAAAABAA"
+    + "ABkAAAAAEAAAAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAPc2R0cAAAAAAgEBgAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAMAAAABAAAAIHN0c3oAAAAAAAAAAAAAAA"
+    + "MAAAB0AAAAFQAAABUAAAAUc3RjbwAAAAAAAAABAAAALA=="
+
 private final class GLMScriptedEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [CBv2Request] = []
@@ -165,13 +181,29 @@ struct GLM5NextMediaRoutingTests {
         #expect(capture.requests.isEmpty)
     }
 
-    @Test func videoAndProcessorRefusalsAreDeterministicClientFaults() async throws {
-        await #expect(throws: EngineV2VisionPrefillError.self) {
+    @Test func videoIsDecodedAndHandedToTheProcessorRatherThanRefused() async throws {
+        // A decodable clip passes bounded ingest; only the stub's processor
+        // identity stops it, after decode and before any tower work.
+        let refusal = await #expect(throws: EngineV2VisionPrefillError.self) {
+            _ = try await EngineV2VisionPrefill.prepareGLM5NextMedia(
+                container: stubContainer(),
+                request: imageRequest([.text("What moves?"), .videoURL(tinyMP4DataURI)]),
+                templateControls: .init())
+        }
+        guard case .unsupportedVLM? = refusal else {
+            Issue.record("video stopped before the processor: \(String(describing: refusal))")
+            return
+        }
+        // A malformed clip keeps the deterministic ingest fault (HTTP 400).
+        await #expect(throws: MediaIngest.MediaError.self) {
             _ = try await EngineV2VisionPrefill.prepareGLM5NextMedia(
                 container: stubContainer(),
                 request: imageRequest([.text("x"), .videoURL("data:video/mp4;base64,AAAA")]),
                 templateControls: .init())
         }
+    }
+
+    @Test func processorRefusalsAreDeterministicClientFaults() {
         for error in [
             GLM5NextVisionError.invalidInput("media count does not match rendered prompt"),
             .budgetExceeded("prepared pixels"), .unsupported("nonlocal or invalid image URL"),
@@ -190,8 +222,8 @@ struct GLM5NextMediaRoutingTests {
                 == .weightsNotLoaded)
     }
 
-    @Test func reservationChargesTowerWorkingSetAndFullImageTokenCaps() throws {
-        let vision = try JSONDecoder().decode(
+    private func visionConfiguration() throws -> GLM5NextVisionConfiguration {
+        try JSONDecoder().decode(
             GLM5NextVisionConfiguration.self,
             from: Data(
                 #"""
@@ -201,6 +233,10 @@ struct GLM5NextMediaRoutingTests {
                  "attention_dropout":0.0,"rms_norm_eps":1e-5,"swiglu_limit":10.0,"hidden_act":"silu",
                  "image_size":448,"initializer_range":0.02}
                 """#.utf8))
+    }
+
+    @Test func reservationChargesTowerWorkingSetAndFullImageTokenCaps() throws {
+        let vision = try visionConfiguration()
         let processor = try GLM5NextProcessorConfiguration()
         let twoImages = imageRequest([.text("compare"), .imageURL(pngDataURI), .imageURL(pngDataURI)])
         let reservation = GLM5NextVisionBudget.reservation(
@@ -221,6 +257,33 @@ struct GLM5NextMediaRoutingTests {
         // Clamped to the context window plus output.
         let clamped = GLM5NextVisionBudget.reservation(
             request: twoImages, vision: vision, processor: processor,
+            defaultMaxTokens: 64, contextLength: 4096)
+        #expect(clamped.kvTokens == 4096 + 8)
+    }
+
+    @Test func videoReservationChargesTheVideoTokenCeilingAndDecodedFrames() throws {
+        let vision = try visionConfiguration()
+        let processor = try GLM5NextProcessorConfiguration()
+        // 28,532 prepared features, then 602 pairs of begin/end tokens and
+        // "601.0 seconds", then the video's begin/end tokens.
+        let ceiling = GLM5NextVisionBudget.videoTokenCeiling(processor: processor, maxDurationSeconds: 600)
+        #expect(ceiling == 28_532 + 602 * (2 + 13) + 2)
+        #expect(ceiling > MediaIngest.visionTokensPerVideo)
+        #expect(GLM5NextVisionBudget.videoTokenCeiling(processor: processor, maxDurationSeconds: 1e300) > ceiling)
+        let video = imageRequest([.text("What moves?"), .videoURL(tinyMP4DataURI)])
+        let reservation = GLM5NextVisionBudget.reservation(
+            request: video, vision: vision, processor: processor,
+            defaultMaxTokens: 64, contextLength: 1_000_000)
+        let base = MediaIngest.projectedKVTokens(video, defaultMaxTokens: 64, contextLength: 1_000_000)
+        #expect(
+            reservation.kvTokens == base + GLM5NextVisionBudget.videoTokenCeiling(processor: processor)
+                - MediaIngest.visionTokensPerVideo)
+        #expect(
+            reservation.bytes == UInt64(processor.maximumPreparedBytes)
+                + UInt64(processor.maximumDecodedBytes)
+                + GLM5NextVisionBudget.towerWorkingSetBytes(configuration: vision))
+        let clamped = GLM5NextVisionBudget.reservation(
+            request: video, vision: vision, processor: processor,
             defaultMaxTokens: 64, contextLength: 4096)
         #expect(clamped.kvTokens == 4096 + 8)
     }

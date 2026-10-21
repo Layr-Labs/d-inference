@@ -68,9 +68,10 @@ enum GLM5NextVisionBudget {
     static let maximumFramePatches = 32_000
 
     struct Reservation: Equatable {
-        /// Prepared pixels plus the tower working set of the largest frame.
+        /// Prepared pixels plus the tower working set of the largest frame,
+        /// plus the processor's decoded-frame cap when a video is present.
         let bytes: UInt64
-        /// Prompt text plus every image at the processor's token cap, plus output.
+        /// Prompt text plus every image and video at its token ceiling, plus output.
         let kvTokens: Int
     }
 
@@ -120,30 +121,66 @@ enum GLM5NextVisionBudget {
             defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
     }
 
+    /// Upper bound on one video's rendered tokens: the processor's prepared-
+    /// feature cap, plus per temporal pair its begin/end image tokens and
+    /// `%.1f seconds` timestamp (byte-level BPE emits at most one token per
+    /// UTF-8 byte), plus the video's own begin/end tokens. Frames are sampled
+    /// at 2 FPS over at most the duration cap and 2048 frames, plus an even
+    /// final pair and one second of track/asset duration slack.
+    static func videoTokenCeiling(
+        processor: GLM5NextProcessorConfiguration,
+        maxDurationSeconds: Double = MediaIngest.maxVideoDurationSeconds
+    ) -> Int {
+        let featureBytes = 4 * 6 * processor.patchSize * processor.patchSize * MemoryLayout<Float>.size
+        let features = min(processor.videoMaximumTokens, processor.maximumPreparedBytes / featureBytes)
+        let seconds = max(0, maxDurationSeconds)
+        let pairs = min(features, Int(min(seconds, 1024).rounded(.up)) + 2)
+        let timestamp = String(
+            format: "%.1f seconds", locale: Locale(identifier: "en_US_POSIX"), seconds + 1
+        ).utf8.count
+        return features + pairs * (2 + timestamp) + 2
+    }
+
     static func reservation(
         request: OpenAIChatCompletionRequest, vision: GLM5NextVisionConfiguration,
         processor: GLM5NextProcessorConfiguration, defaultMaxTokens: Int, contextLength: Int
     ) -> Reservation {
-        let images = request.messages.reduce(0) { count, message in
-            guard case .parts(let parts) = message.content else { return count }
-            return count + parts.filter { if case .imageURL = $0 { true } else { false } }.count
+        var images = 0
+        var videos = 0
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .imageURL = part { images += 1 }
+                if case .videoURL = part { videos += 1 }
+            }
         }
-        // `projectedKVTokens` allots `visionTokensPerImage` per image; a GLM
-        // image renders begin/end tokens around up to `imageMaximumTokens`.
+        // `projectedKVTokens` allots `visionTokensPerImage` per image and
+        // `visionTokensPerVideo` per video; a GLM image renders begin/end
+        // tokens around up to `imageMaximumTokens`, a video its token ceiling.
         let extraPerImage = max(0, processor.imageMaximumTokens + 2 - MediaIngest.visionTokensPerImage)
+        let extraPerVideo = max(0, videoTokenCeiling(processor: processor) - MediaIngest.visionTokensPerVideo)
         let base = MediaIngest.projectedKVTokens(
             request, defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
-        let (extra, extraOverflow) = images.multipliedReportingOverflow(by: extraPerImage)
+        let (imageExtra, imageOverflow) = images.multipliedReportingOverflow(by: extraPerImage)
+        let (videoExtra, videoOverflow) = videos.multipliedReportingOverflow(by: extraPerVideo)
+        let (extra, extraOverflow) = imageExtra.addingReportingOverflow(videoExtra)
         var (tokens, overflow) = base.addingReportingOverflow(extra)
-        if extraOverflow || overflow { tokens = .max }
+        if imageOverflow || videoOverflow || extraOverflow || overflow { tokens = .max }
         if contextLength > 0 {
             let output = max(0, MediaIngest.resolveMaxOutputTokens(
                 for: request, defaultMaxTokens: defaultMaxTokens))
             let (ceiling, ceilingOverflow) = contextLength.addingReportingOverflow(output)
             if !ceilingOverflow { tokens = min(tokens, ceiling) }
         }
-        let (bytes, bytesOverflow) = UInt64(processor.maximumPreparedBytes)
-            .addingReportingOverflow(towerWorkingSetBytes(configuration: vision))
-        return .init(bytes: bytesOverflow ? .max : bytes, kvTokens: tokens)
+        // A video's decoded RGB8 frames stay live while its pairs are prepared.
+        // Videos are decoded one at a time, so one cap covers any video count.
+        let decodedBytes = videos > 0 ? UInt64(processor.maximumDecodedBytes) : 0
+        let bytes = [towerWorkingSetBytes(configuration: vision), decodedBytes].reduce(
+            UInt64(processor.maximumPreparedBytes)
+        ) { total, addend in
+            let (sum, overflow) = total.addingReportingOverflow(addend)
+            return overflow ? .max : sum
+        }
+        return .init(bytes: bytes, kvTokens: tokens)
     }
 }

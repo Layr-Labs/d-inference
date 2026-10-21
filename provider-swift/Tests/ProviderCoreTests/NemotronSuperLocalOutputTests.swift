@@ -149,9 +149,9 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
             ["R:<tool_call>\n<function=get_weather>\n<parameter=city>\nX\n</parameter>\n</function>\n</tool_call>",
              "C:Done."])
         // Text before a `<` survives even while the shared frame parser probes it.
-        var plain = try output(#""enable_thinking":false"#)
+        var plain = try output(Self.weather + #","enable_thinking":false"#)
         XCTAssertEqual(try stream(&plain, ["x <", "y", " a<to"]), ["C:x ", "C:<y", "C: a", "C:<to"])
-        var unterminated = try output(#""enable_thinking":false"#)
+        var unterminated = try output(Self.weather + #","enable_thinking":false"#)
         _ = try unterminated.append("a<tool_call>\n<function=get_weather>")
         XCTAssertThrowsError(try unterminated.finish())
         var complete = try output(Self.weather + #","enable_thinking":false"#, streaming: false)
@@ -159,15 +159,36 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(try trace(complete.finish().events), [#"F:get_weather{"city":"Rome"}"#])
     }
 
+    /// With no tool declared under auto choice the prompt offers no tools, so
+    /// tool tags are answer text, as in the reference server.
+    func testToolTagsAreTextWhenNoToolIsOffered() throws {
+        let frame = "<tool_call>\n<function=get_weather>\n</function>\n</tool_call>"
+        var streamed = try output(#""enable_thinking":false"#)
+        XCTAssertEqual(try stream(&streamed, ["Write ", frame, " or <function=x>."]),
+                       ["C:Write ", "C:" + frame, "C: or <function=x>."])
+        for tools in ["", #""tools":[],"tool_choice":"auto""#] {
+            var complete = try output(tools, streaming: false)
+            _ = try complete.append("r</think>Write " + frame)
+            XCTAssertEqual(try complete.finish().result, .init(content: "Write " + frame, reasoning: "r", calls: []))
+        }
+    }
+
     func testToolPolicyViolationsFailClosed() throws {
         let missing = "</think><tool_call>\n<function=get_weather>\n<parameter=days>\n2\n</parameter>\n</function>\n</tool_call>"
         var schema = try output(Self.weather)
         _ = try schema.append(missing)
         XCTAssertThrowsError(try schema.finish())
-        var undeclared = try output()
-        _ = try undeclared.append("</think><tool_call>\n<function=get_weather>\n</function>\n</tool_call>")
+        var undeclared = try output(Self.weather)
+        _ = try undeclared.append("</think><tool_call>\n<function=get_time>\n</function>\n</tool_call>")
         XCTAssertThrowsError(try undeclared.finish())
         let one = "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>"
+        // `none` withholds the declarations, so any frame is undeclared, with
+        // or without tools in the request.
+        for tools in [Self.weather + ",", ""] {
+            var none = try output(tools + #""tool_choice":"none""#)
+            _ = try none.append("</think>" + one)
+            XCTAssertThrowsError(try none.finish(), tools)
+        }
         var parallel = try output(Self.weather + #","parallel_tool_calls":false"#)
         _ = try parallel.append("</think>" + one + one)
         XCTAssertThrowsError(try parallel.finish())

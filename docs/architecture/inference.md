@@ -341,9 +341,11 @@ request's measured fixed bytes, rounded up (576 MiB with speculation, 512 MiB
 plain, at any context), 2 GiB and any prefix bank, which the grant holds and
 which never exceed it (`grantKVBytes`), and a speculating owner's round work
 once (`speculativeOwnerBoundBytes`, below), which is reserved beside the grant
-whatever its size, so a small co-resident grant still serves the configured
-width. For the pinned checkpoint the same claim also holds the prefill
-lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
+whatever its size. The grant itself must still hold every configured
+request's fixed bytes and the minimum KV: a smaller co-resident grant serves
+fewer requests, and one that cannot serve a single request fails the load
+at publication (below). For the pinned checkpoint the same claim also holds
+the prefill lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
 A refused claim first returns MLX's cached buffers (once per load) and asks
@@ -418,6 +420,11 @@ as resident, like weights (`NemotronSuperSlotOwner.reservedBesideGrantBytes`):
 the newcomer's re-slice counts the planned lane and round, and publication
 re-slices every grant with the actual reservations, so Super's engine ceiling
 and advertised token budget stay within what the ledger holds beside them.
+The builder checked its configured requests against the grant with the
+planned lane and round, so beside other models the published grant alone
+can be too small for one request (`superGrantRefusal`); publication then
+logs the refusal, unpublishes the slot, retires the owner and restores every
+survivor's grant instead of keeping a loaded slot that serves nothing.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding

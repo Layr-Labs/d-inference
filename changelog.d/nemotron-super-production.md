@@ -31,17 +31,19 @@
   configuration that barely fits steps down instead of losing its admission
   after the weights are installed. The provider accepts, evicts for and
   preloads Super on that same rule: an idle co-resident model is evicted when
-  that lets the planned owner (or a wider fallback) load, instead of the
-  request being accepted and then refused with 503, and a load that cannot fit
-  even after evicting every idle model is refused before it is accepted. MLX's
-  cached buffers are returned before the load steps down, a small KV grant
-  beside other models no longer narrows or refuses the load (the speculation
-  round is reserved beside the grant), and a resident slot quotes image and
-  video probes against the memory their reservation actually uses. Its
-  advertised memory is now the narrowest owner's LOAD size, 83.6 GiB on every
-  Mac (was 69.8 GiB on 128 GB, shrinking with RAM); the coordinator's cold-load
-  routing, which still subtracts the 10% load reserve, sends a cold Super load
-  only to a 128 GB Mac with about 99.4 GiB available.
+  that lets the planned owner (or a wider fallback) load,
+  instead of the request being accepted and then refused with 503, and a load
+  that cannot fit even after evicting every idle model is refused before it
+  is accepted. MLX's cached buffers are returned before the load steps down,
+  the speculation round is reserved beside the KV grant rather than taken
+  from it, a load whose grant beside other models cannot serve one request
+  fails instead of leaving the slot loaded and serving nothing, and a
+  resident slot quotes image and video probes against the memory their
+  reservation actually uses. Its advertised memory is now the narrowest
+  owner's LOAD size, 83.6 GiB on every Mac (was 69.8 GiB on 128 GB,
+  shrinking with RAM); the coordinator's cold-load routing, which still
+  subtracts the 10% load reserve, sends a cold Super load only to a 128 GB
+  Mac with about 99.4 GiB available.
   Either owner reuses exact prompt prefixes when the grant holds its bank; a
   restored speculative request drafts from the same prompt history as a cold
   one, and an image turn reuses only checkpoints of the same image features.

@@ -117,7 +117,8 @@ extension ProviderLoop {
         }
     }
 
-    /// Post-build checks and publication. Caller holds the re-slice gate.
+    /// Post-build checks and publication. Caller holds the re-slice gate and,
+    /// on a throw, retires the owner, which is then no slot.
     private func publishNemotronSuperSlot(_ owner: NemotronSuperSlotOwner, modelID: String,
         directory: URL, modelType: String?, before: WeightHashSnapshot, started: ContinuousClock.Instant
     ) async throws {
@@ -160,6 +161,17 @@ extension ProviderLoop {
         // Every grant again with the owner's actual reservations resident:
         // its own engine shrinks to what the ledger holds beside them.
         await resliceGrowSurvivorsLocked()
+        // The build was checked against its grant with the planned lane and
+        // round, which sit beside the grant. Beside other models the grant
+        // alone can be too small for one request: such a slot would hold its
+        // memory and serve nothing, so it leaves serving and the load fails.
+        let grant = await owner.bridge.resliceAdmissionBytesClaim()
+        if let refusal = await owner.bridge.superGrantRefusal(grantBytes: grant, requests: 1) {
+            logger.error("Nemotron Super serves no request beside the resident models; unloading it: \(refusal)")
+            modelSlots.removeValue(forKey: modelID)
+            await engineV2Runtime.unregister(modelId: modelID)
+            throw refusal
+        }
     }
 
     /// Provider policy under this grant: `mtp_mode` and the kill switch pick

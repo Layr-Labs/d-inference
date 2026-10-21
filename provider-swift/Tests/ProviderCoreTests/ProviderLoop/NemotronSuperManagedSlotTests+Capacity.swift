@@ -54,4 +54,37 @@ extension NemotronSuperManagedSlotTests {
         #expect(await loop.unloadModel(Self.modelID))
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
+
+    /// The build is checked against its grant with the planned lane and
+    /// round; publication re-slices it beside the resident models. Beside an
+    /// idle model with a far larger KV share (the fixture owner publishes its
+    /// 1,024-token context against that model's 8,192), Super's grant is a few
+    /// MiB and serves no request: the load fails, the slot is unpublished and
+    /// retired, and the co-resident model keeps its grant and is not evicted.
+    @Test(.timeLimit(.minutes(2)))
+    func publishedGrantThatServesNoRequestFailsTheLoad() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 1, availableGiB: 110)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        await loop.setEngineV2SlotHooksForTesting(ProviderLoop.EngineV2SlotHooks(
+            physicalMemoryBytes: 128 << 30, makeEngine: { _, _ in throw CancellationError() }))
+        await loop.resliceGrowSurvivorsForTesting()
+        let lone = try #require(fixture.idle.capacityUpdates.last)
+        var refusal: Error?
+        do {
+            try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                             revisionDirectory: fixture.directory)
+        } catch { refusal = error }
+        let error = try #require(refusal)
+        #expect(ProviderLoop.loadErrorStatusCode(for: error) == 503)
+        #expect("\(error)".contains("serves 1 concurrent request(s)"), "\(error)")
+        #expect(await loop.modelLoadingLastLoadError()?.message.contains("serves 1 concurrent request(s)") == true)
+        #expect(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID) == nil)
+        #expect(await loop.engineV2Runtime.bridge(forModel: Self.modelID) == nil)
+        #expect(await loop.modelLoadingResidentIDs() == [Self.coResidentID])
+        #expect(fixture.idle.shutdownCalls == 0)
+        #expect(fixture.idle.capacityUpdates.last == lone, "the co-resident model's grant is restored")
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+        #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
+    }
 }

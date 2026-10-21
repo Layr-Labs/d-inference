@@ -9,8 +9,9 @@ import Testing
 /// and served cold under three conditions: idle, while another tenant's long
 /// prefill holds the engine, and right after another tenant's donor finishes
 /// (its own checkpoint write in flight). A restore must reach the demanded
-/// boundary and must never produce its first token later than cold prefill of
-/// the same prompt under the same condition. Timings are otherwise observations.
+/// boundary, must never produce its first token later than cold prefill of
+/// the same prompt under the same condition, and must stage as fast contended
+/// as idle. Timings are otherwise observations.
 @Suite("Complete-checkpoint restore under contention (live)", .serialized)
 struct ModelCheckpointRestoreContentionLiveTests {
     private static let environment = ProcessInfo.processInfo.environment
@@ -30,9 +31,14 @@ struct ModelCheckpointRestoreContentionLiveTests {
     struct Report: Codable {
         let modelID: String
         let weightHash: String
-        let sharedTokens: Int
-        let demandedTokens: Int
+        var sharedTokens = 0
+        var demandedTokens = 0
         var samples: [Sample] = []
+        var failure: String?
+
+        func save(to path: String) throws {
+            try JSONEncoder().encode(self).write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
     }
 
     /// Raw values are the report's role suffixes for the measured fork.
@@ -56,11 +62,12 @@ struct ModelCheckpointRestoreContentionLiveTests {
             "the report output must be a new absolute path")
         let specification = try ModelPrefixBenchmarkSpecification.load()
         let fixture = try await ModelPrefixBenchmarkFixture(specification)
+        var report = Report(modelID: specification.modelID, weightHash: specification.expectedWeightHash)
         do {
             let cell = try #require(specification.cases.first)
             let prompts = try ModelCheckpointStoragePrompts(fixture: fixture, cell: cell)
-            var report = Report(modelID: specification.modelID, weightHash: specification.expectedWeightHash,
-                sharedTokens: prompts.sharedTokens, demandedTokens: prompts.demandedTokens)
+            report.sharedTokens = prompts.sharedTokens
+            report.demandedTokens = prompts.demandedTokens
             var requests = RequestIDs()
             _ = try await Self.timed(fixture, id: requests.next(), pair: -1, role: "excluded_warmup",
                 tokens: prompts.fork, scope: "warmup", target: nil, cache: false)
@@ -73,14 +80,17 @@ struct ModelCheckpointRestoreContentionLiveTests {
                     for cache in [true, false] {
                         report.samples += try await Self.measureFork(fixture, condition: condition, cache: cache,
                             pair: pair, scope: scope, prompts: prompts, requests: &requests)
+                        try report.save(to: output)
                     }
                 }
             }
-            try JSONEncoder().encode(report).write(to: URL(fileURLWithPath: output))
             try Self.requireRestoreNeverSlower(report)
         } catch {
-            try? await fixture.close()
-            throw error
+            let failure = error
+            report.failure = String(describing: failure)
+            do { try await fixture.close() } catch { report.failure = "\(failure); teardown: \(error)" }
+            try report.save(to: output)
+            throw failure
         }
         try await fixture.close()
     }
@@ -125,6 +135,9 @@ struct ModelCheckpointRestoreContentionLiveTests {
 
     private static func requireRestoreNeverSlower(_ report: Report) throws {
         for pair in Set(report.samples.map(\.pair)).sorted() where pair >= 0 {
+            let idle = try #require(report.samples.first {
+                $0.pair == pair && $0.role == Condition.idle.role(cache: true)
+            })
             for condition in Condition.allCases {
                 let restore = try #require(report.samples.first {
                     $0.pair == pair && $0.role == condition.role(cache: true)
@@ -136,6 +149,10 @@ struct ModelCheckpointRestoreContentionLiveTests {
                     "pair \(pair) \(condition.rawValue): restore must reach the demanded boundary")
                 #expect(restore.firstOutputSeconds <= cold.firstOutputSeconds,
                     "pair \(pair) \(condition.rawValue): restore TTFT \(restore.firstOutputSeconds)s exceeds cold TTFT \(cold.firstOutputSeconds)s")
+                // Waiting on evalLock costs a whole foreign prefill chunk (2.6-3.8 s
+                // measured on M5 Max) on top of the 0.3 s idle stage.
+                #expect(restore.stageMilliseconds <= idle.stageMilliseconds + 1_000,
+                    "pair \(pair) \(condition.rawValue): stage \(restore.stageMilliseconds)ms vs idle \(idle.stageMilliseconds)ms")
             }
         }
     }

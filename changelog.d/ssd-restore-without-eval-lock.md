@@ -5,5 +5,6 @@
   chunk. On an M5 Max with Qwen 3.8 27B, staging a 0.96 GB checkpoint during a
   concurrent prefill dropped from 2.6–3.8 s to about 0.35 s.
 - Added the opt-in `ModelCheckpointRestoreContentionLiveTests` real-model
-  regression, which requires SSD restore to reach its demanded boundary and
-  never to produce its first token later than cold prefill, idle or contended.
+  regression, which requires SSD restore to reach its demanded boundary, never
+  to produce its first token later than cold prefill, idle or contended, and to
+  stage as fast contended as idle.

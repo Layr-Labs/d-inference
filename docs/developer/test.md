@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -182,8 +182,10 @@ a shared engine. It reads the first case of the same standalone
 pair it serves the fork prompt restored and cold under three conditions: idle,
 while another tenant's long prefill is running, and right after another
 tenant's donor completes. It fails when a restore does not reach
-`demandedTokens` or produces its first token later than the cold run under the
-same condition. Other timings are observations. Run it from `provider-swift/`
+`demandedTokens`, produces its first token later than the cold run under the
+same condition, or stages more than 1 s slower than the idle restore of its
+pair, the signature of waiting on another prefill's `evalLock`. Other timings
+are observations. Run it from `provider-swift/`
 after building tests and staging the metallib, with only the listed variables:
 
 ```bash
@@ -200,7 +202,9 @@ Pick `demandedTokens` at or below the deepest checkpoint that fits
 check rather than measuring restore latency. The contended fork is submitted
 two seconds after the foreign prefill starts, so pick a `donorTokens` long
 enough to still be prefilling then. The report keeps every sample, including
-the foreign requests that create each condition.
+the foreign requests that create each condition, and is rewritten atomically
+after each one, so an interrupted run keeps its completed samples and records
+the `failure`, including any teardown error.
 
 ## Runtime Generation Comparisons
 

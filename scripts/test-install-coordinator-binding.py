@@ -7,8 +7,8 @@ import tempfile
 import unittest
 
 INSTALLER = Path(__file__).resolve().parent / "install.sh"
-DEV = "https://api.dev.darkbloom.xyz"
-DEV_WS = 'url = "wss://api.dev.darkbloom.xyz/ws/provider"'
+DEV = "https://api.dev.darkbloom.dev"
+DEV_WS = 'url = "wss://api.dev.darkbloom.dev/ws/provider"'
 
 
 def run_binding(coordinator, config):
@@ -40,7 +40,7 @@ class CoordinatorBindingTests(unittest.TestCase):
         existing = (
             '[provider]\nname = "mac"\nurl = "keep-provider"\n\n'
             '[coordinator]\nheartbeat_interval_secs = 5\n'
-            'url = "wss://api.dev.darkbloom.xyz/ws/provider"\nprivate_only = true\n\n'
+            'url = "wss://api.dev.darkbloom.dev/ws/provider"\nprivate_only = true\n\n'
             '[coordinator.extra]\nurl = "keep-extra"\n'
             '[backend]\nenabled_models = ["a"]\n')
         for url in ("https://api.darkbloom.dev", "https://api.darkbloom.dev/"):
@@ -48,7 +48,7 @@ class CoordinatorBindingTests(unittest.TestCase):
                 result, text, leftovers = self.bind(url, existing)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(text, existing.replace(
-                    'url = "wss://api.dev.darkbloom.xyz/ws/provider"\n', ""))
+                    'url = "wss://api.dev.darkbloom.dev/ws/provider"\n', ""))
                 self.assertEqual(leftovers, ["provider.toml"])
                 self.assertIn("production default", result.stdout)
 
@@ -75,7 +75,7 @@ class CoordinatorBindingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(text, "[coordinator]\n" + DEV_WS + "\n")
         self.assertEqual(leftovers, ["provider.toml"])
-        self.assertIn("wss://api.dev.darkbloom.xyz/ws/provider", result.stdout)
+        self.assertIn("wss://api.dev.darkbloom.dev/ws/provider", result.stdout)
 
     def test_existing_url_is_replaced_and_other_settings_are_kept(self):
         existing = (

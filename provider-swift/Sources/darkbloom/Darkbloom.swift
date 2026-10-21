@@ -22,7 +22,7 @@ struct Darkbloom: AsyncParsableCommand {
     }()
 
     static let configuration = CommandConfiguration(
-        commandName: "darkbloom",
+        commandName: BuildEnvironment.current.cliName,
         abstract: "Swift-native provider CLI for Darkbloom.",
         discussion: "Runs on Apple Silicon Macs. Connects to the coordinator, serves inference requests via mlx-swift.",
         version: ProviderCore.version,
@@ -87,7 +87,7 @@ public func runUpdateBannerIfEnabled() async {
     if let snapshot = try? loadRuntimeSnapshot(configPath: nil) {
         coordinatorURL = snapshot.config.coordinator.url
     } else {
-        coordinatorURL = "https://api.darkbloom.dev"
+        coordinatorURL = BuildEnvironment.current.coordinatorHTTPURL
     }
     await UpdateBanner.run(coordinatorURL: coordinatorURL)
 }

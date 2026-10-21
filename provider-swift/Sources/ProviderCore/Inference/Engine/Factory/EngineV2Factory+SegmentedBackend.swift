@@ -15,6 +15,8 @@ extension EngineV2Factory {
         schedulerConfig: CBv2SchedulerConfig,
         maxContextLength: Int?,
         maxBufferLength: Int,
+        quantization: PagedKVQuantizationConfig? = nil,
+        nativeLayerIndices: Set<Int> = [],
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil
     ) throws -> PagedKVBackend {
         try PagedKVBackend(
@@ -28,7 +30,9 @@ extension EngineV2Factory {
                 nominalMaxSequenceLength: max(1, maxContextLength ?? 8192),
                 maxBufferLength: maxBufferLength,
                 segmentSizeBytes: 64 << 20,
-                layerDTypes: layerDTypes),
+                layerDTypes: layerDTypes,
+                quantization: quantization,
+                nativeLayerIndices: nativeLayerIndices),
             slabCommitment: .atFirstAdmission,
             residentPrefixCache: residentPrefixCache)
     }

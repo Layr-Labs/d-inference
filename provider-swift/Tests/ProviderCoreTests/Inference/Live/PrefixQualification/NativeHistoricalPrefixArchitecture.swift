@@ -10,7 +10,8 @@ import ProviderCoreFoundation
 enum NativeHistoricalPrefixArchitecture {
   static func load(
     modelID: String, directory: URL, verifiedWeightHash: String,
-    environment: [String: String], mtpEnabled: Bool = false, kvBackend: String = "auto"
+    environment: [String: String], mtpEnabled: Bool = false, kvBackend: String = "auto",
+    kvQuantizationConfig: String = "native", checkpointQuantizationConfig: String = "native"
   ) async throws
     -> (container: ModelContainer, session: EngineV2BenchmarkSession)
   {
@@ -58,7 +59,9 @@ enum NativeHistoricalPrefixArchitecture {
             verifiedWeightHash: verifiedWeightHash, environment: environment,
             load: load, serving: serving, tokenizer: tokenizer,
             budget: budget, reserve: reserve, operatorReserve: operatorReserve,
-            ownership: ownership, mtpEnabled: mtpEnabled, kvBackend: kvBackend)
+             ownership: ownership, mtpEnabled: mtpEnabled, kvBackend: kvBackend,
+             kvQuantizationConfig: kvQuantizationConfig,
+             checkpointQuantizationConfig: checkpointQuantizationConfig)
         }
         _ = try await load.sealConstructionForPublication()
         return try load.commitPublication { (container: container, session: session) }
@@ -90,7 +93,8 @@ enum NativeHistoricalPrefixArchitecture {
     environment: [String: String], load: MiMoV26ServingLoad,
     serving: ProviderModelContainer, tokenizer: TokenizerHandle,
     budget: GlobalKVCacheBudget, reserve: UInt64, operatorReserve: UInt64,
-    ownership: MiMoV26BenchmarkOwnership, mtpEnabled: Bool, kvBackend: String
+    ownership: MiMoV26BenchmarkOwnership, mtpEnabled: Bool, kvBackend: String,
+    kvQuantizationConfig: String, checkpointQuantizationConfig: String
   ) async throws -> EngineV2BenchmarkSession {
     let preparation = try MiMoV26ServingLoad.preparation(
       mode: mtpEnabled ? .on : .off,
@@ -109,7 +113,9 @@ enum NativeHistoricalPrefixArchitecture {
       modelType: "mimo_v2", isVLM: false, modelDirectory: directory,
       container: serving, tokenizer: tokenizer, sizing: sizing,
       kvBytesCapacity: grant.grantBytes, maxConcurrentRequests: 1, constructionPurpose: .benchmark,
-      kvBudget: budget, activationReserveBytes: reserve, kvBackendConfig: kvBackend,
+       kvBudget: budget, activationReserveBytes: reserve, kvBackendConfig: kvBackend,
+       kvQuantizationConfig: kvQuantizationConfig,
+       checkpointQuantizationConfig: checkpointQuantizationConfig,
       weightHash: verifiedWeightHash, specDecPreparation: preparation, preparedModel: prepared,
       environment: environment, startServingTelemetry: false)
     let expectedLayouts = mtpEnabled

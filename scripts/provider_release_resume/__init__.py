@@ -4,18 +4,23 @@ import json
 import os
 from pathlib import Path
 
-from .api import GitHub, verify_tag
+from .api import GitHub, verify_tag, verify_workflow_source
 from .artifact import download
 from .identity import select
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["resolve", "download"])
+    parser.add_argument("operation", choices=["verify-source", "resolve", "download"])
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     env = os.environ
     api = GitHub(env["GITHUB_REPOSITORY"])
+    if args.operation == "verify-source":
+        source = verify_workflow_source(api, env)
+        with open(env["GITHUB_OUTPUT"], "a") as stream:
+            stream.write(f"source_sha={source}\n")
+        return
     if args.operation == "resolve":
         if (env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
                 or env.get("GITHUB_REF") != "refs/heads/master"
@@ -38,6 +43,6 @@ def main():
         for key, name in [("source_sha", "RELEASE_SOURCE_SHA"), ("unsigned_artifact_id", "RELEASE_UNSIGNED_ARTIFACT_ID"),
                           ("unsigned_artifact_digest", "RELEASE_UNSIGNED_ARTIFACT_DIGEST")]:
             if selection[key] != env[name]:
-                raise ValueError("Retained selection changed after approval: " + key)
+                raise ValueError("Retained selection changed after resolution: " + key)
         download(api, selection, args.output)
         verify_tag(api, selection["release_tag"], selection["source_sha"])

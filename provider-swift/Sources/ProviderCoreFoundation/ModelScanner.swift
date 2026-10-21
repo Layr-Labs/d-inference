@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import ProviderBuildEnvironment
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -107,8 +108,19 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Snapshot Discovery
 
-    /// Resolve an explicit refs/main selection, or the latest legacy snapshot
-    /// by modification time only when that selection is genuinely absent.
+    /// Active-revision refs an environment reads, in order: its own
+    /// (`modelRevisionRef`), then production's. The weights cache is shared,
+    /// but each install writes only its own ref, so the two installs never
+    /// move each other's selection.
+    public static func revisionRefNames(for environment: BuildEnvironment = .current) -> [String] {
+        let own = environment.modelRevisionRef
+        let production = BuildEnvironment.prod.modelRevisionRef
+        return own == production ? [own] : [own, production]
+    }
+
+    /// Resolve an explicit `refs/<modelRevisionRef>` selection (see
+    /// `revisionRefNames`), or the latest legacy snapshot by modification time
+    /// only when every selection is genuinely absent.
     ///
     /// The returned URL is symlink-resolved. `contentsOfDirectory(at:)`
     /// canonicalises the paths it hands back (on macOS a `/var/...` input
@@ -116,26 +128,30 @@ public struct ModelScanner: Sendable {
     /// could come back in a different textual form than the cache directory it
     /// was found under -- and callers that compare or key on those paths would
     /// treat one directory as two.
-    public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
+    public static func findLatestSnapshot(
+        in snapshotsDir: URL, refNames: [String] = ModelScanner.revisionRefNames()
+    ) -> URL? {
         let fm = FileManager.default
         // A managed revision is selected explicitly. Modification times must
         // never activate a staged download or undo a rollback.
-        let mainRef = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs/main")
-        switch readSnapshotReference(at: mainRef) {
-        case .invalid:
-            return nil
-        case .selected(let raw):
-            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
-                  !name.utf8.contains(0) else { return nil }
-            let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
-            var isDirectory: ObjCBool = false
-            guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
-            // Use the same POSIX canonicalization as legacy discovery so one
-            // selected directory cannot acquire two cache/ownership identities.
-            return resolved(selected)
-        case .absent:
-            break
+        let refs = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs")
+        for refName in refNames {
+            switch readSnapshotReference(at: refs.appendingPathComponent(refName)) {
+            case .invalid:
+                return nil
+            case .selected(let raw):
+                let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+                      !name.utf8.contains(0) else { return nil }
+                let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
+                var isDirectory: ObjCBool = false
+                guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+                // Use the same POSIX canonicalization as legacy discovery so one
+                // selected directory cannot acquire two cache/ownership identities.
+                return resolved(selected)
+            case .absent:
+                continue
+            }
         }
         let entries: [URL]
         do {

@@ -17,7 +17,7 @@ enum EngineV2Translation {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2")
     #endif
 
     // MARK: - Request translation

@@ -26,6 +26,7 @@ struct EngineV2KVBackendPolicyTests {
         "nvidia-nemotron-3.5-lightning-hybrid8",
         "nvidia-nemotron-3.5-lightning-4bit-r1",
         "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+        "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
         "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b",
     ])
     func exactReleaseArtifactAutoPolicy(modelID: String) {

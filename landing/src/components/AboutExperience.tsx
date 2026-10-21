@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { PageWithFooter } from "./Footer";
 import { SiteNav } from "./SiteNav";
+import { publicFacts } from "../content/public-site";
 
 type Audience = "developers" | "owners";
 
@@ -27,16 +28,8 @@ type AboutData = {
   degraded?: boolean;
 };
 
-const PRICING_ROWS = [
-  { name: "GPT-OSS 20B", specification: "MoE · 128K context", input: "$0.0145", output: "$0.07", typical: "$0.14", savings: "50% lower" },
-  { name: "Gemma 4 26B", specification: "128K context", input: "$0.05", output: "$0.25", typical: "$0.90", savings: "50% lower" },
-  { name: "Qwen 3.6 35B A3B", specification: "Qwen3.5 MoE VLM with inline MTP · 256K context", input: "$0.08", output: "$0.75", typical: "$1.55", savings: "50% lower" },
-  { name: "Gemma 4 26B", specification: "MoE · 128K context", input: "$0.05", output: "$0.75", typical: null, savings: null },
-  { name: "Gemma 4 26B 8-bit rollback", specification: "128K context", input: "$0.05", output: "$0.25", typical: null, savings: null },
-] as const;
-
 const AUDIENCE_COPY: Record<Audience, string> = {
-  developers: "Swap the base URL, keep your existing OpenAI client. Requests are encrypted before they leave your app.",
+  developers: "Use your existing OpenAI client with the Darkbloom API base URL and an API key. Paid inference requires a funded account.",
   owners: "Run a provider on hardware you already have. Darkbloom matches your Mac to demand it can actually handle.",
 };
 
@@ -170,7 +163,7 @@ export function AboutExperience() {
         <div className="about-r6-hero-copy">
           <p className="about-r6-kicker about-r6-kicker--hero">What is Darkbloom</p>
           <h1 id="about-r6-title">A new topology for private inference.</h1>
-          <p className="about-r6-intro">Darkbloom routes encrypted requests to verified Apple Silicon hardware, at roughly half the cost of typical API providers. Prompts stay hidden from operators. Mac owners earn from compute they already own.</p>
+          <p className="about-r6-intro">Darkbloom routes inference requests to verified Apple Silicon hardware. Requests are encrypted hop by hop, and providers process prompts to run inference. Mac owners contribute compute they already own.</p>
           <div className="about-audience" role="tablist" aria-label="Choose your view">
             <button type="button" role="tab" aria-selected={audience === "owners"} onClick={() => setAudience("owners")}>For Mac Owners</button>
             <button type="button" role="tab" aria-selected={audience === "developers"} onClick={() => setAudience("developers")}>For Developers</button>
@@ -198,7 +191,7 @@ export function AboutExperience() {
           <section className="about-market" aria-labelledby="about-market-title">
             <Reveal><p className="about-r6-kicker">Why does it cost less</p></Reveal>
             <Reveal delay={70}><h2 id="about-market-title">Darkbloom turns idle capacity into a private inference market</h2></Reveal>
-            <Reveal delay={140}><p className="about-r6-section-copy">Typical inference passes through clouds, resellers, and API layers, each adding margin. Darkbloom routes requests to idle Apple Silicon instead - hardware its owners already paid for, where the marginal cost is mostly electricity. Pay per token, with no subscription or minimum.</p></Reveal>
+            <Reveal delay={140}><p className="about-r6-section-copy">Typical inference passes through clouds, resellers, and API layers, each adding margin. Darkbloom routes requests to idle Apple Silicon instead - hardware its owners already paid for, where the marginal cost is mostly electricity. Pay per token; see the current pricing page for rates.</p></Reveal>
           </section>
         </div>
 
@@ -207,25 +200,10 @@ export function AboutExperience() {
         <section className="about-pricing" id="pricing" aria-labelledby="about-pricing-title">
           <Reveal className="about-pricing-card">
             <h2 id="about-pricing-title">Decentralized Inference Pricing</h2>
-            <div className="about-pricing-scroll">
-              <table>
-                <thead><tr><th>Model &amp; Specification</th><th>Input (1M Tok)</th><th>Output (1M Tok)</th><th>Typical API</th><th>vs typical API</th></tr></thead>
-                <tbody>
-                  {PRICING_ROWS.map((row, index) => (
-                    <tr key={`${row.name}-${index}`}>
-                      <td><b>{row.name}</b><small>{row.specification}</small></td>
-                      <td data-label="Input (1M Tok)">{row.input}</td>
-                      <td data-label="Output (1M Tok)">{row.output}</td>
-                      <td data-label="Typical API">{row.typical ? <s>{row.typical}</s> : "-"}</td>
-                      <td data-label="vs typical API">{row.savings ? <span className="about-savings">{row.savings}</span> : "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <p>Pay for inference by token usage. Input, output and cache-read tokens have separate model-specific rates, quoted in USD per million tokens.</p>
             <div className="about-card-footer">
-              <p>Prices per million tokens. Typical API means published list rates for comparable models from major API providers.</p>
-              <a href="https://github.com/Layr-Labs/d-inference" target="_blank" rel="noreferrer">View full documentation ↗</a>
+              <p>Current rates come from the public pricing endpoint. The pricing page shows the retrieval time or an explicit unavailable state.</p>
+              <a href="/pricing">View current pricing ↗</a>
             </div>
           </Reveal>
         </section>
@@ -234,7 +212,7 @@ export function AboutExperience() {
           <div className="about-privacy-copy">
             <Reveal><p className="about-r6-kicker">Why privacy matters*</p></Reveal>
             <Reveal delay={70}><h2 id="about-privacy-title">Sensitive information shouldn&apos;t run on untrusted hardware</h2></Reveal>
-            <Reveal delay={140}><p className="about-r6-section-copy">Every prompt carries information you&apos;d never publish: personal reflections, customer conversations, source code, strategy. Darkbloom&apos;s privacy is more than a policy. The coordinator can route requests, the providers can serve them, but neither can get a usable view of the prompt.</p></Reveal>
+            <Reveal delay={140}><p className="about-r6-section-copy">{publicFacts.privacy}</p></Reveal>
             <Reveal delay={210}><a className="about-text-link" href="https://github.com/Layr-Labs/d-inference/blob/master/papers/dginf-private-inference.pdf" target="_blank" rel="noreferrer">Read the whitepaper ↗</a></Reveal>
           </div>
           <Reveal delay={80} className="about-flow-wrap">
@@ -256,7 +234,7 @@ export function AboutExperience() {
               <div className="about-flow-provider about-flow-provider--macbook"><b>MacBook</b><small>verified</small></div>
               <ul className="about-flow-points">
                 <li>Encrypted</li>
-                <li>50% lower cost</li>
+                <li>Verified hardware</li>
                 <li>Private</li>
               </ul>
             </div>
@@ -266,19 +244,19 @@ export function AboutExperience() {
         <section className="about-operator" id="security" aria-labelledby="about-operator-title">
           <div className="about-operator-copy">
             <Reveal><p className="about-r6-kicker about-r6-kicker--lg">How privacy is ensured*</p></Reveal>
-            <Reveal delay={70}><h2 id="about-operator-title">Operator blind by design</h2></Reveal>
-            <Reveal delay={140}><p className="about-r6-section-copy">Darkbloom removes software paths an operator could use to observe inference data. Requests are encrypted, the OS is sealed, memory is isolated, and the process itself refuses inspection.</p></Reveal>
+            <Reveal delay={70}><h2 id="about-operator-title">Verified hardware, explicit trust boundaries</h2></Reveal>
+            <Reveal delay={140}><p className="about-r6-section-copy">Darkbloom combines encrypted transport with hardware and code verification. These checks help establish which provider receives a request. The coordinator decrypts in confidential-VM memory, and the provider processes plaintext to perform inference.</p></Reveal>
           </div>
           <Reveal delay={80} className="about-layers-wrap">
             <div className="about-layers" aria-label="Four layers protect inference data">
               <div className="about-layer about-layer--1">
-                <div className="about-layer-head"><b>01 / E2E Encryption</b><small>encrypted before it leaves your device</small></div>
+                <div className="about-layer-head"><b>01 / Hop-by-hop Encryption</b><small>requests are re-encrypted between hops</small></div>
                 <div className="about-layer about-layer--2">
                   <div className="about-layer-head"><b>02 / OS Integrity</b><small>SIP enforced · signed system volume · binary self-hash</small></div>
                   <div className="about-layer about-layer--3">
-                    <div className="about-layer-head"><b>03 / Memory Isolation</b><small>Hypervisor.framework · Stage 2 page tables</small></div>
+                    <div className="about-layer-head"><b>03 / Confidential Coordinator</b><small>decrypts in confidential-VM memory</small></div>
                     <div className="about-layer about-layer--4">
-                      <div className="about-layer-head"><b>04 / Hardened Process</b><small>debugger blocked · no shell access</small></div>
+                      <div className="about-layer-head"><b>04 / Attested Provider Key</b><small>provider decrypts to run inference</small></div>
                       <div className="about-layer-core">
                         <b>Your inference data</b>
                         <span>prompts · responses · model state</span>
@@ -288,7 +266,7 @@ export function AboutExperience() {
                 </div>
               </div>
             </div>
-            <p className="about-layers-caption">operator is here, every path inward is eliminated</p>
+            <p className="about-layers-caption">Trust includes the coordinator and the provider plaintext endpoint</p>
           </Reveal>
         </section>
 

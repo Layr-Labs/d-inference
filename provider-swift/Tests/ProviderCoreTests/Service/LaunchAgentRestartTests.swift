@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+@testable import ProviderAppAttest
 import Testing
 
 @testable import ProviderCore
@@ -49,6 +50,27 @@ struct LaunchAgentRestartTests {
 
 @Suite("LaunchAgent environment passthrough")
 struct LaunchAgentEnvironmentTests {
+    @Test func workerOptInSurvivesDaemonPlistWithoutDiagnosticFlags() throws {
+        let key = AppAttestWorkerSelection.qualificationEnvironment
+        for value: String? in [nil, "", "0", "true", "yes", " 1 ", "1"] {
+            var environment = [
+                "DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION": "1",
+                "DARKBLOOM_NATIVE_SERVE_QUALIFICATION": "1",
+                "DARKBLOOM_NATIVE_WORKER_SERVE_QUALIFICATION": "1",
+                "UNRELATED_SECRET": "excluded",
+            ]
+            environment[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: environment)
+            let encoded = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            let decoded = try #require(try PropertyListSerialization.propertyList(from: encoded, format: nil) as? [String: Any])
+            let forwarded = decoded["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(forwarded == (value == "1" ? [key: "1"] : [:]))
+            #expect(AppAttestWorkerSelection.enabled(in: forwarded) == (value == "1"))
+        }
+    }
+
     @Test func memoryPolicyMatchesForegroundIncludingInvalidAndEmptyValues() {
         let key = SystemMemory.availabilityEnvironmentKey
         for value: String? in [nil, "reclaimable", "free-only", " FREE-ONLY ", "typo", ""] {
@@ -67,10 +89,33 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1"])
     }
 
+    @Test func forwardsModelCDNOverride() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_R2_CDN_URL": "https://cdn.example.test", "PATH": "/usr/bin",
+        ])
+        #expect(out == ["DARKBLOOM_R2_CDN_URL": "https://cdn.example.test"])
+    }
+
+    @Test(arguments: ["balanced", "k8v4", "k8v8", "native", "malformed"])
+    func forwardsIndependentKVPrecisionControls(checkpoint: String) {
+        let precision = [
+            "DARKBLOOM_CBV2_KV_QUANTIZATION": "k8v8",
+            "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION": checkpoint,
+        ]
+        let environment = precision.merging(["UNRELATED_SECRET": "excluded"]) { value, _ in value }
+        #expect(LaunchAgent.passthroughEnvironment(from: environment) == precision)
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log", environment: environment)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == precision)
+    }
+
     @Test func dropsEmptyAndMissingVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
         let out = LaunchAgent.passthroughEnvironment(from: [
             "DARKBLOOM_PREFIX_CACHE": "",
+            "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION": "",
             EngineV2Factory.maxPartialPrefillsKey: "",
             PrefillDeadlineMode.environmentKey: "",
             "UNRELATED_SECRET": "excluded",

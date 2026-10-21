@@ -110,6 +110,19 @@ identical); its steps only lose launches.
 | Check | Result |
 |---|---|
 | Perplexity panel (4 documents, 15,901 scored positions, `.serving`, 2,048-token chunks) against the previous SDK | bit-identical NLL and argmax at every position (`PrefillProjections.nativeGEMM`) |
+| Same panel at 8-token steps (decode-sized; sparse past 2,048 tokens): split-K decode attention (`.serving`) against absorbed decode attention with the reference selection graph (`sparseDecode: .reference`) | perplexity 7.310244 vs 7.309884 (+0.0049 %); top-1 97.60 % |
+| Each 8-token variant against `.serving` at 2,048-token chunks | split-K −0.051 % perplexity, 94.03 % top-1; absorbed −0.056 %, 93.98 % top-1. Both are equally close; the qualified policy agrees 94.0 % with itself across step sizes |
+
+Re-qualification of `344b39e3…` on one M5 Ultra 256 GB (128K selection, run in place):
+
+| Check | Result |
+|---|---|
+| Endpoint checks | as for `d9780e86…`: the misses are the harness's 64K-era `over_context` assumption, the known seeded-sampling limit, `reasoning.exclude: true` and `include_reasoning: false` refused by design, and `thinking_off`, whose harness still expects the earlier 400 (thinking-off now answers 200 with no reasoning and the correct result). `metrics_snapshot` lacks `complete_prefix_key_persistent` because a build run in place has no cache key (`key_unavailable`); `d9780e86…` run the same way reports the same |
+| OpenRouter templates | none failed |
+| Needles at 64K and 125K tokens, depths 10 / 50 / 90 % | 6/6 |
+| Image kit | 45/51, the same six misses as `d9780e86…` (three image-size cases and three cases written for the earlier video refusal) |
+| Video kit | 15/15 |
+| SDK GLM GPU suites (61) | every assertion passes; the remaining reports are env-gated benchmark and oracle-fixture skips. `GLM5NextMoEPrefillBenchTests` flags the known sub-65-row shared-expert difference at its default rows and is bitwise at 2,048 and 4,096 rows |
 
 
 ## Final recheck after merging main

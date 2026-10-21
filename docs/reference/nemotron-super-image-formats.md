@@ -19,7 +19,7 @@ at model revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`.
 | Orientation | `ImageOps.exif_transpose`: IFD0 Orientation; only when that tag is absent, the first XMP `tiff:Orientation` match. Values 2–8 transpose; other values are ignored | Same rules for `.applyEXIF`, which the image owner uses; `.preserveRaster` ignores both | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageOrientation.swift` (`NemotronSuperImageOrientation`) |
 | Mode conversion | `Image.convert("RGB")` | The PNG and JPEG tables below | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGRaster.swift` (`NemotronSuperPNGRaster`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`NemotronSuperJPEGRaster`) |
 | Colour management | None: ICC profiles, `gAMA`, `cHRM` and `sRGB` do not change samples | None. ImageIO samples are read without drawing | as above |
-| Frames | Frame 0 | APNG: the IDAT image. MPO: the primary JPEG. Bytes after the primary JPEG's EOI are ignored | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGContainer.swift` (`NemotronSuperPNGContainer`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`NemotronSuperJPEGContainer`) |
+| Frames | Frame 0 | APNG: the IDAT image. MPO: the primary JPEG. Bytes after the primary JPEG's EOI are ignored and never reach ImageIO | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGContainer.swift` (`NemotronSuperPNGContainer`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`NemotronSuperJPEGContainer`) |
 | Resize and normalization | Float32 `interpolate(bicubic, align_corners=False, antialias=True)`, then `(t / 255 - mean) / std` | SDK `normalizeRGB`, which reproduces CPU PyTorch 2.12.0 rounding and is bitwise equal on the golden fixtures | `libs/mlx-swift-lm/Libraries/MLXVLM/NemotronSuperImagePreprocessing.swift` (`NemotronSuperImagePreprocessing`) |
 
 ## PNG
@@ -49,7 +49,8 @@ validity; Pillow counts only text it stores. Text and ICC rules are in
 
 ## JPEG
 
-ImageIO decodes the primary frame after the container check. Its IDCT and
+ImageIO decodes the primary frame after the container check, given only the
+bytes through its EOI; its metadata properties are not requested. Its IDCT and
 chroma upsampling are not libjpeg-turbo's, so samples differ from Pillow.
 
 | Property | Admitted | Source |

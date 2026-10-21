@@ -16,6 +16,8 @@ struct NemotronSuperJPEGContainer {
     let exif: Data?
     /// The last XMP APP1 packet, as Pillow's `info["xmp"]`.
     let xmp: Data?
+    /// Bytes from SOI through the primary image's EOI: all a decoder needs.
+    let primaryLength: Int
 
     private struct Component { let id: UInt8, horizontal: Int, vertical: Int }
 
@@ -93,7 +95,8 @@ struct NemotronSuperJPEGContainer {
         }
         guard let frame else { throw Failure.invalidHeader }
         let model = try colorModel(frame.components, jfif: jfif, adobeTransform: adobeTransform)
-        return Self(width: frame.width, height: frame.height, colorModel: model, exif: exif, xmp: xmp)
+        return Self(width: frame.width, height: frame.height, colorModel: model, exif: exif, xmp: xmp,
+                    primaryLength: position)
     }
 
     private static func parseFrame(_ payload: UnsafeRawBufferPointer) throws

@@ -3,8 +3,9 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// Scan parameters, from the container alone: ImageIO never sees the synthetic
-/// headers here, whose scans carry no entropy-coded data.
+/// Scan parameters and the primary image's extent, from the container alone:
+/// ImageIO never sees the synthetic headers here, whose scans carry no
+/// entropy-coded data.
 struct NemotronSuperJPEGContainerTests {
     private typealias Failure = NemotronSuperImageDecode.Failure
 
@@ -98,5 +99,27 @@ struct NemotronSuperJPEGContainerTests {
         #expect(throws: Failure.invalidHeader) {
             try Self.inspect(Self.jpeg(frame, first + Array(repeating: refinement, count: 498)))
         }
+    }
+
+    /// ImageIO is given bytes [0, primaryLength): MPO frames and trailers
+    /// after the primary EOI, which Pillow never decodes for frame 0, are not
+    /// part of the stream it parses.
+    @Test func primaryImageEndsAtItsEOI() throws {
+        func container(_ data: Data) throws -> NemotronSuperJPEGContainer {
+            try data.withUnsafeBytes { try NemotronSuperJPEGContainer.parse($0) }
+        }
+        let mpo = try NemotronSuperImageFixtures.data("jpeg-mpo.jpeg")
+        let primary = try container(mpo).primaryLength
+        #expect(primary == 1254 && primary < mpo.count)
+        #expect(mpo[primary - 2] == 0xff && mpo[primary - 1] == 0xd9)
+        let whole = try NemotronSuperImageDecode.decode(mpo, orientation: .applyEXIF)
+        #expect(whole.rgb == (try NemotronSuperImageDecode.decode(mpo.prefix(primary), orientation: .applyEXIF)).rgb)
+        let baseline = try NemotronSuperImageFixtures.data("jpeg-420.jpeg")
+        #expect(try container(baseline).primaryLength == baseline.count)
+        // Fill bytes before EOI belong to the primary image; a trailer does not.
+        let filled = Self.jpeg(Self.frame(0xc0, components: 1), [Self.scan([1], 0, 63)])
+        let padded = filled.dropLast(2) + Data([0xff, 0xff, 0xd9])
+        #expect(try container(padded).primaryLength == padded.count)
+        #expect(try container(padded + Data("trailer".utf8)).primaryLength == padded.count)
     }
 }

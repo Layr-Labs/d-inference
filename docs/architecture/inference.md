@@ -224,7 +224,7 @@ serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
 one-partial-prefill default. The bridge advertises the enforced
 context, so an over-length request is refused with 400 before native admission,
-and an omitted `max_tokens` defaults to half the bound. Omitted sampling fields
+and an omitted `max_tokens` defaults to the smaller of the model's default output budget (4,096 for this artifact) and half the bound (`GLM5NextCoordinatorServing.boundedSizing`). Omitted sampling fields
 use the artifact's `generation_config.json` (`EngineV2SamplingDefaults`).
 
 GLM images use ordinary causal token positions: the text tower has no

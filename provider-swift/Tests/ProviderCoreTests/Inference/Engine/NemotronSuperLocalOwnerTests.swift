@@ -258,6 +258,73 @@ extension NemotronSuperLocalOwnerTests {
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
     }
+
+    /// The owner's lock covers only an image step's admission check: while
+    /// an image prompt renders, text admission returns at once.
+    @Test(.timeLimit(.minutes(1))) func imagePromptRendersOutsideTheOwnerLock() async throws {
+        let render = SuperRenderGate()
+        let (owner, _, residency, budget, lease) = try await Self.owner(
+            tokenizer: SuperGatedImageTokenizer(gate: render))
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": NemotronSuperLocalBinding.modelID,
+            "messages": [["role": "user", "content": [
+                ["type": "text", "text": "fixture"],
+                ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]]]]]])
+        let prompt = Task.detached {
+            try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
+        }
+        #expect(await SuperRenderGate.wait(render.entered))
+        // Its own thread: an admission blocked on the lock must not hold the pool.
+        let admitted = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { if owner.admitLocalRequest() { admitted.signal() } }
+        let returned = await SuperRenderGate.wait(admitted)
+        render.release.signal()
+        #expect(returned, "text admission waited for an image prompt to render")
+        #expect(try await prompt.value == [1, 19, 18, 18, 18, 20, 2])
+        if returned { owner.finishLocalRequest() }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+}
+
+/// Holds the image prompt render inside the tokenizer until released.
+private final class SuperRenderGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+
+    /// Waits off the cooperative pool, at most five seconds.
+    static func wait(_ semaphore: DispatchSemaphore) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + 5) == .success)
+            }
+        }
+    }
+}
+
+/// `SuperSyntheticImageTokenizer` whose template render waits on a gate.
+private struct SuperGatedImageTokenizer: MLXLMCommon.Tokenizer {
+    let gate: SuperRenderGate
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1, 18, 2] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        String(repeating: "x", count: tokenIds.count)
+    }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { "x" }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+                           additionalContext: [String: any Sendable]?) throws -> [Int] { [1, 18, 2] }
+    func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String,
+                           tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] {
+        gate.entered.signal()
+        _ = gate.release.wait(timeout: .now() + 10)
+        return [1, 18, 2]
+    }
 }
 
 private actor SuperOwnerCharges {

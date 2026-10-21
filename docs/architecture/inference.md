@@ -450,7 +450,9 @@ quantizes activations with deployment (SATFINITE) overflow semantics: an image
 embedding beyond a layer's text-calibrated activation scale saturates as on
 TensorRT-LLM and vLLM, where ModelOpt's eager cast rule would turn it into NaN
 (see `libs/mlx-swift-lm/docs/nemotron-super.md`). Non-finite tower or projector
-features still fail the request.
+features still fail the request; that check, like every image evaluation, runs
+under `MLX.withError`. The owner's lock covers only each image step's admission
+check, so text admission never waits on image preparation.
 The generic local engine refuses Super; only chat completions serve it.
 
 `retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner

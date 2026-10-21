@@ -142,74 +142,82 @@ enum NemotronSuperLocalBridgeBuilder {
             lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }
         }
 
+        /// The installation, while this owner accepts media work. The lock
+        /// covers only this check: rendering, decoding and the tower run
+        /// without it, so text admission and fault checks never wait on an
+        /// image. The installation cannot close meanwhile: image steps run only
+        /// inside the image binding's one active media task, which
+        /// `closeAfterDrain` awaits before `closeAfterRetirement`.
+        private func mediaInstallation() throws -> NemotronSuperInstallation.Installed {
+            try lock.withLock {
+                guard closing == nil, imageFaults.isEmpty, let installed else {
+                    throw Failure.retirementIncomplete
+                }
+                return installed
+            }
+        }
+
         /// Uses this loaded owner's tokenizer and the pinned literal template.
         /// Input counts come from the admitted image processor, in message order.
         func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
-            return try lock.withLock {
-                guard closing == nil, imageFaults.isEmpty, installed != nil else {
-                    throw Failure.retirementIncomplete
-                }
-                let request = try ProviderLoop.decodeOpenAIRequest(body)
-                guard request.model == modelID,
-                    request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
-                    !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
-                else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
-                var imageCount = 0
-                for message in request.messages {
-                    if case .parts(let parts) = message.content {
-                        for part in parts {
-                            if case .imageURL = part { imageCount += 1 }
-                        }
+            _ = try mediaInstallation()
+            let request = try ProviderLoop.decodeOpenAIRequest(body)
+            guard request.model == modelID,
+                request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
+                !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
+            else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
+            var imageCount = 0
+            for message in request.messages {
+                if case .parts(let parts) = message.content {
+                    for part in parts {
+                        if case .imageURL = part { imageCount += 1 }
                     }
                 }
-                guard imageCount == featureCounts.count else {
-                    throw NemotronSuperLocalImageBinding.Failure.invalidInput
-                }
-                // Context overflow keeps the image path's capacity status.
-                do {
-                    return try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
-                        body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
-                        featureCounts: featureCounts, contextLength: contextLength)
-                } catch NemotronSuperPromptContract.Failure.contextExceeded {
-                    throw NemotronSuperLocalImageBinding.Failure.capacity
-                } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
-                    throw NemotronSuperLocalImageBinding.Failure.invalidInput
-                }
+            }
+            guard imageCount == featureCounts.count else {
+                throw NemotronSuperLocalImageBinding.Failure.invalidInput
+            }
+            // Context overflow keeps the image path's capacity status.
+            do {
+                return try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
+                    body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
+                    featureCounts: featureCounts, contextLength: contextLength)
+            } catch NemotronSuperPromptContract.Failure.contextExceeded {
+                throw NemotronSuperLocalImageBinding.Failure.capacity
+            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
+                throw NemotronSuperLocalImageBinding.Failure.invalidInput
             }
         }
 
         func makeLocalImageInput(promptTokens: [Int], pixels: [[Float]], widths: [Int], heights: [Int],
             construction: NativeConstructionScope
         ) throws -> NemotronSuperLocalImageBinding.Input {
-            return try lock.withLock {
-                guard closing == nil, imageFaults.isEmpty, let installed else {
-                    throw Failure.retirementIncomplete
-                }
-                return .init(promptTokens: promptTokens,
-                    normalizedImages: try NemotronSuperVisionPreparation.makeNormalizedImages(
-                        installed: installed, pixels: pixels, widths: widths, heights: heights,
-                        construction: construction))
-            }
+            let installation = try mediaInstallation()
+            return .init(promptTokens: promptTokens,
+                normalizedImages: try NemotronSuperVisionPreparation.makeNormalizedImages(
+                    installed: installation, pixels: pixels, widths: widths, heights: heights,
+                    construction: construction))
         }
 
         func prepareLocalImage(_ input: NemotronSuperLocalImageBinding.Input,
             maximumFeatureBytes: Int, construction: NativeConstructionScope
         ) throws -> EngineV2VisionPrefill.PreparedSubmission {
-            return try lock.withLock {
-                guard closing == nil, imageFaults.isEmpty, let installed else {
-                    throw Failure.retirementIncomplete
+            let installation = try mediaInstallation()
+            let prepared = try NemotronSuperVisionPreparation.prepare(
+                installed: installation, prompt: input.promptTokens.map(Int32.init),
+                normalizedImages: input.normalizedImages, maximumFeatureBytes: maximumFeatureBytes,
+                construction: construction)
+            // The features are evaluated; a non-finite value would decode as
+            // garbage, so the request fails instead of streaming it. A refused
+            // check evaluation throws its recorded fault instead of exiting.
+            try MLX.withError { (errors: MLX.ErrorBox) in
+                for feature in prepared.features {
+                    let finite = all(isFinite(feature)).item(Bool.self)
+                    try EngineV2VisionPrefill.throwIfMLXFaulted(errors)
+                    guard finite else { throw NemotronSuperLocalImageBinding.Failure.invalidFeatures }
                 }
-                let prepared = try NemotronSuperVisionPreparation.prepare(
-                    installed: installed, prompt: input.promptTokens.map(Int32.init),
-                    normalizedImages: input.normalizedImages, maximumFeatureBytes: maximumFeatureBytes,
-                    construction: construction)
-                // The features are evaluated; a non-finite value would decode
-                // as garbage, so the request fails instead of streaming it.
-                for feature in prepared.features where !all(isFinite(feature)).item(Bool.self) {
-                    throw NemotronSuperLocalImageBinding.Failure.invalidFeatures
-                }
-                return NemotronSuperVisionSubmission.make(prepared)
             }
+            return NemotronSuperVisionSubmission.make(prepared)
         }
 
         /// The pinned template around the request's one video with this

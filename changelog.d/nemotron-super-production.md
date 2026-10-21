@@ -80,7 +80,9 @@
   rendering its prompt. An answer held for validation (JSON content with
   thinking off, forced or tool-call-only answers) starts its stream at the
   first generated token, so a streamed one that fails validation ends with an
-  error event instead of a 422 status.
+  error event instead of a 422 status. Text requests no longer wait while an
+  image is prepared, and a GPU fault while checking image features fails the
+  request instead of stopping the provider.
 - Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
   `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
   reference serving samples it: 2 frames per second, at most 256, paired into

@@ -60,7 +60,7 @@ public enum RetiredKnobWarnings {
         config: ProviderConfig,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String] {
-        let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "config")
+        let logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "config")
         let out = messages(config: config, environment: environment)
         for message in out {
             logger.warning(message)

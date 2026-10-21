@@ -12,21 +12,15 @@ struct ModelPrefixBenchmarkLiveTests {
     func modelPrefixPairs() async throws {
         try #require(ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_EXCLUSIVE_GPU"] == "1")
         let specification = try ModelPrefixBenchmarkSpecification.load()
+        try #require(specification.resolvedLiveKVQuantization == "native"
+            && specification.resolvedCheckpointQuantization == "native",
+            "exact replay uses native live/storage; lossy profiles belong in ModelCheckpointStorageLiveTests")
         let fixture = try await ModelPrefixBenchmarkFixture(specification)
         do {
-            let cache = await fixture.session.cacheSnapshot()
-            var report = ModelPrefixBenchmarkReport(modelID: specification.modelID,
-                openRouterID: specification.openRouterID, weightHash: specification.expectedWeightHash,
-                modelType: specification.modelType, servingModelType: fixture.servingModelType,
-                backend: fixture.session.backend, backendFallback: fixture.session.backendFallback,
-                cacheMode: cache.durableMode, keyMode: cache.keyMode, mtpEnabled: specification.mtpEnabled ?? false,
-                checkpointPartition: specification.checkpointPartition ?? "production", strictFsync: false,
-                productionKVGrantBytes: cache.engineKVCapacityBytes, physicalMemoryBytes: cache.physicalMemoryBytes,
-                activationReserveBytes: cache.activationReserveBytes, outputTokens: specification.outputTokens,
-                comparison: specification.checkpointPartition == "demanded_recurrent_qualification"
+            var report = await fixture.makeReport(comparison:
+                specification.checkpointPartition == "demanded_recurrent_qualification"
                     ? "benchmark-only recurrent partition: cache-disabled versus actual scoped SSD reuse; not production or old binary"
                     : "current production factory: cache-disabled versus actual scoped SSD reuse; not old binary")
-            report.assistantIdentity = cache.assistantIdentity
             // Excluded initialization pass on the same workload family.
             _ = try await fixture.run(cell: "priming", pair: -1, role: "excluded",
                 tokens: fixture.promptTokens(count: 1025), scope: "priming",

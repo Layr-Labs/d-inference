@@ -73,7 +73,7 @@ public enum WrappedKEKStorageError: Error, CustomStringConvertible, Sendable {
 /// `InMemoryWrappedKEKStorage` in those builds.
 public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
 
-    public static let defaultService = "io.darkbloom.kv.kek.v1"
+    public static let defaultService = BuildEnvironment.current.keychainServicePrefix + ".kv.kek.v1"
     public static let defaultAccount = "default"
 
     private let service: String

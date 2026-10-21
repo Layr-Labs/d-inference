@@ -262,8 +262,7 @@ extension ProviderLoop {
 
     /// Driver epilogue: log the summary and clear the task handle. Runs on the
     /// actor whether the gate was still waiting or had already timed out.
-    private func finishStartupPreload(summary: StartupPreloader.Summary, elapsed: Duration) {
-        startupPreloadTask = nil
+    private func finishStartupPreload(summary: StartupPreloader.Summary, elapsed: Duration) async {
         startupPreloadPendingModels = []
         var parts = ["loaded=\(summary.loaded.count)"]
         if !summary.skippedInsufficientMemory.isEmpty {
@@ -280,6 +279,13 @@ extension ProviderLoop {
         }
         logger.info(
             "Startup preload complete in \(StartupPreloader.secs(elapsed)): \(parts.joined(separator: " "))")
+        // Also runs when registration already proceeded after the preload timeout.
+        // Self-tests and their foreground leases have finished before this point.
+        await refreshModelCalibration()
+        if !Task.isCancelled, !isShuttingDown, !servingDrain.refusing {
+            await updateAggregateCapacity()
+        }
+        startupPreloadTask = nil
         writeDaemonState()
     }
 
@@ -482,7 +488,8 @@ extension ProviderLoop {
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+            measurementPurpose: .startupWarmup
         )
         let service = MLXOpenAIService(engine: engine)
 

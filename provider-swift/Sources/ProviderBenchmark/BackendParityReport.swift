@@ -146,8 +146,8 @@ public struct BackendParityReport: Codable, Sendable {
     /// attributable to the backend — and that must be established per RUN and
     /// per MODEL, not inherited from a one-off experiment in someone's notes.
     ///
-    /// The perturbation is the paged pool dtype (fp16 -> fp32), reachable
-    /// only since `DARKBLOOM_CBV2_PAGED_KV_DTYPE` landed. The arm is trusted
+    /// The requested perturbation is native per-layer KV storage -> fp32.
+    /// A strict native dtype refusal reports an unavailable control. The arm is trusted
     /// ONLY when `ProductionBuild.pagedPoolDType` confirms fp32 actually
     /// served; a silently-ignored knob would otherwise masquerade as
     /// agreement, which is exactly the failure class this gate exists to
@@ -774,12 +774,12 @@ public enum BackendParityCriteria {
             + " is a tautology about one configuration, not a control"
     }
 
-    /// Relative precision of the fp16 KV the paged pool stores (11-bit
-    /// significand). Derived from the storage dtype, NOT tuned.
+    /// Historical fp16 reference precision (11-bit significand). This fixed
+    /// diagnostic is not an inference about the current native layer types.
     static let fp16RelativeEpsilon: Float = 1.0 / 2048.0
 
     /// Whether the baseline's argmax at `index` had more slack than the
-    /// STORAGE precision — i.e. "was this decision resolvable in fp16 at all".
+    /// fp16 reference precision — i.e. "was this decision resolvable in fp16 at all".
     ///
     /// Read the scope carefully, because the obvious misreading is wrong.
     /// This does NOT answer "was the perturbation small". The perturbation
@@ -793,7 +793,7 @@ public enum BackendParityCriteria {
     /// gives 0.244), so the arrival magnitude is amplification through 30
     /// residual layers and 240 top-8-of-128 MoE selections, not storage noise.
     ///
-    /// So a `resolvable: true` answer means the fp16 cache could represent the
+    /// So a `resolvable: true` answer means fp16 could represent the
     /// gap, and nothing more. It is reported as context beside the first flip;
     /// it is NEVER the reason the criterion declines to score, which is
     /// unconditional (see `tokenExactness`).
@@ -997,8 +997,8 @@ public enum BackendParityCriteria {
                 measurements["resolvableFloor"] = String(format: "%.3e", probe.floor)
                 detail += ". The baseline's argmax at that flip had a top1-top2 gap of "
                     + "\(String(format: "%.2e", probe.margin)) against a "
-                    + "\(String(format: "%.2e", probe.floor)) floor from the fp16 KV the "
-                    + "pool stores, so the tie was "
+                    + "\(String(format: "%.2e", probe.floor)) fp16 reference floor "
+                    + "(not the observed per-layer native storage precision), so the tie was "
                     + (probe.resolvable ? "resolvable" : "NOT resolvable")
                     + " at that precision"
             }

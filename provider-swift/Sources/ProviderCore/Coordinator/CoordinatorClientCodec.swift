@@ -18,7 +18,8 @@ public enum CoordinatorClientCodec {
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
-        autopilotInventory: [ModelInfo]? = nil
+        autopilotInventory: [ModelInfo]? = nil,
+        appAttestResumeNonce: String? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -81,6 +82,8 @@ public enum CoordinatorClientCodec {
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
             appAttestProtocol: 3,
+            appAttestResumeProtocol: appAttestResumeNonce == nil ? nil : 1,
+            appAttestResumeNonce: appAttestResumeNonce,
             modelAutopilot: modelAutopilot,
             autopilotInventory: inventory.isEmpty ? nil : inventory
         ))
@@ -100,7 +103,8 @@ public enum CoordinatorClientCodec {
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
-        autopilotInventory: [ModelInfo]? = nil
+        autopilotInventory: [ModelInfo]? = nil,
+        appAttestResumeNonce: String? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -117,7 +121,8 @@ public enum CoordinatorClientCodec {
                 prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
                 modelAutopilot: modelAutopilot,
                 ordinaryServingModelIDs: ordinaryServingModelIDs,
-                autopilotInventory: autopilotInventory
+                autopilotInventory: autopilotInventory,
+                appAttestResumeNonce: appAttestResumeNonce
             )
         )
     }
@@ -215,9 +220,6 @@ public enum CoordinatorClientCodec {
                 templateHashes: payload.templateHashes,
                 modelHashes: payload.modelHashes
             ))
-
-        case .appAttestShadow(let payload):
-            return .appAttestShadow(payload)
 
         case .codeAttestationResponse(let nonce, let signature, _):
             return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(

@@ -1,0 +1,77 @@
+{
+  "arms" : [
+    {
+      "resolvedBackend" : "contiguous",
+      "selection" : "contiguous"
+    },
+    {
+      "resolvedBackend" : "paged",
+      "selection" : "paged"
+    }
+  ],
+  "criteria" : [
+    {
+      "detail" : "3 prompts, 24 generated token ids identical between contiguous and paged, finish reasons equal (shortest row 8 tokens)",
+      "id" : "token_exactness",
+      "measurements" : {
+        "contiguous" : "3 rows, 24 tokens, finish=length",
+        "paged" : "3 rows, 24 tokens, finish=length"
+      },
+      "title" : "token exactness: greedy decode produces IDENTICAL token ids on both backends",
+      "verdict" : "PASS"
+    },
+    {
+      "detail" : "MTP could not be set up on contiguous: no MTP assistant supplied (--assistant-model)",
+      "id" : "mtp_token_exactness",
+      "measurements" : {
+
+      },
+      "title" : "MTP: drafts PRODUCED on both backends and token-exact against each backend's OWN plain decode",
+      "verdict" : "UNAVAILABLE"
+    },
+    {
+      "detail" : "contiguous: model GPTOSSModel does not claim CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill, so the packed path is never taken for this model on EITHER backend — that is a MODEL fact and says nothing about the backend; paged: model GPTOSSModel does not claim CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill, so the packed path is never taken for this model on EITHER backend — that is a MODEL fact and says nothing about the backend",
+      "id" : "packed_prefill",
+      "measurements" : {
+        "contiguous" : "UNDETERMINED — model GPTOSSModel does not claim CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill, so the packed path is never taken for this model on EITHER backend — that is a MODEL fact and says nothing about the backend",
+        "paged" : "UNDETERMINED — model GPTOSSModel does not claim CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill, so the packed path is never taken for this model on EITHER backend — that is a MODEL fact and says nothing about the backend"
+      },
+      "title" : "packed prefill ACTIVE on both backends",
+      "verdict" : "UNAVAILABLE"
+    },
+    {
+      "detail" : "contiguous: model GPTOSSModel reports supportsVisionSpanPrefill=false, so CBv2Multimodal.validate refuses at the MODEL gate before the backend's span capability is consulted — this says nothing about the backend; paged: model GPTOSSModel reports supportsVisionSpanPrefill=false, so CBv2Multimodal.validate refuses at the MODEL gate before the backend's span capability is consulted — this says nothing about the backend",
+      "id" : "vision_spans",
+      "measurements" : {
+        "contiguous" : "UNDETERMINED — model GPTOSSModel reports supportsVisionSpanPrefill=false, so CBv2Multimodal.validate refuses at the MODEL gate before the backend's span capability is consulted — this says nothing about the backend",
+        "paged" : "UNDETERMINED — model GPTOSSModel reports supportsVisionSpanPrefill=false, so CBv2Multimodal.validate refuses at the MODEL gate before the backend's span capability is consulted — this says nothing about the backend"
+      },
+      "title" : "vision spans ACTIVE on both backends",
+      "verdict" : "UNAVAILABLE"
+    },
+    {
+      "detail" : "the 512-token probe prompt is at or below the frozen-replay bound (contiguous 1536, paged 1536), so no saving is reachable at this length — raise --parity-prefix-tokens above 1536",
+      "id" : "prefix_reuse",
+      "measurements" : {
+        "contiguous" : "capability=supported(frozen_full_replay), replayBound=1536, prompt=512, donated=1, outcomes=miss->skipped_policy, finish=length\/length, matched=256, saved=0, adoptionExact=not_measured, probeResolved=contiguous, cache(hits=1,misses=1,tokensSaved=256)",
+        "paged" : "capability=supported(frozen_full_replay), replayBound=1536, prompt=512, donated=1, outcomes=miss->skipped_policy, finish=length\/length, matched=256, saved=0, adoptionExact=not_measured, probeResolved=paged, cache(hits=1,misses=1,tokensSaved=256)"
+      },
+      "title" : "prefix reuse: paged saves at least as many prefill tokens as contiguous",
+      "verdict" : "UNAVAILABLE"
+    }
+  ],
+  "modelID" : "gpt-oss-20b",
+  "modelPath" : "\/Users\/gaj\/.codex\/runtime-kv-models\/gpt-oss-20b",
+  "notes" : [
+    "verdicts describe the RESOLVED backends (contiguous vs paged), not the requested selections (contiguous vs paged).",
+    "this harness calls EngineV2Factory.makeProductionBuild directly and so bypasses the slot-routing policy (EngineV2KVBackendPolicy.applySlotVetoes, applied by EngineV2SlotFactory). Every verdict here is a BACKEND result, not a statement about how production routes a slot to that backend.",
+    "token comparisons are over RAW SAMPLED TOKEN IDS with temperature 0; text equality is a strictly weaker oracle and is not used.",
+    "both backend arms use native KV precision and the factory's observed per-layer storage types; ambient dtype overrides are cleared. The paged arm reports mixed storage (mixed means multiple native layer types). The separate fp32 diagnostic may be UNAVAILABLE when the native dtype guard refuses its override; it never coerces KV or proves packed precision quality."
+  ],
+  "numericsControl" : {
+    "candidatePoolDType" : "mixed",
+    "detail" : "the fp32 control engine would not build: engine_v2: paged KV backend explicitly requested but unavailable — native_kv_probe: backendIneligible(reason: \"paged dtype override differs from the loaded model\\'s native KV types\")",
+    "perturbation" : "paged pool dtype native (mixed) -> float32"
+  },
+  "schemaVersion" : 3
+}

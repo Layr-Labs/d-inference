@@ -1,0 +1,92 @@
+{
+  "baselineCommit": "7e3189cee92f2073e5e85abc3e98795f2d6d42d7",
+  "baselineScriptSHA256": "9594609c4aa919cc75dbe543475e1ed5818cb5f92edbaeb8f24d765d14f91aa1",
+  "comparisons": [
+    {
+      "runs": [
+        {
+          "childCalled": true,
+          "exitCode": 0,
+          "identityPassed": [
+            true,
+            true
+          ],
+          "inheritedQueryOverride": "1",
+          "schema": 1,
+          "taskPassed": [
+            false,
+            false
+          ],
+          "version": "before"
+        },
+        {
+          "childCalled": true,
+          "exitCode": 0,
+          "identityPassed": [
+            true,
+            true
+          ],
+          "inheritedQueryOverride": null,
+          "schema": 2,
+          "taskPassed": [
+            true,
+            true
+          ],
+          "version": "after"
+        }
+      ],
+      "scenario": "ambient"
+    },
+    {
+      "runs": [
+        {
+          "childCalled": true,
+          "exitCode": 0,
+          "identityPassed": [
+            true,
+            true
+          ],
+          "inheritedQueryOverride": null,
+          "schema": 1,
+          "taskPassed": [
+            true,
+            true
+          ],
+          "version": "before"
+        },
+        {
+          "childCalled": false,
+          "exitCode": 1,
+          "schema": null,
+          "version": "after"
+        }
+      ],
+      "scenario": "task"
+    },
+    {
+      "runs": [
+        {
+          "childCalled": true,
+          "exitCode": 0,
+          "identityPassed": [
+            true,
+            true
+          ],
+          "inheritedQueryOverride": null,
+          "schema": 1,
+          "version": "before"
+        },
+        {
+          "childCalled": false,
+          "exitCode": 1,
+          "schema": null,
+          "version": "after"
+        }
+      ],
+      "scenario": "score"
+    }
+  ],
+  "currentScriptSHA256": "0faf371a0ada529ee7284b0533f6882ae408d2d62a0f4cf9810ffd17306c2ab6",
+  "rawComparisonSHA256": "ba68e53e3bb4cb927694510f328109322d3d601f6055214a8b61d38392377e11",
+  "scope": "Actual outer qualification CLI/Popen with harmless CPU child, baseline committed script vs repaired script; no historical measurement edits or serving/operator changes."
+}

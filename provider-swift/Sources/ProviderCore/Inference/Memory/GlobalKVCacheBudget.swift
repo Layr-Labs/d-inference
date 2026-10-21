@@ -61,6 +61,8 @@ public actor GlobalKVCacheBudget {
     /// guarantee.
     private let reclaimer: KVPoolReclaimer
     static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
+    /// The reclaimer's fenced flush of MLX's buffer cache.
+    private nonisolated let flushCache: @Sendable () -> Void
 
     /// Swift initializes this once, on first use. Keep constructors free of MLX
     /// access so callers can bind the immutable runtime metallib before serving.
@@ -109,6 +111,7 @@ public actor GlobalKVCacheBudget {
             total: total, capFraction: capFraction, activationReserveBytes: activationReserveBytes,
             configReserveBytes: configReserveBytes,
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
+        self.flushCache = clearCache
         self.reclaimer = KVPoolReclaimer(
             clearCache: clearCache,
             reclaimableBytes: { snapshot().cache },
@@ -148,12 +151,14 @@ public actor GlobalKVCacheBudget {
         self.clockNow = clockNow
         self.auditMinInterval = auditMinInterval
         self.emitAuditEvent = emitAuditEvent
+        let fencedClearCache: @Sendable () -> Void = {
+            let deviceActivity = serviceBudget.beginUnboundedActivity()
+            defer { deviceActivity.finish() }
+            clearCache()
+        }
+        self.flushCache = fencedClearCache
         self.reclaimer = reclaimer ?? KVPoolReclaimer(
-            clearCache: {
-                let deviceActivity = serviceBudget.beginUnboundedActivity()
-                defer { deviceActivity.finish() }
-                clearCache()
-            },
+            clearCache: fencedClearCache,
             reclaimableBytes: { memorySnapshot().cache },
             minInterval: selfHealMinInterval,
             // Tests that don't pin a threshold should never trip the proactive
@@ -358,6 +363,10 @@ public actor GlobalKVCacheBudget {
                 "reservations": .string(table),
             ])
     }
+
+    /// Returns MLX's cached buffers to the system now, under the reclaimer's
+    /// fence. The caller decides that reclamation is safe.
+    nonisolated func returnCachedBuffers() { flushCache() }
 
     /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
     /// reclaimable MLX pool so admission headroom stays healthy under sustained

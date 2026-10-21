@@ -468,6 +468,65 @@ struct NemotronSuperLocalPrefixCacheTests {
         }
     }
 
+    /// MLX buffer-cache bytes a scripted budget reports until its flush runs.
+    final class ScriptedCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: UInt64 = 0
+        var bytes: UInt64 {
+            get { lock.withLock { stored } }
+            set { lock.withLock { stored = newValue } }
+        }
+    }
+
+    /// A configuration refused only for buffers MLX holds in its cache is not
+    /// narrowed: the load returns them once and asks again, and builds the
+    /// planned owner (a refusal alone only schedules the reclaimer's flush,
+    /// too late for the next configuration, which would serve without the
+    /// bank).
+    @Test(.timeLimit(.minutes(5)))
+    func cachedBuffersAreReturnedBeforeNarrowing() async throws {
+        let grant: Int = 40 << 30
+        let context = 1024
+        let environment = [Builder.maxConcurrentKey: "8", Self.memoryKey: "1",
+                           "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(4 << 30)]
+        let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: false) + (4 << 30)
+        let planned = try #require(try NemotronSuperLoadFit.candidates(environment: environment,
+            admissionKVBytes: admission, kvBytesCapacity: grant, speculates: false, contextTokens: context).first)
+        let base = try SuperMTPInstalledFixture().staging()
+        let quote = try NemotronSuperInstallation.loadQuote(source: base.source, backendAllowanceBytes: 1 << 20)
+        let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
+            speculates: false, contextTokens: context)
+        let fit = try #require(try NemotronSuperLoadFit.claim(planned, kvBytesCapacity: grant, shares: shares) {
+            try NemotronSuperLoadClaim.bytes(installation: quote, head: nil,
+                sequential: NemotronSuperLoadClaim.mayReturnStagingBuffers(), servingBytes: $0)
+        })
+        let cache = ScriptedCache()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 64 << 30, active: 0, cache: cache.bytes, systemAvailable: .max) },
+            clearCache: { cache.bytes = 0 })
+        // Exactly the planned configuration fits once the cache is returned.
+        let ballast = await Self.freeBytes(budget) - fit.requiredBytes
+        #expect(await budget.reserveBytes(requestID: "ballast", bytes: ballast))
+        cache.bytes = 512 << 20
+        let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: base.install,
+                                                     head: base.head, pinned: true)
+        let tensorBytes = base.source.tensors.values.reduce(0) { $0 + $1.layout.byteCount }
+        let transaction = NemotronSuperLocalLoad(budget: budget)
+        let bridge = try await transaction.load(staging: { staging },
+            tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
+            sizing: SlotSizingSnapshot(weightsBytes: tensorBytes, fp16KVBytesPerToken: 64,
+                                       maxContextLength: context, defaultMaxTokens: 16),
+            kvBytesCapacity: grant, admissionKVBytes: admission, backendAllowanceBytes: 1 << 20,
+            modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+        #expect(cache.bytes == 0)
+        #expect(await transaction.fitAttempts == [.init(requests: 8, prefixBankBytes: 4 << 30,
+            claimBytes: fit.chargedBytes, admitted: true)])
+        #expect(await bridge.maxConcurrentRequests == 8)
+        try await transaction.closeAfterDrain()
+        await budget.release(requestID: "ballast")
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// A co-resident slot's small grant holds every request's fixed bytes and
     /// the minimum KV, not the round work, which the claim holds whole beside
     /// it as the round share: eight speculating requests load on a 3 GiB

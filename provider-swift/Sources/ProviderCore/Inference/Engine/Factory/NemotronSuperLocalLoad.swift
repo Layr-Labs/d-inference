@@ -84,10 +84,11 @@ actor NemotronSuperLocalLoad {
     /// and the requests' KV. Once the weights are resident (MLX usage) their
     /// share is handed over to live usage, and the builder hands the lane and
     /// bank shares to their reservations, so each byte is counted once.
-    /// When the gate refuses a managed claim, the load first tries
-    /// `NemotronSuperLoadFit`'s narrower configurations (no prefix bank, then
-    /// fewer concurrent requests) and builds the first admitted one;
-    /// `fitAttempts` records each.
+    /// When the gate refuses a managed claim, the load returns MLX's cached
+    /// buffers once and asks again, then tries `NemotronSuperLoadFit`'s
+    /// narrower configurations (no prefix bank, then fewer concurrent
+    /// requests, then shorter prompt chunks) and builds the first admitted
+    /// one; `fitAttempts` records each.
     func load(configData: Data, source: ModelOptCheckpointSource,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
@@ -132,6 +133,7 @@ actor NemotronSuperLocalLoad {
             let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
             var admitted: (environment: [String: String], fit: NemotronSuperLoadFit.Claim,
                            claim: PendingModelLoadLease)?
+            var returnedCachedBuffers = false
             for candidate in try NemotronSuperLoadFit.candidates(environment: environment,
                 admissionKVBytes: admissionKVBytes, kvBytesCapacity: kvBytesCapacity,
                 speculates: speculation != nil, contextTokens: sizing.maxContextLength) {
@@ -154,10 +156,14 @@ actor NemotronSuperLocalLoad {
                 guard !fitAttempts.contains(where: {
                     $0.requests == candidate.requests && $0.claimBytes == fit.chargedBytes
                 }) else { continue }
-                let claim = await budget.claimPendingLoad(requestID: UUID().uuidString,
-                    weightBytes: fit.askedWeightBytes, minimumKVBytes: UInt64(fit.kvFloorBytes),
-                    systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes(
-                        configReserveBytes: budget.configReserveBytes))
+                var claim = await pendingLoad(fit)
+                // A refusal only schedules the reclaimer's flush of MLX's
+                // cache; before narrowing, return the cached buffers once and
+                // ask again for the same configuration.
+                if claim == nil, !returnedCachedBuffers, budget.memoryHeadroomSnapshot().cacheBytes > 0 {
+                    returnedCachedBuffers = true
+                    if NemotronSuperLoadClaim.returnCachedLoadBuffers(budget: budget) { claim = await pendingLoad(fit) }
+                }
                 let chunk = NemotronSuperLocalPrefill.requestedChunkTokens(environment: candidate.environment) ?? 0
                 fitAttempts.append(FitAttempt(requests: candidate.requests, prefixBankBytes: shares?.bank ?? 0,
                     claimBytes: fit.chargedBytes, admitted: claim != nil, chunkTokens: chunk))
@@ -215,6 +221,13 @@ actor NemotronSuperLocalLoad {
             await retireFailedLoad()
             throw error
         }
+    }
+
+    /// One configuration's LOAD claim, beside Super's own system reserve.
+    private func pendingLoad(_ fit: NemotronSuperLoadFit.Claim) async -> PendingModelLoadLease? {
+        await budget.claimPendingLoad(requestID: UUID().uuidString, weightBytes: fit.askedWeightBytes,
+            minimumKVBytes: UInt64(fit.kvFloorBytes),
+            systemReserveBytes: NemotronSuperLoadFit.systemReserveBytes(configReserveBytes: budget.configReserveBytes))
     }
 
     /// Dedicated unpublished image execution; no shared registry/native lease.

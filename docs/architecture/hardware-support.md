@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-20
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -52,8 +52,11 @@ at 76.7 GB and the process footprint at 79.3 GB, MLX active was 75.0 GB after
 load, and at the 65,536-token context claims of 129.6 to 130.7 GB (36 to 37 GiB
 of KV headroom, under the earlier claim that also counted the installed
 weights until the owner was built) were admitted at some times and refused at
-others. The registry floor stays 192 GB until a 128 GB Mac is measured; it is
-in the [registry reference](../reference/model-registry-format.md#nemotron-super).
+others. The registration gates the model to attested M5 providers with at least
+128 GB (M5 Max 128 GB, M5 Ultra) through
+`required_provider_capabilities: ["apple_m5"]` and `min_ram_gb` 128; a physical
+128 GB measurement is still pending. It is in the
+[registry reference](../reference/model-registry-format.md#nemotron-super).
 Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
 `scripts/nemotron-qualification/validation-2026-10-15.json`.

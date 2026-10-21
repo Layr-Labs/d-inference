@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-20
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -162,7 +162,8 @@ and [inference](../architecture/inference.md#managed-nemotron-super-slot) archit
 | `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
 | `max_context_length` | `65536` (the builder accepts up to `262144`; see the [managed slot](../architecture/inference.md#managed-nemotron-super-slot)) | `NemotronSuperServingPolicy.contextTokens`, `NemotronSuperServingPolicy.maximumContextTokens` |
 | `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
-| `min_ram_gb` | `192`; the default LOAD footprint's gate would admit 128 GB ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not measured; only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
+| `min_ram_gb` | `128`; the default LOAD footprint's gate admits 128 GB ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not yet measured on a physical 128 GB Mac; only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
+| `required_provider_capabilities` | `["apple_m5"]`; with `min_ram_gb` it limits the model to M5 Max (128 GB) and M5 Ultra; the coordinator honors `apple_m5` only for an attested M5 chip family | registration input; `ProviderRuntimeCapability.appleM5` (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
 | Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image; image requests refuse tools and `response_format`), served target-only on the speculating owner. No video | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody` |
 
 Providers without this policy drop the artifact at scan, advertisement and

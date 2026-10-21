@@ -57,5 +57,6 @@
   whole window, and its round work once instead of per request, so eight
   requests claim 11.2 GiB of KV headroom beside any prefix bank (was 26 GiB at
   16,384 tokens).
-- Needs at least 192 GB of unified memory; only 256 GB is measured.
+- Registered for Apple M5 Max (128 GB) and M5 Ultra (`apple_m5`, at least 128 GB
+  of unified memory); only 256 GB is measured on hardware.
   Coordinator-side registration remains a separate step.

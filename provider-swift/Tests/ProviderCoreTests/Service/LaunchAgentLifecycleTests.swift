@@ -552,7 +552,7 @@ struct WatchdogLaunchAdapterTests {
         case .missingError3:
             launchctl.answer("kickstart", failure("Could not kickstart service: 3: could not find service", status: 3))
         case .missingDiagnostic:
-            launchctl.answer("kickstart", failure("could not find service", status: 113))
+            launchctl.answer("kickstart", absent)
         case .permissionFailure:
             launchctl.answer("kickstart", failure("Could not kickstart service: 1: Operation not permitted", status: 1))
         default:

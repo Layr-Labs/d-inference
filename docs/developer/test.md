@@ -317,8 +317,8 @@ distinct. See [release](../operations/provider-release.md).
 
 ## Watchdog Launch Acknowledgement
 
-`LaunchAgentLifecycleTests` drives the actual `LaunchAgent.kickstartIfLoaded`
-adapter, `WatchdogRecoveryService` and the disk-backed crash-loop guard with a
+`WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
+actual `LaunchAgent.kickstartIfLoaded` adapter, `WatchdogRecoveryService` and the disk-backed crash-loop guard with a
 temporary install and scripted `LaunchctlControl`.
 
 ```bash
@@ -326,7 +326,8 @@ swift test --skip-build --no-parallel \
   --filter 'WatchdogLaunchAdapterTests|LaunchAgentLifecycleTests|refusedKickstartRollsBackTrip|rollbackRestoresPreexistingGuard'
 ```
 
-A missing-service response after a successful loaded check must return
+A missing-service response after a successful loaded check (exit 3 text or
+launchctl's exit-113 `Could not find service`) must return
 `noLongerLoaded`, restore the exact prior guard bytes and invoke no trip
 callback. Controls cover an already absent job, a successful kickstart,
 permission errors and manual restart reload. No real launchctl, model or GPU is

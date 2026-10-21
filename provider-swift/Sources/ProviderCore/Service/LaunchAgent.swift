@@ -205,9 +205,11 @@ public enum LaunchAgent: Sendable {
             ["kickstart", "-k", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
         if !result.succeeded {
             let stderr = result.stderr
-            // Error 3 = "could not find service": the service vanished between
-            // the isLoaded() check and here.
-            if stderr.contains("3:") || stderr.contains("could not find service") {
+            // Error 3 / exit 113 = "could not find service": the service
+            // vanished between the isLoaded() check and here.
+            if result.status == 113 || stderr.contains("3:")
+                || stderr.lowercased().contains("could not find service")
+            {
                 // Fall back to a fresh load only when allowed; the watchdog opts
                 // out so it can't resurrect an intentionally-stopped provider.
                 guard reloadIfMissing else { return false }

@@ -18,9 +18,9 @@ catalog activation or production deployment approval.
 | Hugging Face check | every manifest file present at `8841c52a` with matching LFS SHA-256; the catalog's earlier pin `8603f7fe` differs only in `README.md` |
 | Selection | local qualification selection, `maximumContextLength` 65,536 |
 | Policy | `GLM5NextExecutionPolicy.serving` (enforced by the managed load), paged KV, embedded MTP with adaptive rectangular verification up to depth 3 |
-| SDK | mlx-swift-lm `48f1e000` (#314) on mlx-swift `cf921c05`, core `2bba342d`, mlx-c `2f1bcab9` |
+| SDK | mlx-swift-lm `322a231f` (#314) on mlx-swift `205ee3d8`, core `6ee3062c`, mlx-c `bd03297a` (production footprint policy). Earlier checks ran on mlx-swift-lm `48f1e000`, mlx-swift `cf921c05`, core `2bba342d`, mlx-c `2f1bcab9` |
 | Metallib | `156f2624f9f1b1413dfabd8b6e16423121b0e5b18e2573c23c4e023b606a462d` (unchanged by this work) |
-| Executables | final: `darkbloom` `593cd3d08748a75e118c2dc45976ccb33fc96340b2349df02b6a9e681c33ea86` (= #1516 `1216ffb84`, SDK `48f1e000`; refusal probes and confirmation soak); `8eee2c99…` (#1516 `23eb9d377`; admission checks and the 40-minute soak). Earlier builds of the same chain: `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (#1516 `e114fc348`; performance table, long context, video proof), DEBUG variant `3256e2c7…` (SSD restart check only). The SDK changes after the port gate (`0ceec3ab`… `48f1e000`) only gate a non-bitwise path off, change admission charges, video decoding and the step-refusal path; none changes text numerics |
+| Executables | final: `darkbloom` `94a83e2730262d61a9d0af72729ec17043579fb403cd2dc88fe1a87211902d40` (= #1516 `15d7a833d`, SDK `322a231f`; see "Recheck after restoring production footprint charges"), DEBUG variant `4f7fd9df…` (SSD restart recheck). Before that: `593cd3d0…` (= #1516 `1216ffb84`, SDK `48f1e000`; refusal probes and confirmation soak); `8eee2c99…` (#1516 `23eb9d377`; admission checks and the 40-minute soak). Earlier builds of the same chain: `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (#1516 `e114fc348`; performance table, long context, video proof), DEBUG variant `3256e2c7…` (SSD restart check only). The SDK changes after the port gate (`0ceec3ab`… `48f1e000`) only gate a non-bitwise path off, change admission charges, video decoding and the step-refusal path; none changes text numerics |
 
 The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitted by
 `GLM5NextHardwareRequirement` but was not measured.
@@ -67,6 +67,29 @@ adaptive MTP, 5 repetitions (medians):
 MTP speculates for one row at a time (`maxSpeculativeBatch` 1), so from two
 concurrent requests on, rows decode without speculation and aggregate decode
 grows slowly (c4 is 1.55× c1).
+
+## Recheck after restoring production footprint charges
+
+The first chain (core `2bba342d`) included a one-page minimum in the Metal
+footprint policy. With it, the SDK's estimates for MTP drafters that declare no
+buffer layout grow from kilobytes to 37–671 MB per token (Qwen4 inline MTP,
+NemotronH35 MTP), so their requests could never be admitted. This release must
+not change how other models are charged, so the core reverts it (`4a355746`,
+mlx#37) and the policy equals the current provider release again. The SDK also
+merged main (#316: provider-staged checkpoint imports from host zeros). GLM's
+serving MTP charge is now 4.05 GB per request (4.89 GB with the minimum).
+
+Final executable `94a83e27…`, metallib `156f2624…`:
+
+| Check | Result |
+|---|---|
+| Tokens, serial-target mode | 13/13 text cases identical to the pre-port and port builds (incl. 31.6K prompt, 3-turn chat, concurrent pair); image case identical to the previous final build; two runs 14/14 identical |
+| Admission flood, 8 × (~30K + 30K) | unchanged: 3 served (first tokens 16.5 / 32.7 / 62.3 s), 5 clean 503 before headers, idle 0.26 s after, faults 0 |
+| Performance | prefill 1,899 / 2,023 / 2,009 tok/s (2.7K / 10.5K / 31.5K); decode 62.2 / 67.7 tok/s (256 / 1,024, adaptive MTP); c1 / c2 / c4 complete |
+| Prefix cache | 10.6K repeat 10,240 cached, TTFT 1.13 s; extended, multi-turn and media cases pass |
+| SSD tier across restart (DEBUG, persistent key) | 20,015-token prompt: same process 18,432 cached (1.87 s); after a restart 18,432 cached, TTFT 2.31 s |
+| Long context | needle 64K and 125K (125,266 tokens, TTFT 77.6 s) pass |
+| Soak, 20 minutes (seed 5301) | 559 jobs: 471 ok, 33 intended cancels, 55 capacity 503, 0 other errors, faults 0, idle at the end; up to 4 requests active; memory pressure normal in every sample, at least 23 GB free, no swap growth |
 
 ## Memory admission
 

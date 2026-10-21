@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -58,7 +58,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates; refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (a refused SSD store's typed reason reaches the bridge for local `/metrics` only); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -231,21 +231,31 @@ GLM images use ordinary causal token positions: the text tower has no
 positional encoding, so a submission carries causal spans and no position
 state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
 The original request is normalized by the GLM prompt policy exactly as text is,
-with symbolic image parts, and the processor expands each `<|image|>` to its
-feature count (16 to 8000 per image). Every placement is validated before tower
-work; the tower then runs one image at a time with MLX fused attention on the
+with symbolic image and video parts, and the processor expands each `<|image|>`
+to its feature count (16 to 8000 per image). A video's single constant-frame-rate
+MP4 or QuickTime track is read frame by frame, and only its 2 FPS official
+sample is converted to RGB8 and kept, within the processor's decoded-frame cap
+(`maximumDecodedBytes`, 512 MiB; `GLM5NextProcessor.decodeAsset`); each
+pair of sampled frames becomes one image-token span between
+`<|begin_of_image|>` and `<|end_of_image|>`, followed by its timestamp text
+(`GLM5NextProcessor.expandPrompt`). Every placement is validated before tower
+work; the tower then runs one image or frame pair at a time with MLX fused attention on the
 GPU (`GLM5NextVisionAttentionKernel.automatic`; query-tiled elsewhere), so no
 frame-square score tensor is allocated, and every evaluation checks the scoped
 MLX fault box. The reservation below still prices the tiled working set. The scheduler's `VisionMemoryGate` reservation adds the
 processor's prepared-pixel cap, the tower working set of a full 32,000-patch
-frame and every image at its token cap (`GLM5NextVisionBudget.mediaReservation`).
-Processor refusals are deterministic 400s; tower and MLX faults keep the
+frame, every image at its token cap, every video at its token ceiling and,
+because videos decode one at a time, one decoded-frame cap when any video is
+present (`GLM5NextVisionBudget.mediaReservation`,
+`GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
+processor's prepared-pixel cap of 28,532 visual tokens.
+Processor refusals, including variable-frame-rate video, are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
-(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images, and
-they decode without MTP speculation. A GLM slot serves images only when its
+(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
+they decode without MTP speculation. A GLM slot serves media only when its
 engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the
-embedded-MTP native engine issues that permission, so image rows prefill and
-decode target-only next to speculating text rows. Video is refused with 400.
+embedded-MTP native engine issues that permission, so media rows prefill and
+decode target-only next to speculating text rows.
 
 An unproven retirement, including one during a post-build unwind, retains the
 bridge, newcomer, artifact ownership, pending-load lease, loading marker and

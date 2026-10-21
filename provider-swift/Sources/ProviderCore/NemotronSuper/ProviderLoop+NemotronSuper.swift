@@ -244,6 +244,7 @@ extension ProviderLoop {
     /// the bridge down first (every pump is cancelled, and the engine
     /// force-finishes its rows within its shutdown timeout), then retires the
     /// owner. Reloads are refused until `engineV2RecoveryCooldown` after `now`.
+    /// A retirement past `bound` leaves the owner charged until it completes.
     func retireWedgedNemotronSuperSlot(_ modelID: String, now: ContinuousClock.Instant,
         bound: Duration = ProviderLoop.nemotronSuperWedgeRetirementBound
     ) async {
@@ -255,13 +256,16 @@ extension ProviderLoop {
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         await engineV2Runtime.unregister(modelId: modelID)
         syncWarmModelState()
+        let retirement = Task {
+            await owner.bridge.shutdown()
+            try await owner.retire()
+        }
         Task { [weak self] in
-            let retired = await Self.completes(within: bound) {
-                await owner.bridge.shutdown()
-                try await owner.retire()
-            }
+            let retired = await Self.completes(within: bound) { try await retirement.value }
             await self?.finishNemotronSuperRetirement(modelID, owner: owner, retired: retired)
             deviceActivity.finish()
+            guard !retired, (try? await retirement.value) != nil else { return }
+            await self?.releaseLateRetiredNemotronSuperOwner(owner)
         }
     }
 
@@ -291,14 +295,13 @@ extension ProviderLoop {
     }
 
     /// The end of every slot retirement: the slot leaves, an owner that did
-    /// not retire stays charged until restart, survivors regrow and waiters
-    /// resume.
+    /// not retire stays charged, survivors regrow and waiters resume.
     private func finishNemotronSuperRetirement(_ modelID: String, owner: NemotronSuperSlotOwner,
                                                retired: Bool) async {
         if !retired {
             retainNemotronSuperOwner(owner)
-            recordModelLoadError(model: modelID,
-                message: "Nemotron Super owner did not retire; its memory stays charged until restart")
+            recordModelLoadError(model: modelID, message: "Nemotron Super owner did not retire; "
+                + "its memory stays charged until it does or the provider restarts")
         }
         modelSlots.removeValue(forKey: modelID)
         modelsUnloading.remove(modelID)
@@ -317,24 +320,54 @@ extension ProviderLoop {
     }
 
     /// Native work that did not retire keeps the owner's weights, the
-    /// reservations beside its grant and its bank charged until restart.
+    /// reservations beside its grant and its bank charged in the fleet budget.
     private func retainNemotronSuperOwner(_ owner: NemotronSuperSlotOwner) {
-        for bytes in [owner.sizing.weightsBytes, owner.reservedBesideGrantBytes, owner.prefixBankBytes] {
-            let (sum, overflow) = nemotronSuperRetainedWeightBytes.addingReportingOverflow(UInt64(max(0, bytes)))
-            nemotronSuperRetainedWeightBytes = overflow ? .max : sum
+        retainNemotronSuperBytes(Self.retainedChargeBytes(owner))
+    }
+
+    /// A wedged retirement that outlived its bound and then completed: the
+    /// owner released its native work, reservations and bank after all, so
+    /// its charge leaves the fleet budget, and Super loads again unless
+    /// another owner stays retained.
+    private func releaseLateRetiredNemotronSuperOwner(_ owner: NemotronSuperSlotOwner) async {
+        // A saturated total no longer tells this owner's charge apart.
+        guard nemotronSuperRetainedWeightBytes < .max else { return }
+        nemotronSuperRetainedWeightBytes -= min(nemotronSuperRetainedWeightBytes, Self.retainedChargeBytes(owner))
+        logger.info("Nemotron Super owner retired after its bound; its memory is released")
+        clearCacheAfterConfirmedNativeOwnership()
+        nemotronSuperMemoryRetirement = NativeMemoryRetirementWindow()
+        await resliceGrowSurvivors()
+        await updateAggregateCapacity()
+        await retryReserveDeferredPrefetches()
+    }
+
+    private func retainNemotronSuperBytes(_ bytes: UInt64) {
+        let (sum, overflow) = nemotronSuperRetainedWeightBytes.addingReportingOverflow(bytes)
+        nemotronSuperRetainedWeightBytes = overflow ? .max : sum
+    }
+
+    private static func retainedChargeBytes(_ owner: NemotronSuperSlotOwner) -> UInt64 {
+        saturatingSum([owner.sizing.weightsBytes, owner.reservedBesideGrantBytes, owner.prefixBankBytes])
+    }
+
+    /// The sum of `parts`, negatives as zero, saturating.
+    private static func saturatingSum(_ parts: [Int]) -> UInt64 {
+        parts.reduce(UInt64(0)) { total, part in
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, part)))
+            return overflow ? .max : sum
         }
     }
 
     /// Super's own slot state refuses a load: native work an earlier owner
-    /// retained, until restart, and a wedged slot's model until
-    /// `engineV2RecoveryCooldown` has passed since its retirement began, never
-    /// thrashing loads into the fault. `ensureModelLoaded` asks before it
-    /// evicts anything for Super and the load asks again. Transient (503):
-    /// the coordinator reroutes.
+    /// retained, until it retires or the process restarts, and a wedged
+    /// slot's model until `engineV2RecoveryCooldown` has passed since its
+    /// retirement began, never thrashing loads into the fault.
+    /// `ensureModelLoaded` asks before it evicts anything for Super and the
+    /// load asks again. Transient (503): the coordinator reroutes.
     func refuseNemotronSuperReload(_ modelID: String) throws {
         guard nemotronSuperRetainedWeightBytes == 0 else {
-            throw InferenceError.modelLoadFailed(
-                "An earlier Nemotron Super owner retained native work; process restart required")
+            throw InferenceError.modelLoadFailed("An earlier Nemotron Super owner retained native work; "
+                + "refused until it retires or the provider restarts")
         }
         guard nemotronSuperWedgeCooldownActive(modelID) else { return }
         throw InferenceError.modelLoadFailed(

@@ -203,7 +203,8 @@ extension NemotronSuperManagedSlotTests {
     /// A wedged retirement still running at its bound (here the engine's own
     /// shutdown timeout outlasts it) is a retained fault: the slot leaves,
     /// its weights, reservations and bank stay charged and later Super loads
-    /// are refused, while the late retirement still releases the ledger.
+    /// are refused. A late retirement that completes releases the ledger and
+    /// that charge, and Super loads again without a restart.
     @Test(.timeLimit(.minutes(2)))
     func wedgedRetirementPastItsBoundIsARetainedFault() async throws {
         let gate = DecodeGate()
@@ -240,6 +241,12 @@ extension NemotronSuperManagedSlotTests {
         #expect(await loop.fastAdmissionReject(modelId: Self.modelID))
         gate.open()
         #expect(await Self.eventually(within: .seconds(30)) { await fixture.budget.outstandingReservedBytes() == 0 })
-        #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == retained)
+        #expect(await Self.eventually(within: .seconds(30)) {
+            await loop.nemotronSuperRetainedWeightBytesForTesting() == 0
+        })
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                         revisionDirectory: fixture.directory)
+        #expect(await loop.unloadModel(Self.modelID))
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
 }

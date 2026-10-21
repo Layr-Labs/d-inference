@@ -315,6 +315,25 @@ This is not real Apple service validation. Physical smoke is optional for normal
 publication; official-build registration and runtime Apple authorization remain
 distinct. See [release](../operations/provider-release.md).
 
+## Watchdog Launch Evidence
+
+`WatchdogRecoveryIntegrationTests` exercises
+`WatchdogRecoveryService.observeHealthyProvider`, the real updater and the
+disk-backed recovery store with synthetic bundles, temporary install roots and
+loopback release HTTP. Launch snapshots, process liveness and restart callbacks
+are injected; no model or MLX kernel runs.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+```
+
+It covers missing and partial baseline evidence, intent retention before
+restart, later positive run-count or process-identity evidence, the startup
+timeout, one-time failure accounting and heartbeat promotion. It does not run
+native launchd, the controller cancellation interleaving or a signed release
+installation.
+
 ## Public Fixtures And Private Qualification
 
 Public protocol JSON and prompt golden vectors contain fixed inputs and expected

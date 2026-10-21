@@ -208,8 +208,9 @@ LOAD claim holds the installation, any head, the lane, the bank and the
 requests' KV, so half of what the machine's cap leaves beside it stays free.
 `grant / 4` is the engine's own bank ceiling when a re-slice shrinks the grant.
 A lone slot (grant = fleet KV budget) gets 16 GiB for either owner on 192, 256
-and 512 GiB; on 192 GiB the speculating owner's whole claim leaves more than
-19 GB of the cap for other memory. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+and 512 GiB; on 192 GiB the speculating owner's whole claim (110.0 GiB) and
+activation reserve leave 60.8 GiB of the cap for other memory, on 128 GiB
+(a 5.25 GiB bank) 13.9 GiB. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
 keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
@@ -327,8 +328,8 @@ flowchart LR
     G --> D
 ```
 
-`ensureModelLoaded` runs its ordinary selection, eviction and load gate on the
-discovery footprint, then hands the load to `ProviderLoop.loadNemotronSuperSlot`.
+`ensureModelLoaded` runs its ordinary selection and Super's own eviction and
+load gate (below), then hands the load to `ProviderLoop.loadNemotronSuperSlot`.
 Under the re-slice gate, held until installation, `resliceShrinkingForNewcomer`
 shrinks survivors and returns Super's grant; `NemotronSuperSlotLoader.pinnedCheckpoint`
 opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
@@ -336,13 +337,18 @@ transaction. Its LOAD claim holds the installation's and (with speculation) the
 head's resident payloads, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (576 MiB with speculation, 512 MiB
-plain, at any context), a speculating owner's round work once
-(`speculativeOwnerBoundBytes`, below), plus 2 GiB and any prefix bank, never
-above the grant. For the pinned checkpoint the same claim also holds the prefill
+plain, at any context), 2 GiB and any prefix bank, which the grant holds and
+which never exceed it (`grantKVBytes`), and a speculating owner's round work
+once (`speculativeOwnerBoundBytes`, below), which is reserved beside the grant
+whatever its size, so a small co-resident grant still serves the configured
+width. For the pinned checkpoint the same claim also holds the prefill
 lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
-Before refusing, the transaction tries narrower configurations in order
+A refused claim first returns MLX's cached buffers (once per load) and asks
+again for the same configuration; a refusal alone only schedules the
+reclaimer's flush. Before refusing, the transaction tries narrower
+configurations in order
 (`NemotronSuperLoadFit`): the same policy without the prefix bank, then half
 the concurrent requests at a time down to one, then that request with
 1,024-token prompt chunks (a 4.75 GiB lane instead of 8.5 GiB), each with
@@ -354,17 +360,37 @@ the installation's quote, and a configuration admitted with 1.9 GB to spare
 lost its admission after its weights were installed. Super's claims keep no
 OS reserve beyond that slack and the activation reserve
 (`NemotronSuperLoadFit.systemReserveBytes`, in place of the provider's 10%
-load reserve), so the narrowest configuration loads with
-`NemotronSuperLoadFit.minimumAvailableBytes` (85.6 GiB) available: its 80.6
-GiB claim, the slack and the 2 GiB activation reserve. The default (eight
+load reserve) unless the operator raised `memory_reserve_gb` above its 4 GiB
+default, which then stays free whole. So the narrowest configuration loads
+with `NemotronSuperLoadFit.minimumAvailableBytes` (85.6 GiB) available: its
+80.6 GiB claim, the slack and the 2 GiB activation reserve. The default (eight
 requests and a bank, about 99 GiB) needs about 104 GiB. Every attempt is
 recorded (`fitAttempts`; the provider logs an owner narrower than planned,
 the qualification runner's `load.fit` event lists each claim beside the
-gate's terms). The discovery footprint is that minimum less the load reserve
-and load headroom the ordinary gates add back, so pre-accept, eviction,
-startup preload, cold quotes and coordinator routing admit the same loads.
+gate's terms).
+Pre-accept (`fastAdmissionReject`), eviction and startup preload decide on
+the same terms (`ProviderLoop+NemotronSuperAdmission`): the room the claim
+would be admitted with (`GlobalKVCacheBudget.HeadroomSnapshot.loadClaimRemainingBytes`,
+the ledger's own admission with Super's system reserve) against what each
+configuration requires (`NemotronSuperLoadFit.Claim.requiredBytes`; for the
+pinned checkpoint `pinnedRequirements`, the plan sized for a lone slot
+first). Pre-accept refuses only when evicting every idle model cannot make
+room for the narrowest configuration. Eviction removes idle models, least
+recently used first, until the room holds the widest configuration such
+eviction can reach, so an idle model yields to the planned owner rather than
+to a narrower one, and refuses without evicting when not even the narrowest
+is reachable. Startup preload, which never evicts, admits Super by the same
+room and orders it by its planned requirement. The discovery footprint
+(`estimated_memory_gb`) is the narrowest configuration's requirement itself,
+89,750,767,136 bytes (83.6 GiB) on every Mac. Cold capacity quotes and the
+coordinator's cold-load routing compare it and the load headroom with free
+memory less the provider's load reserve (`free_for_load_gb`), so they stay
+stricter than the provider's 85.6 GiB minimum (about 99.4 GiB available on
+128 GB) until the platform adopts a Super-specific rule.
 The bridge reports the width it was built with, so capacity quotes route no
-more concurrent work to it.
+more concurrent work to it. A resident slot's image or video probe is quoted
+against the ledger room its media reservation is admitted by
+(`process_memory.remaining_bytes`), not the load gate's room.
 The load's transient (`NemotronSuperLoadClaim`) is the larger of the
 installation's staging with its 2 GiB backend allowance and the head's
 construction allowance, and the claim adds only the part beyond that serving
@@ -488,6 +514,8 @@ weights, reservations and bank in the fleet KV budget
 (`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
 restart. Sources:
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
+`provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLoadFit.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperSlotOwner.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperCheckpoint.swift`,

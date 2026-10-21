@@ -3,10 +3,7 @@
 - Discovers and advertises exactly `nvidia-nemotron-3.5-super`: the complete
   pinned NVIDIA NVFP4 checkpoint with its embedded MTP head. The registry id
   with an unpinned `config.json` or index is withheld; every other
-  `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
-  what the ordinary load gates must see so that the managed load's narrowest
-  owner has 85.6 GiB available (69.8 GiB on a 128 GB Mac, after the load
-  reserve and headroom those gates add back), and it advertises image and
+  `nemotron_h_omni` id stays unsupported, as before. It advertises image and
   video input; capacity quotes for media probes charge their images' whole
   reservation, a one-part probe the larger of one image and one video.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
@@ -28,10 +25,23 @@
   refusing: no prefix bank, then four, two or one concurrent requests, then
   one with 1,024-token prompt chunks, with every measured bound and the full
   context kept, and logs what it chose. Super loads keep no OS reserve beyond
-  3 GiB of admission slack and the 2 GiB activation reserve, so the model
+  3 GiB of admission slack and the 2 GiB activation reserve (a
+  `memory_reserve_gb` raised above its 4 GiB default stays free), so the model
   loads with 85.6 GiB available (about 104 GiB for the default), and a
   configuration that barely fits steps down instead of losing its admission
-  after the weights are installed.
+  after the weights are installed. The provider accepts, evicts for and
+  preloads Super on that same rule: an idle co-resident model is evicted when
+  that lets the planned owner (or a wider fallback) load, instead of the
+  request being accepted and then refused with 503, and a load that cannot fit
+  even after evicting every idle model is refused before it is accepted. MLX's
+  cached buffers are returned before the load steps down, a small KV grant
+  beside other models no longer narrows or refuses the load (the speculation
+  round is reserved beside the grant), and a resident slot quotes image and
+  video probes against the memory their reservation actually uses. Its
+  advertised memory is now the narrowest owner's LOAD size, 83.6 GiB on every
+  Mac (was 69.8 GiB on 128 GB, shrinking with RAM); the coordinator's cold-load
+  routing, which still subtracts the 10% load reserve, sends a cold Super load
+  only to a 128 GB Mac with about 99.4 GiB available.
   Either owner reuses exact prompt prefixes when the grant holds its bank; a
   restored speculative request drafts from the same prompt history as a cold
   one, and an image turn reuses only checkpoints of the same image features.

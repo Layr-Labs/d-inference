@@ -415,8 +415,8 @@ struct NemotronSuperServingPolicyTests {
     /// shard bytes, the activation reserve and the operator's 4 GiB reserve.
     /// On 192, 256 and 512 GiB both owners get the 16 GiB default bank, and
     /// the single LOAD claim of the speculating owner (installation, head,
-    /// lane, eight requests' fixed bytes and the bank) fits under the cap with
-    /// room left for other memory: 20 GB on 192 GiB.
+    /// lane, eight requests' fixed bytes, the round and the bank, 110.0 GiB)
+    /// fits under the cap with room left for other memory: 60.8 GiB on 192 GiB.
     @Test(arguments: [192, 256, 512])
     func defaultBankOnTheSupportedMachines(physicalGiB: Int) throws {
         typealias Policy = NemotronSuperServingPolicy
@@ -446,16 +446,17 @@ struct NemotronSuperServingPolicyTests {
             servingBytes: shares.lane + admission))
         let claim: Int = installation + shares.lane + admission
         let room: Int = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical)) - Int(activation) - claim
-        #expect(room > 19_000_000_000, "\(physicalGiB) GiB leaves \(room) bytes")
+        #expect(claim == 118_137_816_608)
+        #expect(room >= 65_257_286_931, "\(physicalGiB) GiB leaves \(room) bytes")
     }
 
     /// On a 128 GiB Mac the default speculating owner's LOAD claim holds its
-    /// round work as one share inside the admission, not beside it, at 65,536
+    /// round work as one share of the admission, counted once, at 65,536
     /// tokens and at the served (largest accepted) 262,144: the claim is
     /// the payloads, the load transient beyond the serving room, and the
     /// serving room (lane, round, bank and KV floor) once. With the activation
-    /// floor beside it the claim fits under the cap, and so does the load gate
-    /// (the scan-time footprint at that context, the floor and the minimum KV).
+    /// floor beside it the claim fits under the cap, and so does the bankless
+    /// claim with one image's media charge, the floor and the minimum KV.
     @Test(arguments: [65_536, NemotronSuperServingPolicy.contextTokens])
     func roundIsOneShareOfTheClaimOnA128GiBMac(context: Int) throws {
         typealias Policy = NemotronSuperServingPolicy
@@ -485,8 +486,8 @@ struct NemotronSuperServingPolicyTests {
         let claim = install + serving
         let cap = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical))
         #expect(claim + Int(activation) <= cap, "\(context): claim \(claim) + floor \(activation) > cap \(cap)")
-        // The load gate at this context: payloads, the larger of the transient
-        // and the serving room with one image, the floor and the minimum KV.
+        // At this context: payloads, the larger of the transient and the
+        // bankless serving room with one image, the floor and the minimum KV.
         let media = try #require(Policy.mediaChargeBytes(imageCount: 1))
         let footprint = Int(Policy.pinnedLoadClaimBytes(speculates: true,
             servingBytes: shares.lane + admission - shares.bank + Int(media)))
@@ -714,11 +715,12 @@ struct NemotronSuperServingPolicyTests {
 
     /// The managed load's fallbacks under the default policy at the whole
     /// context: the planned owner, then no prefix bank at eight, four, two and
-    /// one requests, each with every measured bound (the round at 262,144
-    /// tokens: 9,865,003,008 bytes at eight). One request claims 84.3 GiB
-    /// (the default about 99), so a 128 GB Mac with about 102.1 GiB available
-    /// (the claim, the admission slack and the activation and load reserves)
-    /// loads it. A whole-grant claim keeps only its own configuration.
+    /// one requests, then that request with 1,024-token chunks, each with
+    /// every measured bound (the round at 262,144 tokens: 9,865,003,008 bytes
+    /// at eight). The last claims 80.6 GiB (the default about 99), so a 128 GB
+    /// Mac with 85.6 GiB available (the claim, the 3 GiB admission slack and
+    /// the 2 GiB activation reserve; no load reserve) loads it. A whole-grant
+    /// claim keeps only its own configuration.
     @Test func managedLoadFallsBackToNarrowerOwners() throws {
         let grant = 40 << 30
         let context = NemotronSuperServingPolicy.contextTokens

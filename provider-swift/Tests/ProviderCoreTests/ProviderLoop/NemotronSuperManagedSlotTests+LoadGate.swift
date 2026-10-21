@@ -69,9 +69,10 @@ extension NemotronSuperManagedSlotTests {
     /// 128 GiB, an idle 30 GiB co-resident model and 92 GiB available: the
     /// claim's room (min(115.2 - 30, 92) less the 5.5 GiB activation reserve,
     /// 79.7 GiB) holds no configuration, so the pinned checkpoint's claim
-    /// would be refused, though the ordinary free-memory gate passed this
-    /// load without evicting. Pre-accept admits it, eviction removes the idle
-    /// model, and Super loads: never accepted, then refused.
+    /// would be refused, though the ordinary free-memory gate, at the earlier
+    /// 69.8 GiB scan-time size, passed this load without evicting. Pre-accept
+    /// admits it, eviction removes the idle model, and Super loads: never
+    /// accepted, then refused.
     @Test(.timeLimit(.minutes(2)))
     func idleCoResidentModelIsEvictedForTheSuperClaim() async throws {
         let fixture = try await Self.coResidentFixture(weightsGiB: 30, availableGiB: 92)

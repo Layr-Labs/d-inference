@@ -437,8 +437,8 @@ enum NemotronSuperServingPolicy {
     /// quote at the largest body and `NemotronSuperLocalImageBinding.videoChargeBytes`
     /// at the largest body, coded frame, frame grid (32 x 34 patches) and
     /// sampled frame count. It stays within one largest image's charge
-    /// (`mediaChargeBytes(imageCount: 1)`), so the discovery footprint and a
-    /// one-part quote hold a video. nil when the binding refuses those maxima.
+    /// (`mediaChargeBytes(imageCount: 1)`); a one-part capacity quote charges
+    /// the larger of the two. nil when the binding refuses those maxima.
     static var videoMediaChargeBytes: UInt64? {
         guard let ingress = try? NemotronSuperLocalImageBinding.encodedHeaderQuote(
                 bodyBytes: maximumEncodedBodyBytes, templateBytes: pinnedTemplateBytes),

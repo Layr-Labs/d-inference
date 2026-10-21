@@ -412,10 +412,12 @@ private final class ReaderStop: @unchecked Sendable {
 
     deinit { timer?.cancel() }
 
-    /// Whole nanoseconds of `duration`, saturating; zero when negative.
+    /// Whole nanoseconds of `duration`, saturating; zero when not positive
+    /// (a negative duration under a second has zero seconds but negative
+    /// attoseconds).
     private static func nanoseconds(_ duration: Duration) -> UInt64 {
+        guard duration > .zero else { return 0 }
         let (seconds, attoseconds) = duration.components
-        guard seconds >= 0 else { return 0 }
         let (whole, overflow) = UInt64(seconds).multipliedReportingOverflow(by: 1_000_000_000)
         let (total, carry) = whole.addingReportingOverflow(UInt64(attoseconds / 1_000_000_000))
         return overflow || carry ? .max : total

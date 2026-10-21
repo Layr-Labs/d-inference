@@ -105,6 +105,12 @@ struct NemotronSuperVideoDecodeTests {
         try #require(plan.frameIndices.count == 8 && plan.decodedFrames == 240)
         let spent = try await Decode.Frames(plan, decodeAllowance: .zero)
         #expect(throws: Decode.Failure.limit) { try spent.next() }
+        // A negative allowance is spent too, under a second (zero seconds,
+        // negative attoseconds) as beyond it.
+        for allowance in [Duration.milliseconds(-500), .seconds(-2)] {
+            let negative = try await Decode.Frames(plan, decodeAllowance: allowance)
+            #expect(throws: Decode.Failure.limit) { try negative.next() }
+        }
         let short = try await Decode.Frames(plan, decodeAllowance: .microseconds(100))
         #expect(throws: Decode.Failure.limit) { while try short.next() != nil {} }
         let planned = try await Decode.Frames(plan)

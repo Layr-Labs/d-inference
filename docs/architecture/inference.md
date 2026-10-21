@@ -29,9 +29,9 @@ lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement an
 drains its own requests; the owner mints one `localTextBinding` and drains it in
 `closeAfterDrain` before the image binding and bridge. It accepts pretokenized text only; media, tools, schemas
 and client prompt-cache keys are rejected, and text prefix reuse runs only when the owner has a
-checkpoint bank (below). The builder uses serial contiguous KV, bounded
-calibrated prefill, and no MTP unless the explicit opt-in below installs text
-speculation. The provider installs this owner only through the
+checkpoint bank (below). The builder uses serial segmented paged KV (Super has
+no contiguous storage), bounded calibrated prefill, and no MTP unless the
+explicit opt-in below installs text speculation. The provider installs this owner only through the
 [managed Super slot](#managed-nemotron-super-slot). `NemotronSuperLocalLoad` owns
 the one-shot load transaction, checks the pinned config, reserves the
 conservative SDK quote and preserves charges on native completion faults. `NemotronSuperPromptContract` renders the
@@ -68,7 +68,8 @@ Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalBinding.swift`.
 
 The dedicated `NemotronSuperLocalImageBinding` is minted by that exact load
-owner, uses separate real media and bridge KV reservations, and cancels/drains
+owner, holds its own media reservations (its prompt's KV pages are charged
+like text's, by the engine's process-memory owner), and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
 and close. It does not manufacture a shared native lease; the managed slot's
 chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
@@ -133,11 +134,15 @@ frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
 each decoded frame must have the inspected size and row bytes within the
 charge (`NemotronSuperVideoDecode.validateDecodedFrame`), and only the sampled
 ones are copied to RGB8 (presentation order, the track's rotation applied) and
-normalized with the image resize; an odd last frame repeats. Waiting on the
-decoder is bounded by `NemotronSuperVideoDecode.decodeAllowance` (5 s, then
-2 ms a frame and 4 ns a coded pixel, at most 120 s): when it is spent the
-reader is cancelled and the video is refused. Cancelling the request, as the
-binding's `drain` does, cancels a read blocked in the decoder.
+normalized with the image resize; an odd last frame repeats. Every read, and
+the reader's one cancellation, runs in order on the reader's own serial queue
+while the pulling thread waits for the sample, so the reader is never
+cancelled during a read. Waiting on the decoder is bounded by
+`NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
+coded pixel, at most 120 s): when it is spent the wait ends and the video is
+refused. Cancelling the request, as the binding's `drain` does, ends the wait
+at once. Either way the reader is cancelled once the read in progress
+returns, and that read's sample is dropped.
 `NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with
@@ -190,9 +195,10 @@ reserved before the first request and released only after native retirement:
 measured on the full checkpoint) for the pinned checkpoint, the ModelOpt
 workspace quote for synthetic fixtures. A lane that does not fit fails the load;
 the pinned checkpoint's LOAD claim already holds it (below).
-Each bridge request reservation carries, beyond the engine's recurrent
-generations and any speculation charge, `requestWorkspaceBytes`: one
-`NemotronSuperDecodeCharge` decode row. The builder refuses a KV grant that
+Each request's fixed bytes count, beyond the engine's recurrent generations
+and any speculation charge, `requestWorkspaceBytes`: one
+`NemotronSuperDecodeCharge` decode row, which the owner reserves for every
+configured request (below). The builder refuses a KV grant that
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
@@ -243,29 +249,32 @@ newcomer memory the bank still holds. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
-`NemotronSuperLocalKVBackend` selects the attention KV storage:
-`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` selects the segmented native
-paged backend (the adapter declares `supportsPagedKV` and
-`requiresNativePagedKV`; the pool takes the eight attention layers' observed
-BF16 types) and `contiguous` the contiguous one. The managed slot's
-`NemotronSuperServingPolicy.loadPlan` sets `paged` when the key is unset; the
-builder alone defaults to contiguous. A paged selection never degrades: a
-paged construction failure fails the load. On paged storage the
+Super serves paged attention KV only: `NemotronSuperLocalKVBackend` always
+selects the segmented native paged backend (the adapter declares
+`supportsPagedKV` and `requiresNativePagedKV`; the pool takes the eight
+attention layers' observed BF16 types). `DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`
+unset or `paged` serves it; `contiguous` fails the load as no longer supported
+(`contiguousUnsupported`) and any other value as malformed (`invalidBackend`).
+The load transaction refuses either, and `DARKBLOOM_CBV2_PAGED_KV` disabling
+paged KV (`pagedDisabled`; the fleet kill switch would otherwise degrade the
+paged selection to contiguous), before its LOAD claim and installation. A paged
+construction failure fails the load, and the builder retires a built bridge
+whose storage is not paged and fails the load instead of serving it
+(`storageNotPaged`). The
 engine's process-memory owner charges pages and recurrent rows to the shared
 budget as they materialize and the bridge reserves no request bytes, so the
 owner reserves `requestWorkspaceBytes` for every configured request (the
 decode rows) from before the first request until native retirement, like the
-lane. The text prefix bank works on either storage
-(`CBv2HybridPrefixCacheConfig.permitsPagedStorage`): its budget is carved from
-the paged grant as from the contiguous one, a paged donor's prompt KV is
-gathered into the bank's own buffers on the engine queue before its pages
-return to the pool, and an adopter writes that prefix into fresh pages with a
-`.direct` plan. A paged backend with step-owned attention, a native binding or
-a page-sharing index builds no bank, and the builder then fails the load
-(`NemotronSuperLocalPrefixCache.Failure.unavailable`). Paged and
-contiguous attention reduce differently, so their logits agree within a
-stated tolerance rather than bit for bit; within paged storage, batched rows,
-captured speculation windows and rollback stay exact.
+lane. The text prefix bank (`CBv2HybridPrefixCacheConfig.permitsPagedStorage`)
+is carved from the paged grant, a donor's prompt KV is gathered into the
+bank's own buffers on the engine queue before its pages return to the pool,
+and an adopter writes that prefix into fresh pages with a `.direct` plan. A
+paged backend with step-owned attention, a native binding or a page-sharing
+index builds no bank, and the builder then fails the load
+(`NemotronSuperLocalPrefixCache.Failure.unavailable`). Within paged storage,
+batched rows, captured speculation windows and rollback stay exact; the gated
+`NemotronSuperPagedLiveTests` hold paged logits to a contiguous reference arm,
+which reduces differently, within a stated tolerance.
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (the hook's default is off; the
 managed slot's policy sets it). The load transaction
@@ -421,7 +430,7 @@ their own reservations right before taking them, so no byte is counted twice.
 The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
-registered and the slot installed. The lane, any paged decode rows and the
+registered and the slot installed. The lane, the decode rows and the
 round sit in the shared budget beside the grant (only the bank is carved from
 it), so the re-slice (`fleetKVBudgetBytes`) and the heartbeat clamp count them
 as resident, like weights (`NemotronSuperSlotOwner.reservedBesideGrantBytes`):
@@ -462,7 +471,8 @@ prompt plus output (`NemotronSuperServingPolicy.contextTokens`, equal to
 `maximumContextTokens`, the most the builder and the image binding accept); the
 qualification runner's `--max-context` can select less. The checkpoint's attention has no positional
 encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
-reserved per request by its own length. Recurrent state, the decode row and the
+which the engine's admission ledger reserves for each request by its own
+length. Recurrent state, the decode row and the
 prefill lane do not grow with the context: on the full checkpoint each
 2,048-token chunk peaked 7.7 to 8.7 GB above the state held before it through
 131,056 tokens, with finite logits throughout; the larger figures are first
@@ -474,9 +484,9 @@ owner's assistant keeps state that grows with each request: its FP8 history
 and decoded mirror, allocated once for the request's prompt plus `max_tokens`
 and written in place. The SDK declares it as a per-token buffer
 (`CBv2MTPSequenceScaledAllocationProviding`): EngineV2 prices it for each
-request's reserved tokens through its auxiliary ledger, and each bridge
-reservation adds 1,536 bytes per token beside the 8,192 of KV, with the
-projection's rounding slack in its fixed bytes. The fixed per-request bytes are
+request's reserved tokens through its auxiliary ledger, 1,536 bytes per token
+beside the 8,192 of KV, with the projection's rounding slack in its fixed
+bytes. The fixed per-request bytes are
 533,401,365 whatever the configured context (measured; 2,450,016,143 while the
 round work was charged to every request, 4.43 GB at 65,536 while the window
 was charged up front); the plain owner's stay 516,253,712. Work of one round

@@ -97,8 +97,8 @@ struct NemotronSuperVideoDecodeTests {
         }
     }
 
-    /// A spent allowance cancels the reader from the timer's thread: the
-    /// blocked read returns and the pull fails as a limit.
+    /// A spent allowance ends the pull's wait on the decoder at once and
+    /// fails it as a limit; the reader stops behind the read in flight.
     @Test(.timeLimit(.minutes(2))) func decodeAllowanceStopsTheReader() async throws {
         // 240 frames at 60 fps: 8 sampled, every frame up to 239 decodes.
         let plan = try await Decode.inspect(Clips.uri(try await Clips.movie(frames: 240, fps: 60)))
@@ -127,7 +127,7 @@ struct NemotronSuperVideoDecodeTests {
     }
 
     /// Cancelling the task stops the reader itself, not only the task, so a
-    /// read blocked in the decoder returns instead of holding the owner.
+    /// pull waiting on the decoder returns instead of holding the owner.
     @Test func cancellationStopsTheReader() async throws {
         let plan = try await Decode.inspect(Clips.uri(try await Clips.movie(frames: 60, fps: 30)))
         let frames = SendableFrames(try await Decode.Frames(plan))
@@ -137,6 +137,49 @@ struct NemotronSuperVideoDecodeTests {
         }
         await #expect(throws: CancellationError.self) { try await pull.value }
         // An uncancelled pull finds the reader stopped.
+        #expect(throws: Decode.Failure.inconsistentFrames) { try frames.value.next() }
+    }
+
+    /// A pull given up on, for a spent allowance or a cancelled task, fails
+    /// at once while its read finishes on the reader's queue; only then is
+    /// the reader cancelled, once, and released. Cancelling a reader under a
+    /// blocked read crashes in AVFoundation, so the stops are repeated at
+    /// varying points of the decode.
+    @Test(.timeLimit(.minutes(3))) func givingUpOnAReadNeverRacesTheReader() async throws {
+        // 600 frames at 30 fps: 40 sampled frames, far more decoding than
+        // any allowance or cancellation delay below.
+        let plan = try await Decode.inspect(Clips.uri(try await Clips.movie(frames: 600, fps: 30)))
+        let readers = CancelledReaders()
+        let iterations = 50
+        try await Decode.$readerCancelledForTesting.withValue({ readers.record($0) }) {
+            for iteration in 0 ..< iterations {
+                if iteration.isMultiple(of: 2) {
+                    let short = try await Decode.Frames(plan,
+                                                        decodeAllowance: .microseconds(10 * (iteration % 20 + 1)))
+                    #expect(throws: Decode.Failure.limit) { while try short.next() != nil {} }
+                } else {
+                    try await Self.cancelMidDecode(plan, afterMicroseconds: 100 * (iteration % 10))
+                }
+            }
+        }
+        let settled = await readers.settled(count: iterations)
+        #expect(settled.cancelled == iterations && settled.alive == 0, "\(settled)")
+    }
+
+    /// Cancels, from another thread, a pull of every frame `delay` after its
+    /// first sampled frame starts decoding.
+    private static func cancelMidDecode(_ plan: Decode.Plan, afterMicroseconds delay: Int) async throws {
+        let frames = SendableFrames(try await Decode.Frames(plan))
+        let started = DispatchSemaphore(value: 0)
+        let pull = Decode.Frames.$beforeFrameDecodeForTesting.withValue({ _ = started.signal() }) {
+            Task { try await frames.value.withCancellableReader { while try frames.value.next() != nil {} } }
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            started.wait()
+            Thread.sleep(forTimeInterval: TimeInterval(delay) / 1_000_000)
+            pull.cancel()
+        }
+        await #expect(throws: CancellationError.self) { try await pull.value }
         #expect(throws: Decode.Failure.inconsistentFrames) { try frames.value.next() }
     }
 
@@ -182,4 +225,28 @@ struct NemotronSuperVideoDecodeTests {
 private final class SendableFrames: @unchecked Sendable {
     let value: NemotronSuperVideoDecode.Frames
     init(_ value: NemotronSuperVideoDecode.Frames) { self.value = value }
+}
+
+/// The readers the decoder cancels, each held weakly to see it released.
+private final class CancelledReaders: @unchecked Sendable {
+    private struct Entry { weak var reader: AVAssetReader? }
+    private let lock = NSLock()
+    private var entries: [Entry] = []
+
+    func record(_ reader: AVAssetReader) { lock.withLock { entries.append(Entry(reader: reader)) } }
+
+    /// Readers cancelled and still alive, once `count` are cancelled and
+    /// none is alive, or after thirty seconds.
+    func settled(count: Int) async -> (cancelled: Int, alive: Int) {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while true {
+            let current = snapshot()
+            if (current.cancelled >= count && current.alive == 0) || ContinuousClock.now >= deadline { return current }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func snapshot() -> (cancelled: Int, alive: Int) {
+        lock.withLock { (entries.count, entries.filter { $0.reader != nil }.count) }
+    }
 }

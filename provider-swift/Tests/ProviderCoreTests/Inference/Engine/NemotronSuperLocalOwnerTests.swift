@@ -3,7 +3,7 @@
 import Foundation
 import MLX
 import MLXLLM
-import MLXLMCommon
+@testable import MLXLMCommon
 import MLXVLM
 import Testing
 @testable import ProviderCore
@@ -93,12 +93,13 @@ extension NemotronSuperLocalOwnerTests {
         return (owner, installed, residency, budget, lease)
     }
 
-    /// Each request's shared-budget charge carries one batched decode row from
-    /// admission until it retires; the owner's single prefill lane (the graph
-    /// path's ModelOpt workspace for one chunk) is held from before the first
-    /// request until native retirement, whatever the number of requests.
+    /// The owner reserves one batched decode row per configured request and
+    /// its single prefill lane (the graph path's ModelOpt workspace for one
+    /// chunk) from before the first request until native retirement. The
+    /// bridge counts the row in every request's fixed bytes, but on paged
+    /// storage a request adds no shared-budget reservation of its own.
     @Test(.timeLimit(.minutes(1)))
-    func requestsChargeADecodeRowAndTheOwnerOnePrefillLane() async throws {
+    func ownerHoldsItsDecodeRowsAndOnePrefillLaneAcrossRequests() async throws {
         let (owner, installed, residency, budget, lease) = try await Self.owner()
         let language = try #require(installed.model?.languageModel)
         let chunk = owner.prefill.chunkTokens
@@ -107,19 +108,22 @@ extension NemotronSuperLocalOwnerTests {
         let row = try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
         let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
         #expect(prefill > 0 && row > 0 && workspace == row && owner.prefillLaneBytes == prefill)
-        let lane = await budget.reservationBytesSnapshot()
-        #expect(lane.count == 1 && lane.first.map { NemotronSuperLocalPrefill.isLaneReservationID($0.key) } == true
-            && lane.first?.value == UInt64(prefill))
+        #expect(owner.decodeRowsBytes == workspace)
+        let idle = await budget.reservationBytesSnapshot()
+        #expect(idle.count == 2)
+        #expect(idle.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }.values.map { Int($0) }
+            == [prefill])
+        #expect(idle.filter { NemotronSuperLocalKVBackend.isDecodeRowsReservationID($0.key) }.values
+            .map { Int($0) } == [workspace])
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
+        #expect(await owner.bridge.kvBackendKind == .paged)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
         let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
             messages: [], temperature: 0, max_tokens: 12)
-        let expected = try #require(await owner.bridge.requestReservationBytes(tokenCount: 15))
-        #expect(expected >= workspace)
         let observed = SuperOwnerCharges()
-        // Hold the request before its native terminal, while its charge must
-        // still be held, so the in-flight charge is observed without racing
+        // Hold the request before its native terminal, while it is still
+        // admitted, so the in-flight reservations are observed without racing
         // event delivery; then let it retire.
         let gate = SuperHTTPTerminalGate()
         await owner.bridge._testInstallPersistentTerminalGate { _ in await gate.hold() }
@@ -130,14 +134,15 @@ extension NemotronSuperLocalOwnerTests {
             }
         }
         try await superHTTPEventually("request held before its native terminal") { await gate.entered }
-        let inFlight = await budget.reservationBytesSnapshot().values.map { Int($0) }.sorted()
-        #expect(inFlight == [expected, prefill].sorted(), "\(inFlight)")
+        #expect(await budget.reservationBytesSnapshot() == idle)
         await gate.release()
         try await run.value
         await owner.bridge._testInstallPersistentTerminalGate(nil)
         #expect(!(await gate.timedOut))
-        #expect(await observed.rows.allSatisfy { $0.contains(prefill) })
-        #expect(await budget.reservationBytesSnapshot() == lane)
+        let held = idle.values.map { Int($0) }.sorted()
+        #expect(!(await observed.rows.isEmpty))
+        #expect(await observed.rows.allSatisfy { $0 == held })
+        #expect(await budget.reservationBytesSnapshot() == idle)
         try await owner.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)
         #expect(residency.snapshot.usedBytes == 0)
@@ -212,8 +217,10 @@ extension NemotronSuperLocalOwnerTests {
         let charge = try language.superDecodeCharge(kvElementBytes: 2)
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
-        #expect(engine.resolvedFixedBytesPerRequest
-            == charge.recurrentGenerations * charge.recurrentBytesPerGeneration)
+        // Paged prices footprints: live generations x one generation's conv and SSM buffers, each allocator-rounded.
+        let policy = try #require(Memory.allocationFootprintPolicy())
+        let generationBytes = try language.cbv2RecurrentStateSpec.allocationBytesPerGeneration(policy: policy)
+        #expect(engine.resolvedFixedBytesPerRequest == charge.recurrentGenerations * generationBytes)
         let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
         #expect(owner.admitLocalRequest() && owner.admitLocalRequest() && !owner.admitLocalRequest())

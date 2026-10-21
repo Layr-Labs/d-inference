@@ -381,9 +381,12 @@ struct NemotronSuperLocalPrefixCacheTests {
                     let roundHeld = held.filter { NemotronSuperLocalMTP.isRoundReservationID($0.key) }
                     #expect(roundHeld.count == (speculates ? 1 : 0))
                     #expect(roundHeld.values.allSatisfy { $0 > 0 && $0 < UInt64(round) })
+                    // The decode rows sit beside the claim's shares, admitted on their own.
+                    let rowsHeld = held.filter { NemotronSuperLocalKVBackend.isDecodeRowsReservationID($0.key) }
+                    #expect(rowsHeld.count == 1)
                     // The claim is gone; only the owner's own reservations and the ballast stay.
                     let owner: UInt64 = (laneHeld.values.first ?? 0) + UInt64(bank)
-                        + roundHeld.values.reduce(0, +)
+                        + roundHeld.values.reduce(0, +) + rowsHeld.values.reduce(0, +)
                     #expect(await budget.outstandingReservedBytes() == ballast + owner)
                     try await transaction.closeAfterDrain()
                 }
@@ -660,7 +663,7 @@ struct NemotronSuperLocalPrefixCacheTests {
 
     /// A refusal after the first owner's bridge is built: the room passes the
     /// builder's recheck exactly, then falls once the lane is reserved, below
-    /// what paged storage's decode rows need. (The fixture's lane is far below
+    /// what the owner's decode rows need. (The fixture's lane is far below
     /// the claim's 8.5 GiB lane share, so a room that passes the recheck also
     /// holds the rows.) The builder retires that bridge and releases its lane;
     /// the load builds eight requests without the bank in a second native
@@ -674,14 +677,11 @@ struct NemotronSuperLocalPrefixCacheTests {
         let speculation = speculates
             ? [NemotronSuperLocalMTP.enabledKey: "1", NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"] : [:]
         let environment = speculation.merging([Builder.maxConcurrentKey: "8", Self.memoryKey: "1",
-            "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank), NemotronSuperLocalKVBackend.key: "paged"]) { $1 }
+            "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank)]) { $1 }
         let admission = NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: speculates,
             environment: environment, contextTokens: 1024, kvBytesCapacity: 40 << 30, bankBytes: bank)
-        // 64-wide attention heads, the paged kernels' minimum.
-        let load = try await SuperMTPInstalledFixture.$attentionHeadDim.withValue(64) {
-            try await Self.loadLosingRoomWhileInstalling(environment: environment, admissionKVBytes: admission,
-                speculates: speculates, room: { $0[0] }, roomWhileBuilding: { $0[1] + slack })
-        }
+        let load = try await Self.loadLosingRoomWhileInstalling(environment: environment, admissionKVBytes: admission,
+            speculates: speculates, room: { $0[0] }, roomWhileBuilding: { $0[1] + slack })
         #expect(load.failure == nil, "\(load.failure.map { "\($0)" } ?? "")")
         #expect(load.installs == 1 && load.headLoads == (speculates ? 1 : 0), "installed once")
         #expect(await load.transaction.fitAttempts == [
@@ -776,7 +776,7 @@ struct NemotronSuperLocalPrefixCacheTests {
     }
 
     /// A bank that does not fit the shared budget fails the load after the
-    /// engine retired, refunding the lane already reserved.
+    /// engine retired, refunding the lane and decode rows already reserved.
     @Test(.timeLimit(.minutes(2))) func bankThatDoesNotFitFailsTheLoadAndRefundsTheLane() async throws {
         let fixture = try SuperMTPInstalledFixture().make()
         let budget = Self.budget()
@@ -785,8 +785,9 @@ struct NemotronSuperLocalPrefixCacheTests {
         let lane = NemotronSuperLocalPrefill.laneBytes(language, chunkTokens: Self.chunk,
             measuredBound: false)
         let bank: Int = Self.grant / 8
-        // Ballast leaves room for the lane and half the bank: the largest
-        // reservation that still fits, found by bisection, minus both.
+        // Ballast leaves room for the lane and half the bank, which also holds
+        // the one decode row: the largest reservation that still fits, found
+        // by bisection, minus both.
         var low: UInt64 = 0
         var high: UInt64 = 64 << 30
         while low < high {

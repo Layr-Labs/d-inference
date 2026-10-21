@@ -234,21 +234,24 @@ struct NemotronSuperServingPolicyTests {
         #expect(tight.prefixBankBytes == 0 && tight.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
     }
 
-    /// Paged KV is the managed default and holds the same default bank as
-    /// contiguous storage; the operator's choice of either passes through.
-    @Test func pagedStorageIsTheDefaultAndHoldsTheBank() {
+    /// The plan serves paged KV, the builder's only storage, with the default
+    /// bank; an operator's storage key passes through unchanged, so the load
+    /// refuses `contiguous` rather than ignoring it.
+    @Test func planServesPagedStorageAndPassesTheStorageKeyThrough() throws {
+        typealias Storage = NemotronSuperLocalKVBackend
         for mode in [MTPMode.off, .auto] {
             let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: mode,
                 configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
-            #expect(plan.environment[NemotronSuperLocalKVBackend.key] == "paged", "\(mode)")
+            #expect(plan.environment[Storage.key] == nil, "\(mode)")
+            #expect(try Storage.resolve(environment: plan.environment) == .paged, "\(mode)")
             #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1", "\(mode)")
             #expect(plan.prefixBankBytes == 16 << 30, "\(mode)")
-            let contiguous = NemotronSuperServingPolicy.loadPlan(
-                base: [NemotronSuperLocalKVBackend.key: "contiguous"], mode: mode,
+            let contiguous = NemotronSuperServingPolicy.loadPlan(base: [Storage.key: "contiguous"], mode: mode,
                 configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
-            #expect(contiguous.environment[NemotronSuperLocalKVBackend.key] == "contiguous", "\(mode)")
-            #expect(contiguous.prefixBankBytes == plan.prefixBankBytes, "\(mode)")
-            #expect(contiguous.admissionKVBytes == plan.admissionKVBytes, "\(mode)")
+            #expect(contiguous.environment[Storage.key] == "contiguous", "\(mode)")
+            #expect(throws: Storage.Failure.contiguousUnsupported) {
+                try Storage.resolve(environment: contiguous.environment)
+            }
         }
     }
 

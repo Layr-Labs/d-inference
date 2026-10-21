@@ -25,11 +25,13 @@ extension NemotronSuperLocalBridgeBuilder {
         return value
     }
 
-    /// Fixed bytes each request reserves beyond the engine's own (recurrent
-    /// generations and any speculation charge): one batched decode row. Prompt
-    /// chunks run one per step, so their activations are the owner's single
-    /// prefill lane (`NemotronSuperLocalPrefill`), not a per-request charge.
-    /// The eager reference keeps its own bounded tiles and has no row quote.
+    /// Fixed bytes each request needs beyond the engine's own (recurrent
+    /// generations and any speculation charge): one batched decode row, which
+    /// the owner reserves for every configured request
+    /// (`NemotronSuperLocalKVBackend.decodeRowsBytes`). Prompt chunks run one
+    /// per step, so their activations are the owner's single prefill lane
+    /// (`NemotronSuperLocalPrefill`), not a per-request charge. The eager
+    /// reference keeps its own bounded tiles and has no row quote.
     static func requestWorkspaceBytes(_ language: NemotronHModel) throws -> Int {
         do {
             // Only the row workspace is used; the KV element width does not enter it.
@@ -57,9 +59,9 @@ extension NemotronSuperLocalBridgeBuilder {
 }
 
 extension EngineV2Factory.ProductionBuild {
-    /// The same build with `bytes` more fixed workspace in every request's
-    /// shared-budget reservation, admitted before submission and held until
-    /// the request retires.
+    /// The same build with `bytes` more fixed workspace per request in the
+    /// bridge's grant and width arithmetic (`maximumRequestOverheadBytes`);
+    /// the owner reserves the bytes themselves as its decode rows.
     func addingSuperRequestWorkspace(_ bytes: Int) throws -> Self {
         let (total, overflow) = fixedRequestBytes.addingReportingOverflow(bytes)
         guard bytes >= 0, !overflow, total < Int.max else {
@@ -90,8 +92,8 @@ extension EngineV2Bridge {
 
     /// Smallest grant whose admission ceiling holds `requests` requests' fixed
     /// bytes plus the minimum KV: the count `fixedWorkspaceConcurrencyLimit`
-    /// admits on this ordinary contiguous bridge, plus the engine's checkpoint
-    /// bank budget carved from the same grant. Int.max when unprovable.
+    /// admits on this ordinary bridge, plus the engine's checkpoint bank
+    /// budget carved from the same grant. Int.max when unprovable.
     func superMinimumGrantBytes(requests: Int) -> Int {
         guard requests > 0, let overhead = maximumRequestOverheadBytes(),
             let engine = ownedEngine as? EngineV2, let admissionWatermarkFraction

@@ -21,29 +21,40 @@ private actor SuperPagedRun {
     }
 }
 
-/// The Super owner on segmented native paged KV: an explicit runtime-policy
-/// opt-in that never degrades silently, the engine's process-memory owner
-/// charging pages and recurrent rows, the owner's decode-row workspace held
-/// like the prefill lane, text and images served and every charge retired.
-/// Synthetic fixture with 64-wide attention heads (the paged kernels' minimum).
+/// The Super owner's only KV storage, segmented native paged KV: unset or
+/// `paged` selects it, contiguous storage and a disabled paged backend fail
+/// the load instead of serving other storage, the engine's process-memory
+/// owner charges pages and recurrent rows, the owner's decode-row workspace
+/// is held like the prefill lane, text and images are served and every
+/// charge retires.
 struct NemotronSuperLocalPagedTests {
     typealias Builder = NemotronSuperLocalBridgeBuilder
     typealias Paged = NemotronSuperLocalKVBackend
     static let grant: Int = 2 << 30
 
-    @Test func pagedStorageIsAnExplicitValidatedOptIn() throws {
-        #expect(try Paged.resolve(environment: [:]) == .contiguous)
-        #expect(try Paged.resolve(environment: [Paged.key: "contiguous"]) == .contiguous)
+    @Test func pagedStorageIsTheOnlyStorage() throws {
+        #expect(try Paged.resolve(environment: [:]) == .paged)
         #expect(try Paged.resolve(environment: [Paged.key: " paged "]) == .paged)
-        for value in ["auto", "PAGED", "1", ""] {
+        for value in ["contiguous", " contiguous "] {
+            #expect(throws: Paged.Failure.contiguousUnsupported) {
+                try Paged.resolve(environment: [Paged.key: value])
+            }
+        }
+        for value in ["auto", "PAGED", "Contiguous", "1", ""] {
             #expect(throws: Paged.Failure.invalidBackend) {
                 try Paged.resolve(environment: [Paged.key: value])
             }
         }
-        #expect(try Paged.decodeRowsBytes(selection: .contiguous, requests: 4, rowBytes: 100) == 0)
-        #expect(try Paged.decodeRowsBytes(selection: .paged, requests: 4, rowBytes: 100) == 400)
+        // The fleet kill switch would degrade paged to contiguous storage.
+        let killSwitch = EngineV2KVBackendPolicy.killSwitchEnvKey
+        for environment in [[killSwitch: "0"], [killSwitch: "off", Paged.key: "paged"]] {
+            #expect(throws: Paged.Failure.pagedDisabled) { try Paged.resolve(environment: environment) }
+        }
+        #expect(try Paged.resolve(environment: [killSwitch: "1"]) == .paged)
+        #expect(try Paged.decodeRowsBytes(requests: 4, rowBytes: 100) == 400)
+        #expect(try Paged.decodeRowsBytes(requests: 4, rowBytes: 0) == 0)
         #expect(throws: Paged.Failure.decodeRowsRefused) {
-            try Paged.decodeRowsBytes(selection: .paged, requests: 2, rowBytes: Int.max)
+            try Paged.decodeRowsBytes(requests: 2, rowBytes: Int.max)
         }
         let id = Paged.decodeRowsReservationID()
         #expect(Paged.isDecodeRowsReservationID(id))
@@ -58,9 +69,7 @@ struct NemotronSuperLocalPagedTests {
     }
 
     private static func fixture() throws -> SuperMTPInstalledFixture.Installation {
-        try SuperMTPInstalledFixture.$attentionHeadDim.withValue(64) {
-            try SuperMTPInstalledFixture().make()
-        }
+        try SuperMTPInstalledFixture().make()
     }
 
     private static func lease(_ fixture: SuperMTPInstalledFixture.Installation, name: String,
@@ -121,47 +130,97 @@ struct NemotronSuperLocalPagedTests {
 
     static let prompts: [[Int]] = [[5, 9, 1, 4, 22, 7, 3, 8, 30], [1, 2, 3], [40, 41, 42, 43, 44, 2]]
 
-    /// Two concurrent requests on paged storage stream the same text as each
-    /// served alone on paged storage and as a contiguous owner serves it;
+    /// Two concurrent requests stream the same text as each served alone;
     /// the owner holds its lane and its two decode rows from build to
-    /// retirement and nothing stays charged after close.
+    /// retirement, a request adds no bridge reservation of its own, and
+    /// nothing stays charged after close.
     @Test(.timeLimit(.minutes(3))) func pagedOwnerServesTextAndImagesThenRetires() async throws {
         let budget = Self.budget()
-        let pagedFixture = try Self.fixture()
-        let contiguousFixture = try Self.fixture()
-        let common = [Builder.maxConcurrentKey: "2", NemotronSuperLocalPrefill.chunkKey: "4"]
-        let (paged, pagedLease) = try await Self.owner(pagedFixture,
-            environment: common.merging([Paged.key: "paged"]) { $1 }, budget: budget, name: "paged")
-        let (contiguous, contiguousLease) = try await Self.owner(contiguousFixture,
-            environment: common, budget: budget, name: "contiguous")
-        #expect(await paged.bridge.kvBackendKind == .paged)
-        #expect(await contiguous.bridge.kvBackendKind == .contiguous)
-        let engine = try #require(await paged.bridge.ownedEngine as? EngineV2)
+        let fixture = try Self.fixture()
+        let (owner, lease) = try await Self.owner(fixture,
+            environment: [Builder.maxConcurrentKey: "2", NemotronSuperLocalPrefill.chunkKey: "4"],
+            budget: budget, name: "paged")
+        #expect(await owner.bridge.kvBackendKind == .paged)
+        let engine = try #require(await owner.bridge.ownedEngine as? EngineV2)
         #expect(engine.usesProcessMemoryOwner)
-        let row = try Builder.requestWorkspaceBytes(try #require(pagedFixture.installed.model).languageModel)
-        #expect(row > 0 && paged.decodeRowsBytes == 2 * row && contiguous.decodeRowsBytes == 0)
+        let row = try Builder.requestWorkspaceBytes(try #require(fixture.installed.model).languageModel)
+        #expect(row > 0 && owner.decodeRowsBytes == 2 * row)
         let held = await budget.reservationBytesSnapshot()
         #expect(held.filter { Paged.isDecodeRowsReservationID($0.key) }.values.map { Int($0) } == [2 * row])
-        #expect(held.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }.count == 2)
+        #expect(held.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }.count == 1)
 
         var alone: [String] = []
-        for prompt in Self.prompts { alone.append(try await Self.run(paged, prompt: prompt)) }
-        async let first = Self.run(paged, prompt: Self.prompts[0])
-        async let second = Self.run(paged, prompt: Self.prompts[2])
+        for prompt in Self.prompts { alone.append(try await Self.run(owner, prompt: prompt)) }
+        #expect(alone.allSatisfy { !$0.isEmpty })
+        async let first = Self.run(owner, prompt: Self.prompts[0])
+        async let second = Self.run(owner, prompt: Self.prompts[2])
         let together = try await [first, second]
         #expect(together == [alone[0], alone[2]])
-        for (index, prompt) in Self.prompts.enumerated() {
-            #expect(try await Self.run(contiguous, prompt: prompt) == alone[index], "prompt \(index)")
-        }
-        #expect(try await Self.runImage(paged) == (try await Self.runImage(contiguous)))
+        #expect(!(try await Self.runImage(owner)).isEmpty)
+        #expect(await budget.reservationBytesSnapshot() == held)
 
-        for (owner, fixture, lease) in [(paged, pagedFixture, pagedLease),
-                                        (contiguous, contiguousFixture, contiguousLease)] {
-            try await owner.closeAfterDrain()
-            #expect(fixture.residency.snapshot.usedBytes == 0)
-            #expect(await budget.finishPendingLoad(lease))
-        }
+        try await owner.closeAfterDrain()
+        #expect(fixture.residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
         #expect(await budget.reservationBytesSnapshot().isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// A builder asked for contiguous storage, or whose paged storage the
+    /// fleet kill switch disables, fails before native setup and holds
+    /// nothing; the same installation then builds a paged owner.
+    @Test(.timeLimit(.minutes(2))) func otherStorageFailsTheBuildBeforeNativeSetup() async throws {
+        let budget = Self.budget()
+        let fixture = try Self.fixture()
+        let lease = try await Self.lease(fixture, name: "refused", budget: budget)
+        let refusals: [([String: String], Paged.Failure)] = [
+            ([Paged.key: "contiguous"], .contiguousUnsupported),
+            ([EngineV2KVBackendPolicy.killSwitchEnvKey: "0"], .pagedDisabled),
+        ]
+        for (environment, failure) in refusals {
+            await #expect(throws: failure) {
+                _ = try await Self.make(fixture, environment: environment, budget: budget, lease: lease)
+            }
+            #expect(await budget.reservationBytesSnapshot().isEmpty)
+        }
+        let owner = try await Self.make(fixture, environment: [:], budget: budget, lease: lease)
+        #expect(await owner.bridge.kvBackendKind == .paged)
+        try await owner.closeAfterDrain()
+        #expect(fixture.residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// A configuration naming contiguous storage, or disabling paged KV,
+    /// fails the load before its LOAD claim and the installation, so a retry
+    /// never reinstalls the checkpoint.
+    @Test(arguments: [
+        ([Paged.key: "contiguous"], Paged.Failure.contiguousUnsupported),
+        ([EngineV2KVBackendPolicy.killSwitchEnvKey: "0"], Paged.Failure.pagedDisabled),
+    ])
+    func otherStorageFailsTheLoadBeforeInstalling(environment: [String: String], failure: Paged.Failure)
+        async throws {
+        let base = try SuperMTPInstalledFixture().staging()
+        let installs = SuperPrefixInstallCount()
+        let staging = NemotronSuperLocalLoad.Staging(source: base.source, install: {
+            installs.increment()
+            return try base.install($0, $1, $2)
+        }, head: nil)
+        let budget = Self.budget()
+        let load = NemotronSuperLocalLoad(budget: budget)
+        var refusal: (any Error)?
+        do {
+            _ = try await load.load(staging: { staging }, tokenizer: TokenizerHandle(SuperTokenTextTokenizer()),
+                eosTokenIDs: [63], sizing: .init(weightsBytes: 1 << 20, fp16KVBytesPerToken: 64,
+                    maxContextLength: 64, defaultMaxTokens: 16),
+                kvBytesCapacity: Self.grant, backendAllowanceBytes: 1 << 20,
+                modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+        } catch {
+            refusal = error
+        }
+        #expect(refusal as? Paged.Failure == failure)
+        #expect(installs.count == 0)
+        #expect(await load.fitAttempts.isEmpty)
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
@@ -175,7 +234,7 @@ struct NemotronSuperLocalPagedTests {
         let budget = Self.budget()
         let plainFixture = try Self.fixture()
         let speculativeFixture = try Self.fixture()
-        let environment = [Paged.key: "paged", NemotronSuperLocalPrefill.chunkKey: "4"]
+        let environment = [NemotronSuperLocalPrefill.chunkKey: "4"]
         let (plain, plainLease) = try await Self.owner(plainFixture, environment: environment,
             budget: budget, name: "plain")
         let (speculative, speculativeLease) = try await Self.owner(speculativeFixture,
@@ -183,7 +242,9 @@ struct NemotronSuperLocalPagedTests {
         #expect(speculative.speculates)
         #expect(await speculative.bridge.kvBackendKind == .paged)
         for prompt in Self.prompts {
-            #expect(try await Self.run(speculative, prompt: prompt) == (try await Self.run(plain, prompt: prompt)))
+            let speculativeText = try await Self.run(speculative, prompt: prompt)
+            let plainText = try await Self.run(plain, prompt: prompt)
+            #expect(!plainText.isEmpty && speculativeText == plainText, "prompt \(prompt)")
         }
         let engine = try #require(await speculative.bridge.ownedEngine as? EngineV2)
         #expect(try #require(engine.mtpMetricsSnapshot()).rounds > 0)
@@ -194,9 +255,9 @@ struct NemotronSuperLocalPagedTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// Exact text prefix reuse on paged storage, plain and speculating: each
-    /// owner holds its bank like a contiguous owner; after an unrelated
-    /// request takes over the donor's freed pages, the next turn restores the
+    /// Exact text prefix reuse on paged storage, plain and speculating, with
+    /// an operator's explicit `paged`: each owner holds its bank; after an
+    /// unrelated request takes over the donor's freed pages, the next turn restores the
     /// deepest chunk boundary and streams what a cold paged owner streams;
     /// every charge retires.
     @Test(.timeLimit(.minutes(3)), arguments: [false, true])

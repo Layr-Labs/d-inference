@@ -54,6 +54,11 @@ enum NemotronSuperVideoDecode {
         return min(.seconds(120), .seconds(5) + perFrame * frames)
     }
 
+    /// Tests only: runs once for each reader, right after it is cancelled,
+    /// with that reader, so a test can count stops and watch the reader be
+    /// released. Read when the reader is set up.
+    @TaskLocal static var readerCancelledForTesting: (@Sendable (AVAssetReader) -> Void)?
+
     struct Plan: Sendable {
         let sourceFrames: Int
         let sourceFPS: Double
@@ -149,7 +154,7 @@ enum NemotronSuperVideoDecode {
                 let (pixels, overflow) = coded.width.multipliedReportingOverflow(by: coded.height)
                 guard !overflow, pixels <= pixelCap else { throw Failure.limit }
                 let rotation = try Rotation(try await track.load(.preferredTransform))
-                let timing = try await sampleTiming(movie, track: track)
+                let timing = try await sampleTiming(movie, track: track, source: asset)
                 let indices = try NemotronSuperVideoPreprocessing.sampledFrameIndices(
                     totalFrames: timing.frames, sourceFPS: timing.fps)
                 let width = rotation.swapsAxes ? coded.height : coded.width
@@ -199,8 +204,8 @@ enum NemotronSuperVideoDecode {
     /// integral rate exact, so `int(1000 / fps)` steps match. Like FFmpeg's
     /// demuxer, a zero-duration last sample counts as a frame and adds no
     /// time; a zero duration anywhere else is refused.
-    private static func sampleTiming(_ movie: AVAsset, track: AVAssetTrack) async throws
-        -> (frames: Int, fps: Double) {
+    private static func sampleTiming(_ movie: AVAsset, track: AVAssetTrack, source: NemotronSuperVideoAsset)
+        async throws -> (frames: Int, fps: Double) {
         let reader = try AVAssetReader(asset: movie)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         // Samples are only read, never modified in place.
@@ -208,14 +213,14 @@ enum NemotronSuperVideoDecode {
         guard reader.canAdd(output) else { throw Failure.invalidVideo }
         reader.add(output)
         guard reader.startReading() else { throw Failure.invalidVideo }
-        defer { reader.cancelReading() }
+        let samples = SerialReader(reader, output: output, source: source)
         var frames = 0
         var markers = 0
         var duration = CMTime.zero
         var sawZeroDuration = false
-        try await ReaderStop(reader).cancellable {
+        try await samples.cancellable {
             while try autoreleasepool(invoking: { () throws -> Bool in
-                guard let sample = output.copyNextSampleBuffer() else { return false }
+                guard let sample = samples.nextSample() else { return false }
                 try Task.checkCancellation()
                 let count = CMSampleBufferGetNumSamples(sample)
                 guard count > 0 else {
@@ -235,7 +240,7 @@ enum NemotronSuperVideoDecode {
         }
         // Cancellation stops the reader early; it is not a malformed movie.
         try Task.checkCancellation()
-        guard reader.status == .completed, frames > 0, duration.value > 0, duration.timescale > 0 else {
+        guard samples.completed, frames > 0, duration.value > 0, duration.timescale > 0 else {
             throw Failure.invalidVideo
         }
         let fps = Double(frames) * Double(duration.timescale) / Double(duration.value)
@@ -264,15 +269,15 @@ enum NemotronSuperVideoDecode {
 
     /// The plan's sampled frames in order, normalized CHW at its grid; after
     /// an odd count the last frame repeats once to complete its tubelet.
-    /// Each frame decodes on the caller's thread when it is pulled, so only
-    /// the frame in hand and the caller's batch are resident. The time spent
-    /// waiting on the decoder is bounded by `decodeAllowance`; pull frames
-    /// inside `withCancellableReader` so cancellation reaches a blocked read.
+    /// Each frame decodes on the reader's queue while the pulling thread
+    /// waits for it, so only the frame in hand and the caller's batch are
+    /// resident (and, after a pull gives up, the one read still finishing).
+    /// The time spent waiting on the decoder is bounded by `decodeAllowance`;
+    /// pull frames inside `withCancellableReader` so cancellation ends a
+    /// blocked wait.
     final class Frames {
         let plan: Plan
-        private let reader: AVAssetReader
-        private let output: AVAssetReaderTrackOutput
-        private let stop: ReaderStop
+        private let reader: SerialReader
         private var index = 0
         private var markers = 0
         private var lastPresentation: CMTime?
@@ -301,20 +306,17 @@ enum NemotronSuperVideoDecode {
                 return (reader, output)
             }
             self.plan = plan
-            self.reader = reader
-            self.output = output
-            stop = ReaderStop(reader, allowance: decodeAllowance
+            self.reader = SerialReader(reader, output: output, source: plan.asset, allowance: decodeAllowance
                 ?? NemotronSuperVideoDecode.decodeAllowance(frames: plan.decodedFrames,
                                                             codedPixels: plan.codedPixels))
         }
 
-        deinit { reader.cancelReading() }
-
-        /// Runs `body`, which pulls frames, with the reader cancelled as soon
-        /// as the task is, so a blocked read returns instead of holding the
-        /// media slot and a draining owner.
+        /// Runs `body`, which pulls frames, with a pull waiting on the
+        /// decoder released and the reader stopped as soon as the task is
+        /// cancelled, so a slow decode holds neither the media slot nor a
+        /// draining owner.
         func withCancellableReader<Result>(_ body: () throws -> Result) async throws -> Result {
-            try await stop.cancellable(body)
+            try await reader.cancellable(body)
         }
 
         /// The next normalized frame; nil after the last.
@@ -328,12 +330,12 @@ enum NemotronSuperVideoDecode {
             }
             Self.beforeFrameDecodeForTesting?()
             // Only the wait for decoded frames counts against the allowance.
-            stop.startCharging()
-            defer { stop.stopCharging() }
+            reader.startCharging()
+            defer { reader.stopCharging() }
             while true {
                 try Task.checkCancellation()
                 let frame = try autoreleasepool { () throws -> [Float]? in
-                    guard let sample = output.copyNextSampleBuffer() else { throw stop.earlyEnd }
+                    guard let sample = reader.nextSample() else { throw reader.earlyEnd }
                     let count = CMSampleBufferGetNumSamples(sample)
                     guard count > 0 else {
                         markers += 1
@@ -351,7 +353,7 @@ enum NemotronSuperVideoDecode {
                     try NemotronSuperVideoDecode.validateDecodedFrame(buffer, codedWidth: plan.codedWidth,
                                                                      codedHeight: plan.codedHeight)
                     guard index == plan.frameIndices[produced] else { return nil }
-                    stop.stopCharging()
+                    reader.stopCharging()
                     return try normalized(buffer)
                 }
                 guard let frame else { continue }
@@ -396,26 +398,60 @@ enum NemotronSuperVideoDecode {
     }
 }
 
-/// Stops a reader from outside the thread blocked in `copyNextSampleBuffer()`,
-/// which then returns nil: when the task is cancelled, or once the time spent
-/// waiting on the decoder outlasts an allowance. `cancelReading()` stops
-/// AVAssetReader's background reads from any thread.
-private final class ReaderStop: @unchecked Sendable {
+/// Owns one reader's reads and its stop. Cancelling an AVAssetReader while a
+/// `copyNextSampleBuffer()` is blocked tears down the state that read waits
+/// on, so every copy and the reader's one `cancelReading()` run in order on
+/// the reader's serial queue, never concurrently. The pulling thread waits
+/// for each sample instead: while charged, at most the decoder allowance
+/// left, and only until the task is cancelled. A wait given up on returns at
+/// once; its read finishes on the queue, its sample is dropped, and only then
+/// is the reader cancelled. Each queued block keeps this owner, and with it
+/// the reader, its output and the asset serving the bytes, alive.
+private final class SerialReader: @unchecked Sendable {
+    /// One copy handed from the queue to the waiting thread. Its state is
+    /// guarded by the owner's lock.
+    private final class Read: @unchecked Sendable {
+        let done = DispatchSemaphore(value: 0)
+        var delivered = false
+        var abandoned = false
+        var sample: CMSampleBuffer?
+    }
+
     private let reader: AVAssetReader
+    private let output: AVAssetReaderOutput
+    /// The in-memory asset the reader loads through; its resource loader
+    /// holds the delegate serving the bytes only weakly.
+    private let source: NemotronSuperVideoAsset
+    private let queue = DispatchQueue(label: "ai.darkbloom.super-video.reader", qos: .userInitiated,
+                                      autoreleaseFrequency: .workItem)
+    private let cancelledForTesting: (@Sendable (AVAssetReader) -> Void)?
     private let lock = NSLock()
     /// Nanoseconds of decoder wait left; nil without an allowance.
     private var remaining: UInt64?
     /// Uptime when the current wait began.
     private var chargedSince: UInt64?
-    private var timer: DispatchSourceTimer?
+    /// The read the pulling thread waits on, which cancellation wakes.
+    private var waiting: Read?
+    /// No read starts once the reader is stopped; its cancellation is queued.
+    private var stopped = false
     private var expired = false
 
-    init(_ reader: AVAssetReader, allowance: Duration? = nil) {
+    init(_ reader: AVAssetReader, output: AVAssetReaderOutput, source: NemotronSuperVideoAsset,
+         allowance: Duration? = nil) {
         self.reader = reader
+        self.output = output
+        self.source = source
+        cancelledForTesting = NemotronSuperVideoDecode.readerCancelledForTesting
         remaining = allowance.map(Self.nanoseconds)
     }
 
-    deinit { timer?.cancel() }
+    /// Queued blocks retain the owner, so none is queued here and the reader
+    /// can be cancelled inline.
+    deinit {
+        guard !stopped else { return }
+        reader.cancelReading()
+        cancelledForTesting?(reader)
+    }
 
     /// Whole nanoseconds of `duration`, saturating; zero when not positive
     /// (a negative duration under a second has zero seconds but negative
@@ -428,41 +464,78 @@ private final class ReaderStop: @unchecked Sendable {
         return overflow || carry ? .max : total
     }
 
-    /// Runs `body` with the reader cancelled as soon as the task is.
+    /// Runs `body` with a wait for a sample given up, and the reader
+    /// stopped, as soon as the task is cancelled.
     func cancellable<Result>(_ body: () throws -> Result) async throws -> Result {
-        try await withTaskCancellationHandler(operation: body) { self.reader.cancelReading() }
+        try await withTaskCancellationHandler(operation: body) {
+            self.lock.withLock { () -> Read? in
+                self.stop()
+                return self.waiting
+            }?.done.signal()
+        }
     }
 
     /// Decoder wait from here until `stopCharging()` runs down the
-    /// allowance; once it is spent the reader is cancelled.
+    /// allowance; once it is spent the reader is stopped.
     func startCharging() {
-        let spent = lock.withLock { () -> Bool in
-            guard let remaining, chargedSince == nil else { return false }
-            guard remaining > 0 else { return true }
-            let now = DispatchTime.now()
-            chargedSince = now.uptimeNanoseconds
-            let timer = self.timer ?? {
-                let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
-                timer.setEventHandler { [weak self] in self?.expire() }
-                timer.activate()
-                self.timer = timer
-                return timer
-            }()
-            timer.schedule(deadline: now + .nanoseconds(Int(clamping: remaining)))
-            return false
+        lock.withLock {
+            guard remaining != nil, chargedSince == nil else { return }
+            chargedSince = DispatchTime.now().uptimeNanoseconds
         }
-        if spent { expire() }
     }
 
     func stopCharging() {
         lock.withLock {
             guard let since = chargedSince, let remaining else { return }
-            timer?.schedule(deadline: .distantFuture)
             let waited = DispatchTime.now().uptimeNanoseconds - since
             self.remaining = remaining > waited ? remaining - waited : 0
             chargedSince = nil
         }
     }
+
+    /// The next sample; nil once the reader ends or is stopped, because the
+    /// task was cancelled or the charged wait outlasted the allowance.
+    func nextSample() -> CMSampleBuffer? {
+        let read = Read()
+        let deadline = lock.withLock { () -> DispatchTime? in
+            guard !stopped else { return nil }
+            var deadline = DispatchTime.distantFuture
+            if let remaining, let chargedSince {
+                let spent = DispatchTime.now().uptimeNanoseconds - chargedSince
+                guard remaining > spent else {
+                    expire()
+                    return nil
+                }
+                deadline = .now() + .nanoseconds(Int(clamping: remaining - spent))
+            }
+            waiting = read
+            return deadline
+        }
+        guard let deadline else { return nil }
+        queue.async { [self] in
+            let sample = autoreleasepool { output.copyNextSampleBuffer() }
+            let delivered = lock.withLock { () -> Bool in
+                guard !read.abandoned else { return false }
+                read.sample = sample
+                read.delivered = true
+                return true
+            }
+            if delivered { read.done.signal() }
+        }
+        _ = read.done.wait(timeout: deadline)
+        return lock.withLock { () -> CMSampleBuffer? in
+            waiting = nil
+            if read.delivered { return read.sample }
+            // Cancelled, or out of allowance: the read finishes on the queue
+            // ahead of the reader's cancellation, and its sample is dropped.
+            read.abandoned = true
+            if !stopped { expire() }
+            return nil
+        }
+    }
+
+    /// Whether the reader read to its end, asked on its queue.
+    var completed: Bool { queue.sync { reader.status == .completed } }
 
     /// Why the reader returned no sample before the plan's last frame: the
     /// task was cancelled, the allowance ran out, or the reader failed or
@@ -473,8 +546,20 @@ private final class ReaderStop: @unchecked Sendable {
             ? NemotronSuperVideoDecode.Failure.limit : NemotronSuperVideoDecode.Failure.inconsistentFrames
     }
 
+    /// Under the lock.
     private func expire() {
-        lock.withLock { expired = true }
-        reader.cancelReading()
+        expired = true
+        stop()
+    }
+
+    /// Under the lock: no read starts after this, and the reader is
+    /// cancelled on its queue once any read in flight returns.
+    private func stop() {
+        guard !stopped else { return }
+        stopped = true
+        queue.async { [self] in
+            reader.cancelReading()
+            cancelledForTesting?(reader)
+        }
     }
 }

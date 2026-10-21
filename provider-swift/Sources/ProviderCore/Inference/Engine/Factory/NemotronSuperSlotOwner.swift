@@ -23,7 +23,7 @@ final class NemotronSuperSlotOwner: Sendable {
     /// The configurations the LOAD gate weighed; the last is the one served.
     let fitAttempts: [NemotronSuperLocalLoad.FitAttempt]
     /// Held in the shared budget beside the KV grant until native retirement:
-    /// the prefill lane, paged decode rows and MTP round work. Resident like
+    /// the prefill lane, decode rows and MTP round work. Resident like
     /// weights to the re-slice and the heartbeat.
     let reservedBesideGrantBytes: Int
     /// The prefix bank's reservation, carved from the KV grant.

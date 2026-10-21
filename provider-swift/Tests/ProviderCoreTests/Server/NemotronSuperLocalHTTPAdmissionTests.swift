@@ -33,14 +33,18 @@ private struct SuperRouteTokenizer: MLXLMCommon.Tokenizer {
 
 private let superAdmissionPNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
 
-private func superAdmissionBody(image: Bool, stream: Bool) throws -> Data {
+/// `contradictory` also enables thinking through the template kwargs, which
+/// the request plan refuses (400) once the owner admits the request.
+private func superAdmissionBody(image: Bool, stream: Bool, contradictory: Bool = false) throws -> Data {
     let content: Any = image
         ? [["type": "text", "text": "fixture"], ["type": "image_url", "image_url": ["url": superAdmissionPNG]]]
         : "fixture"
-    return try JSONSerialization.data(withJSONObject: [
+    var value: [String: Any] = [
         "model": NemotronSuperLocalBinding.modelID, "stream": stream, "max_tokens": 2,
         "temperature": 0, "enable_thinking": false,
-        "messages": [["role": "user", "content": content]]])
+        "messages": [["role": "user", "content": content]]]
+    if contradictory { value["chat_template_kwargs"] = ["enable_thinking": true] }
+    return try JSONSerialization.data(withJSONObject: value)
 }
 
 private func superAdmissionApplication(hook: NemotronSuperLocalImageHTTP, token: String,
@@ -93,13 +97,19 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                 try await superHTTPEventually("first request held before terminal") { await gate.entered }
                 let held = await budget.outstandingReservedBytes()
                 #expect(held > baseline)
+                // Admission precedes the body's plan: even a request the plan
+                // would refuse gets the busy status without being decoded.
                 for (image, stream) in [(false, true), (false, false), (true, true), (true, false)] {
-                    try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
-                        body: ByteBuffer(bytes: try superAdmissionBody(image: image, stream: stream))) { response in
-                        #expect(response.status == .tooManyRequests, "image \(image) stream \(stream)")
-                        #expect(response.headers[.contentType] == "application/json")
-                        let text = String(buffer: response.body)
-                        #expect(text.contains("\"error\"") && !text.contains("data:"))
+                    for contradictory in [false, true] {
+                        let body = try superAdmissionBody(image: image, stream: stream, contradictory: contradictory)
+                        try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                            body: ByteBuffer(bytes: body)) { response in
+                            #expect(response.status == .tooManyRequests,
+                                    "image \(image) stream \(stream) contradictory \(contradictory)")
+                            #expect(response.headers[.contentType] == "application/json")
+                            let text = String(buffer: response.body)
+                            #expect(text.contains("\"error\"") && !text.contains("data:"))
+                        }
                     }
                 }
                 // Refused requests reserved nothing: no media, ingress or KV row.
@@ -110,6 +120,15 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                     let reserved = await budget.outstandingReservedBytes()
                     let active = await owner.bridge.activeRequestCount()
                     return reserved == baseline && active == 0 && tracker.activeCount == 0
+                }
+                // Idle, the plan refuses them; each returns its admission, so
+                // the single-request owner serves the requests after them.
+                for image in [false, true] {
+                    try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                        body: ByteBuffer(bytes: try superAdmissionBody(image: image, stream: true,
+                                                                       contradictory: true))) { response in
+                        #expect(response.status == .badRequest, "image \(image)")
+                    }
                 }
                 for image in [false, true] {
                     try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,

@@ -96,7 +96,16 @@ private struct SuperHTTPEngine: MLXServerEngine {
     /// `request` already carries the service's response-format instruction.
     func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let owner = self.owner
         guard request.model == owner.modelID else { throw unsupported() }
+        // The owner admits its configured concurrency before the body is
+        // decoded, the prompt rendered or media reserved, so a busy owner
+        // refuses at once. Every exit before the task takes it over returns it.
+        guard owner.admitLocalRequest() else {
+            throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
+        }
+        var admissionTransferred = false
+        defer { if !admissionTransferred { owner.finishLocalRequest() } }
         let media = if case .text = route { false } else { true }
         let output: NemotronSuperLocalOutput
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
@@ -125,15 +134,9 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
-        // The owner admits its configured concurrency; an image would otherwise
-        // reserve and prepare media only for the bridge to refuse it.
-        guard owner.admitLocalRequest() else {
-            throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
-        }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output)
         let scope = LocalRequestCancellation.current
-        let owner = self.owner
         let task = Task {
             let registration = scope?.register { relay.cancel() }
             defer { registration?.remove(); owner.finishLocalRequest() }
@@ -144,6 +147,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 await relay.complete()
             } catch { await relay.fail(SuperHTTPErrors.map(error, media: media)) }
         }
+        admissionTransferred = true
         relay.installCancellation { task.cancel() }
         pair.continuation.onTermination = { _ in task.cancel() }
         // Preserve pre-header error status for rejected requests. This also keeps

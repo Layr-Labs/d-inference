@@ -76,6 +76,8 @@
   16 MiB inflated from them, and a JPEG whose scans would decode a coefficient
   again. ImageIO is given only the primary JPEG image, and a request reserves
   its largest image's decode workspace once instead of once per image.
+- A busy owner refuses a request with 429 before decoding its body or
+  rendering its prompt.
 - Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
   `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
   reference serving samples it: 2 frames per second, at most 256, paired into

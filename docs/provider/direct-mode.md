@@ -211,7 +211,7 @@ frame-timestamp label.
 | `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422 |
 | `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422 |
 | Contradictory controls, `logprobs`, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
-| A request beyond the owner's concurrency while others are in flight (text or image) | 429 before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
+| A request beyond the owner's concurrency while others are in flight (text or image) | 429 before the body is decoded or any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
 | A second video, a video with images, another container, an undecodable movie, frames above `4096 * 2160` pixels or an extreme aspect ratio | 400 before any frame decodes |

@@ -15,8 +15,6 @@ enum ToolChoiceEnforcementPolicy {
         case structuredPostValidation
     }
 
-    static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
-
     /// Per-model wire capability, never inferred from a caller's model label.
     /// Other families retain their existing media/grammar behavior until their
     /// complete forced-choice and tool-result-media paths are qualified.
@@ -74,7 +72,7 @@ enum ToolChoiceEnforcementPolicy {
         if nativeStructuredTarget(context) {
             return true
         }
-        return model.id == qwen38ConstrainedModelID
+        return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }
 
@@ -150,7 +148,7 @@ enum ToolChoiceEnforcementPolicy {
                 return
             }
             let nativeQwen = type == "qwen4_exp" || type == "qwen4_exp_text"
-                || type == "prism_hadamard_qwen35"
+                || type == "prism_hadamard_qwen35" || type?.hasPrefix("qwen3_5") == true
             let framedFormat: ToolCallFormat = nativeQwen ? .qwen35 : .nemotron
             guard format == .xmlFunction || format == framedFormat else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(

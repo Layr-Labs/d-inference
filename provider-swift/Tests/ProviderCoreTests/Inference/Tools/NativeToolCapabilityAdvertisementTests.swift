@@ -22,7 +22,8 @@ struct NativeToolCapabilityAdvertisementTests {
     private var legacyModels: [ModelInfo] {
         [model("gemma-4-qualified", "gemma4_text",
                template: Gemma4ToolConstraintContract.pinnedTemplateSHA256),
-         model("EigenLabs/Qwen3.8-27B-4bit", "qwen3_5")]
+         model("EigenLabs/Qwen3.8-27B-4bit", "qwen3_5"),
+         model("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5")]
     }
 
     private var unsupportedModels: [ModelInfo] {

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -711,6 +711,11 @@ Resolution happens before submit so a bad parser name never orphans a request.
 | anything else, including `qwen3_vl_moe` | `nil` → `.json` | `JSONToolCallParser` (`<tool_call>…</tool_call>`) |
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
+
+Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
+inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
+including the embedded-MTP one, advertise forced tools
+(`ToolChoiceEnforcementPolicy.swift`).
 
 ### Chat-template render check
 

@@ -222,6 +222,32 @@ struct GLM5NextCoordinatorServingTests {
             committedBytes: .max, admissibleBytes: bridgeAdmissible) == .committed)
     }
 
+    /// A slot refusal is thrown before any stream as the typed capacity error:
+    /// 503 `capacity`/`token_budget_exhausted` on the local and coordinator
+    /// paths, and the same typed case when a nonthrowing caller carries its
+    /// marker in-band.
+    @Test(arguments: [true, false])
+    func slotRefusalIsATypedRetryableCapacityError(neverFits: Bool) {
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: neverFits, reservedTokens: 61_440)
+        let message = "token_budget_exhausted: "
+            + (neverFits ? "request_exceeds_slot_capacity" : "slot_capacity_committed")
+            + " (61440 reserved tokens)"
+        #expect(refusal == .tokenBudgetExhausted(message))
+        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message) == refusal)
+        for phase in [InferenceFailurePhase.streamStart, .generation] {
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: refusal, phase: phase)
+            #expect(failure.statusCode == 503)
+            #expect(failure.code == .capacity)
+            #expect(failure.errorReason == .tokenBudgetExhausted)
+            #expect(failure.message == InferenceFailureCode.capacity.message)
+        }
+        let enriched = CapacityRejectionEnrichment.enrich(
+            ProviderLoop.sanitizedInferenceFailure(from: refusal, phase: .streamStart),
+            modelId: GLM5NextCoordinatorServing.catalogModelID, published: nil,
+            fallbackReason: .tokenBudget)
+        #expect(enriched.statusCode == 503 && enriched.rejectionReason == .tokenBudget)
+    }
+
     /// A closed bridge's pending host consumers are retried, never retained;
     /// any other proof failure escapes unchanged.
     @Test func pendingHostConsumersAreRetriedAfterQuiescence() async throws {

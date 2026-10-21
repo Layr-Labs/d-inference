@@ -43,6 +43,46 @@ struct LocalStreamingFailureTests {
             }
         }
     }
+
+    /// A GLM slot refusal thrown before the stream exists is answered as a
+    /// 503 JSON error before any SSE header, for streaming and non-streaming
+    /// requests alike, with the fixed capacity text instead of the marker.
+    @Test(arguments: [true, false])
+    func glmSlotRefusalIs503BeforeHeaders(stream: Bool) async throws {
+        let router = Router<BasicRequestContext>()
+        let service = MLXOpenAIService(engine: LocalCapacityRefusalFixture())
+        let upload = LocalChatUploadResponder(inner: router.buildResponder(), service: service)
+        let app = Application(responder: CORSResponder(inner: upload),
+            configuration: .init(address: .hostname("127.0.0.1", port: 0)))
+        let body = ByteBuffer(string:
+            #"{"model":"fixture","stream":\#(stream),"messages":[{"role":"user","content":"hi"}]}"#)
+        try await app.test(.router) { client in
+            try await client.execute(uri: "/v1/chat/completions", method: .post,
+                headers: [.contentType: "application/json"], body: body) { response in
+                #expect(response.status == .serviceUnavailable)
+                #expect(response.headers[.contentType] == "application/json")
+                let text = String(buffer: response.body)
+                #expect(!text.contains("data: "))
+                #expect(!text.contains("token_budget_exhausted"))
+                let envelope = try #require(JSONSerialization.jsonObject(
+                    with: Data(text.utf8)) as? [String: Any])
+                let error = try #require(envelope["error"] as? [String: Any])
+                #expect(error["message"] as? String == InferenceFailureCode.capacity.message)
+            }
+        }
+    }
+}
+
+private struct LocalCapacityRefusalFixture: MLXServerEngine {
+    func availableModels() async throws -> [MLXServerModel] { [.init(id: "fixture")] }
+    func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
+        -> AsyncThrowingStream<MLXServerGenerationEvent, Error>
+    {
+        throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: false, reservedTokens: 61_440)
+    }
+    func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { .init(tokens: [1]) }
+    func detokenize(_ request: DetokenizeRequest) async throws -> DetokenizeResponse { .init(text: "ok") }
+    func applyTemplate(_ request: ApplyTemplateRequest) async throws -> TokenizeResponse { .init(tokens: [1]) }
 }
 
 private struct LocalFailureFixture: MLXServerEngine {

@@ -95,6 +95,18 @@ extension EngineV2Bridge {
         return overflow || total > admissibleBytes ? .committed : .admit(requestBytes)
     }
 
+    /// Thrown before the request's stream exists, so local HTTP answers 503
+    /// before headers and the coordinator receives a retryable pre-stream
+    /// capacity `inference_error`, never an in-band generation failure.
+    nonisolated static func glm5NextSlotRefusal(
+        neverFits: Bool, reservedTokens: Int
+    ) -> MultiModelBatchSchedulerEngineError {
+        .tokenBudgetExhausted(
+            "token_budget_exhausted: "
+                + (neverFits ? glm5NextExceedsSlotCapacity : glm5NextSlotCommitted)
+                + " (\(reservedTokens) reserved tokens)")
+    }
+
     /// Held GLM reservations: admitted requests at their reserved tokens, plus
     /// any still between the gate and admission.
     func glm5NextCommittedBytes() -> Int {

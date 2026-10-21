@@ -796,6 +796,12 @@ normal terminal handling instead of this exemption. The provider emits it
 through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
 the contract in `sanitizeProviderInferenceError`.
 
+A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
+`token_budget_exhausted`, enriched like other capacity rejections
+(`rejection_reason` `token_budget`); its internal
+`request_exceeds_slot_capacity`/`slot_capacity_committed` marker never reaches
+the wire. See [GLM5Next implementation boundary](../architecture/inference.md#glm5next-implementation-boundary).
+
 ### `attestation_response`
 
 Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to

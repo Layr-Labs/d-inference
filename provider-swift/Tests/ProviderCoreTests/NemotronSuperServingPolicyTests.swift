@@ -499,7 +499,7 @@ struct NemotronSuperServingPolicyTests {
             + "activation=\(gib(Int(activation))) footprint=\(gib(footprint)) gate=\(gib(gate)) cap=\(gib(cap))")
     }
 
-    @Test func discoveryFootprintIsTheNarrowestLoadNetOfTheGateCredits() throws {
+    @Test func discoveryFootprintIsTheNarrowestRequirement() throws {
         // The ship-check claim at a 28 GiB grant: installation, head and grant.
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
             + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_033_369_216)
@@ -507,24 +507,23 @@ struct NemotronSuperServingPolicyTests {
         // sequential transients (the installation's 8,903,163,904-byte
         // staging, not the head's 7,078,617,184-byte construction).
         #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_889_980_960)
-        let physical: UInt64 = 128 << 30
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240,
-                                                                      physicalBytes: physical)
+        let size: UInt64 = 75_010_188_240
+        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: size)
         #expect(footprint.nativeLoadTransientBytes == 8_879_792_720)
-        // The ordinary gate admits when available memory less the load reserve
-        // covers the footprint and the load headroom: exactly the narrowest
-        // configuration's 91,898,250,784 bytes (85.59 GiB) available.
-        let reserve = UnifiedMemoryCap.loadReserveBytes(physicalBytes: physical, configReserveBytes: 0)
-        let headroom = UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [NemotronSuperServingPolicy.modelID])
-        #expect(reserve == 13_743_895_348 && headroom == 3 << 30)
-        let gate = footprint.estimatedMemoryGb * 1_073_741_824 + Double(reserve + headroom)
-        #expect(abs(gate - Double(NemotronSuperLoadFit.minimumAvailableBytes)) < 1)
-        #expect(abs(footprint.estimatedMemoryGb - 69.786_915_522_068_74) < 1e-9, "\(footprint.estimatedMemoryGb)")
-        // A Mac with a larger reserve credits it the same way.
-        let large = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0, physicalBytes: 256 << 30)
-        #expect(abs(large.estimatedMemoryGb * 1_073_741_824
-            + Double(UnifiedMemoryCap.loadReserveBytes(physicalBytes: 256 << 30, configReserveBytes: 0) + headroom)
-            - Double(NemotronSuperLoadFit.minimumAvailableBytes)) < 1)
+        // The narrowest configuration's claim and the admission slack,
+        // 89,750,767,136 bytes, whatever the Mac: with Super's 2 GiB activation
+        // reserve, the 85.59 GiB its own gate needs available.
+        #expect(NemotronSuperLoadFit.narrowestRequirementBytes == 89_750_767_136)
+        #expect(footprint.estimatedMemoryGb == Double(89_750_767_136) / 1_073_741_824)
+        #expect(abs(footprint.estimatedMemoryGb - 83.586_915_522_813_8) < 1e-9, "\(footprint.estimatedMemoryGb)")
+        #expect(NemotronSuperLoadFit.minimumAvailableBytes == 89_750_767_136 + (2 << 30))
+        // The platform accepts a full native LOAD declaration only at or above
+        // the shard bytes plus the transient (78.13 GiB), else it falls back to
+        // the padded catalog quote.
+        let declared = Double(size + footprint.nativeLoadTransientBytes) / 1_073_741_824
+        #expect(footprint.estimatedMemoryGb >= declared && declared > 78.12)
+        #expect(NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0).estimatedMemoryGb
+            == footprint.estimatedMemoryGb)
     }
 
     /// Super's requests, prefill lane and media charges carry its decode,

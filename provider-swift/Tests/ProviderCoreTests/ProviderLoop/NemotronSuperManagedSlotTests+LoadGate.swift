@@ -24,8 +24,8 @@ extension NemotronSuperManagedSlotTests {
     /// the OS reports `availableGiB` available, until its engine shuts down;
     /// then the weights are free. It is unmeasured, so the serving set's
     /// activation reserve is the 5.5 GiB default. Super is advertised as the
-    /// scanner discovers it on 128 GiB; its loader sizes and gates the load as
-    /// the pinned checkpoint's there, and a fixture loads.
+    /// scanner discovers it; its loader sizes and gates the load as the pinned
+    /// checkpoint's on 128 GiB, and a fixture loads.
     static func coResidentFixture(weightsGiB: Double, availableGiB: Double) async throws -> CoResidentFixture {
         let stub = makeInertStubBridge(modelId: coResidentID)
         let engine = stub.engine
@@ -38,8 +38,7 @@ extension NemotronSuperManagedSlotTests {
         let hardware = HardwareInfo(machineModel: "Mac15,14", chipName: "Apple M3 Ultra",
             chipFamily: .m3, chipTier: .ultra, memoryGb: 128, memoryAvailableGb: 128,
             cpuCores: .init(total: 28, performance: 20, efficiency: 8), gpuCores: 60, memoryBandwidthGbs: 819)
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240,
-                                                                      physicalBytes: 128 << 30)
+        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
         let superModel = ModelInfo(id: modelID, modelType: "nemotron_h_omni", sizeBytes: 1 << 20,
             estimatedMemoryGb: footprint.estimatedMemoryGb, nativeLoadTransientBytes: footprint.nativeLoadTransientBytes)
         let coResident = ModelInfo(id: coResidentID, modelType: "gpt_oss", sizeBytes: weights,

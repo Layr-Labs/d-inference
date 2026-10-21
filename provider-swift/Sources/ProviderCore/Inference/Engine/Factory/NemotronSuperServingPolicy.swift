@@ -335,35 +335,28 @@ enum NemotronSuperServingPolicy {
     }
 
     struct DiscoveryFootprint: Equatable {
-        /// What the ordinary load gate compares, in GiB: the available memory
-        /// the managed load's narrowest configuration needs
-        /// (`NemotronSuperLoadFit.minimumAvailableBytes`), less this Mac's
-        /// load reserve and the gate's load headroom, which the gate adds back
-        /// and the managed claim does not keep. Not the resident size.
+        /// The managed load's LOAD size in GiB, the same on every Mac: what
+        /// the narrowest configuration requires of the ledger
+        /// (`NemotronSuperLoadFit.narrowestRequirementBytes`, its claim and the
+        /// admission slack), never below the shard bytes and
+        /// `nativeLoadTransientBytes`. Not the resident size.
         let estimatedMemoryGb: Double
         /// LOAD bytes above the shard bytes: staging, backend allowance and
         /// head construction. Not activation, KV or media.
         let nativeLoadTransientBytes: UInt64
     }
 
-    /// Scan-time requirement for the ordinary gates (pre-accept, eviction,
-    /// startup preload, cold capacity quotes and the coordinator's cold-load
-    /// routing all compare `estimatedMemoryGb` plus the load headroom with
-    /// available memory less the load reserve): they admit a Super load
-    /// exactly when `NemotronSuperLoadFit.minimumAvailableBytes` (85.6 GiB) is
-    /// available, the narrowest configuration the managed claim serves; a Mac
-    /// with more room loads a wider owner. It holds no media: an image
-    /// request is charged its whole media reservation.
-    static func discoveryFootprint(sizeBytes: UInt64,
-                                   physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory)
-        -> DiscoveryFootprint {
-        let credited = UnifiedMemoryCap.loadReserveBytes(physicalBytes: physicalBytes, configReserveBytes: 0)
-            + UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [modelID])
-        let minimum = NemotronSuperLoadFit.minimumAvailableBytes
-        let transient = pinnedLoadClaimBytes(speculates: true)
-        return DiscoveryFootprint(
-            estimatedMemoryGb: Double(minimum > credited ? minimum - credited : 0) / 1_073_741_824,
-            nativeLoadTransientBytes: transient > sizeBytes ? transient - sizeBytes : 0)
+    /// Scan-time size of the managed load. Super's own gate
+    /// (`ProviderLoop.nemotronSuperLoadRequirements`) admits its loads from the
+    /// ledger, with no load reserve; gates that compare this size and the
+    /// load headroom with free memory less the load reserve (cold quotes,
+    /// the coordinator's cold-load routing) stay stricter. It holds no media:
+    /// an image request is charged its whole media reservation.
+    static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
+        let claim = pinnedLoadClaimBytes(speculates: true)
+        let load = max(NemotronSuperLoadFit.narrowestRequirementBytes, sizeBytes, claim)
+        return DiscoveryFootprint(estimatedMemoryGb: Double(load) / 1_073_741_824,
+            nativeLoadTransientBytes: claim > sizeBytes ? claim - sizeBytes : 0)
     }
 
     // MARK: - Image media charge

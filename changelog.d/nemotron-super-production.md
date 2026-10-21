@@ -130,6 +130,12 @@
   (thread-scoped limits in the pinned MLX), and full SSD prefill windows run
   batched, with tokens unchanged: one plain request decodes at 42.9 tok/s
   instead of 34.6 on the full checkpoint. Speculative rounds are unchanged.
+- Prompt processing frees each Mamba layer's temporaries within the layer
+  instead of at the end of the chunk, with tokens unchanged: on the M5 Ultra
+  a 24K-token prompt grows MLX memory by 2.6 GiB instead of 5.6 GiB, four
+  parallel 12K prompts by 5.3 instead of 9.2 GiB. Weight hashing and shard
+  loading read around the file cache, so loading no longer leaves a second
+  cached copy of the checkpoint resident beside the loaded weights.
 - Paged attention KV by default (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`, `paged`
   unless set to `contiguous`): the segmented native paged backend, charged by
   the engine's process-memory owner, with the decode rows reserved for the

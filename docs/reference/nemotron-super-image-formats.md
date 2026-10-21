@@ -85,6 +85,7 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 | JPEG with 12-bit precision, a lossless, hierarchical or arithmetic process, DNL, 2 components, YCCK, JFIF combined with Adobe transform 0, `R`,`G`,`B` component IDs without Adobe transform 0, other sampling, or more than 500 scans (hardening beyond the reference: ImageIO's decode cannot be cancelled) | `unsupportedEncoding` |
 | JPEG without a frame or EOI, with a reserved marker, or with scans outside the scan rules above (hardening: libjpeg-turbo decodes some of them with a warning) | `invalidHeader` |
 | Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`); more than 64 compressed chunks, or more than 16 MiB inflated from them, in one image, unkeyed, corrupt and non-UTF-8 chunks included (hardening: Pillow accepts these) | `sizeLimit` |
+| An image whose resize workspace exceeds the SDK's limit (below) | `NemotronSuperImagePreprocessing.Failure.workspaceLimit` |
 
 ## Limits and admission
 
@@ -92,7 +93,7 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 |---|---|---|
 | Encoded bytes | `min(MediaIngest.maxMediaDecodedBytes, 64 MiB)`; the owner's whole request body is at most 8 MiB | `NemotronSuperImageDecode.swift` (`parse`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`encodedHeaderQuote`) |
 | Declared pixels | `min(MediaIngest.maxImagePixels, 64 Mi)`, each axis at most 131072, JPEG axes at most 65500. Checked from the container before any raster buffer exists | `NemotronSuperImageDecode.swift` (`parse`) |
-| Resize workspace | SDK limit of 256 MiB. The largest admitted square is 5751x5751; 8064x6048 is refused | `NemotronSuperImagePreprocessing.validateWorkspace` |
+| Resize workspace | SDK limit of 256 MiB for the oriented source and its grid, checked as each image is planned: before the media reservation and before any raster buffer exists. The largest admitted square is 5751x5751; 5752x5752, 8064x6048 and 8192x8192 are refused | `NemotronSuperImageDecode.swift` (`plan`); `NemotronSuperImagePreprocessing.validateWorkspace` |
 | Largest grid | 13312 patches (3328 tokens) per image, for example a 2048x1664 target; a 5751x5751 source resizes to 1856x1824 | `NemotronSuperImagePreprocessing.grid` |
 | Decoder quote | `data.count * 2 + pixels * 14` (PNG) or `* 16` (JPEG) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB | `NemotronSuperImageDecode.swift` (`Quote`) |
 | Tower working memory | The media reservation adds the pinned composition's derived bound for the request's largest image, 2,095,272,960 bytes at 13312 patches. The global activation reserve is unchanged | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`towerActivationBytes`); `libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperImageActivation.swift` (`pinnedActivationBytes`) |

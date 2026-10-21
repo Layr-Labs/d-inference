@@ -102,12 +102,9 @@ actor NemotronSuperLocalImageBinding {
             try Task.checkCancellation()
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 var decoded: [NemotronSuperImageDecode.Prepared] = []
-                for (index, data) in parsed.images.enumerated() {
+                for image in plan.images {
                     try Task.checkCancellation()
-                    let normalized = try NemotronSuperImageDecode.prepare(data, orientation: .applyEXIF,
-                                                                          imageCount: parsed.images.count)
-                    guard normalized.grid == plan.grids[index] else { throw Failure.invalidInput }
-                    decoded.append(normalized)
+                    decoded.append(try NemotronSuperImageDecode.prepare(image))
                 }
                 // SDK helper owns raw array construction/reshape/eval in its own
                 // fenced epoch, before the separate vision-preparation epoch.
@@ -201,9 +198,11 @@ actor NemotronSuperLocalImageBinding {
         var video: String? = nil
     }
     struct EncodedPlan {
-        let grids: [NemotronSuperImagePreprocessing.Grid]
+        /// Each image as planned; preparation decodes from these parses.
+        let images: [NemotronSuperImageDecode.Plan]
         let totalBytes: UInt64
         let featureBytes: Int
+        var grids: [NemotronSuperImagePreprocessing.Grid] { images.map(\.grid) }
     }
     /// Small local ingress ceiling, separate from per-raster decode admission.
     /// Includes concurrent JSON/template/base64 copies and bounded metadata scratch.
@@ -270,22 +269,22 @@ actor NemotronSuperLocalImageBinding {
             throw Failure.invalidInput
         }
         var total: UInt64 = 0, features = 0, tokens = 0
-        var grids: [NemotronSuperImagePreprocessing.Grid] = []
+        var planned: [NemotronSuperImageDecode.Plan] = []
         for data in images {
             try Task.checkCancellation()
-            let quote = try NemotronSuperImageDecode.inspect(data, orientation: .applyEXIF)
-            let grid = try NemotronSuperImagePreprocessing.grid(width: quote.width, height: quote.height,
-                                                               imageCount: images.count)
+            // Refuses an oversize resize workspace before any reservation or decode.
+            let image = try NemotronSuperImageDecode.plan(data, orientation: .applyEXIF, imageCount: images.count)
+            let grid = image.grid
             guard grid.tokens <= contextLength - tokens else { throw Failure.capacity }
             tokens += grid.tokens
             let featureBytes = grid.tokens * 4096 * 4
             // Full SDK workspace plus BOTH retained CPU Float32 and MLX copies.
-            let charge = UInt64(quote.normalizationWorkspaceBytes) + UInt64(grid.width * grid.height) * 24
+            let charge = UInt64(image.quote.normalizationWorkspaceBytes) + UInt64(grid.width * grid.height) * 24
                 + UInt64(featureBytes)
-            total = try sum(total, charge); features += featureBytes; grids.append(grid)
+            total = try sum(total, charge); features += featureBytes; planned.append(image)
         }
-        let activation = try towerActivationBytes(grids.map { ($0.heightPatches, $0.widthPatches) })
-        return EncodedPlan(grids: grids, totalBytes: try sum(total, activation), featureBytes: features)
+        let activation = try towerActivationBytes(planned.map { ($0.grid.heightPatches, $0.grid.widthPatches) })
+        return EncodedPlan(images: planned, totalBytes: try sum(total, activation), featureBytes: features)
     }
 
     /// Tower and projector working memory of the largest image: preparation

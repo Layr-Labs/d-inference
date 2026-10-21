@@ -57,8 +57,6 @@ struct FanStartupDiscoveryTests {
             await harness.daemon.tick()
         }
         let recovered = await harness.daemon.status()
-        let encoded = try JSONEncoder().encode(recovered)
-        print("DISCOVERY_RECOVERY_OBSERVED \(String(decoding: encoded, as: UTF8.self))")
         #expect(recovered.providerActive)
         #expect(recovered.gpuSensorKeys == ["Tg1U"])
         #expect(recovered.gpuTemperatureC == 35)

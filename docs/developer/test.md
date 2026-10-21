@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -183,6 +183,48 @@ ratio or runner exit code alone does not qualify encrypted restart, quality,
 TTFT, TPS or memory. The existing `ModelPrefixBenchmarkLiveTests` exact replay
 suite requires native live and native checkpoint precision and rejects nonnative
 specifications before loading; keep those output-hash assertions unchanged.
+
+`ModelCheckpointRestoreContentionLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointRestoreContentionLiveTests.swift`)
+is the opt-in real-model regression for complete-checkpoint SSD restore TTFT on
+a shared engine. It reads the first case of the same standalone
+`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache, and
+requires native live and checkpoint precision: a lossy checkpoint can restore
+slower than recompute, which belongs in `ModelCheckpointStorageLiveTests`. For each
+pair it serves the fork prompt restored and cold under three conditions: idle,
+while another tenant's long prefill is running, and right after another
+tenant's donor completes. Each condition gets its own donor and cache scope,
+so a deeper checkpoint donated by one measured fork never serves another. It
+fails when a restore does not reach `demandedTokens`, restores a different
+depth than the idle restore of its pair, produces its first token later than
+the cold run under the same condition, or stages more than 1 s slower than the
+idle restore, the signature of waiting on another prefill's `evalLock`. A
+contended run also fails if the foreign prefill finished before its stage did.
+Other timings are observations. The timing gates need exclusive GPU use. Run
+it from `provider-swift/` after building tests and staging the metallib, with
+only the listed variables:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_RESTORE_CONTENTION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_RESTORE_CONTENTION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointRestoreContentionLiveTests
+```
+
+Pick `demandedTokens` at or below the deepest checkpoint that fits
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`; a deeper demand fails the boundary
+check rather than measuring restore latency. The contended fork is submitted
+two seconds after the foreign prefill starts, so pick a `donorTokens` long
+enough to still be prefilling then. The report records the session's runtime
+identity (`runtime`, from `makeReport`) and keeps every sample, including the
+foreign requests that create each condition. It is rewritten atomically after
+each measured run, so an interrupted run keeps every completed run's samples,
+and its `failure` records contract violations, thrown errors and teardown
+errors alike. The test qualifies provider-staged imports only, so it refuses
+MiMo specifications, which load through the native engine.
 
 ## Runtime Generation Comparisons
 

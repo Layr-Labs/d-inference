@@ -6,7 +6,7 @@
   `nemotron_h_omni` id stays unsupported, as before. Its advertised memory is
   the resident checkpoint plus the larger of its load transient and the
   serving room (prefill lane, requests' KV headroom and one image request's
-  media charge; 93.1 GiB for the default configuration), and it advertises image input; capacity
+  media charge; 97.6 GiB for the default configuration), and it advertises image input; capacity
   quotes for image probes charge their images.
 - Loads into a shared slot through a managed owner: the ordinary eviction and
   re-slice, one LOAD claim covering the installation, the head, the
@@ -60,12 +60,13 @@
   owner's lifetime; it never falls back to contiguous storage. Exact prefix
   reuse works on it: the bank keeps its own copy of a donor's prompt KV and a
   restore writes it into fresh pages.
-- Serves 65,536 tokens of context, prompt plus output (was 16,384); the runner
-  can select up to 262,144 tokens. The speculating owner charges each request
-  its draft history per token of its own prompt and output instead of for the
+- Serves its whole verified context, 262,144 tokens, prompt plus output (was
+  16,384); the coordinator, not the provider, decides whether a long prompt's
+  prefill time suits a request. The speculating owner charges each request its
+  draft history per token of its own prompt and output instead of for the
   whole window, and its round work once instead of per request, so eight
-  requests claim 11.2 GiB of KV headroom beside any prefix bank (was 26 GiB at
-  16,384 tokens).
+  requests claim 15.7 GiB of KV headroom beside any prefix bank (was 26 GiB at
+  16,384 tokens) and the default load still fits a 128 GB Mac.
 - Registered for Apple M5 Max (128 GB) and M5 Ultra (`apple_m5`, at least 128 GB
   of unified memory); only 256 GB is measured on hardware.
   Coordinator-side registration remains a separate step.

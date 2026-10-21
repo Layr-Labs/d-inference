@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -305,10 +305,10 @@ keep an operator's value. The plain owner turns exact text prefix reuse on when
 the grant holds every request's fixed bytes beside the bank, unless the
 operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
 
-The slot serves and advertises 65,536 tokens of context, prompt plus output
-(`NemotronSuperServingPolicy.contextTokens`); the builder and the image binding
-accept up to `maximumContextTokens` (262,144), which only the qualification
-runner's `--max-context` selects. The checkpoint's attention has no positional
+The slot serves and advertises its whole verified context, 262,144 tokens,
+prompt plus output (`NemotronSuperServingPolicy.contextTokens`, equal to
+`maximumContextTokens`, the most the builder and the image binding accept); the
+qualification runner's `--max-context` can select less. The checkpoint's attention has no positional
 encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
 reserved per request by its own length. Recurrent state, the decode row and the
 prefill lane do not grow with the context: on the full checkpoint each
@@ -339,13 +339,19 @@ eight requests and 65,536 tokens that is 4,935,449,637 bytes (measured);
 `speculativeOwnerBoundBytes` estimates it for the LOAD claim from the engine's
 own counts for the depth table in effect (5.03 GB here; less when the table
 drafts less at a width) and the builder refuses the build when the exact
-reservation does not fit. Eight speculating requests then need a 6.7 GB
+reservation does not fit. At the served 262,144 tokens only the history
+copies grow (16 for the default table and eight requests, 1,536 bytes per
+token each), to 9,865,003,008 bytes (estimate; the engine reserved 9,767,287,845
+on the full checkpoint). With the round reserved once, eight speculating requests need a 6.7 GB
 minimum grant with a 1 GiB bank (22.8 GB before), and the full checkpoint's
 decode-window peak above idle at 131,041 prompt tokens fell from 3.80 to
-2.36 GB. The served
-context stays at 65,536 for prefill time (a 130,058-token prompt takes 5.4
-minutes to its first token) and whole-document recall, which degrades beyond
-about 32K tokens.
+2.36 GB. Long prompts are slow and recall degrades with length: a
+130,058-token prompt takes 5.4 minutes to its first token, and whole-document
+recall degrades beyond about 32K tokens. The slot still serves the whole
+window; whether a long prompt's prefill time suits a request is the
+coordinator's routing decision, not a provider cap. On the default owner (paged KV,
+prefix bank, MTP) a 258,036-token needle through the managed local endpoint
+returned its passphrase exactly in 888.8 s (2026-10-21, M3 Ultra).
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
 local-endpoint chat completions (`NemotronSuperLocalEndpointEngine`) run on the

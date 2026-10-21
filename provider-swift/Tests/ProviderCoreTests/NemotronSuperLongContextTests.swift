@@ -12,9 +12,10 @@ struct NemotronSuperLongContextTests {
     private typealias Policy = NemotronSuperServingPolicy
     private typealias Binding = NemotronSuperLocalImageBinding
 
-    @Test func servedContextStaysWithinTheVerifiedCeiling() {
-        #expect(Policy.contextTokens == 65_536 && Policy.maximumContextTokens == 262_144)
-        #expect(Policy.contextTokens <= Policy.maximumContextTokens)
+    @Test func servedContextIsTheVerifiedCeiling() {
+        // The slot serves the whole verified ceiling; the coordinator decides
+        // whether a long prompt's prefill time suits a request.
+        #expect(Policy.contextTokens == 262_144 && Policy.contextTokens == Policy.maximumContextTokens)
     }
 
     private static func owner(maxContextLength: Int, budget: GlobalKVCacheBudget, name: String)

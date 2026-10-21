@@ -22,9 +22,10 @@ enum NemotronSuperServingPolicy {
     static var indexSHA256: String { NemotronSuperCheckpointPin.index }
 
     /// Context window the managed slot serves and advertises (prompt plus
-    /// output); see the managed slot in `docs/architecture/inference.md` for
-    /// why it stays below `maximumContextTokens`.
-    static let contextTokens = 65_536
+    /// output): the whole verified ceiling. Prefill time and long-document
+    /// recall at this length are routing decisions for the coordinator, not
+    /// a cap here; see the managed slot in `docs/architecture/inference.md`.
+    static let contextTokens = maximumContextTokens
     /// Largest context the bridge builder and the image binding accept,
     /// verified on the pinned checkpoint. The checkpoint's attention has no
     /// positional encoding (`max_position_embeddings` 1,048,576); the bound

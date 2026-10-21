@@ -296,7 +296,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     /// fail at load with the builder's own error; here they keep the plain grant.
     /// Speculating owners take at least the managed slot's admission for their
     /// width and depth table at the context (`NemotronSuperServingPolicy.admissionKVBytes`,
-    /// about 11.1 GiB for eight at 65,536 tokens), which covers the measured
+    /// about 15.7 GiB for eight at 262,144 tokens), which covers the measured
     /// minimum grant at depth 3.
     static func defaultKVCapacityGib(engineEnvironment environment: [String: String],
                                      contextTokens: Int) -> Double {

@@ -37,12 +37,12 @@ enum NemotronSuperVideoDecode {
     /// of 30 fps 1080p (18,000 frames of 1,920 x 1,088 coded pixels). A
     /// 4096 x 2160 movie may decode 4,250 frames (2 min 21 s at 30 fps).
     static let maximumDecodedPixels = 18_000 * 1_920 * 1_088
-    /// H.264 and HEVC, which Apple silicon decodes in hardware, under either
-    /// sample entry (`avc1` or `avc3`, `hvc1` or `hev1`); any other codec is
-    /// refused before a frame decodes.
-    static let admittedCodecs: Set<FourCharCode> = [
-        kCMVideoCodecType_H264, 0x6176_6333 /* avc3 */, kCMVideoCodecType_HEVC, 0x6865_7631 /* hev1 */,
-    ]
+    /// H.264 (`avc1`) and HEVC (`hvc1`), which Apple silicon decodes in
+    /// hardware. The in-band parameter-set entries (`avc3`, `hev1`) are
+    /// refused with every other codec before a frame decodes: AVFoundation
+    /// does not decode them here, and in-band parameter sets could change a
+    /// frame's size after inspection.
+    static let admittedCodecs: Set<FourCharCode> = [kCMVideoCodecType_H264, kCMVideoCodecType_HEVC]
 
     /// The wall time `Frames` may spend waiting on the decoder for `frames`
     /// frames of `codedPixels`: five seconds, then 2 ms a frame and 4 ns a

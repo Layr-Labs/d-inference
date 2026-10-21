@@ -11,6 +11,8 @@ struct FlintLiveTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_FLINT_LIVE"] == "1"))
     func chatResponsesToolsAndRefusals() async throws {
         let env = ProcessInfo.processInfo.environment
+        try #require(env["DARKBLOOM_FLINT_BACKEND"] == nil || env["DARKBLOOM_FLINT_BACKEND"] == "paged",
+            "Flint live qualification requires paged attention")
         let root = try #require(env["DARKBLOOM_FLINT_CACHE"])
         let previous = ModelScanner.configuredCacheDirectory
         ModelScanner.configureCacheDirectory(root)
@@ -29,7 +31,7 @@ struct FlintLiveTests {
         let port = UInt16(env["DARKBLOOM_FLINT_PORT"] ?? "19089") ?? 19089
         let token = UUID().uuidString + UUID().uuidString
         let server = StandaloneServer(config: .init(port: port, host: "127.0.0.1", authToken: token,
-            engineV2KVBackend: env["DARKBLOOM_FLINT_BACKEND"] ?? "contiguous",
+            engineV2KVBackend: "paged",
             engineV2KVQuantization: "native", engineV2KVCheckpointQuantization: "native",
             coordinatorURL: "http://127.0.0.1:1"), models: [model])
         let configuration = URLSessionConfiguration.ephemeral
@@ -77,6 +79,8 @@ struct FlintLiveTests {
             #expect((authResponse as? HTTPURLResponse)?.statusCode == 401)
             let (status, data) = try await post(chat("What is 17 times 23? Answer with the number."), name: "arithmetic")
             try #require(status == 200, "Cold HTTP response: \(String(decoding: data, as: UTF8.self))")
+            try #require(await server.slots[id]?.bridge.kvBackendKind == .paged,
+                "The production slot must resolve to paged attention")
             let answer = try message(data)
             #expect((answer["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == "391")
             #expect(!(answer["content"] as? String ?? "").contains("<think>"))

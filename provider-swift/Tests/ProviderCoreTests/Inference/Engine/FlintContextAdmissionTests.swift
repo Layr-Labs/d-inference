@@ -157,7 +157,7 @@ struct FlintContextAdmissionTests {
     private func scheduler(_ bridge: EngineV2Bridge) -> MultiModelBatchSchedulerEngine {
         let id = modelID
         return MultiModelBatchSchedulerEngine(registryProvider: {
-            [id: .init(tokenizer: TokenizerHandle(FlintContextTokenizer()),
+            [id: .init(tokenizer: TokenizerHandle(FlintProtocolTestTokenizer()),
                 modelType: "flint", engineV2Bridge: bridge)]
         })
     }
@@ -166,8 +166,9 @@ struct FlintContextAdmissionTests {
         sizingContext: Int, defaultOutput: Int = 2, id: String? = nil,
         type: String = "flint") async throws -> EngineV2Bridge {
         let id = id ?? modelID
-        let tokenizer = FlintContextTokenizer()
-        let container = ModelContainer(context: .init(configuration: .init(id: id),
+        let tokenizer = FlintProtocolTestTokenizer()
+        let container = ModelContainer(context: .init(configuration: .init(id: id,
+                extraEOSTokens: ["<|user|>", "<|observation|>", "<|developer|>"]),
             model: model, processor: FlintContextProcessor(), tokenizer: tokenizer))
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(
             modelId: id, modelType: type, isVLM: false, modelDirectory: nil,
@@ -221,18 +222,6 @@ private final class FlintContextSentinelEngine: CBv2Engine, @unchecked Sendable 
             kvBytesCapacity: 16 << 20, activeTokens: 0)
     }
     func shutdown() async {}
-}
-
-private struct FlintContextTokenizer: MLXLMCommon.Tokenizer {
-    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1] }
-    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "prompt" }
-    func convertTokenToId(_ token: String) -> Int? { nil }
-    func convertIdToToken(_ id: Int) -> String? { nil }
-    var bosToken: String? { nil }
-    var eosToken: String? { nil }
-    var unknownToken: String? { nil }
-    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
-        additionalContext: [String: any Sendable]?) throws -> [Int] { [1] }
 }
 
 private struct FlintContextProcessor: UserInputProcessor {

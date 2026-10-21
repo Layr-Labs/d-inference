@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -123,6 +123,20 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### Scheduler-prefill benchmark prompts
+
+| CLI setting | Default / behavior | Consumer |
+|---|---|---|
+| `benchmark --scheduler-prefill --prefill-fixed-prompt` | Off by default: measured prompts rotate by `iteration * 17`. Enabled: warmup and measured prompts start at seed offset `0`, with identical inputs per length. CLI-only; no environment or `provider.toml` key. Other benchmark modes reject the flag before runtime loading. | `provider-swift/Sources/darkbloom/BenchmarkCommand.swift` (`prefillFixedPrompt`); `provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift` (`schedulerPrefillOptionError`, `runSchedulerPrefillBenchmark`); `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift` (`run`, `makePrompt`) |
+
+The [benchmark report metadata](../provider/cli-reference.md#darkbloom-benchmark) distinguishes
+fixed repeated-input runs from rotating-fixture runs. This option does not
+change the prefill stripe or enable prefix caching.
+
+Scheduler prefill applies the existing `MLXMemoryGuard` memory/cache settings
+before direct model loading, as serving and the throughput sweep do. It logs
+the applied limits without changing their defaults, reserves or override rules.
 
 ### App Attest worker qualification
 

@@ -29,7 +29,16 @@
   template, reasoning channel, tool and structured-output validation,
   cancellation and usage of the owner. Prefix reuse is partitioned by the
   authenticated cache scope and reports no cache use. `logit_bias` and
-  `logprobs` are refused with 400.
+  `logprobs` are refused with 400. Reasoning effort is `none`/`off`/`0`,
+  `medium` or `high` (top-level `reasoning_effort` or `reasoning.effort`);
+  other values are refused with 400. OpenRouter's
+  `chat_template_kwargs.thinking` switches thinking like `enable_thinking`,
+  and Responses `reasoning.summary` (`auto`, `concise`, `detailed`) is
+  accepted with the full reasoning returned. `reasoning` fields the template
+  cannot honor (`max_tokens`, `exclude: true`, other members unless null)
+  and `chat_template_kwargs` beyond `enable_thinking`, `thinking`,
+  `medium_effort`, `truncate_history_thinking` and `force_nonempty_content`
+  are refused with 400 instead of being ignored.
 - Serves inline JPEG and PNG images (`data:` URIs) on the same slot. On the
   default speculating owner each image request runs target-only, with no
   draft state, while text keeps speculating; its media reservation, including

@@ -719,6 +719,14 @@ including the embedded-MTP one, advertise forced tools
 
 ### Chat-template render check
 
+The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
+`qwen3_5_moe`, `prism_hadamard_qwen35`) raise "No user query found in
+messages." when no user turn is more than a `<tool_response>` wrapper. Such
+histories are refused before rendering with the typed HTTP 400
+`missingUserQuery` instead of a provider-fault 500 `template_render`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift`,
+`validateUserQuery`).
+
 At scan time `TemplateRenderCheck.renderOK(at:)` compiles every template
 source in runtime precedence (`chat_template.jinja`, `chat_template.json`,
 `tokenizer_config.json`) with swift-jinja `lstripBlocks: true, trimBlocks:
@@ -1121,6 +1129,7 @@ or change consumer/OpenRouter routing.
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
+| `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
 

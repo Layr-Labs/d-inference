@@ -45,6 +45,23 @@ enum Qwen35TemplateFix {
         LeadingSystemMessageNormalizer.normalize(messages)
     }
 
+    /// Qwen 3.5/3.6/3.8 and Bonsai 2 templates raise "No user query found in
+    /// messages." unless a user turn is more than a `<tool_response>` wrapper.
+    /// Reject that history as a typed 400, not a provider 500. Gated by
+    /// `model_type`: Qwen3-VL matches `applies(to:)` but not the raise.
+    static func validateUserQuery(
+        _ messages: [[String: any Sendable]], context: ChatTemplateFixContext
+    ) throws {
+        guard ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"].contains(context.modelType ?? "")
+        else { return }
+        let hasQuery = messages.contains { message in
+            guard message["role"] as? String == "user" else { return false }
+            let text = (message["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return !(text.hasPrefix("<tool_response>") && text.hasSuffix("</tool_response>"))
+        }
+        if !hasQuery { throw MultiModelBatchSchedulerEngineError.missingUserQuery }
+    }
+
     /// Typed counterpart used by the multimodal path before `UserInput`
     /// construction. It preserves user image/video parts byte-for-byte while
     /// enforcing the same leading-system invariant as the dictionary/Jinja path.

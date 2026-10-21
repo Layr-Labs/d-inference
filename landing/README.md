@@ -27,6 +27,16 @@ fixed fallback snapshot when live stats are unavailable. Provider-story
 delivery requires `DARKBLOOM_STORY_WEBHOOK_URL` and, if applicable,
 `DARKBLOOM_STORY_WEBHOOK_TOKEN`.
 
+## Homepage layout
+
+After the map fills the viewport with blue, the provider films appear directly,
+without a section headline or a separate headline scroll sequence. The gallery
+holds briefly before releasing into the closing section.
+
+The closing copy and laptop share a top edge on desktop. The paragraph uses
+the copy column's width, and the headline, paragraph and button use equal gaps;
+on phones the laptop follows the copy in normal flow.
+
 ## Hosting
 
 Use `landing` as the Vercel project root, with the Next.js framework

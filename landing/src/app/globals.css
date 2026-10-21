@@ -1571,15 +1571,6 @@ button {
   user-select: none;
 }
 
-.story-section-heading {
-  font-size: clamp(28px, 3.1vw, 44px);
-  font-weight: 400;
-  letter-spacing: -.02em;
-  line-height: 1.2;
-  margin: 0 auto 32px;
-  width: min(84vw, 906px);
-}
-
 .story-article.is-dragging,
 .story-article.is-dragging .story-gallery {
   cursor: grabbing;
@@ -4020,10 +4011,8 @@ button {
   color: #fff;
 }
 
-/* Figma 2194:9635 — preserve the 1440px composition at full size, then scale
-   its coordinates proportionally on narrower desktop viewports. Cropping a
-   fixed canvas pushed the headline into the edge and left the laptop at its
-   1440px size on a 1296px screen. */
+/* Share a top edge and use flow layout so longer copy remains aligned with
+   the laptop without colliding with it at narrower desktop sizes. */
 .closing {
   background: var(--blue);
   box-shadow: none;
@@ -4032,39 +4021,51 @@ button {
 }
 
 .closing-content {
+  align-items: start;
+  column-gap: clamp(40px, 9.375vw, 135px);
+  display: grid;
+  grid-template-columns: minmax(300px, 410fr) minmax(0, 670fr);
   margin: 0 auto;
   max-width: 1440px;
   min-height: max(100svh, 720px);
   overflow: hidden;
+  padding: clamp(74px, 22.5svh, 225px) clamp(32px, 6.25vw, 90px) 80px clamp(52px, 9.375vw, 135px);
   width: 100%;
 }
 
-/* Figma 202:1410 @1440x835: copy column at x135 (9.375vw), h2 top at y214
-   (25.6% of the viewport); the laptop sits at y163 so the pair keeps its
-   51px offset at the reference size. */
 .closing-copy {
-  left: clamp(52px, 9.375vw, 135px);
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
   opacity: var(--closing-copy-opacity, 0);
-  position: absolute;
-  top: clamp(104px, 25.6svh, 256px);
+  position: relative;
   transform: translateY(var(--closing-copy-rise, 52px));
-  width: clamp(350px, 28.4722vw, 410px);
+  width: 100%;
   z-index: 3;
 }
 
 .closing-copy h2 {
-  font-size: clamp(48px, 4.1667vw, 60px);
+  font-size: clamp(40px, 4.1667vw, 60px);
   font-weight: 400;
   letter-spacing: -.03em;
   line-height: 1.1;
   margin: 0;
 }
 
+@media (min-width: 801px) {
+  .closing-copy h2 {
+    /* Align the visible capitals, accounting for Telegraf's top line-box space. */
+    margin-top: calc(-.2em - 1px);
+  }
+}
+
 .closing-copy .closing-subhead {
   font-size: 14px;
-  line-height: 1.3;
-  margin: 28px 0 0;
-  max-width: 292px;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 410px;
 }
 
 .closing-copy .closing-join {
@@ -4075,7 +4076,7 @@ button {
   font-size: 14px;
   height: 34px;
   justify-content: center;
-  margin: 24px 0 0;
+  margin: 0;
   min-width: 176px;
   padding: 0 17px;
   width: auto;
@@ -4110,12 +4111,10 @@ button {
 
 .closing-laptop {
   aspect-ratio: 812.987 / 515.016;
-  left: 47.25%;
   opacity: var(--closing-media-opacity, 0);
-  position: absolute;
-  top: clamp(74px, 22.5svh, 225px);
+  position: relative;
   transform: translateY(var(--closing-media-rise, 68px));
-  width: min(46.5%, 670px);
+  width: 100%;
   z-index: 2;
 }
 
@@ -4279,17 +4278,17 @@ button {
   }
 
   .closing-content {
+    display: flex;
+    flex-direction: column;
+    gap: 64px;
     left: auto;
-    padding: 0;
+    padding: 105px 33px 80px;
     transform: none;
     width: 100%;
   }
 
   .closing-copy {
-    left: 33px;
-    max-width: calc(100% - 66px);
-    top: 105px;
-    width: 292px;
+    max-width: 410px;
   }
 
   .closing-copy h2 {
@@ -4300,13 +4299,10 @@ button {
 
   .closing-copy .closing-subhead {
     font-size: 14px;
-    margin-top: 23px;
-    max-width: 292px;
   }
 
   .closing-copy .closing-join {
     font-size: 12px;
-    margin-top: 24px;
     min-width: 137px;
     padding-inline: 13px;
   }
@@ -4316,9 +4312,9 @@ button {
   }
 
   .closing-laptop {
-    left: -5vw;
-    top: 520px;
-    width: 105vw;
+    align-self: center;
+    flex-shrink: 0;
+    width: min(105vw, 670px);
   }
 }
 
@@ -5980,9 +5976,8 @@ button {
 
 /* Final-round authoritative overrides ---------------------------------- */
 
-/* Give the provider-film module a brief landing beat without making the page
-   feel locked. The overlap below leaves roughly half a viewport of native
-   scroll before the gallery releases naturally into the closing section. */
+/* Hold the films briefly after the map-to-blue handoff, then release them
+   naturally into the closing section. */
 .story-section {
   min-height: 165svh;
 }

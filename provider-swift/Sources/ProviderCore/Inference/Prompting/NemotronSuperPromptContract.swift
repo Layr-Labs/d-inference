@@ -238,7 +238,9 @@ enum NemotronSuperPromptContract {
     }
 
     /// vLLM decodes OpenAI's JSON-string arguments before rendering; empty
-    /// arguments become an empty mapping.
+    /// arguments become an empty mapping. The template iterates them with
+    /// `items`, which jinja2 refuses for anything but a mapping (swift-jinja
+    /// would render an empty call), so other JSON values are refused.
     private static func toolCall(_ call: OpenAIToolCall) throws -> Value {
         let arguments: Value
         if call.function.arguments.isEmpty {
@@ -246,6 +248,7 @@ enum NemotronSuperPromptContract {
         } else {
             do { arguments = try NemotronSuperOrderedJSON.parse(call.function.arguments) }
             catch { throw Failure.invalidToolArguments }
+            guard case .object = arguments else { throw Failure.invalidToolArguments }
         }
         return .object(["id": .string(call.id), "type": .string(call.type),
             "function": .object(["name": .string(call.function.name), "arguments": arguments])])

@@ -180,6 +180,27 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertEqual(arguments["a"], .array([.boolean(true), .null]))
     }
 
+    /// The template iterates tool-call arguments with `items`, which raises in
+    /// the reference for anything but a mapping; such arguments are refused
+    /// instead of rendering an empty call.
+    func testNonObjectToolCallArgumentsAreRefused() throws {
+        func history(_ arguments: String) -> [OpenAIChatMessage] {
+            [OpenAIChatMessage(role: .user, content: .text("q")),
+             OpenAIChatMessage(role: .assistant, content: .null, toolCalls: [
+                OpenAIToolCall(id: "c", function: .init(name: "f", arguments: arguments))])]
+        }
+        for arguments in ["[1]", "5", "null", #""s""#, "true", "{"] {
+            XCTAssertThrowsError(try NemotronSuperPromptContract.messages(history(arguments)), arguments) {
+                guard case .invalidToolArguments = $0 as? NemotronSuperPromptContract.Failure else {
+                    return XCTFail("\(arguments): \($0)")
+                }
+            }
+        }
+        for arguments in ["", "{}", #"{"a":[1]}"#] {
+            XCTAssertNoThrow(try NemotronSuperPromptContract.messages(history(arguments)), arguments)
+        }
+    }
+
     func testImagePlaceholderExpansionMatchesProcessor() throws {
         XCTAssertEqual(try NemotronSuperPromptContract.expandImagePlaceholders(
             [1, 18, 2, 18, 3], featureCounts: [2, 1], contextLength: 64),

@@ -466,8 +466,13 @@ The generic local engine refuses Super; only chat completions serve it.
 
 `retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner
 (bindings, bridge, prefill lane, any bank, installation), then regrows
-survivors. A wedged slot is retired, never rebuilt. An owner whose native work
-did not retire keeps its weights, reservations and bank in the fleet KV budget
+survivors. A wedged slot is retired, never rebuilt: no wedged row ever drains,
+so `retireWedgedNemotronSuperSlot` takes it out of serving at once and, off the
+capacity tick, shuts the bridge down before the same drain and close, within
+`nemotronSuperWedgeRetirementBound` (twice `CBv2EngineLoopConfig.shutdownTimeout`);
+the model reloads only after `engineV2RecoveryCooldown`. An owner whose native
+work did not retire, or whose wedged retirement outlives that bound, keeps its
+weights, reservations and bank in the fleet KV budget
 (`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
 restart. Sources:
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,

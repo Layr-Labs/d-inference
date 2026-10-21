@@ -74,9 +74,10 @@ struct NemotronSuperManagedSlotTests {
     /// `totalGiB` bounds the process budget the LOAD claim and requests use.
     /// `physicalGiB` (default `totalGiB`) is the machine memory the slot
     /// loader sizes its prefix bank for, so no result depends on the host.
+    /// `decodeGate` holds the engine's detokenization while closed.
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
-                        memory: ReturningMemory? = nil,
-                        probe: InstallationProbe? = nil) async throws -> Fixture {
+                        memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
+                        decodeGate: DecodeGate? = nil) async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
                   systemAvailable: memory?.available(total: totalGiB << 30) ?? totalGiB << 30)
@@ -94,8 +95,11 @@ struct NemotronSuperManagedSlotTests {
         let script = SuperOutputScript()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
+        let scripted = SuperScriptedTokenizer(script: script)
+        let tokenizer: any MLXLMCommon.Tokenizer = decodeGate.map { GatedTokenizer(base: scripted, gate: $0) }
+            ?? scripted
         await loop.setNemotronSuperSlotLoaderForTesting(
-            loader(tokenizer: TokenizerHandle(SuperScriptedTokenizer(script: script)), template: template,
+            loader(tokenizer: TokenizerHandle(tokenizer), template: template,
                    physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe),
             environment: [:])
         let directory = FileManager.default.temporaryDirectory

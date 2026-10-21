@@ -2,6 +2,7 @@
 
 import Foundation
 import MLX
+import MLXLMCommon
 
 /// ProviderLoop -- the managed Nemotron Super slot.
 ///
@@ -34,6 +35,7 @@ extension ProviderLoop {
             throw InferenceError.modelLoadFailed(
                 "An earlier Nemotron Super owner retained native work; process restart required")
         }
+        try refuseNemotronSuperReloadAfterWedge(modelID)
         let started = ContinuousClock.now
         let kvRate: Int
         do { kvRate = try nemotronSuperSlotLoader.kvBytesPerToken(directory) }
@@ -213,9 +215,79 @@ extension ProviderLoop {
         defer { deviceActivity.finish() }
         modelsUnloading.insert(modelID)
         await engineV2Runtime.unregister(modelId: modelID)
-        var retired = true
-        do { try await owner.retire() } catch {
-            retired = false
+        let retired: Bool
+        do {
+            try await owner.retire()
+            retired = true
+        } catch { retired = false }
+        await finishNemotronSuperRetirement(modelID, owner: owner, retired: retired)
+        return true
+    }
+
+    /// How long a wedged slot's retirement may run: the engine force-finishes
+    /// its rows within its own shutdown timeout, and the owner's joins get as
+    /// long again. A retirement still running then is a retained fault.
+    static let nemotronSuperWedgeRetirementBound: Duration =
+        .seconds(2 * CBv2EngineLoopConfig().shutdownTimeout)
+
+    /// A confirmed wedge (`recoverEngineV2SlotIfWedged`). No row of the slot
+    /// finishes, so `retireNemotronSuperSlot`'s drain would wait forever on
+    /// the capacity tick. The slot leaves serving now; a task of its own shuts
+    /// the bridge down first (every pump is cancelled, and the engine
+    /// force-finishes its rows within its shutdown timeout), then retires the
+    /// owner. Reloads are refused until `engineV2RecoveryCooldown` after `now`.
+    func retireWedgedNemotronSuperSlot(_ modelID: String, now: ContinuousClock.Instant,
+        bound: Duration = ProviderLoop.nemotronSuperWedgeRetirementBound
+    ) async {
+        guard let owner = modelSlots[modelID]?.modelContainer.nemotronSuper,
+            !modelsUnloading.contains(modelID) else { return }
+        recordModelLoadError(model: modelID, message: "Nemotron Super slot wedged; retired without a warm rebuild")
+        modelsUnloading.insert(modelID)
+        engineV2LastRecoveryAt[modelID] = now
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        await engineV2Runtime.unregister(modelId: modelID)
+        syncWarmModelState()
+        Task { [weak self] in
+            let retired = await Self.completes(within: bound) {
+                await owner.bridge.shutdown()
+                try await owner.retire()
+            }
+            await self?.finishNemotronSuperRetirement(modelID, owner: owner, retired: retired)
+            deviceActivity.finish()
+        }
+    }
+
+    /// Whether `operation` returns within `bound`; false when it throws or is
+    /// still running then. Nothing is cancelled: a retirement that outlives
+    /// its bound runs on beside the retained fault.
+    private static func completes(within bound: Duration,
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async -> Bool {
+        let outcome = OneShotBoolContinuation()
+        return await withCheckedContinuation { continuation in
+            outcome.install(continuation)
+            let timer = Task {
+                try? await taskSleep(bound)
+                outcome.resume(returning: false)
+            }
+            Task {
+                let completed: Bool
+                do {
+                    try await operation()
+                    completed = true
+                } catch { completed = false }
+                outcome.resume(returning: completed)
+                timer.cancel()
+            }
+        }
+    }
+
+    /// The end of every slot retirement: the slot leaves, an owner that did
+    /// not retire stays charged until restart, survivors regrow and waiters
+    /// resume.
+    private func finishNemotronSuperRetirement(_ modelID: String, owner: NemotronSuperSlotOwner,
+                                               retired: Bool) async {
+        if !retired {
             retainNemotronSuperOwner(owner)
             recordModelLoadError(model: modelID,
                 message: "Nemotron Super owner did not retire; its memory stays charged until restart")
@@ -234,7 +306,6 @@ extension ProviderLoop {
         await updateAggregateCapacity()
         logger.info("Unloaded model: \(modelID) (\(modelSlots.count) model(s) remaining)")
         await retryReserveDeferredPrefetches()
-        return true
     }
 
     /// Native work that did not retire keeps the owner's weights, the
@@ -244,6 +315,16 @@ extension ProviderLoop {
             let (sum, overflow) = nemotronSuperRetainedWeightBytes.addingReportingOverflow(UInt64(max(0, bytes)))
             nemotronSuperRetainedWeightBytes = overflow ? .max : sum
         }
+    }
+
+    /// A wedged slot's model reloads only once `engineV2RecoveryCooldown` has
+    /// passed since its retirement began, never thrashing loads into the
+    /// fault. Transient (503): the coordinator reroutes.
+    private func refuseNemotronSuperReloadAfterWedge(_ modelID: String) throws {
+        guard let wedged = engineV2LastRecoveryAt[modelID],
+            ContinuousClock.now - wedged < Self.engineV2RecoveryCooldown else { return }
+        throw InferenceError.modelLoadFailed(
+            "Nemotron Super slot wedged; reload refused for \(Self.engineV2RecoveryCooldown) after its retirement")
     }
 
     /// The pinned owner's planned lane and round (`pinnedOwnerShares`, as its

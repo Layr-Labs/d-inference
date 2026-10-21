@@ -98,9 +98,14 @@
   embedder is now loaded, adding 3,932,160 bytes to the resident installation.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.
-- The owner's prefill lane, decode rows and round work count as resident
-  memory in every KV grant and heartbeat, so Super and models beside it no
-  longer advertise token budget the shared memory budget refuses.
+- A wedged Super slot leaves serving at once and retires without stalling the
+  capacity refresh: its bridge shuts down before its requests drain, within
+  twice the engine's 10-second shutdown timeout (past it the slot's memory
+  stays charged and Super loads are refused until restart), and the model
+  reloads only after a 120-second cooldown. The owner's prefill lane, decode
+  rows and round work count as resident memory in every KV grant and
+  heartbeat, so Super and models beside it no longer advertise token budget
+  the shared memory budget refuses.
 - Plain decode steps of the Super owner commit larger Metal command buffers
   (thread-scoped limits in the pinned MLX), and full SSD prefill windows run
   batched, with tokens unchanged: one plain request decodes at 42.9 tok/s

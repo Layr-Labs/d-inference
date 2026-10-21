@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -249,6 +249,15 @@ only; segmented paged admission and backing use the shared native process owner)
 check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
 `EngineProfile` (`EngineV2Bridge+Profile.swift`).
+
+The SSD stage runs before `engine.submit`, off the engine queue, while the
+engine may be evaluating another request's prefill chunk under MLX-Swift's
+process-wide `evalLock`. A provider-staged complete-checkpoint import therefore
+creates its destinations already available from host bytes and never evaluates
+or fences them, so staging does not wait for that chunk
+([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
+(`CBv2CompleteCheckpointImport`)).
 
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge

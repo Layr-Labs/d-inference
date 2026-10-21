@@ -97,7 +97,9 @@ extension ProviderLoop {
         }
     }
 
-    /// The declined eviction at which the Super load stops planning again.
+    /// The declined eviction that refuses the Super load. A victim can keep
+    /// declining (an autopilot transaction owning residency), so planning
+    /// again after a decline is bounded.
     private static let nemotronSuperDeclinedEvictionLimit = 3
 
     /// `fastAdmissionReject`'s verdict for the managed Super load, on the same

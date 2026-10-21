@@ -119,8 +119,8 @@ extension ProviderLoop {
         }
     }
 
-    /// Post-build checks and publication. Caller holds the re-slice gate and,
-    /// on a throw, retires the owner, which is then no slot.
+    /// Post-build checks and publication. Caller holds the re-slice gate; a
+    /// throw leaves the owner unpublished, for the caller to retire.
     private func publishNemotronSuperSlot(_ owner: NemotronSuperSlotOwner, modelID: String,
         directory: URL, modelType: String?, before: WeightHashSnapshot, started: ContinuousClock.Instant
     ) async throws {
@@ -266,7 +266,7 @@ extension ProviderLoop {
             let retired = await Self.completes(within: bound) { try await retirement.value }
             await self?.finishNemotronSuperRetirement(modelID, owner: owner, retired: retired)
             deviceActivity.finish()
-            guard !retired, (try? await retirement.value) != nil else { return }
+            guard !retired, case .success = await retirement.result else { return }
             await self?.releaseLateRetiredNemotronSuperOwner(owner)
         }
     }

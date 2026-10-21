@@ -8,7 +8,7 @@ public final class ProviderSignalHandler: @unchecked Sendable {
     private var sources: [DispatchSourceSignal] = []
 
     public init(onTermination: @escaping @Sendable () async -> Void) {
-        for signo in [SIGTERM, SIGINT] {
+        for signo in ProviderStopSignals.forCurrentProcess() {
             signal(signo, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signo, queue: .global(qos: .utility))
             source.setEventHandler { Task { await onTermination() } }

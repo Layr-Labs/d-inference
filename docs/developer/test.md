@@ -15,6 +15,16 @@ Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
 
+## Provider Terminal And Stop Signals
+
+After rebuilding the provider test products, run the focused
+`ModelPickerInputEndTests|ProviderSignalTests|ProviderStopSignalsTests` selector
+through the isolated provider test runner. The suites cover closed input,
+invalid descriptors, interrupted and temporarily unavailable reads, terminal
+hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
+ignored-hangup behavior and exercise signal handling across process replacement.
+No model weights or live provider state are needed.
+
 ## Provider And SDK
 
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
@@ -480,6 +490,25 @@ Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
 
+## Watchdog Launch Acknowledgement
+
+`WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
+actual `LaunchAgent.kickstartIfLoaded` adapter, `WatchdogRecoveryService` and
+the disk-backed crash-loop guard with a temporary install and scripted
+`LaunchctlControl`.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'WatchdogLaunchAdapterTests|LaunchAgentLifecycleTests|refusedKickstartRollsBackTrip|rollbackRestoresPreexistingGuard'
+```
+
+A missing-service response after a successful loaded check (exit 3 text or
+launchctl's exit-113 `Could not find service`) must return
+`noLongerLoaded`, restore the exact prior guard bytes and invoke no trip
+callback. Controls cover an already absent job, a successful kickstart,
+permission errors and manual restart reload. No real launchctl, model or GPU is
+used; the scripted interleaving does not measure native race frequency.
+
 ## App Attest Provider Dispatch
 
 `ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
@@ -574,6 +603,25 @@ including the compiled environment line and four resource/callback markers.
 This is not real Apple service validation. Physical smoke is optional for normal
 publication; official-build registration and runtime Apple authorization remain
 distinct. See [release](../operations/provider-release.md).
+
+## Watchdog Launch Evidence
+
+`WatchdogRecoveryIntegrationTests` exercises
+`WatchdogRecoveryService.observeHealthyProvider`, the real updater and the
+disk-backed recovery store with synthetic bundles, temporary install roots and
+loopback release HTTP. Launch snapshots, process liveness and restart callbacks
+are injected; no model or MLX kernel runs.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+```
+
+It covers missing and partial baseline evidence, intent retention before
+restart, later positive run-count or process-identity evidence, the startup
+timeout, one-time failure accounting and heartbeat promotion. It does not run
+native launchd, the controller cancellation interleaving or a signed release
+installation.
 
 ## Public Fixtures And Private Qualification
 

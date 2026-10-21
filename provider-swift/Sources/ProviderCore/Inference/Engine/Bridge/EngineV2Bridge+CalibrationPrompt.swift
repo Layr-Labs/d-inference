@@ -3,7 +3,7 @@ import Foundation
 extension EngineV2Bridge {
     /// Built-in realistic prose/code, never a retained customer's prompt. Full
     /// templates are rendered at every size; token arrays are not truncated.
-    func mimoCalibrationPrompt(targetTokens: Int, variant: Int) throws -> [Int] {
+    func modelCalibrationPrompt(targetTokens: Int, variant: Int) throws -> [Int] {
         let passage = variant.isMultiple(of: 2)
             ? "A small team maintains an inference service. Incoming requests vary in length, and machines share memory between model weights and cached attention state. The team measures latency and throughput before changing how requests are assigned. Explain the tradeoffs with concrete examples. "
             : "Review this Python function and explain its behavior, complexity, and edge cases: def merge_sorted(a, b): result = []; i = j = 0; while i < len(a) and j < len(b): if a[i] <= b[j]: result.append(a[i]); i += 1; else: result.append(b[j]); j += 1; return result + a[i:] + b[j:]. Suggest a readable correction. "

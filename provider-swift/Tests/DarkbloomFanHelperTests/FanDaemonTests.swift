@@ -240,4 +240,43 @@ struct FanDaemonTests {
         #expect(harness.backend.byte("Ftst") == 1)
         #expect(!FileManager.default.fileExists(atPath: harness.paths.sessionJournal.path))
     }
+
+    @Test("two providers hold separate leases; Auto returns only when both end", arguments: [false, true])
+    func concurrentProviderLeases(explicitRelease: Bool) async throws {
+        let harness = try makeFanDaemonHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let production = UUID()
+        let dev = UUID()
+        for session in [production, dev] {
+            #expect((await harness.daemon.renewLease(
+                sessionID: session, protocolVersion: FanIPC.protocolVersion, providerVersion: "0.9.20")).ok)
+        }
+        await harness.daemon.tick()
+        #expect(harness.backend.byte("F0Md") == 1)
+
+        if explicitRelease {
+            #expect((await harness.daemon.releaseLease(sessionID: production)).ok)
+        } else {
+            await harness.daemon.sessionInvalidated(production)
+        }
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).providerActive)
+        #expect(harness.backend.byte("F0Md") == 1)
+
+        // The remaining provider keeps renewing past the first lease's expiry.
+        harness.clock.advance(by: FanIPC.leaseDurationSeconds - 1)
+        _ = await harness.daemon.renewLease(
+            sessionID: dev, protocolVersion: FanIPC.protocolVersion, providerVersion: "0.9.20")
+        harness.clock.advance(by: 2)
+        await harness.daemon.tick()
+        #expect(harness.backend.byte("F0Md") == 1)
+
+        if explicitRelease {
+            #expect((await harness.daemon.releaseLease(sessionID: dev)).ok)
+        } else {
+            await harness.daemon.sessionInvalidated(dev)
+        }
+        #expect(harness.backend.byte("F0Md") == 0)
+        #expect(!(await harness.daemon.status()).providerActive)
+    }
 }

@@ -82,6 +82,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// known-native owner must throw, never return nil into the legacy path.
     private let nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)?
     private let defaultMaxTokens: Int
+    private let measurementPurpose: EngineMeasurementPurpose
 
     /// OpenAI `reasoning_effort` and Qwen template controls for this request
     /// (`low`/`medium`/`high` for gpt-oss; model-specific otherwise).
@@ -176,8 +177,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) {
+        self.measurementPurpose = measurementPurpose
         self.profile = profile
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -226,6 +229,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeLocalCacheScope: String? = nil,
         modelTypeProvider: (@Sendable (String) async -> String?)? = nil
     ) {
+        self.measurementPurpose = .serving
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
         self.modelTypeProvider = modelTypeProvider
@@ -681,7 +685,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         profile: profile,
                         serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation,
-                        promptWork: promptWork
+                        promptWork: promptWork,
+                        measurementPurpose: measurementPurpose
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -900,7 +905,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     profile: profile,
                     serviceReservationID: serviceReservationID,
                     serviceReservation: serviceReservation,
-                    promptWork: promptWork
+                    promptWork: promptWork,
+                    measurementPurpose: measurementPurpose
                 )
                 do {
                     try checkFirstContentDeadline()
@@ -1013,7 +1019,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             request:Self.translate(openAIRequest:request,defaultMaxTokens:maximumOutput,
                 logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
             requestId:id,cacheScope:cacheScope,cacheEnabled:false,usageSignal:requestUsage,
-            multimodal:native.request.multimodal,firstContentDeadline:firstContentDeadline,profile:profile)
+            multimodal:native.request.multimodal,firstContentDeadline:firstContentDeadline,profile:profile,
+            measurementPurpose:measurementPurpose)
         // Install the ONE existing router/forwarder before any post-submit
         // cancellation veto. Its protected mode drains actual terminal/error.
         do {

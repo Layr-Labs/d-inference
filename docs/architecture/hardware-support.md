@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-14
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -13,7 +13,7 @@ understand why a box refuses a load that "should fit"; for the operator view
 The provider is Apple-Silicon-only: the SwiftPM platform floor is declared by
 the packages described in
 [`components/mlx-swift.md#what-providercore-links`](components/mlx-swift.md#what-providercore-links),
-`coordinator/api/install.sh` refuses anything but Darwin on `arm64`, and
+[coordinator/api/install.sh](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/install.sh) refuses anything but Darwin on `arm64`, and
 `darkbloom start` requires Metal
 (`provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`,
 `requireMetal`) and a minimum amount of RAM
@@ -332,18 +332,57 @@ Implementation: `provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMem
 `EngineProcessMemoryOwner.swift`, and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`.
 
-### Coordinator mirror
+### Calibration ownership and foreground admission
 
-The coordinator predicts servability with its own copy of the cap fraction,
-activation floors and per-model table
-(`coordinator/internal/registry/memorypolicy/structural.go`:
-`servabilityActivationFloorGB`, `servabilityModelActivationFloorsGB`,
-`servabilityMeasuredResidentGiB`;
-`coordinator/registry/scheduler.go`, `coldLoadCatalogGBToMemGiB`). The doc
-comment on `defaultActivationReserveBytes` requires the provider and
-coordinator tables to move in the same commit. The coordinator's arithmetic and
-its use in admission are described once, in
-[`routing.md`](routing.md); this page does not restate them.
+Automatic startup calibration uses the loaded engine's existing KV and service
+budgets. It does not lower activation or OS reserves, raise concurrency limits,
+or create a separate memory allowance. Only one calibration session runs on the
+Mac at a time. After an uncancelled session retires, the next eligible resident
+engine can start without waiting for a capacity tick.
+Ordinary and native MiMo loads offer their new engine first when that owner is
+available. The completed construction activity ends before that handoff, but
+the load-transition gate remains closed until the scheduling attempt returns.
+Slot identity, shutdown and native-owner checks precede waking parked load
+requests. Once completed publication reaches this handoff, cancelling its
+caller does not fail the already resident slot.
+
+A customer request takes a foreground lease, cancels any current calibration,
+and waits for its actual retirement before admission. A consumer terminal event
+alone does not release the probe's ownership: the bridge waits for the event
+pump and service reservation to retire. Shutdown follows the same ownership
+boundary. Retirement releases request ownership; it is not a claim that the
+allocator has returned every cached physical byte to the OS. Original request
+deadlines and memory admission remain authoritative during this wait.
+
+The one-token startup health check is excluded from throughput learning, while
+its work accounting remains intact. Bounded calibration samples populate the
+existing capacity measurements and never increment served-request or output
+token totals. The detailed probe plan and retry/posture gates are documented in
+[model startup calibration](inference.md#model-startup-calibration). These are
+provider-local changes; capacity wire fields and the external platform's memory
+contract are unchanged.
+Calibration observations are staged per cell and published only after all
+requests retire and the completion posture check passes. A cancelled or
+non-nominal cell discards those observations and remains retryable; valid
+earlier measurements and independently published serving evidence survive.
+
+### Serving width by chip
+
+Without a reviewed profile the automatic engine width is the legacy default 4
+on every chip except M5 Pro, Max and Ultra, where models on the native `auto`
+paged allowlist start at the legacy ceiling 8
+(`ServingPerformanceProfiles.automaticConcurrency`; chip identity comes from
+`machdep.cpu.brand_string`, not full detection). The width changes no KV grant,
+load quotation or activation reserve (already sized for B=8); it only raises how
+many admitted requests a slot may run at once, still bounded by fixed-workspace
+memory concurrency and the coordinator's per-model quality cap. Under Low Power
+Mode or a non-nominal thermal state the bridge serves and reports the configured
+width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
+values, including a literal `4` from older configs, are kept.
+
+### Cross-repository agreement
+
+Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.
 
 ## Invariants
 
@@ -389,10 +428,11 @@ its use in admission are described once, in
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
+| Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
-| Coordinator mirror | `coordinator/registry/servability.go`, `coordinator/registry/scheduler.go` |
+| Coordinator mirror | [coordinator/registry/servability.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/servability.go), [coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go) |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
 
 ## Related
@@ -400,6 +440,6 @@ its use in admission are described once, in
 - [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md) — RAM tiers and catalog models, for operators
 - [`inference.md`](inference.md) — per-request KV reservation
 - [`prefix-cache.md`](prefix-cache.md) — KV layouts and the SSD tier's RAM staging
-- [`routing.md`](routing.md) — coordinator servability predictor
+- [routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md) — coordinator servability predictor
 - [`components/mlx-swift.md`](components/mlx-swift.md) — the pinned MLX stack and the SwiftPM platform floor
 - [`../design/activation-reserve-overhaul-plan.md`](../design/activation-reserve-overhaul-plan.md) — the plan that introduced per-model floors

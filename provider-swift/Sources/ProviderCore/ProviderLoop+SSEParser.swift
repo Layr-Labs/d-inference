@@ -323,6 +323,6 @@ extension ProviderLoop {
 /// which is a `static` method and so cannot access the per-instance
 /// logger.
 private let standaloneStreamChunkLogger = ProviderLogger(
-    subsystem: "dev.darkbloom.provider",
+    subsystem: BuildEnvironment.current.serviceLogSubsystem,
     category: "ProviderLoop.parseStreamChunk"
 )

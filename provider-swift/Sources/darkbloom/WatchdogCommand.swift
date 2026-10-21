@@ -225,7 +225,7 @@ struct Watchdog: AsyncParsableCommand {
             crashLoopCount: issuedCrashLoopCount,
             crashLoopVersion: issuedCrashLoopVersion
         ), !WatchdogStateStore.write(newState) {
-            Self.log("warning: could not persist watchdog state (check ~/.darkbloom)")
+            Self.log("warning: could not persist watchdog state (check ~/\(BuildEnvironment.current.installDirectoryName))")
         }
     }
 
@@ -258,7 +258,7 @@ struct Watchdog: AsyncParsableCommand {
         if let configPath {
             let path = URL(fileURLWithPath: (configPath as NSString).expandingTildeInPath)
             config = (try? ConfigManager.load(from: path))
-                ?? ProviderConfig(provider: ProviderSettings(name: "darkbloom"))
+                ?? ProviderConfig(provider: ProviderSettings(name: BuildEnvironment.current.cliName))
         } else {
             config = ConfigManager.loadDefault()
         }

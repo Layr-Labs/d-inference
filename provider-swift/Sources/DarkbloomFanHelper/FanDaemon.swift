@@ -32,7 +32,10 @@ actor FanDaemon {
 
     private var policy: FanPolicyStateMachine
     private var pollTask: Task<Void, Never>?
-    private var providerLease: (sessionID: UUID, expiresAt: TimeInterval)?
+    /// Lease expiry per provider XPC session. A dev and a production
+    /// provider on one Mac each hold their own lease; fans stay under control
+    /// while any lease is live, and return to Auto only when none is.
+    private var providerLeases: [UUID: TimeInterval] = [:]
     private var powerSuspended = false
     private var administrativelyDisabled = false
     private var shuttingDown = false
@@ -120,13 +123,14 @@ actor FanDaemon {
         guard providerVersion.utf8.count <= 64 else {
             return FanIPCReply(ok: false, message: "provider version is invalid")
         }
-        providerLease = (sessionID, uptime() + FanIPC.leaseDurationSeconds)
+        let now = uptime()
+        providerLeases = providerLeases.filter { $0.value > now }
+        providerLeases[sessionID] = now + FanIPC.leaseDurationSeconds
         return FanIPCReply(ok: true)
     }
 
     func releaseLease(sessionID: UUID) async -> FanIPCReply {
-        if providerLease?.sessionID == sessionID {
-            providerLease = nil
+        if providerLeases.removeValue(forKey: sessionID) != nil, !providerLeaseActive {
             let restored = await restoreAutomatic(reason: "provider lease released")
             return FanIPCReply(
                 ok: restored,
@@ -137,15 +141,14 @@ actor FanDaemon {
     }
 
     func sessionInvalidated(_ sessionID: UUID) async {
-        guard providerLease?.sessionID == sessionID else { return }
-        providerLease = nil
+        guard providerLeases.removeValue(forKey: sessionID) != nil, !providerLeaseActive else { return }
         _ = await restoreAutomatic(reason: "provider XPC session ended")
     }
 
     func emergencyRestore() async -> FanIPCReply {
         administrativelyDisabled = true
         lifecycleRevision &+= 1
-        providerLease = nil
+        providerLeases.removeAll()
         let restored = await restoreAutomatic(reason: "administrator requested Auto")
         return FanIPCReply(ok: restored, message: restored ? nil : lastError)
     }
@@ -172,14 +175,14 @@ actor FanDaemon {
         lifecycleRevision &+= 1
         pollTask?.cancel()
         pollTask = nil
-        providerLease = nil
+        providerLeases.removeAll()
         _ = await restoreAutomatic(reason: "fan helper shutting down")
     }
 
     func prepareForSleep() async {
         powerSuspended = true
         lifecycleRevision &+= 1
-        providerLease = nil
+        providerLeases.removeAll()
         _ = await restoreAutomatic(reason: "system will sleep")
     }
 
@@ -188,13 +191,13 @@ actor FanDaemon {
         // stale pre-sleep lease from reasserting manual mode on resumed hardware.
         powerSuspended = false
         lifecycleRevision &+= 1
-        providerLease = nil
+        providerLeases.removeAll()
         mode = effectiveEnabled ? .waitingForProvider : .disabled
     }
 
     private var providerLeaseActive: Bool {
-        guard let providerLease else { return false }
-        return !powerSuspended && uptime() < providerLease.expiresAt
+        let now = uptime()
+        return !powerSuspended && providerLeases.values.contains { now < $0 }
     }
 
     private var effectiveEnabled: Bool {
@@ -284,7 +287,7 @@ actor FanDaemon {
             // No suspension between the final checks and replacing both owners.
             inventory = discovered
             controller = TransactionalFanController(backend: backend, inventory: discovered)
-            providerLease = nil
+            providerLeases.removeAll()
             _ = policy.reset()
             gpuTemperatureC = nil
             fanReadings = []

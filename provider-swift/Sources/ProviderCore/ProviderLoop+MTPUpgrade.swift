@@ -80,7 +80,7 @@ extension ProviderLoop {
         else { return [] }
         return modelSlots.compactMap { modelID, slot in
             guard Self.nativeMiMoLoad(in: slot.modelContainer) == nil,
-                slot.container != nil, modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
+                slot.container != nil, MTPMode.isAutomaticExternalTarget(modelType: slot.modelType, modelID: modelID), !slot.engineBundle.mtpStatus.active,
                 loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
                 !modelsUnloading.contains(modelID), !revisionUpdatesInProgress.contains(modelID), !isRefusedByRetirement(modelID)

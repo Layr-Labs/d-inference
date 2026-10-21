@@ -7,6 +7,15 @@ description: Implement, review, or prepare pull requests in the Darkbloom d-infe
 
 Use the repository's instructions as the source of truth:
 
+Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
+checkouts. Provider/local native APIs and landing belong here; centralized
+backend, prompt sidecar, console and admin development belongs to the platform.
+Never implement, commit, push or upload new code for those owners here. The
+existing console snapshot and its build/test/hosting configuration remain;
+retention does not authorize new console development. Check the remote and intended diff first.
+Public golden vectors do not establish private cross-implementation qualification.
+Source ownership does not authorize live trigger, hosting or endpoint changes.
+
 1. Read `AGENTS.md` and every narrower `AGENTS.md` that applies to files in
    scope.
 2. Before editing, inspect the target branch and related open PRs so the change
@@ -17,8 +26,9 @@ Use the repository's instructions as the source of truth:
 4. Preserve the cross-language and release synchronization points in
    `AGENTS.md`. Trace readers, failure cleanup, concurrency, and disconnect
    cleanup when provider registry state changes.
-5. Create signed commits and confirm every PR commit is GitHub-verified after
-   pushing. Amend and re-sign any unsigned commit before requesting review.
+5. When committing and pushing are authorized, create signed commits and confirm
+   every PR commit is GitHub-verified. Do not amend or rewrite public history
+   without explicit authorization; report signature blockers before review.
 6. Run focused tests while implementing, then the component checks required by
    `Makefile`. Run `make docs-impact-check BASE=<target-branch>` and
    `make docs-check` before pushing.

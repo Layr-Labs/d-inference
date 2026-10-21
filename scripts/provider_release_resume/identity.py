@@ -17,6 +17,20 @@ def positive_integer(value):
     return int(value)
 
 
+def jobs_named(jobs, name):
+    """Match a release job by name.
+
+    release-swift.yml calls the reusable release-provider.yml once per
+    environment, so the Actions API reports each release job as
+    "<caller-job-id> / <job-name>" (for prod, "prod / Build optimized SDK 27
+    provider"). Match the trailing job name so recovery still binds the one
+    build, qualification and signing job in a reusable-workflow run, while a
+    legacy top-level run with the bare name keeps matching.
+    """
+    return [job for job in jobs
+            if job.get("name") == name or str(job.get("name", "")).endswith(" / " + name)]
+
+
 def select(api, run_id, attempt):
     run_id, attempt = positive_integer(run_id), positive_integer(attempt)
     run = api.get(f"actions/runs/{run_id}")
@@ -32,20 +46,20 @@ def select(api, run_id, attempt):
         raise ValueError("Retained run and current release tag differ")
     verify_source(api, source)
     version = tag[1:]
-    for path, pattern in [
-        ("provider-swift/Sources/ProviderCore/ProviderCore.swift", r'public static let version = "([^"]+)"'),
-        ("coordinator/api/server.go", r'var LatestProviderVersion = "([^"]+)"'),
-    ]:
-        file = api.get(f"contents/{path}?ref={source}")
-        values = re.findall(pattern, base64.b64decode(file["content"]).decode())
-        if values != [version]:
-            raise ValueError("Retained source version differs from release tag")
+    file = api.get(f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={source}")
+    content = file.get("content") if isinstance(file, dict) else None
+    if not isinstance(content, str):
+        raise ValueError("Retained provider source is missing")
+    values = re.findall(r'public static let version = "([^"]+)"',
+                        base64.b64decode("".join(content.split()), validate=True).decode())
+    if values != [version]:
+        raise ValueError("Retained source version differs from release tag")
     jobs = api.pages(f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
     for name in [BUILD_JOB, QUALIFY_JOB]:
-        matches = [job for job in jobs if job.get("name") == name]
+        matches = jobs_named(jobs, name)
         if len(matches) != 1 or matches[0].get("status") != "completed" or matches[0].get("conclusion") != "success":
             raise ValueError("Retained attempt lacks successful build and SDK qualification")
-    signing = [job for job in jobs if job.get("name") == SIGN_JOB]
+    signing = jobs_named(jobs, SIGN_JOB)
     if len(signing) != 1 or signing[0].get("conclusion") not in {"failure", "cancelled", "skipped"}:
         raise ValueError("Resume must start from an unsuccessful signing job")
     artifacts = api.pages(f"actions/runs/{run_id}/artifacts", "artifacts")

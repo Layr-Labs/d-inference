@@ -35,6 +35,8 @@ class FakeAPI:
         self.artifacts = [{"id":10,"name":f"unsigned-provider-{SHA}-1","expired":False,"size_in_bytes":100,
                           "digest":"sha256:" + "b"*64,"workflow_run":{"id":123,"head_sha":SHA}}]
         self.provider_version = "0.9.13"
+        self.provider_source = None
+        self.content_requests = []
         self.comparison = {"status": "ahead", "merge_base_commit": {"sha": SHA}}
     def get(self,path):
         if path == "actions/runs/123":return self.run
@@ -47,8 +49,10 @@ class FakeAPI:
         if path == "compare/" + "d"*40 + "..." + "d"*40:
             return {"status":"identical","merge_base_commit":{"sha":"d"*40}}
         if path.startswith("contents/"):
-            source = ('public static let version = "'+self.provider_version+'"' if "ProviderCore.swift" in path
-                      else 'var LatestProviderVersion = "0.9.13"')
+            self.content_requests.append(path)
+            if path != f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={SHA}":
+                raise AssertionError("Release recovery read a non-provider version source: " + path)
+            source = self.provider_source if self.provider_source is not None else 'public static let version = "'+self.provider_version+'"'
             return {"content":base64.b64encode(source.encode()).decode()}
         raise AssertionError(path)
     def pages(self,path,key):
@@ -58,6 +62,24 @@ class FakeAPI:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_missing_or_malformed_source_response_is_rejected(self):
+        for response in ({}, {"content": None}, {"content": "not-valid-base64!"}):
+            with self.subTest(response=response):
+                api = FakeAPI()
+                get = api.get
+                with patch.object(api, "get", side_effect=lambda path: response if path.startswith("contents/") else get(path)):
+                    with self.assertRaises(ValueError):
+                        select(api, "123", "1")
+
+    def test_missing_malformed_or_ambiguous_provider_source_is_rejected(self):
+        for source in ("", 'public static let version = "invalid"',
+                       'public static let version = "0.9.13"\npublic static let version = "0.9.13"'):
+            with self.subTest(source=source):
+                api = FakeAPI()
+                api.provider_source = source
+                with self.assertRaises(ValueError):
+                    select(api, "123", "1")
+
     def test_signed_tag_requires_verified_source_on_master_ancestry(self):
         env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag",
                "GITHUB_REF_NAME": "v0.9.13", "GITHUB_REF": "refs/tags/v0.9.13", "GITHUB_SHA": SHA}
@@ -90,6 +112,23 @@ class RecoveryTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
 
+    def test_master_push_source_must_be_verified_master_ancestry(self):
+        # Master may advance before the job starts; ancestry is the boundary.
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
+               "GITHUB_REF_NAME": "master", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": SHA}
+        self.assertEqual(verify_workflow_source(FakeAPI(), env), SHA)
+        for key, value in [("GITHUB_REF", "refs/heads/candidate"), ("GITHUB_REF", "refs/tags/v0.9.13"),
+                           ("GITHUB_REF", ""), ("GITHUB_REF_TYPE", "")]:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
+        for mutate in [lambda api: api.commit["commit"]["verification"].update(verified=False),
+                       lambda api: api.comparison.update(status="diverged"),
+                       lambda api: api.comparison["merge_base_commit"].update(sha="e"*40)]:
+            api = FakeAPI()
+            mutate(api)
+            with self.assertRaises(ValueError):
+                verify_workflow_source(api, env)
+
     def test_failed_source_verification_emits_no_trusted_outputs(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
@@ -101,11 +140,14 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_success_binds_original_source_attempt_and_immutable_artifact(self):
-        value=select(FakeAPI(),"123","1")
+        api = FakeAPI()
+        value=select(api,"123","1")
         self.assertEqual(value["source_sha"],SHA)
         self.assertEqual(value["build_run_id"],"123")
         self.assertEqual(value["unsigned_artifact_id"],"10")
         self.assertEqual(value["release_tag"],"v0.9.13")
+        self.assertEqual(api.content_requests,
+                         [f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={SHA}"])
 
     def test_untrusted_incomplete_expired_or_replaced_inputs_fail(self):
         mutations = [
@@ -173,8 +215,27 @@ class RecoveryTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):extract_transport(archive,digest,root/"out")
 
+    def test_nested_reusable_workflow_job_names_still_bind_recovery(self):
+        # release-swift.yml calls the reusable release-provider.yml, so the
+        # Actions API reports each job as "<caller-job-id> / <job-name>". Recovery
+        # must bind the nested prod jobs, and still reject a run that lacks the
+        # one build, qualification and signing job.
+        api=FakeAPI()
+        api.jobs=[{"name":"prod / "+name,"status":"completed","conclusion":"success"}
+                  for name in (BUILD_JOB,QUALIFY_JOB)]
+        api.jobs.append({"name":"prod / "+SIGN_JOB,"status":"completed","conclusion":"failure"})
+        self.assertEqual(select(api,"123","1")["source_sha"],SHA)
+        for mutate in [lambda x:x.jobs[0].update(name="prod / Unrelated job"),
+                       lambda x:x.jobs[2].update(name="prod / Unrelated job")]:
+            nested=FakeAPI()
+            nested.jobs=[{"name":"prod / "+name,"status":"completed","conclusion":"success"}
+                         for name in (BUILD_JOB,QUALIFY_JOB)]
+            nested.jobs.append({"name":"prod / "+SIGN_JOB,"status":"completed","conclusion":"failure"})
+            mutate(nested)
+            with self.assertRaises(ValueError):select(nested,"123","1")
+
     def test_workflow_success_guard_truth_table(self):
-        source=(ROOT/".github/workflows/release-swift.yml").read_text()
+        source=(ROOT/".github/workflows/release-provider.yml").read_text()
         resolver=source.split("  resolve-env:\n",1)[1].split("  build-provider:\n",1)[0]
         self.assertIn("      actions: read",resolver)
         self.assertNotIn("secrets.",resolver)

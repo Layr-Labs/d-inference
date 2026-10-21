@@ -75,7 +75,7 @@ public enum LocalAuthPolicy {
     }
 
     static func unauthorizedResponse() -> Response {
-        let body = Data(#"{"error":{"message":"missing or invalid local API key — get it from `darkbloom local`","type":"authentication_error"}}"#.utf8)
+        let body = Data(#"{"error":{"message":"missing or invalid local API key — get it from `\#(BuildEnvironment.current.cliName) local`","type":"authentication_error"}}"#.utf8)
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
         headers[.wwwAuthenticate] = "Bearer"

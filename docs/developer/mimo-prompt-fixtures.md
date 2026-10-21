@@ -1,10 +1,11 @@
 # MiMo prompt fixture reproduction
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-09
 
-The Rust MiMo parity tests intentionally require pinned metadata and an
-independent20-case corpus. Missing inputs are failures, not silently skipped
-checks. No model weights, API credential or running inference service is needed.
+Public MiMo golden-vector checks require pinned metadata and an independent
+20-case corpus. Missing inputs are failures, not silently skipped checks. No
+model weights, API credential or running inference service is needed. Private
+cross-implementation qualification remains a separate platform-owned operation.
 
 CI prepares the exact public-source inputs before running the unchanged tests:
 
@@ -14,7 +15,7 @@ python3 scripts/prepare-mimo-prompt-fixtures.py --output /absolute/fresh/fixture
 
 The script prints `MIMO_PROMPT_ARTIFACT_DIRECTORY` and
 `MIMO_PROMPT_REFERENCE_VECTORS`; set both to those returned paths for local
-`cargo test --locked`. It downloads only four public metadata files from
+provider fixture checks. It downloads only four public metadata files from
 `XiaomiMiMo/MiMo-V2.6-Flash-RL` at immutable revision
 `5711b268169967567844e1e560e8a3966da959b1`, with no Hub login, credential read,
 weights or executable model code. The unchanged synthetic corpus is checked in
@@ -35,19 +36,20 @@ be ordinary bounded files, not symlinks. Validate these exact SHA-256 values:
 | Additional20 corpus | `66e6a49a23509fbc99e5389fa4687f2b6175f96d05d7a8be0f323bf4986049bb` |
 | Original31 identity recorded inside corpus | `c11b2d3a9400bbe935c33f86b1ec6dc0ed91ea6e8b85030d355a4b66d35c2e8e` |
 
-Run the existing `cargo test --locked` from the Rust sidecar after supplying
-those variables and its pinned toolchain. Use a canonical temporary directory
+Run the retained public provider checks with those exact inputs. Use a canonical temporary directory
 or the test-root canonicalization correction; macOS temporary-directory aliases
 must not accidentally test the production symlink refusal instead of the
 intended parser/planner assertion. Keep the production refusal unchanged.
 
-The fixture contract lives in
-`coordinator/promptsidecar/src/mimo_v26/tests.rs` (`corpus`, `Fixture::new`).
+The independent private implementation is maintained in
+[platform MiMo tests](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/promptsidecar/src/mimo_v26/tests.rs)
+(`corpus`, `Fixture::new`), not built in this repository.
 The metadata cap is128MiB/file; the corpus cap is1MiB and exactly20 cases.
 Do not regenerate/reorder goldens, substitute moving tokenizer metadata or
 reinterpret the original31 cross-runtime mismatches as passes.
 
-Observed execution history:118 unit passes/7 missing-fixture failures;
+Historical private execution evidence, not a current public test result:
+118 unit passes/7 missing-fixture failures;
 then122 passes/3 temporary-root identity failures with fixtures;
 then125 unit plus27 integration/binary passes (152 total,0 failed/ignored)
 after test-only canonicalization.

@@ -327,8 +327,9 @@ private final class CapacityStubEngine: CBv2Engine, @unchecked Sendable {
 @Suite("EngineV2 fp32 paged pages: KV rate wiring")
 struct EngineV2FP32PagedRateTests {
 
-    @Test("mixed native full-row rates reach the slot without widening window or shared rows")
-    func mixedNativeRateMatchesAdmission() {
+    @Test("mixed native full-row rates reach either backend without widening window or shared rows",
+          arguments: [EngineV2KVBackendKind.paged, .contiguous])
+    func mixedNativeRateMatchesAdmission(kind: EngineV2KVBackendKind) {
         let kinds = [
             CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 2, queryHeads: 4),
             CBv2LayerKind(attention: .full, headDim: 128, kvHeads: 1, queryHeads: 4),
@@ -341,7 +342,7 @@ struct EngineV2FP32PagedRateTests {
             layerKinds: kinds, bytesCapacity: 1 << 20,
             config: .init(layerElementBytes: types.map(\.size)))
         let rate = EngineV2SlotFactory.slotKVBytesPerToken(
-            resolvedKind: .paged, pagedPoolDType: "mixed", pagedLayerDTypes: types,
+            resolvedKind: kind, pagedPoolDType: kind == .paged ? "mixed" : nil, nativeLayerDTypes: types,
             layerKinds: kinds, nominalFP16BytesPerToken: 1024,
             servingModelIsGPTOSS: false)
         #expect(rate == 1536)

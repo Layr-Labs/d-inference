@@ -149,7 +149,8 @@ in addition to the original schema in the prompt. `structured_output.py` project
 unsupported length/count/numeric bounds into descriptions for the provider; local
 validation still enforces every original bound, coverage ID, citation and review
 decision. Empty or whitespace-only analysis is invalid even for a clean batch.
-Finding title/detail limits count raw characters, including whitespace padding.
+Finding title/detail and analysis limits count raw characters, including whitespace
+padding, in both the budgeted scanner and the legacy review path.
 Sol also sets the required `additionalModelRequestFields.text.format.strict=true`
 ([AWS model contract](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html));
 that model-specific field is not sent to Claude.

@@ -123,7 +123,7 @@ def scan(records, evidence, threat_model, key, model, transport):
             if not isinstance(ids, list) or len(ids) != len(batch) or set(ids) != {unit["id"] for unit in batch}:
                 raise ReviewUnavailable("Model did not confirm all units; scan incomplete")
             analysis = response.get("analysis")
-            if not isinstance(analysis, str) or not 1 <= len(analysis.strip()) <= 4000:
+            if not isinstance(analysis, str) or not analysis.strip() or len(analysis) > 4000:
                 raise ReviewUnavailable("Model did not provide integration context; scan incomplete")
             summaries.append({"id": str(len(summaries)), "analysis": analysis,
                               "findings": response["findings"]})

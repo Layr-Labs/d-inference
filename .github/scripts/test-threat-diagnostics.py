@@ -116,6 +116,7 @@ class DiagnosticsTests(unittest.TestCase):
             ({"covered_units": ["a", "PRIVATE_ID"]}, "BATCH_ACKNOWLEDGMENT_INVALID"),
             ({"covered_units": ["a", "a"]}, "BATCH_ACKNOWLEDGMENT_INVALID"),
             ({"analysis": " " * 4001}, "BATCH_ANALYSIS_INVALID"),
+            ({"analysis": " " * 4000 + "x"}, "BATCH_ANALYSIS_INVALID"),
             ({"analysis": ""}, "BATCH_ANALYSIS_INVALID"),
             ({"analysis": "   "}, "BATCH_ANALYSIS_INVALID"),
             ({"needs_deeper_review": "PRIVATE_DECISION"}, "BATCH_DECISION_INVALID"),

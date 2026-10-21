@@ -181,10 +181,13 @@ extension EngineV2Bridge {
                 promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
+            // A full Mac refuses as capacity before any stream exists, so
+            // routing moves on and a local client gets 503, not a 200 stream
+            // that fails at once.
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
-            continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
-            return stream
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                Self.serviceAllowanceExhausted)
         }
         defer {
             if active[id] == nil && !retirementTransfer.isClaimed {

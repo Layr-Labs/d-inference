@@ -1,6 +1,10 @@
 import Foundation
 
 extension EngineV2Bridge {
+    /// Capacity refusal of a Mac whose serving concurrency is full; thrown
+    /// before any stream exists (503 locally, retriable capacity upstream).
+    static let serviceAllowanceExhausted = "token_budget_exhausted: whole-Mac service allowance exhausted"
+
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,
             deadlinePostureMonitoring == nil else { return }

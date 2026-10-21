@@ -85,6 +85,14 @@ struct EngineDeadlineRetirementBridgeTests {
         let rejected = await otherBridge.submitTokenized(promptTokens: [1, 2], request: request,
             requestId: "other")
         #expect(await errors(in: rejected) == ["token_budget_exhausted: whole-Mac service allowance exhausted"])
+        // The throwing path refuses before any stream exists (a local 503).
+        do {
+            _ = try await otherBridge.submitTokenized(promptTokens: [1, 2], request: request,
+                requestId: "other-throwing", firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000))
+            Issue.record("a full Mac must refuse before any stream exists")
+        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message) {
+            #expect(message == EngineV2Bridge.serviceAllowanceExhausted)
+        }
         #expect(otherEngine.continuations.isEmpty)
 
         gate.release()

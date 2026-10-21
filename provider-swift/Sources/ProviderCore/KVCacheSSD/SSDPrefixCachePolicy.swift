@@ -116,10 +116,14 @@ enum SSDPrefixCachePolicy {
     static func maxStageBytes(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
+        configuredMaxStageBytes(environment: environment) ?? defaultMaxStageBytes
+    }
+
+    private static func configuredMaxStageBytes(environment: [String: String]) -> Int? {
         guard let raw = environment[maxStageMBFlag],
             let mb = Int(raw.trimmingCharacters(in: .whitespaces)), mb > 0,
             mb < Int.max / 1_048_576
-        else { return defaultMaxStageBytes }
+        else { return nil }
         return mb * 1_048_576
     }
 
@@ -133,10 +137,44 @@ enum SSDPrefixCachePolicy {
     static func maxStageMillis(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
+        configuredMaxStageMillis(environment: environment) ?? defaultMaxStageMillis
+    }
+
+    private static func configuredMaxStageMillis(environment: [String: String]) -> Int? {
         guard let raw = environment[maxStageMillisFlag],
             let ms = Int(raw.trimmingCharacters(in: .whitespaces)), ms > 0
-        else { return defaultMaxStageMillis }
+        else { return nil }
         return ms
+    }
+
+    /// A complete checkpoint restores a whole prompt prefix from one file, so
+    /// the byte cap is a token cap: on the 4,096-token prefill grid, Qwen 3.8
+    /// with MTP restores at most 8,192 tokens at 1 GiB and about 94,000 at
+    /// 7 GiB. Deeper captures and restores hold larger transient ledger
+    /// reservations, so only large-memory Macs default to the deeper cap;
+    /// explicit settings still win. A full-size file estimates about 5 s at
+    /// the conservative 1.5 GB/s rate, so the byte cap, not the 15 s time
+    /// cap, binds. Attention block caches keep the general defaults.
+    static let largeMemoryThresholdBytes: UInt64 = 48 << 30
+    static let largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576  // 7 GiB
+    static let largeMemoryCompleteCheckpointStageMillis = 15_000
+
+    static func completeCheckpointMaxStageBytes(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        configuredMaxStageBytes(environment: environment)
+            ?? (physicalMemoryBytes >= largeMemoryThresholdBytes
+                ? largeMemoryCompleteCheckpointStageBytes : defaultMaxStageBytes)
+    }
+
+    static func completeCheckpointMaxStageMillis(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        configuredMaxStageMillis(environment: environment)
+            ?? (physicalMemoryBytes >= largeMemoryThresholdBytes
+                ? largeMemoryCompleteCheckpointStageMillis : defaultMaxStageMillis)
     }
 
     /// Conservative end-to-end read+decrypt planning rate (read and decrypt

@@ -192,6 +192,8 @@ public actor EngineV2Bridge {
         ssdPrefixCache != nil || ssdHybridCheckpointStore != nil ? .ssd : .memory
     }
     nonisolated let prefixCacheBaseStatus: PrefixCacheModelStatus
+    /// Typed reason the slot's SSD store was refused; local `/metrics` only.
+    nonisolated let prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure?
     nonisolated let prefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
     nonisolated let residentPrefixCacheEvidence: ResidentPrefixCacheEvidence?
     nonisolated let residentPrefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
@@ -389,6 +391,7 @@ public actor EngineV2Bridge {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         kvQuantization: EngineV2KVQuantizationSelection = .native,
         kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
@@ -481,6 +484,7 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
+        self.prefixCacheConstructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }

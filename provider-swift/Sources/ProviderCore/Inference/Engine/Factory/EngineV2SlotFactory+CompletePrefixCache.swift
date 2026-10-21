@@ -76,13 +76,17 @@ extension EngineV2SlotFactory {
         else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .runtimeIdentityUnavailable))
         }
-        let cache = await SSDHybridCheckpointStoreFactory.make(
+        switch await SSDHybridCheckpointStoreFactory.build(
             modelId: modelId, identity: identity, backendLayout: storage.backendLayout,
             kvBudget: kvBudget, environment: environment,
-            persistentTestNamespace: persistentTestNamespace)
-        return .init(cache: cache, status: cache == nil
-            ? .init(state: .error, reason: .cacheInitFailed) : .scanPending,
-            checkpointQuantization: cache == nil ? nil : storage.checkpointQuantization)
+            persistentTestNamespace: persistentTestNamespace) {
+        case .success(let cache):
+            return .init(cache: cache, status: .scanPending,
+                checkpointQuantization: storage.checkpointQuantization)
+        case .failure(let failure):
+            return .init(cache: nil,
+                status: .init(state: .error, reason: .cacheInitFailed, failure: failure.reason))
+        }
     }
 
     enum CompleteCheckpointAssistant: Equatable {

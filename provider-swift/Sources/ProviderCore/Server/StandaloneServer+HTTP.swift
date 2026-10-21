@@ -176,9 +176,15 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
-            return Self.openAIErrorResponse(
-                status: HTTPResponse.Status(code: Int(failure.statusCode)),
-                message: failure.message)
+            let status = HTTPResponse.Status(code: Int(failure.statusCode))
+            // This refusal's fixed text names the accepted controls; the closed
+            // failure-code message alone would not tell the caller what to send.
+            if case .reasoningCannotBeDisabled? = error as? MultiModelBatchSchedulerEngineError {
+                return Self.openAIErrorResponse(
+                    status: status, message: GLM5NextPromptPolicy.reasoningCannotBeDisabledMessage,
+                    code: "unsupported_value")
+            }
+            return Self.openAIErrorResponse(status: status, message: failure.message)
         }
     }
 
@@ -197,7 +203,8 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// OpenAI-shaped error envelope (matches the body the upstream
     /// `/v1/embeddings` route emits when the engine is missing). Sets
     /// the CORS allow-origin header so browser clients can read the
-    /// body even on a cross-origin request.
+    /// body even on a cross-origin request. `code` is the optional OpenAI
+    /// error code; it is omitted from the body when nil.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
         message: String,

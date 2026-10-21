@@ -29,8 +29,10 @@ class PaidCalls:
         self.actual = self.reserved = self.cached_tokens = self.calls = 0
         self.unknown = 0
         self.stopped = None
+        self.last_request = {}
 
     def __call__(self, url, key, payload):
+        self.last_request = {"provider": "openrouter"}
         if self.stopped:
             raise BudgetStopped(self.stopped)
         self.alive()
@@ -56,6 +58,7 @@ class PaidCalls:
         self.reserved += reserve
         self.unknown += reserve
         self.calls += 1
+        self.last_request["call"] = self.calls
         # An exception or cancellation after admission keeps the reservation.
         # Never blindly retry or assume an HTTP error means no provider charge.
         response = self.transport(url, self.key, payload)

@@ -167,11 +167,15 @@ public enum ProcessLifecycle {
 
         var argv: [UnsafeMutablePointer<CChar>?] = cStrings.map { $0 }
         argv.append(nil)
-        execv(executablePath, &argv)
+        var execError: Int32 = 0
+        ProviderStopSignals.withHangupAsAtStart {
+            execv(executablePath, &argv)
+            execError = errno
+        }
         throw NSError(
             domain: NSPOSIXErrorDomain,
-            code: Int(errno),
-            userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))]
+            code: Int(execError),
+            userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(execError))]
         )
         #else
         throw NSError(

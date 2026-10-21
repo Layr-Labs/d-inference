@@ -1,6 +1,6 @@
 # MiMo prompt fixture reproduction
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-18
 
 Public MiMo golden-vector checks require pinned metadata and an independent
 20-case corpus. Missing inputs are failures, not silently skipped checks. No
@@ -61,3 +61,43 @@ metadata pins do not establish parity for a newer serving-artifact tokenizer.
 Public fixture redistribution/retrieval must retain applicable licenses and
 the exact hashes above; this page neither embeds private diagnostics nor
 authorizes a network/model download.
+
+## Tool-schema ingress regressions
+
+`fixtures/prompt-contract/mimo-v26-schema-parity-v1.json` contains two newly
+authored minimal requests for typeless-enum and Boolean-property schemas
+(SHA-256 `cc28dcb11b8ac98bf202733b10be998d9b96ca5d52dec88c356157b500fc0d93`).
+These are new reproductions, not the historical external two-case corpus and
+not a replacement or rebaseline of Additional20.
+
+`MiMoV26SchemaParityTests` uses the pinned metadata above and scripted generation
+through the actual provider service. Its five methods compare exact provider/local
+prompt IDs, serving, recount and benchmark preparation; they also cover hosted-tool
+fallback, malformed retained declarations, tool-choice and reserved-marker isolation.
+No model weights or GPU forward are required. The
+[native inference contract](../architecture/inference.md#native-mimo-v26-candidate)
+owns the restoration behavior.
+
+With both metadata variables set, rebuild current test products using the
+[build procedure](build.md), then run from `provider-swift/`. If using a separate
+scratch directory, append the same `--scratch-path /absolute/owned/scratch`
+argument to every command:
+
+```bash
+../scripts/run-nested-suite.sh 'MiMoV26SchemaParityTests' --no-parallel --disable-automatic-resolution --skip-update
+../scripts/run-nested-suite.sh 'MiMoV26PromptContractTests|MiMoV26TemplateFixTests|LocalChatRequestTests|InboundDecodeTests|ToolChoicePromptPolicyTests' --no-parallel --disable-automatic-resolution --skip-update
+../scripts/run-nested-suite.sh 'MiMoV26ConsumerParityTests' --skip testRecordedTypelessAndBooleanSchemaIngressParity --no-parallel --disable-automatic-resolution --skip-update
+```
+
+Use isolated daemon-state and loaded-model paths as in the
+[test guide](test.md#provider-and-sdk). The strict wrapper fails zero-test and
+skipped required lanes. Record actual counts and exact source/binary identities;
+prior-composition passes cannot qualify rebuilt public sources.
+
+Historical `testRecordedTypelessAndBooleanSchemaIngressParity` remains a separate
+optional selection. Only with the actual historical corpus available, set
+`MIMO_CONSUMER_DIVERGENCE_TESTS=1` and `MIMO_CONSUMER_DIVERGENCE_VECTORS` to that
+corpus, then select the method with `swift test --skip-build --filter` in its own
+process. Without those inputs it explicitly skips; record that outcome separately
+and do not substitute the newly authored reproductions. These tests do not establish
+full-model, installed endpoint or live cross-implementation qualification.

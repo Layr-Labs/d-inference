@@ -2,7 +2,7 @@
 """Offline HTTP integration tests for budgets, reuse, escalation and delivery."""
 import base64
 import copy
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
@@ -20,9 +20,11 @@ from urllib.parse import urlsplit
 
 from threat_review.budget_runner import run
 from threat_review.budget_scan import Scanner, failure
+from threat_review.bedrock import BedrockCalls
 from threat_review.client import APIError, GitHub, ReviewUnavailable, request_json
 from threat_review.context import ThreatContext, SONNET, OPUS, SOL
 from threat_review.paid import PaidCalls, microdollars
+from threat_review.merge_policy import clean
 from threat_review.preflight import check as preflight
 from threat_review.report import COMMENT_LIMIT, plain
 from threat_review.source import complete_files
@@ -400,6 +402,38 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(result["requests"], 0)
         self.assertEqual(result["reused_batches"], count)
 
+    def test_malformed_cache_stops_without_spend_or_prior_request_metadata(self):
+        with patch.object(self.service.state, "cached", return_value={"findings": [], "PRIVATE": "secret"}):
+            result, _ = self.scan()
+        self.assertFalse(self.service.calls)
+        self.assertFalse(result["integration_completed"])
+        self.assertEqual(result["diagnostics"][0]["code"], "RESPONSE_FIELDS_INVALID")
+        self.assertTrue(result["diagnostics"][0]["cache_hit"])
+        self.assertNotIn("provider", result["diagnostics"][0])
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_sonnet_integration_receives_source_uncertainty(self):
+        self.service.reply = lambda body: self.service.completion(
+            body, uncertain=json.loads(body["messages"][1]["content"])["stage"] == "source")
+        result, _ = self.scan()
+        integration = json.loads(self.service.calls[1]["messages"][1]["content"])
+        self.assertTrue(integration["units"][0]["needs_deeper_review"])
+        self.assertFalse(result["errors"])
+
+    def test_cross_file_uncertainty_is_not_cleared_by_independent_local_depth(self):
+        self.files[0]["filename"] = "ordinary.py"
+        def reply(body):
+            stage = json.loads(body["messages"][1]["content"])["stage"]
+            return self.service.completion(body, uncertain=body["model"] == SONNET and stage == "integration")
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS])
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertTrue(result["manual_review_reasons"])
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
     def test_model_context_or_dependency_base_invalidates_cache(self):
         self.scan()
         result, _ = self.scan(base="d" * 40)
@@ -471,7 +505,7 @@ class ScanTests(unittest.TestCase):
             return self.service.completion(body, [finding] if model == SONNET else [], uncertain=model == SONNET)
         self.service.reply = reply
         result, _ = self.scan()
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL, SOL])
         self.assertEqual(result["findings"][0]["models"], [SONNET])
 
     def test_actual_cost_overrun_preserves_findings_but_halts_spending(self):
@@ -485,12 +519,73 @@ class ScanTests(unittest.TestCase):
         from threat_review.merge_policy import clean
         self.service.reply = lambda body: self.service.completion(body, [], uncertain=body["model"] == SOL)
         result, _ = self.scan(force=True)
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL, SOL])
         self.assertEqual(result["depth_batches_pending"], 0)
-        self.assertIn("Final reviewer requests further review", result["errors"][0])
+        self.assertIn("Final reviewer requests further review", result["manual_review_reasons"][0])
+        self.assertFalse(result["errors"])
         report = {"head": fixtures.HEAD, "base": fixtures.BASE, "review": result}
         self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
-        self.assertTrue(self.checkpoints[-1]["errors"])
+        self.assertTrue(self.checkpoints[-1]["manual_review_reasons"])
+
+    def test_sol_reconciles_local_uncertainty_before_final_decision(self):
+        from threat_review.merge_policy import clean
+        def reply(body):
+            stage = json.loads(body["messages"][1]["content"])["stage"]
+            return self.service.completion(body, uncertain=body["model"] == SOL and stage == "source")
+        self.service.reply = reply
+        result, _ = self.scan(force=True)
+        self.assertFalse(result["manual_review_reasons"])
+        self.assertTrue(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                              fixtures.HEAD, fixtures.BASE))
+        final = json.loads(self.service.calls[-1]["messages"][1]["content"])
+        self.assertEqual(final["stage"], "integration")
+        self.assertTrue(final["units"][0]["needs_deeper_review"])
+
+    def test_failed_final_integration_is_incomplete_and_retains_advice(self):
+        def reply(body):
+            stage = json.loads(body["messages"][1]["content"])["stage"]
+            if body["model"] == SOL and stage == "integration":
+                return 503
+            return self.service.completion(body, [fixtures.FINDING])
+        self.service.reply = reply
+        result, _ = self.scan(force=True)
+        self.assertEqual(result["depth_batches_pending"], 1)
+        self.assertTrue(result["findings"])
+        self.assertTrue(result["errors"])
+        self.assertEqual(result["diagnostics"][0]["http_status"], 503)
+        self.assertEqual(result["diagnostics"][0]["stage"], "integration")
+
+    def test_head_only_excerpt_receives_complete_change_coordinates(self):
+        from threat_review.change_context import batch_changes
+        self.files = [{"filename": "docs/guide.md", "status": "modified", "source_complete": True,
+                       "base_text": "old\n" + "unchanged\n" * 9000,
+                       "head_text": "new\n" + "unchanged\n" * 9000,
+                       "patch": "@@ -1 +1 @@\n-old\n+new"}]
+        scanner = Scanner(self.context, self.files, self.service.state, None, lambda _: None, fixtures.BASE)
+        tail = next(u for b in scanner.source for u in b
+                    if u.get("kind") == "head_text" and u["start_line"] > 1)
+        context = batch_changes(scanner.changes, [tail])[0]
+        self.assertEqual(context["changed_ranges"], {"base": [[1, 1]], "head": [[1, 1]]})
+        self.assertTrue(context["range_map_complete"])
+        self.assertIn("-old", context["patch_excerpt"])
+        # Orientation includes line 1, but it grants no new citation permission.
+        evidence = scanner.batch_evidence("source", [tail])
+        self.assertNotIn(1, evidence["docs/guide.md"]["lines"]["head"])
+
+    def test_invalid_json_diagnostic_is_correlated_and_has_no_response_text(self):
+        def reply(body):
+            response = self.service.completion(body)
+            response["choices"][0]["message"]["content"] = '{"private-secret":\nINVALID}'
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        diagnostic = result["diagnostics"][0]
+        self.assertEqual(diagnostic["code"], "RESPONSE_JSON_INVALID")
+        self.assertEqual(diagnostic["line"], 2)
+        self.assertEqual(diagnostic["model"], SONNET)
+        self.assertEqual(len(diagnostic["batch_sha256"]), 64)
+        self.assertNotIn("private-secret", json.dumps(result))
+        self.assertEqual(len(self.service.calls), 1)
 
     def test_followup_push_reuses_unaffected_batches_but_reintegrates(self):
         self.files = [{"filename": name, "status": "modified", "source_complete": True,
@@ -625,6 +720,19 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(saved["head"], fixtures.HEAD)
         self.assertTrue(saved["review"]["integration_completed"])
 
+    def test_unwritable_diagnostics_do_not_destroy_report_or_original_failure(self):
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(self.root)
+        self.env["THREAT_REVIEW_RESULT_FILE"] = str(self.root / "result.json")
+        self.service.reply = lambda body: 503
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            body = self.run_review()
+        self.assertIn("HTTP 503", body)
+        report = json.loads((self.root / "result.json").read_text())
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(report["review"]["diagnostics"][0]["http_status"], 503)
+        self.assertIn("DIAGNOSTICS_WRITE_FAILED", errors.getvalue())
+        self.assertNotIn(str(self.root), errors.getvalue())
     def test_progress_comment_precedes_source_collection(self):
         files = self.github.files
         def collect(count):
@@ -685,6 +793,120 @@ class LifecycleTests(unittest.TestCase):
         self.github.call = lambda path: {"permission": "read"}
         self.run_review(event)
         self.assertFalse(self.service.calls)
+
+    def bedrock_run(self, reply, **config):
+        """Exercise the real transport adapter, scanner, state and rendering."""
+        self.env.update(
+            BEDROCK_SCAN_ENABLED="true", GITHUB_REPOSITORY="example/repo",
+            BEDROCK_SCAN_PROFILES=json.dumps({
+                name: f"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/{name}"
+                for name in ("sonnet", "opus", "sol")}),
+            BEDROCK_SCAN_USAGE_FILE=str(self.root / "usage.jsonl"),
+            THREAT_REVIEW_DIAGNOSTICS_FILE=str(self.root / "diagnostics.json"),
+            THREAT_REVIEW_RESULT_FILE=str(self.root / "result.json"),
+            **config)
+        requests = []
+        outer = self
+        class Client:
+            def converse(self, **request):
+                requests.append(request)
+                # Progress must already exist before a potentially killed call.
+                progress = json.loads((outer.root / "diagnostics.json").read_text())
+                outer.assertEqual(progress["active_request"]["phase"], "provider_call")
+                return reply(request)
+        def factory(*args, **kwargs):
+            return BedrockCalls(*args, **kwargs, client=Client(), fallback_factory=self.factory)
+        event = copy.deepcopy(fixtures.EVENT)
+        event.update(review_depth="deep", sender={"login": "maintainer"})
+        original = self.github.call
+        self.github.call = lambda path: {"permission": "write"} if "/permission" in path else original(path)
+        with patch("threat_review.bedrock.BedrockCalls", side_effect=factory):
+            body = self.run_review(event)
+        report = json.loads((self.root / "result.json").read_text())
+        diagnostic = json.loads((self.root / "diagnostics.json").read_text())
+        return body, report, diagnostic, requests
+
+    @staticmethod
+    def bedrock_response(request, uncertain=False):
+        sent = json.loads(request["messages"][0]["content"][0]["text"])
+        result = {"findings": [], "covered_units": [u["id"] for u in sent["units"]],
+                  "analysis": "Synthetic complete analysis.", "needs_deeper_review": uncertain}
+        return {"usage": {"inputTokens": 100, "outputTokens": 50}, "stopReason": "end_turn",
+                "ResponseMetadata": {"RequestId": "12345678-1234-1234-1234-123456789abc"},
+                "output": {"message": {"content": [{"text": json.dumps(result)}]}}}
+
+    def test_bedrock_full_lifecycle_completes_final_integration_and_artifacts(self):
+        body, report, diagnostic, requests = self.bedrock_run(self.bedrock_response)
+        self.assertTrue(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(len(requests), 5)
+        self.assertEqual([r["modelId"].rsplit("/", 1)[-1] for r in requests],
+                         ["sonnet", "sonnet", "opus", "sol", "sol"])
+        self.assertEqual(diagnostic["diagnostics"], [])
+        self.assertEqual(diagnostic["active_request"]["phase"], "validated")
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertEqual(saved["review"], report["review"])
+        self.assertNotIn("Review not completed", body)
+        self.assertFalse(self.service.calls)
+
+    def test_bedrock_truncation_preserves_code_request_identity_and_no_clearance(self):
+        def reply(request):
+            response = self.bedrock_response(request)
+            response["stopReason"] = "max_tokens"
+            response["usage"]["outputTokens"] = 4096
+            response["output"]["message"]["content"][0]["text"] = "PRIVATE_TRUNCATED_RESPONSE"
+            return response
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 1)
+        self.assertFalse(self.service.calls)  # no fallback/resampling
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertIn("Review not completed", body)
+        failure = diagnostic["diagnostics"][0]
+        self.assertEqual(failure["code"], "BEDROCK_RESPONSE_INCOMPLETE")
+        self.assertEqual(failure["stop_reason"], "max_tokens")
+        self.assertEqual(failure["request_id"], "12345678-1234-1234-1234-123456789abc")
+        self.assertNotIn("PRIVATE_TRUNCATED_RESPONSE", json.dumps(diagnostic))
+
+    def test_bedrock_final_uncertainty_is_complete_but_never_clears(self):
+        def reply(request):
+            stage = json.loads(request["messages"][0]["content"][0]["text"])["stage"]
+            return self.bedrock_response(request, request["modelId"].endswith("/sol") and stage == "integration")
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 5)
+        self.assertIn("Scan completed; human review required", body)
+        self.assertNotIn("Review not completed", body)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertFalse(diagnostic["diagnostics"])
+
+    def test_bedrock_call_cap_stops_before_final_integration_without_clearance(self):
+        body, report, diagnostic, requests = self.bedrock_run(
+            self.bedrock_response, BEDROCK_SCAN_MAX_CALLS="4")
+        self.assertEqual(len(requests), 4)
+        self.assertEqual(report["review"]["depth_batches_pending"], 1)
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "BEDROCK_CALL_LIMIT")
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertFalse(self.service.calls)
+
+    def test_remote_checkpoint_failure_preserves_local_diagnostics_and_halts(self):
+        def reply(request):
+            self.service.fail_write = True
+            return self.bedrock_response(request)
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 1)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertTrue(diagnostic["diagnostics"])
+        self.assertEqual(diagnostic["active_request"]["model"], SONNET)
+        self.assertNotIn("secret provider payload", json.dumps(diagnostic))
+
+    def test_interrupted_provider_call_leaves_content_free_progress(self):
+        def interrupted(request):
+            raise KeyboardInterrupt("PRIVATE_INTERRUPTION")
+        with self.assertRaises(KeyboardInterrupt):
+            self.bedrock_run(interrupted)
+        diagnostic = json.loads((self.root / "diagnostics.json").read_text())
+        self.assertEqual(diagnostic["active_request"]["phase"], "provider_call")
+        self.assertEqual(diagnostic["active_request"]["model"], SONNET)
+        self.assertFalse(diagnostic["integration_completed"])
+        self.assertNotIn("PRIVATE_INTERRUPTION", json.dumps(diagnostic))
 
 
 if __name__ == "__main__":

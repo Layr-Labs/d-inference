@@ -92,6 +92,13 @@ extension EngineV2Bridge {
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
             continuation.finish()
             return stream
+        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message) {
+            // A capacity refusal already finalized its lookup; keep its
+            // content-free marker in-band for nonthrowing callers.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(message))
+            continuation.finish()
+            return stream
         } catch {
             // Unknown admission failures remain bounded for nonthrowing callers.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
@@ -208,10 +215,13 @@ extension EngineV2Bridge {
                 promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
+            // A full Mac refuses as capacity before any stream exists, so
+            // routing moves on and a local client gets 503, not a 200 stream
+            // that fails at once.
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
-            continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
-            return stream
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                Self.serviceAllowanceExhausted)
         }
         defer {
             if active[id] == nil && !retirementTransfer.isClaimed {
@@ -300,9 +310,10 @@ extension EngineV2Bridge {
             return stream
         }
         // GLM prices each request by its reserved tokens beside one step's
-        // setup. Refuse as capacity, so routing moves on, a request that can
-        // never fit or that would leave a step no room once all held requests
-        // run; the engine charges step scratch from the same ledger.
+        // setup. Refuse as capacity before any stream exists, so routing moves
+        // on, a request that can never fit or that would leave a step no room
+        // once all held requests run; the engine charges step scratch from
+        // the same ledger.
         if glm5NextNativeOwner != nil {
             let decision = Self.glm5NextSlotAdmission(
                 requestBytes: requestReservationBytes(tokenCount: worstCaseTokens),
@@ -310,12 +321,9 @@ extension EngineV2Bridge {
                 admissibleBytes: admissionCapacityBytes())
             guard case .admit(let bytes) = decision else {
                 usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
-                continuation.yield(.error(
-                    "token_budget_exhausted: "
-                        + (decision == .neverFits ? Self.glm5NextExceedsSlotCapacity : Self.glm5NextSlotCommitted)
-                        + " (\(worstCaseTokens) reserved tokens)"))
                 continuation.finish()
-                return stream
+                throw Self.glm5NextSlotRefusal(
+                    neverFits: decision == .neverFits, reservedTokens: worstCaseTokens)
             }
             glm5NextGateReservations[id] = bytes
         }

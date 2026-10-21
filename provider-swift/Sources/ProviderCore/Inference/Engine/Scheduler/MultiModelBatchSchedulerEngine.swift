@@ -598,8 +598,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 visionRequest, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
             if glmMedia, let container {
-                // GLM's tower runs inside this reservation, and one image can
-                // expand to its processor's full token cap.
+                // GLM's tower runs inside this reservation, and one image or
+                // video can expand to its processor's full token cap.
                 let reservation = await GLM5NextVisionBudget.mediaReservation(
                     container: container, request: visionRequest,
                     defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength)
@@ -638,13 +638,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
-            // Four throws are NOT refusals: `CancellationError` (the
+            // Five throws are NOT refusals: `CancellationError` (the
             // caller went away — propagate, 499), `MediaError`
             // (deterministic input fault — keeps its 4xx mapping), and
             // `noProcessedMedia` (media on non-user roles only — a
             // deterministic 400; rerouting would fail identically
             // everywhere), plus `unsupportedMedia` (the loaded family rejects
-            // this shape on every equivalent provider).
+            // this shape on every equivalent provider) and the bridge's
+            // `tokenBudgetExhausted` admission refusal (capacity, not a
+            // construction fault).
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 // Vision eval precedes bridge admission and has no text-token
@@ -786,6 +788,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if let failure = error as? PreContentDeadlineFailure { throw failure }
                     if error is CancellationError { throw CancellationError() }
                     if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+                    if case .tokenBudgetExhausted? = error as? MultiModelBatchSchedulerEngineError { throw error }
                     if let visionError = error as? EngineV2VisionPrefillError {
                         switch visionError {
                         case .noProcessedMedia:

@@ -1,6 +1,6 @@
 # Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-20
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
@@ -89,9 +89,11 @@ python3 .github/scripts/test-threat-full-scan.py
 python3 .github/scripts/test-threat-ensemble.py
 python3 .github/scripts/test-threat-budget.py
 python3 .github/scripts/test-threat-bedrock.py
+python3 .github/scripts/test-threat-diagnostics.py
+python3 .github/scripts/test-threat-integration-scope.py
 ```
 
-Release Integrity runs all five suites using Python 3.9+ and loopback sockets,
+Release Integrity runs all seven suites using Python 3.9+ and loopback sockets,
 without external services, real keys or paid calls. The budget suite exercises
 real local HTTP, conflicting SHA writes, reconciliation, permissions, cache
 invalidation, escalation, partial failures and comment delivery. Earlier suites
@@ -101,7 +103,7 @@ protect immutable-source collection, validation and legacy report helpers.
 |---|---|
 | First feedback | Progress, then Sonnet findings or clean first-pass feedback before deeper work. |
 | Risky or uncertain changes | Selected Opus review for auth, attestation, encryption, billing, workflows, findings or model uncertainty. |
-| Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request. |
+| Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request, followed by integration of its selected source analyses. |
 | Repeat push | Identical analysis reused; changed inputs invalidate source and integration results. |
 | Failure or budget exhaustion | Completed findings retained; unfinished coverage explicit; no automatic paid retries. |
 | Head changes during a call | Original-head results saved; stale findings not posted as current. |
@@ -210,6 +212,39 @@ linked reports, reconcile unknown charges against provider billing, and fix
 credentials, permissions or invalid responses before resuming. HTTP statuses and fixed local validation-failure reasons are
 shown without raw error bodies or model responses. Cache/checkpoint failures halt further spending.
 
+### Diagnose a failed or deferred review
+
+1. Check whether the comment says **Scan completed; human review required** or
+   **Review not completed**. A completed scan can require a human decision for
+   medium/high findings or unresolved final-review uncertainty. This is distinct
+   from a transport, coverage, validation or budget failure; neither state grants
+   automatic merge clearance.
+2. For an incomplete scan, download the run's `threat-review-diagnostics-*`
+   artifact. `diagnostics.py` records fixed failure codes, the model, source or
+   integration stage, batch hash and expected coverage. JSON failures include
+   a syntax category, line/column/offset, response length/hash and prefix class.
+   Field failures identify missing schema fields and count unexpected fields
+   without exposing their names. Findings and raw response text are excluded.
+   Coverage mismatches include missing, unexpected and duplicate unit counts;
+   analysis-length and decision-type failures have separate codes.
+3. Correlate Bedrock failures with `bedrock-usage-*`: the call number, allowlisted
+   AWS error code, request ID, stop reason and latency distinguish access errors,
+   refusal/truncation, invalid JSON and local validation. Missing metadata stays
+   unavailable; it is never invented. The smoke test also writes safe failure
+   metadata to its existing usage artifact.
+4. Fix the diagnosed cause before a maintainer reruns the existing workflow.
+   Invalid responses do not trigger an automatic paid retry or provider switch.
+   These artifacts are content-free diagnostics suitable for a public repository,
+   not raw-response recordings; use the AWS request ID with authorized provider
+   diagnostics when additional evidence is needed.
+
+The local artifact is atomically refreshed before provider calls and remote
+checkpoints. An interrupted run can retain the last model, stage, batch and
+phase even when no final error is available. A `provider_call` phase does not
+prove whether the provider completed or charged the request. If the local
+artifact cannot be written, Actions logs `DIAGNOSTICS_WRITE_FAILED` without
+filesystem details; findings, report delivery and merge evaluation still proceed.
+
 ## Scope, reuse and saved findings
 
 Immutable merge-base/head blobs supply complete before/after text and rebuilt
@@ -222,6 +257,26 @@ pending integration instead of claiming full coverage. Existing limits remain:
 80,000-character batches. Split patches carry continuation hunk headers so
 each fragment retains its original base/head citation lines. Binary, LFS and
 submodule changes need manual review.
+
+`change_context.py` supplies each source batch with changed-line coordinates and
+a bounded patch excerpt for its files, so a HEAD-only excerpt can distinguish
+changed lines from unchanged surroundings. Incomplete range maps and truncated
+excerpts are labeled; context overflow stops before spending. This context does
+not expand citation permissions beyond the supplied source units. Reviewers must
+report hypothetical deployment mismatches as unverified contracts, not established
+vulnerabilities without supporting evidence.
+
+Sol integrates its own selected batch analyses before deciding whether local
+questions remain unresolved. This costs at least one additional request when
+Sol runs; all existing request, runtime and spending limits still apply. A limit
+or validation failure during integration preserves prior findings and leaves the
+scan incomplete. Final uncertainty is stored separately in `manual_review_reasons`;
+it still denies automatic clearance. Reports missing this field also deny clearance.
+An unresolved Sonnet cross-file integration question also requires human review:
+independent local depth passes do not receive that question and cannot clear it.
+Each model's integration may cite only the source lines that model reviewed;
+cached source results rebuild the same evidence scope, and integration cache
+identity includes that scope.
 
 Each request receives an index of **all** canonical definition entries, the
 preamble, and up to eight lexically relevant complete definition blocks within
@@ -236,6 +291,8 @@ identical summaries cannot reuse stale cross-file conclusions. A base change
 conservatively invalidates all results, including unchanged-dependency assumptions.
 Models do not see each other's source verdicts. Findings retain attribution;
 a later clean pass does not silently veto a prior candidate. Humans validate them.
+The `budgeted-v3` cache version invalidates earlier analyses whose prompts lacked
+the change context and final-integration policy; it does not reset the budget ledger.
 
 Validated findings are checkpointed after every batch before caching or more
 spend. Reports include exact head/base, progress and the previous public comment,
@@ -266,5 +323,6 @@ minutes inside a 20-minute workflow timeout.
 Source excerpts include original line numbers, with annotation size included in the
 batch limit. Review summaries target 2,000 characters below the unchanged 4,000
 character validation limit. An unresolved `needs_deeper_review` request from the
-final Sol reviewer makes coverage incomplete and requires independent human review;
+final Sol integration requires independent human review without relabeling completed
+scan execution as a coverage failure;
 a zero-finding response alone cannot clear that uncertainty.

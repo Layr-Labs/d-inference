@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -805,6 +805,12 @@ normal terminal handling instead of this exemption. The provider emits it
 through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
 the contract in `sanitizeProviderInferenceError`.
 
+A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
+`token_budget_exhausted`, enriched like other capacity rejections
+(`rejection_reason` `token_budget`); its internal
+`request_exceeds_slot_capacity`/`slot_capacity_committed` marker never reaches
+the wire. See [GLM5Next implementation boundary](../architecture/inference.md#glm5next-implementation-boundary).
+
 ### `attestation_response`
 
 Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
@@ -1147,6 +1153,20 @@ identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
 
+#### MiMo Chat tool-schema preservation
+
+The decrypted Chat body adds no envelope field or schema-metadata trust grant.
+Loaded exact `mimo_v2` selects restoration of the original typed tool declarations;
+caller model names do not select this behavior. The public fixture is a fixed
+provider contract, not evidence of a deployed platform implementation.
+
+| Boundary | Contract | Provider source |
+|---|---|---|
+| Original tools | Preserve typeless enums and Boolean property schemas before native rendering, serving, recount and benchmark preparation. Other loaded families retain existing normalization. | `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift` (`restoring`); [native inference](../architecture/inference.md#native-mimo-v26-candidate) |
+| Hosted-tool fallback | Share the existing function-object/string-name structural filter. Malformed retained declarations still fail SDK decoding; unsupported hosted entries follow existing ingress repair. | `provider-swift/Sources/ProviderCore/InboundChatNormalization.swift` (`isRepresentableTool`); `MiMoV26ToolEvidence.OriginalTool` |
+| Reserved metadata | Reject client-authored reserved schema metadata before tool-choice handling, including `none`. No new caller trust or forced-tool capability follows from capture. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`rejectReservedSchemaMetadata`); `MiMoV26ToolEvidence.restoring` |
+| Public regression | Two newly authored reproductions exercise exact provider/local prompt IDs through scripted generation. Historical external-corpus and live platform qualification remain separate. | `fixtures/prompt-contract/mimo-v26-schema-parity-v1.json`; [fixture procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions) |
+
 #### GLM native prompt contract
 
 GLM-5.3-Flash (catalog `glm-5.3-flash` and the local qualification download)
@@ -1156,10 +1176,12 @@ model names cannot authorize the raw-schema path.
 
 | Request-body control | Native text contract | Provider source |
 |---|---|---|
-| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and invalid shadowed values reject; the template has no thinking-off level. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`) |
+| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and `off` are thinking-off requests (below); other invalid values reject even when shadowed. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`, `Effort`) |
+| `reasoning.max_tokens` | Positive integer. Selects the nearest effort when no effort alias is present: at most 1,024 renders `low`, at most 8,192 `high`, otherwise `max` (the budgets OpenAI-compatible APIs give `low` and `medium`). The template does not enforce a token budget. | Same source (`Effort.init(reasoningBudget:)`) |
+| `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking`, `include_reasoning`, `reasoning.exclude` | Boolean only. `true` (`false` for `reasoning.exclude`) keeps reasoning on and returned: a no-op that leaves the rendered prompt unchanged. The opposite value refuses with 400 `MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled`, because the template always reasons and the provider has no per-request seam to withhold reasoning deltas. Local HTTP returns the fixed `GLM5NextPromptPolicy.reasoningCannotBeDisabledMessage` with code `unsupported_value`; the coordinator frame keeps the closed `invalid_request` / `client_error` vocabulary. | Same source (`RawControls`, `validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | `clear_thinking`, `chat_template_kwargs.clear_thinking` | Boolean only; top-level precedes template value; default `false`. This clears historical reasoning, not newly generated reasoning. | Same source and symbols |
 | Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. | Same source (`normalizedTextInput`, `validateHistory`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
-| Unqualified modes | Reject binary thinking controls, forced tool calls, strict tool decoding, JSON output modes and media. GLM image input uses the native causal media path when the slot's engine accepts prepared causal media; otherwise, and for any video, local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
+| Unqualified modes | Reject `preserve_thinking`, top-level `thinking`, other `reasoning` or `chat_template_kwargs` keys, forced tool calls, strict tool decoding, JSON output modes and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 
 `LocalResponseRequest` retains request-local raw controls for the same later
 loaded-model check; capture alone grants no capability

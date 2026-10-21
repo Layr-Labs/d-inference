@@ -92,9 +92,13 @@
   redundant visual tokens at rate 0.5 (`DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING`,
   `0` disables). Its media reservation (at most 3.5 GiB, below one largest
   image's) is taken before any frame decodes; a second video, a video with
-  images, another container, frames above 4096 × 2160 pixels, more than
-  36,000 frames, extreme aspect ratios and undecodable movies are refused
-  with 400. The checkpoint's video
+  images, another container, a codec other than H.264 or HEVC, frames of
+  more than 8,847,360 pixels (4096 × 2160, in any shape), more than 36,000
+  frames, more than 37.6 billion decoded pixels (every frame up to the last
+  sampled one decodes; ten minutes of 30 fps 1080p fits), extreme aspect
+  ratios and undecodable movies are refused with 400, as is a movie that
+  keeps the decoder busy past its allowance (at most two minutes).
+  Cancelling a video request stops its decoder at once. The checkpoint's video
   embedder is now loaded, adding 3,932,160 bytes to the resident installation.
 - A load right after a Super unload re-samples free memory for up to two
   seconds while macOS returns the unloaded pages, instead of refusing.

@@ -201,6 +201,91 @@ struct NemotronSuperVideoBindingTests {
         }
     }
 
+    /// Cancelling a request while its frames decode returns the ingress and
+    /// media charges and leaves the owner without a fault.
+    @Test(.timeLimit(.minutes(3))) func cancellingAVideoMidDecodeReleasesItsCharge() async throws {
+        let fixture = try await Self.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
+        let body = try await Self.longVideoBody()
+        let template = try Self.template()
+        let baseline = await fixture.budget.outstandingReservedBytes()
+        let request = Task {
+            try await media.runEncoded(body: body, templateBytes: template) { _ in }
+        }
+        try await Self.decodeStarted(fixture.budget)
+        request.cancel()
+        await #expect(throws: CancellationError.self) { try await request.value }
+        #expect(await fixture.budget.outstandingReservedBytes() == baseline)
+        #expect(!fixture.owner.hasRetainedImageFault)
+        try await fixture.close()
+    }
+
+    /// Retiring the owner while a video decodes cancels it instead of
+    /// waiting on the decoder.
+    @Test(.timeLimit(.minutes(3))) func drainStopsAnActiveVideo() async throws {
+        let fixture = try await Self.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
+        let body = try await Self.longVideoBody()
+        let template = try Self.template()
+        let request = Task {
+            try await media.runEncoded(body: body, templateBytes: template) { _ in }
+        }
+        try await Self.decodeStarted(fixture.budget)
+        try await fixture.close()
+        await #expect(throws: CancellationError.self) { try await request.value }
+    }
+
+    /// The fixture tower's 32 x 32 position table: square clips map to it.
+    private static let squareTower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+        channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
+
+    private struct VideoOwner {
+        let owner: NemotronSuperLocalBridgeBuilder.Owner
+        let budget: GlobalKVCacheBudget
+        let lease: PendingModelLoadLease
+        let residency: NemotronSuperResidency
+
+        /// Drains and retires the owner; every charge but the load's returns.
+        func close() async throws {
+            try await owner.closeAfterDrain()
+            #expect(residency.snapshot.usedBytes == 0)
+            #expect(await budget.finishPendingLoad(lease))
+            #expect(await budget.outstandingReservedBytes() == 0)
+        }
+    }
+
+    private static func videoOwner(contextLength: Int) async throws -> VideoOwner {
+        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: squareTower).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-video-" + UUID().uuidString,
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: TokenizerHandle(SuperSyntheticVideoTokenizer()), eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: contextLength, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        return VideoOwner(owner: owner, budget: budget, lease: lease, residency: residency)
+    }
+
+    /// 600 frames at 30 fps: 40 sampled frames (20 tubelets) to decode and
+    /// normalize, seconds of work in a debug build.
+    private static func longVideoBody() async throws -> Data {
+        let uri = NemotronSuperVideoClips.uri(try await NemotronSuperVideoClips.movie(frames: 600, fps: 30))
+        return try body([user([text("fixture"), video(uri)])], extras: ["max_tokens": 2, "temperature": 0])
+    }
+
+    /// Returns once the video's media charge is held, which is taken right
+    /// before its first frame decodes, and a moment more.
+    private static func decodeStarted(_ budget: GlobalKVCacheBudget) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        while await !budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }) {
+            try #require(ContinuousClock.now < deadline, "the video never reserved its media charge")
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+    }
+
     @Test(.timeLimit(.minutes(3))) func encodedVideoServesAndReleasesItsCharge() async throws {
         let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
             channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)

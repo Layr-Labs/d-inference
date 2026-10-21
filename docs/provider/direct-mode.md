@@ -215,7 +215,7 @@ frame-timestamp label.
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
 | A media request body over 8 MiB, or visual tokens or an image prompt beyond the context | 400 before decoding; nothing stays reserved |
-| A second video, a video with images, another container, an undecodable movie, frames above `4096 * 2160` pixels or an extreme aspect ratio | 400 before any frame decodes |
+| A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
 
 Image and video requests still refuse `tools` and `response_format`; formats outside the
 image format reference are refused. The host calls the hook's `drain()` before the

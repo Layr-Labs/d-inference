@@ -96,16 +96,20 @@ The same binding serves one inline video as the only media of a request
 at a time, like images). Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
-`NemotronSuperServingPolicy.maximumVideoFramePixels`), then reads the
-compressed samples of the one video track as vLLM's OpenCV loader reads
-FFmpeg's metadata: the sample count (at most
+`NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
+admits only an H.264 or HEVC track (`NemotronSuperVideoDecode.admittedCodecs`),
+then reads the compressed samples of the one video track as vLLM's OpenCV
+loader reads FFmpeg's metadata: the sample count (at most
 `NemotronSuperVideoDecode.maximumSourceFrames`, 36,000: ten minutes at 60 fps),
 and the rate as that count over the summed sample durations; as in FFmpeg, the
 last sample may have zero duration (no other may). The SDK's
 `NemotronSuperVideoPreprocessing` samples 2 frames per second (at most 256,
 `np.linspace` truncation), formats each tubelet's label and fixes one frame
 grid of about 1,024 patches; grids above
-`NemotronSuperServingPolicy.maximumVideoGridPatches` are refused.
+`NemotronSuperServingPolicy.maximumVideoGridPatches` are refused. Every frame
+up to the last sampled one is decoded, so a plan whose decoded frames hold
+more than `NemotronSuperVideoDecode.maximumDecodedPixels` pixels (ten minutes
+of 30 fps 1080p) is refused as well.
 `NemotronSuperPromptContract.videoPrompt` renders the video in the template's
 single media slot (the template renders a lone video exactly as a lone image,
 but as plain `<video>` text) and tokenizes each label alone, later ones behind
@@ -124,9 +128,16 @@ image's charge. As for images, a body over
 invalid-media 400 and a charge the shared budget cannot hold returns the
 media-memory 503, as does a video prompt over the context.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
-frames and converts only the sampled ones (presentation order, the track's
-rotation applied, BGRA to RGB8), normalizing them with the image resize; an odd
-last frame repeats. `NemotronSuperVideoFeatures.prepare` runs
+frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
+each decoded frame must have the inspected size and row bytes within the
+charge (`NemotronSuperVideoDecode.validateDecodedFrame`), and only the sampled
+ones are copied to RGB8 (presentation order, the track's rotation applied) and
+normalized with the image resize; an odd last frame repeats. Waiting on the
+decoder is bounded by `NemotronSuperVideoDecode.decodeAllowance` (5 s, then
+2 ms a frame and 4 ns a coded pixel, at most 120 s): when it is spent the
+reader is cancelled and the video is refused. Cancelling the request, as the
+binding's `drain` does, cancels a read blocked in the decoder.
+`NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with
 `throwIfMLXFaulted`, and keeps only projected rows. When

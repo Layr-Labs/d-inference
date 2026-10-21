@@ -148,9 +148,9 @@ enum NemotronSuperLocalBridgeBuilder {
         /// The installation, while this owner accepts media work. The lock
         /// covers only this check: rendering, decoding and the tower run
         /// without it, so text admission and fault checks never wait on an
-        /// image. The installation cannot close meanwhile: image steps run only
-        /// inside the image binding's one active media task, which
-        /// `closeAfterDrain` awaits before `closeAfterRetirement`.
+        /// image or a video. The installation cannot close meanwhile: media
+        /// steps run only inside the image binding's one active media task,
+        /// which `closeAfterDrain` awaits before `closeAfterRetirement`.
         private func mediaInstallation() throws -> NemotronSuperInstallation.Installed {
             try lock.withLock {
                 guard closing == nil, imageFaults.isEmpty, let installed else {
@@ -247,22 +247,13 @@ enum NemotronSuperLocalBridgeBuilder {
         /// Decodes `frames` into the installed tower in bounded tubelet
         /// batches, prunes the projected rows at `videoPruningRate` and
         /// expands `prompt` with the kept rows. A failed fence keeps the
-        /// arrays it left in flight with this owner.
-        /// The lock covers only the admission check: frames decode and the
-        /// tower runs without it, so text admission and fault checks never
-        /// wait on a video. The installation cannot close meanwhile: this runs
-        /// inside the image binding's one active media task, which
-        /// `closeAfterDrain` awaits before `closeAfterRetirement`.
+        /// arrays it left in flight with this owner. Frames decode and the
+        /// tower runs outside the owner lock (`mediaInstallation()`).
         func prepareLocalVideo(_ frames: NemotronSuperVideoDecode.Frames,
             prompt: NemotronSuperPromptContract.VideoPrompt, maximumFeatureBytes: Int,
             construction: NativeConstructionScope
         ) throws -> EngineV2VisionPrefill.PreparedSubmission {
-            let installation = try lock.withLock { () throws -> NemotronSuperInstallation.Installed in
-                guard closing == nil, imageFaults.isEmpty, let installed else {
-                    throw Failure.retirementIncomplete
-                }
-                return installed
-            }
+            let installation = try mediaInstallation()
             var live: [MLXArray] = []
             do {
                 return try NemotronSuperVideoFeatures.prepare(installed: installation, frames: frames,

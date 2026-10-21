@@ -74,7 +74,7 @@ struct FlintTemplateReplayTests {
         return try Data(contentsOf: url)
     }
 
-    private func render(
+    func render(
         _ request: OpenAIChatCompletionRequest, modelType: String?
     ) throws -> String {
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)

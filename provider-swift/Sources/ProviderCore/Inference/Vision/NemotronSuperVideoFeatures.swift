@@ -90,7 +90,7 @@ enum NemotronSuperVideoFeatures {
                     eval(features)
                     try EngineV2VisionPrefill.throwIfMLXFaulted(errors)
                     guard features.ndim == 3, features.dim(0) == count, features.dim(1) == grid.tokens else {
-                        throw Binding.Failure.invalidFeatures
+                        throw Binding.Failure.inconsistentVideoFeatures
                     }
                     live.removeAll { $0 === pixels }
                     if prunes {
@@ -129,7 +129,7 @@ enum NemotronSuperVideoFeatures {
                         zip(positions, positions.dropFirst()).allSatisfy { $0 < $1 }
                             && positions.allSatisfy { (0 ..< grid.tokens).contains($0) }
                     })
-                else { throw Binding.Failure.invalidFeatures }
+                else { throw Binding.Failure.inconsistentVideoFeatures }
                 let (featureBytes, overflow) = retained.multipliedReportingOverflow(by: rows.dim(2) * 4)
                 guard !overflow, featureBytes <= maximumFeatureBytes else { throw Binding.Failure.capacity }
                 let tokens: [Int]

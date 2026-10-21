@@ -229,6 +229,22 @@ struct NemotronSuperVideoBindingTests {
         }
     }
 
+    /// Native feature failures name what went wrong, for video as for images.
+    @Test func featureFailuresNameTheirCause() {
+        let failures: [(Binding.Failure, String)] = [
+            (.invalidFeatures, "native media features were not finite"),
+            (.inconsistentVideoFeatures, "native video features did not match the admitted layout"),
+        ]
+        for (failure, message) in failures {
+            let mapped = SuperHTTPErrors.map(failure, media: true)
+            guard case .generationFailed(let description)? = mapped as? MultiModelBatchSchedulerEngineError else {
+                Issue.record("\(failure) mapped to \(mapped)")
+                continue
+            }
+            #expect(description == message)
+        }
+    }
+
     /// Ten tubelets run as batches of four, four and two, each later batch
     /// scored behind the previous batch's last tubelet. The kept rows equal
     /// EVS over the whole video's rows (the SDK's whole-video reference):

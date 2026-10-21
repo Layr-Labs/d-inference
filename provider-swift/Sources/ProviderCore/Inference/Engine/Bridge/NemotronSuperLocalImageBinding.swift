@@ -14,9 +14,11 @@ import MLXVLM
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, unsupportedCapability, invalidInput, capacity, retainedFault
-        /// The tower and projector produced a non-finite feature, or video
-        /// pruning kept other rows than its admitted count.
+        /// The tower and projector produced a non-finite feature.
         case invalidFeatures
+        /// The video tower returned rows of another shape, or EVS pruning
+        /// kept other rows than the prompt admitted.
+        case inconsistentVideoFeatures
     }
 
     /// Internal qualification input. The caller must transfer immutable arrays

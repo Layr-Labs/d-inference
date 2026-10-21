@@ -175,7 +175,10 @@ enum SuperHTTPErrors {
             case .wrongModel, .unsupportedCapability, .invalidInput:
                 return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline media request")
             case .invalidFeatures:
-                return MultiModelBatchSchedulerEngineError.generationFailed("native image features were not finite")
+                return MultiModelBatchSchedulerEngineError.generationFailed("native media features were not finite")
+            case .inconsistentVideoFeatures:
+                return MultiModelBatchSchedulerEngineError.generationFailed(
+                    "native video features did not match the admitted layout")
             }
         }
         if let failure = error as? NemotronSuperLocalBinding.Failure {

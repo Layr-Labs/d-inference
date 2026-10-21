@@ -51,9 +51,9 @@ final class NemotronSuperSlotOwner: Sendable {
     }
 
     /// One coordinator or local-endpoint request: text on the text binding,
-    /// inline JPEG/PNG images on the image binding (target-only when the
-    /// owner speculates). Only the coordinator path trusts schema metadata
-    /// (see `NemotronSuperRequestPlan`).
+    /// inline JPEG/PNG images or one inline video on the image binding
+    /// (target-only when the owner speculates). Only the coordinator path
+    /// trusts schema metadata (see `NemotronSuperRequestPlan`).
     func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
                     trustsSchemaMetadata: Bool) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,

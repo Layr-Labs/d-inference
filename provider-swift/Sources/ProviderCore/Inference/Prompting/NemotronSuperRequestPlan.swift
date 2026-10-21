@@ -31,11 +31,11 @@ struct NemotronSuperRequestPlan: Sendable {
          modelID: String = NemotronSuperLocalBinding.modelID, trustsSchemaMetadata: Bool = false) throws {
         let decoded = try formatted ?? OpenAIResponseFormatSupport.preparedRequest(
             ProviderLoop.decodeOpenAIRequest(body))
-        let parts = decoded.messages.reduce(0) { count, message in
+        let contentParts = decoded.messages.reduce(0) { count, message in
             guard case .parts(let parts) = message.content else { return count }
             return count + parts.count
         }
-        guard parts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
+        guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
         try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
             modelType: "nemotron_h_omni", allowInternalSchemaMetadata: trustsSchemaMetadata)

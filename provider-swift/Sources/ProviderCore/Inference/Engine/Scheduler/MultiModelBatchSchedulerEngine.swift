@@ -768,7 +768,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if let failure = error as? PreContentDeadlineFailure { throw failure }
                     if error is CancellationError { throw CancellationError() }
                     if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
-                    if case .tokenBudgetExhausted? = error as? MultiModelBatchSchedulerEngineError { throw error }
+                    if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
                     if let visionError = error as? EngineV2VisionPrefillError {
                         switch visionError {
                         case .noProcessedMedia:

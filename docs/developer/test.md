@@ -844,6 +844,26 @@ byte for byte and the final tensors bitwise; JPEG uses the bounds in the
 [image format reference](../reference/nemotron-super-image-formats.md).
 Regenerated fixtures must be byte-identical unless a pinned reference changes.
 
+The three Nemotron Super reference clips in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/NemotronSuperVideos` and their
+`nemotron-super-video-golden.json` come from NVIDIA's serving path (vLLM's
+OpenCV loader at 2 fps and 256 frames, the HF processor and the pinned
+tokenizer). `NemotronSuperVideoGoldenTests` checks the frame plan, labels,
+grid, decoded frame layout, the red first frame of the colors clip, EVS
+retained counts, the `<video>` replacement ids
+and the template text without the tokenizer; with
+`NEMOTRON_SUPER_REFERENCE_DIR` it also checks the label and full prompt token
+ids. `NemotronSuperVideoBindingTests` covers video admission, the tubelet
+layout, the media charge and its quote, and serves a synthesized MP4 end to
+end on the tiny installed fixture, checking its prompt length and one span per
+tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
+selects over the whole video, that cancelling or draining a decoding video
+returns its charge and that a malformed pruning rate fails the load
+before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
+refusals on synthesized clips (decoded-pixel budget, codec, second track,
+zero-duration frame), per-frame validation, the decode allowance, reader
+cancellation and the container type hint.
+
 The managed slot is covered by `NemotronSuperServingPolicyTests` and
 `NemotronSuperMediaChargeTests` (identity, discovery, image advertisement, load
 plan, footprint, media charge and capacity quotes; CPU only) and

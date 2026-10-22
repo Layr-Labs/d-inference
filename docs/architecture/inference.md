@@ -29,9 +29,9 @@ lease. `NemotronSuperLocalBinding` owns acquisition through engine retirement an
 drains its own requests; the owner mints one `localTextBinding` and drains it in
 `closeAfterDrain` before the image binding and bridge. It accepts pretokenized text only; media, tools, schemas
 and client prompt-cache keys are rejected, and text prefix reuse runs only when the owner has a
-checkpoint bank (below). The builder uses serial contiguous KV, bounded
-calibrated prefill, and no MTP unless the explicit opt-in below installs text
-speculation. The provider installs this owner only through the
+checkpoint bank (below). The builder uses serial segmented paged KV (Super has
+no contiguous storage), bounded calibrated prefill, and no MTP unless the
+explicit opt-in below installs text speculation. The provider installs this owner only through the
 [managed Super slot](#managed-nemotron-super-slot). `NemotronSuperLocalLoad` owns
 the one-shot load transaction, checks the pinned config, reserves the
 conservative SDK quote and preserves charges on native completion faults. `NemotronSuperPromptContract` renders the
@@ -68,7 +68,8 @@ Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalBinding.swift`.
 
 The dedicated `NemotronSuperLocalImageBinding` is minted by that exact load
-owner, uses separate real media and bridge KV reservations, and cancels/drains
+owner, holds its own media reservations (its prompt's KV pages are charged
+like text's, by the engine's process-memory owner), and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
 and close. It does not manufacture a shared native lease; the managed slot's
 chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
@@ -91,6 +92,73 @@ tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
+The same binding serves one inline video as the only media of a request
+(`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
+at a time, like images). Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
+container, duration, coded frame size up to
+`NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
+admits only an H.264 or HEVC track (`NemotronSuperVideoDecode.admittedCodecs`),
+then reads the compressed samples of the one video track as vLLM's OpenCV
+loader reads FFmpeg's metadata: the sample count (at most
+`NemotronSuperVideoDecode.maximumSourceFrames`, 36,000: ten minutes at 60 fps),
+and the rate as that count over the summed sample durations; as in FFmpeg, the
+last sample may have zero duration (no other may). The SDK's
+`NemotronSuperVideoPreprocessing` samples 2 frames per second (at most 256,
+`np.linspace` truncation), formats each tubelet's label and fixes one frame
+grid of about 1,024 patches; grids above
+`NemotronSuperServingPolicy.maximumVideoGridPatches` are refused. Every frame
+up to the last sampled one is decoded, so a plan whose decoded frames hold
+more than `NemotronSuperVideoDecode.maximumDecodedPixels` pixels (ten minutes
+of 30 fps 1080p) is refused as well.
+`NemotronSuperPromptContract.videoPrompt` renders the video in the template's
+single media slot (the template renders a lone video exactly as a lone image,
+but as plain `<video>` text) and tokenizes each label alone, later ones behind
+their `\n`, as vLLM's `get_video_repl`; every tubelet then contributes its label,
+`<img>`, one `<image>` per kept feature and `</img>`. EVS fixes the kept count,
+`max(N, int(T * N * (1 - q)))` (`NemotronSuperVideoFeatures.retainedRows`), so
+the prompt is admitted at its final length before any frame decodes. The whole
+charge (`NemotronSuperLocalImageBinding.videoChargeBytes`: two encoded copies,
+the decoder working set at the coded frame size, one batch of four tubelets'
+frames and tower activation, its five-tubelet EVS scoring window at
+`NemotronSuperServingPolicy.videoScoringBytesPerRow`, and three Float32 copies
+of every projected row) is then reserved; its maximum,
+`NemotronSuperServingPolicy.videoMediaChargeBytes`, stays below one largest
+image's charge. As for images, a body over
+`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) returns the
+invalid-media 400, as does a video prompt over the context, and a charge the
+shared budget cannot hold returns the media-memory 503. The owner lock covers
+only the admission check while the video prompt is decoded and rendered.
+`NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
+frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
+each decoded frame must have the inspected size and row bytes within the
+charge (`NemotronSuperVideoDecode.validateDecodedFrame`), and only the sampled
+ones are copied to RGB8 (presentation order, the track's rotation applied) and
+normalized with the image resize; an odd last frame repeats. Every read, and
+the reader's one cancellation, runs in order on the reader's own serial queue
+while the pulling thread waits for the sample, so the reader is never
+cancelled during a read. Waiting on the decoder is bounded by
+`NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
+coded pixel, at most 120 s): when it is spent the wait ends and the video is
+refused. Cancelling the request, as the binding's `drain` does, ends the wait
+at once. Either way the reader is cancelled once the read in progress
+returns, and that read's sample is dropped.
+`NemotronSuperVideoFeatures.prepare` runs
+`videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
+the installation's native setup, checking every evaluation with
+`throwIfMLXFaulted`, and keeps only projected rows. When
+`DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING` (default `0.5`, `0` keeps every row; a
+malformed value fails the load before its LOAD claim) prunes anything, each
+batch is scored with `NemotronSuperEVS.dissimilarity` behind the previous
+batch's last tubelet, since a token scores only against the same position of
+the previous tubelet; the host scores then select the kept rows, the same rows
+EVS selects over the whole video. Each tubelet's kept rows are substituted
+at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
+rows were all pruned keeps its label and wrappers and has no span. Invalid,
+oversized or undecodable videos map to the invalid-media 400. AVFoundation's
+BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
+not equal to, the reference loader's.
+
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary
 roots, while failed completion retains resident objects and charges. Header-derived
@@ -100,8 +168,11 @@ MTP tensors does not qualify execution.
 The optional `NemotronSuperLocalImageHTTP` hook reuses the authenticated local
 application and standard JSON/SSE framing and defaults to absent. It serves text
 through the owner's `localTextBinding` and images through its image binding, admits
-the owner's configured number of requests and refuses another with `queueFull`
-(429) before any response starts. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
+the owner's configured number of requests before it decodes the body or renders
+the prompt, and refuses another with `queueFull` (429) before any response
+starts. A response starts at the first generated chunk the output parser accepts,
+even one it withholds, so a held answer's failed validation ends the stream with
+an error. `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)` builds
 it over the transaction's own owner. Only the qualification runner installs it as
 a hook; the managed slot serves the same route through `engine(body:hasMedia:cacheScope:)`.
 `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` (default `1`) sets how many requests
@@ -124,9 +195,10 @@ reserved before the first request and released only after native retirement:
 measured on the full checkpoint) for the pinned checkpoint, the ModelOpt
 workspace quote for synthetic fixtures. A lane that does not fit fails the load;
 the pinned checkpoint's LOAD claim already holds it (below).
-Each bridge request reservation carries, beyond the engine's recurrent
-generations and any speculation charge, `requestWorkspaceBytes`: one
-`NemotronSuperDecodeCharge` decode row. The builder refuses a KV grant that
+Each request's fixed bytes count, beyond the engine's recurrent generations
+and any speculation charge, `requestWorkspaceBytes`: one
+`NemotronSuperDecodeCharge` decode row, which the owner reserves for every
+configured request (below). The builder refuses a KV grant that
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
@@ -143,8 +215,9 @@ LOAD claim holds the installation, any head, the lane, the bank and the
 requests' KV, so half of what the machine's cap leaves beside it stays free.
 `grant / 4` is the engine's own bank ceiling when a re-slice shrinks the grant.
 A lone slot (grant = fleet KV budget) gets 16 GiB for either owner on 192, 256
-and 512 GiB; on 192 GiB the speculating owner's whole claim leaves more than
-19 GB of the cap for other memory. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
+and 512 GiB; on 192 GiB the speculating owner's whole claim (110.0 GiB) and
+activation reserve leave 60.8 GiB of the cap for other memory, on 128 GiB
+(a 5.25 GiB bank) 13.9 GiB. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
 keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
@@ -176,29 +249,32 @@ newcomer memory the bank still holds. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift`.
 
-`NemotronSuperLocalKVBackend` selects the attention KV storage:
-`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` selects the segmented native
-paged backend (the adapter declares `supportsPagedKV` and
-`requiresNativePagedKV`; the pool takes the eight attention layers' observed
-BF16 types) and `contiguous` the contiguous one. The managed slot's
-`NemotronSuperServingPolicy.loadPlan` sets `paged` when the key is unset; the
-builder alone defaults to contiguous. A paged selection never degrades: a
-paged construction failure fails the load. On paged storage the
+Super serves paged attention KV only: `NemotronSuperLocalKVBackend` always
+selects the segmented native paged backend (the adapter declares
+`supportsPagedKV` and `requiresNativePagedKV`; the pool takes the eight
+attention layers' observed BF16 types). `DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`
+unset or `paged` serves it; `contiguous` fails the load as no longer supported
+(`contiguousUnsupported`) and any other value as malformed (`invalidBackend`).
+The load transaction refuses either, and `DARKBLOOM_CBV2_PAGED_KV` disabling
+paged KV (`pagedDisabled`; the fleet kill switch would otherwise degrade the
+paged selection to contiguous), before its LOAD claim and installation. A paged
+construction failure fails the load, and the builder retires a built bridge
+whose storage is not paged and fails the load instead of serving it
+(`storageNotPaged`). The
 engine's process-memory owner charges pages and recurrent rows to the shared
 budget as they materialize and the bridge reserves no request bytes, so the
 owner reserves `requestWorkspaceBytes` for every configured request (the
 decode rows) from before the first request until native retirement, like the
-lane. The text prefix bank works on either storage
-(`CBv2HybridPrefixCacheConfig.permitsPagedStorage`): its budget is carved from
-the paged grant as from the contiguous one, a paged donor's prompt KV is
-gathered into the bank's own buffers on the engine queue before its pages
-return to the pool, and an adopter writes that prefix into fresh pages with a
-`.direct` plan. A paged backend with step-owned attention, a native binding or
-a page-sharing index builds no bank, and the builder then fails the load
-(`NemotronSuperLocalPrefixCache.Failure.unavailable`). Paged and
-contiguous attention reduce differently, so their logits agree within a
-stated tolerance rather than bit for bit; within paged storage, batched rows,
-captured speculation windows and rollback stay exact.
+lane. The text prefix bank (`CBv2HybridPrefixCacheConfig.permitsPagedStorage`)
+is carved from the paged grant, a donor's prompt KV is gathered into the
+bank's own buffers on the engine queue before its pages return to the pool,
+and an adopter writes that prefix into fresh pages with a `.direct` plan. A
+paged backend with step-owned attention, a native binding or a page-sharing
+index builds no bank, and the builder then fails the load
+(`NemotronSuperLocalPrefixCache.Failure.unavailable`). Within paged storage,
+batched rows, captured speculation windows and rollback stay exact; the gated
+`NemotronSuperPagedLiveTests` hold paged logits to a contiguous reference arm,
+which reduces differently, within a stated tolerance.
 `NemotronSuperLocalMTP` installs text speculation only when
 `DARKBLOOM_NEMOTRON_SUPER_MTP` is exactly `1` (the hook's default is off; the
 managed slot's policy sets it). The load transaction
@@ -241,7 +317,7 @@ Super manifest scanner also retains root `LICENSE.txt` and
 `UPSTREAM_README.md` notices in the download and integrity aggregate; adding
 these notices requires a new immutable artifact revision. Other model families'
 integrity inventories are unchanged. Managed `auto` enables text speculation;
-image requests automatically use the target-only path on that same owner.
+image and video requests automatically use the target-only path on that same owner.
 
 The provider serves exactly one Super artifact, `NemotronSuperServingPolicy.modelID`
 (`nvidia-nemotron-3.5-super`): the complete pinned NVIDIA NVFP4 checkpoint, embedded
@@ -262,8 +338,8 @@ flowchart LR
     G --> D
 ```
 
-`ensureModelLoaded` runs its ordinary selection, eviction and load gate on the
-discovery footprint, then hands the load to `ProviderLoop.loadNemotronSuperSlot`.
+`ensureModelLoaded` runs its ordinary selection and Super's own eviction and
+load gate (below), then hands the load to `ProviderLoop.loadNemotronSuperSlot`.
 Under the re-slice gate, held until installation, `resliceShrinkingForNewcomer`
 shrinks survivors and returns Super's grant; `NemotronSuperSlotLoader.pinnedCheckpoint`
 opens every shard against its pin (`NemotronSuperCheckpoint`) and runs the
@@ -271,12 +347,73 @@ transaction. Its LOAD claim holds the installation's and (with speculation) the
 head's resident payloads, and
 `NemotronSuperServingPolicy.admissionKVBytes` of KV headroom: every configured
 request's measured fixed bytes, rounded up (576 MiB with speculation, 512 MiB
-plain, at any context), a speculating owner's round work once
-(`speculativeOwnerBoundBytes`, below), plus 2 GiB and any prefix bank, never
-above the grant. For the pinned checkpoint the same claim also holds the prefill
-lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
+plain, at any context), 2 GiB and any prefix bank, which the grant holds and
+which never exceed it (`grantKVBytes`), and a speculating owner's round work
+once (`speculativeOwnerBoundBytes`, below), which is reserved beside the grant
+whatever its size. The grant itself must still hold every configured
+request's fixed bytes and the minimum KV: a smaller co-resident grant serves
+fewer requests, and one that cannot serve a single request fails the load
+at publication (below). For the pinned checkpoint the same claim also holds
+the prefill lane at its measured bound (`NemotronSuperLocalBridgeBuilder.pinnedOwnerShares`),
 so one admission before any allocation covers everything the loaded owner keeps
 and a load that cannot hold it is refused before a shard is read into memory.
+A refused claim first returns MLX's cached buffers (once per load) and asks
+again for the same configuration; a refusal alone only schedules the
+reclaimer's flush. Before refusing, the transaction tries narrower
+configurations in order
+(`NemotronSuperLoadFit`): the same policy without the prefix bank, then half
+the concurrent requests at a time down to one, then that request with
+1,024-token prompt chunks (a 4.75 GiB lane instead of 8.5 GiB), each with
+every measured bound (installation, head, the lane of its chunk, per-request
+bytes, the round at the whole context). It builds the first one the gate
+admits with `NemotronSuperLoadFit.admissionSlackBytes` (3 GiB) to spare
+beside the claim: while the claim is held the process grows up to 2.6 GB past
+the installation's quote, and a configuration admitted with 1.9 GB to spare
+lost its admission after its weights were installed. If memory still drops
+by more than the slack while the weights install (other applications
+swapping), the owner build's memory refusal (`loadAdmissionLost`, or a refused
+lane, decode rows, round or bank) does not retire the load: the transaction
+keeps the installed weights and head, finishes that claim (its attempt is
+marked `lostAfterInstallation`) and asks the gate for each next narrower
+configuration's owner shares, KV floor and slack
+(`NemotronSuperLoadFit.Claim.installedAskedWeightBytes`), failing with the
+builder's last refusal when none fits. Super's claims keep no
+OS reserve beyond that slack and the activation reserve
+(`NemotronSuperLoadFit.systemReserveBytes`, in place of the provider's 10%
+load reserve) unless the operator raised `memory_reserve_gb` above its 4 GiB
+default, which then stays free whole. So the narrowest configuration loads
+with `NemotronSuperLoadFit.minimumAvailableBytes` (85.6 GiB) available: its
+80.6 GiB claim, the slack and the 2 GiB activation reserve. The default (eight
+requests and a bank, about 99 GiB) needs about 104 GiB. Every attempt is
+recorded (`fitAttempts`; the provider logs an owner narrower than planned,
+the qualification runner's `load.fit` event lists each claim beside the
+gate's terms).
+Pre-accept (`fastAdmissionReject`), eviction and startup preload decide on
+the same terms (`ProviderLoop+NemotronSuperAdmission`): the room the claim
+would be admitted with (`GlobalKVCacheBudget.HeadroomSnapshot.loadClaimRemainingBytes`,
+the ledger's own admission with Super's system reserve) against what each
+configuration requires (`NemotronSuperLoadFit.Claim.requiredBytes`; for the
+pinned checkpoint `pinnedRequirements`, the plan sized for a lone slot
+first). On memory, pre-accept refuses only when evicting every idle model
+cannot make room for the narrowest configuration. Eviction removes idle
+models, least recently used first, until the room holds the widest
+configuration such eviction can reach, so an idle model yields to the
+planned owner rather than to a narrower one, and refuses without evicting
+when not even the narrowest is reachable. A victim that takes work while its
+unload suspends declines it, and eviction plans again from the models still
+idle; the third decline refuses the load. Startup preload, which never
+evicts, admits Super by the same room and orders it by its planned
+requirement. The discovery footprint (`estimated_memory_gb`) is the
+narrowest configuration's requirement itself,
+89,750,767,136 bytes (83.6 GiB) on every Mac. Cold capacity quotes and the
+coordinator's cold-load routing compare it and the load headroom with free
+memory less the provider's load reserve (`free_for_load_gb`), so they stay
+stricter than the provider's 85.6 GiB minimum (about 99.4 GiB available on
+128 GB) until the platform adopts a Super-specific rule.
+The bridge reports the width it was built with, so capacity quotes route no
+more concurrent work to it. A resident slot's image or video probe is quoted
+against the ledger room its media reservation is admitted by
+(`process_memory.remaining_bytes`), not the load gate's room.
 The load's transient (`NemotronSuperLoadClaim`) is the larger of the
 installation's staging with its 2 GiB backend allowance and the head's
 construction allowance, and the claim adds only the part beyond that serving
@@ -293,7 +430,18 @@ their own reservations right before taking them, so no byte is counted twice.
 The grant itself stays the engine's admission ceiling, re-sliced like every slot's; the
 builder still refuses a grant that cannot serve every configured request with
 `UnserviceableGrant`. After the post-build headroom guard the bridge is
-registered and the slot installed.
+registered and the slot installed. The lane, the decode rows and the
+round sit in the shared budget beside the grant (only the bank is carved from
+it), so the re-slice (`fleetKVBudgetBytes`) and the heartbeat clamp count them
+as resident, like weights (`NemotronSuperSlotOwner.reservedBesideGrantBytes`):
+the newcomer's re-slice counts the planned lane and round, and publication
+re-slices every grant with the actual reservations, so Super's engine ceiling
+and advertised token budget stay within what the ledger holds beside them.
+The builder checked its configured requests against the grant with the
+planned lane and round, so beside other models the published grant alone
+can be too small for one request (`superGrantRefusal`); publication then
+logs the refusal, unpublishes the slot, retires the owner and restores every
+survivor's grant instead of keeping a loaded slot that serves nothing.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
@@ -310,7 +458,8 @@ prompt plus output (`NemotronSuperServingPolicy.contextTokens`, equal to
 `maximumContextTokens`, the most the builder and the image binding accept); the
 qualification runner's `--max-context` can select less. The checkpoint's attention has no positional
 encoding and its eight attention layers keep 8 KiB of BF16 KV per token,
-reserved per request by its own length. Recurrent state, the decode row and the
+which the engine's admission ledger reserves for each request by its own
+length. Recurrent state, the decode row and the
 prefill lane do not grow with the context: on the full checkpoint each
 2,048-token chunk peaked 7.7 to 8.7 GB above the state held before it through
 131,056 tokens, with finite logits throughout; the larger figures are first
@@ -322,9 +471,9 @@ owner's assistant keeps state that grows with each request: its FP8 history
 and decoded mirror, allocated once for the request's prompt plus `max_tokens`
 and written in place. The SDK declares it as a per-token buffer
 (`CBv2MTPSequenceScaledAllocationProviding`): EngineV2 prices it for each
-request's reserved tokens through its auxiliary ledger, and each bridge
-reservation adds 1,536 bytes per token beside the 8,192 of KV, with the
-projection's rounding slack in its fixed bytes. The fixed per-request bytes are
+request's reserved tokens through its auxiliary ledger, 1,536 bytes per token
+beside the 8,192 of KV, with the projection's rounding slack in its fixed
+bytes. The fixed per-request bytes are
 533,401,365 whatever the configured context (measured; 2,450,016,143 while the
 round work was charged to every request, 4.43 GB at 65,536 while the window
 was charged up front); the plain owner's stay 516,253,712. Work of one round
@@ -369,22 +518,39 @@ keep speculating in the same steps. The image's media reservation (decode,
 normalization, features and the largest image's tower and projector bound) is
 taken from the shared budget before decoding and held until the request
 retires; one that does not fit is refused with 503 before anything is
-allocated. One image request runs at a time per owner, beside text requests; a
+allocated. A body over 8 MiB, visual tokens beyond the context or a prompt
+that overflows it is the request's own fault: 400, never a retryable 503.
+One image request runs at a time per owner, beside text requests; a
 second concurrent one gets 429 before any response starts. The Super model
 quantizes activations with deployment (SATFINITE) overflow semantics: an image
 embedding beyond a layer's text-calibrated activation scale saturates as on
 TensorRT-LLM and vLLM, where ModelOpt's eager cast rule would turn it into NaN
 (see `libs/mlx-swift-lm/docs/nemotron-super.md`). Non-finite tower or projector
-features still fail the request.
+features still fail the request; that check, like every image evaluation, runs
+under `MLX.withError`. The owner's lock covers only each image step's admission
+check, so text admission never waits on image preparation.
 The generic local engine refuses Super; only chat completions serve it.
 
 `retireNemotronSuperSlot` unregisters the bridge, drains and closes the owner
 (bindings, bridge, prefill lane, any bank, installation), then regrows
-survivors. A wedged slot is retired, never rebuilt. An owner whose native work
-did not retire keeps its weights in the fleet KV budget
-(`nemotronSuperRetainedWeightBytes`) and refuses later Super loads until
-restart. Sources:
+survivors. A wedged slot is retired, never rebuilt: no wedged row ever drains,
+so `retireWedgedNemotronSuperSlot` takes it out of serving at once and, off the
+capacity tick, shuts the bridge down before the same drain and close, within
+`nemotronSuperWedgeRetirementBound` (twice `CBv2EngineLoopConfig.shutdownTimeout`);
+the model reloads only after `engineV2RecoveryCooldown`. An owner whose native
+work did not retire, or whose wedged retirement outlives that bound, keeps its
+weights, reservations and bank in the fleet KV budget
+(`nemotronSuperRetainedWeightBytes`; a load that faults keeps its installation's
+size and the lane, round and bank its plan reserves) and refuses later Super
+loads until restart, except that a wedged retirement completing after its
+bound releases its charge and reopens the memory retirement window.
+`ensureModelLoaded` asks both refusals (`refuseNemotronSuperReload`) before it
+evicts anything for Super, and pre-accept refuses Super requests on them
+(`nemotronSuperRefusesRequest`), also while the wedged slot, still resident,
+retires. Sources:
 `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
+`provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLoadFit.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperSlotOwner.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperCheckpoint.swift`,
@@ -1382,6 +1548,17 @@ and the coordinator can refuse to route
 (`provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift`).
 
+A template `raise_exception` at request time is classified `jinja_template`
+and returned as HTTP 500, the provider-fault class, so a caller control that
+a template is known to reject must be validated before rendering. The
+Flash-Next and Qwen3.8-27B templates accept only `low`, `medium` and `xhigh`
+while thinking is enabled; any other active effort, such as OpenAI's `high`
+or `minimal`, is a typed HTTP 400 `client_error` and never reaches Jinja, on
+text and media requests alike
+(`provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`,
+`validateReasoningContext`). Media preparation rethrows such typed request
+errors instead of wrapping them as a retryable 503 construction refusal.
+
 ### Vision constraints
 
 - **One image per tower pass.** `EngineV2VisionTowerRun` drives the Qwen
@@ -1796,6 +1973,7 @@ or change consumer/OpenRouter routing.
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
 | `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
+| `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |

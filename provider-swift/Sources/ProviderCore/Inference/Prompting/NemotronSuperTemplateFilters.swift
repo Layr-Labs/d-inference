@@ -1,10 +1,11 @@
 import Foundation
 import Jinja
 
-/// Python-compatible `string`, `trim` and `tojson` for the pinned Super
-/// template. Transformers renders it with Python `str`, `str.strip` and
-/// `json.dumps(ensure_ascii=False)`; swift-jinja's defaults print booleans,
-/// `None`, floats and nested values differently. Scoped to Super so other
+/// Python-compatible `string`, `trim`, `tojson` and `str.endswith` for the
+/// pinned Super template. Transformers renders it with Python `str`,
+/// `str.strip`, `json.dumps(ensure_ascii=False)` and code-point suffixes;
+/// swift-jinja's defaults print booleans, `None`, floats and nested values
+/// differently and compare suffixes by Character. Scoped to Super so other
 /// families keep their existing prompt bytes.
 enum NemotronSuperTemplateFilters {
     /// swift-jinja resolves `string` the filter and `string` the test through
@@ -12,16 +13,23 @@ enum NemotronSuperTemplateFilters {
     /// pattern is exact only for the hash-pinned template, which has no
     /// `| string` inside literals or comments; golden tests prove its output.
     static let stringFilterName = "__nemotron_super_string"
+    /// The template's one `endswith` call decides the separator before a media
+    /// part. swift-jinja's would not see "\n" ending text that ends in "\r\n"
+    /// (one Character), so the exact call is rewritten to this filter.
+    static let endsWithFilterName = "__nemotron_super_endswith"
     static let outputLimit = 16 << 20
 
     static func bind(template: String) -> String {
-        template.replacingOccurrences(
-            of: #"\|(\s*)string(?![A-Za-z0-9_])"#, with: "|$1\(stringFilterName)",
-            options: .regularExpression)
+        template
+            .replacingOccurrences(of: #"\|(\s*)string(?![A-Za-z0-9_])"#, with: "|$1\(stringFilterName)",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: #"content_ns.val.endswith('\n')"#,
+                                  with: #"(content_ns.val | \#(endsWithFilterName)('\n'))"#)
     }
 
     static var context: [String: any Sendable] {
-        [stringFilterName: stringFilter, "trim": trimFilter, "tojson": toJSONFilter]
+        [stringFilterName: stringFilter, endsWithFilterName: endsWithFilter, "trim": trimFilter,
+         "tojson": toJSONFilter]
     }
 
     private static let stringFilter = Value.function { args, kwargs, _ in
@@ -36,6 +44,13 @@ enum NemotronSuperTemplateFilters {
         var output = ""
         try writeJSON(soleArgument(args, kwargs), to: &output, depth: 0)
         return .string(output)
+    }
+
+    /// Python `str.endswith(suffix)`, comparing Unicode scalars.
+    private static let endsWithFilter = Value.function { args, kwargs, _ in
+        guard args.count == 2, kwargs.isEmpty, case .string(let text) = args[0], case .string(let suffix) = args[1]
+        else { throw JinjaError.runtime("Super endswith accepts only a string and a string suffix") }
+        return .boolean(text.unicodeScalars.reversed().starts(with: suffix.unicodeScalars.reversed()))
     }
 
     private static func soleArgument(_ args: [Value], _ kwargs: [String: Value]) throws -> Value {

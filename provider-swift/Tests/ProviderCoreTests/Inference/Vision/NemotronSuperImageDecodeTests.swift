@@ -278,9 +278,6 @@ extension NemotronSuperImageDecodeTests {
                 + Array("en".utf8) + [0, 0, 0xff, 0xfe])]),
             ("iCCP of exactly 1 MiB", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(mebibyte)))]),
             ("corrupt iCCP", [SuperImageTestPNG.chunk("iCCP", keyed("icc", corrupt))]),
-            ("text totalling exactly 64 MiB", (0..<64).map {
-                SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte - 1)))
-            } + [SuperImageTestPNG.chunk("tEXt", Array("x".utf8) + [0] + [UInt8](repeating: 32, count: 64))]),
         ]
         for (name, chunks) in accepted {
             #expect(try NemotronSuperImageDecode.decode(image(chunks), orientation: .applyEXIF).rgb
@@ -293,10 +290,6 @@ extension NemotronSuperImageDecodeTests {
             ("compressed iTXt over 1 MiB", [SuperImageTestPNG.chunk("iTXt", Array("Desc".utf8) + [0, 1, 0]
                 + Array("en".utf8) + [0, 0] + spaces(mebibyte + 1))], .sizeLimit),
             ("iCCP over 1 MiB", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(mebibyte + 1)))], .sizeLimit),
-            ("text over 64 MiB", (0..<64).map {
-                SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte - 1)))
-            } + [SuperImageTestPNG.chunk("tEXt", Array("x".utf8) + [0] + [UInt8](repeating: 32, count: 65))],
-             .sizeLimit),
             ("second iCCP", [SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(10))),
                              SuperImageTestPNG.chunk("iCCP", keyed("icc", spaces(10)))], .invalidHeader),
         ]
@@ -305,17 +298,38 @@ extension NemotronSuperImageDecodeTests {
                 try NemotronSuperImageDecode.inspect(image(chunks), orientation: .applyEXIF)
             }
         }
+        // Stored text may total exactly 64 MiB. An image inflates at most
+        // 16 MiB (`NemotronSuperPNGTextTests`), so the rest is plain tEXt,
+        // which needs the decoder's 64 MiB encoded ceiling.
+        func plain(_ keyword: String, _ characters: Int) -> Data {
+            SuperImageTestPNG.chunk("tEXt", Array(keyword.utf8) + [0] + [UInt8](repeating: 32, count: characters))
+        }
+        let stored = (0..<16).map { SuperImageTestPNG.chunk("zTXt", keyed("T\($0)", spaces(mebibyte))) }
+            + [plain("x", 48 * mebibyte - 1)]
+        func text(last characters: Int) throws -> NemotronSuperImageDecode.Quote {
+            try NemotronSuperImageDecode.inspect(image(stored + [plain("y", characters)]), orientation: .applyEXIF,
+                                                 maxEncodedBytes: 64 * mebibyte)
+        }
+        #expect(try text(last: 1).width == 2, "text totalling exactly 64 MiB")
+        #expect(throws: Failure.sizeLimit, "text over 64 MiB") { try text(last: 2) }
     }
 
     @Test func progressiveScanCountIsCapped() throws {
-        // Container-level check only: ImageIO never sees these headers.
+        // Container-level check only: ImageIO never sees these headers. A
+        // legal 896-scan progression: each coefficient alone, in a first scan
+        // (Al = 13) and thirteen one-bit refinements.
         let frame: [UInt8] = [0xff, 0xc2, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]
-        let scan: [UInt8] = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 0]
+        let progression = (0...63).flatMap { band in
+            (0...13).map { pass -> [UInt8] in
+                let high = pass == 0 ? 0 : 14 - pass, low = pass == 0 ? 13 : high - 1
+                return [0xff, 0xda, 0, 8, 1, 1, 0, UInt8(band), UInt8(band), UInt8(high << 4 | low)]
+            }
+        }
         func jpeg(scans: Int) -> Data {
-            Data([0xff, 0xd8] + frame + Array([[UInt8]](repeating: scan, count: scans).joined()) + [0xff, 0xd9])
+            Data([0xff, 0xd8] + frame + Array(progression.prefix(scans).joined()) + [0xff, 0xd9])
         }
         let limit = NemotronSuperJPEGContainer.maximumScans
-        #expect(limit == 500)
+        #expect(limit == 500 && progression.count > limit)
         #expect(try NemotronSuperImageDecode.inspect(jpeg(scans: limit), orientation: .applyEXIF).format == .jpeg)
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperImageDecode.inspect(jpeg(scans: limit + 1), orientation: .applyEXIF)

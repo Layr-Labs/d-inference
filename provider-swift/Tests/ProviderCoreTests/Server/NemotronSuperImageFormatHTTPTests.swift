@@ -108,7 +108,8 @@ struct NemotronSuperImageFormatHTTPTests {
         #expect(plan.grids.map(\.tokens) == [256, 256, 256])
         let quotes = try images.map { try NemotronSuperImageDecode.inspect($0, orientation: .applyEXIF) }
         #expect(quotes.map(\.format) == [.png, .jpeg, .png])
-        #expect(plan.totalBytes >= quotes.reduce(UInt64(0)) { $0 + UInt64($1.normalizationWorkspaceBytes) })
+        // Images decode one at a time: the largest decoder workspace is charged once.
+        #expect(plan.totalBytes >= quotes.map { UInt64($0.normalizationWorkspaceBytes) }.max() ?? .max)
         let oversize = SuperImageTestPNG.image(width: 20_000, height: 20_000, colorType: 0, depth: 1, rows: [[0]])
         #expect(throws: NemotronSuperImageDecode.Failure.sizeLimit) {
             try NemotronSuperLocalImageBinding.encodedPlan(images + [oversize], contextLength: 1024)

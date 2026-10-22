@@ -20,6 +20,14 @@ final class NemotronSuperSlotOwner: Sendable {
     let bridge: EngineV2Bridge
     let tokenizer: TokenizerHandle
     let sizing: SlotSizingSnapshot
+    /// The configurations the LOAD gate weighed; the last is the one served.
+    let fitAttempts: [NemotronSuperLocalLoad.FitAttempt]
+    /// Held in the shared budget beside the KV grant until native retirement:
+    /// the prefill lane, decode rows and MTP round work. Resident like
+    /// weights to the re-slice and the heartbeat.
+    let reservedBesideGrantBytes: Int
+    /// The prefix bank's reservation, carved from the KV grant.
+    let prefixBankBytes: Int
     private let transaction: NemotronSuperLocalLoad
     private let chat: NemotronSuperLocalImageHTTP
 
@@ -32,6 +40,8 @@ final class NemotronSuperSlotOwner: Sendable {
             try? await transaction.closeAfterDrain()
             throw error
         }
+        fitAttempts = await transaction.fitAttempts
+        (reservedBesideGrantBytes, prefixBankBytes) = await transaction.ownerReservations
         self.transaction = transaction
         self.bridge = bridge
         self.tokenizer = tokenizer
@@ -41,14 +51,19 @@ final class NemotronSuperSlotOwner: Sendable {
     }
 
     /// One coordinator or local-endpoint request: text on the text binding,
-    /// inline JPEG/PNG images on the image binding (target-only when the
-    /// owner speculates).
-    func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?) -> any MLXServerEngine {
-        chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope)
+    /// inline JPEG/PNG images or one inline video on the image binding
+    /// (target-only when the owner speculates). Only the coordinator path
+    /// trusts schema metadata (see `NemotronSuperRequestPlan`).
+    func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
+                    trustsSchemaMetadata: Bool) -> any MLXServerEngine {
+        chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
+                    trustsSchemaMetadata: trustsSchemaMetadata)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.
-    func promptTokenCount(body: Data) -> Int { chat.promptTokenCount(body: body) }
+    func promptTokenCount(body: Data, trustsSchemaMetadata: Bool) -> Int {
+        chat.promptTokenCount(body: body, trustsSchemaMetadata: trustsSchemaMetadata)
+    }
 
     /// Rejects new chat work and joins it, then closes the owner: bindings,
     /// bridge, prefill lane, any prefix bank and the installation. Throws

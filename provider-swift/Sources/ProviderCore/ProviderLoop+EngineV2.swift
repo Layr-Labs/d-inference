@@ -179,7 +179,8 @@ extension ProviderLoop {
     /// Fleet KV budget for a prospective residency set: the unified-memory
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's and memory
-    /// charged to retained GLM owners outside any slot), minus the
+    /// charged to retained GLM owners outside any slot) and the
+    /// reservations Super owners hold beside their grants, minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
@@ -201,6 +202,9 @@ extension ProviderLoop {
         let (withRetainedSuper, superOverflow) = totalWeights.addingReportingOverflow(
             nemotronSuperRetainedWeightBytes)
         totalWeights = superOverflow ? .max : withRetainedSuper
+        let (withSuperReservations, reservationOverflow) = totalWeights.addingReportingOverflow(
+            nemotronSuperReservedBesideGrantBytes(excludingModelIDs: excludingModelIDs))
+        totalWeights = reservationOverflow ? .max : withSuperReservations
         let physical = engineV2SlotHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
@@ -211,6 +215,19 @@ extension ProviderLoop {
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+    }
+
+    /// The prefill lanes, paged decode rows and MTP round work that resident
+    /// Super owners hold in the shared budget beside their KV grants. No
+    /// grant or heartbeat budget may offer these bytes as KV.
+    func nemotronSuperReservedBesideGrantBytes(excludingModelIDs: Set<String> = []) -> UInt64 {
+        var total: UInt64 = 0
+        for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
+            guard let owner = slot.modelContainer.nemotronSuper else { continue }
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, owner.reservedBesideGrantBytes)))
+            total = overflow ? .max : sum
+        }
+        return total
     }
 
     /// Preflight for an advertise-only reserve raise (no newcomer slot —

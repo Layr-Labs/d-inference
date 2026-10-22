@@ -1049,7 +1049,11 @@ For a guarded automatic AR paged retry, use
 Diffusion assembly does not consult this crash-loop guard. For explicit contiguous recovery, resolve
 `native` precision before selecting `contiguous` or disabling paged storage
 with `DARKBLOOM_CBV2_PAGED_KV=0`; see the
-[precision settings](#providertoml-keys-read-by-the-cli). A posture pass alone
+[precision settings](#providertoml-keys-read-by-the-cli).
+`DARKBLOOM_CBV2_PAGED_KV=0` also fails the Nemotron Super load, which serves
+paged KV only and ignores `engine_v2_kv_backend`
+([configuration reference](../reference/configuration.md#engine-and-scheduler)).
+A posture pass alone
 does not qualify precision or the runtime. Explicit `paged` construction
 failures refuse the load; a native policy veto that serves contiguous still
 fails the explicit-request check (`KVBackendPosture.backendCheck`,

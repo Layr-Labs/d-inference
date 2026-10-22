@@ -39,8 +39,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// histories do not trip model-specific Jinja assertions as provider
     /// 500s.
     case invalidToolPayload(String)
-    /// The owned native Flash-Next template does not support the resolved
-    /// thinking effort. Deterministic request error, before template rendering.
+    /// The owned native Flash-Next or Qwen3.8-27B template does not support
+    /// the resolved thinking effort. Deterministic request error, before
+    /// template rendering.
     case unsupportedReasoningEffort
     /// Native binary-thinking model received an unknown effort alias.
     case unsupportedNativeReasoningEffort
@@ -114,7 +115,7 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         case .invalidToolPayload(let message):
             return message
         case .unsupportedReasoningEffort:
-            return "Qwen3.8-Flash-Next supports reasoning effort low, medium, or xhigh when thinking is enabled"
+            return "This model supports reasoning effort low, medium, or xhigh when thinking is enabled"
         case .unsupportedNativeReasoningEffort:
             return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
         case .reasoningExclusionUnsupported:

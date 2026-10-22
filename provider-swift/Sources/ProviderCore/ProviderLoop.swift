@@ -253,8 +253,10 @@ public actor ProviderLoop {
     internal var nemotronSuperSlotLoader = NemotronSuperSlotLoader.pinnedCheckpoint
     /// Runtime-policy environment of the Super load; nil reads the process.
     internal var nemotronSuperEnvironment: [String: String]?
-    /// Weights of Super owners whose native work did not retire. They stay
-    /// in the fleet budget and refuse every later Super load until restart.
+    /// Weights, reservations and banks of Super owners whose native work did
+    /// not retire. They stay in the fleet budget and refuse every later Super
+    /// load until restart, except that a wedged retirement completing after
+    /// its bound releases its owner's share.
     internal var nemotronSuperRetainedWeightBytes: UInt64 = 0
     /// Refusal/hold-only fixture boundary; never supplies a successful native
     /// result, memory estimate, retirement receipt, or replacement model.

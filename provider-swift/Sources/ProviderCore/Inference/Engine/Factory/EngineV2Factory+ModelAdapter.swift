@@ -36,6 +36,10 @@ extension EngineV2Factory {
     /// One family dispatch supplies both backend metadata and cache construction.
     /// Cache creation stays lazy; GPT-OSS primes its sinks probe only there,
     /// after weights have loaded, and Gemma retains its compatibility check.
+    /// `NemotronSuperRecurrentAdapter` and `NemotronSuperMTPTextTarget` are
+    /// dispatch-only: only `NemotronSuperLocalBridgeBuilder` constructs them,
+    /// for its own owner, and they are never advertised. The generic
+    /// `NemotronHModel` is not dispatched.
     struct ProductionModelAdapter {
         let layerKinds: [CBv2LayerKind]
         let modelCapabilities: CBv2ModelCapabilities
@@ -83,12 +87,6 @@ extension EngineV2Factory {
                 modelCapabilities = superTarget.cbv2Capabilities
                 newCaches = { make in try superTarget.newCacheV2(makeLayerCache: make) }
             case let nemotron as NemotronH35Model:
-                layerKinds = nemotron.cbv2LayerKinds
-                modelCapabilities = nemotron.cbv2Capabilities
-                newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }
-            case let nemotron as NemotronHModel where type(of: nemotron) == NemotronHModel.self:
-                // Explicit base implementation only; derived Lightning/MTP execution
-                // is not interchangeable with the Super target's Mamba2 blocks.
                 layerKinds = nemotron.cbv2LayerKinds
                 modelCapabilities = nemotron.cbv2Capabilities
                 newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }

@@ -15,6 +15,7 @@ extension DistributedCBv2Engine {
         // Like the prefix report: after the last token, telemetry only.
         if case .telemetry(let value) = event {
             state.rankTelemetry = value
+            mtpTotals.add(value)
             return state.terminal == nil
         }
         guard state.terminal == nil else {

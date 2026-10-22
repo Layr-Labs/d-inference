@@ -131,10 +131,13 @@ public struct DistributedRankTelemetry: Sendable, Equatable {
     /// The decoding rank's MTP drafts and acceptances, summed over the ranks that drafted.
     public let mtpDrafted: Int?
     public let mtpAccepted: Int?
+    /// The decoding rank's MTP rounds, summed over the ranks that reported them.
+    public let mtpRounds: Int?
 
-    public init(handoffMilliseconds: Double?, handoffBytes: Int?, mtpDrafted: Int?, mtpAccepted: Int?) {
+    public init(handoffMilliseconds: Double?, handoffBytes: Int?, mtpDrafted: Int?, mtpAccepted: Int?,
+                mtpRounds: Int? = nil) {
         self.handoffMilliseconds = handoffMilliseconds; self.handoffBytes = handoffBytes
-        self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted
+        self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted; self.mtpRounds = mtpRounds
     }
 
     /// Merges what each rank sent: the longer hand-off (both ranks wait for it),
@@ -147,6 +150,8 @@ public struct DistributedRankTelemetry: Sendable, Equatable {
         let drafted = ranks.compactMap(\.mtpDrafted), accepted = ranks.compactMap(\.mtpAccepted)
         mtpDrafted = drafted.isEmpty ? nil : drafted.reduce(0, +)
         mtpAccepted = accepted.isEmpty ? nil : accepted.reduce(0, +)
+        let rounds = ranks.compactMap(\.mtpRounds)
+        mtpRounds = rounds.isEmpty ? nil : rounds.reduce(0, +)
     }
 }
 

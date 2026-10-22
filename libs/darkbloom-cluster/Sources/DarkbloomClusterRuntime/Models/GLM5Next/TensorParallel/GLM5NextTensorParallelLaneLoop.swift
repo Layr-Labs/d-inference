@@ -65,6 +65,17 @@ protocol GLM5NextTensorParallelLaneNative: AnyObject {
     /// Drops the lane's native state: prompt tokens it restored and the
     /// prompt frontiers it kept.
     func close(_ lane: Lane, kept: Int, leave: GLM5NextTensorParallelLaneWire.Leave) -> (reused: Int, stored: [Int])
+    /// Rank 0: the logprobs of the lane's agreed token `ordinal`, taken once,
+    /// as it is published; nil when its request asks for none.
+    func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs?
+    /// Rank 0, as the lane finishes: its measurements (MTP rounds, drafts,
+    /// acceptances); nil for none.
+    func telemetry(_ lane: Lane) -> ClusterWorkerRequestTelemetry?
+}
+
+extension GLM5NextTensorParallelLaneNative {
+    func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs? { nil }
+    func telemetry(_ lane: Lane) -> ClusterWorkerRequestTelemetry? { nil }
 }
 
 /// Continuous batching for GLM tensor parallel. Both ranks run this loop in
@@ -328,8 +339,9 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
                 if !answer { lane.stoppedAt = lane.answered; return }
             }
             guard lane.stoppedAt == nil, lane.published < lane.tokens.count else { return }
+            let logprobs = try lane.native.flatMap { try native.takeLogprobs($0, ordinal: lane.published) }
             try host.publishToken(requestID: lane.id, ordinal: lane.published, tokenID: lane.tokens[lane.published],
-                committedTokens: lane.request.promptTokenIDs.count + lane.published)
+                committedTokens: lane.request.promptTokenIDs.count + lane.published, logprobs: logprobs)
             lane.published += 1; lane.awaiting = true
         }
     }
@@ -438,6 +450,7 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
     /// Retires one lane on this rank: its native state, its prompt-cache
     /// report and its finish, or, cancelled, its retirement without one.
     private func retire(_ lane: Record, reason: Wire.Leave, kept: Int) throws {
+        let telemetry = lane.native.flatMap { native.telemetry($0) }
         let cache = lane.native.map { native.close($0, kept: kept, leave: reason) } ?? (reused: 0, stored: [])
         lane.native = nil
         if let finish = reason.finish {
@@ -445,6 +458,7 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
                 try host.publishPromptCache(requestID: lane.id, reusedTokens: cache.reused,
                     storedFrontiers: Array(cache.stored.sorted().suffix(32)))
             }
+            if let telemetry, !telemetry.isEmpty { try host.publishTelemetry(requestID: lane.id, telemetry: telemetry) }
             try host.publishFinished(requestID: lane.id, reason: finish)
         } else {
             try host.publishLeft(requestID: lane.id)

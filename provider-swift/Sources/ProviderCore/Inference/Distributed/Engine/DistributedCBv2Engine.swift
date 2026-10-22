@@ -26,6 +26,9 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     var shutdownTask: Task<Void, Never>?
     /// The seed of every sampled request that names none (see `resolvingSeed`).
     let fallbackSeed = UInt64.random(in: .min ... .max)
+    /// The pair's MTP counts over every request that reported them
+    /// (`DistributedRankTelemetry`, the decoding rank's), for `/metrics`.
+    var mtpTotals = DistributedMTPTotals()
     /// Receives a cleanly finished request's receipt and the prompt
     /// frontiers both peers now hold; the bridge turns them into resident
     /// prefix evidence for routing. Set once, before serving.
@@ -94,6 +97,9 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         }
     }
 
+    /// The pair's cumulative MTP counts (rank 0's runtime, request by request).
+    public func mtpTotalsSnapshot() -> DistributedMTPTotals { onQueue { mtpTotals } }
+
     public func updateKVBytesCapacity(_ bytes: Int) {
         onQueue { capacityLimit = max(0, bytes) }
     }
@@ -128,5 +134,25 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     func invalidate() {
         invalidated = true
         for state in Array(actives.values) { stop(state, reason: .error("distributed peer readiness lost")) }
+    }
+}
+
+/// Cumulative MTP counts a pair reported, summed request by request from the
+/// decoding rank's request telemetry. `reported`: at least one request carried
+/// MTP counts (its runtime decodes with a NextN head).
+public struct DistributedMTPTotals: Sendable, Equatable {
+    public var reported = false
+    public var rounds = 0
+    public var proposed = 0
+    public var accepted = 0
+
+    public init() {}
+
+    mutating func add(_ telemetry: DistributedRankTelemetry) {
+        guard telemetry.mtpRounds != nil || telemetry.mtpDrafted != nil else { return }
+        reported = true
+        rounds += max(0, telemetry.mtpRounds ?? 0)
+        proposed += max(0, telemetry.mtpDrafted ?? 0)
+        accepted += max(0, telemetry.mtpAccepted ?? 0)
     }
 }

@@ -193,6 +193,33 @@ struct GLM5NextTensorParallelLaneTests {
         #expect(run.natives[0].openedAtTick[id]! >= 20)
     }
 
+    /// Logprob lanes beside each other (a stop answer, an EOS, an output
+    /// limit): rank 0 publishes every token with that token's own logprobs,
+    /// taken once each, then the lane's telemetry once, before its finish;
+    /// rank 1 publishes neither.
+    @Test func logprobLanesPublishEachTokensLogprobsAndTheirTelemetry() throws {
+        let run = try FakePair(lanes: 3)
+        for native in run.natives { native.reportsLogprobs = true }
+        let specs: [FakePair.Spec] = [
+            .init(tick: 0, prompt: 9, output: 12),
+            .init(tick: 1, prompt: 6, output: 10, eosAt: 7),
+            .init(tick: 2, prompt: 5, output: 9, stopAnswerAt: 3),
+        ]
+        try run.serve(specs)
+        for index in specs.indices {
+            let id = run.ids[index]
+            let zero = run.hosts[0].record(id), one = run.hosts[1].record(id)
+            #expect(!zero.tokens.isEmpty && zero.finish != nil, "lane \(index) finishes")
+            #expect(zero.logprobs == zero.tokens.enumerated().map {
+                FakeLaneNative.logprobs(token: $0.element, ordinal: $0.offset)
+            }, "lane \(index) publishes each token's own logprobs")
+            #expect(zero.telemetry == [FakeLaneNative.telemetry], "lane \(index) reports its telemetry once")
+            #expect(one.tokens.isEmpty && one.telemetry.isEmpty)
+        }
+        #expect(run.natives[0].takenTwice.isEmpty)
+        #expect(run.link.mismatch == nil)
+    }
+
     @Test func aSingleLaneRunsAsOneRequest() throws {
         let run = try FakePair(lanes: 8)
         try run.serve([.init(tick: 0, prompt: 10, output: 20)])
@@ -262,6 +289,14 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     private(set) var opened: [UUID] = []
     private(set) var openedAtTick: [UUID: Int] = [:]
     var tick: () -> Int = { 0 }
+    /// Every request asks for logprobs; rank 0 gives each agreed token's.
+    var reportsLogprobs = false
+    private var taken: Set<String> = []
+    private(set) var takenTwice: [String] = []
+    static let telemetry = ClusterWorkerRequestTelemetry(mtpDrafted: 4, mtpAccepted: 3, mtpRounds: 2)
+    static func logprobs(token: Int, ordinal: Int) -> ClusterWorkerTokenLogprobs {
+        .init(logprob: -Float(ordinal) / 8, top: [.init(tokenID: token, logprob: -Float(ordinal) / 8)])
+    }
 
     init(rank: Int, link: FakeLink) { self.rank = rank; self.link = link }
 
@@ -326,12 +361,27 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     func close(_ lane: Lane, kept: Int, leave: GLM5NextTensorParallelLaneWire.Leave) -> (reused: Int, stored: [Int]) {
         (0, [])
     }
+
+    func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs? {
+        guard reportsLogprobs else { return nil }
+        guard rank == 0, ordinal < lane.agreed else { throw ProbeError("fake logprobs of a token not agreed on rank 0") }
+        let key = "\(lane.request.requestID)/\(ordinal)"
+        if !taken.insert(key).inserted { takenTwice.append(key) }
+        return Self.logprobs(token: lane.solo[ordinal], ordinal: ordinal)
+    }
+
+    func telemetry(_ lane: Lane) -> ClusterWorkerRequestTelemetry? {
+        reportsLogprobs && rank == 0 ? Self.telemetry : nil
+    }
 }
 
 /// One rank's worker as the loop sees it: control applied between steps,
 /// publication, the owner's late answers.
 final class FakeLaneHost: QwenBatchServingHost, @unchecked Sendable {
-    struct Record { var tokens: [Int] = []; var finish: ClusterWorkerFinishReason?; var left = false }
+    struct Record {
+        var tokens: [Int] = []; var finish: ClusterWorkerFinishReason?; var left = false
+        var logprobs: [ClusterWorkerTokenLogprobs] = []; var telemetry: [ClusterWorkerRequestTelemetry] = []
+    }
     let rank: Int
     let pair: FakePair
     private let lock = NSLock()
@@ -342,6 +392,17 @@ final class FakeLaneHost: QwenBatchServingHost, @unchecked Sendable {
     func record(_ id: UUID) -> Record { lock.withLock { records[id] ?? Record() } }
 
     func serviceControl() throws { try pair.service(rank: rank) }
+    func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
+                      logprobs: ClusterWorkerTokenLogprobs?) throws {
+        try publishToken(requestID: requestID, ordinal: ordinal, tokenID: tokenID, committedTokens: committedTokens)
+        if let logprobs { lock.withLock { records[requestID, default: .init()].logprobs.append(logprobs) } }
+    }
+    func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {
+        try lock.withLock {
+            guard records[requestID]?.finish == nil else { throw ProbeError("fake host: telemetry after finish") }
+            records[requestID, default: .init()].telemetry.append(telemetry)
+        }
+    }
     func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
         try lock.withLock {
             guard rank == 0, outstanding[requestID] == nil, records[requestID, default: .init()].tokens.count == ordinal,

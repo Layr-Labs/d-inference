@@ -222,6 +222,7 @@ private struct GLMPairFixture {
     let owner = GLMPairOwner()
     let tokenizer = GLMPairTokenizer()
     let service: MLXOpenAIService
+    let bridge: EngineV2Bridge
     var renderedPrompts: [String] { tokenizer.rendered }
 
     init(controls: ChatTemplateControls = .init()) throws {
@@ -230,7 +231,7 @@ private struct GLMPairFixture {
         let engine = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.identity, profile: profile,
             detokenizers: GLMPairDetokenizers())
         let handle = TokenizerHandle(tokenizer)
-        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model, tokenizer: handle, eosTokenIds: [],
+        bridge = EngineV2Bridge(engine: engine, modelId: Self.model, tokenizer: handle, eosTokenIds: [],
             defaultMaxTokens: 128, defaultMaxTokensContextLimit: 4096)
         let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(tokenizer: handle, modelType: "glm5_next",
             engineV2Bridge: bridge)
@@ -248,7 +249,8 @@ private struct GLMPairFixture {
     }
 
     /// Serves `request` while the scripted pair commits `tokens` and stops.
-    func complete(_ request: OpenAIChatCompletionRequest, tokens: [Int]) async throws -> OpenAIChatCompletionResponse {
+    func complete(_ request: OpenAIChatCompletionRequest, tokens: [Int],
+                  telemetry: DistributedRankTelemetry? = nil) async throws -> OpenAIChatCompletionResponse {
         let owner = self.owner
         let driver = Task {
             let end = ContinuousClock.now.advanced(by: .seconds(5))
@@ -257,10 +259,59 @@ private struct GLMPairFixture {
             }
             guard let lease = owner.lastLease else { return }
             for token in tokens where !lease.send(.token(token)) { break }
+            if let telemetry { _ = lease.send(.telemetry(telemetry)) }
             _ = lease.send(.finished(.stop))
             lease.acknowledge()
         }
         defer { driver.cancel() }
         return try await service.createChatCompletion(request: request)
+    }
+}
+
+extension GLMPairForcedOutputTests {
+    /// `reasoning.exclude` in the body: MiMo's evidence marks it invalid,
+    /// which sends the request through the scheduler's early native-control
+    /// check (c35 answered 400 there). The pair still serves it, withheld.
+    @Test func reasoningExcludeInTheBodyIsServedOnThePair() async throws {
+        let controls = try JSONDecoder().decode(ChatTemplateControls.self,
+            from: Data(#"{"reasoning":{"exclude":true}}"#.utf8))
+        #expect(controls.rawMiMoControls.invalid)
+        #expect(controls.rawGLM5Controls.excludesReasoning)
+        let pair = try GLMPairFixture(controls: controls)
+        let answer = try await pair.complete(pair.request(), tokens: [10, 11, 14])
+        #expect(answer.choices.first?.message.reasoningContent == nil)
+        #expect(answer.choices.first?.message.textContent == "It is sunny.")
+        #expect(answer.usage.completionTokens == 3)
+    }
+
+    /// The cluster API's `/metrics`: the MTP counts rank 0 reported request by
+    /// request, the requests running and waiting, the reservation ledger and
+    /// a never-persisted prefix key, under the single-Mac family names.
+    @Test func thePairsMetricsCarryItsMTPCountsAndLedger() async throws {
+        let pair = try GLMPairFixture()
+        let before = try #require(await pair.bridge.pairMetricsSample(model: GLMPairFixture.model, waitingRequests: 0))
+        let idle = MTPPrometheusRenderer.render([before])
+        #expect(idle.contains(#"mtp_enabled{model="fixture/glm-pair"} 0"#))
+        #expect(idle.contains(#"mtp_rounds_total{model="fixture/glm-pair"} 0"#))
+        #expect(idle.contains(#"kv_active_requests{model="fixture/glm-pair"} 0"#))
+        _ = try await pair.complete(pair.request(), tokens: [10, 11, 14], telemetry: .init(handoffMilliseconds: nil,
+            handoffBytes: nil, mtpDrafted: 6, mtpAccepted: 4, mtpRounds: 3))
+        let sample = try #require(await pair.bridge.pairMetricsSample(model: GLMPairFixture.model, waitingRequests: 2))
+        let text = MTPPrometheusRenderer.render([sample])
+        let model = #"model="fixture/glm-pair""#
+        for line in ["mtp_enabled{\(model)} 1", "mtp_active{\(model)} 1", "mtp_rounds_total{\(model)} 3",
+                     "mtp_tokens_proposed_total{\(model)} 6", "mtp_tokens_accepted_total{\(model)} 4",
+                     "kv_waiting_requests{\(model)} 2", "complete_prefix_key_persistent{\(model)} 0",
+                     "paged_kv_page_size{\(model),ledger=\"cluster_pair\"} 0",
+                     "paged_kv_reserved_bytes{\(model),ledger=\"cluster_pair\"} ",
+                     "paged_kv_grant_bytes{\(model),ledger=\"cluster_pair\"} "] {
+            #expect(text.contains(line), "missing \(line)")
+        }
+        for family in ["kv_active_requests", "paged_kv_live_bytes", "paged_kv_committed_bytes", "prefix_cache_status",
+                       "kv_backend_info"] {
+            #expect(text.contains("# TYPE \(family) gauge"), "missing \(family)")
+        }
+        // A single-Mac slot has no pair sample.
+        #expect(MTPPrometheusRenderer.render([]).isEmpty)
     }
 }

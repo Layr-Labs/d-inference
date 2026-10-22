@@ -7,7 +7,7 @@ extension DistributedLocalServer {
         makeLocalInferenceApplication(config: config, defaultMaxTokens: defaultMaxTokens,
             acquire: { try await self.acquire($0) },
             tokenizerProvider: { try await self.resolveTokenizer($0) },
-            availableModels: { await self.catalog() }, mtpSlots: { [] },
+            availableModels: { await self.catalog() }, mtpSlots: { await self.metricsSamples() },
             onServerRunning: { await self.didBind($0) },
             modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
@@ -138,6 +138,16 @@ extension DistributedLocalServer {
             throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
         }
         return .init(tokenizer: entry.tokenizer, modelType: entry.modelType)
+    }
+
+    /// The pair's `/metrics` lines (`EngineV2Bridge.pairMetricsSample`): its
+    /// MTP counts, the requests it runs and the ones waiting for a lane.
+    func metricsSamples() async -> [MTPSlotMetricsSample] {
+        guard phase == .serving, let bridge = entry?.engineV2Bridge else { return [] }
+        let waitingRequests = waiting.count
+        guard let sample = await bridge.pairMetricsSample(model: binding.publicModelID,
+            waitingRequests: waitingRequests) else { return [] }
+        return [sample]
     }
 
     func catalog() -> [String] {

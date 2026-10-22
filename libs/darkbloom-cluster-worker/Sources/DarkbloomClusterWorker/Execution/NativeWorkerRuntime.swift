@@ -136,9 +136,9 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         }
     }
     /// GLM tensor parallel publishes each token's logprobs from its decoding
-    /// rank on its one-request path; its batch lanes do not carry them yet.
+    /// rank, on its one-request path and in its batch lanes alike.
     var capturesLogprobs: Bool {
-        if case .glm5NextTensorParallel(let runtime) = owner { return runtime.lanes.lanes == 1 }
+        if case .glm5NextTensorParallel = owner { return true }
         return false
     }
     func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {

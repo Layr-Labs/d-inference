@@ -341,7 +341,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 knownType = resident[request.model]?.modelType
             }
             try checkFirstContentDeadline()
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: knownType)
+            // Hidden GLM reasoning is decided by the acquired slot (a cluster
+            // pair serves it, single-Mac refuses it: `prepareCompletion`);
+            // this early check must not refuse it for every slot. MiMo's
+            // evidence marks `reasoning.exclude` invalid for its own rules, so
+            // a GLM request carrying it reaches this check too.
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: knownType,
+                glm5PairPostValidation: GLM5NextPromptPolicy.applies(modelType: knownType))
         }
 
         // I1: prefer the atomic-`acquire` path. The legacy three-closure

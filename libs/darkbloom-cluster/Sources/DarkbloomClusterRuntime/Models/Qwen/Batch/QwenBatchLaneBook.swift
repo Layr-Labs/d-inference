@@ -9,6 +9,10 @@ public protocol QwenBatchServingHost: AnyObject {
     func serviceControl() throws
     /// Rank 0 only: one committed token of one request, after both ranks hold it.
     func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws
+    /// Rank 0 only: as `publishToken`, with the decoding rank's logprobs for
+    /// the token when its request asks for them (`ClusterWorkerSampling.topLogprobs`).
+    func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
+                      logprobs: ClusterWorkerTokenLogprobs?) throws
     /// Rank 0 only: the owner's continue (true) or clean stop (false) for each
     /// request's last published token; returns once every one arrived.
     func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool]
@@ -18,6 +22,10 @@ public protocol QwenBatchServingHost: AnyObject {
     /// restored from its prefix cache and the frontiers it kept afterwards.
     /// Called only when either is not empty.
     func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws
+    /// After any `publishPromptCache` and just before `publishFinished`: this
+    /// rank's measurements of the request (`requestTelemetry`). Called only
+    /// when not empty.
+    func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws
     /// Rank 0 only, without waiting: the owner's answer to `requestID`'s last
     /// published token if it has arrived (true: go on), else nil. False once
     /// the request was cancelled or passed its deadline: no answer comes then.
@@ -32,6 +40,12 @@ public protocol QwenBatchServingHost: AnyObject {
 }
 
 extension QwenBatchServingHost {
+    public func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {}
+    public func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
+                             logprobs: ClusterWorkerTokenLogprobs?) throws {
+        guard logprobs == nil else { throw ProbeError("This batch host does not carry token logprobs") }
+        try publishToken(requestID: requestID, ordinal: ordinal, tokenID: tokenID, committedTokens: committedTokens)
+    }
     public func pollDecision(_ requestID: UUID) throws -> Bool? {
         throw ProbeError("This batch host reads every lane's decisions together")
     }

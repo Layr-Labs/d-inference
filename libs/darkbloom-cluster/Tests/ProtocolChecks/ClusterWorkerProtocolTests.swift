@@ -58,7 +58,8 @@ struct ClusterWorkerProtocolTests {
         try tensorParallelModes()
         try logprobs()
         try nativeContext()
-        print("{\"passed\":true,\"groups\":16,\"modelExecution\":false,\"localPipeIO\":true}")
+        try mtpTelemetry()
+        print("{\"passed\":true,\"groups\":17,\"modelExecution\":false,\"localPipeIO\":true}")
     }
 
     /// Both ranks must accept and retain the requested 32K output budget.
@@ -457,6 +458,23 @@ struct ClusterWorkerProtocolTests {
         var none = try Conversation(); try none.start()
         try refuses { try none.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3, logprobs: two)) }
     }
+    /// Request telemetry carries the decoding rank's MTP rounds beside its
+    /// drafts and acceptances; telemetry without them keeps its exact bytes,
+    /// and a count beyond the output bound is refused.
+    static func mtpTelemetry() throws {
+        let value = ClusterWorkerRequestTelemetry(mtpDrafted: 40, mtpAccepted: 31, mtpRounds: 22)
+        let frame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 3, requestID: requestID,
+            event: .requestTelemetry(value))
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "MTP rounds round trip")
+        let plain = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 3, requestID: requestID,
+            event: .requestTelemetry(.init(mtpDrafted: 40, mtpAccepted: 31)))
+        try check(!String(decoding: try ClusterWorkerCodec.encode(plain), as: UTF8.self).contains("mtpRounds"),
+            "No rounds field without rounds")
+        try check(!ClusterWorkerRequestTelemetry(mtpRounds: 0).isEmpty, "Zero rounds is a measurement")
+        try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 3,
+            requestID: requestID, event: .requestTelemetry(.init(mtpRounds: ClusterWorkerLimits.wireOutputTokens + 1)))) }
+    }
+
     static func lifecycle() throws {
         var c = try Conversation(); try c.start()
         try c.event(.committedToken(ordinal: 0, tokenID: 12, committedTokens: 3))

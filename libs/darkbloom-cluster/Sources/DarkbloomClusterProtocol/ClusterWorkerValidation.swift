@@ -122,7 +122,8 @@ enum ClusterWorkerValidation {
                 && (t.prefillNanoseconds.map { $0 <= day } ?? true)
                 && (t.handoffBytes.map { (0...ClusterWorkerLimits.capacityBytes).contains($0) } ?? true)
                 && (t.mtpDrafted.map { (0...ClusterWorkerLimits.wireOutputTokens * 16).contains($0) } ?? true)
-                && (t.mtpAccepted.map { accepted in accepted >= 0 && accepted <= (t.mtpDrafted ?? 0) } ?? true),
+                && (t.mtpAccepted.map { accepted in accepted >= 0 && accepted <= (t.mtpDrafted ?? 0) } ?? true)
+                && (t.mtpRounds.map { (0...ClusterWorkerLimits.wireOutputTokens).contains($0) } ?? true),
                 "Invalid request telemetry")
         default: break
         }

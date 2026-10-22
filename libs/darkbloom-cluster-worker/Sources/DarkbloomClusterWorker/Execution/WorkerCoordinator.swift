@@ -644,13 +644,15 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
     }
 
-    fileprivate func publishLaneToken(_ id: UUID, ordinal: Int, token: Int, committed: Int) throws {
+    fileprivate func publishLaneToken(_ id: UUID, ordinal: Int, token: Int, committed: Int,
+                                      logprobs: ClusterWorkerTokenLogprobs? = nil) throws {
         condition.lock(); defer { condition.unlock() }
         // A lane its owner cancelled, or past its deadline, publishes nothing
         // more of its own (the runtime retiring lanes alone then drops it).
         let now = DispatchTime.now().uptimeNanoseconds
         if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true { return }
-        try publishLocked(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: committed), requestID: id, now: now)
+        try publishLocked(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: committed,
+            logprobs: logprobs), requestID: id, now: now)
     }
 
     fileprivate func publishLanePromptCache(_ id: UUID, reused: Int, stored: [Int]) throws {
@@ -658,6 +660,13 @@ final class WorkerCoordinator: @unchecked Sendable {
         let now = DispatchTime.now().uptimeNanoseconds
         if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true { return }
         try publishLocked(.promptCache(reusedTokens: reused, storedFrontiers: stored), requestID: id, now: now)
+    }
+
+    fileprivate func publishLaneTelemetry(_ id: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {
+        condition.lock(); defer { condition.unlock() }
+        let now = DispatchTime.now().uptimeNanoseconds
+        if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true { return }
+        try publishLocked(.requestTelemetry(telemetry), requestID: id, now: now)
     }
 
     fileprivate func publishLaneFinished(_ id: UUID, reason: ClusterWorkerFinishReason) throws {
@@ -720,12 +729,20 @@ private final class LaneHost: QwenBatchServingHost {
     func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
         try coordinator.publishLaneToken(requestID, ordinal: ordinal, token: tokenID, committed: committedTokens)
     }
+    func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
+                      logprobs: ClusterWorkerTokenLogprobs?) throws {
+        try coordinator.publishLaneToken(requestID, ordinal: ordinal, token: tokenID, committed: committedTokens,
+            logprobs: logprobs)
+    }
     func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] { try coordinator.awaitLaneDecisions(requestIDs) }
     func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws {
         try coordinator.publishLaneFinished(requestID, reason: reason)
     }
     func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
         try coordinator.publishLanePromptCache(requestID, reused: reusedTokens, stored: storedFrontiers)
+    }
+    func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {
+        try coordinator.publishLaneTelemetry(requestID, telemetry: telemetry)
     }
     func pollDecision(_ requestID: UUID) throws -> Bool? { try coordinator.pollLaneDecision(requestID) }
     func awaitDecision(_ requestID: UUID) throws -> Bool { try coordinator.awaitLaneDecision(requestID) }

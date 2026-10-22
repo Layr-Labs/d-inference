@@ -220,6 +220,7 @@ public enum ClusterWorkerCodec {
         if let value = t.mtpDrafted { result["mtpDrafted"] = value }
         if let value = t.mtpAccepted { result["mtpAccepted"] = value }
         if let value = t.prefillNanoseconds { result["prefillNanoseconds"] = NSNumber(value: value) }
+        if let value = t.mtpRounds { result["mtpRounds"] = value }
         return result
     }
     private static func telemetry(_ object: [String: Any]) throws -> ClusterWorkerRequestTelemetry {
@@ -232,7 +233,8 @@ public enum ClusterWorkerCodec {
             handoffBytes: try optional("handoffBytes") { try $0.int("handoffBytes") },
             mtpDrafted: try optional("mtpDrafted") { try $0.int("mtpDrafted") },
             mtpAccepted: try optional("mtpAccepted") { try $0.int("mtpAccepted") },
-            prefillNanoseconds: try optional("prefillNanoseconds") { try $0.uint("prefillNanoseconds") })
+            prefillNanoseconds: try optional("prefillNanoseconds") { try $0.uint("prefillNanoseconds") },
+            mtpRounds: try optional("mtpRounds") { try $0.int("mtpRounds") })
         try r.finish()
         return value
     }

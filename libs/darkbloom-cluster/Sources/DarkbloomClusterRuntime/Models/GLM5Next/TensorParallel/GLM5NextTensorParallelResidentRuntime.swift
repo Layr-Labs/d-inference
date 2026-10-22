@@ -997,6 +997,21 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
     }
 
+    /// The request asks for each token's logprobs. Such a request decodes one
+    /// token per step, never in MTP rounds, on every rank (both read the same
+    /// sampling): the product's logprob rows are MTP-ineligible
+    /// (`EngineLoopV2.mtpBasicEligible`), and each step's gather by rank 0's
+    /// product sampler then belongs to the token it agrees.
+    static func capturesLogprobs(_ sampler: QwenStageTokenSampler?) -> Bool {
+        sampler?.wire.capturedLogprobs != nil
+    }
+
+    /// A request's MTP counts for its `requestTelemetry` (rank 0): rounds,
+    /// proposals and accepted proposals; nil without a NextN layer.
+    static func speculationTelemetry(_ speculation: GLM5NextTensorParallelSpeculation?) -> ClusterWorkerRequestTelemetry? {
+        speculation.map { .init(mtpDrafted: $0.proposedTokens, mtpAccepted: $0.acceptedTokens, mtpRounds: $0.rounds) }
+    }
+
     /// Rank 0's draft probe for a stateless sampled request (`probesDraftRules`).
     func installDraftProbe(_ speculation: GLM5NextTensorParallelSpeculation, sampler: QwenStageTokenSampler?) {
         guard collective.rank == 0, Self.probesDraftRules, let sampler, sampler.admitsSpeculativeVerification else {
@@ -1090,7 +1105,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             case .clientStop, .proceed: return nil
             }
         }
-        if let speculation, let lastHidden {
+        if let speculation, let lastHidden, !Self.capturesLogprobs(sampler) {
             // The first token is agreed as a plain step's; then each round
             // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
             // and when the loop ends follow from agreed tokens only, so both
@@ -1217,9 +1232,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
             + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Self.proposalFields(speculation, sampler: sampler)
             + " media_frames=\(opened.media?.media.frames.count ?? 0) media_tokens=\(opened.media?.featureCount ?? 0)")
-        return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
+        var completion = QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,
             reusedPromptTokens: start, storedPromptFrontiers: stored)
+        if rank == 0 { completion.telemetry = Self.speculationTelemetry(speculation) }
+        return completion
     }
 }

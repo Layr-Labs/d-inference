@@ -234,6 +234,10 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         let propose: GLM5NextMTP.ProposalSelection?
         var offset: Int
         var stored: [Int] = []
+        /// Rank 0, a request that asks for logprobs: each agreed token's, by
+        /// output index, until it is published.
+        var logprobs: [Int: ClusterWorkerTokenLogprobs] = [:]
+        var drawn = 0
 
         init(request: QwenLayerStageGenerationRequest, sampler: QwenStageTokenSampler?, opened: Runtime.OpenedRequest,
              speculates: Bool, draw: ((MLXArray) -> MLXArray)?, propose: GLM5NextMTP.ProposalSelection?) {
@@ -270,8 +274,10 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         if opened.stopped, rank == 0 { book.cancel(id) }
         try check()
         let sampler = request.sampler
-        // As one request: every request speculates (bias and penalties too).
-        let speculates = opened.speculation != nil
+        // As one request: every request speculates (bias and penalties too),
+        // except one that asks for logprobs, which decodes one token a step
+        // (the product's logprob rows are MTP-ineligible: `mtpBasicEligible`).
+        let speculates = opened.speculation != nil && !Runtime.capturesLogprobs(sampler)
         if let speculation = opened.speculation { runtime.installDraftProbe(speculation, sampler: sampler) }
         return Lane(request: request, sampler: sampler, opened: opened, speculates: speculates,
             draw: speculates ? runtime.verificationDraw(sampler) : nil,
@@ -301,6 +307,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         // The first token is agreed as one request's is.
         let first = try Runtime.agreedToken(runtime.choose(final.logits, sampler: lane.sampler, stop: 0)
             .asArray(Float.self), sampled: lane.sampler != nil)
+        try keepLogprobs(lane)
         lane.sampler?.commit(first)
         if lane.speculates { try lane.opened.speculation!.begin(carry: first, lastHidden: final.lastHidden) }
         return first
@@ -371,11 +378,38 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
             asyncEval(chosen)
             try whileRunning(index)
             let token = try Runtime.agreedToken(chosen.asArray(Float.self), sampled: lane.sampler != nil)
+            try keepLogprobs(lane)
             lane.sampler?.commit(token)
             results[index] = [token]
             try check()
         }
         return results.map { $0! }
+    }
+
+    /// Rank 0, after a one-token step's (or the prefill's) token was agreed:
+    /// keeps the logprobs the product sampler gathered with it, as the
+    /// one-request path publishes them. A logprob lane never speculates, so
+    /// each agreed token had its own draw.
+    private func keepLogprobs(_ lane: Lane) throws {
+        guard rank == 0, let sampler = lane.sampler, Runtime.capturesLogprobs(sampler) else { return }
+        guard let drawn = sampler.takePendingLogprobs() else {
+            throw ProbeError("GLM tensor-parallel lane token has no logprobs")
+        }
+        lane.logprobs[lane.drawn] = drawn
+        lane.drawn += 1
+    }
+
+    func telemetry(_ lane: Lane) -> ClusterWorkerRequestTelemetry? {
+        guard rank == 0 else { return nil }
+        return Runtime.speculationTelemetry(lane.opened.speculation)
+    }
+
+    func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs? {
+        guard let sampler = lane.sampler, Runtime.capturesLogprobs(sampler) else { return nil }
+        guard let value = lane.logprobs.removeValue(forKey: ordinal) else {
+            throw ProbeError("GLM tensor-parallel lane token \(ordinal) has no logprobs")
+        }
+        return value
     }
 
     func close(_ lane: Lane, kept: Int, leave: GLM5NextTensorParallelLaneWire.Leave) -> (reused: Int, stored: [Int]) {

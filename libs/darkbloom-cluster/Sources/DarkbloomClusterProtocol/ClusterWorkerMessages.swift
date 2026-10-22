@@ -354,13 +354,17 @@ public struct ClusterWorkerRequestTelemetry: Equatable, Sendable {
     public let mtpAccepted: Int?
     /// This rank's time from the start of the request to its first committed (or relayed) token.
     public let prefillNanoseconds: UInt64?
+    /// MTP rounds (draft and verify) this rank ran for the request.
+    public let mtpRounds: Int?
     public init(handoffNanoseconds: UInt64? = nil, handoffBytes: Int? = nil, mtpDrafted: Int? = nil,
-                mtpAccepted: Int? = nil, prefillNanoseconds: UInt64? = nil) {
+                mtpAccepted: Int? = nil, prefillNanoseconds: UInt64? = nil, mtpRounds: Int? = nil) {
         self.handoffNanoseconds = handoffNanoseconds; self.handoffBytes = handoffBytes
         self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted; self.prefillNanoseconds = prefillNanoseconds
+        self.mtpRounds = mtpRounds
     }
     public var isEmpty: Bool {
         handoffNanoseconds == nil && handoffBytes == nil && mtpDrafted == nil && mtpAccepted == nil && prefillNanoseconds == nil
+            && mtpRounds == nil
     }
 }
 

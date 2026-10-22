@@ -2182,6 +2182,14 @@ rebuilding the vocabulary-sized mask on the host. The catalog artifact
 legacy serving width (`ServingPerformanceProfiles.legacyMaximumConcurrency`) on
 M5 Pro, Max and Ultra without an operator override.
 
+Decode also runs fewer, fused kernels: one quantized matmul for q/k/v on single
+rows and for dense/shared gate+up on small batches, routed gate/up banks fused
+at load (the checkpoint is still validated in split form), compiled router
+steps, and one kernel for the MoE combine, shared-expert add and residual add.
+The batch-1 decode graph drops from about 2,000 to about 1,200 GPU primitives
+per token with byte-identical outputs. Larger row counts keep the separate
+projections, because MLX's split-K choice depends on the output width.
+
 The published tool protocol has no escape for a literal `</arg_value>` in a
 top-level raw string value. `FlintRequestPolicy` rejects such historical
 arguments; syntactically indistinguishable generated frames cannot be recovered

@@ -99,6 +99,12 @@ extension NemotronSuperLocalHTTPTests {
 
             _ = try await send(body(["not", " json"], stream: false,
                 ["enable_thinking": false, "response_format": ["type": "json_object"]]), status: .unprocessableContent)
+            // Streamed, the held answer's first chunk sent the headers: its
+            // failed validation is a stream error, and no held text leaks.
+            let failedJSON = try await send(body(["not", " json"], stream: true,
+                ["enable_thinking": false, "response_format": ["type": "json_object"]]))
+            #expect(failedJSON.contains(#""finish_reason":"error""#) && !failedJSON.contains("[DONE]"))
+            #expect(SuperSSE(failedJSON).content.isEmpty)
             _ = try await send(body(["</think>", "Sure."], stream: false,
                 ["tools": [weather()], "tool_choice": "required"]), status: .unprocessableContent)
             for invalid in [["enable_thinking": false, "chat_template_kwargs": ["enable_thinking": true]],

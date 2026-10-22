@@ -165,11 +165,43 @@ struct NemotronSuperServingPolicyTests {
         let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(plain.requests == 16 && !plain.speculates)
-        // A grant below the policy bound caps the claim at the grant itself
-        // and leaves no room for the bank.
+        // A grant below the policy bound caps the part the grant holds at the
+        // grant itself and leaves no room for the bank; the round work stays
+        // whole beside it.
         let small = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: nil, kvBytesCapacity: 4 << 30)
-        #expect(small.admissionKVBytes == 4 << 30 && small.prefixBankBytes == 0)
+        #expect(small.admissionKVBytes == (4 << 30) + 9_865_003_008 && small.prefixBankBytes == 0)
+    }
+
+    /// A co-resident Super slot's grant holds only every request's fixed
+    /// bytes, 2 GiB and any bank; the round work is reserved beside it. At
+    /// any grant of at least the 1 GiB minimum KV, the plan and each fallback
+    /// keep their KV floor (admission less the round and the bank) within the
+    /// grant and above that minimum, so no width is skipped for want of grant
+    /// while memory is free (before, eight speculating requests needed a
+    /// 10.19 GiB grant and one request 4.44 GiB).
+    @Test(arguments: [1, 3, 6, 40] as [Int])
+    func roundStaysBesideASmallGrant(grantGiB: Int) throws {
+        typealias Policy = NemotronSuperServingPolicy
+        let grant: Int = grantGiB << 30
+        let plan = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: 128 << 30)
+        let round8 = Policy.speculativeOwnerBoundBytes(requests: 8, environment: plan.environment)
+        #expect(plan.admissionKVBytes - round8
+            == min(grant, Policy.grantKVBytes(requests: 8, speculates: true) + plan.prefixBankBytes))
+        let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true,
+            contextTokens: Policy.contextTokens)
+        for candidate in candidates {
+            let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: candidate.environment,
+                kvBytesCapacity: grant, speculates: true, physicalBytes: 128 << 30)
+            #expect(shares.round == Policy.speculativeOwnerBoundBytes(requests: candidate.requests,
+                environment: candidate.environment))
+            let kvFloor = candidate.admissionKVBytes - shares.bank - shares.round
+            #expect(kvFloor == min(grant - shares.bank, Policy.grantKVBytes(requests: candidate.requests,
+                speculates: true)), "\(grantGiB) GiB, \(candidate.requests)")
+            #expect(kvFloor >= Int(UnifiedMemoryCap.minimumLoadKVBytes), "\(grantGiB) GiB, \(candidate.requests)")
+        }
     }
 
     @Test func plainOwnerReusesExactTextPrefixesWhenTheGrantHoldsTheBank() {
@@ -202,21 +234,24 @@ struct NemotronSuperServingPolicyTests {
         #expect(tight.prefixBankBytes == 0 && tight.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
     }
 
-    /// Paged KV is the managed default and holds the same default bank as
-    /// contiguous storage; the operator's choice of either passes through.
-    @Test func pagedStorageIsTheDefaultAndHoldsTheBank() {
+    /// The plan serves paged KV, the builder's only storage, with the default
+    /// bank; an operator's storage key passes through unchanged, so the load
+    /// refuses `contiguous` rather than ignoring it.
+    @Test func planServesPagedStorageAndPassesTheStorageKeyThrough() throws {
+        typealias Storage = NemotronSuperLocalKVBackend
         for mode in [MTPMode.off, .auto] {
             let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: mode,
                 configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
-            #expect(plan.environment[NemotronSuperLocalKVBackend.key] == "paged", "\(mode)")
+            #expect(plan.environment[Storage.key] == nil, "\(mode)")
+            #expect(try Storage.resolve(environment: plan.environment) == .paged, "\(mode)")
             #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1", "\(mode)")
             #expect(plan.prefixBankBytes == 16 << 30, "\(mode)")
-            let contiguous = NemotronSuperServingPolicy.loadPlan(
-                base: [NemotronSuperLocalKVBackend.key: "contiguous"], mode: mode,
+            let contiguous = NemotronSuperServingPolicy.loadPlan(base: [Storage.key: "contiguous"], mode: mode,
                 configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
-            #expect(contiguous.environment[NemotronSuperLocalKVBackend.key] == "contiguous", "\(mode)")
-            #expect(contiguous.prefixBankBytes == plan.prefixBankBytes, "\(mode)")
-            #expect(contiguous.admissionKVBytes == plan.admissionKVBytes, "\(mode)")
+            #expect(contiguous.environment[Storage.key] == "contiguous", "\(mode)")
+            #expect(throws: Storage.Failure.contiguousUnsupported) {
+                try Storage.resolve(environment: contiguous.environment)
+            }
         }
     }
 
@@ -361,8 +396,10 @@ struct NemotronSuperServingPolicyTests {
                         pinned: pinned, physicalBytes: physical)?.maximumBytes ?? 0
                     let label = "\(physicalGiB) GiB pinned=\(pinned) \(mode) grant \(grantGiB) GiB"
                     #expect(built == plan.prefixBankBytes, "\(label)")
+                    let round = plan.speculates ? Policy.speculativeOwnerBoundBytes(requests: requests) : 0
                     #expect(plan.admissionKVBytes == min(grant,
-                        Policy.admissionKVBytes(requests: requests, speculates: plan.speculates) + built), "\(label)")
+                        Policy.grantKVBytes(requests: requests, speculates: plan.speculates) + built) + round,
+                        "\(label)")
                 }
             }
         }
@@ -381,8 +418,8 @@ struct NemotronSuperServingPolicyTests {
     /// shard bytes, the activation reserve and the operator's 4 GiB reserve.
     /// On 192, 256 and 512 GiB both owners get the 16 GiB default bank, and
     /// the single LOAD claim of the speculating owner (installation, head,
-    /// lane, eight requests' fixed bytes and the bank) fits under the cap with
-    /// room left for other memory: 20 GB on 192 GiB.
+    /// lane, eight requests' fixed bytes, the round and the bank, 110.0 GiB)
+    /// fits under the cap with room left for other memory: 60.8 GiB on 192 GiB.
     @Test(arguments: [192, 256, 512])
     func defaultBankOnTheSupportedMachines(physicalGiB: Int) throws {
         typealias Policy = NemotronSuperServingPolicy
@@ -412,16 +449,17 @@ struct NemotronSuperServingPolicyTests {
             servingBytes: shares.lane + admission))
         let claim: Int = installation + shares.lane + admission
         let room: Int = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical)) - Int(activation) - claim
-        #expect(room > 19_000_000_000, "\(physicalGiB) GiB leaves \(room) bytes")
+        #expect(claim == 118_137_816_608)
+        #expect(room >= 65_257_286_931, "\(physicalGiB) GiB leaves \(room) bytes")
     }
 
     /// On a 128 GiB Mac the default speculating owner's LOAD claim holds its
-    /// round work as one share inside the admission, not beside it, at 65,536
+    /// round work as one share of the admission, counted once, at 65,536
     /// tokens and at the served (largest accepted) 262,144: the claim is
     /// the payloads, the load transient beyond the serving room, and the
     /// serving room (lane, round, bank and KV floor) once. With the activation
-    /// floor beside it the claim fits under the cap, and so does the load gate
-    /// (the scan-time footprint at that context, the floor and the minimum KV).
+    /// floor beside it the claim fits under the cap, and so does the bankless
+    /// claim with one image's media charge, the floor and the minimum KV.
     @Test(arguments: [65_536, NemotronSuperServingPolicy.contextTokens])
     func roundIsOneShareOfTheClaimOnA128GiBMac(context: Int) throws {
         typealias Policy = NemotronSuperServingPolicy
@@ -451,8 +489,8 @@ struct NemotronSuperServingPolicyTests {
         let claim = install + serving
         let cap = Int(UnifiedMemoryCap.hardCapBytes(physicalBytes: physical))
         #expect(claim + Int(activation) <= cap, "\(context): claim \(claim) + floor \(activation) > cap \(cap)")
-        // The load gate at this context: payloads, the larger of the transient
-        // and the serving room with one image, the floor and the minimum KV.
+        // At this context: payloads, the larger of the transient and the
+        // bankless serving room with one image, the floor and the minimum KV.
         let media = try #require(Policy.mediaChargeBytes(imageCount: 1))
         let footprint = Int(Policy.pinnedLoadClaimBytes(speculates: true,
             servingBytes: shares.lane + admission - shares.bank + Int(media)))
@@ -465,35 +503,31 @@ struct NemotronSuperServingPolicyTests {
             + "activation=\(gib(Int(activation))) footprint=\(gib(footprint)) gate=\(gib(gate)) cap=\(gib(cap))")
     }
 
-    @Test func discoveryFootprintCoversTheLargestDefaultLoadAndOneImage() throws {
+    @Test func discoveryFootprintIsTheNarrowestRequirement() throws {
         // The ship-check claim at a 28 GiB grant: installation, head and grant.
         #expect(NemotronSuperServingPolicy.pinnedInstallationLoadBytes
-            + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_013_708_416)
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
-        // Media is a serving reservation, not LOAD transient. The LOAD claim
-        // holds both payloads and the larger of the two sequential transients
-        // (the installation's 8,887,435,264-byte staging, not the head's
-        // 7,078,617,184-byte construction), which runs in the serving room
-        // (lane, admission KV, one image) before anything is served.
-        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_870_320_160)
-        #expect(footprint.nativeLoadTransientBytes == 8_860_131_920)
-        let media = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1))
-        let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: 2048))
-        let admission = UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
-        let serving = lane + admission + media
-        #expect(serving > 8_887_435_264)
-        let expected = Double(73_213_230_600 + 1_769_654_296 + serving) / 1_073_741_824
-        #expect(abs(footprint.estimatedMemoryGb - expected) < 1e-9)
-        // 93.142 GiB at 65,536 tokens; the served 262,144 adds exactly 4.5 GiB of history copies.
-        #expect(abs(footprint.estimatedMemoryGb - 97.642_094_161_361_46) < 1e-9, "\(footprint.estimatedMemoryGb)")
-        let plain = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .off,
-            configuredConcurrency: nil, kvBytesCapacity: 100 << 30)
-        // The plain owner's scan-time equivalent (no head, no bank) is smaller.
-        let plainServing = lane + UInt64(NemotronSuperServingPolicy.admissionKVBytes(requests: plain.requests,
-            speculates: false)) + media
-        let plainBytes = NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false,
-            servingBytes: Int(plainServing)) + plainServing
-        #expect(Double(plainBytes) / 1_073_741_824 < footprint.estimatedMemoryGb)
+            + NemotronSuperServingPolicy.pinnedHeadLoadBytes + (28 << 30) == 121_033_369_216)
+        // The LOAD claim holds both payloads and the larger of the two
+        // sequential transients (the installation's 8,903,163,904-byte
+        // staging, not the head's 7,078,617,184-byte construction).
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true) == 83_889_980_960)
+        let size: UInt64 = 75_010_188_240
+        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: size)
+        #expect(footprint.nativeLoadTransientBytes == 8_879_792_720)
+        // The narrowest configuration's claim and the admission slack,
+        // 89,750,767,136 bytes, whatever the Mac: with Super's 2 GiB activation
+        // reserve, the 85.59 GiB its own gate needs available.
+        #expect(NemotronSuperLoadFit.narrowestRequirementBytes == 89_750_767_136)
+        #expect(footprint.estimatedMemoryGb == Double(89_750_767_136) / 1_073_741_824)
+        #expect(abs(footprint.estimatedMemoryGb - 83.586_915_522_813_8) < 1e-9, "\(footprint.estimatedMemoryGb)")
+        #expect(NemotronSuperLoadFit.minimumAvailableBytes == 89_750_767_136 + (2 << 30))
+        // The platform accepts a full native LOAD declaration only at or above
+        // the shard bytes plus the transient (78.13 GiB), else it falls back to
+        // the padded catalog quote.
+        let declared = Double(size + footprint.nativeLoadTransientBytes) / 1_073_741_824
+        #expect(footprint.estimatedMemoryGb >= declared && declared > 78.12)
+        #expect(NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0).estimatedMemoryGb
+            == footprint.estimatedMemoryGb)
     }
 
     /// Super's requests, prefill lane and media charges carry its decode,
@@ -547,9 +581,9 @@ struct NemotronSuperServingPolicyTests {
         }
         // The pinned checkpoint: the plain claim is unchanged; speculation adds
         // the head's payload, not its construction (below the staging).
-        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false) == 82_100_665_864)
+        #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: false) == 82_120_326_664)
         #expect(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true)
-            == 82_100_665_864 + 1_769_654_296)
+            == 82_120_326_664 + 1_769_654_296)
     }
 
     private static let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 75_010_188_240)
@@ -557,19 +591,28 @@ struct NemotronSuperServingPolicyTests {
         estimatedMemoryGb: footprint.estimatedMemoryGb, isVision: true, templateRenderOK: true,
         nativeLoadTransientBytes: footprint.nativeLoadTransientBytes)
 
+    /// `runtimeRemainingBytes` is the published process ledger room
+    /// (`process_memory.remaining_bytes`); nil publishes no process sample.
     private static func quote(_ model: ModelInfo = Self.model, freeForLoadGb: Double = 0,
                               loadUsableGb: Double? = nil, loadHeadroomGb: Double? = 6.5,
+                              runtimeRemainingBytes: UInt64? = nil,
                               resident: Bool = false, vision: Bool = false,
                               images: Int = 0) -> ProviderMessage.CapacityQuote {
         let slot = BackendSlotCapacity(model: model.id, state: "idle", numRunning: 0, numWaiting: 0,
             activeTokens: 0, maxTokensPotential: 0, maxConcurrency: 8, activeTokenBudgetUsed: 0,
             activeTokenBudgetMax: 1 << 20, queuedTokenBudget: 0)
+        let telemetry = runtimeRemainingBytes.map { bytes in
+            var processMemory = ProcessMemoryTelemetry()
+            processMemory.remainingBytes = bytes
+            return CapacityTelemetry(processMemory: processMemory)
+        }
         return CapacityQuoteEngine.quote(.init(
             probe: .init(quoteId: "q", model: model.id, promptTokensBucket: 512, maxOutputTokens: 512,
                 requiresVision: vision, visionImageCount: images, deadlineRemainingMs: 9000),
             capacity: BackendCapacity(slots: resident ? [slot] : [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
                 gpuMemoryCacheGb: 0, totalMemoryGb: 256, freeForLoadGb: freeForLoadGb,
-                loadUsableGb: loadUsableGb, loadHeadroomGb: loadHeadroomGb, capacitySeq: 3),
+                loadUsableGb: loadUsableGb, loadHeadroomGb: loadHeadroomGb, capacitySeq: 3,
+                telemetry: telemetry),
             model: model, ttft: nil,
             visionLimits: .init(maxBufferBytes: 38 << 30, attentionElementBytes: 2, headFactor: 1),
             refusingNewWork: false))
@@ -582,55 +625,67 @@ struct NemotronSuperServingPolicyTests {
     @Test func coldQuotesUseTheManagedLoadFootprint() {
         let footprintGb = Self.footprint.estimatedMemoryGb
         #expect(Self.quote(freeForLoadGb: footprintGb).admissibleNow)
-        #expect(Self.quote(freeForLoadGb: footprintGb, vision: true, images: 1).admissibleNow)
-        // The shard bytes alone would fit; the full managed LOAD does not.
-        let shardsOnly = Self.quote(freeForLoadGb: 75_010_188_240 * 1.2 / 1_073_741_824)
-        #expect(!shardsOnly.admissibleNow && shardsOnly.rejectionReason == .memoryCap)
-        for (vision, images) in [(false, 0), (true, 0), (true, 1), (false, 3)] {
+        for (vision, images) in [(false, 0), (false, 3)] {
             #expect(Self.quote(freeForLoadGb: footprintGb - 0.01, vision: vision, images: images)
                 .rejectionReason == .memoryCap)
         }
-        // Further images need their charge beyond the footprint's single image.
-        let single = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1)
-        for images in [2, 4, 16] {
-            let extraGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images)) - Self.gib(single)
-            #expect(extraGb > 0)
-            #expect(Self.quote(freeForLoadGb: footprintGb + extraGb, vision: true, images: images).admissibleNow)
-            #expect(Self.quote(freeForLoadGb: footprintGb + extraGb - 0.01, vision: true, images: images)
+        // The footprint holds no media: every image probe needs its whole charge beside it.
+        for images in [1, 2, 4, 16] {
+            let mediaGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
+            let charge = images == 1
+                ? max(mediaGb, Self.gib(NemotronSuperServingPolicy.videoMediaChargeBytes)) : mediaGb
+            #expect(Self.quote(freeForLoadGb: footprintGb + charge, vision: true, images: images).admissibleNow)
+            #expect(Self.quote(freeForLoadGb: footprintGb + charge - 0.01, vision: true, images: images)
                 .rejectionReason == .memoryCap)
         }
         // A probe without an image count is charged the binding's maximum.
-        let maximumGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 16)) - Self.gib(single)
+        let maximumGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 16))
         #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb - 0.01, vision: true).rejectionReason == .memoryCap)
         #expect(Self.quote(freeForLoadGb: footprintGb + maximumGb, vision: true).admissibleNow)
     }
 
-    /// A resident slot charges a vision probe against the published room no
-    /// resident model is credited as reclaimable, net of load headroom.
-    @Test func residentVisionProbesNeedTheirMediaCharge() {
-        let headroom = 6.5
+    /// A resident slot charges a vision probe against the room its media
+    /// reservation is admitted by: the published process ledger room, with
+    /// the activation reserve and outstanding commitments already taken.
+    @Test func residentVisionProbesNeedTheirMediaCharge() throws {
         for images in [1, 5, 16] {
-            let chargeGb = Self.gib(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
-            #expect(Self.quote(loadUsableGb: headroom + chargeGb, resident: true, vision: true, images: images)
+            let image = try #require(NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images))
+            let video = try #require(NemotronSuperServingPolicy.videoMediaChargeBytes)
+            let charge = images == 1 ? max(image, video) : image
+            #expect(Self.quote(runtimeRemainingBytes: charge, resident: true, vision: true, images: images)
                 .admissibleNow)
-            // Room to load elsewhere does not substitute for live room here.
-            let short = Self.quote(freeForLoadGb: 200, loadUsableGb: headroom + chargeGb - 0.01,
+            // Room to load elsewhere or under the load gate does not substitute for it.
+            let short = Self.quote(freeForLoadGb: 200, loadUsableGb: 200, runtimeRemainingBytes: charge - 1,
                                    resident: true, vision: true, images: images)
             #expect(!short.admissibleNow && short.rejectionReason == .memoryCap)
         }
-        #expect(Self.quote(freeForLoadGb: 200, loadUsableGb: nil, resident: true, vision: true, images: 1)
-            .rejectionReason == .memoryCap)
-        #expect(Self.quote(loadUsableGb: 200, loadHeadroomGb: nil, resident: true, vision: true, images: 1)
+        #expect(Self.quote(freeForLoadGb: 200, loadUsableGb: 200, resident: true, vision: true, images: 1)
             .rejectionReason == .memoryCap)
         // Text probes on the resident slot do not consult media room.
-        #expect(Self.quote(loadUsableGb: 0, resident: true).admissibleNow)
+        #expect(Self.quote(runtimeRemainingBytes: 0, resident: true).admissibleNow)
         #expect(Self.quote(loadUsableGb: nil, loadHeadroomGb: nil, resident: true).admissibleNow)
+    }
+
+    /// The narrowest owner on a 128 GB Mac with other work open (the claim
+    /// took the room, keeping no load reserve): the load gate's view, less
+    /// the 12.8 GiB load reserve the slot does not keep, shows no room at
+    /// all, but the ledger room its image reservation needs is there, so the
+    /// probe is admissible exactly as the binding would serve it.
+    @Test func narrowestOwnerQuotesMediaOnTheLedgerRoom() throws {
+        let charge = try #require(NemotronSuperServingPolicy.videoMediaChargeBytes.flatMap { video in
+            NemotronSuperServingPolicy.mediaChargeBytes(imageCount: 1).map { max($0, video) }
+        })
+        let narrow = Self.quote(loadUsableGb: 0, loadHeadroomGb: 3, runtimeRemainingBytes: charge,
+                                resident: true, vision: true, images: 1)
+        #expect(narrow.admissibleNow, "\(String(describing: narrow.rejectionReason))")
+        #expect(Self.quote(loadUsableGb: 0, loadHeadroomGb: 3, runtimeRemainingBytes: charge - 1,
+                           resident: true, vision: true, images: 1).rejectionReason == .memoryCap)
     }
 
     @Test func visionProbesOutsideTheImageBindingAreCapabilityRejects() {
         #expect(Self.quote(freeForLoadGb: 1_000, loadUsableGb: 1_000, vision: true, images: 17)
             .rejectionReason == .capability)
-        #expect(Self.quote(loadUsableGb: 1_000, resident: true, images: 17).rejectionReason == .capability)
+        #expect(Self.quote(runtimeRemainingBytes: 1 << 40, resident: true, images: 17).rejectionReason == .capability)
         // An unpinned or text-only Super entry never advertises media.
         var textOnly = Self.model
         textOnly.isVision = nil
@@ -639,7 +694,8 @@ struct NemotronSuperServingPolicyTests {
         let other = ModelInfo(id: "org/vision", modelType: "qwen3_vl", sizeBytes: 1, estimatedMemoryGb: 8,
                               isVision: true, templateRenderOK: true)
         #expect(Self.quote(other, freeForLoadGb: 8, vision: true, images: 16).admissibleNow)
-        #expect(Self.quote(other, loadUsableGb: 0, resident: true, vision: true, images: 17).admissibleNow)
+        #expect(Self.quote(other, loadUsableGb: 0, runtimeRemainingBytes: 0, resident: true, vision: true,
+                           images: 17).admissibleNow)
     }
 
     @Test func scannerWithholdsTheRegistryIDWithoutThePinnedMetadata() throws {
@@ -658,6 +714,95 @@ struct NemotronSuperServingPolicyTests {
         #expect(TemplateRenderCheck.configDeclaresVision(at: directory, modelID: Self.superID))
         #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.superID) == true)
         #expect(TemplateRenderCheck.renderOK(at: directory, modelID: Self.hfID) == true)
+    }
+
+    /// The managed load's fallbacks under the default policy at the whole
+    /// context: the planned owner, then no prefix bank at eight, four, two and
+    /// one requests, then that request with 1,024-token chunks, each with
+    /// every measured bound (the round at 262,144 tokens: 9,865,003,008 bytes
+    /// at eight). The last claims 80.6 GiB (the default about 99), so a 128 GB
+    /// Mac with 85.6 GiB available (the claim, the 3 GiB admission slack and
+    /// the 2 GiB activation reserve; no load reserve) loads it. A whole-grant
+    /// claim keeps only its own configuration.
+    @Test func managedLoadFallsBackToNarrowerOwners() throws {
+        let grant = 40 << 30
+        let context = NemotronSuperServingPolicy.contextTokens
+        let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: 128 << 30)
+        let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        #expect(candidates.map(\.requests) == [8, 8, 4, 2, 1, 1])
+        #expect(candidates[0] == .init(environment: plan.environment, admissionKVBytes: plan.admissionKVBytes,
+                                       requests: 8))
+        for candidate in candidates.dropFirst() {
+            #expect(candidate.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "0")
+            #expect(candidate.environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey]
+                == String(candidate.requests))
+            #expect(candidate.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
+        }
+        // Only the last serves 1,024-token prompt chunks; the rest keep the default.
+        #expect(candidates.map { NemotronSuperLocalPrefill.requestedChunkTokens(environment: $0.environment) }
+            == [2048, 2048, 2048, 2048, 2048, 1024])
+        #expect(candidates.dropFirst().map(\.admissionKVBytes)
+            == [16_844_324_864, 12_817_793_024, 8_053_063_680, 6_442_450_944, 6_442_450_944])
+        #expect(NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8) == 9_865_003_008)
+        // The narrowest claim: both payloads, the 1,024-token lane (4.75 GiB) and one request's admission.
+        let lane = NemotronSuperLocalPrefill.pinnedLaneBytes(chunkTokens: NemotronSuperLoadFit.narrowestChunkTokens)
+        #expect(lane == 5_100_273_664)
+        let narrowest = candidates[5].admissionKVBytes + lane
+        let claim = Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: narrowest))
+            + narrowest
+        #expect(claim == 86_529_541_664)
+        #expect(NemotronSuperLoadFit.narrowestRequirementBytes
+            == UInt64(claim + NemotronSuperLoadFit.admissionSlackBytes))
+        // With the 3 GiB slack and the 2 GiB activation reserve: 85.59 GiB available.
+        #expect(NemotronSuperLoadFit.minimumAvailableBytes == 91_898_250_784)
+        let whole = try NemotronSuperLoadFit.candidates(environment: plan.environment, admissionKVBytes: nil,
+            kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        #expect(whole == [.init(environment: plan.environment, admissionKVBytes: grant, requests: 8)])
+        // An owner already at 1,024-token chunks gets no further rung.
+        var small = plan.environment
+        small[NemotronSuperLocalPrefill.chunkKey] = "1024"
+        let smallChunk = try NemotronSuperLoadFit.candidates(environment: small,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        #expect(smallChunk.map(\.requests) == [8, 8, 4, 2, 1])
+    }
+
+    /// Once the pinned weights are installed, a narrower configuration is
+    /// asked only for its owner shares and the admission slack beside its KV
+    /// floor: with both resident payloads beside them, exactly what the gate
+    /// required of it before installation (no transient outgrows a rung's
+    /// serving room), so the narrowest still needs `narrowestRequirementBytes`
+    /// and, with the activation reserve, `minimumAvailableBytes`. A fixture's
+    /// claim, whose lease keeps the installation, is asked whole again.
+    @Test func claimsAfterInstallationLeaveOutOnlyTheResidentPayloads() throws {
+        let grant = 40 << 30
+        let physical: UInt64 = 128 << 30
+        let context = NemotronSuperServingPolicy.contextTokens
+        let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: grant, physicalBytes: physical)
+        #expect(plan.speculates)
+        let candidates = try NemotronSuperLoadFit.candidates(environment: plan.environment,
+            admissionKVBytes: plan.admissionKVBytes, kvBytesCapacity: grant, speculates: true, contextTokens: context)
+        let installation: (Int) -> Int = {
+            Int(NemotronSuperServingPolicy.pinnedLoadClaimBytes(speculates: true, servingBytes: $0))
+        }
+        let fits: [NemotronSuperLoadFit.Claim] = try candidates.map { candidate in
+            let shares = try NemotronSuperLocalBridgeBuilder.pinnedOwnerShares(environment: candidate.environment,
+                kvBytesCapacity: grant, speculates: true, contextTokens: context, physicalBytes: physical)
+            return try #require(NemotronSuperLoadFit.claim(candidate, kvBytesCapacity: grant, shares: shares,
+                                                           installationBytes: installation))
+        }
+        let payloads = NemotronSuperServingPolicy.pinnedInstallationPayloadBytes
+            + NemotronSuperServingPolicy.pinnedHeadPayloadBytes
+        let installed = fits.map { payloads + $0.installedAskedWeightBytes + UInt64($0.kvFloorBytes) }
+        let required = try NemotronSuperLoadFit.pinnedRequirements(plan: plan, kvBytesCapacity: grant,
+                                                                  physicalBytes: physical)
+        #expect(installed == required)
+        #expect(installed.last == NemotronSuperLoadFit.narrowestRequirementBytes)
+        let fixture = try #require(NemotronSuperLoadFit.claim(candidates[0], kvBytesCapacity: grant, shares: nil,
+                                                              installationBytes: installation))
+        #expect(fixture.installedAskedWeightBytes == fixture.askedWeightBytes)
     }
 
     /// Forced `tool_choice` is advertised for the registry id only: the owner

@@ -1,9 +1,97 @@
 import Foundation
 import Jinja
+import MLXLMServer
 import XCTest
 @testable import ProviderCore
 
 final class NemotronSuperPromptContractTests: XCTestCase {
+    private static func templateBytes() throws -> Data {
+        try XCTUnwrap(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
+    }
+
+    /// One user message's reference prompt text, thinking on.
+    private static func userPrompt(_ content: String) -> String {
+        "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n" + content
+            + "<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    }
+
+    /// Rendering merges each run of adjacent text parts; the pinned template
+    /// over one value per part renders the same tokens, including empty
+    /// parts, text around images and a placeholder split across parts.
+    func testMergedTextPartsRenderTheBytesOfTheSplitParts() throws {
+        let template = try Self.templateBytes()
+        let image = "data:image/png;base64,AA=="
+        let cases: [[OpenAIContentPart]] = [
+            [.text("a"), .text(""), .text("b\n"), .text("")],
+            [.text(""), .text("")],
+            [.text("x"), .text(""), .imageURL(image), .text(""), .text("y"), .text("z"), .imageURL(image), .text("")],
+            [.imageURL(image), .text(""), .imageURL(image)],
+            [.text("Look:"), .text("\n"), .imageURL(image), .text("a "), .text("<ima"), .text("ge>")],
+        ]
+        let tokenizer = SuperVideoTextTokenizer()
+        let chatTemplate = try NemotronSuperPromptContract.verifiedTemplate(template)
+        var context = NemotronSuperPromptContract.additionalContext(.init())
+        context["add_generation_prompt"] = true
+        for parts in cases {
+            let messages = [OpenAIChatMessage(role: .system, content: .parts(parts)),
+                            OpenAIChatMessage(role: .user, content: .parts(parts))]
+            let merged = try NemotronSuperPromptContract.render(messages: messages, body: Data("{}".utf8),
+                declared: nil, controls: .init(), templateBytes: template, tokenizer: tokenizer)
+            let split: [[String: any Sendable]] = messages.map { message in
+                ["role": message.role.rawValue, "content": Value.array(parts.map { part -> Value in
+                    switch part {
+                    case .text(let text): .object(["type": "text", "text": .string(text)])
+                    case .imageURL(let uri): .object(["type": "image_url", "image_url": .object(["url": .string(uri)])])
+                    default: .null
+                    }
+                })]
+            }
+            XCTAssertEqual(merged, try tokenizer.applyChatTemplate(messages: split, chatTemplate: chatTemplate,
+                                                                   tools: nil, additionalContext: context), "\(parts)")
+        }
+        let text = try NemotronSuperPromptContract.render(messages: [OpenAIChatMessage(role: .user,
+            content: .parts([.text("a"), .text(""), .text("b\n"), .text("")]))], body: Data("{}".utf8),
+            declared: nil, controls: .init(), templateBytes: template, tokenizer: tokenizer)
+        XCTAssertEqual(SuperVideoTextTokenizer.text(text), Self.userPrompt("ab\n"))
+    }
+
+    /// The separator before a media part follows Python's `endswith`, which
+    /// compares code points: text ending in "\r\n" ends with "\n" and takes no
+    /// separator (swift-jinja's own `endswith` compares Characters).
+    func testSeparatorBeforeAnImageFollowsPythonEndsWith() throws {
+        let template = try Self.templateBytes()
+        XCTAssertFalse(try NemotronSuperPromptContract.verifiedTemplate(template).contains(".endswith("))
+        let image = OpenAIContentPart.imageURL("data:image/png;base64,AA==")
+        let tokenizer = SuperVideoTextTokenizer()
+        for (text, content) in [("Look:\r\n", "Look:\r\n<image>"), ("Look:\n", "Look:\n<image>"),
+                                ("Look:", "Look:\n<image>"), ("Look:\r", "Look:\r\n<image>")] {
+            let tokens = try NemotronSuperPromptContract.render(
+                messages: [OpenAIChatMessage(role: .user, content: .parts([.text(text), image]))],
+                body: Data("{}".utf8), declared: nil, controls: .init(), templateBytes: template, tokenizer: tokenizer)
+            XCTAssertEqual(tokens, tokenizer.encode(text: Self.userPrompt(content), addSpecialTokens: false),
+                           text.debugDescription)
+        }
+    }
+
+    /// A request carries at most `maximumContentParts` parts: a 100,000-part
+    /// body is refused when the plan is built, before any render; one at the
+    /// bound renders its merged text.
+    func testContentPartsAreBoundedBeforeRendering() throws {
+        func body(parts: Int) -> Data {
+            Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID + #"","messages":[{"role":"user","content":["#
+                + Array(repeating: #"{"type":"text","text":"a"}"#, count: parts).joined(separator: ",")
+                + "]}]}").utf8)
+        }
+        XCTAssertThrowsError(try NemotronSuperRequestPlan(body: body(parts: 100_000))) {
+            XCTAssertEqual($0 as? NemotronSuperRequestPlan.Failure, .tooManyContentParts)
+        }
+        let bounded = body(parts: NemotronSuperRequestPlan.maximumContentParts)
+        let tokens = try NemotronSuperRequestPlan(body: bounded).textPromptTokens(body: bounded,
+            templateBytes: Self.templateBytes(), tokenizer: SuperVideoTextTokenizer())
+        XCTAssertEqual(SuperVideoTextTokenizer.text(tokens),
+                       Self.userPrompt(String(repeating: "a", count: NemotronSuperRequestPlan.maximumContentParts)))
+    }
+
     func testOfficialDefaultsAndMediumEffort() throws {
         let defaults = try NemotronSuperPromptContract.additionalContext(body: Data("{}".utf8))
         XCTAssertEqual(defaults["enable_thinking"] as? Bool, true)
@@ -110,6 +198,27 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertEqual(arguments["a"], .array([.boolean(true), .null]))
     }
 
+    /// The template iterates tool-call arguments with `items`, which raises in
+    /// the reference for anything but a mapping; such arguments are refused
+    /// instead of rendering an empty call.
+    func testNonObjectToolCallArgumentsAreRefused() throws {
+        func history(_ arguments: String) -> [OpenAIChatMessage] {
+            [OpenAIChatMessage(role: .user, content: .text("q")),
+             OpenAIChatMessage(role: .assistant, content: .null, toolCalls: [
+                OpenAIToolCall(id: "c", function: .init(name: "f", arguments: arguments))])]
+        }
+        for arguments in ["[1]", "5", "null", #""s""#, "true", "{"] {
+            XCTAssertThrowsError(try NemotronSuperPromptContract.messages(history(arguments)), arguments) {
+                guard case .invalidToolArguments = $0 as? NemotronSuperPromptContract.Failure else {
+                    return XCTFail("\(arguments): \($0)")
+                }
+            }
+        }
+        for arguments in ["", "{}", #"{"a":[1]}"#] {
+            XCTAssertNoThrow(try NemotronSuperPromptContract.messages(history(arguments)), arguments)
+        }
+    }
+
     func testImagePlaceholderExpansionMatchesProcessor() throws {
         XCTAssertEqual(try NemotronSuperPromptContract.expandImagePlaceholders(
             [1, 18, 2, 18, 3], featureCounts: [2, 1], contextLength: 64),
@@ -142,6 +251,56 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         }
         let deep = String(repeating: "[", count: 66) + String(repeating: "]", count: 66)
         XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(deep))
+    }
+
+    /// Only the requested top-level member is parsed, and held to the limits;
+    /// the others need only well-formed extents. A repeated key keeps its last
+    /// value, as in Python.
+    func testOrderedJSONMemberParsesOnlyItsKey() throws {
+        func tools(_ body: String) throws -> Value? {
+            try NemotronSuperOrderedJSON.member("tools", of: Data(body.utf8))
+        }
+        let deep = String(repeating: "[", count: 100) + String(repeating: "]", count: 100)
+        XCTAssertEqual(try tools(#"{"seed": 9223372036854775808, "deep": "# + deep
+            + #", "tools": [1], "s": "}\"[\\", "e": 1e999, "tools": [{"b": 1, "a": null}]}"#),
+            .array([.object(["b": .int(1), "a": .null])]))
+        XCTAssertNil(try tools(#"{"seed": 18446744073709551616}"#))
+        XCTAssertThrowsError(try tools(#"{"tools": [12345678901234567890]}"#)) {
+            XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .limit)
+        }
+        for invalid in ["[]", #"{"a": }"#, #"{"a": [1}"#, #"{"a": "x}"#, #"{"a": 1] }"#, #"{"a": 1} x"#,
+                        #"{"a": 1"#, "{\"a\": \"\u{01}\"}"] {
+            XCTAssertThrowsError(try tools(invalid), invalid)
+        }
+    }
+
+    /// The body is parsed strictly only for `tools`: a `seed` the SDK decodes
+    /// as UInt64 but beyond Int64 no longer refuses a tool request.
+    func testSeedBeyondInt64DoesNotRefuseATooledRequest() throws {
+        let body = Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID
+            + #"","seed":9223372036854775808,"messages":[{"role":"user","content":"q"}],"#
+            + #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","#
+            + #""properties":{"b":{"type":"string"},"a":{"type":"integer"}}}}}]}"#).utf8)
+        let plan = try NemotronSuperRequestPlan(body: body)
+        XCTAssertEqual(plan.request.seed, 1 << 63)
+        let prompt = SuperVideoTextTokenizer.text(try plan.textPromptTokens(body: body,
+            templateBytes: Self.templateBytes(), tokenizer: SuperVideoTextTokenizer()))
+        XCTAssertTrue(prompt.contains("<name>b</name>\n<type>string</type>\n</parameter>\n<parameter>\n<name>a</name>"),
+                      prompt)
+    }
+
+    /// String bytes decode exactly, as Python's `json.loads` reads them: a
+    /// U+FEFF that starts a raw segment survives, and invalid UTF-8 (a stray
+    /// byte, an encoded surrogate, an overlong or truncated sequence) is refused.
+    func testOrderedJSONKeepsByteOrderMarksAndRefusesInvalidUTF8() throws {
+        XCTAssertEqual(try NemotronSuperOrderedJSON.parse("{\"\u{FEFF}k\": \"\u{FEFF}v\\n\u{FEFF}w\"}"),
+                       .object(["\u{FEFF}k": .string("\u{FEFF}v\n\u{FEFF}w")]))
+        for bytes: [UInt8] in [[0x22, 0xFF, 0x22], [0x22, 0xED, 0xA0, 0x80, 0x22], [0x22, 0xC0, 0xAF, 0x22],
+                               [0x22, 0xE2, 0x82, 0x22]] {
+            XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(Data(bytes)), "\(bytes)") {
+                XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .invalid)
+            }
+        }
     }
 
     /// Expected strings were produced by CPython 3.14 `repr`, `str`,

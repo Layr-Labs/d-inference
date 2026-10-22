@@ -19,7 +19,8 @@ struct NemotronSuperLocalOutput {
 
     let plan: NemotronSuperRequestPlan
     let streaming: Bool
-    private let handler: BatchedToolStreamHandler
+    /// Nil when content carries no tool frames to parse.
+    private let handler: BatchedToolStreamHandler?
     private var channel: NemotronSuperReasoningChannel
     private var raw = ""
     private var content = ""
@@ -32,9 +33,13 @@ struct NemotronSuperLocalOutput {
         guard maximumBytes > 0, maximumBytes <= 16 << 20 else { throw Failure.invalidRequest }
         self.plan = plan
         self.streaming = streaming
-        // Absent tools still parse frames: an undeclared call must fail
-        // validation instead of reaching the client as raw XML.
-        handler = BatchedToolStreamHandler(format: .nemotron,
+        // With no tool declared under auto choice the prompt offers no tools,
+        // so a literal `<tool_call>` is answer text, as in the reference
+        // server. Otherwise frames always parse: a call that `none` or the
+        // declarations do not allow fails validation instead of reaching the
+        // client as raw XML.
+        let offersNoTools = plan.toolPolicy.mode == .auto && plan.toolPolicy.tools?.isEmpty != false
+        handler = offersNoTools ? nil : BatchedToolStreamHandler(format: .nemotron,
             tools: plan.toolPolicy.tools?.map { $0.toolSpec() })
         channel = NemotronSuperReasoningChannel(controls: plan.controls)
         self.maximumBytes = maximumBytes
@@ -64,18 +69,23 @@ struct NemotronSuperLocalOutput {
         var events: [MLXServerGenerationEvent] = []
         if streaming {
             events = try route(channel.finishStream())
+            // The streamed reasoning stays; its copy is content and passes the
+            // same tool and response-format checks as any other.
+            if channel.promotesUnterminatedReasoning, !reasoning.isEmpty {
+                events += try route([.init(content: reasoning, reasoningContent: nil)])
+            }
         } else {
             let split = channel.complete(raw)
             reasoning = split.reasoning ?? ""
             _ = try route([.init(content: split.content ?? "", reasoningContent: nil)])
         }
-        let calls = handler.finish()
-        let residual = handler.takeResidualText() ?? ""
+        let calls = handler?.finish() ?? []
+        let residual = handler?.takeResidualText() ?? ""
         let forced = plan.toolPolicy.requiresToolCall
         // route refuses mid-stream parse failures, so any failure here is the
         // end-of-stream remainder: a complete opening tag is an unterminated
         // frame; a bare `<to…` prefix was only withheld while being probed.
-        let unterminated = handler.parseFailureCount > 0
+        let unterminated = (handler?.parseFailureCount ?? 0) > 0
             && Self.frameOpenings.contains(where: residual.contains)
         guard !unterminated, !forced || ToolChoiceEnforcementPolicy.isFramingWhitespace(residual)
         else { throw Failure.malformedToolFrame }
@@ -94,7 +104,8 @@ struct NemotronSuperLocalOutput {
         return (events, Result(content: validatedContent, reasoning: validatedReasoning, calls: calls))
     }
 
-    /// Reasoning is never parsed for tools; content passes the tool parser.
+    /// Reasoning is never parsed for tools; content passes the tool parser
+    /// when the request has one.
     private mutating func route(_ pieces: [ParsedReasoning]) throws -> [MLXServerGenerationEvent] {
         var events: [MLXServerGenerationEvent] = []
         for piece in pieces {
@@ -103,12 +114,16 @@ struct NemotronSuperLocalOutput {
                 events.append(.parsed(.init(content: "", reasoningContent: text)))
             }
             var visible = ""
-            for segment in Self.tagSegments(piece.content) {
-                let text = handler.processChunk(segment)
-                // The shared parser returns a failed frame as text; refuse it
-                // before that text can be exposed.
-                guard handler.parseFailureCount == 0 else { throw Failure.malformedToolFrame }
-                visible += text ?? ""
+            if let handler {
+                for segment in Self.tagSegments(piece.content) {
+                    let text = handler.processChunk(segment)
+                    // The shared parser returns a failed frame as text; refuse
+                    // it before that text can be exposed.
+                    guard handler.parseFailureCount == 0 else { throw Failure.malformedToolFrame }
+                    visible += text ?? ""
+                }
+            } else {
+                visible = piece.content
             }
             guard !visible.isEmpty else { continue }
             if plan.toolPolicy.requiresToolCall {

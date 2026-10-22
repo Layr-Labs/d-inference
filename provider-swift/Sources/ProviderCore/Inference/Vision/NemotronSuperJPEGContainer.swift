@@ -16,6 +16,8 @@ struct NemotronSuperJPEGContainer {
     let exif: Data?
     /// The last XMP APP1 packet, as Pillow's `info["xmp"]`.
     let xmp: Data?
+    /// Bytes from SOI through the primary image's EOI: all a decoder needs.
+    let primaryLength: Int
 
     private struct Component { let id: UInt8, horizontal: Int, vertical: Int }
 
@@ -29,6 +31,7 @@ struct NemotronSuperJPEGContainer {
             throw Failure.unsupportedEncoding
         }
         var frame: (width: Int, height: Int, components: [Component])?
+        var progression: ScanProgression?
         var jfif = false, adobeTransform: UInt8?
         var exif: Data?, xmp: Data?
         var scans = 0, position = 2
@@ -40,7 +43,7 @@ struct NemotronSuperJPEGContainer {
             position += 1
             switch marker {
             case 0xd9:  // EOI
-                guard scans > 0 else { throw Failure.invalidHeader }
+                guard scans > 0, progression?.isComplete == true else { throw Failure.invalidHeader }
                 break markers
             case 0x00...0xbf, 0xd0...0xd8:
                 // Stuffing, TEM, reserved, RSTn outside a scan, or a second SOI.
@@ -59,10 +62,12 @@ struct NemotronSuperJPEGContainer {
             switch marker {
             case 0xc0, 0xc1, 0xc2:
                 guard frame == nil, scans == 0 else { throw Failure.invalidHeader }
-                frame = try parseFrame(payload)
+                let parsed = try parseFrame(payload)
+                frame = parsed
+                progression = ScanProgression(components: parsed.components.map(\.id), progressive: marker == 0xc2)
             case 0xda:
-                guard let frame else { throw Failure.invalidHeader }
-                try validateScan(payload, frame.components)
+                guard progression != nil else { throw Failure.invalidHeader }
+                try progression?.admit(payload)
                 scans += 1
                 guard scans <= maximumScans else { throw Failure.unsupportedEncoding }
                 position = try entropyEnd(bytes, from: position)
@@ -90,7 +95,8 @@ struct NemotronSuperJPEGContainer {
         }
         guard let frame else { throw Failure.invalidHeader }
         let model = try colorModel(frame.components, jfif: jfif, adobeTransform: adobeTransform)
-        return Self(width: frame.width, height: frame.height, colorModel: model, exif: exif, xmp: xmp)
+        return Self(width: frame.width, height: frame.height, colorModel: model, exif: exif, xmp: xmp,
+                    primaryLength: position)
     }
 
     private static func parseFrame(_ payload: UnsafeRawBufferPointer) throws
@@ -118,12 +124,52 @@ struct NemotronSuperJPEGContainer {
         return (width, height, components)
     }
 
-    private static func validateScan(_ payload: UnsafeRawBufferPointer, _ components: [Component]) throws {
-        guard let count = payload.first.map(Int.init), (1...4).contains(count),
-              payload.count == 1 + 2 * count + 3 else { throw NemotronSuperImageDecode.Failure.invalidHeader }
-        let ids = (0..<count).map { payload[1 + 2 * $0] }
-        guard Set(ids).count == count, ids.allSatisfy({ id in components.contains { $0.id == id } }) else {
-            throw NemotronSuperImageDecode.Failure.invalidHeader
+    /// The scans' spectral selection (Ss, Se) and successive approximation
+    /// (Ah, Al) per component and coefficient, as ITU T.81 requires them.
+    /// libjpeg-turbo tolerates scans that decode coefficients again (warning
+    /// at most), and ImageIO's decode cannot be cancelled, so they are refused:
+    /// a sequential frame codes each component in exactly one full-band scan;
+    /// a progressive DC scan has Ss = Se = 0 and an AC scan one component and
+    /// 1 <= Ss <= Se <= 63; a coefficient's first scan has Ah = 0 and Al <= 13,
+    /// and each later one refines the previous Al by one bit (Ah = previous Al,
+    /// Al = Ah - 1). No coefficient is decoded more than 14 times.
+    private struct ScanProgression {
+        private let components: [UInt8]
+        private let progressive: Bool
+        /// 64 coefficients per component: -1 before their first scan, then the latest Al.
+        private var bits: [Int8]
+
+        init(components: [UInt8], progressive: Bool) {
+            self.components = components
+            self.progressive = progressive
+            bits = Array(repeating: -1, count: components.count * 64)
+        }
+
+        /// A sequential frame has coded every component.
+        var isComplete: Bool { progressive || !bits.contains(-1) }
+
+        mutating func admit(_ payload: UnsafeRawBufferPointer) throws {
+            typealias Failure = NemotronSuperImageDecode.Failure
+            guard let count = payload.first.map(Int.init), (1...4).contains(count),
+                  payload.count == 1 + 2 * count + 3 else { throw Failure.invalidHeader }
+            let ids = (0..<count).map { payload[1 + 2 * $0] }
+            let indices = ids.compactMap { components.firstIndex(of: $0) }
+            guard Set(ids).count == count, indices.count == count else { throw Failure.invalidHeader }
+            let start = Int(payload[2 * count + 1]), end = Int(payload[2 * count + 2])
+            let high = Int(payload[2 * count + 3] >> 4), low = Int(payload[2 * count + 3] & 15)
+            if progressive {
+                let band = start == 0 ? end == 0 : start <= end && end <= 63 && count == 1
+                guard band, low <= 13, high == 0 || low == high - 1 else { throw Failure.invalidHeader }
+            } else {
+                guard start == 0, end == 63, high == 0, low == 0 else { throw Failure.invalidHeader }
+            }
+            for component in indices {
+                for coefficient in start...end {
+                    let index = component * 64 + coefficient
+                    guard high == 0 ? bits[index] < 0 : Int(bits[index]) == high else { throw Failure.invalidHeader }
+                    bits[index] = Int8(low)
+                }
+            }
         }
     }
 

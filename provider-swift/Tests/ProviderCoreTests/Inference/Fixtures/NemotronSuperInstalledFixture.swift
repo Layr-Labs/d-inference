@@ -11,12 +11,14 @@ import Testing
 struct SuperInstalledFixture {
     var radioDimensions: NemotronRadioDimensions? = nil
     private struct Tensor { let dtype: String; let shape: [Int]; let data: Data }
+    /// 64-wide attention heads, the narrowest the paged KV kernels take; the
+    /// Super owner serves paged KV only.
     private func model() throws -> NemotronSuperModel {
         let language = NemotronHModel(NemotronHConfiguration(vocabSize: 32, hiddenSize: 16,
             numHiddenLayers: 3, numAttentionHeads: 1, numKeyValueHeads: 1,
             mambaNumHeads: 1, mambaHeadDim: 16, ssmStateSize: 4, convKernel: 4, nGroups: 1,
             intermediateSize: 16, moeIntermediateSize: 16, moeSharedExpertIntermediateSize: 16,
-            nRoutedExperts: 2, numExpertsPerTok: 1, hybridOverridePattern: "M*E", headDim: 16))
+            nRoutedExperts: 2, numExpertsPerTok: 1, hybridOverridePattern: "M*E", headDim: 64))
         let tower = NemotronRadio(radioDimensions ?? NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
             channels: 1, patch: 2, positionSide: 2, prefix: 1, mlpWidth: 3))
         let images = NemotronSuperImageComposition(tower: tower,

@@ -3,7 +3,7 @@
 import Foundation
 import MLX
 import MLXLLM
-import MLXLMCommon
+@testable import MLXLMCommon
 import MLXVLM
 import Testing
 @testable import ProviderCore
@@ -93,12 +93,13 @@ extension NemotronSuperLocalOwnerTests {
         return (owner, installed, residency, budget, lease)
     }
 
-    /// Each request's shared-budget charge carries one batched decode row from
-    /// admission until it retires; the owner's single prefill lane (the graph
-    /// path's ModelOpt workspace for one chunk) is held from before the first
-    /// request until native retirement, whatever the number of requests.
+    /// The owner reserves one batched decode row per configured request and
+    /// its single prefill lane (the graph path's ModelOpt workspace for one
+    /// chunk) from before the first request until native retirement. The
+    /// bridge counts the row in every request's fixed bytes, but on paged
+    /// storage a request adds no shared-budget reservation of its own.
     @Test(.timeLimit(.minutes(1)))
-    func requestsChargeADecodeRowAndTheOwnerOnePrefillLane() async throws {
+    func ownerHoldsItsDecodeRowsAndOnePrefillLaneAcrossRequests() async throws {
         let (owner, installed, residency, budget, lease) = try await Self.owner()
         let language = try #require(installed.model?.languageModel)
         let chunk = owner.prefill.chunkTokens
@@ -107,19 +108,22 @@ extension NemotronSuperLocalOwnerTests {
         let row = try language.superDecodeCharge(kvElementBytes: 2).rowWorkspace.totalBytes
         let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
         #expect(prefill > 0 && row > 0 && workspace == row && owner.prefillLaneBytes == prefill)
-        let lane = await budget.reservationBytesSnapshot()
-        #expect(lane.count == 1 && lane.first.map { NemotronSuperLocalPrefill.isLaneReservationID($0.key) } == true
-            && lane.first?.value == UInt64(prefill))
+        #expect(owner.decodeRowsBytes == workspace)
+        let idle = await budget.reservationBytesSnapshot()
+        #expect(idle.count == 2)
+        #expect(idle.filter { NemotronSuperLocalPrefill.isLaneReservationID($0.key) }.values.map { Int($0) }
+            == [prefill])
+        #expect(idle.filter { NemotronSuperLocalKVBackend.isDecodeRowsReservationID($0.key) }.values
+            .map { Int($0) } == [workspace])
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
+        #expect(await owner.bridge.kvBackendKind == .paged)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
         let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
             messages: [], temperature: 0, max_tokens: 12)
-        let expected = try #require(await owner.bridge.requestReservationBytes(tokenCount: 15))
-        #expect(expected >= workspace)
         let observed = SuperOwnerCharges()
-        // Hold the request before its native terminal, while its charge must
-        // still be held, so the in-flight charge is observed without racing
+        // Hold the request before its native terminal, while it is still
+        // admitted, so the in-flight reservations are observed without racing
         // event delivery; then let it retire.
         let gate = SuperHTTPTerminalGate()
         await owner.bridge._testInstallPersistentTerminalGate { _ in await gate.hold() }
@@ -130,14 +134,15 @@ extension NemotronSuperLocalOwnerTests {
             }
         }
         try await superHTTPEventually("request held before its native terminal") { await gate.entered }
-        let inFlight = await budget.reservationBytesSnapshot().values.map { Int($0) }.sorted()
-        #expect(inFlight == [expected, prefill].sorted(), "\(inFlight)")
+        #expect(await budget.reservationBytesSnapshot() == idle)
         await gate.release()
         try await run.value
         await owner.bridge._testInstallPersistentTerminalGate(nil)
         #expect(!(await gate.timedOut))
-        #expect(await observed.rows.allSatisfy { $0.contains(prefill) })
-        #expect(await budget.reservationBytesSnapshot() == lane)
+        let held = idle.values.map { Int($0) }.sorted()
+        #expect(!(await observed.rows.isEmpty))
+        #expect(await observed.rows.allSatisfy { $0 == held })
+        #expect(await budget.reservationBytesSnapshot() == idle)
         try await owner.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)
         #expect(residency.snapshot.usedBytes == 0)
@@ -212,8 +217,10 @@ extension NemotronSuperLocalOwnerTests {
         let charge = try language.superDecodeCharge(kvElementBytes: 2)
         let ownedEngine = await owner.bridge.ownedEngine
         let engine = try #require(ownedEngine as? EngineV2)
-        #expect(engine.resolvedFixedBytesPerRequest
-            == charge.recurrentGenerations * charge.recurrentBytesPerGeneration)
+        // Paged prices footprints: live generations x one generation's conv and SSM buffers, each allocator-rounded.
+        let policy = try #require(Memory.allocationFootprintPolicy())
+        let generationBytes = try language.cbv2RecurrentStateSpec.allocationBytesPerGeneration(policy: policy)
+        #expect(engine.resolvedFixedBytesPerRequest == charge.recurrentGenerations * generationBytes)
         let workspace = try NemotronSuperLocalBridgeBuilder.requestWorkspaceBytes(language)
         #expect(await owner.bridge.fixedRequestBytes == engine.resolvedFixedBytesPerRequest + workspace)
         #expect(owner.admitLocalRequest() && owner.admitLocalRequest() && !owner.admitLocalRequest())
@@ -247,8 +254,9 @@ extension NemotronSuperLocalOwnerTests {
                 ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]]]]]])
         #expect(try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
             == [1, 19, 18, 18, 18, 20, 2])
-        // The framed span must fit the context: 62 features plus 2 markers do not.
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.capacity) {
+        // The framed span must fit the context: 62 features plus 2 markers do
+        // not, which is the request's own fault (400), not capacity.
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
             try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [62])
         }
         #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
@@ -257,6 +265,102 @@ extension NemotronSuperLocalOwnerTests {
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
+    }
+
+    /// The owner's lock covers only an image step's admission check: while
+    /// an image prompt renders, text admission returns at once.
+    @Test(.timeLimit(.minutes(1))) func imagePromptRendersOutsideTheOwnerLock() async throws {
+        try await Self.expectTextAdmittedWhileRendering(base: SuperSyntheticImageTokenizer(),
+            media: ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]],
+            expected: [1, 19, 18, 18, 18, 20, 2]
+        ) { owner, body, template in
+            try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
+        }
+    }
+
+    /// Likewise for a video prompt: while its template renders, text
+    /// admission returns at once.
+    @Test(.timeLimit(.minutes(1))) func videoPromptRendersOutsideTheOwnerLock() async throws {
+        let labels = ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: "]
+        try await Self.expectTextAdmittedWhileRendering(base: SuperSyntheticVideoTokenizer(),
+            media: ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AA=="]],
+            expected: NemotronSuperPromptContract.VideoPrompt(prefix: [1], labels: [[3, 4]], suffix: [2])
+        ) { owner, body, template in
+            try owner.localVideoPrompt(body: body, templateBytes: template, labels: labels)
+        }
+    }
+
+    /// Renders the prompt of a text part and `media` with `render` while a
+    /// gate holds its template render in `base`; text admission must return
+    /// meanwhile, and the prompt must equal `expected`.
+    private static func expectTextAdmittedWhileRendering<Prompt: Equatable & Sendable>(
+        base: any MLXLMCommon.Tokenizer, media: [String: Any], expected: Prompt,
+        render: @escaping @Sendable (NemotronSuperLocalBridgeBuilder.Owner, Data, Data) throws -> Prompt
+    ) async throws {
+        let gate = SuperRenderGate()
+        let (owner, _, residency, budget, lease) = try await Self.owner(
+            tokenizer: SuperGatedRenderTokenizer(base: base, gate: gate))
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": NemotronSuperLocalBinding.modelID,
+            "messages": [["role": "user", "content": [["type": "text", "text": "fixture"], media]]]])
+        let prompt = Task.detached { try render(owner, body, template) }
+        #expect(await SuperRenderGate.wait(gate.entered))
+        // Its own thread: an admission blocked on the lock must not hold the pool.
+        let admitted = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { if owner.admitLocalRequest() { admitted.signal() } }
+        let returned = await SuperRenderGate.wait(admitted)
+        gate.release.signal()
+        #expect(returned, "text admission waited for a media prompt to render")
+        #expect(try await prompt.value == expected)
+        if returned { owner.finishLocalRequest() }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+}
+
+/// Holds a media prompt render inside the tokenizer until released.
+private final class SuperRenderGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+
+    /// Waits off the cooperative pool, at most five seconds.
+    static func wait(_ semaphore: DispatchSemaphore) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + 5) == .success)
+            }
+        }
+    }
+}
+
+/// `base`, whose template render waits on a gate.
+private struct SuperGatedRenderTokenizer: MLXLMCommon.Tokenizer {
+    let base: any MLXLMCommon.Tokenizer
+    let gate: SuperRenderGate
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        base.encode(text: text, addSpecialTokens: addSpecialTokens)
+    }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        base.decode(tokenIds: tokenIds, skipSpecialTokens: skipSpecialTokens)
+    }
+    func convertTokenToId(_ token: String) -> Int? { base.convertTokenToId(token) }
+    func convertIdToToken(_ id: Int) -> String? { base.convertIdToToken(id) }
+    var bosToken: String? { base.bosToken }
+    var eosToken: String? { base.eosToken }
+    var unknownToken: String? { base.unknownToken }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+                           additionalContext: [String: any Sendable]?) throws -> [Int] {
+        try base.applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
+    }
+    func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String,
+                           tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] {
+        gate.entered.signal()
+        _ = gate.release.wait(timeout: .now() + 10)
+        return try base.applyChatTemplate(messages: messages, chatTemplate: chatTemplate, tools: tools,
+                                          additionalContext: additionalContext)
     }
 }
 

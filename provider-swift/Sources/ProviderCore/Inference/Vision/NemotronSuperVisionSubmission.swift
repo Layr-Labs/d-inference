@@ -1,3 +1,4 @@
+import MLX
 import MLXLMCommon
 import MLXVLM
 
@@ -7,10 +8,17 @@ import MLXVLM
 enum NemotronSuperVisionSubmission {
     static func make(_ prepared: NemotronSuperVisionPreparation.Prepared)
         -> EngineV2VisionPrefill.PreparedSubmission {
-        .init(promptTokens: prepared.prompt.map(Int.init),
-            spans: prepared.ranges.map {
+        make(promptTokens: prepared.prompt.map(Int.init), ranges: prepared.ranges,
+             features: prepared.features, mediaKind: .image)
+    }
+
+    /// One evaluated feature array per placeholder range, in prompt order.
+    static func make(promptTokens: [Int], ranges: [Range<Int>], features: [MLXArray],
+                     mediaKind: EngineV2MediaKind) -> EngineV2VisionPrefill.PreparedSubmission {
+        .init(promptTokens: promptTokens,
+            spans: ranges.map {
                 CBv2ImageSpan(tokenOffset: $0.lowerBound, length: $0.count)
-            }, embeddings: prepared.features,
-            attention: .causal, positionState: nil, mediaKind: .image)
+            }, embeddings: features,
+            attention: .causal, positionState: nil, mediaKind: mediaKind)
     }
 }

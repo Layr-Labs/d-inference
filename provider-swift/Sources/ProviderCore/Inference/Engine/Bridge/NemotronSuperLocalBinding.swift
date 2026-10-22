@@ -37,12 +37,15 @@ actor NemotronSuperLocalBinding {
         }
     }
 
+    #if DEBUG
+    /// TEST SEAM (debug builds only): replaces the bridge execution.
     init(modelID: String = NemotronSuperLocalBinding.modelID, acquire: @escaping Acquire,
          fixtureExecution: @escaping Execute) {
         self.modelID = modelID
         self.acquire = acquire
         self.execute = fixtureExecution
     }
+    #endif
 
     /// Tokens must already be rendered by the qualified pinned tokenizer/chat template.
     /// No media, MTP, structured output, or tool capability is claimed here; prefix

@@ -3,9 +3,663 @@
 Unreleased changes live in [`changelog.d/`](changelog.d/README.md). Ordinary
 pull requests add one fragment; release preparation alone updates this file.
 
-## v0.9.21 — candidate (unpublished)
+Version sections identify source included in published tags, not coordinator
+or console deployment, feature activation, model promotion or hardware
+qualification. Sections marked historical retain the original candidate's
+qualification, opt-in and deployment limits rather than claiming activation.
 
-Prepared on 2026-10-14; tagging and publication are separate steps.
+## v0.10.0 — candidate (unpublished)
+
+Prepared on 2026-10-22; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Request normalization moves from v8 to v9 for every model, so every `prompt_contract_id` changes. A coordinator attaches a cache scope only when a provider's advertised contract matches its own, so a 0.10.0 provider under a v8 coordinator, or an older provider under a v9 coordinator, serves coordinator requests without prefix-cache or prompt-token reuse and without cache-aware routing until both run v9. Ordinary serving continues across the mismatch. Run this release with a v9 coordinator, add v9 tuples to the coordinator's cache-routing allowlist, and expect existing prefix caches to start cold.
+- MLX moves from `cb77239b` to `ad4745a2` both in `libs/mlx` and in the copy nested in `libs/mlx-swift` that Cmlx compiles; `libs/mlx-swift` moves from `6923a80f` to `67dc7528` and `libs/mlx-swift-lm` from `14661d9b` to `7bed8216`. The quantized and NAX Metal kernels that every quantized model uses change, so the release metallib changes and the first start after updating compiles kernels again.
+- Flint, Nemotron 3.5 Super and GLM-5.3-Flash serve coordinator requests only after each model is published and registered. Register Super only behind a coordinator that enforces its provider-version floor at 0.10.0, and GLM-5.3-Flash only behind one that requires the `glm5_next_v1` capability; without those gates a coordinator would route them without their load quotations, prompt contracts and media estimates. Flint needs the coordinator's v9 Flint prompt framing, and older providers cannot serve it.
+- Two changes listed under GLM-5.3-Flash native prerequisites apply to every model: model-weight hashing reads around the file cache, and a request refused because the Mac's serving concurrency is full gets HTTP 503 before any response headers.
+- `darkbloom start` does not forward these rollback switches to the LaunchAgent, so they affect only foreground processes: `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL`, `DARKBLOOM_TTFT_QWEN_MTP_CHAINED`, `DARKBLOOM_TTFT_QWEN_MTP_CARRY`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` and the `DARKBLOOM_NEMOTRON_SUPER_*` settings.
+
+### Native Flint support
+
+- Add native Recursive Flint loading and CBv2 serving for the official group-64 affine INT4 artifact with INT8 embeddings and native BF16 KV. Live KV and checkpoint precision must both be native.
+- Enforce the loaded artifact context limit for prompt plus reserved output before request admission.
+- Preserve automatic reasoning, separate reasoning output, validate complete schema-aware tool frames and retain nulls in tool history. Media and unrepresentable raw `</arg_value>` history return errors; Flint OpenRouter parameters below covers reasoning controls, `stop` and JSON `response_format`.
+- Enforce native reasoning/tool boundaries in every Flint request, including requests without tools, with split-token marker handling, EOS protection and prepared tool-choice/cardinality rules. JSON and schema checks remain mandatory in the parser and post-validator.
+- Keep the caller's messages for required and named Flint tool choices instead of adding a generic tool-only instruction; the native constraint and validators enforce the call. This fixes paged named-tool requests that repeated a call inside unfinished reasoning until the output limit and failed. The request-normalization identity advances to v9 for all models; see Upgrade and rollout notes.
+- Bound protocol state and vocabulary caches. Constraints add host/masking work; Flint serving speedups below restore chained decode. Unconstrained diagnostics do not establish production safety, answer quality or throughput.
+- Omit unused prefill vocabulary projections while preserving the full trunk and every KV write. Dense/expert NAX execution is captured; a speedup and the prefill/decode targets remain unproven.
+- Credit Prince Canuma's MIT mlx-vlm implementation and Recursive's Apache-2.0 rec reference, including its protocol grammar design, with full licenses retained in the SDK notices. Physical qualification remains scoped to the accompanying evidence; MTP, reduced KV and model publication are outside this change.
+
+### Flint OpenRouter parameters
+
+- Accept Flint reasoning effort, `reasoning.enabled` and thinking switches with no effect, since Flint always chooses whether to reason. Malformed values are still rejected. `reasoning.exclude`, `include_reasoning: false` and `reasoning.enabled: false` now hide Flint's reasoning in chat completions, the Responses API and coordinator streams; those tokens are still counted and billed, and they no longer appear in coordinator logprobs.
+- Support up to four `stop` sequences on Flint, matched only against the visible answer after reasoning; reasoning and tool calls never trigger a stop.
+- Enforce JSON `response_format` (`json_object` and `json_schema`) on Flint's answer after optional reasoning. Requests with tools and a response format return only the formatted answer. Output that is cut off or invalid returns 422 instead of a successful completion.
+
+### Flint paged-only defaults
+
+- Flint now loads on paged attention with the default provider configuration and never falls back to contiguous. An explicit contiguous selection, the paged kill switch or a paged construction failure refuses the load instead of serving the unqualified contiguous path.
+- Flint now uses native KV and checkpoint precision even when the provider-wide checkpoint default is `balanced`; an explicit per-model or environment request for reduced precision is still refused.
+
+### Flint serving speedups
+
+- Pin the SDK with Flint decode and prefill speedups: larger decode command buffers, fewer paged decode dispatches and uploads, a fused MoE expert combine, batched sliding-window prefill attention, and constrained decode chaining. Outputs are byte-identical to the previous build.
+- Flint's protocol and stop constraints keep decode pipelined: the next step no longer waits for the host to build its mask, and repeated constraint states reuse a cached device mask.
+- `RecursiveSI/flint-int4` now serves at the automatic paged width (8 concurrent requests) on M5 Pro, Max and Ultra.
+- The pinned SDK change edits shared paged-attention, sampler and engine-loop code, so every paged model runs it; the byte-identical output check covers Flint.
+
+### Flint decode fusions
+
+- Pin the SDK with exact Flint decode fusions (fused q/k/v and gate/up projections, fused routed gate/up banks, a single MoE combine-and-residual kernel and compiled router steps): about 40% fewer GPU dispatches per decode token with byte-identical outputs.
+
+### Nemotron 3.5 Super native owner and media discovery
+
+Staged Nemotron Super VL checkpoints no longer advertise media capability merely
+because their configuration includes a vision tower; only the exact serving
+identity in the next entry advertises media.
+
+Add an unregistered native text binding with explicit LOAD recheck, bounded
+calibrated prefill and request retirement ownership. Synthetic fixtures exercise
+text and causal image installation through the real bridge, image cancellation
+and retirement, plus live loopback HTTP authentication/SSE/restart. The image
+owner binds the installation and separate media/KV reservations. Its CPU
+decoder accepts PNG of every colour type and bit depth (byte-exact with the
+reference loader) and baseline/progressive JPEG (ImageIO samples within
+measured bounds), applies EXIF/XMP orientation as Pillow does, and bounds
+declared geometry before allocation; the SDK resize is bitwise equal to CPU
+PyTorch on the golden fixtures. Inline images use the `data:image/png;base64,`
+or `data:image/jpeg;base64,` label; content selects the format. Image media
+reservations include a derived tower and projector working-memory bound for the
+largest image. The owner speculates with the embedded MTP head, verified by one
+exact captured target window per round
+(`DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION=serial` keeps one target step per
+draft); synthetic fixtures show token-exact output and exact rollback in both
+modes. The managed production slot in the next entry serves local and
+coordinator requests through this owner and sets speculation and concurrency
+itself, superseding the opt-in image hook and the
+`DARKBLOOM_NEMOTRON_SUPER_MTP` and `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT`
+switches the owner first used. Full-checkpoint quality and image formats other
+than PNG and JPEG remain unqualified. Portable fixture harnesses preserve reproducible
+continuation and require measured admission and reservation calibration before
+enabling serving.
+
+The owner serves text as well as images. Prompts match the reference
+chat template and tokenizer byte for byte on a 30-case golden corpus (tool
+schemas in request order, tool-call history, images with `<img>` placeholder
+spans, reasoning on/off). Reasoning follows the reference `ultra_v3` parser:
+`enable_thinking` defaults on and streams `reasoning_content`. Text requests
+return validated `tool_calls` and validated `response_format` JSON. Image
+requests still refuse tools and structured output; image prompts carry the
+reference `<img>`/`</img>` span around each image's placeholders. A request
+that arrives while the owner is busy gets 429 before any response starts, and
+with speculation installed image requests run target-only beside speculating
+text.
+Each request's reservation now includes a decode row; a KV grant too small for
+the configured requests fails the load with the minimum grant it needs. The plain owner
+batches text decode row-exactly, and the speculative owner (rectangular
+verification) serves up to eight concurrent requests verified in one exact captured window per
+round, each committing its own accepted prefix; serial verification stays one
+request. `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH=auto` lets the engine pick each
+step's depth up to three. Synthetic fixtures show token-exact output against
+solo plain decode. Prompts prefill in fixed chunks (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`,
+default 2048 tokens), at most one chunk per step beside every decode or verify
+row, optionally with decode-only steps between chunks
+(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`); a request's chunks are
+the same as when it is served alone. The prefill activation charge is one
+owner-wide lane, reserved before the first request and held until retirement
+(the pinned checkpoint charges the SDK's measured whole-chunk bound), instead
+of a prefill workspace in every request's reservation.
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1` opts the owner into
+exact text prefix reuse: a resident recurrent checkpoint bank sized from the KV
+grant and the machine (half of what the grant leaves beside every request's
+fixed bytes, the prefill lane and one image, and half of what the memory cap
+leaves beside the load, at most a quarter of the grant and 16 GiB, none below
+1 GiB: 16 GiB for a lone slot on 192 GB and up; or
+`DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`) whose budget is reserved from load until
+retirement. The managed slot turns it on whenever that size is
+non-zero. Checkpoints sit only at multiples
+of the prefill chunk, where a restored request continues a cold prefill bit for
+bit on synthetic fixtures; prompts shorter than one chunk restore nothing. On
+the speculating owner a checkpoint also holds the assistant's prompt history, so
+a restored request speculates exactly as a cold one. An image request reuses
+only checkpoints bound to the same evaluated image features at the same
+positions.
+
+### Nemotron 3.5 Super served natively
+
+- Discovers and advertises exactly `nvidia-nemotron-3.5-super`: the complete
+  pinned NVIDIA NVFP4 checkpoint with its embedded MTP head. The registry id
+  with an unpinned `config.json` or index is withheld; every other
+  `nemotron_h_omni` id stays unsupported, as before. It advertises image and
+  video input; capacity quotes for media probes charge their images' whole
+  reservation, a one-part probe the larger of one image and one video.
+- Loads into a shared slot through a managed owner: the ordinary eviction and
+  re-slice, one LOAD claim covering the installation, the head, the
+  speculating owner's round work once and the configured requests' KV
+  headroom, each counted once (the load's transient only where it
+  exceeds that serving room, since freed load buffers are returned before
+  serving), every shard verified against its pin, an owner-wide prefill
+  lane of the measured chunk peak (8.5 GiB at 2,048 tokens), a measured
+  2 GiB activation reserve (its requests, lane and media
+  charges hold its activations), and a refusal naming the minimum when the
+  grant cannot serve every request. Defaults: exact rectangular speculation for up
+  to eight requests, drafting three tokens for one decoding request, two for
+  two to four and one beyond (the fastest depth measured at each width on the
+  full checkpoint); `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` serves the
+  plain owner, and an explicit `engine_v2_max_concurrent` bounds the width.
+  When available memory cannot hold that owner (a 128 GB Mac running other
+  work), the load serves the widest narrower one that fits instead of
+  refusing: no prefix bank, then four, two or one concurrent requests, then
+  one with 1,024-token prompt chunks, with every measured bound and the full
+  context kept, and logs what it chose. Super loads keep no OS reserve beyond
+  3 GiB of admission slack and the 2 GiB activation reserve (a
+  `memory_reserve_gb` raised above its 4 GiB default stays free), so the model
+  loads with 85.6 GiB available (about 104 GiB for the default), and a
+  configuration that barely fits steps down instead of losing its admission
+  after the weights are installed. If memory still drops while the weights
+  install (other applications swapping on a 128 GB Mac), the load keeps the
+  installed weights and serves the widest narrower configuration that still
+  fits instead of failing and reading the checkpoint again. The provider
+  accepts, evicts for and preloads Super on that same rule: an idle
+  co-resident model is evicted when that lets the planned owner (or the
+  widest reachable fallback) load,
+  instead of the request being accepted and then refused with 503, and a load
+  that cannot fit even after evicting every idle model is refused before it
+  is accepted. MLX's cached buffers are returned before the load steps down,
+  the speculation round is reserved beside the KV grant rather than taken
+  from it, a load whose grant beside other models cannot serve one request
+  fails instead of leaving the slot loaded and serving nothing, and a
+  resident slot quotes image and video probes against the memory their
+  reservation actually uses. Its advertised memory is now the narrowest
+  owner's LOAD size, 83.6 GiB on every Mac (was 69.8 GiB on 128 GB,
+  shrinking with RAM); the coordinator's cold-load routing, which still
+  subtracts the 10% load reserve, sends a cold Super load only to a 128 GB
+  Mac with about 99.4 GiB available.
+  Either owner reuses exact prompt prefixes when the grant holds its bank; a
+  restored speculative request drafts from the same prompt history as a cold
+  one, and an image turn reuses only checkpoints of the same image features.
+- Coordinator and local-endpoint chat completions use the reference prompt
+  template, reasoning channel, tool and structured-output validation,
+  cancellation and usage of the owner. Prefix reuse is partitioned by the
+  authenticated cache scope and reports no cache use. `logit_bias` and
+  `logprobs` are refused with 400. Reasoning effort is `none`/`off`/`0`,
+  `medium` or `high` (top-level `reasoning_effort` or `reasoning.effort`);
+  other values are refused with 400. OpenRouter's
+  `chat_template_kwargs.thinking` switches thinking like `enable_thinking`,
+  and Responses `reasoning.summary` (`auto`, `concise`, `detailed`) is
+  accepted with the full reasoning returned. `reasoning` fields the template
+  cannot honor (`max_tokens`, `exclude: true`, other members unless null)
+  and `chat_template_kwargs` beyond `enable_thinking`, `thinking`,
+  `medium_effort`, `truncate_history_thinking` and `force_nonempty_content`
+  are refused with 400 instead of being ignored.
+- Coordinator tool requests whose schemas hold `{}` or boolean subschemas
+  are served (they were refused with 400); the local endpoint still refuses
+  a client-sent internal schema marker. `force_nonempty_content` applies to
+  streamed responses too: reasoning that never closes is repeated as
+  content at the end, as vLLM does. With no tools declared, a literal
+  `<tool_call>` in an answer is returned as text instead of failing. A
+  `seed` of 2^63 or more no longer refuses a tool request; history tool-call
+  arguments that are not a JSON object, and requests with more than 4,096
+  content parts, are refused with 400. Prompts keep a string's leading
+  U+FEFF and add no separator before an image after text ending in CRLF,
+  and reasoning markers followed by a combining mark are recognized.
+- Serves inline JPEG and PNG images (`data:` URIs) on the same slot. On the
+  default speculating owner each image request runs target-only, with no
+  draft state, while text keeps speculating; its media reservation, including
+  the largest image's tower and projector bound, is taken before decoding and
+  a reservation that does not fit is refused with 503. A second concurrent
+  image request gets 429. Activation overflow on the Super model saturates as
+  on deployment engines instead of becoming NaN, so images whose embeddings
+  exceed the text-calibrated scales are answered instead of decoding as
+  `<unk>`; non-finite image features fail the request.
+- Image ingress refuses with 400, before the media reservation and any
+  decode, a source whose resize workspace exceeds the SDK's 256 MiB (above
+  about 33 megapixels, for example 8192 × 8192, which was reserved and decoded
+  first), a PNG with more than 64 compressed text or ICC chunks or more than
+  16 MiB inflated from them, and a JPEG whose scans would decode a coefficient
+  again. ImageIO is given only the primary JPEG image, and a request reserves
+  its largest image's decode workspace once instead of once per image.
+- A busy owner refuses a request with 429 once the request is decoded,
+  before its prompt is planned or rendered. An answer held for validation
+  (JSON content with thinking off, forced or tool-call-only answers) starts
+  its stream at the first generated token, so a streamed one that fails
+  validation ends with an error event instead of a 422 status. Text requests
+  no longer wait while an image is prepared, and a GPU fault while checking
+  image features fails the request instead of stopping the provider. An image
+  body over 8 MiB, visual tokens beyond the context or an image prompt beyond
+  it is refused with 400 instead of the retryable 503.
+- Serves one inline MP4 or QuickTime video (`data:video/mp4;base64,` or
+  `data:video/quicktime;base64,`) as the only media of a request, as NVIDIA's
+  reference serving samples it: 2 frames per second, at most 256, paired into
+  tubelets with each pair's timestamps in the prompt, and EVS pruning of
+  redundant visual tokens at rate 0.5 (`DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING`,
+  `0` disables). Its media reservation (at most 3.5 GiB, below one largest
+  image's) is taken before any frame decodes; a second video, a video with
+  images, another container, a codec other than H.264 or HEVC, frames of
+  more than 8,847,360 pixels (4096 × 2160, in any shape), more than 36,000
+  frames, more than 37.6 billion decoded pixels (every frame up to the last
+  sampled one decodes; ten minutes of 30 fps 1080p fits), extreme aspect
+  ratios and undecodable movies are refused with 400, as is a movie that
+  keeps the decoder busy past its allowance (at most two minutes).
+  Cancelling a video request stops waiting on its decoder at once. A
+  malformed pruning rate fails the load before installing. The checkpoint's
+  video embedder is now loaded, adding 3,932,160 bytes to the resident
+  installation.
+- Video decoding no longer crashes when a request is cancelled or its decode
+  allowance runs out mid-frame: the reader was cancelled from another thread
+  while a read was blocked in AVFoundation. Reads and the reader's
+  cancellation now run in order on one queue, so the reader stops once the
+  read in progress returns.
+- A load right after a Super unload re-samples free memory for up to two
+  seconds while macOS returns the unloaded pages, instead of refusing.
+- A wedged Super slot leaves serving at once and retires without stalling the
+  capacity refresh: its bridge shuts down before its requests drain, within
+  twice the engine's 10-second shutdown timeout (past it the slot's memory
+  stays charged and Super loads are refused until that retirement completes
+  or the provider restarts), and the model reloads only after a 120-second
+  cooldown. Until it may load again, Super requests are refused before they
+  are accepted, also while the slot retires, and nothing is evicted for
+  them. The owner's prefill lane, decode rows and round work count as
+  resident memory in every KV grant and heartbeat, so Super and models
+  beside it no longer advertise token budget the shared memory budget
+  refuses.
+- Plain decode steps of the Super owner commit larger Metal command buffers
+  (thread-scoped limits in the pinned MLX), and full SSD prefill windows run
+  batched, with tokens unchanged: one plain request decodes at 42.9 tok/s
+  instead of 34.6 on the full checkpoint. Speculative rounds are unchanged.
+- Prompt processing frees each Mamba layer's temporaries within the layer
+  instead of at the end of the chunk, with tokens unchanged: on the M5 Ultra
+  a 24K-token prompt grows MLX memory by 2.6 GiB instead of 5.6 GiB, four
+  parallel 12K prompts by 5.3 instead of 9.2 GiB. Weight hashing and shard
+  loading read around the file cache, so loading no longer leaves a second
+  cached copy of the checkpoint resident beside the loaded weights.
+- Faster on M5 GPUs, with tokens unchanged in decode: speculative rounds
+  submit the verify window in parts and use the fused decode kernels, so
+  one request decodes realistic prompts at 79 tok/s instead of 70 on the M5
+  Ultra. Prompt processing on NAX GPUs runs the experts on dedicated NVFP4
+  NAX kernels with a fused expert route and decodes the dense projections'
+  weights inside the NAX GEMM, and the Mamba layers' scan runs as a chunked
+  NAX kernel: 2,881 tokens/s instead of 1,556 on a 12K prompt, within the
+  teacher-forced accuracy gate (top-1 78.09% vs 78.12%, perplexity 2.7275
+  vs 2.7294). The runtime-compiled NAX kernels need macOS 27; earlier systems
+  keep MLX's prebuilt NAX kernels.
+- Serves paged attention KV only: the segmented native paged backend, charged
+  by the engine's process-memory owner, with the decode rows reserved for the
+  owner's lifetime. Contiguous KV is no longer supported:
+  `DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=contiguous`, any value other than
+  `paged`, or `DARKBLOOM_CBV2_PAGED_KV` disabling paged KV fails the load
+  before anything is installed; the owner never falls back to contiguous
+  storage. Exact prefix reuse works on it: the bank keeps its own copy of a
+  donor's prompt KV and a restore writes it into fresh pages.
+- Serves its whole verified context, 262,144 tokens, prompt plus output (was
+  16,384); the coordinator, not the provider, decides whether a long prompt's
+  prefill time suits a request. The speculating owner charges each request its
+  draft history per token of its own prompt and output instead of for the
+  whole window, and its round work once instead of per request, so eight
+  requests claim 15.7 GiB of KV headroom beside any prefix bank (was 26 GiB at
+  16,384 tokens) and the default load still fits a 128 GB Mac.
+- Registered for Apple M5 Max (128 GB) and M5 Ultra (`apple_m5`, at least 128 GB
+  of unified memory); only 256 GB is measured on hardware.
+  Coordinator-side registration remains a separate step; see Upgrade and
+  rollout notes.
+
+### GLM-5.3-Flash native prerequisites
+
+- Add the GLM-5.3-Flash target, trained MTP, media and bounded loader, with synthetic regression coverage. Full-model qualification remains a separate gate.
+- Add a low-level GLM5 tool parser with schema-aware values and response-wide validation before tool-call emission, plus loaded-model-gated prompt controls. These do not advertise function calling, constrained decoding or media support for an unqualified model.
+- Recognize the chat template shipped in `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`, the official template with numeric attribute access written as `[0]` subscripts, so the ordinary pinned Swift-Jinja renders it without a dependency patch. It reproduces every official-template golden byte for byte.
+- Price raw same-directory GLM5-Next discovery and managed loads with the raw source size plus native-copy, tokenizer and a measured `ceil(source / 32)` residual allowance, instead of disk × 1.2. The published NVFP4 artifact (181,752,181,866 bytes) therefore fits a 256 GiB Mac with the unchanged activation and minimum-KV headroom, where disk × 1.2 did not. Bounded metadata-only cache/provenance directories remain discoverable; nested integrity files and symlinks remain refused. Malformed layouts and separate-tokenizer compositions do not receive a loadable generic fallback.
+- Add an explicit default-off, manifest/aggregate-pinned local GLM qualification selection; it never advertises the local download to the coordinator or changes default cohorts. It serves GLM only through its owned embedded-MTP engine, which the default `mtp_mode = "auto"` enables without any setting; target-only GLM loads, fallbacks and in-place recovery are refused, and local startup skips GLM with a message when `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` disables MTP. Coordinator-connected mode sizes GLM for an enforced 262,144-token context, never the full model context. Size GLM sparse KV using its actual asymmetric FP32 rows, preserving the engine's separate three-generation KDA request charge.
+- Expose retained GLM faults on local metrics (`darkbloom_glm5_next_retained_fault`, `darkbloom_glm5_next_retained_owner_objects`, `darkbloom_glm5_next_retained_resident_bytes`). An unproven GLM retirement keeps its pending-load lease, roots, ownership and activity without refund, and its unpublished bytes are excluded from fleet KV grants. A GLM slot whose unload, eviction or shutdown cannot prove retirement is charged its KV claim, keeps a frozen grant and is skipped for eviction. Other families still load and reclaim when capacity remains, but cannot grow into that memory; when the retained grant held the whole KV budget, their loads are refused.
+- Load local GLM with the native serving execution policy and record it in the encrypted checkpoint identity. GLM prefill chunks and steps are each at most 2,048 tokens, with solo stripes off: paged prefill rows read each layer's latent history once instead of retaining one selected-latent read per query token, so a 2,048-token step's priced scratch fits the post-load envelope with four concurrent requests at 8K and 32K context; at the 262,144-token coordinator bound a 256 GiB host runs at most two or three. Local GLM selects its native paged KV backend automatically and refuses rather than falling back to contiguous; the encrypted SSD prefix store defaults on for the pinned GLM identity (`DARKBLOOM_PREFIX_CACHE=0` opts out). A GLM engine that refuses to activate reports the native reason, such as the step-scratch bytes needed and available, in the load error. A published GLM engine holds standing wired residency for its weights, bounded by the same safe ceiling as MiMo and released only after proven retirement; without it, 512-token prefill chunks measured 263–367 instead of 1,246 tok/s on a 256 GiB M5 Ultra. `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY=0` rolls it back. On Neural-Accelerator GPUs routed-expert prefill uses the NAX expert kernel for NVFP4 banks too (real NVFP4 artifact: 1,955 instead of 1,585 tok/s at 2,048-token chunks, 1,486 instead of 1,246 at 512-token chunks; decode unchanged). Prefill chunks past position 2,048 use the native sparse-attention prefill kernel (native profiler, 8,192-token prompts at 2,048-token chunks: 2,000 instead of 1,340 tok/s; perplexity within noise, +0.018%).
+- Refuse local GLM requests that exceed the enforced context with HTTP 400 before native admission, and default an omitted `max_tokens` to half that bound. Omitted sampling fields use the artifact's `generation_config.json`. `reasoning_effort` accepts `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, mapped to the template's low/high/max levels as the platform does.
+- Prepare GLM image input natively: the GLM prompt policy renders interleaved image parts, the vision tower runs one image at a time with fused attention on the GPU (query-tiled elsewhere; a 7,921-token image's tower drops from 28 s to 1.4 s) and checked evaluation, and the resulting causal spans carry no position state. The media reservation charges prepared pixels, the full-frame tower working set and each image's 8000-token cap. Images are served by the embedded-MTP serving engine, which accepts prepared causal media: image rows decode target-only and never reuse cached prefixes. A GLM load now requires the reviewed shipped chat template, and a selection file with the unsupported `tokenizer` field is refused.
+- GLM MTP now verifies up to three drafted tokens per round in one target forward (rectangular verification, adaptive depth) by default, including with the GLM prefix cache, and sampled requests speculate through exact target-prefix acceptance. GLM MTP output is not token-identical to target-only greedy decoding: the multi-token verify forward can flip near-tie tokens. `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` restores serial single-proposal verification; the variable is forwarded to the launchd provider job.
+- Reserve the GLM MTP layer's memory per request in proportion to that request's reserved tokens (a fixed amount plus bytes per token) instead of for the full model context, and price its index scratch from the actual selection path (the native sparse decode kernels pool in kernel; absorbed attention never expands selected latents). Under the serving policy with 2048-token steps and depth-3 verification this is 4.14 GB plus 33,900 bytes per reserved token, about 13.0 GB at 262,144 tokens instead of about 22.8 GB for every request.
+- Serve GLM-5.3-Flash in coordinator-connected mode as catalog model `glm-5.3-flash`, downloaded through the normal model-revision path and loaded by the same managed native load, embedded MTP, paged KV, prefix cache and wired residency as the local opt-in. The coordinator catalog entry, the revision receipt and the loaded bytes must agree on one aggregate, and the reviewed shipped template stays mandatory. The enforced context is 262,144 tokens; a larger catalog `max_context_length` refuses the load. GLM loads only on Apple M5 Max or M5 Ultra with at least 256 GB of unified memory: the provider reports the new runtime capability `glm5_next_v1` only there, the build requires `apple_m5`, `mlx_nax` and `glm5_next_v1`, and other Macs report their chip and memory in the refusal. GLM requests reserve target KV (33,836 bytes per token; 8.87 GB for a full request), native step scratch and embedded-MTP state per actual reserved token, alongside the fixed recurrent and MTP charges, and the running-row cap is the largest the engine's step-scratch activation check admits; the slot reports that combined rate as `kv_bytes_per_token`, must hold one full-length request to publish, and refuses a request larger than its whole pool as capacity instead of queueing it.
+- Retain GLM native owners and wired-memory policy entries after backend residency start/end faults. Refuse publication after a failed start and wait for pending ticket work before reporting clean retirement; unsupported platforms skip ticket creation before backend work. Keep the bridge engine, KV claim and activity guards through residency settlement so an end fault cannot erase the retained-memory charge.
+- Reject malformed GLM tool suffixes instead of exposing parser fallback text, and report unproven compatibility shutdown through a fixed diagnostic while retaining resources.
+- Add provider-hosted GLM aligned-read, descriptor-cache-policy and tiny-artifact loader regressions. They require the matching immutable SDK loader/reader implementation; native cases remain subject to exact-composition qualification.
+- Build single-Mac GLM-5.3-Flash on the single-Mac native stack (`Layr-Labs/mlx` #37, `mlx-swift` #58 and `mlx-c` #16, merged from `work/glm53-flash-release`). It carries the quantized tile-bound, allocation-cap, page-backed footprint and 512-thread launch fixes the GLM path needs, without the two-Mac JACCL, sealed all-sum and collective startup-wait changes, so this release does not depend on the cluster pull requests. Compared with v0.9.22 the MLX quantized and NAX Metal kernel sources change; see Upgrade and rollout notes.
+- Report why a complete-checkpoint SSD prefix store (the only GLM prefix cache) was not built instead of silently serving uncached: the provider logs one public line naming the model and a typed reason such as `key_unavailable` with the Keychain/Secure Enclave status (an ad hoc signed build has no keychain access group), and local `/metrics` adds `detail="<reason>"` to the `error` `prefix_cache_status`; the heartbeat reason stays `cache_init_failed`. DEBUG builds only can take a persistent cache key from an operator-created 32-byte, mode-0600 file named by `DARKBLOOM_DEBUG_CACHE_KEY_FILE` for qualification; release builds do not contain that path.
+- Accept OpenRouter's GLM reasoning controls: `reasoning.enabled: true`, `reasoning.exclude: false`, `include_reasoning: true`, `enable_thinking: true` and `chat_template_kwargs` `enable_thinking`/`thinking: true` are no-ops that leave the prompt unchanged, and a positive `reasoning.max_tokens` without an effort selects `low` (up to 1,024), `high` (up to 8,192) or `max`. GLM thinking can be turned off with `reasoning.enabled: false`, `enable_thinking: false`, `chat_template_kwargs` `enable_thinking`/`thinking: false` or effort `none`/`off`: the prompt ends with an empty `<think></think>` block, as the template writes for an assistant turn without reasoning, and the answer is content only. Thinking-off combined with a thinking-on switch, an effort level or a reasoning budget gets HTTP 400. Hiding generated reasoning (`reasoning.exclude: true`, `include_reasoning: false`) still gets HTTP 400 with the fixed local message "GLM-5.3-Flash returns the reasoning it generates; reasoning.exclude true and include_reasoning false are unsupported. To turn thinking off, send reasoning.enabled false, enable_thinking false or reasoning_effort none." and code `unsupported_value`.
+- Hash model weights with uncached (`F_NOCACHE`), page-aligned reads before and after a load, so integrity hashing no longer pulls a second copy of the weights through the file cache. On a 256 GB M5 Ultra the cached pre- and post-load hashes of GLM-5.3-Flash's 181.7 GB pushed about 150 GB of the just-loaded weights into the memory compressor (memory pressure warning) and stalled the first request. Digests are unchanged.
+- Pin the SDK with GLM-5.3-Flash's bitwise kernel speedups for one Mac (mlx-swift-lm #314): KDA prefill recurrence and long-step convolution, MoE NAX tile plan, shared experts inside the routed prefill launches where MLX itself would not split K (65 rows and more), faster MoE gathers and decode router, one-launch hyper-connection sites, DSA decode selection and prefill projections. On one M5 Ultra the greedy output is byte-identical to the previous pin (provider endpoint 14/14, SDK fixed-depth MTP 30/30 token sequences) while prefill is 12–13 % and decode 16–18 % faster. The MTP history work is now charged per prefill chunk, so each GLM MTP request reserves 4.89 GB fixed instead of 11.31 GB.
+- Bring three bit-identical GLM-5.3-Flash speedups that previously reached only the deprecated contiguous forward to the paged path that serves it (mlx-swift-lm #314): decode and verification steps reuse a shared all-true validity mask and build their token embeddings in one launch; prefill attention projections on Neural-Accelerator GPUs run a native GEMM kernel that matches MLX's bit for bit; and each sparse-attention layer stages its KV rows in one launch. Output is bit-identical to the previous pin. Paged decode and MTP verification keep the absorbed attention: the split-K sparse decode attention stays off on the paged path because its output is not bit-identical to the previous pin. The prefill projections give bit-identical logits on a 15,901-position perplexity panel.
+- A request refused because the Mac's serving concurrency is full, or (GLM) because the slot is full or the request can never fit it, now gets HTTP 503 with the fixed capacity message before any response headers, for streaming and non-streaming requests, instead of a 200 stream ending in a `server_error` "Response generation failed" frame. Coordinator-connected requests still receive a retryable `capacity`/503 `token_budget_exhausted` error, now sent before the stream with the usual capacity-rejection fields.
+- Keep running GLM requests alive when memory is nearly full: a step whose scratch reservation is refused is now deferred instead of failing every row of the step; the requests admitted in that step wait for capacity and new admissions pause until a running request leaves (mlx-swift-lm #314). On one M5 Ultra with the SSD prefix store, three ~60K-token requests previously all failed when the second finished prefill; now the running ones continue and the third waits.
+
+### GLM-5.3-Flash video input
+
+- Serve GLM-5.3-Flash `video_url` parts (inline `data:video/mp4` or `data:video/quicktime`) instead of refusing them with 400. The processor reads every frame of the constant-frame-rate track but converts and keeps only the 2 FPS official sample (RGB8, within its 512 MiB decoded-frame cap), and places each sampled frame pair as an image-token span with its timestamp; video rows decode target-only and never reuse cached prefixes, like images. The media reservation adds each video's token ceiling and, once, the processor's decoded-frame cap (videos decode one at a time). Variable-frame-rate clips, clips whose sampled frames exceed the decoded-frame cap and clips whose visual tokens exceed the shared 28,532-token prepared-pixel cap are refused with 400.
+
+### MiMo tool-schema ingress parity
+
+- Preserve original MiMo Chat function-tool schemas across provider/local prompt rendering, serving, recount and benchmark preparation, including typeless enums and Boolean properties.
+- Keep existing hosted-tool fallback, malformed-declaration refusal, reserved-schema metadata checks and other model families' normalization.
+- Add public scripted-generation regressions; full-model and live platform qualification remain separate.
+
+### GPT-OSS bf16 activations and KV
+
+- A bf16 GPT-OSS checkpoint such as `gpt-oss-20b` now keeps bf16 activations
+  and native K/V on every layer. The expert SwiGLU clamp used float32 bounds,
+  which promoted every layer after the first to float32; its scalar bounds now
+  take the activation dtype. Float32 models are unchanged.
+- `gpt-oss-20b` native full-attention K/V falls from 49,152 to 24,576 bytes per
+  token. A slot grant holds about twice as many GPT-OSS tokens, and the
+  heartbeat `kv_bytes_per_token` halves. Admission, paged storage and
+  checkpoint identity already use the observed native K/V types.
+- Measured cold TTFT falls 21-26% on an M5 Ultra (512-8,192-token prompts)
+  and 14-18% on an M3 Ultra (2,048-32,768 tokens). Aggregate decode at batch 8
+  rises from 153 to 519 tokens/s on the M5 Ultra and from 275 to 314 on the
+  M3 Ultra.
+- Output is not bit-identical to the float32 path. On 6 teacher-forced samples
+  of 256 tokens, mean token NLL moved from 3.8146 to 3.8123 and top-1
+  agreement with the float32 path was 93.3%.
+- GPT-OSS SSD complete checkpoints written with float32 layer types use a
+  different checkpoint namespace and are not restored. Matching prompts
+  prefill cold until new checkpoints are written; the old files expire.
+- The 3.5 GiB `gpt-oss-20b` activation floor is unchanged. It was measured on
+  the float32 path.
+
+### Wider mixed-step prefill for Gemma 4
+
+- Gemma 4 prefills prompts in 2,048-token chunks with a 4,096-token step budget, including while other requests are decoding, instead of 512-token chunks beside decode. Busy engines reach the first token sooner and decode each stream faster; solo prefill chunking, KV capacity, paged ring sizes, load quotations and activation floors are unchanged. On contiguous KV (Gemma 4 artifacts other than the catalog's paged `gemma-4-26b-qat-4bit`, or with paging disabled), a solo prompt whose 2,048-token chunk cannot reserve KV now waits or is preempted instead of retrying with 512-token chunks, as the former 2,048-token stripe did.
+- Gemma 4 image and video requests keep 512-token chunks, so their attention memory is unchanged.
+- A decode token that shares a step with a long prompt now waits for a 2,048-token chunk instead of a 512-token one: typical inter-token gaps shrink, the slowest grow.
+- GPT-OSS and dense Qwen3.5/3.8 also reached the first token sooner with the wide geometry, but at eight 32k-token prompts it raised their activation peaks further above their memory floors, so they keep the 512-token chunk and 2,048-token step by default. Nemotron 3.5, Bonsai, MoE Qwen, Qwen3-VL, Qwen4, MiMo and other families keep them too.
+- Set `DARKBLOOM_CBV2_PREFILL_CHUNK=512` and `DARKBLOOM_CBV2_STEP_TOKENS=2048` to restore the previous Gemma 4 geometry, or `2048` and `4096` to opt another family in; `darkbloom start` forwards both to the background provider. Either override disqualifies reviewed serving and deadline profiles, like other `DARKBLOOM_CBV2_*` settings.
+
+### Qwen3.8 forced tool calls
+
+- The embedded-MTP Qwen3.8-27B build now advertises `tool_choice` `required`
+  and named-function support, like the original build it replaced, and forced
+  calls accept the catalog's default `qwen3_5` parser instead of failing with
+  an invalid request.
+
+### Qwen3.8 unsupported reasoning effort is a client error
+
+Qwen3.8-27B requests with thinking enabled and an effort its template does not
+accept, such as `high` or `minimal`, now fail before rendering with the typed
+HTTP 400 that Flash-Next already returns. Text requests previously surfaced as
+a provider 500 `template_render` failure; media requests hit the same raise
+inside vision preparation and were reported as a retryable 503
+`capacity_busy`. Typed request errors from media preparation now keep their
+own status.
+
+### Qwen and Bonsai histories without a user query are a client error
+
+Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 requests whose history has no user
+turn beyond `<tool_response>` wrappers (for example only a system message, or
+system plus assistant) now fail before rendering with a typed HTTP 400. They
+previously reached the template's "No user query found in messages." raise
+and surfaced as a provider 500 `template_render` failure.
+
+### Tool calls stream while they are generated
+
+Chat streams now send `tool_choice: "auto"` calls from Gemma 4, Qwen 3.5, 3.6
+and 3.8, GPT-OSS and framed-JSON models as OpenAI `tool_calls` fragments while
+the model generates them. The call's `id`, `type` and function name arrive as
+soon as the name is generated, followed by argument fragments. A response that
+started with a tool call previously had no content until the whole call and the
+end of generation were produced, so its time to first token included the
+entire call. Each call is still validated against its declared tool and schema
+when it completes. Required and named tool choices keep validating before
+anything is shown.
+
+Long tool calls in the Gemma, GPT-OSS and framed-JSON formats no longer cost
+provider CPU time that grows with the square of their length: parsing a 64 KB
+Gemma file write took about 20 s of CPU and now takes about 0.1 s.
+
+Qwen3-VL Instruct, whose generation prompt carries no think marker, now
+streams its answer instead of buffering it until the end.
+`DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` and `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0`
+restore the previous behaviors.
+
+### Faster prompt preparation and admission
+
+- Prompt preparation reuses the token IDs of chat-template pieces (the text
+  between special tokens) already seen in the same prefix-cache scope, so a
+  follow-up turn of a long conversation no longer re-tokenizes its history.
+  Token IDs equal the previous path's; a load-time self-check and sampled
+  background comparisons disable reuse on any mismatch, including a prompt
+  the previous path would have rejected. On an M3 Ultra a
+  27–38K-token follow-up turn now prepares in 5–8 ms instead of 102–264 ms,
+  and new long prompts prepare 2.3–3.4× faster, encoded on several cores.
+  `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the previous path.
+- Gemma 4 and GPT-OSS chat templates rescanned the whole history for every
+  message, so render time grew with the square of the history length: 0.72 s
+  for 1,603 Gemma messages on an M3 Ultra, on every request. Cached
+  prompts now render through equivalent linear-time forms of those loops
+  (26 ms for the same history), checked against the served template at load
+  and in the background comparisons. A 610-message, 44–46K-token agent loop
+  now prepares a follow-up turn in 15–21 ms instead of 213–346 ms. In an
+  end-to-end tool loop of about 400 messages and 18–22K tokens, every request
+  reached its first token 45–152 ms sooner on Gemma 4 and GPT-OSS.
+  `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` keeps the served template.
+- The Jinja null sanitizer returns plain string, number and Boolean leaves
+  without reflection: 5.4 ms instead of 12.5 ms for a 603-message history.
+- For requests without tools or legacy function calls, the decrypted request
+  body is parsed once for the chat request and its extension fields instead
+  of five times.
+- A request waiting for a cold model load (other than native MiMo) no longer
+  holds the coordinator work queue: resident models' requests, cancels and
+  attestation challenges proceed while it loads, and a cancel for it still
+  applies when its admission returns. A request for another model that is not
+  resident still waits for that load, so its capacity check sees the memory
+  the load takes. A request for the model being loaded that fails that check
+  while the load runs is checked again once the load returns, as before.
+  `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the serial queue.
+
+### Startup shape warmup
+
+- After a new install or a macOS or MLX kernel update, the first long prompt for each model paid seconds of on-demand Metal kernel compiles: an 8K-token first request took 4.4 s instead of 2.9-3.0 s (Gemma 4 QAT) and 4.1-4.2 s instead of 3.4 s (GPT-OSS) on an M3 Ultra, and 3.2 s instead of 1.1 s and 5.3 s instead of 1.6 s on a shared M5 Ultra. Startup preload now warms the kernels that long prompts, the served batch width and MTP verify use, after each model loads and passes any self-test, before the provider registers or the local listener opens. A short probe skips the warmup when the compiled-kernel cache is already warm (about 0.2-0.3 s per model); on a cold cache the warmup takes 5.4-7.4 s per model before registration or the listener. If the served batch width grows later (power or thermal posture recovers, or more KV memory frees up), the next idle moment warms the wider width too. The warmup trains no rates, yields to any request, stays within 20 seconds per model and logs its outcome. This release changes the MLX kernels, so the first start after updating takes the cold-cache path. Set `DARKBLOOM_TTFT_SHAPE_WARMUP=0` to disable it, or `always` to skip the probe.
+
+### Fewer GPU stalls while serving
+
+- The proactive MLX buffer-cache sweep no longer flushes between busy engines' steps while admission headroom is healthy. It waits for five seconds of whole-Mac idleness and then flushes without reporting device activity, so deadline quiescence and idle calibration survive it; a request that arrives during that flush is admitted after it instead of starting on a pool being emptied. While engines serve it flushes only when the reusable pool crowds out admission headroom, and a refused engine-owned KV charge or native MiMo media reservation now signals the same shortfall-gated reclaim as request reservations. Load gates drop that pool and resample before evicting a resident model. `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0` restores the old sweep; refusals keep signalling while segment retention is on.
+- Paged KV pools keep up to an eighth of their slot grant (at most 2 GiB) of free segments across requests and reinstall them for the next admission instead of allocating, zero-filling and fencing new 64 MiB segments. New segments wrap zero-fill-on-demand host pages, so admission no longer drains queued GPU work under the process-wide MLX eval lock. Retained segments are uncommitted (no grant, floor or ledger charge), are dropped on a refused admission or on process memory pressure (any refused charge, a pressure sweep or a macOS memory-pressure event) and return to the allocator after 30 s of engine idleness. The provider, standalone and managed Nemotron Super load gates release them before evicting a resident model or refusing, and startup preload releases them before skipping a model. Cold loads count them as reclaimable only until that release: segments a busy engine has not dropped by the end of the release's wait never justify evicting an idle model, and pre-accept releases them and resamples before admitting a request on them. `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` restores release-time trimming and device-filled segments; `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keeps retention with device fills.
+- `darkbloom start` forwards all three rollbacks to the background provider, so they also reach launchd-managed providers.
+
+### Qwen MTP decode without seed steps
+
+- Qwen 3.5, 3.6 and 3.8 requests with the inline MTP head decode as ordinary chained steps while more than one request is decoding, because the head speculates for one decode row only. These steps previously ran unchained, each with a vocabulary-wide policy top-two reduction and an extra host readback. The head's history is still fed from every committed position, so speculation resumes without a seed step when one request remains.
+- The final prompt position seeds the first speculative round, so speculation starts right after the first token instead of after one extra target-only step.
+- Rollback: `DARKBLOOM_TTFT_QWEN_MTP_CHAINED=0` restores the seed steps and `DARKBLOOM_TTFT_QWEN_MTP_CARRY=0` restores the post-first-token seed step, in processes that receive them (LaunchAgents do not forward them).
+- Add opt-in `benchmark --runtime-generation --runtime-concurrency <sizes> [--runtime-stagger]`: one production slot per batch size, with per-token arrival times, chained steps and MTP counters as JSON, plus model, prompt, precision and assistant provenance. Malformed size lists, and staggered runs whose `--max-tokens` is below 3×B, are refused before the model loads; a slot narrower than its batch, a `length` terminal before the row's quota, a `stop` without a configured stop token or an early stop in stagger mode exits with status 2 instead of passing as a measurement.
+
+### Faster Qwen Gated DeltaNet prompt prefill
+
+- Run Gated DeltaNet prompt chunks of 16 or more tokens for Qwen3.5, Qwen3.6, Qwen3.8 and Bonsai 2 models on kernels that compute four value rows per SIMD group. On M5 Ultra the per-layer recurrence is 1.45-1.70x faster (Qwen3.5-9B geometry, 4,096-token chunk: 3.160 to 1.930 ms), which is estimated to save 3-4% of Qwen3.5-9B cold time to first token at 8K-32K prompt tokens. Decode, MTP verification, masked updates and shorter chunks keep the existing kernel.
+- A new kernel runs only where it reproduces the existing kernel bit for bit, so outputs and recurrent checkpoints do not change: the first prompt chunk of each model geometry checks this on the GPU and keeps the existing kernel where no candidate matches. On M3 Ultra, Qwen3.5-9B cold prefill takes 1.1-1.3% less time at 2K-32K prompt tokens; speed on other M1-M4 GPUs is unmeasured. `DARKBLOOM_TTFT_GDN_BLOCKED=0` restores the existing kernel. `darkbloom start` forwards it to the background provider, so the rollback also reaches launchd-managed providers.
+
+### Fused causal prompt attention
+
+- Attend a full-attention prompt chunk with one fused causal attention call instead of 128-query blocks when MLX serves its head geometry with a fused kernel: head_dim 64, 72, 80, 96 or 128 on every Apple GPU, and head_dim 256 on M5 (NAX) chips for chunks of at least 1024 tokens. That includes the full-attention layers of GPT-OSS and Nemotron 3.5 Lightning on every chip and the head_dim 256 full-attention layers of Qwen-family models in M5 solo prefill stripes; sliding-window, softcapped, vision-span, live packed paged KV and Gemma 4 layers are unchanged.
+- On M3 Ultra, GPT-OSS 20B cold time to first token drops from 19.5 s to 17.4 s at 32K prompt tokens and from 3.41 s to 3.30 s at 8K. On M5 Ultra, Qwen3.5-9B peak memory at 32K prompt tokens drops from 13.86 GB to 12.03 GB because its head_dim 256 layers no longer materialize attention scores.
+- GPT-OSS teacher-forced scores are bit-identical; Qwen output on M5 can differ within bf16 rounding; Nemotron 3.5 Lightning and the other qualifying models were not measured. `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores the blocked path in a foreground process; the provider LaunchAgent does not receive it.
+
+### Deadline admission estimators
+
+- Charge decode in first-token deadline projections once per batch step, priced from the step shape the decode rate was measured at (rows, confirmed tokens and draft width per step), instead of summing every running row's tokens against a per-request rate. Each measured step's duration is smoothed together with its shape, so requests measured at different batch widths never pair one width's rate with another's rows, and the rows of the step that produced the first token, which the decode rate does not time, are left out. An MTP round is priced by the tokens it was measured confirming rather than its full draft width. Rows the live MTP planner cannot speculate (beyond its batch gate, or with no depth left inside the automatic verification envelope) are charged their one target token instead of the full draft width, no row is charged more depth than that envelope allows, and a full-slot MTP stretch with no live depth is projected in one jump like plain decode. A request carrying a reviewed deadline calibration keeps the per-row charge its error envelope was measured against.
+- Stop one slow "isolated" prefill sample from locking an ordinary engine out of deadline admission until restart. The aggregate prefill rate is never priced below one eighth of the startup calibration's idle rate, and isolated evidence that expired while the whole Mac was idle at nominal posture is priced at no less than that rate. Evidence older than 30 minutes on an idle Mac is treated as absent, with or without a calibrated rate, so a calibration slowed by another process cannot lock admission either. The Mac counts as idle only when no other request on any resident model and no model load, encoder preparation or cache transfer is in progress. A fresh measurement for the request's prompt size still applies below that floor, so a short calibration never vouches for a long prompt. Published rates are unchanged.
+- Keep measurement age and expiry tied to the newest observation when older completed work arrives later, and stop a late older cold sample from restarting the combined prefill estimate.
+- `DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators. `darkbloom start` forwards it to the background provider, so the rollback also reaches launchd-managed providers.
+
+### SSD restore no longer waits behind another request's prefill
+
+- Restoring a complete prefix checkpoint from SSD no longer blocks on MLX's
+  process-wide eval lock while the engine runs another request's prefill
+  chunk. On an M5 Max with Qwen 3.8 27B, staging a 0.96 GB checkpoint during a
+  concurrent prefill dropped from 2.6–3.8 s to about 0.35 s.
+- Added the opt-in `ModelCheckpointRestoreContentionLiveTests` real-model
+  regression, which requires SSD restore to reach its demanded boundary, never
+  to produce its first token later than cold prefill, idle or contended, and to
+  stage as fast contended as idle.
+
+### Deeper SSD checkpoint restores on large-memory Macs
+
+- On Macs with at least 48 GiB, complete-checkpoint SSD restores now default
+  to a 7 GiB / 15 s staging cap instead of 1 GiB / 1 s. With Qwen 3.8 and MTP
+  the deepest restorable prompt prefix rises from 8,192 tokens to about
+  94,000. On an M5 Max 128 GB a 20k-token fork's first token dropped from
+  about 17 s to 6 s (27 s cold). Explicit
+  `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` / `_MS` settings still win in
+  processes that receive them (LaunchAgents do not forward them), attention
+  block caches keep their defaults, and the daily SSD write cap is unchanged.
+
+### Local Responses continuation and reasoning
+
+- Continue local Responses requests with `previous_response_id`, preserving input, reasoning and correlated tool history. Reject non-null invalid ID types and unavailable IDs with HTTP 400 before model acquisition; null remains absence.
+- Bound continuation history with an application-local LRU. Response retrieval uses a separate in-memory object store, so a retrievable response can have expired continuation history; neither store survives application restart. `store: false` suppresses both new saves.
+- Select omitted local reasoning parsers by model type while preserving explicit overrides. Keep unfinished prompt-side thinking in reasoning fields for collected Chat and Responses, retrieval and continued history, with the paired SDK parser repair; native parsed channels and token usage remain authoritative.
+
+### Provider start and terminal hangups
+
+- Stop the interactive model picker (`darkbloom start`, `darkbloom switch`) when its terminal goes away. It previously kept reading a closed input and used a full processor core until the process was killed; it now cancels as Esc does, restores the terminal mode and leaves the provider unchanged.
+- Drain a provider started by hand (`start --local`, or `start --foreground` in a terminal) when its terminal window closes, the same cooperative stop as Ctrl-C and `SIGTERM`, instead of ending the process at once. The launchd-run provider and a start made with `SIGHUP` ignored (for example under `nohup`) behave as before.
+
+### Picker serving-set reserve
+
+- Use the complete ordinary model selection's activation reserve in the catalog picker, so measured-only choices are not rejected using the unknown-model floor. Recheck existing choices when adding a model raises that reserve. Preserve the conservative Autopilot enrollment check and runtime memory safeguards.
+
+### Fan helper startup discovery
+
+- Retry an unusable startup fan or GPU sensor inventory every 30 seconds while the helper is enabled and awake. Restore previous ownership before accepting recovered hardware and require a fresh provider lease before engaging fans; transiently invalid startup sensor readings no longer leave the helper permanently unsupported. The fix is in the root fan helper: after updating, run `sudo darkbloom fan enable` so the installed helper matches the new app bundle.
+
+### Interrupted watchdog launch recovery
+
+- Recover a candidate's launch receipt when the watchdog exits after starting it but before recording success. A running candidate that never produces a heartbeat then reaches the existing startup timeout; missing launch evidence does not count as a failed start.
+- Preserve unproven launch intent across health observations before restart. Require comparable saved and current launch evidence so an old serving process cannot acquire a false failed-start timeout when baseline evidence is missing or partial.
+
+### Watchdog restart acknowledgement
+
+- When a provider job disappears between the watchdog's launchd check and kickstart, report that no restart occurred and restore the previous crash-loop backend guard. Keep stopped or uninstalled jobs unloaded instead of recording a restart that launchd refused.
+
+### Installer release file modes
+
+- Extract the release bundle under umask 022 with `/usr/bin/tar`, so a restrictive caller umask no longer leaves installed app files owner-only. Private state created elsewhere by the installer is unchanged. New installs get it once the coordinator serves an installer that includes it; `darkbloom update` and the self-updater extract separately and are unchanged.
+
+### Staging build environment
+
+- Add `staging` as a third provider build environment beside production and dev. It has its own install identity (`darkbloom-staging`, Secure Enclave helper `darkbloom-enclave-staging`, app `Darkbloom Staging.app`, install dir `~/.darkbloom-staging`, config dir `~/.config/darkbloom-staging`, local port `8002`, LaunchAgent `io.darkbloom.provider.staging`, keychain prefix `io.darkbloom.staging`, encrypted-cache namespace `darkbloom-staging`) and the staging coordinator `wss://api.staging.darkbloom.dev/ws/provider`, so a staging provider runs beside production and dev on the same Mac. It shares the production model CDN like dev, and the signing identifier, keychain access group, MDM identifiers and fan helper stay shared across all three environments.
+- Select the staging identity from a `-staging.N` version in the installer and the release tooling. Build it with `DARKBLOOM_RELEASE_ENVIRONMENT=staging` (`DARKBLOOM_ENV_STAGING`).
+- A staging run uses only `STAGING_*` secrets. A tag never resolves to staging; master pushes publish staging only when `STAGING_ENABLED` is set (next entry).
+
+### Master push publishes dev and staging provider releases
+
+- A push to `master` now publishes a staging provider release in parallel with the dev release (DBLM-771: staging tracks main), gated by the `STAGING_ENABLED` repository variable. Staging is a normal Developer-ID dev-family release signed with the same certificate as dev and prod, versioned `X.Y.Z-staging.N` by the workflow run number. The gate defaults off (variable unset), so a master push builds and publishes dev only.
+- Refactor the provider release pipeline into a thin caller (`.github/workflows/release-swift.yml`) and a reusable workflow (`.github/workflows/release-provider.yml`, `on: workflow_call`) that encapsulates the whole resolve, build, qualification, signing, R2 staging and publication chain for one environment. The caller routes each trigger to its lanes: a master push runs the `dev` and `staging` lanes in parallel, a `vX.Y.Z` tag runs the `prod` lane, and a dispatch runs the chosen environment. A plain matrix cannot carry each lane's artifact id and digest across the dependent jobs, so each lane is a separate call of the reusable workflow.
+- The dev and prod paths are preserved exactly: the same signing, notarization, serialization groups (`release-dev` for dev, a per-run group for prod), version stamping and publication idempotency. prod remains tag-gated — `scripts/resolve-provider-release.sh` refuses prod on any non-tag trigger — so a master push can never reach the production signing identity. Accepted cost: with staging enabled, one master push runs two full build, sign, notarize and publish lanes (dev and staging are different binaries, identity is compile-time). Staging publication is not operational yet: without the `STAGING_*` secrets the lane fails when it resolves them, after build and qualification, and the publication step accepts only `dev` and `prod`. Keep `STAGING_ENABLED` unset until both are in place.
+
+### Experimental dev-branch provider lane
+
+- Add `.github/workflows/release-dev-branch.yml`, a dispatch-only lane that builds a provider from any branch or commit and publishes it to the dev coordinator as a self-signed (ad-hoc) release, without merging to master. It is dev-only: no tag path, no production environment, no production signing identity, and no production secret. It stamps the version `X.Y.Z-dev.branch.<run>` so it stays distinct from the master dev lane.
+- Relax the installer signature check for pre-release versions only: for a version carrying `-dev.` or `-staging.`, `scripts/install.sh` accepts an ad-hoc or otherwise non-Apple-anchored signature while keeping the bundle identifier pinned and every other check in force. Production versions keep the full Apple-team requirement unchanged. The dev coordinator serves the relaxed installer only after the platform-served copy is re-snapshotted.
+- The lane has not completed a run. The shared build step accepts only the dispatching `master` commit, and the installer still requires an Apple-signed fan helper, so it cannot yet deliver a branch build.
+
+### Model publication
+
+- Publish an already uploaded revision through the Register Model workflow without R2 credentials, preserving model metadata and prices.
+- Document model-bucket access checks and the Bonsai 9B publication incident.
+
+### Fixed-input scheduler-prefill benchmarks
+
+- Add opt-in `benchmark --scheduler-prefill --prefill-fixed-prompt` to repeat seed offset zero for warmup and measured iterations. Default measured prompts retain their rotation; other benchmark modes reject the flag.
+- Record prompt mode, warmup offset and per-sample offsets in backward-compatible optional report fields. Fresh engines, disabled prefix caching and the existing prefill stripe remain unchanged.
+- Initialize the serving allocator limits before scheduler-prefill model loading and log the applied cache limit, matching the throughput sweep and serving paths.
+
+### SSD test working-volume selection
+
+- Honor the selected test working volume in SSD-prefix and bridge write fixtures,
+  and report directory setup errors directly. Production cache safeguards remain
+  unchanged.
+
+### Threat review reliability
+
+- Distinguish completed scans requiring human review from failed or incomplete
+  scans. Preserve change context across source batches and reconcile Sol's local
+  questions before its final decision, within existing spending limits.
+- Add content-free failure diagnostics with validation codes, JSON positions,
+  model/batch correlation and Bedrock request metadata. Raw responses, prompts,
+  source text and credentials are excluded from diagnostic artifacts.
+- Keep unresolved cross-file questions for human review and restrict each
+  model's integration citations to its reviewed source. Preserve diagnostic
+  progress across interruptions without allowing logging failures to hide reports.
+
+### Threat review failure recovery
+
+- New reviews use the current trusted scanner with the PR base threat model,
+  preventing old PR bases from retaining obsolete review code.
+- Request native Bedrock JSON output and nonempty batch analysis while retaining
+  strict local validation and the existing model, spend and merge policies.
+- Recover bounded report/cache write conflicts without repeating paid requests;
+  distinguish state, GitHub and OpenRouter failures in content-free diagnostics.
+- Give final integration reviewers bounded exact source evidence from their own
+  reviewed scope, retaining explicit omissions and human-review decisions.
+- Preserve Bedrock cache-read/write input accounting and enforce finding-text
+  and analysis limits on raw characters, including whitespace padding.
+- Stop further model calls after backup cost-accounting failures even if the
+  primary provider recovers, retaining validated findings.
+
+### Threat-review recovery and evidence retention
+
+- Repair one otherwise valid response with empty/oversized analysis or incorrect
+  primary acknowledgment per scan, within existing limits. Distinguish replayed
+  source IDs and constrain integration acknowledgments; retain earlier findings
+  and uncertainty. A second failure remains incomplete.
+- Extend bounded retries for explicit state-branch conflicts without repeating
+  paid calls. Persistent conflicts still stop the review.
+- Retain validated advice and original diagnostics when native usage accounting
+  or final-result delivery fails. Stop further spending on unknown accounting;
+  reject final results from another workflow run or attempt.
+- Record repair status and original request metadata in safe diagnostics and PR
+  feedback. Distinguish a closed/merged PR from a technical review failure.
+
+### Automatic threat-review completion and human handoff
+
+CI sizes native review allowances from source batches, selected independent depth
+and cross-file integration rounds, retaining one shared response repair and an
+emergency ceiling. Generous native defaults allow up to 500 calls and 16,384
+output tokens per call with ten minutes per native response. Maintainers can
+lower the call and output limits through Actions variables. A longer bounded
+scan deadline leaves time to save findings
+and publish a human-review handoff when the scan cannot complete.
+
+Normal reviews send critical source directly to Sol instead of repeating it with
+Opus first. All source still receives Sonnet review and cross-file integration;
+clean tests/docs avoid filename-only depth, and integration findings target their
+cited batches. Global uncertainty requires human review without a blanket rescan.
+Production attestation filenames are not mistaken for Swift test suffixes;
+critical source outside explicit support trees takes precedence over filename hints.
+
+Paid manual dispatches and GitHub job reruns are disabled. Incomplete reviews
+explicitly require a human and cannot grant merge clearance. Advisory mode and
+existing OpenRouter spending limits remain unchanged.
+
+## v0.9.22
+
+Published 2026-10-15 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)).
+
+### Native Bonsai 9B preparation
+
+Preserve native tool/reasoning framing and artifact sampling defaults for the Bonsai 9B candidate. Honor its image minimum within the existing serving budget. Honor explicit tanh/exact GELU declarations in native Qwen3.5 vision blocks, preserving the existing fallback for missing or unknown declarations. Select paged attention and encrypted SSD prefix caching by default for its exact identity, retaining operator opt-outs and runtime security/capability checks. Reject requests beyond the checkpoint's native context limit before inference.
+
+Request MTP by default in automatic mode for the exact Prism/Eigen 9B identities and architecture. Resolve a validated catalog assistant asynchronously, with an explicit local path taking precedence, including the inspected affine 4-bit/group-64 head while retaining F16 rollback compatibility. Preserve the checkpoint's original base-weight precision, default to exact acceptance, and cap draft depth at two. Preserve drafter-required rectangular verification when runtime eligibility permits, with the existing target-only fallback. Plain inference remains available without the optional sidecar. Actual-artifact qualification and publication remain separate gates.
+
+Return a structured HTTP 503 invalid_request_error when local POST admission has closed for a graceful drain. Preserve CORS headers, health checks, preflight requests, and ownership of already admitted responses.
+
+Recognize the exact Prism and Eigen Labs 9B identifiers through the same request, cache and local MTP policies; artifact publication and coordinator activation remain separate.
+
+### M5 paged serving concurrency
+
+- Serve up to 8 concurrent requests per model by default on M5 Pro, M5 Max and M5 Ultra for models that the default `auto` backend selects for paged KV, when `engine_v2_max_concurrent` is absent from `provider.toml`. Other chips, contiguous models, models paged only by an explicit backend or live KV quantization setting, explicit global or per-model concurrency settings (including a `4` written by older releases) and reviewed profiles are unchanged; the coordinator's per-model quality cap still bounds admission.
+- Fall back from that width to the configured width under Low Power Mode or thermal pressure, as reviewed profiles already do. `darkbloom status` and `doctor` describe the M5 default.
+
+## v0.9.21
+
+Published 2026-10-14 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21)).
 
 ### Fixed
 
@@ -25,32 +679,95 @@ Prepared on 2026-10-14; tagging and publication are separate steps.
 - A push to `master` that changes the provider or its release tooling now builds, signs, notarizes and publishes a dev provider release. Tags still publish production releases unchanged.
 - Every dev build has the version `X.Y.Z-dev.<run number>`. `darkbloom --version` shows it, and dev providers update to each newer dev build. Dev runs never receive `PROD_*` secret values.
 
-## v0.9.20 - 2026-10-12
+### Provider repository ownership
+
+- Remove centralized coordinator/backend, admin, integration-harness and deployment implementation from this repository; retain the Swift provider, local native runtime and landing site. The console source snapshot and its existing build, lint, test and hosting configuration remain unchanged. New backend, console and admin development belongs in the sibling platform repository; release/model registration remains an external API operation. Source ownership changes do not change deployed endpoints or authorize deployment.
+
+### Agent-readable website discovery
+
+- Give the Darkbloom website a stable canonical identity, structured product and organization metadata, and a public sitemap.
+- Add readable product, pricing, contact and integration guidance, including Markdown responses and recovery links for agents.
+- Publish a source-reviewed consumer API description while preserving API authentication and the existing browser experience.
+
+### Community headlines and story browsing
+
+- Introduce the homepage with “AI, powered by your Macs.” and the live grid with “Many Macs. One network.” Highlight the trailblazers and people contributing to the network.
+- Browse stories by dragging or scrolling horizontally over their media or text, with keyboard navigation and native vertical scrolling preserved.
+
+## v0.9.20
+
+Published 2026-10-12 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20)).
 
 - Raise the default SSD cache write budget from 750 GB to 4 TB (4,000 decimal GB)
   per rolling day. Saved limits and environment overrides continue to take precedence.
-- Prepare the provider release identity for 0.9.20. The unrelated unreleased
-  entries and fragments below remain separate.
 
-## Unreleased — responsive provider App Attest handling
+### Responsive provider App Attest handling
 
 - Process App Attest challenges, received authorization updates and connection invalidation while inference or model work is suspended. Keep model-work ordering and existing proof, expiry, key-reuse and revocation checks.
 
-## Unreleased — provider build environment
+### Provider build environment
 
 - A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.
 - The LaunchAgent now forwards `DARKBLOOM_R2_CDN_URL` to the daemon. `darkbloom doctor` prints the build environment, the coordinator and the model CDN. `runtime-smoke` prints a `build-environment-runtime-smoke` line first.
 
-## Unreleased — provider cache storage controls
+### Provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.
 
-## Unreleased — Member-only automatic security clearance
+### App Attest diagnostic wording
 
-Version sections identify source included in published tags, not coordinator
-or console deployment, feature activation, model promotion or hardware
-qualification. Sections marked historical retain the original candidate's
-qualification, opt-in and deployment limits rather than claiming activation.
+- Identify the `darkbloom doctor` key-generation countdown as a local safeguard and explain that the coordinator may retry later.
+- Report generation attempts and the last recorded invalid-key attestation failure without inferring that every new key failed its first attestation. Recovery and authorization policies are unchanged.
+
+### Autopilot consent journal contention
+
+- Let independent provider sessions record Autopilot consent concurrently instead of serializing the fleet behind the inventory write lock. Preserve per-session ownership, account-erasure fences, and exclusive protection for identity merges and reward settlement.
+- Keep canonical-machine ownership lookups scoped to materialized ancestor IDs so PostgreSQL does not scan the complete provider-session history on each consent observation.
+
+### Changelog fragments and release history
+
+- Keep pending release notes in separate per-change Markdown files instead of having every pull request edit the shared changelog. Release preparation validates and renders the selected notes without modifying files automatically.
+- Group historical notes under their first published source tags, split entries added in later versions, and retain candidate qualification and deployment limitations. Source inclusion is not proof of production activation.
+
+### Member-only automatic security clearance
+
+- Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.
+- Surface fixed validation-failure reasons in incomplete review reports without exposing raw provider output.
+
+### Native inference and quantized checkpoints
+
+- Default live attention to native precision and independently request balanced encrypted-checkpoint storage for eligible native paged and contiguous engines. Preserve explicit live `balanced`, `k8v4` and `k8v8` settings; checkpoint compression does not force paging or reduce native serving-memory reservations.
+- Add separate checkpoint configuration, environment and benchmark controls, plus effective live/checkpoint precision and actual layout in local diagnostics. Unsupported storage layouts, persistent assistant state, MiMo, native-block diffusion and Qwen4 selected-index state retain native encoding.
+- Encode and restore older checkpoint rows with bounded CPU conversion, preserving exact recent rows and native recurrent/auxiliary state. Distinct layout/profile identities reject incompatible data. Restoring a native format does not recover precision discarded on disk or guarantee identical output or latency.
+- Add matched-geometry encrypted-checkpoint qualification with real native-memory, cancellation, tenant-isolation and restart evidence. Keep exact-native replay controls separate from lossy output observations.
+- Retain adaptive target-prefix MTP for explicit live-packed execution using measured unchained decode as its baseline; native targets retain their chained baseline. Preserve whole visual-block admission, native-owner feasibility accounting, and packed historical frontier restrictions.
+- Enforce paged model capabilities independently of legacy prefix reuse, and reject invalid checkpoint precision settings on the native Diffusion path without enabling unsupported compression.
+- Preflight live-packed Diffusion kernels before engine construction and include the native-recent feasibility bound in reported request capacity without adding runtime reservations.
+
+### Supervised App Attest worker candidate
+
+- Add a default-off, same-signed-executable App Attest worker candidate. Keep the inference key in the parent process, bind proof replies to their originating socket, and retire the owned worker before replacement without restarting inference.
+- Fence update installation and restart on confirmed worker retirement and current lifecycle ownership. After a failed update, fresh verification can retry cleanup of the retained owner; terminal shutdown cannot reopen it.
+- Preserve the exact worker opt-in in background `darkbloom start`; keep native diagnostic/fault flags out of the daemon. Reject the unused component-only transport-resumption scenario rather than reporting unproven success.
+- Record artifact-bound native suspended-worker, loaded-engine assertion-callback recovery, and separate composed two-minute resumption passes. These results do not qualify later rebuilt artifacts or the full OS/security-transition and fleet-rollout matrix.
+
+### Provider endpoint resumption
+
+- Add protocol-1 endpoint-custody responses for same-process reconnects, using a fresh nonce per socket and the existing in-memory encryption key. Requires the matching platform implementation; does not grant local trust or extend Apple proof lifetimes.
+- Make `darkbloom logout` drain and stop the provider before removing credentials, and attempt revocation of the saved provider token. Report unconfirmed remote revocation explicitly.
+- Bind saved tokens to their issuer and roll back failed credential saves. Preserve revocation URL authority, ignore unbound stale PID occupants, and allow local logout when configuration is malformed.
+- Enforce resume control-frame limits before decoding, while preserving large ordinary inference frames.
+- Add an isolated signed-app diagnostic for native loaded-engine endpoint resumption. Reject runs that exit before their completion marker; align the retained threat model with the authoritative platform policy.
+
+### Automatic official provider release registration
+
+- Trusted CI tests, builds, signs and notarizes, then automatically registers the exact official build through the existing scoped release API before publication. Per-release hardware qualification and manual approval are no longer prerequisites; runtime Apple proof, receipt verification and permanent revocation remain enforced.
+- Require verified signed annotated production tags in reviewed master ancestry and trusted master for dev/manual/recovery runs. Release jobs use existing repository secrets without environment approval attachments; shared security settings are unchanged. CI and repository writers are trusted for build identity, not proof that runtime Apple APIs work.
+- Deploy the matching platform persistence change first. Publication retries reuse immutable signed artifacts without rebuilding or re-signing. No new endpoint, signing authority, hardware service, provisioning or automatic version bump is introduced.
+
+### Provider release version ownership
+
+- Validate provider packaging and retained-build recovery against `ProviderCore.version`, the signed release tag and the built binary. The frozen coordinator display version no longer blocks provider releases; signed-source, SDK qualification and immutable-artifact checks remain required.
 
 ## v0.9.19
 

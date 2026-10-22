@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -23,28 +23,42 @@ reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
 find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.9.22` for native Bonsai 9B request,
-vision and explicit MTP sidecar support. The previous `v0.9.21` was
-[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21).
-The release candidate uses exact acceptance and drafter-required rectangular verification
-when its validated sidecar and runtime eligibility permit it. Serial verification
-is an explicit comparison override; target-only generation remains available
-without a sidecar or when speculation is ineligible.
-See the [native Bonsai contract](../architecture/inference.md) for the exact model
-identity, checkpoint constraints and defaults.
+`ProviderCore.version` is prepared as `0.10.0`. The candidate moves request
+normalization to v9 for every model, adds native Flint, Nemotron 3.5 Super and
+GLM-5.3-Flash serving, and updates the MLX pins, so its metallib changes. See
+the [`v0.10.0` changelog entry](../../CHANGELOG.md) for the full scope and its
+qualification limits.
 
-This source preparation does not establish release qualification. Confirm final
-publisher artifacts and their explicit sidecar metadata, final distribution IDs,
-sampled-MTP correctness, model quality, physical-memory/media admission and hosted
-platform compatibility before promotion. Bounded local greedy parity and speed
-results do not close those gates. No tag, registration, upload or deployment is
-performed by this change.
+Tag `v0.10.0` only after production runs a `darkbloom-platform` coordinator
+that normalizes requests with v9, enforces the Nemotron 3.5 Super
+provider-version floor at `0.10.0`, gates GLM-5.3-Flash on the `glm5_next_v1`
+capability and serves a provider-contract snapshot pinned to the merged
+preparation commit. A v8 coordinator accepts the `0.10.0` registration and
+serves its providers, but without cache scopes and without the new models'
+gates. Then tag promptly: until providers update, a v9 coordinator serves
+0.9.22 providers without cache scopes. The platform owns the coordinator
+deployment and its cache-routing allowlist; model registration and promotion
+are separate approvals. This preparation does not tag, register, upload or
+deploy anything.
 
-`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
-Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
-from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
-[published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
-from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish
+Platform evidence, inspected on 2026-10-22 (recheck current `master` before
+tagging):
+
+| Claim | Source |
+|---|---|
+| Platform `master` normalizes with v9 | [`identity/contract.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
+| Production `74e9f989` normalizes with v8 | [`identity/contract.go` at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/blob/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
+| A cache plan applies only to a matching prompt contract | [`registry/cache_tiers.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/cache_tiers.go) (`CapabilityMatchesPlan`) |
+| Super has a per-identity provider-version floor | [`registry/catalog_version_floor.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`, unset there; [darkbloom-platform#400](https://github.com/Layr-Labs/darkbloom-platform/pull/400) sets `0.10.0`) |
+| GLM-5.3-Flash requires `glm5_next_v1` | [`registry/provider_capabilities.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/provider_capabilities.go) (`ProviderCapabilityGLM5Next`, `embeddedRequiredProviderCapabilities`) |
+| Production `74e9f989` has neither gate | Neither symbol exists in the [platform registry package at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/tree/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/registry) |
+
+`v0.9.22` was [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
+from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, `v0.9.21` was
+[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21)
+from `9951a7db72d3db9a9cb0ec5e777969afe968c9b6`, and `v0.9.20` was
+[published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20)
+from `5dc5313e5201e8d84db15adc153ceaf56147cc71`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -129,7 +143,9 @@ release-preparation commit. Rendering itself neither edits history nor consumes
 notes. Ordinary PRs never regenerate the root history; see
 [contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
 The pipeline takes its registered `changelog` from the annotated tag message,
-not `CHANGELOG.md`; derive that message from the reviewed release entry.
+not `CHANGELOG.md`; derive that message from the reviewed release entry. Keep
+it to a short summary: the release API refuses registration bodies above
+64 KiB, and that refusal comes only after signing and notarization.
 
 ### 3. Merge And Verify Release Preparation
 

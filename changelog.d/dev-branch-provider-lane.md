@@ -1,4 +1,0 @@
-### Experimental dev-branch provider lane
-
-- Add `.github/workflows/release-dev-branch.yml`, a dispatch-only lane that builds a provider from any branch or commit and publishes it to the dev coordinator as a self-signed (ad-hoc) release, without merging to master. It is dev-only: no tag path, no production environment, no production signing identity, and no production secret. It stamps the version `X.Y.Z-dev.branch.<run>` so it stays distinct from the master dev lane.
-- Relax the installer signature check for pre-release versions only: for a version carrying `-dev.` or `-staging.`, `scripts/install.sh` accepts an ad-hoc or otherwise non-Apple-anchored signature while keeping the bundle identifier pinned and every other check in force. Production versions keep the full Apple-team requirement unchanged. The dev coordinator serves the relaxed installer only after the platform-served copy is re-snapshotted.

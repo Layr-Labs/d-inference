@@ -94,20 +94,23 @@ struct ModelLoadEvictionAndAdmissionTests {
         let id = "test/large-idle-retained"
         let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
         await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1)
-        let stub = makeInertStubBridge(modelId: id)
-        await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: 100 << 30)
         let engine = try RetainingEngineStub()
         #expect(engine.parkedBytes > 0)
+        let parkedAtEviction = ParkedBytesRecorder()
+        let stub = makeInertStubBridge(
+            modelId: id, onShutdown: { parkedAtEviction.record(engine.parkedBytes) })
+        await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: 100 << 30)
         let steps = engine.start()
         defer { steps.cancel() }
 
         // The pinned sample never changes, so the release cannot make room and
-        // the eviction still follows; the load path must have released on the way.
+        // the eviction still follows. The refusal path releases too, so check
+        // the parked bytes at the moment the resident model shuts down.
         await #expect(throws: InferenceError.self) {
             try await loop.evictUntilAvailable(weightsGb: 10)
         }
-        #expect(engine.parkedBytes == 0)
         #expect(stub.engine.shutdownCalls == 1)
+        #expect(parkedAtEviction.bytes == 0)
     }
 
     @Test("a model with a live request is never evicted")
@@ -352,4 +355,14 @@ struct ModelLoadEvictionAndAdmissionTests {
         #expect(ProviderLoop.modelIsVLM(at: textOnly) == false)
         #expect(ProviderLoop.modelIsVLM(at: noConfig) == false)
     }
+}
+
+/// Parked retained-segment bytes seen when the resident model shut down.
+private final class ParkedBytesRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: Int?
+
+    var bytes: Int? { lock.withLock { recorded } }
+
+    func record(_ bytes: Int) { lock.withLock { recorded = bytes } }
 }

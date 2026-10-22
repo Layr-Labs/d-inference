@@ -186,6 +186,26 @@ struct KVPoolIdleSweepTests {
         #expect(!budget.signalsEngineRefusals)
     }
 
+    @Test("the segmented factory retains min(2 GiB, grant / 8) with host zeros unless rolled back")
+    func segmentedFactoryAppliesRetentionRollbacks() throws {
+        let kind = CBv2LayerKind(attention: .full, headDim: 128, kvHeads: 2, queryHeads: 4)
+        func config(grant: Int, _ environment: [String: String] = [:]) throws -> PagedKVPoolConfig {
+            try EngineV2Factory.makeSegmentedPagedBackend(
+                admittedGrantBytes: grant, layerKinds: [kind], layerDTypes: [.bfloat16],
+                schedulerConfig: .init(), maxContextLength: 8192, maxBufferLength: 128 << 20,
+                environment: environment
+            ).pool.config
+        }
+        let defaults = try config(grant: 8 << 30)
+        #expect(defaults.retainedFreeSegmentBytes == 1 << 30 && defaults.hostZeroedSegments)
+        #expect(defaults.retainedFreeSegmentIdleSeconds == 30)
+        #expect(try config(grant: 64 << 30).retainedFreeSegmentBytes == 2 << 30)
+        let deviceFill = try config(grant: 8 << 30, ["DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS": "0"])
+        #expect(deviceFill.retainedFreeSegmentBytes == 1 << 30 && !deviceFill.hostZeroedSegments)
+        let off = try config(grant: 8 << 30, ["DARKBLOOM_TTFT_SEGMENT_RETENTION": "0"])
+        #expect(off.retainedFreeSegmentBytes == 0 && !off.hostZeroedSegments)
+    }
+
     @Test("a load-time release waits for engine steps to drop retained KV segments")
     func loadReleaseWaitsForEngineSteps() async throws {
         let engine = try RetainingEngineStub()

@@ -172,13 +172,14 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         let opened: Runtime.OpenedRequest
         let speculates: Bool
         let draw: ((MLXArray) -> MLXArray)?
+        let propose: GLM5NextMTP.ProposalSelection?
         var offset: Int
         var stored: [Int] = []
 
         init(request: QwenLayerStageGenerationRequest, sampler: QwenStageTokenSampler?, opened: Runtime.OpenedRequest,
-             speculates: Bool, draw: ((MLXArray) -> MLXArray)?) {
+             speculates: Bool, draw: ((MLXArray) -> MLXArray)?, propose: GLM5NextMTP.ProposalSelection?) {
             self.request = request; self.sampler = sampler; self.opened = opened
-            self.speculates = speculates; self.draw = draw; offset = opened.start
+            self.speculates = speculates; self.draw = draw; self.propose = propose; offset = opened.start
         }
     }
 
@@ -202,10 +203,12 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         let opened = try runtime.openRequest(request, stage: stage)
         try check()
         let sampler = request.sampler
-        // As one request: greedy and stateless-sampled requests speculate.
-        let speculates = opened.speculation != nil && (sampler?.admitsSpeculativeVerification ?? true)
+        // As one request: every request speculates (bias and penalties too).
+        let speculates = opened.speculation != nil
+        if let speculation = opened.speculation { runtime.installDraftProbe(speculation, sampler: sampler) }
         return Lane(request: request, sampler: sampler, opened: opened, speculates: speculates,
-            draw: speculates ? runtime.verificationDraw(sampler) : nil)
+            draw: speculates ? runtime.verificationDraw(sampler) : nil,
+            propose: speculates ? runtime.proposalSelection(sampler) : nil)
     }
 
     func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
@@ -262,7 +265,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
                     throw ProbeError("GLM lane round for a lane that does not speculate")
                 }
                 return .init(speculation: speculation, cache: unit.lane.opened.cache, last: unit.last, window: window,
-                    stop: 0, draw: unit.lane.draw)
+                    stop: 0, draw: unit.lane.draw, propose: unit.lane.propose)
             }
             let rounds = try GLM5NextTensorParallelSpeculation.rounds(stage: stage, lanes: lanes, whileRunning: {
                 for index in speculating { try whileRunning(index) }
@@ -300,7 +303,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
             + " stored=\(lane.stored.map(String.init).joined(separator: "_")) prefix_entries=\(runtime.prefix.count) prefix_bytes=\(runtime.prefix.bytesInUse)"
             + " output=\(kept) finish=\(leave.finish?.rawValue ?? "cancelled") sampled=\(lane.sampler == nil ? 0 : 1)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
-            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)")
+            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Runtime.proposalFields(speculation, sampler: lane.sampler))
         return (lane.opened.start, lane.stored)
     }
 }

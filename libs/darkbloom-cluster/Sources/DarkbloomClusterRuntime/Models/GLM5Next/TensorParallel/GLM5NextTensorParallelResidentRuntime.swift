@@ -27,8 +27,10 @@ import MLXLMCommon
 /// layer, which every rank holds whole (`mtpDepth`,
 /// `GLM5NextTensorParallelSpeculation`): one stage forward verifies up to
 /// `mtpDepth` proposals, and its round's reduction carries every window
-/// position's token, the proposals and the stop flags. Sampled requests
-/// decode one token per step.
+/// position's token, the proposals and the stop flags. So do sampled
+/// requests, verifying against keyed target draws with proposals coupled to
+/// them (`coupledDraftSharpness`); logit bias and penalties are replayed over
+/// each round's proposals (`QwenStageTokenSampler.verifyRound`).
 ///
 /// Not in this mode yet (the pipeline serves it): image input. A request
 /// asking for images is refused.
@@ -107,6 +109,48 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// 62.6 tok/s; depth 1 68.7, depth 2 76.0 (2.24 tokens a round), depth 3
     /// 71.8 (its third proposal is rarely kept and widens every window).
     static let mtpDepth = 2
+    /// A sampled request draws every NextN proposal with its own sampler and
+    /// the keyed noise of the output index the proposal is for (coupled
+    /// drafting, `GLM5NextTensorParallelSpeculation`), from the NextN logits
+    /// times this factor: 1 applies the target's own race to the draft's
+    /// distribution; above 1 sharpens a draft less confident than the target;
+    /// infinity proposes the NextN argmax (the rule before coupling). A
+    /// request with bias or penalties takes 1 unless it is infinite. Every
+    /// committed token stays the target's draw from its window logits at any
+    /// value; it moves acceptance (and with it where rounds end).
+    static let coupledDraftSharpness: Float = 1
+    /// Rank 0 of a stateless sampled request also scores other proposal rules
+    /// on every verified round's first proposal: the argmax, then the coupled
+    /// draw at each of `probedDraftSharpness`. Its kept counts are logged
+    /// (`mtp_probe`); one more small sampling pass per round, enqueued after
+    /// the round's result is read. Diagnostic: proposals and tokens never change.
+    static let probesDraftRules = true
+    static let probedDraftSharpness: [Float] = [1, 1.5, 2, 3]
+
+    /// The request log line's proposal fields: the rule, kept and made
+    /// proposals per position, and the draft probe's kept counts.
+    static func proposalFields(_ speculation: GLM5NextTensorParallelSpeculation?,
+                               sampler: QwenStageTokenSampler?) -> String {
+        guard let speculation else { return "" }
+        let rule = sampler.map { $0.admitsSpeculativeVerification ? "coupled\(coupledDraftSharpness)" : "replayed" }
+        var fields = " mtp_draft=\(rule ?? "argmax")"
+            + " mtp_accepted_by_position=" + speculation.acceptedByPosition.map(String.init).joined(separator: "-")
+            + " mtp_proposed_by_position=" + speculation.proposedByPosition.map(String.init).joined(separator: "-")
+        if let hits = speculation.draftProbeHits() {
+            fields += " mtp_probe_rounds=\(speculation.probedRounds) mtp_probe=" + hits
+        }
+        return fields
+    }
+
+    /// The rules `probesDraftRules` scores, named `argmax` and `c<sharpness>`.
+    static func draftProbe(_ sampler: QwenStageTokenSampler) -> GLM5NextTensorParallelSpeculation.DraftProbe {
+        .init(names: ["argmax"] + probedDraftSharpness.map { "c\($0)" }) { logits in
+            let wide = logits.asType(.float32)
+            let greedy = argMax(wide[0..., -1, 0...], axis: -1).reshaped(1).asType(.int32)
+            let coupled = sampler.draft(concatenated(probedDraftSharpness.map { wide * $0 }, axis: 0), offset: 0)
+            return concatenated([greedy] + (coupled.map { [$0.reshaped(-1).asType(.int32)] } ?? []), axis: 0)
+        }
+    }
 
     let configuration: QwenResidentLoadConfiguration
     let descriptor: GLM5NextResidentDescriptor
@@ -639,11 +683,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
         let prompt = request.promptTokenIDs
-        // Greedy requests decode speculatively, and so do sampled ones whose
-        // transforms do not depend on their history (as in the product; bias
-        // and penalties decode one token per step). Every request primes the NextN
-        // history over its prompt (cheap: no attention, MoE or readout), so
-        // every prefix entry carries the history at its boundary.
+        // Every request decodes speculatively, greedy or sampled (bias and
+        // penalties too: `QwenStageTokenSampler.verifyRound`). Every request
+        // primes the NextN history over its prompt (cheap: no attention, MoE
+        // or readout), so every prefix entry carries the history at its
+        // boundary.
         let speculation = try mtp.map {
             try GLM5NextTensorParallelSpeculation(mtp: $0, depth: Self.mtpDepth, rank: rank, ranks: collective.size,
                 primeRows: descriptor.profile.maximumChunkTokens, agree: { [group] in group.allSum($0) })
@@ -716,19 +760,38 @@ public final class GLM5NextTensorParallelResidentRuntime {
     }
 
     /// Sampled MTP rounds: rank 0 draws the keyed target sample at every
-    /// window column, at output indexes from the sampler's committed count.
-    /// Rank 1 puts the window's argmax, which the agreement ignores: its slot
-    /// must depend on the window's logits, or the round's one evaluation may
-    /// run the agreement sum before the layer sums on rank 1 only, and the
-    /// ranks' sums no longer pair up. Nil for greedy requests (the argmax).
+    /// window column, at output indexes from the sampler's committed count
+    /// (`QwenStageTokenSampler.verifyRound`: with bias or penalties, the step
+    /// path replayed over the round's proposals). Rank 1 puts the window's
+    /// argmax, which the agreement ignores: its slot must depend on the
+    /// window's logits, or the round's one evaluation may run the agreement
+    /// sum before the layer sums on rank 1 only, and the ranks' sums no longer
+    /// pair up. Nil for greedy requests (the argmax).
     func verificationDraw(_ sampler: QwenStageTokenSampler?) -> ((MLXArray) -> MLXArray)? {
         let rank = collective.rank
         return sampler.map { sampler in
-            { logits in
-                (rank == 0 ? sampler.verify(logits) ?? argMax(logits, axis: -1) : argMax(logits, axis: -1))
-                    .asType(.float32)
-            }
+            { logits in (rank == 0 ? sampler.verifyRound(logits) : argMax(logits, axis: -1)).asType(.float32) }
         }
+    }
+
+    /// Sampled MTP rounds: every rank draws proposal j with the request's
+    /// sampler and the keyed noise of window column j's output index
+    /// (coupled drafting, `coupledDraftSharpness`), so the ranks' proposals
+    /// stay equal and a draft close to the target proposes the target's own
+    /// draw. Holds no collective: the proposals feed the window on every rank
+    /// before its sums. Nil for greedy requests (the argmax).
+    func proposalSelection(_ sampler: QwenStageTokenSampler?) -> GLM5NextMTP.ProposalSelection? {
+        sampler.map { sampler in
+            { logits, step in sampler.propose(logits, step: step, sharpness: Self.coupledDraftSharpness) }
+        }
+    }
+
+    /// Rank 0's draft probe for a stateless sampled request (`probesDraftRules`).
+    func installDraftProbe(_ speculation: GLM5NextTensorParallelSpeculation, sampler: QwenStageTokenSampler?) {
+        guard collective.rank == 0, Self.probesDraftRules, let sampler, sampler.admitsSpeculativeVerification else {
+            return
+        }
+        speculation.draftProbe = Self.draftProbe(sampler)
     }
 
     // MARK: - One request
@@ -800,7 +863,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             case .clientStop, .proceed: return nil
             }
         }
-        if let speculation, sampler?.admitsSpeculativeVerification ?? true, let lastHidden {
+        if let speculation, let lastHidden {
             // The first token is agreed as a plain step's; then each round
             // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
             // and when the loop ends follow from agreed tokens only, so both
@@ -811,10 +874,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
             // would, and carries its flag in the next round it submits.
             let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
             sampler?.commit(first)
-            // Sampled: rank 0 draws the keyed target sample at every window
-            // column, at output indexes from the sampler's committed count
-            // (rank 1's slot depends on the logits: `verificationDraw`).
-            let draw = verificationDraw(sampler)
+            // Sampled: coupled proposals on every rank (`proposalSelection`);
+            // rank 0 draws the keyed target sample at every window column, at
+            // output indexes from the sampler's committed count (rank 1's slot
+            // depends on the logits: `verificationDraw`).
+            let draw = verificationDraw(sampler), propose = proposalSelection(sampler)
+            installDraftProbe(speculation, sampler: sampler)
             try speculation.begin(carry: first, lastHidden: lastHidden)
             var agreedCount = 1, last = first, fresh: [Int] = []
             /// Takes one agreed token; true when the request ends at it.
@@ -831,7 +896,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 let taken = agreedCount
                 let round = try speculation.round(stage: stage, cache: cache, last: last,
                     window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep, draw: draw,
-                    whileRunning: {
+                    propose: propose, whileRunning: {
                         for (index, value) in fresh.enumerated() {
                             _ = try take(value, counted: taken - fresh.count + index + 1)
                         }
@@ -923,7 +988,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) output=\(tokens.count) finish=\(finish.rawValue)"
             + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
-            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)")
+            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Self.proposalFields(speculation, sampler: sampler))
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,

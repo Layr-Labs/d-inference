@@ -18,14 +18,28 @@ import MLXLMCommon
 /// rejected proposal costs no replay. The NextN history is fed only verified
 /// pairs (target token, preceding target hidden row), never a proposal.
 ///
-/// A sampled request (stateless transforms only, as in the product) keeps
-/// the product's target-prefix pre-sampling instead of the argmax: rank 0
-/// draws the keyed target sample at every window column at its own output
-/// index (`QwenStageTokenSampler.verify`), a proposal is kept while it equals
+/// A sampled request keeps the product's target-prefix pre-sampling instead
+/// of the argmax: rank 0 draws the keyed target sample at every window column
+/// at its own output index (`QwenStageTokenSampler.verify`; with logit bias or
+/// penalties, the step path replayed over the proposals before the column,
+/// `QwenStageTokenSampler.verifyRound`), a proposal is kept while it equals
 /// that sample, and the sample at the first mismatch is the round's last
 /// token. Each committed token is the draw the one-token sampled path makes
 /// at that index from the same logits; rank 1 puts its argmax (only so its
 /// slot depends on the window, like rank 0's) and adopts rank 0's draws.
+///
+/// Its proposals are coupled to those draws: every rank draws proposal j
+/// from the NextN logits with the request's own sampler and the keyed noise
+/// of window column j's output index (`QwenStageTokenSampler.propose`,
+/// which also replays logit bias and penalties over the proposals). The
+/// argmax is kept only as often as the target draws it; a coupled proposal
+/// from a draft distribution close to the target's is the target's own
+/// draw: kept with probability between `(1 - TV) / (1 + TV)` and `1 - TV`
+/// (TV: the two filtered distributions' total variation distance; equal
+/// distributions always agree). No committed token depends on how a
+/// proposal is chosen: column j's draw is a function of the committed prefix,
+/// the logits and the noise, never of the proposal at j, and a column is
+/// only reached through proposals equal to the committed tokens.
 ///
 /// Both ranks propose and verify from identical inputs, so they agree; they
 /// still check it. Each round carries one small sum in which every rank puts
@@ -42,6 +56,9 @@ import MLXLMCommon
 /// decode and can pick a different token after tens to hundreds of tokens
 /// (measured: first difference at 104 tokens at depths 1 and 2), not only at
 /// a near-tie. Ranks never differ; a one-token window is bitwise a step.
+/// Where rounds end follows the proposals, so which window column computes a
+/// given index (and with it that rounding) depends on how proposals are
+/// chosen, greedy or coupled, exactly as on the NextN history they come from.
 final class GLM5NextTensorParallelSpeculation {
     /// Bound into the load agreement beside the depth.
     static let agreementName = "glm5-next-tp-mtp-v1"
@@ -72,6 +89,28 @@ final class GLM5NextTensorParallelSpeculation {
     private(set) var rounds = 0
     private(set) var proposedTokens = 0
     private(set) var acceptedTokens = 0
+    /// Proposals made and kept at each proposal position.
+    private(set) var proposedByPosition: [Int]
+    private(set) var acceptedByPosition: [Int]
+
+    /// Diagnostic for a sampled request on rank 0: scores other proposal
+    /// rules on every verified round's first proposal. Window column 0's
+    /// draw does not depend on any proposal, so each rule is scored against
+    /// the very draw the round kept or rejected its own first proposal by.
+    /// `rules` maps the first step's NextN logits `[1, 1, V]` to one token
+    /// per rule `[R]`; it is called inside `round` (before the caller commits
+    /// the round's tokens to its sampler) and evaluated after the round's
+    /// result is read, while the next round is built. It never changes a
+    /// proposal or a token.
+    struct DraftProbe {
+        let names: [String]
+        let rules: (MLXArray) -> MLXArray
+    }
+    var draftProbe: DraftProbe?
+    /// The current round's first-step NextN logits, while the probe needs them.
+    private var probeLogits: MLXArray?
+    private var probeHits: MLXArray?
+    private(set) var probedRounds = 0
 
     init(mtp: GLM5NextMTP, depth: Int, rank: Int, ranks: Int, primeRows: Int,
          agree: @escaping (MLXArray) -> MLXArray) throws {
@@ -83,7 +122,17 @@ final class GLM5NextTensorParallelSpeculation {
         }
         self.mtp = mtp; self.depth = depth; self.rank = rank; self.ranks = ranks
         self.primeRows = primeRows; self.agree = agree
+        proposedByPosition = Array(repeating: 0, count: depth)
+        acceptedByPosition = Array(repeating: 0, count: depth)
         state = try mtp.newRequestState()
+    }
+
+    /// The draft probe's kept counts per rule, as `name:count` (one host
+    /// read); nil without a probe or a probed round.
+    func draftProbeHits() -> String? {
+        guard let draftProbe, let probeHits, probedRounds > 0 else { return nil }
+        let hits = probeHits.asArray(Int32.self)
+        return zip(draftProbe.names, hits).map { "\($0):\($1)" }.joined(separator: ",")
     }
 
     /// Roots a caller's fence must evaluate with the graph that built them.
@@ -177,19 +226,20 @@ final class GLM5NextTensorParallelSpeculation {
     /// `[1, 1 + window, V]` (rank 0 its keyed samples); nil takes the argmax.
     /// Every rank's slot must be computed from the logits: the agreement sum
     /// is ordered after the window's layer sums only by that dependency.
+    /// `propose`, for a sampled request, gives proposal j from step j's NextN
+    /// logits `[1, 1, V]`, the same on every rank (the coupled draw at window
+    /// column j's output index); nil takes the argmax. It must hold no
+    /// collective: the proposals precede the window and its sums on every rank.
     func round(stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, last: Int, window: Int,
                stop: Float, draw: ((MLXArray) -> MLXArray)? = nil,
+               propose: GLM5NextMTP.ProposalSelection? = nil,
                whileRunning: () throws -> Void = {}) throws -> Round {
         guard let verified = pending, (0...depth).contains(window) else {
             throw ProbeError("GLM speculative round without its verified pairs or beyond its depth")
         }
         pending = nil
         let started = DispatchTime.now().uptimeNanoseconds
-        // Priming the verified pairs is never skipped: it keeps the NextN
-        // history in step with the target even when no proposal is used.
-        let proposals = try mtp.primeAndPropose(shiftedTokens: verified.tokens, targetHidden: verified.hidden,
-            at: state.committedInputCount, state: state, depth: max(1, window))
-        let drafts = window > 0 ? proposals[0..., ..<window] : nil
+        let drafts = try prepareProposals(verified, window: window, propose: propose)
         let input = concatenated([MLXArray([Int32(last)], [1, 1])] + (drafts.map { [$0] } ?? []), axis: 1)
         let candidate = try stage.prepareVerification(tokens: input, cache: cache)
         guard case .final(let output) = candidate.output else {
@@ -232,8 +282,45 @@ final class GLM5NextTensorParallelSpeculation {
         // The next round's verified pairs: each kept target token with the
         // hidden row that predicted it.
         pending = (MLXArray(decided.tokens.map(Int32.init), [1, kept]), output.hidden[0..., ..<kept, 0...])
-        rounds += 1; proposedTokens += window; acceptedTokens += kept - 1
+        record(decided, window: window)
         return decided
+    }
+
+    /// Graph only: primes the verified pairs (never skipped: it keeps the
+    /// NextN history in step with the target even when no proposal is used)
+    /// and proposes a round's `window` tokens with `propose` (nil: the
+    /// argmax), `[1, window]`; nil for a window of 0. Keeps the first step's
+    /// NextN logits for the draft probe.
+    private func prepareProposals(_ verified: (tokens: MLXArray, hidden: MLXArray), window: Int,
+                                  propose: GLM5NextMTP.ProposalSelection?) throws -> MLXArray? {
+        probeLogits = nil
+        let select: GLM5NextMTP.ProposalSelection? = propose.map { propose in
+            { [unowned self, probing = draftProbe != nil && window > 0] logits, step in
+                if probing, step == 0 { probeLogits = logits }
+                return propose(logits, step)
+            }
+        }
+        let proposals = try mtp.primeAndPropose(shiftedTokens: verified.tokens, targetHidden: verified.hidden,
+            at: state.committedInputCount, state: state, depth: max(1, window), select: select)
+        return window > 0 ? proposals[0..., ..<window] : nil
+    }
+
+    /// Counts a decided round of `window` proposals and scores the draft
+    /// probe's rules against its first token: enqueued now, run while the
+    /// next round is built, read once (`draftProbeHits`).
+    private func record(_ decided: Round, window: Int) {
+        let kept = decided.tokens.count
+        rounds += 1; proposedTokens += window; acceptedTokens += kept - 1
+        for position in 0 ..< window { proposedByPosition[position] += 1 }
+        for position in 0 ..< (kept - 1) { acceptedByPosition[position] += 1 }
+        if let draftProbe, let probeLogits {
+            let hits = (draftProbe.rules(probeLogits).reshaped(-1).asType(.int32)
+                .== MLXArray(Int32(decided.tokens[0]))).asType(.int32)
+            let total = probeHits.map { $0 + hits } ?? hits
+            asyncEval(total)
+            probeHits = total; probedRounds += 1
+        }
+        probeLogits = nil
     }
 }
 
@@ -248,6 +335,8 @@ extension GLM5NextTensorParallelSpeculation {
         let window: Int
         let stop: Float
         var draw: ((MLXArray) -> MLXArray)?
+        /// `round`'s `propose`.
+        var propose: GLM5NextMTP.ProposalSelection?
     }
 
     /// Each lane's part of a multi-lane agreement, lane after lane: the
@@ -262,10 +351,12 @@ extension GLM5NextTensorParallelSpeculation {
     }
 
     /// `round` for several requests at once. Every lane primes and proposes
-    /// from its own NextN state; ONE stage forward then verifies every
-    /// lane's window over its own cache (`GLM5NextTextStage
-    /// .prepareVerificationRows`: each lane's logits, hidden rows and cache
-    /// are bitwise those of its own `prepareVerification`); ONE agreement sum
+    /// from its own NextN state (a sampled lane with its own sampler's
+    /// coupled proposals, `propose`, which hold no collective); ONE stage
+    /// forward then verifies every lane's window over its own cache
+    /// (`GLM5NextTextStage.prepareVerificationRows`: each lane's logits,
+    /// hidden rows and cache are bitwise those of its own
+    /// `prepareVerification`); ONE agreement sum
     /// carries every lane's slots, each laid out as its own round's; and each
     /// lane commits its own kept prefix. A lane's tokens, cache and NextN
     /// history are therefore exactly those of its own `round`. Both ranks
@@ -289,11 +380,9 @@ extension GLM5NextTensorParallelSpeculation {
             let speculation = lane.speculation
             let verified = speculation.pending!
             speculation.pending = nil
-            // Priming the verified pairs is never skipped (as in `round`).
-            let proposals = try speculation.mtp.primeAndPropose(shiftedTokens: verified.tokens,
-                targetHidden: verified.hidden, at: speculation.state.committedInputCount, state: speculation.state,
-                depth: max(1, lane.window))
-            let draft = lane.window > 0 ? proposals[0..., ..<lane.window] : nil
+            // Each lane's own priming and proposals (as in `round`): its own
+            // NextN state and, for a sampled lane, its own sampler's round.
+            let draft = try speculation.prepareProposals(verified, window: lane.window, propose: lane.propose)
             drafts.append(draft)
             inputs.append(.init(tokens: concatenated([MLXArray([Int32(lane.last)], [1, 1])] + (draft.map { [$0] } ?? []),
                 axis: 1), cache: lane.cache))
@@ -353,7 +442,7 @@ extension GLM5NextTensorParallelSpeculation {
             let kept = round.tokens.count
             // The next round's verified pairs, as `round` keeps them.
             speculation.pending = (MLXArray(round.tokens.map(Int32.init), [1, kept]), output.hidden[0..., ..<kept, 0...])
-            speculation.rounds += 1; speculation.proposedTokens += lane.window; speculation.acceptedTokens += kept - 1
+            speculation.record(round, window: lane.window)
         }
         return decided
     }

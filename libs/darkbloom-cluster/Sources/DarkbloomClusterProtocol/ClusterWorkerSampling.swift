@@ -55,7 +55,9 @@ public struct ClusterWorkerSampling: Equatable, Sendable {
     /// The penalty window has an effect, as the product decides it.
     public var hasRepetitionPenalty: Bool { repetitionPenalty != 1 && repetitionContextSize > 0 }
     /// A transform depends on the tokens selected so far. The product runs
-    /// such requests without speculative decoding; so does the pair.
+    /// such requests without speculative decoding, and so do the pipeline's
+    /// MTP paths; GLM tensor parallel replays them over each round's
+    /// proposals (`QwenStageTokenSampler.verifyRound`).
     public var dependsOnHistory: Bool {
         !logitBias.isEmpty || hasRepetitionPenalty || frequencyPenalty != 0 || presencePenalty != 0
     }

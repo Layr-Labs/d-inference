@@ -915,7 +915,7 @@ weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and
 `RecursiveSI/flint-int4` snapshot. It starts an authenticated loopback service,
 uses a task-local encrypted-cache directory, executes real production slots,
 and stops/drains them. `DARKBLOOM_FLINT_PORT` selects an unused port;
-`DARKBLOOM_FLINT_BACKEND` selects `contiguous` or `paged`.
+Flint is paged-only, so `DARKBLOOM_FLINT_BACKEND` may only be unset or `paged`.
 `DARKBLOOM_FLINT_RECEIPTS` optionally writes synthetic response evidence to an
 owned file. Keep these model-dependent checks separate from tiny-fixture,
 public-CI and signed-release evidence.

@@ -176,7 +176,7 @@ struct FlintContextAdmissionTests {
             sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 0,
                 maxContextLength: sizingContext, defaultMaxTokens: defaultOutput),
             kvBytesCapacity: 16 << 20, maxConcurrentRequests: 1, kvBudget: nil,
-            kvBackendConfig: "contiguous", checkpointQuantizationConfig: "native",
+            kvBackendConfig: "paged", checkpointQuantizationConfig: "native",
             specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)),
             environment: [PrefixCachePolicy.environmentFlag: "0"],
             startServingTelemetry: false, emitTelemetry: { _ in },

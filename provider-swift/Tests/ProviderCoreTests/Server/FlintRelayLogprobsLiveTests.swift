@@ -34,8 +34,9 @@ struct FlintRelayLogprobsLiveTests {
         let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:1/unused",
             hardware: try HardwareDetector.detect(), models: [model], config: ProviderConfig(
                 provider: ProviderSettings(name: "flint-relay-logprobs"),
-                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1, engineV2KVBackend: "paged",
-                    engineV2KVQuantization: "native", engineV2KVCheckpointQuantization: "native"))),
+                // Default backend settings, as a production provider ships them:
+                // Flint must resolve paged attention and native precision on its own.
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1))),
             attestationSigner: nil)
         let stateRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("flint-relay-logprobs-\(UUID().uuidString)", isDirectory: true)

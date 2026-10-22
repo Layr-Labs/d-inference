@@ -2055,18 +2055,22 @@ mixed affine export (group-64 INT4 projections/experts, INT8 embeddings, BF16
 sensitive tensors), with native BF16 KV for the official export. It rejects
 missing/extra/duplicate tensors, conflicting aliases and unsupported geometry
 rather than silently filling a checkpoint.
-This format is not NVFP4. Native KV and native checkpoint precision are required;
-select both explicitly when the provider's general checkpoint setting is
-`balanced`. `EngineV2KVQuantizationPolicy.resolve` rejects non-native selections;
-the production factory also checks an explicitly supplied checkpoint selection.
-Reduced KV and MTP are not supported by this integration.
+This format is not NVFP4. Flint always uses native KV and native checkpoint
+precision. `EngineV2KVQuantizationPolicy.resolve` ignores the provider-wide
+defaults for it (checkpoints default to `balanced`), so a default configuration
+serves Flint, and refuses an explicit per-model or environment selection of
+anything other than native. The production factory also checks an explicitly
+supplied checkpoint selection. Reduced KV and MTP are not supported by this
+integration.
 
-Select `engine_v2_kv_backend = "paged"` for paged serving and pass
-`--kv-backend paged` to its qualification benchmarks. Explicit selection refuses
-paged construction failures; automatic selection follows the general artifact
-allowlist and does not establish that a Flint slot used paged attention. Record
-the resolved backend in every performance receipt. Contiguous measurements are
-separate reference results, not evidence of paged throughput.
+Flint is served only on paged attention.
+`EngineV2Factory.prepareProductionBackend` treats an automatic
+`engine_v2_kv_backend` selection for a verified `FlintModel` as explicit paged:
+the automatic crash-loop guard cannot move it to contiguous, and paged
+construction failures refuse the load. An explicit `contiguous` selection, the
+paged kill switch or a model-capability veto also refuses the load instead of
+serving contiguous. Pass `--kv-backend paged` to its qualification benchmarks
+and record the resolved backend in every performance receipt.
 
 Flint always decides for itself whether to reason; it has no trained switch,
 effort level or budget, and its pinned template reads none of these controls

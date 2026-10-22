@@ -17,15 +17,16 @@ extension EngineV2Factory {
         body: Data, tokenizer: any MLXLMCommon.Tokenizer, modelType: String?,
         defaultDate: PromptRenderDate
     ) throws -> BenchmarkPrompt {
-        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        let inbound = try ProviderLoop.decodeInboundChatRequest(body)
+        let request = inbound.request
         guard !MediaIngest.hasMedia(request) else {
             throw BenchmarkPromptError.mediaRequiresHTTP
         }
-        let supplied = ProviderLoop.extractChatTemplateControls(from: body)
+        let supplied = inbound.extensions.templateControls
         let controls = supplied.promptDate == nil ? supplied.withPromptDate(defaultDate) : supplied
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
-        let overrides = ProviderLoop.extractSamplingOverrides(from: body)
-        let logprobs = ProviderLoop.extractLogprobsSpec(from: body)
+        let overrides = inbound.extensions.samplingOverrides
+        let logprobs = inbound.extensions.logprobsSpec
         let translated = MultiModelBatchSchedulerEngine.translate(
             openAIRequest: request, defaultMaxTokens: request.maxTokens ?? 1,
             logprobs: logprobs?.requested, topLogprobs: logprobs?.topLogprobs,

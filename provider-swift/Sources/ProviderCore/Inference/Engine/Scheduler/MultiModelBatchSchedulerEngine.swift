@@ -792,7 +792,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                templateControls: templateControls)
+                templateControls: templateControls,
+                // Token reuse is partitioned exactly like the prefix KV cache.
+                promptCacheScope: cacheEnabled ? requestCacheScope : nil)
             try checkFirstContentDeadline()
         } catch {
             emitToolConstraintTelemetry(

@@ -11,6 +11,7 @@
 /// Used by ProviderLoop and the engine/model factories.
 
 import Foundation
+import Hub
 import MLXLMCommon
 import ProviderCoreFoundation
 import Tokenizers
@@ -20,10 +21,21 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
         let upstream: any Tokenizers.Tokenizer
+        var configurations: PromptTokenCache.Configurations?
         if let inputs = try DiffusionGemmaTokenizerConfiguration.load(from: directory) {
             upstream = try PreTrainedTokenizer(
                 tokenizerConfig: .init(inputs.configurationDictionary()),
                 tokenizerData: .init(inputs.dataDictionary()))
+        } else if PromptTokenCachePolicy.isEnabled() {
+            // The steps of `AutoTokenizer.from(modelFolder:)`, keeping the
+            // configurations for the prompt token cache.
+            let hub = LanguageModelConfigurationFromHub(modelFolder: directory)
+            guard let tokenizerConfig = try await hub.tokenizerConfig else {
+                throw Tokenizers.TokenizerError.missingConfig
+            }
+            let tokenizerData = try await hub.tokenizerData
+            upstream = try PreTrainedTokenizer(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
+            configurations = .init(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
         } else {
             upstream = try await AutoTokenizer.from(modelFolder: directory)
         }
@@ -37,7 +49,8 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
             chatTemplate = nil
         }
         return LocalTokenizerBridge(
-            upstream, chatTemplate: chatTemplate, modelType: modelType)
+            upstream, chatTemplate: chatTemplate, modelType: modelType,
+            promptCacheConfigurations: configurations)
     }
 }
 
@@ -46,19 +59,35 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
 /// from a third-party library that doesn't conform to `Sendable`; we wrap
 /// it as `@unchecked Sendable` because every concrete tokenizer in the
 /// library is internally thread-safe (read-only after construction).
-private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer {
+private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer, PromptTokenCaching {
     private let upstream: any Tokenizers.Tokenizer
     private let chatTemplate: String?
     private let modelType: String?
+    private let promptCache: PromptTokenCache?
 
-    init(_ upstream: any Tokenizers.Tokenizer, chatTemplate: String?, modelType: String?) {
+    init(
+        _ upstream: any Tokenizers.Tokenizer, chatTemplate: String?, modelType: String?,
+        promptCacheConfigurations: PromptTokenCache.Configurations? = nil
+    ) {
         self.upstream = upstream
         self.chatTemplate = chatTemplate.map {
             NemotronTemplateFilters.bindingFilters(
                 in: normalizeSwiftJinjaTemplate($0), modelType: modelType)
         }
         self.modelType = modelType
+        if let promptCacheConfigurations, let template = self.chatTemplate,
+            let pretrained = upstream as? PreTrainedTokenizer
+        {
+            promptCache = PromptTokenCache(
+                upstream: pretrained, configurations: promptCacheConfigurations,
+                chatTemplate: template,
+                selfCheckContext: NemotronTemplateFilters.additionalContext(modelType: modelType))
+        } else {
+            promptCache = nil
+        }
     }
+
+    var promptTokenCache: PromptTokenCache? { promptCache }
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         upstream.encode(text: text, addSpecialTokens: addSpecialTokens)
@@ -85,10 +114,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer 
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
-        var effectiveContext = additionalContext ?? [:]
-        if let filters = NemotronTemplateFilters.additionalContext(modelType: modelType) {
-            effectiveContext.merge(filters) { _, referenceFilter in referenceFilter }
-        }
+        let effectiveContext = effectiveContext(additionalContext)
         do {
             if let chatTemplate {
                 return try upstream.applyChatTemplate(
@@ -98,17 +124,42 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer 
                     truncation: false,
                     maxLength: nil,
                     tools: tools,
-                    additionalContext: effectiveContext.isEmpty ? nil : effectiveContext
+                    additionalContext: effectiveContext
                 )
             }
             return try upstream.applyChatTemplate(
                 messages: messages,
                 tools: tools,
-                additionalContext: effectiveContext.isEmpty ? nil : effectiveContext
+                additionalContext: effectiveContext
             )
         } catch Tokenizers.TokenizerError.missingChatTemplate {
             throw MLXLMCommon.TokenizerError.missingChatTemplate
         }
+    }
+
+    /// Same tokens as the unscoped call; pieces seen before in this cache scope
+    /// are reused (`PromptTokenCache`).
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?,
+        promptCacheScope: String
+    ) throws -> [Int] {
+        if let promptCache, let tokens = promptCache.applyChatTemplate(
+            messages: messages, tools: tools,
+            additionalContext: effectiveContext(additionalContext), scope: promptCacheScope)
+        {
+            return tokens
+        }
+        return try applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
+    }
+
+    private func effectiveContext(_ additionalContext: [String: any Sendable]?) -> [String: any Sendable]? {
+        var effectiveContext = additionalContext ?? [:]
+        if let filters = NemotronTemplateFilters.additionalContext(modelType: modelType) {
+            effectiveContext.merge(filters) { _, referenceFilter in referenceFilter }
+        }
+        return effectiveContext.isEmpty ? nil : effectiveContext
     }
 
     func applyChatTemplate(

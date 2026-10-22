@@ -443,6 +443,10 @@ public actor ProviderLoop {
     /// unchanged TOML while a manual foreground override was serving.
     public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
+    /// Requests that released the work FIFO at a model-load wait and have not
+    /// returned yet (`ProviderLoop+WorkFIFO.swift`).
+    internal var releasedAdmissions: [String: ReleasedAdmission] = [:]
+    internal var coldLoadReleasesWorkFIFO = WorkFIFOPolicy.releasesColdLoadWaits()
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()

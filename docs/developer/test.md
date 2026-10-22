@@ -60,6 +60,24 @@ cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` require
 `MIMO_V26_SERIAL_NATIVE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to
 the symmetric synthetic fixture directory.
 
+## Prompt Preparation And Admission
+
+```bash
+swift test --skip-build --filter 'PromptTokenCacheTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
+```
+
+`PromptTokenCacheTests` loads synthetic tokenizers through the production
+`LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
+pre-tokenizer families, with no download, and requires piecewise, cached and
+cross-turn token IDs to equal the unchanged path. Set
+`PROMPT_TOKEN_CACHE_MODEL_DIRS` to colon-separated local model directories to
+repeat the comparison on real chat templates. `InboundChatRequestDecodeTests`
+checks the merged admission body decode against the separate decoders, and
+`ServeLoopColdLoadTests` drives the serve loop with a request parked on a model
+load. `darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
+and the body decode on the CPU with only the tokenizer loaded; it exits 2 if any
+token ID or decoded field differs.
+
 ## Startup Performance Recovery
 
 `StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and

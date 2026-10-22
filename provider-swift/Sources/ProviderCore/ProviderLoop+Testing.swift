@@ -132,6 +132,13 @@ extension ProviderLoop {
         loadedModelsPersistenceEnabled = enabled
     }
 
+    /// Test seam: the `DARKBLOOM_TTFT_COLD_LOAD_RELEASE` choice, read at init.
+    func setColdLoadReleasesWorkFIFOForTesting(_ enabled: Bool) {
+        coldLoadReleasesWorkFIFO = enabled
+    }
+
+    func releasedAdmissionCountForTesting() -> Int { releasedAdmissions.count }
+
     /// Test seam: replace `ensureModelLoaded` in the startup preload driver
     /// with a scripted loader (no weights, no disk).
     func setStartupPreloadLoadOverrideForTesting(

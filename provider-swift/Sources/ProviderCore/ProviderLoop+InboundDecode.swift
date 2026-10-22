@@ -30,14 +30,41 @@ extension ProviderLoop {
     internal static func decodeOpenAIRequest(
         _ data: Data
     ) throws -> OpenAIChatCompletionRequest {
+        try decodeRepairedOpenAIRequest(repairedRequestBody(data))
+    }
+
+    /// `decodeOpenAIRequest` plus the body extensions, equal to the separate
+    /// calls. When the repairs leave the body untouched (requests without
+    /// tools or legacy function calls), one parse serves the strict request
+    /// and every extension instead of five.
+    internal static func decodeInboundChatRequest(_ data: Data) throws -> InboundChatRequest {
+        let repaired = try repairedRequestBody(data)
+        if repaired == data,
+            let decoded = try? JSONDecoder().decode(InboundChatRequest.self, from: data)
+        {
+            return decoded
+        }
+        // The extensions always come from the original bytes, like the
+        // per-field extractors; the request keeps the strict and repair paths.
+        return InboundChatRequest(
+            request: try decodeRepairedOpenAIRequest(repaired),
+            extensions: InboundChatExtensions(from: data))
+    }
+
+    private static func repairedRequestBody(_ data: Data) throws -> Data {
         // Inject default `type`s into tool parameter schemas so a Gemma-style
         // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
         // property (DAR-130). No-op for requests without tools.
-        var data = ToolSchemaNormalization.ensureParameterTypes(in: data)
+        let data = ToolSchemaNormalization.ensureParameterTypes(in: data)
         // Legacy assistant `function_call` is an unknown field to the upstream
         // decoder, so normalize it before the strict fast path can silently drop
         // it and leave a following tool/function result orphaned for Harmony.
-        data = try InboundChatNormalization.normalizeLegacyFunctionCalls(in: data)
+        return try InboundChatNormalization.normalizeLegacyFunctionCalls(in: data)
+    }
+
+    private static func decodeRepairedOpenAIRequest(
+        _ data: Data
+    ) throws -> OpenAIChatCompletionRequest {
         let decoder = JSONDecoder()
         do {
             return try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
@@ -87,14 +114,7 @@ extension ProviderLoop {
     internal static func extractLogprobsSpec(
         from data: Data
     ) -> (topLogprobs: Int?, requested: Bool)? {
-        struct Probe: Decodable {
-            let logprobs: Bool?
-            let top_logprobs: Int?
-        }
-        guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
-              probe.logprobs == true
-        else { return nil }
-        return (topLogprobs: probe.top_logprobs, requested: true)
+        InboundChatExtensions(from: data).logprobsSpec
     }
 
     /// OpenAI `logit_bias` / `seed` for this request. Like `reasoning_effort`,
@@ -109,14 +129,7 @@ extension ProviderLoop {
     internal static func extractSamplingOverrides(
         from data: Data
     ) -> EngineV2SamplingOverrides? {
-        struct BiasProbe: Decodable { let logit_bias: [String: Float]? }
-        struct SeedProbe: Decodable { let seed: UInt64? }
-        let decoder = JSONDecoder()
-        let rawBias = (try? decoder.decode(BiasProbe.self, from: data))?.logit_bias
-        let bias = (rawBias?.isEmpty == false) ? rawBias : nil
-        let seed = (try? decoder.decode(SeedProbe.self, from: data))?.seed
-        guard bias != nil || seed != nil else { return nil }
-        return EngineV2SamplingOverrides(logitBias: bias, seed: seed)
+        InboundChatExtensions(from: data).samplingOverrides
     }
 
     /// Prompt-token floor for requests whose usage chunk never arrived (cancelled
@@ -179,5 +192,58 @@ extension ProviderLoop {
             max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
         guard !overflow else { return nil }
         return Int64(exactly: envelope)
+    }
+}
+
+/// The admission path's reads of one decrypted chat body.
+struct InboundChatRequest: Decodable {
+    let request: OpenAIChatCompletionRequest
+    let extensions: InboundChatExtensions
+
+    init(request: OpenAIChatCompletionRequest, extensions: InboundChatExtensions) {
+        self.request = request
+        self.extensions = extensions
+    }
+
+    /// The strict request and its extensions from the same parse.
+    init(from decoder: any Decoder) throws {
+        request = try OpenAIChatCompletionRequest(from: decoder)
+        extensions = InboundChatExtensions(decoder: decoder)
+    }
+}
+
+/// Sealed-body fields outside the upstream request shape. Each decodes
+/// independently, so one malformed value never discards another.
+struct InboundChatExtensions {
+    private struct LogprobsProbe: Decodable {
+        let logprobs: Bool?
+        let top_logprobs: Int?
+    }
+    private struct BiasProbe: Decodable { let logit_bias: [String: Float]? }
+    private struct SeedProbe: Decodable { let seed: UInt64? }
+
+    private(set) var templateControls = ChatTemplateControls()
+    private(set) var logprobsSpec: (topLogprobs: Int?, requested: Bool)?
+    private(set) var samplingOverrides: EngineV2SamplingOverrides?
+
+    init(from data: Data) {
+        struct Whole: Decodable {
+            let extensions: InboundChatExtensions
+            init(from decoder: any Decoder) throws { extensions = InboundChatExtensions(decoder: decoder) }
+        }
+        if let whole = try? JSONDecoder().decode(Whole.self, from: data) { self = whole.extensions }
+    }
+
+    init(decoder: any Decoder) {
+        templateControls = (try? ChatTemplateControls(from: decoder)) ?? .init()
+        if let probe = try? LogprobsProbe(from: decoder), probe.logprobs == true {
+            logprobsSpec = (topLogprobs: probe.top_logprobs, requested: true)
+        }
+        let rawBias = (try? BiasProbe(from: decoder))?.logit_bias
+        let bias = (rawBias?.isEmpty == false) ? rawBias : nil
+        let seed = (try? SeedProbe(from: decoder))?.seed
+        if bias != nil || seed != nil {
+            samplingOverrides = EngineV2SamplingOverrides(logitBias: bias, seed: seed)
+        }
     }
 }

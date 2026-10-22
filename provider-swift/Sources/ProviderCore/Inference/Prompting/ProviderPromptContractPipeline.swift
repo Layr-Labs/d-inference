@@ -14,7 +14,8 @@ enum ProviderPromptContractPipeline {
     static func tokenizeProviderBody(
         _ body: Data,
         tokenizer: any MLXLMCommon.Tokenizer,
-        modelType: String?
+        modelType: String?,
+        promptCacheScope: String? = nil
     ) throws -> [Int] {
         if MiMoV26TemplateFix.applies(to: .init(modelType: modelType)) {
             try MiMoV26TemplateFix.validateRawControls(body)
@@ -27,19 +28,28 @@ enum ProviderPromptContractPipeline {
             request: request,
             tokenizer: tokenizer,
             modelType: modelType,
-            templateControls: templateControls)
+            templateControls: templateControls,
+            promptCacheScope: promptCacheScope)
     }
 
 
+    /// `promptCacheScope` is the request's prefix-cache scope when caching is
+    /// enabled for it; nil always takes the unchanged tokenizer path.
     static func tokenize(
         prepared: ToolChoicePromptPolicy.Prepared,
         request: OpenAIChatCompletionRequest,
         tokenizer: any MLXLMCommon.Tokenizer,
         modelType: String?,
-        templateControls: ChatTemplateControls
+        templateControls: ChatTemplateControls,
+        promptCacheScope: String? = nil
     ) throws -> [Int] {
         let input = try normalizedInput(prepared: prepared, request: request,
             modelType: modelType, templateControls: templateControls)
+        if let promptCacheScope, let caching = tokenizer as? any PromptTokenCaching {
+            return try caching.applyChatTemplate(messages: input.messages,
+                tools: input.tools, additionalContext: input.additionalContext,
+                promptCacheScope: promptCacheScope)
+        }
         return try tokenizer.applyChatTemplate(messages: input.messages,
             tools: input.tools, additionalContext: input.additionalContext)
     }

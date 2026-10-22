@@ -188,6 +188,16 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
     var teacherForcedInput: String?
 
+    @Flag(name: .long, help: """
+        CPU only: time prompt preparation (template render and tokenization) \
+        for synthetic chat and agent conversations, uncached and through the \
+        prompt token cache, and print a JSON report. Loads only the tokenizer.
+        """)
+    var promptPrep = false
+
+    @Option(name: .long, help: "Prompt prep: comma-separated approximate prompt lengths in tokens (default 2048,8192,32768).")
+    var promptPrepLengths = "2048,8192,32768"
+
     mutating func run() async throws {
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
@@ -287,6 +297,22 @@ struct Benchmark: AsyncParsableCommand {
         if let error = nativeBlockModeError(modelType: selectedModel.modelType) {
             printError(error)
             throw ExitCode(2)
+        }
+
+        if promptPrep {
+            let lengths = promptPrepLengths.split(separator: ",").compactMap {
+                Int($0.trimmingCharacters(in: .whitespaces))
+            }.filter { $0 > 0 }
+            guard !lengths.isEmpty else {
+                printError("--prompt-prep-lengths needs positive token counts")
+                throw ExitCode(2)
+            }
+            let result = try await PromptPreparationBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath,
+                modelType: selectedModel.modelType, lengths: lengths, iterations: iterations)
+            print(result.json)
+            if !result.identical { throw ExitCode(2) }
+            return
         }
 
         if runtimeGeneration {
@@ -408,6 +434,7 @@ struct Benchmark: AsyncParsableCommand {
             (parity, "--parity"),
             (teacherForcedInput != nil, "--teacher-forced-input"),
             (runtimeGeneration, "--runtime-generation"),
+            (promptPrep, "--prompt-prep"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"

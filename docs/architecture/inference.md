@@ -787,6 +787,19 @@ sequenceDiagram
     S-->>C: SSE chunks / final response
 ```
 
+The chat template is rendered on every request. When caching is enabled for
+the request, `LocalTokenizerBridge` encodes the rendered prompt through
+`PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
+it cuts the text where an added token begins, under the conditions in which the
+swift-transformers encoder already encodes those pieces independently, and
+reuses the token IDs of pieces seen before in the same prefix-cache scope. New
+long prompts encode their pieces on up to four cores. The IDs equal the
+unchanged `applyChatTemplate` path's: tokenizers or templates outside those
+conditions, or failing a load-time comparison, keep that path, and sampled
+background comparisons disable reuse on a mismatch. Reuse never crosses a cache
+scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the unchanged path
+([configuration](../reference/configuration.md#prompt-preparation-and-admission)).
+
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
 deadline check → translation (`maxTokens = request.max_tokens ??

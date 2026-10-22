@@ -190,7 +190,8 @@ extension ProviderLoop {
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
-        send: SendHandle
+        send: SendHandle,
+        workFIFOGate: WorkFIFOGate? = nil
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
@@ -342,9 +343,10 @@ extension ProviderLoop {
         // tools, content-less messages, the `developer` role) before
         // retrying — surfacing the real decoder error on failure rather
         // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
-        let chatRequest: OpenAIChatCompletionRequest
+        // The body extensions read below come from the same parse.
+        let inbound: InboundChatRequest
         do {
-            chatRequest = try Self.decodeOpenAIRequest(decryptedData)
+            inbound = try Self.decodeInboundChatRequest(decryptedData)
         } catch {
             // Privacy: the provider logger renders the whole message `.public`, and
             // reports collect this subsystem — so never interpolate the raw decode
@@ -358,6 +360,7 @@ extension ProviderLoop {
             rejectInvalidRequest()
             return
         }
+        let chatRequest = inbound.request
         profile.mark(.parsed)
 
         // Reject unknown/non-native audio before acceptance or cold loading.
@@ -390,7 +393,7 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths.
-        let templateControls = Self.extractChatTemplateControls(from: decryptedData).resolvingPromptDate()
+        let templateControls = inbound.extensions.templateControls.resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -399,10 +402,10 @@ extension ProviderLoop {
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
-        let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
+        let logprobsSpec = inbound.extensions.logprobsSpec
         // OpenAI `logit_bias` / `seed` (also absent from the upstream request
         // shape). Overlaid onto the EngineV2 translation.
-        let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
+        let samplingOverrides = inbound.extensions.samplingOverrides
 
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -545,6 +548,11 @@ extension ProviderLoop {
             f.mark(.loadWaitStart, offsetUs: now)
             f.set(.loadCold, !loadWasWarm)
             f.set(.loadParked, loadParked)
+        }
+        // Accepted and registered: later events need not queue behind a cold
+        // load or another load's wait. Native MiMo keeps serial admission.
+        if !loadWasWarm, advertisedModels[modelId]?.modelType != "mimo_v2" {
+            releaseWorkFIFO(workFIFOGate, requestId: requestId)
         }
         do {
             try await ensureModelLoaded(modelId: modelId)

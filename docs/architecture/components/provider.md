@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-21
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -72,6 +72,14 @@ renewal reply or a received grant update. Both consumers belong to the same
 serve invocation; shutdown finishes the work stream and waits for its consumer.
 The [attestation lifecycle](../security/attestation.md#provider-connection-control)
 owns the connection and trust guarantees.
+
+An accepted request whose model is not resident releases the work consumer when
+it starts waiting for the load (`ProviderLoop+WorkFIFO.swift`), so later
+inference requests, cancels and attestation challenges are not held behind
+weight loading. A coordinator cancel for the waiting request is applied when its
+admission returns, where the serial consumer applied it. Connection, drain and
+model-management events, and the end of the work stream, still wait for it.
+`DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`
   binary; there is no Python interpreter and no inference subprocess. Runtime verification can launch a child for paged-kernel preflight

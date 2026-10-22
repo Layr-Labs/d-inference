@@ -151,7 +151,7 @@ extension EngineV2Factory {
             maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
             prefillChunkSize: geometry.prefillChunkTokens,
             soloPrefillStripeTokens: geometry.soloPrefillStripeTokens)
-        // Paged span-bearing chunks attend unblocked, so media keeps the SDK width.
+        // Paged span-bearing chunks attend unblocked, so bidirectional media keeps the SDK chunk.
         config.bidirectionalMediaPrefillChunkCeiling = geometry.bidirectionalMediaPrefillChunkCeiling
         config.mixedStepPrefillTokenCap = MixedPrefillPolicy.resolve(
             modelID: modelID, profile: performanceProfile, environment: environment,

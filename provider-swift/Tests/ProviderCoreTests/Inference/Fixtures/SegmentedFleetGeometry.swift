@@ -93,8 +93,9 @@ struct SegmentedFleetGeometry {
         return config
     }
 
-    /// Production's default solo stripes also bound native window rings.
-    /// Dense Qwen uses 4096; the other exact artifacts use 2048.
+    /// Production's largest schedulable chunk, max(plain chunk, solo stripe),
+    /// bounds native window rings: dense Qwen's 4096 stripe; 2048 for the
+    /// other exact artifacts (MoE Qwen's stripe, GPT-OSS and Gemma's chunk).
     var maximumPrefillChunk: Int {
         id == "EigenLabs/Qwen3.8-27B-4bit-mtp"
             ? EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens

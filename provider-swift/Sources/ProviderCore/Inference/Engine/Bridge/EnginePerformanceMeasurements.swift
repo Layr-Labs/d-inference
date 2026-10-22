@@ -105,8 +105,9 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     }
 
     /// Token-producing rows of the step that confirmed the first token. The
-    /// engine stamps prompt-completion timing at that step, the row's first
-    /// participation; nil before it or when no rows were reported.
+    /// engine publishes prompt completion from that step right after recording
+    /// the row's first step participation, so the snapshot's row sum is that
+    /// step's rows; nil before then or when no rows were reported.
     var firstTokenStepRows: UInt64? {
         lock.withLock { sample.map(\.usage.timing.batchRowsSum).flatMap { $0 > 0 ? $0 : nil } }
     }

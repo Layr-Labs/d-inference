@@ -422,8 +422,7 @@ struct AdmissionRateEstimatorTests {
         #expect(try await submittedPrefillRate("beside-other-model") == 625)
         services.release(ownerID: "other-model:busy")
         #expect(try await submittedPrefillRate("after-other-model") == 5_000)
-        // A load, encoder preparation or cache transfer counts as well, and
-        // also keeps stale evidence priced instead of skipping projection.
+        // A load, encoder preparation or cache transfer counts as well.
         let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 12_000)
         let activity = services.beginUnboundedActivity()
         #expect(try #require(await bridge.firstTokenDeadlineAdmission(deadline: deadline,
@@ -431,6 +430,8 @@ struct AdmissionRateEstimatorTests {
         activity.finish()
         await bridge.shutdown()
 
+        // Another model's work also keeps 30-minute-old evidence priced
+        // instead of skipping projection.
         let (stale, _) = self.bridge(fixes: true, kvBudget: budget)
         await stale.applyRateObservation(observation("isolated_prefill", tps: 50,
             at: now - .seconds(3_600)), requestID: "calibration-cell", calibration: true)

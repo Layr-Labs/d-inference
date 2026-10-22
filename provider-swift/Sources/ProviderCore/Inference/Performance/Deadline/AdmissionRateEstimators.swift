@@ -37,7 +37,7 @@ enum DeadlineAdmissionFixes {
 /// range. Smoothing the per-request rate and the rows separately pairs one
 /// batch width's rate with another's rows: 10 tok/s at eight rows, then
 /// 100 tok/s solo, would price an eight-row step at 0.037 s, not 0.1 s.
-struct MeasuredDecodeStep: Equatable {
+struct MeasuredDecodeStep {
     private(set) var shape = CBv2DecodeRateShape(batchRows: 1)
     /// Mean measured step duration; zero before any observation.
     private(set) var seconds: Double = 0

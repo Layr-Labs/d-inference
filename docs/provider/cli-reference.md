@@ -15,6 +15,51 @@ outside cached Autopilot consent. Enrollment remains saved, ordinary serving
 continues, and `darkbloom autopilot models` refreshes inventory before control
 can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
 
+## Local GLM qualification
+
+`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+can include the experimental GLM root only when
+`DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
+Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
+The file pins the exact catalog record, manifest and expected aggregate; see
+[configuration](../reference/configuration.md#local-glm-qualification) for its schema.
+GLM always uses its native paged KV backend: automatic selection resolves
+`paged`, and an explicit `contiguous` selection or the `DARKBLOOM_CBV2_PAGED_KV`
+kill switch refuses the load instead of falling back. GLM serves only through
+its embedded-MTP engine, which is on by default: the default `mtp_mode = "auto"`
+enables it without any setting (`MTPMode.enablesMTP`). `mtp_mode = "off"` or
+the `DARKBLOOM_CBV2_MTP=0` kill switch skips the model at startup with a
+message, because GLM cannot serve target-only. This opt-in does not select a performance profile,
+bypass memory admission or qualify the model. It is not forwarded into launchd.
+Stop the isolated local process to disable it. There is no target-only GLM
+serving engine; target-only construction is limited to benchmarks.
+
+Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
+(absorbed sparse attention with native decode selection and sparse prefill kernels,
+parallel-threshold selection, native KDA
+recurrence, fused hyper-connections and routed-expert combine), recorded in the
+encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
+GLM MTP verifies up to three drafted tokens per round in one target forward with
+an adaptive depth; its greedy output is not token-identical to target-only
+decode. `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` selects serial single-proposal
+verification instead.
+Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes are off, including
+`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. Requests that omit sampling fields use the
+artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
+runs through the native GLM media path; the embedded-MTP serving engine accepts
+prepared causal media, so image rows prefill and decode target-only (no MTP
+speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL) is sampled at 2 FPS and decoded target-only.
+This variable never advertises the local identity to the coordinator
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
+`GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves
+only the catalog build `glm-5.3-flash`, downloaded by the normal revision path,
+on Apple M5 Max or M5 Ultra with at least 256 GB; other Macs report the exact
+refusal (chip and memory) in the load error and `doctor`
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextCoordinatorServing.swift`,
+`GLM5NextCoordinatorServing`; `provider-swift/Sources/ProviderCore/Models/GLM5NextHardwareRequirement.swift`).
+`--local` does not serve the catalog build; use the selection file above.
+
 ## `darkbloom cache`
 
 Persistent settings for encrypted inference caches; downloaded model weights use
@@ -1673,6 +1718,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
+| `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, live) |

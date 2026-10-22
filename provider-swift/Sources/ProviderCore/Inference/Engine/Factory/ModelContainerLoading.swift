@@ -15,7 +15,16 @@ import ProviderCoreFoundation
 
 enum ModelContainerLoading {
     static func loadServingContainer(from directory: URL, modelID: String? = nil,
-                                     nativeMiMoLoad: MiMoV26ServingLoad? = nil) async throws -> ProviderModelContainer {
+                                     nativeMiMoLoad: MiMoV26ServingLoad? = nil,
+                                     nativeGLM5Load: GLM5NextManagedLoad? = nil) async throws -> ProviderModelContainer {
+        if let nativeGLM5Load {
+            guard nativeMiMoLoad == nil,
+                directory.standardizedFileURL == nativeGLM5Load.plan.weights.directory,
+                modelID == nil || modelID == nativeGLM5Load.plan.weights.catalog.id else {
+                throw GLM5NextManagedLoadError.identityMismatch
+            }
+            return try await nativeGLM5Load.load()
+        }
         if let nativeMiMoLoad {
             guard directory.resolvingSymlinksInPath().standardizedFileURL == nativeMiMoLoad.plan.canonicalRoot else {
                 throw MiMoV26ServingLoadError.nativeOwnerMismatch
@@ -27,6 +36,9 @@ enum ModelContainerLoading {
         let base = try JSONDecoder().decode(BaseConfiguration.self, from: data)
         if base.modelType == "mimo_v2" {
             throw MiMoV26ServingLoadError.managedLoadRequired
+        }
+        if GLM5NextPromptPolicy.applies(modelType: base.modelType) {
+            throw GLM5NextManagedLoadError.managedLoadRequired
         }
         // No generic factory builds the ModelOpt NVFP4/FP8 Super owner.
         if base.modelType == NemotronSuperServingPolicy.modelType {
@@ -63,6 +75,11 @@ enum ModelContainerLoading {
 
     /// Load the checkpoint at `directory`, VLM-aware.
     static func loadContainer(from directory: URL, modelID: String? = nil) async throws -> MLXLMCommon.ModelContainer {
+        let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
+        let base = try JSONDecoder().decode(BaseConfiguration.self, from: data)
+        guard !GLM5NextPromptPolicy.applies(modelType: base.modelType) else {
+            throw GLM5NextManagedLoadError.managedLoadRequired
+        }
         let selection = factorySelection(at: directory, modelID: modelID)
         guard selection != .nativeMiMo else { throw MiMoV26ServingLoadError.managedLoadRequired }
         let adopted = try Qwen4ExpPLEResidency.adoptForLoadIfQwen4Exp(directory: directory)

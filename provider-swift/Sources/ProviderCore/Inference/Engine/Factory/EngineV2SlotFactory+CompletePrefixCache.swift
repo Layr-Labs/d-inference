@@ -30,15 +30,32 @@ extension EngineV2SlotFactory {
         guard PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else {
             return .init(cache: nil, status: .configDisabled)
         }
-        guard let storage = completeCheckpointStorage(
-            kind: preparedBackend.kind, layerKinds: preparedBackend.layerKinds,
-            supportsRecurrent: preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse,
-            supportsHistoricalAttention: historicalTarget,
-            modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
-            nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
-            assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
-            checkpointQuantization: checkpointQuantization)
-        else {
+        let storage: CompleteCheckpointStorageIdentity?
+        let effectiveMTPConfig: CBv2MTPConfig
+        if let glm = model as? GLM5NextProtectedModel {
+            guard preparedBackend.glm5NextModel === glm,
+                let resolved = try? glm.resolvedMTPConfiguration(mtpConfig, drafter: mtpDrafter) else {
+                return .init(cache: nil, status: .init(state: .disabled, reason: .unsupportedLayout))
+            }
+            effectiveMTPConfig = resolved
+            // A GLM checkpoint includes KDA state and raw latent/index payloads,
+            // not generic full-attention K/V. Its current codec is lossless FP32.
+            storage = CompleteCheckpointStorageIdentity(kind: preparedBackend.kind,
+                layerDTypes: preparedBackend.nativeLayerDTypes,
+                pagedConfig: preparedBackend.pagedPoolConfig,
+                target: .glm5Next(preparedBackend.layerKinds))
+        } else {
+            effectiveMTPConfig = mtpConfig
+            storage = completeCheckpointStorage(
+                kind: preparedBackend.kind, layerKinds: preparedBackend.layerKinds,
+                supportsRecurrent: preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse,
+                supportsHistoricalAttention: historicalTarget,
+                modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
+                nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
+                assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
+                checkpointQuantization: checkpointQuantization)
+        }
+        guard let storage else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .unsupportedLayout))
         }
         guard PrefixCachePolicy.checkpointIdentityHash(weightHash) != nil else {
@@ -49,7 +66,7 @@ extension EngineV2SlotFactory {
             binaryHash: PrefixCachePolicy.checkpointBinaryHash,
             loadedMetallibHash: metallibHash(),
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            mtpConfig: mtpConfig,
+            mtpConfig: effectiveMTPConfig,
             assistantCodecID: (mtpDrafter as? any CBv2MTPPrefixCheckpointCoding)?.prefixCheckpointCodecID,
             environment: environment, processEnvironment: ProcessInfo.processInfo.environment,
             storage: storage)
@@ -59,13 +76,17 @@ extension EngineV2SlotFactory {
         else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .runtimeIdentityUnavailable))
         }
-        let cache = await SSDHybridCheckpointStoreFactory.make(
+        switch await SSDHybridCheckpointStoreFactory.build(
             modelId: modelId, identity: identity, backendLayout: storage.backendLayout,
             kvBudget: kvBudget, environment: environment,
-            persistentTestNamespace: persistentTestNamespace)
-        return .init(cache: cache, status: cache == nil
-            ? .init(state: .error, reason: .cacheInitFailed) : .scanPending,
-            checkpointQuantization: cache == nil ? nil : storage.checkpointQuantization)
+            persistentTestNamespace: persistentTestNamespace) {
+        case .success(let cache):
+            return .init(cache: cache, status: .scanPending,
+                checkpointQuantization: storage.checkpointQuantization)
+        case .failure(let failure):
+            return .init(cache: nil,
+                status: .init(state: .error, reason: .cacheInitFailed, failure: failure.reason))
+        }
     }
 
     enum CompleteCheckpointAssistant: Equatable {

@@ -1,0 +1,3 @@
+### Cluster KV in pages
+
+- GLM-5.3-Flash tensor-parallel ranks, GLM pipeline stages, Qwen 3.5 pipeline stages (MTP heads included) and Qwen tensor-parallel shards keep request KV in page pools instead of contiguous per-request arrays. Prefix entries share pages (refcounted, copy on write at a shared partial page) instead of copying histories, and a GLM tensor-parallel request is charged its pages (about 18.4 KB a token a rank) rather than the contiguous growth charge. Outputs are bitwise the contiguous ones. `DARKBLOOM_CLUSTER_GLM_PAGED_KV=0`, `DARKBLOOM_CLUSTER_QWEN_TP_PAGED_KV=0` and `DARKBLOOM_CLUSTER_KV_BACKEND=contiguous` keep contiguous KV for diagnosis.

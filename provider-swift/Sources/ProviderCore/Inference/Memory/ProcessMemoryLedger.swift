@@ -195,6 +195,23 @@ final class ProcessMemoryLedger: @unchecked Sendable {
         }
     }
 
+    /// Bytes by which growing the unmaterialized total by `growthBytes` exceeds
+    /// the headroom `replaceCharge` and `recheckCharge` admit against, with the
+    /// same extra OS reserve and fresh usage. Zero when it now fits. A refused
+    /// owner reports this deficit as its reclaim shortfall. Saturates on overflow.
+    func capacityShortfall(
+        growthBytes: UInt64, additionalSystemReserveBytes: UInt64 = 0
+    ) -> UInt64 {
+        prepareUsageReader()
+        return lock.withLock {
+            let (needed, overflow) = (charged - materialized).addingReportingOverflow(growthBytes)
+            guard !overflow else { return .max }
+            return Self.subtract(
+                needed,
+                headroom(readUsage(), additionalSystemReserveBytes: additionalSystemReserveBytes))
+        }
+    }
+
     /// Records the complete owner-proven M after evaluated backing exists.
     /// This only converts an existing commitment, including while closing or in
     /// policy debt; it never grants new charge. Explicit withdrawal is separate.

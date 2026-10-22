@@ -126,6 +126,43 @@ final class MiMoV26ManagedMediaReservationTests: XCTestCase {
         XCTAssertEqual(ledger.snapshot().chargedBytes, 4_000)
     }
 
+    /// When the process cap rather than OS-available RAM binds, the extra
+    /// system reserve plays no part in the refusal. Counting it would inflate
+    /// the shortfall past a buffer cache whose flush lets the retry fit.
+    func testCapBoundRefusalSignalsOnlyTheCapDeficit() throws {
+        let usage = ControlledUsage() // 1 MiB available: the cap binds.
+        let ledger = ProcessMemoryLedger(
+            policy: .init(epoch: 1, capBytes: 6_000, reserveBytes: 0),
+            readUsage: { usage.read() })
+        let signals = ShortfallSignals()
+
+        // 8,000 B against 6,000 B of cap headroom is short by 2,000 B.
+        XCTAssertThrowsError(try MiMoV26ManagedMediaReservation(initialBytes: 8_000, hostBytes: 0,
+            maximumBytes: 1 << 20, additionalSystemReserveBytes: 4_000, ledger: ledger,
+            serviceBudget: .init(), onRefusal: { signals.record($0) }))
+        XCTAssertEqual(signals.values, [2_000])
+
+        let reservation = try MiMoV26ManagedMediaReservation(initialBytes: 4_000, hostBytes: 4_000,
+            maximumBytes: 1 << 20, additionalSystemReserveBytes: 4_000, ledger: ledger,
+            serviceBudget: .init(), onRefusal: { signals.record($0) })
+        // Growing to 9,000 B promises 3,000 B more than the cap leaves.
+        XCTAssertThrowsError(try reservation.reserveDecodeWorkingBytes(9_000))
+        XCTAssertEqual(signals.values, [2_000, 3_000])
+
+        // A recheck after the cap shrinks to 3,000 B is short by the 1,000 B
+        // its unchanged 4,000 B promise now exceeds it by.
+        let rechecked = ProcessMemoryLedger(
+            policy: .init(epoch: 1, capBytes: 6_000, reserveBytes: 0),
+            readUsage: { usage.read() })
+        let plan = metadataPlan()
+        let planned = try MiMoV26ManagedMediaReservation(plan: plan, bytes: 4_000,
+            maximumBytes: 8_192, additionalSystemReserveBytes: 4_000, ledger: rechecked,
+            serviceBudget: .init(), onRefusal: { signals.record($0) })
+        XCTAssertTrue(rechecked.updatePolicy(.init(epoch: 2, capBytes: 3_000, reserveBytes: 0)))
+        XCTAssertThrowsError(try planned.validate(plan: plan))
+        XCTAssertEqual(signals.values, [2_000, 3_000, 1_000])
+    }
+
     private final class ShortfallSignals: @unchecked Sendable {
         private let lock = NSLock()
         private var recorded: [UInt64] = []

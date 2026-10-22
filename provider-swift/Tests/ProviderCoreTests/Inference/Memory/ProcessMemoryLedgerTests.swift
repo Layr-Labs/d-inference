@@ -275,6 +275,57 @@ private func materialize(
     #expect(throws: Ledger.Refusal.insufficientCapacity) { try charge(ledger, host, 101) }
 }
 
+/// The deficit a refused owner reports is exactly what admission is short by:
+/// freeing it admits the retry, one byte less does not.
+@Test func processLedgerCapacityShortfallIsTheBindingDeficit() throws {
+    func admits(_ ledger: Ledger, _ bytes: UInt64, extraReserve: UInt64) -> Bool {
+        let owner = ledger.createOwner()
+        defer { _ = ledger.retire(owner.owner) }
+        do {
+            let admitted = try ledger.replaceCharge(
+                owner: owner.owner, expectedRevision: owner.revision, expectedPolicyEpoch: 1,
+                chargedBytes: bytes, additionalSystemReserveBytes: extraReserve)
+            _ = try charge(ledger, admitted, 0)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    // The cap binds: 1,000 - (100 + 300) - 20 = 580 B of headroom. The extra
+    // OS reserve narrows only the 10,000 B system side, so 800 B is short 220 B.
+    let usage = LedgerUsage()
+    usage.set(active: 100, cache: 300, available: 10_000)
+    let ledger = makeLedger(cap: 1_000, reserve: 20, usage: usage)
+    #expect(!admits(ledger, 800, extraReserve: 4_000))
+    #expect(ledger.capacityShortfall(growthBytes: 800, additionalSystemReserveBytes: 4_000) == 220)
+    usage.set(active: 100, cache: 81, available: 10_000)
+    #expect(!admits(ledger, 800, extraReserve: 4_000))
+    usage.set(active: 100, cache: 80, available: 10_000)
+    #expect(admits(ledger, 800, extraReserve: 4_000))
+    #expect(ledger.capacityShortfall(growthBytes: 800, additionalSystemReserveBytes: 4_000) == 0)
+
+    // The system side binds: 4,600 - 4,000 - 20 = 580 B of headroom.
+    usage.set(active: 100, cache: 300, available: 4_600)
+    let systemBound = makeLedger(cap: 1 << 20, reserve: 20, usage: usage)
+    #expect(systemBound.capacityShortfall(growthBytes: 800, additionalSystemReserveBytes: 4_000) == 220)
+    usage.set(active: 100, cache: 300, available: 4_819)
+    #expect(!admits(systemBound, 800, extraReserve: 4_000))
+    usage.set(active: 100, cache: 300, available: 4_820)
+    #expect(admits(systemBound, 800, extraReserve: 4_000))
+
+    // Commitment debt adds to the deficit; materialized backing does not.
+    usage.set()
+    let indebted = makeLedger(cap: 1_000, usage: usage)
+    let held = try reserve(indebted, 600)
+    usage.set(active: 200)
+    _ = try materialize(indebted, held, 200)
+    usage.set(active: 200, cache: 500)
+    #expect(indebted.snapshot().commitmentDebtBytes == 100)
+    #expect(indebted.capacityShortfall(growthBytes: 50) == 150)
+    #expect(indebted.capacityShortfall(growthBytes: .max) == .max)
+}
+
 @Test func processLedgerOverflowRefusesWithoutPartialMutation() throws {
     let ledger = makeLedger(cap: .max)
     _ = try reserve(ledger, .max)

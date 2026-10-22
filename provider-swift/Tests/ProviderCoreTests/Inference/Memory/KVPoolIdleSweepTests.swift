@@ -220,6 +220,29 @@ struct KVPoolIdleSweepTests {
         #expect(ledger.snapshot().chargedBytes == gib)
     }
 
+    @Test("a refused engine-owned charge in commitment debt also signals that debt")
+    func engineRefusalInDebtSignalsWholeDeficit() throws {
+        // Headroom = cap 8 GiB - (active 3 GiB + cache).
+        let cache = SweepSpy(reclaimable: 3 * gib)
+        let ledger = ProcessMemoryLedger(
+            policy: .init(epoch: 1, capBytes: 8 * gib, reserveBytes: 0),
+            readUsage: {
+                .init(activeBytes: 3 * gib, cacheBytes: cache.reclaimable, systemAvailableBytes: .max)
+            })
+        let signals = SweepSpy(reclaimable: 0)
+        let holder = EngineProcessMemoryOwner(ledger: ledger)
+        let owner = EngineProcessMemoryOwner(ledger: ledger, onRefusal: { signals.reclaimable = $0 })
+        try holder.replaceCharge(2 * gib)
+        // The cache grows by 1 GiB: the 2 GiB promise now exceeds headroom by 1 GiB.
+        cache.reclaimable = 4 * gib
+        #expect(ledger.snapshot().commitmentDebtBytes == gib)
+        #expect(throws: ProcessMemoryLedger.Refusal.insufficientCapacity) {
+            try owner.replaceCharge(gib)
+        }
+        // A +1 GiB growth fits only once that 1 GiB of debt is gone too.
+        #expect(signals.reclaimable == 2 * gib)
+    }
+
     @Test("direct-charge refusals signal a reclaim unless both busy-engine rollbacks are set")
     func engineRefusalSignalFollowsKillSwitches() {
         let sweepOff = ["DARKBLOOM_TTFT_IDLE_CACHE_SWEEP": "0"]

@@ -176,18 +176,14 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
         }
     }
     /// A refused charge (`growthBytes` more than this owner held) signals
-    /// the reclaim a refused request reservation schedules. The ledger
-    /// snapshot omits the extra system reserve, which can shrink headroom by
-    /// at most its own size, so the shortfall is an upper bound: retained KV
-    /// segments are always asked back, and MLX's buffer cache is flushed only
-    /// when it certainly covers the refusal.
+    /// the reclaim a refused request reservation schedules, with the deficit
+    /// the ledger computes under the headroom that refused it: the extra
+    /// system reserve narrows only the OS-available side, never the cap.
     private func signalShortfall(growthBytes: UInt64) {
         guard let onRefusal else { return }
-        let snapshot = ledger.snapshot()
-        let (reserved, reserveOverflow) = growthBytes.addingReportingOverflow(additionalSystemReserveBytes)
-        let (needed, debtOverflow) = reserved.addingReportingOverflow(snapshot.commitmentDebtBytes)
-        let bound = reserveOverflow || debtOverflow ? UInt64.max : needed
-        if bound > snapshot.remainingBytes { onRefusal(bound - snapshot.remainingBytes) }
+        let shortfall = ledger.capacityShortfall(
+            growthBytes: growthBytes, additionalSystemReserveBytes: additionalSystemReserveBytes)
+        if shortfall > 0 { onRefusal(shortfall) }
     }
     func retainAfterFailedDrain(_ work: MiMoV26FailedMediaWork) {
         lock.withLock {

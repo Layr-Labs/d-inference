@@ -64,9 +64,9 @@ final class EngineProcessMemoryOwner: CBv2ProcessMemoryOwner, @unchecked Sendabl
                 expectedPolicyEpoch: ledger.policySnapshot().epoch, chargedBytes: bytes)
         } catch ProcessMemoryLedger.Refusal.insufficientCapacity {
             if let onRefusal, bytes > state.chargedBytes {
-                let increase = bytes - state.chargedBytes
-                let remaining = ledger.snapshot().remainingBytes
-                if increase > remaining { onRefusal(increase - remaining) }
+                // The deficit includes commitment debt the growth adds to.
+                let shortfall = ledger.capacityShortfall(growthBytes: bytes - state.chargedBytes)
+                if shortfall > 0 { onRefusal(shortfall) }
             }
             throw ProcessMemoryLedger.Refusal.insufficientCapacity
         }

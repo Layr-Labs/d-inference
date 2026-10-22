@@ -276,7 +276,8 @@ private func materialize(
 }
 
 /// The deficit a refused owner reports is exactly what admission is short by:
-/// freeing it admits the retry, one byte less does not.
+/// freeing it admits the retry, one byte less does not, even once headroom
+/// floors at zero.
 @Test func processLedgerCapacityShortfallIsTheBindingDeficit() throws {
     func admits(_ ledger: Ledger, _ bytes: UInt64, extraReserve: UInt64) -> Bool {
         let owner = ledger.createOwner()
@@ -304,6 +305,11 @@ private func materialize(
     usage.set(active: 100, cache: 80, available: 10_000)
     #expect(admits(ledger, 800, extraReserve: 4_000))
     #expect(ledger.capacityShortfall(growthBytes: 800, additionalSystemReserveBytes: 4_000) == 0)
+    // Usage inside the reserve floors headroom at zero but still counts:
+    // 800 + 20 + (100 + 890) - 1,000 = 810 B, down to the same 80 B cache.
+    usage.set(active: 100, cache: 890, available: 10_000)
+    #expect(ledger.capacityShortfall(growthBytes: 800, additionalSystemReserveBytes: 4_000) == 810)
+    #expect(ledger.capacityShortfall(growthBytes: 0) == 0, "nothing requested always fits")
 
     // The system side binds: 4,600 - 4,000 - 20 = 580 B of headroom.
     usage.set(active: 100, cache: 300, available: 4_600)
@@ -313,6 +319,11 @@ private func materialize(
     #expect(!admits(systemBound, 800, extraReserve: 4_000))
     usage.set(active: 100, cache: 300, available: 4_820)
     #expect(admits(systemBound, 800, extraReserve: 4_000))
+    // Available memory below the extra reserve: 800 + 20 + 4,000 - 3,000 B.
+    usage.set(active: 100, cache: 300, available: 3_000)
+    #expect(
+        systemBound.capacityShortfall(growthBytes: 800, additionalSystemReserveBytes: 4_000)
+            == 1_820)
 
     // Commitment debt adds to the deficit; materialized backing does not.
     usage.set()

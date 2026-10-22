@@ -345,9 +345,10 @@ standalone server runs the same sequence in
   even when it does not flush. Refused charges that bypass request
   reservations (paged engine growth, native MiMo media work) signal that
   reclaim while either the idle sweep or segment retention is on
-  (`GlobalKVCacheBudget.directChargeRefusalSignal`). Their shortfall is the
-  exact deficit under the headroom that refused them, including commitment
-  debt; MiMo's extra OS reserve narrows only the system side, not the cap
+  (`GlobalKVCacheBudget.directChargeRefusalSignal`). Their shortfall is
+  exactly what usage must fall by for the refused charge to fit, including
+  commitment debt and usage already inside the reserve; MiMo's extra OS
+  reserve narrows only the system side, not the cap
   (`provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryLedger.swift`,
   `ProcessMemoryLedger.capacityShortfall`). Retained segments are
   allocator-active memory, so load admission counts them as reclaimable

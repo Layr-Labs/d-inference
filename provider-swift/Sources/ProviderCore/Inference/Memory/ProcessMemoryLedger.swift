@@ -195,20 +195,31 @@ final class ProcessMemoryLedger: @unchecked Sendable {
         }
     }
 
-    /// Bytes by which growing the unmaterialized total by `growthBytes` exceeds
-    /// the headroom `replaceCharge` and `recheckCharge` admit against, with the
-    /// same extra OS reserve and fresh usage. Zero when it now fits. A refused
-    /// owner reports this deficit as its reclaim shortfall. Saturates on overflow.
+    /// Bytes usage must fall by before growing the unmaterialized total by
+    /// `growthBytes` fits the headroom `replaceCharge` and `recheckCharge` admit
+    /// against, with the same extra OS reserve and fresh usage. Zero when it
+    /// now fits. Headroom floors at zero; this deficit does not, so usage
+    /// already inside the reserve counts too. A refused owner reports it as
+    /// its reclaim shortfall. Saturates on overflow.
     func capacityShortfall(
         growthBytes: UInt64, additionalSystemReserveBytes: UInt64 = 0
     ) -> UInt64 {
         prepareUsageReader()
         return lock.withLock {
-            let (needed, overflow) = (charged - materialized).addingReportingOverflow(growthBytes)
-            guard !overflow else { return .max }
-            return Self.subtract(
-                needed,
-                headroom(readUsage(), additionalSystemReserveBytes: additionalSystemReserveBytes))
+            guard let needed = try? Self.add(charged - materialized, growthBytes) else {
+                return .max
+            }
+            guard needed > 0 else { return 0 }
+            // The larger of the cap-side and OS-side deficits in `headroom`.
+            let usage = readUsage()
+            guard let reserved = try? Self.add(needed, policy.reserveBytes),
+                let used = try? Self.add(usage.activeBytes, usage.cacheBytes),
+                let capDemand = try? Self.add(reserved, used),
+                let systemDemand = try? Self.add(reserved, additionalSystemReserveBytes)
+            else { return .max }
+            return max(
+                Self.subtract(capDemand, policy.capBytes),
+                Self.subtract(systemDemand, usage.systemAvailableBytes))
         }
     }
 

@@ -27,8 +27,8 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
     private var state: ProcessMemoryLedger.OwnerState
     private let additionalSystemReserveBytes: UInt64
     private let maximumBytes: UInt64
-    /// Non-blocking reclaim signal with an upper bound of what a refused
-    /// charge was short by (`GlobalKVCacheBudget.directChargeRefusalSignal`).
+    /// Non-blocking reclaim signal with the bytes a refused charge was short
+    /// by (`GlobalKVCacheBudget.directChargeRefusalSignal`).
     private let onRefusal: (@Sendable (UInt64) -> Void)?
     private var retired = false
     private var failed: [MiMoV26FailedMediaWork] = []

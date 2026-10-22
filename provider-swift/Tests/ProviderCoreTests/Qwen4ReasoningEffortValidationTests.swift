@@ -4,7 +4,7 @@ import MLXLMServer
 import Testing
 @testable import ProviderCore
 
-@Suite("Owned Flash-Next reasoning effort request validation")
+@Suite("Restricted-effort template request validation")
 struct Qwen4ReasoningEffortValidationTests {
     private let owned = Qwen4SupportPolicy.ownedModelID
 
@@ -74,6 +74,7 @@ struct Qwen4ReasoningEffortValidationTests {
         let combinations: [(String, String?)] = [
             ("another-qwen4", "qwen4_exp"), (owned + "-alias", "qwen4_exp_text"),
             (owned, "qwen3_5"), (owned, nil),
+            ("Qwen3.5-9B", "qwen3_5"), ("eigenlabs/qwen3.8-27b-4bit-mtp", "qwen3_5"),
         ]
         for (modelID, modelType) in combinations {
             try Qwen4SupportPolicy.validateReasoningContext(modelID: modelID, modelType: modelType,
@@ -114,10 +115,30 @@ struct Qwen4ReasoningEffortValidationTests {
         #expect(!String(decoding: wire, as: UTF8.self).contains("jinja"))
     }
 
+    @Test(arguments: ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted())
+    func qwen38BuildsShareTheRestrictedEffortContract(model: String) throws {
+        let hi: [OpenAIChatMessage] = [.init(role: .user, content: .text("hi"))]
+        for effort: String? in [nil, "low", "medium", "xhigh"] {
+            _ = try tokenize(.init(model: model, messages: hi, reasoning: .init(enabled: true, effort: effort)),
+                controls: .init(), tokenizer: ReasoningContextTokenizer(), modelType: "qwen3_5")
+        }
+        // Raw-body `reasoning_effort`, the shape OpenRouter traffic arrives in.
+        for effort in ["high", "minimal"] {
+            let tokenizer = ReasoningContextTokenizer()
+            #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort) {
+                try tokenize(.init(model: model, messages: hi), controls: .init(reasoningEffort: effort),
+                    tokenizer: tokenizer, modelType: "qwen3_5")
+            }
+            #expect(tokenizer.calls == 0)
+        }
+        _ = try tokenize(.init(model: model, messages: hi), controls: .init(reasoningEffort: "high", enableThinking: false),
+            tokenizer: ReasoningContextTokenizer(), modelType: "qwen3_5")
+    }
+
     private func tokenize(_ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls,
-        tokenizer: ReasoningContextTokenizer) throws -> [Int] {
+        tokenizer: ReasoningContextTokenizer, modelType: String = "qwen4_exp") throws -> [Int] {
         try ProviderPromptContractPipeline.tokenize(prepared: ToolChoicePromptPolicy.prepare(request),
-            request: request, tokenizer: tokenizer, modelType: "qwen4_exp", templateControls: controls)
+            request: request, tokenizer: tokenizer, modelType: modelType, templateControls: controls)
     }
 }
 

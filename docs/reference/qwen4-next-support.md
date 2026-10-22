@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-20
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 
@@ -76,8 +76,10 @@ does not model `reasoning.enabled`; do not substitute that extension for its
 supported OFF form. Existing Chat Boolean precedence is preserved.
 Unsupported active efforts such as `high` or `minimal` are rejected before
 template rendering with a typed HTTP 400, not coerced to another effort.
-Disabled thinking retains its existing precedence. Other artifact templates
-are unaffected. Source: `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`
+Disabled thinking retains its existing precedence. Every concrete
+Qwen3.8-27B build (`ModelRuntimeRequirements.qwen38ConcreteModelIDs`) ships a
+template with the same effort raise, so it shares this boundary; other
+artifact templates are unaffected. Source: `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`
 (`validateReasoningContext`) and `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
 (`tokenize`). Hosted OpenRouter routing, adapter control mappings, exclusion,
 reasoning-token budgets and opaque reasoning-history extensions require

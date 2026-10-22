@@ -73,16 +73,69 @@ extension GLM5NextTensorParallelResidentRuntime {
         request.promptTokenIDs.count + request.outputCount + mtpDepth + 1
     }
 
-    /// Memory the pool must add before it holds `request`'s pages, beyond
-    /// the pages its charge already holds (`GLM5NextTensorParallelRequestCharge.pagedHistoryBytes`):
+    /// Tokens a request's pages grow by (owner rule 2026-10-22: no
+    /// reservation for the whole output, grow on demand, no context cap; the
+    /// same granule and margin as Qwen tensor parallel).
+    static let pageGrowthTokens = 1024
+    /// Tokens a request keeps reserved ahead of the step or round being
+    /// built: a refused growth still covers the rounds built before its stop
+    /// reaches the peer (decode builds one ahead).
+    static let pageGrowthMargin = 64
+
+    /// The context a request's pages cover at its start: its prompt and one
+    /// granule, at most its whole length.
+    static func initialPageTokens(promptCount: Int, maximumTokens: Int) -> Int {
+        min(maximumTokens, promptCount + pageGrowthTokens)
+    }
+
+    /// The context a growth takes the pages to when `needed` context tokens
+    /// plus the margin pass `tokens`: a granule on, or the margin past
+    /// `needed`, never past `limit`; nil when no growth is due.
+    static func pageGrowthTarget(tokens: Int, needed: Int, limit: Int) -> Int? {
+        guard needed + pageGrowthMargin > tokens, tokens < limit else { return nil }
+        return min(limit, max(needed + pageGrowthMargin, tokens + pageGrowthTokens))
+    }
+
+    /// Memory the pool must add before it holds `request`'s pages at
+    /// `context` (default: its whole maximum), beyond the pages its charge
+    /// already holds (`GLM5NextTensorParallelRequestCharge.pagedHistoryBytes`):
     /// what the slabs grow by past them (growth is in 1.5x granules), plus
     /// the old slabs while they are copied into the new.
-    func pagedGrowthBytes(_ request: QwenLayerStageGenerationRequest) -> Int {
+    func pagedGrowthBytes(_ request: QwenLayerStageGenerationRequest, context: Int? = nil) -> Int {
         guard let pool = stage?.dsaPagePool else { return 0 }
         let pages = Self.historyPages(pool: pool, configuration: descriptor.configuration.textConfig,
-            contextTokens: Self.historyTokens(request), speculative: mtp != nil)
+            contextTokens: requestCharge.historyTokens(contextTokens: context ?? request.maximumTokens),
+            speculative: mtp != nil)
         let growth = pool.growthBytes(reserving: pages)
         return growth > 0 ? max(0, growth - pages * pool.pageBytes) + pool.capacityBytes : 0
+    }
+
+    /// Between steps or rounds: keeps `needed` context tokens plus the
+    /// margin reserved in every history (DSA layers and NextN), growing by
+    /// granules up to the request's length when the live memory gate admits
+    /// what the slabs grow by (the admission charge already holds the pages
+    /// themselves). False when it does not (nothing changed): the request
+    /// then ends at its length (`QwenTensorParallelStopRule.lengthStop`).
+    func growPages(_ pages: GLM5NextPageReservation?, needed: Int, limit: Int) -> Bool {
+        guard let pages, let tokens = pages.tokens,
+              let target = Self.pageGrowthTarget(tokens: tokens, needed: needed, limit: limit) else { return true }
+        let c = descriptor.configuration.textConfig, pool = pages.pool
+        func historyPages(_ context: Int) -> Int {
+            Self.historyPages(pool: pool, configuration: c,
+                contextTokens: requestCharge.historyTokens(contextTokens: context), speculative: mtp != nil)
+        }
+        let add = historyPages(target) - historyPages(tokens)
+        do {
+            let growth = pool.growthBytes(reserving: add)
+            if growth > 0 {
+                try yieldingIdleMemory { try Self.requireLiveMemory(bytes: growth + pool.capacityBytes) }
+            }
+            try pool.extend(pages.account, by: add)
+        } catch {
+            return false
+        }
+        pages.tokens = target; pages.grown += 1
+        return true
     }
 
     /// What an idle rank keeps for the next request gives way before a gate
@@ -98,15 +151,21 @@ extension GLM5NextTensorParallelResidentRuntime {
         }
     }
 
-    /// Opens `request`'s page reservation (nil with contiguous histories).
-    /// Between steps only: it may grow the pool.
-    func reservePages(_ request: QwenLayerStageGenerationRequest) throws -> GLM5NextPageReservation? {
+    /// Opens `request`'s page reservation (nil with contiguous histories):
+    /// a growing request's prompt and one granule (`growPages` extends it),
+    /// else its whole length (lanes). Between steps only: it may grow the pool.
+    func reservePages(_ request: QwenLayerStageGenerationRequest, growing: Bool = false) throws
+        -> GLM5NextPageReservation? {
         guard let pool = stage?.dsaPagePool else { return nil }
         // Pages released by the last steps: every graph that read them was submitted.
         pool.recycle()
+        let context = growing ? Self.initialPageTokens(promptCount: request.promptTokenIDs.count,
+            maximumTokens: request.maximumTokens) : request.maximumTokens
         let pages = Self.historyPages(pool: pool, configuration: descriptor.configuration.textConfig,
-            contextTokens: Self.historyTokens(request), speculative: mtp != nil)
-        return GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages: pages))
+            contextTokens: requestCharge.historyTokens(contextTokens: context), speculative: mtp != nil)
+        let reservation = GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages: pages))
+        if growing { reservation.tokens = context }
+        return reservation
     }
 }
 
@@ -119,6 +178,10 @@ final class GLM5NextPageReservation {
 
     let pool: GLM5NextDSAPagePool
     let account: GLM5NextDSAPageBook.Account
+    /// A growing request's context its pages cover (nil: its whole length
+    /// was reserved at open), and how often they grew.
+    var tokens: Int?
+    var grown = 0
 
     /// The activation type a stage without the embedding receives (its
     /// boundary's, the configuration's `dtype`).

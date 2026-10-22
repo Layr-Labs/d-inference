@@ -720,6 +720,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
             stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
         let media = try reservedMedia(value)
         // Charged at its own context (and its media): the live gate alone decides whether it fits.
+        // A paged request's pages start at its prompt and a granule and grow on demand (`growPages`).
+        let context = Self.initialPageTokens(promptCount: request.promptTokenIDs.count,
+            maximumTokens: request.maximumTokens)
         let charge = try QwenLongPrefillCheckedBytes.sum([try requestCharge.bytes(contextTokens: request.maximumTokens),
             media?.requestBytes ?? 0])
         try control.check(); try control.reserve(requestID)
@@ -732,7 +735,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             // A paged rank also needs what its page pool grows by for this request.
             try yieldingIdleMemory {
                 try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge,
-                    pagedGrowthBytes(request)]))
+                    pagedGrowthBytes(request, context: context)]))
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds, media: media?.media)
@@ -901,7 +904,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// its sums) and it neither restores nor keeps prompt prefixes (the
     /// product's media requests are prefix-cache-excluded too).
     func openRequest(_ request: QwenLayerStageGenerationRequest, stage: GLM5NextTextStage,
-                     media: GLM5NextTensorParallelMedia? = nil, stop: () -> Bool = { false }) throws -> OpenedRequest {
+                     media: GLM5NextTensorParallelMedia? = nil, growing: Bool = false,
+                     stop: () -> Bool = { false }) throws -> OpenedRequest {
         let rank = collective.rank
         guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement
             + (media.map { "|glm-media=" + $0.media.fingerprint } ?? ""))) else {
@@ -914,7 +918,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
         let prompt = request.promptTokenIDs
-        let pages = try reservePages(request)
+        let pages = try reservePages(request, growing: growing)
         // Every request decodes speculatively, greedy or sampled (bias and
         // penalties too: `QwenStageTokenSampler.verifyRound`). Every request
         // primes the NextN history over its prompt (cheap: no attention, MoE
@@ -1100,7 +1104,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         -> QwenResidentGenerationCompletion {
         guard let stage else { throw ProbeError("Resident model already released") }
         let request = reserved.request, rank = collective.rank
-        let opened = try openRequest(request, stage: stage, media: reserved.media,
+        let opened = try openRequest(request, stage: stage, media: reserved.media, growing: true,
             stop: { [control] in (try? control.check(deadline: reserved.deadline)) == nil })
         // Both ranks know a rank stopped before the features crossed: both end
         // here (a stopped request ends the owner's request, as text's does).
@@ -1146,6 +1150,14 @@ public final class GLM5NextTensorParallelResidentRuntime {
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false
         var stopKeep: Float = 0
+        // The pages could not grow: the request ends at its length after the
+        // next step or round built (the margin covers the ones built before).
+        var pagesRefused = false
+        /// Before a step or round that brings the request to `needed` context tokens is built: its pages.
+        func growPages(needed: Int) {
+            guard !pagesRefused else { return }
+            pagesRefused = !self.growPages(opened.pages, needed: needed, limit: request.maximumTokens)
+        }
         // Rank 0 publishes each token at once and reads the owner's answer to
         // it after the next step or round was submitted, before publishing
         // the next token. A stop answer is acted on one step later: the extra
@@ -1223,17 +1235,25 @@ public final class GLM5NextTensorParallelResidentRuntime {
             var ended = try take(first, counted: 1)
             rounds: while !ended {
                 let taken = agreedCount
+                growPages(needed: prompt.count + agreedCount + 1)
                 let round = try speculation.round(stage: stage, cache: cache, last: last,
                     window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep, draw: draw,
                     propose: propose, whileRunning: {
                         for (index, value) in fresh.enumerated() {
                             _ = try take(value, counted: taken - fresh.count + index + 1)
                         }
-                        if stopKeep == 0, localStop() { stopKeep = Float(tokens.count) }
+                        if stopKeep == 0, localStop() {
+                            stopKeep = Float(tokens.count)
+                        } else if stopKeep == 0, pagesRefused {
+                            stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
+                        }
                     })
-                if let keep = round.stops.filter({ $0 > 0 }).min() {
-                    tokens = Array(tokens.prefix(Int(keep)))
-                    finish = .clientStop; break
+                if let slot = round.stops.filter({ $0 > 0 }).min() {
+                    // A rank asked both to stop: both keep the tokens it named
+                    // and end here (at the request's length when its pages could not grow).
+                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
+                    tokens = Array(tokens.prefix(stop.keep))
+                    finish = stop.finish == .length ? .length : .clientStop; break
                 }
                 fresh = round.tokens; last = fresh[fresh.count - 1]; agreedCount += fresh.count
                 if logs {
@@ -1271,23 +1291,35 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             steps: for index in 0 ..< request.outputCount {
                 pending = nil
-                if pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                if pipelined, index + 1 < request.outputCount {
+                    growPages(needed: prompt.count + index + 2)
+                    pending = try step(from: current, stop: stopKeep)
+                }
                 // The answer to the last token arrived while this step was encoded.
                 if stopKeep == 0 { try readAnswer() }
                 let agreed = current.asArray(Float.self)
                 let value = try token(agreed)
                 let flags = [agreed[2], agreed[3]].filter { $0 > 0 }
-                if let keep = flags.min() {
-                    tokens = Array(tokens.prefix(Int(keep)))
-                    finish = .clientStop; break
+                if let slot = flags.min() {
+                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
+                    tokens = Array(tokens.prefix(stop.keep))
+                    finish = stop.finish == .length ? .length : .clientStop; break
                 }
                 if stopKeep == 0 {
                     try keepStepLogprobs()
                     sampler?.commit(value)
                     if let end = try commit(value) { finish = end; break steps }
-                    if localStop() { stopKeep = Float(tokens.count) }
+                    if localStop() {
+                        stopKeep = Float(tokens.count)
+                    } else if pagesRefused {
+                        stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
+                    }
                 }
-                if !pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                if !pipelined, index + 1 < request.outputCount {
+                    growPages(needed: prompt.count + index + 2)
+                    if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
+                    pending = try step(from: current, stop: stopKeep)
+                }
                 guard let next = pending else { break }
                 current = next; pending = nil
             }
@@ -1300,7 +1332,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             unanswered = false
             if try !channel.answer(), finish == .clientStop { clientStopped = true }
         }
-        if stopKeep > 0 || clientStopped { finish = .clientStop }
+        if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
         let agreedEnd = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
         guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
@@ -1323,6 +1355,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) output=\(tokens.count) finish=\(finish.rawValue)"
             + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
+            + " kv_tokens=\(opened.pages?.tokens ?? 0) kv_grown=\(opened.pages?.grown ?? 0) kv_refused=\(pagesRefused ? 1 : 0)"
             + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Self.proposalFields(speculation, sampler: sampler)
             + " media_frames=\(opened.media?.media.frames.count ?? 0) media_tokens=\(opened.media?.featureCount ?? 0)")
         var completion = QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,

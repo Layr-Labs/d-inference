@@ -8,6 +8,7 @@ struct EngineMeasurementOrderingTests {
     @Test("late completed work cannot expire newer aggregate, qualified or shape evidence")
     func delayedObservationPreservesFreshness() throws {
         var measurements = EnginePerformanceMeasurements()
+        measurements.keepsNewestObservationTime = true
         let at = ContinuousClock.now
         let posture = UUID()
         measurements.observe("isolated_prefill", tps: 2_000, prompt: 1_000, context: 1_000,
@@ -44,6 +45,7 @@ struct EngineMeasurementOrderingTests {
     @Test("new and equal timestamps preserve averaging, identity and forward-gap reseeding")
     func orderedAndEqualObservations() {
         var measurements = EnginePerformanceMeasurements()
+        measurements.keepsNewestObservationTime = true
         let at = ContinuousClock.now
         for (offset, tps) in [(0, 100.0), (1, 200.0), (1, 130.0)] {
             measurements.observe("decode", tps: tps, prompt: 500, context: 600,
@@ -64,6 +66,7 @@ struct EngineMeasurementOrderingTests {
     @Test("independent shape observations retain their own clocks without replacing aggregate evidence")
     func independentShapeClocks() throws {
         var measurements = EnginePerformanceMeasurements()
+        measurements.keepsNewestObservationTime = true
         let at = ContinuousClock.now
         measurements.observe("decode", tps: 100, prompt: 500, context: 600,
             cache: "cold", overlap: .init(), at: at)
@@ -84,7 +87,7 @@ struct EngineMeasurementOrderingTests {
     func delayedTerminalPreservesFreshness() async throws {
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b",
-            tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [])
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [], admissionFixes: true)
         let request = ChatCompletionRequest(model: "gpt-oss-20b",
             messages: [.init(role: "user", content: "hi")], max_tokens: 32)
         let first = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),

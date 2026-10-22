@@ -453,6 +453,19 @@ keep an operator's value. The plain owner turns exact text prefix reuse on when
 the grant holds every request's fixed bytes beside the bank, unless the
 operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
 
+On NAX GPUs (M5 and later) prompt processing runs the routed NVFP4 experts
+on dedicated NAX kernels behind one fused expert route
+(`ModelOptNVFP4NAXExperts`) instead of the simdgroup grouped GEMM, and the
+dense FP8 and NVFP4 projections decode their weights inside the NAX GEMM
+(`ModelOptNAXDenseLinear`): the expert summation order differs from the
+grouped GEMM, the teacher-forced accuracy does not
+(`libs/mlx-swift-lm/docs/nemotron-super.md`).
+Speculative rounds submit the verify window to the GPU every 12 blocks
+(`DARKBLOOM_NEMOTRON_SUPER_MTP_WINDOW_SUBMIT`, `0` builds it whole) and run it
+and the MTP head on Super's fused decode kernels row by row
+(`DARKBLOOM_NEMOTRON_SUPER_MTP_FUSION=0` restores the op chains); neither
+changes a token.
+
 The slot serves and advertises its whole verified context, 262,144 tokens,
 prompt plus output (`NemotronSuperServingPolicy.contextTokens`, equal to
 `maximumContextTokens`, the most the builder and the image binding accept); the
@@ -1281,6 +1294,17 @@ and the coordinator can refuse to route
 (`provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift`).
 
+A template `raise_exception` at request time is classified `jinja_template`
+and returned as HTTP 500, the provider-fault class, so a caller control that
+a template is known to reject must be validated before rendering. The
+Flash-Next and Qwen3.8-27B templates accept only `low`, `medium` and `xhigh`
+while thinking is enabled; any other active effort, such as OpenAI's `high`
+or `minimal`, is a typed HTTP 400 `client_error` and never reaches Jinja, on
+text and media requests alike
+(`provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`,
+`validateReasoningContext`). Media preparation rethrows such typed request
+errors instead of wrapping them as a retryable 503 construction refusal.
+
 ### Vision constraints
 
 - **One image per tower pass.** `EngineV2VisionTowerRun` drives the Qwen
@@ -1669,6 +1693,7 @@ or change consumer/OpenRouter routing.
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
 | `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
+| `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |

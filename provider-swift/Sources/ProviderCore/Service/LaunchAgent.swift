@@ -281,6 +281,9 @@ public enum LaunchAgent: Sendable {
     /// verification is the MiMo default; each rollback must reach the job.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
+    /// incremental `auto` tool calls and the plain-tail Qwen content seed are
+    /// on by default; exact `0` is each rollback.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
@@ -290,6 +293,8 @@ public enum LaunchAgent: Sendable {
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        ToolStreamPreparation.streamToolCallsEnvironmentKey,
+        ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

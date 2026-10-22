@@ -1,3 +1,4 @@
+import Foundation
 import MLXLMCommon
 import MLXLMServer
 
@@ -14,6 +15,13 @@ struct NativeToolStreamRouter {
     private let nativeMiMoRequiresConstraint: Bool
     private let rejectMiMoThought: Bool
     private var rejectedNativeGemmaReasoning = false
+    /// Validation contract for calls exposed while generated; nil keeps the
+    /// complete-call path (calls flushed at the engine terminal).
+    private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
+    private var exposedCallCount = 0
+    private var openCallIndex: Int?
+    /// Every call exposed so far, each already validated.
+    private(set) var completedToolCalls: [ToolCall] = []
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -22,13 +30,14 @@ struct NativeToolStreamRouter {
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
-         absorbStrayThinkClose: Bool = false) {
+         absorbStrayThinkClose: Bool = false, streamedCalls: ToolChoicePromptPolicy.Prepared? = nil) {
         self.handler = handler
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
         self.nativeMiMoChannels = nativeMiMoChannels
         self.nativeMiMoRequiresConstraint = nativeMiMoRequiresConstraint
         self.rejectMiMoThought = nativeMiMoChannels && !nativeMiMoThinkingEnabled
+        self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -42,6 +51,9 @@ struct NativeToolStreamRouter {
     }
 
     var usesNativeChannels: Bool { parser != nil || gemmaParser != nil }
+
+    /// True when calls leave as `.toolCallDelta` events while generated.
+    var streamsToolCalls: Bool { streamedCallPolicy != nil }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
         let pieces: [ParsedReasoning]
@@ -64,6 +76,23 @@ struct NativeToolStreamRouter {
             // idempotent for completed frames and does not drain validated calls.
             _ = handler?.finish()
             try checkNativeToolFailure()
+        }
+        return events
+    }
+
+    /// End of generation for streamed calls: completes a call whose end tag
+    /// is a stop token and flushes unexposed buffers. A call cut off by the
+    /// output-token limit stays truncated, as in OpenAI streams; any other
+    /// unfinished exposed call is model noncompliance.
+    mutating func finishToolCalls(truncated: Bool) throws -> [MLXServerGenerationEvent] {
+        guard let handler, let prepared = streamedCallPolicy else { return [] }
+        var events: [MLXServerGenerationEvent] = []
+        for segment in handler.finishSegments() {
+            if truncated, case .callFailed(.unterminated) = segment {
+                openCallIndex = nil
+                continue
+            }
+            events += try routeToolSegment(segment, prepared: prepared)
         }
         return events
     }
@@ -120,6 +149,12 @@ struct NativeToolStreamRouter {
                 }
             }
             guard !piece.content.isEmpty else { continue }
+            if let handler, let prepared = streamedCallPolicy {
+                for segment in handler.processChunkSegments(piece.content) {
+                    events += try routeToolSegment(segment, prepared: prepared)
+                }
+                continue
+            }
             let visible: String?
             if let handler { visible = handler.processChunk(piece.content) }
             else { visible = piece.content }
@@ -137,5 +172,52 @@ struct NativeToolStreamRouter {
             events.append(visibleEvent(visible))
         }
         return events
+    }
+
+    /// Streamed calls are `auto` only. Each is validated (declared name,
+    /// schema, cardinality) as soon as that is decidable: the cardinality at
+    /// its first fragment, the arguments when its frame closes.
+    private mutating func routeToolSegment(
+        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared
+    ) throws -> [MLXServerGenerationEvent] {
+        switch segment {
+        case .text(let text):
+            return text.isEmpty ? [] : [visibleEvent(text)]
+        case .callStarted(let name):
+            let index = try admitCall(prepared)
+            openCallIndex = index
+            return [.toolCallDelta(.init(index: index, name: name))]
+        case .callArguments(let fragment):
+            guard let index = openCallIndex, !fragment.isEmpty else { return [] }
+            return [.toolCallDelta(.init(index: index, arguments: fragment))]
+        case .callCompleted(let call, let remainder):
+            guard let index = openCallIndex else { return [] }
+            openCallIndex = nil
+            try ToolConstraintValidation.validate([call], prepared: prepared)
+            completedToolCalls.append(call)
+            return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
+        case .callFailed(let failure):
+            openCallIndex = nil
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                "streamed tool call output was \(failure.rawValue)")
+        case .call(let call):
+            // Never exposed (e.g. an undeclared name): validate before showing.
+            try ToolConstraintValidation.validate([call], prepared: prepared)
+            let index = try admitCall(prepared)
+            completedToolCalls.append(call)
+            let arguments = String(
+                decoding: try JSONEncoder.openAIServer.encode(call.function.arguments), as: UTF8.self)
+            return [.toolCallDelta(.init(index: index, name: call.function.name, arguments: arguments,
+                completed: call))]
+        }
+    }
+
+    private mutating func admitCall(_ prepared: ToolChoicePromptPolicy.Prepared) throws -> Int {
+        if !prepared.allowsParallelCalls, exposedCallCount > 0 {
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                "parallel tool calls are disabled for this request")
+        }
+        defer { exposedCallCount += 1 }
+        return exposedCallCount
     }
 }

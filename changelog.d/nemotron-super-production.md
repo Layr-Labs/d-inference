@@ -146,6 +146,15 @@
   parallel 12K prompts by 5.3 instead of 9.2 GiB. Weight hashing and shard
   loading read around the file cache, so loading no longer leaves a second
   cached copy of the checkpoint resident beside the loaded weights.
+- Faster on M5 GPUs, with tokens unchanged in decode: speculative rounds
+  submit the verify window in parts and use the fused decode kernels, so
+  one request decodes realistic prompts at 79 tok/s instead of 70 on the M5
+  Ultra. Prompt processing on NAX GPUs runs the experts on dedicated NVFP4
+  NAX kernels with a fused expert route and decodes the dense projections'
+  weights inside the NAX GEMM, and the Mamba layers' scan runs as a chunked
+  NAX kernel: 2,881 tokens/s instead of 1,556 on a 12K prompt, within the
+  teacher-forced accuracy gate (top-1 78.09% vs 78.12%, perplexity 2.7275
+  vs 2.7294).
 - Serves paged attention KV only: the segmented native paged backend, charged
   by the engine's process-memory owner, with the decode rows reserved for the
   owner's lifetime. Contiguous KV is no longer supported:

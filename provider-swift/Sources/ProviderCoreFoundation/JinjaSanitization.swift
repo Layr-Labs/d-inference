@@ -68,6 +68,16 @@ public func sanitizeForJinja(_ value: Any?) -> Any? {
     // A true Swift `nil` at the `Any?` boundary.
     guard let value else { return nil }
 
+    // Exact string, number and Boolean leaves are what every check below
+    // returns verbatim; skip the per-value reflection. The metatype test does
+    // not see through a boxed `Optional`, which still takes the path below.
+    let leafType = type(of: value)
+    if leafType == String.self || leafType == Int.self || leafType == Double.self
+        || leafType == Bool.self || leafType is NSNumber.Type || leafType is NSString.Type
+    {
+        return value
+    }
+
     // Collapse any `Optional` boxed inside `Any`. `Mirror` reports
     // `.optional` for both `.some` and `.none`: a `.none` has zero children
     // (drop it); a `.some` has exactly one child (unwrap and recurse so the

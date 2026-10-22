@@ -283,6 +283,12 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
     /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
     /// verification is the MiMo default; each rollback must reach the job.
+    /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
+    /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
+    /// the rollback.
+    /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
+    /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
+    /// fully serial FIFO.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
@@ -297,6 +303,11 @@ public enum LaunchAgent: Sendable {
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        PromptTokenCachePolicy.environmentKey,
+        PromptTokenCachePolicy.capacityEnvironmentKey,
+        PromptTokenCachePolicy.verifyEnvironmentKey,
+        ChatTemplateLoopRewrites.environmentKey,
+        WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,

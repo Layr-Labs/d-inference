@@ -320,6 +320,30 @@ the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
 
+## Prompt Preparation And Admission
+
+```bash
+swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
+```
+
+`PromptTokenCacheTests` loads synthetic tokenizers through the production
+`LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
+pre-tokenizer families, with no download, and requires piecewise, cached and
+cross-turn token IDs to equal the unchanged path. A marker template that only
+the served loop renders, or raises for, checks that a background comparison
+disables reuse. `ChatTemplateLoopRewritesTests`
+renders random agent histories through skeleton templates built from each loop
+rewrite's matched blocks and requires the rewritten render to equal the
+original. Set `PROMPT_TOKEN_CACHE_MODEL_DIRS` to colon-separated local model
+directories to repeat both comparisons on real chat templates. `InboundChatRequestDecodeTests`
+checks the merged admission body decode against the separate decoders, and
+`ServeLoopColdLoadTests` drives the serve loop with a request parked on a model
+load, including a request for a second cold model that fits only without the
+first, and a request for the loading model when a second copy would not fit.
+`darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
+and the body decode on the CPU with only the tokenizer loaded and the background
+comparisons off; it exits 2 if any token ID or decoded field differs.
+
 ## Startup Performance Recovery
 
 `StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and

@@ -225,6 +225,11 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     var count: Int { lock.withLock { charges.count } }
     var isIdle: Bool { lock.withLock { charges.isEmpty && unboundedActivities.isEmpty } }
 
+    /// No allowance but `ownerID`'s and no unbounded device activity.
+    func isIdle(except ownerID: String?) -> Bool {
+        lock.withLock { unboundedActivities.isEmpty && charges.keys.allSatisfy { $0 == ownerID } }
+    }
+
     func calibrationEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
         lock.withLock {
             guard charges.count == 1, charges[ownerID] != nil, unboundedActivities.isEmpty else { return nil }

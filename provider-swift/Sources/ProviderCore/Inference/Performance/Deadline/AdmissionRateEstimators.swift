@@ -27,37 +27,41 @@ enum DeadlineAdmissionFixes {
     }
 }
 
-/// Admission's view of the isolated cold-prefill rate for an ordinary engine
-/// (native engines own their bounded recovery probe instead).
+/// Admission's view of the aggregate isolated cold-prefill rate for an
+/// ordinary engine (native engines own their bounded recovery probe instead).
 ///
 /// Isolation is judged inside this provider only, so another process's GPU
 /// work can record a contended prefill as isolated, and after an evidence gap
 /// one such sample replaces the estimate. Nothing refused can refresh it.
 /// Startup calibration measures the rate idle at nominal posture; that anchor
-/// bounds how far one sample can push admission and replaces evidence that
-/// expired while the engine sat idle. The published rate is unchanged.
+/// bounds how far one sample can push the aggregate and replaces evidence that
+/// expired while the Mac sat idle. The caller still tightens the result with a
+/// fresh prompt-size bucket: the anchor's short cell never certifies long work,
+/// and bucket evidence expires on its own. The published rate is unchanged.
 enum IsolatedPrefillAdmissionRate {
     /// Low Power Mode roughly halves prefill and the measured first-request
     /// penalty is about 2.3x. A sample eight times below the idle anchor is
-    /// far outside both, so admission never prices below this fraction of it.
+    /// far outside both, so the aggregate is never priced below this fraction of it.
     static let anchorFloorFraction = 0.125
-    /// Evidence this old on an idle engine is treated like none, anchored or
+    /// Evidence this old on an idle Mac is treated like none, anchored or
     /// not: projection is skipped and absolute expiry still applies, exactly
     /// as after a restart. A calibration cell can run under another process's
-    /// GPU load too, so only recent work can keep an idle engine refusing.
+    /// GPU load too, so only recent work can keep an idle Mac refusing.
     /// Matches the coordinator's idle decode expiry.
     static let staleEvidenceExpiry: Duration = .seconds(30 * 60)
 
+    /// `macIdle`: no other request on any resident model and no load, encoder
+    /// preparation or cache transfer holds the Mac.
     static func resolve(
         observed: Double?, anchor: Double?, evidenceAge: Duration?,
-        engineIdle: Bool, nominalPosture: Bool
+        macIdle: Bool, nominalPosture: Bool
     ) -> Double? {
         let observed = observed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         let anchor = anchor.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-        if engineIdle, let evidenceAge, evidenceAge > staleEvidenceExpiry { return nil }
-        if let anchor, engineIdle, nominalPosture, let evidenceAge,
+        if macIdle, let evidenceAge, evidenceAge > staleEvidenceExpiry { return nil }
+        if let anchor, macIdle, nominalPosture, let evidenceAge,
             evidenceAge > EnginePerformanceMeasurements.freshness {
-            // Expired evidence on an idle engine is not evidence of current
+            // Expired evidence on an idle Mac is not evidence of current
             // slowness; the next admitted request measures afresh.
             return max(observed ?? anchor, anchor)
         }

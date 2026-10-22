@@ -9,18 +9,19 @@ import Testing
 struct AdmissionRateEstimatorTests {
     private typealias Policy = IsolatedPrefillAdmissionRate
 
-    private func bridge(fixes: Bool, nominalPosture: Bool = true) -> (EngineV2Bridge, PrefillScriptEngine) {
+    private func bridge(fixes: Bool, nominalPosture: Bool = true,
+        kvBudget: GlobalKVCacheBudget? = nil) -> (EngineV2Bridge, PrefillScriptEngine) {
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(engine: engine, modelId: "gemma-4-26b-qat-4bit",
             tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [],
-            prefillDeadlineMode: .enforce, calibrationPosturePermitsWork: { nominalPosture },
-            admissionFixes: fixes)
+            prefillDeadlineMode: .enforce, kvBudget: kvBudget,
+            calibrationPosturePermitsWork: { nominalPosture }, admissionFixes: fixes)
         return (bridge, engine)
     }
 
     private func observation(_ phase: String, tps: Double, at: ContinuousClock.Instant,
-        contended: Bool = false) -> EngineRateObservation {
-        EngineRateObservation(phase: phase, tps: tps, prompt: 512, context: 512, cache: "cold",
+        contended: Bool = false, prompt: Int = 512) -> EngineRateObservation {
+        EngineRateObservation(phase: phase, tps: tps, prompt: prompt, context: prompt, cache: "cold",
             overlap: .init(contended: contended, peakRequests: contended ? 2 : 1), at: at,
             postureEpoch: nil, aggregate: true)
     }
@@ -44,45 +45,45 @@ struct AdmissionRateEstimatorTests {
         let fresh = Duration.seconds(30), expired = Duration.seconds(300), ancient = Duration.seconds(3_600)
         // No anchor: unchanged until the stale-evidence expiry fails open on an idle engine.
         #expect(Policy.resolve(observed: 233, anchor: nil, evidenceAge: expired,
-            engineIdle: true, nominalPosture: true) == 233)
+            macIdle: true, nominalPosture: true) == 233)
         #expect(Policy.resolve(observed: 233, anchor: nil, evidenceAge: ancient,
-            engineIdle: true, nominalPosture: true) == nil)
+            macIdle: true, nominalPosture: true) == nil)
         #expect(Policy.resolve(observed: 233, anchor: nil, evidenceAge: ancient,
-            engineIdle: false, nominalPosture: true) == 233)
+            macIdle: false, nominalPosture: true) == 233)
         // The same expiry applies with an anchor: a calibration cell slowed by
         // another process must not keep an idle engine refusing either.
         #expect(Policy.resolve(observed: 40, anchor: 50, evidenceAge: expired,
-            engineIdle: true, nominalPosture: true) == 50)
+            macIdle: true, nominalPosture: true) == 50)
         #expect(Policy.resolve(observed: 40, anchor: 50, evidenceAge: ancient,
-            engineIdle: true, nominalPosture: true) == nil)
+            macIdle: true, nominalPosture: true) == nil)
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: ancient,
-            engineIdle: true, nominalPosture: true) == nil)
+            macIdle: true, nominalPosture: true) == nil)
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: ancient,
-            engineIdle: false, nominalPosture: true) == 625)
+            macIdle: false, nominalPosture: true) == 625)
         // Fresh evidence is trusted down to one eighth of the anchor.
         #expect(Policy.resolve(observed: 3_000, anchor: 5_000, evidenceAge: fresh,
-            engineIdle: true, nominalPosture: true) == 3_000)
+            macIdle: true, nominalPosture: true) == 3_000)
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: fresh,
-            engineIdle: true, nominalPosture: true) == 625)
+            macIdle: true, nominalPosture: true) == 625)
         // Expired on an idle engine at nominal posture: never below the anchor.
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: expired,
-            engineIdle: true, nominalPosture: true) == 5_000)
+            macIdle: true, nominalPosture: true) == 5_000)
         #expect(Policy.resolve(observed: 7_000, anchor: 5_000, evidenceAge: expired,
-            engineIdle: true, nominalPosture: true) == 7_000)
+            macIdle: true, nominalPosture: true) == 7_000)
         // Busy or off-nominal engines keep only the floor until the long expiry.
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: expired,
-            engineIdle: false, nominalPosture: true) == 625)
+            macIdle: false, nominalPosture: true) == 625)
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: expired,
-            engineIdle: true, nominalPosture: false) == 625)
+            macIdle: true, nominalPosture: false) == 625)
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: ancient,
-            engineIdle: true, nominalPosture: false) == nil)
+            macIdle: true, nominalPosture: false) == nil)
         // Undated or invalid inputs.
         #expect(Policy.resolve(observed: 233, anchor: 5_000, evidenceAge: nil,
-            engineIdle: true, nominalPosture: true) == 625)
+            macIdle: true, nominalPosture: true) == 625)
         #expect(Policy.resolve(observed: .nan, anchor: nil, evidenceAge: fresh,
-            engineIdle: true, nominalPosture: true) == nil)
+            macIdle: true, nominalPosture: true) == nil)
         #expect(Policy.resolve(observed: 400, anchor: .infinity, evidenceAge: expired,
-            engineIdle: true, nominalPosture: true) == 400)
+            macIdle: true, nominalPosture: true) == 400)
     }
 
     @Test("a contended sample after an idle gap cannot lock an ordinary engine out")
@@ -275,6 +276,77 @@ struct AdmissionRateEstimatorTests {
         #expect(await bridge.observedDecodeShapeEwma == .init(batchRows: 1))
         #expect(await bridge.observedDecodeTpsEwma == 120)
         await bridge.shutdown()
+    }
+
+    @Test("the startup floor never loosens a fresh prompt-size bucket")
+    func freshLongPromptBucketBelowFloor() async throws {
+        let now = ContinuousClock.now
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 12_000)
+        let (bridge, _) = bridge(fixes: true)
+        // A 512-token calibration cell at 5,000 tok/s, then a legitimately slow
+        // 32K-token prompt at 100 tok/s while both are fresh.
+        await bridge.applyRateObservation(observation("isolated_prefill", tps: 5_000,
+            at: now - .seconds(30)), requestID: "calibration-cell", calibration: true)
+        await bridge.applyRateObservation(observation("isolated_prefill", tps: 100,
+            at: now, prompt: 32_000), requestID: "long-prompt", calibration: false)
+        let aggregate = 0.3 * 100 + 0.7 * 5_000
+        func prefillRate(promptTokens: Int) async throws -> Double? {
+            try #require(await bridge.firstTokenDeadlineAdmission(deadline: deadline,
+                isMultimodal: false, promptTokens: promptTokens)).conservativePrefillTokensPerSecond
+        }
+        // The long bucket is priced as measured, not raised to 5,000 / 8.
+        #expect(try await prefillRate(promptTokens: 32_000) == 100)
+        #expect(try await prefillRate(promptTokens: 500) == aggregate)
+        #expect(try await prefillRate(promptTokens: 0) == aggregate)
+        await bridge.shutdown()
+    }
+
+    @Test("another model's request or device activity keeps the idle anchor and expiry off")
+    func otherModelWorkKeepsAnchorOff() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30) })
+        let services = budget.serviceBudget
+        let (bridge, engine) = bridge(fixes: true, kvBudget: budget)
+        engine.setDeadlineBehavior(.reject)
+        let now = ContinuousClock.now
+        await bridge.applyRateObservation(observation("isolated_prefill", tps: 5_000,
+            at: now - .seconds(900)), requestID: "calibration-cell", calibration: true)
+        await bridge.applyRateObservation(observation("isolated_prefill", tps: 50,
+            at: now - .seconds(300)), requestID: "serving", calibration: false)
+        let request = ChatCompletionRequest(model: "gemma-4-26b-qat-4bit", messages: [], max_tokens: 8)
+        func submittedPrefillRate(_ id: String) async throws -> Double? {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: 3_000),
+                    request: request, requestId: id,
+                    firstContentDeadline: .init(relativeBudgetMilliseconds: 12_000))
+            }
+            return try #require(engine.deadlineAdmissions.last).conservativePrefillTokensPerSecond
+        }
+        // The request's own whole-Mac lease is not other work.
+        #expect(try await submittedPrefillRate("alone") == 5_000)
+        // Another resident model holds the shared GPU: only the floor applies.
+        #expect(services.acquire(ownerID: "other-model:busy", concurrency: 2))
+        #expect(try await submittedPrefillRate("beside-other-model") == 625)
+        services.release(ownerID: "other-model:busy")
+        #expect(try await submittedPrefillRate("after-other-model") == 5_000)
+        // A load, encoder preparation or cache transfer counts as well, and
+        // also keeps stale evidence priced instead of skipping projection.
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 12_000)
+        let activity = services.beginUnboundedActivity()
+        #expect(try #require(await bridge.firstTokenDeadlineAdmission(deadline: deadline,
+            isMultimodal: false, requestID: "during-load")).conservativePrefillTokensPerSecond == 625)
+        activity.finish()
+        await bridge.shutdown()
+
+        let (stale, _) = self.bridge(fixes: true, kvBudget: budget)
+        await stale.applyRateObservation(observation("isolated_prefill", tps: 50,
+            at: now - .seconds(3_600)), requestID: "calibration-cell", calibration: true)
+        #expect(await stale.firstTokenDeadlineAdmission(deadline: deadline, isMultimodal: false) == nil)
+        #expect(services.acquire(ownerID: "other-model:busy", concurrency: 2))
+        #expect(await stale.firstTokenDeadlineAdmission(deadline: deadline, isMultimodal: false)?
+            .conservativePrefillTokensPerSecond == 50)
+        services.release(ownerID: "other-model:busy")
+        await stale.shutdown()
     }
 
     @Test("a late older cold sample does not restart the combined prefill estimate")

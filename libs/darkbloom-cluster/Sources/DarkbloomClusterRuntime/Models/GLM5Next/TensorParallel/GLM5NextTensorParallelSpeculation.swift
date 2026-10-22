@@ -81,6 +81,19 @@ final class GLM5NextTensorParallelSpeculation {
     /// windows. A diagnostic: it separates the window arithmetic from the
     /// acceptance and rollback path.
     var acceptsProposals = true
+    /// How a round hands its GPU work to MLX while the host still builds the
+    /// rest. `proposals` (the default) submits the NextN priming and proposals
+    /// as soon as they are built, so the GPU runs them while the host builds
+    /// the verification forward; `layers` also submits every
+    /// `GLM5NextExecutionPolicy.earlyEvaluationLayerStride` layers of that
+    /// forward; `none` submits the round once, whole. The graph and its results
+    /// are the same in every mode: the proposals hold no collective, and the
+    /// forward is cut at the same layers on every rank, so the sums keep their
+    /// order. `rounds` takes the first lane's mode.
+    enum EarlySubmission: String, Sendable {
+        case none, proposals, layers
+    }
+    var earlySubmission = EarlySubmission.proposals
     /// Per round, when set: host seconds building the graph, encoding it
     /// (`asyncEval` returning) and then waiting for the result. A wait near
     /// zero means the round is host-bound; a long wait, GPU-bound.
@@ -259,8 +272,10 @@ final class GLM5NextTensorParallelSpeculation {
         pending = nil
         let started = DispatchTime.now().uptimeNanoseconds
         let drafts = try prepareProposals(verified, window: window, propose: propose)
+        if earlySubmission != .none, let drafts { asyncEval(drafts) }
         let input = concatenated([MLXArray([Int32(last)], [1, 1])] + (drafts.map { [$0] } ?? []), axis: 1)
-        let candidate = try stage.prepareVerification(tokens: input, cache: cache)
+        let candidate = try stage.prepareVerification(
+            tokens: input, cache: cache, earlyEvaluation: earlySubmission == .layers)
         guard case .final(let output) = candidate.output else {
             throw ProbeError("GLM speculative verification produced no logits")
         }
@@ -434,8 +449,11 @@ extension GLM5NextTensorParallelSpeculation {
             eval(drafts.compactMap { $0 } + (try lanes.flatMap { try $0.speculation.evaluationTargets() }))
             forwardStart = now()
             times.proposalWait = seconds(proposed, forwardStart)
+        } else if first.earlySubmission != .none, drafts.contains(where: { $0 != nil }) {
+            asyncEval(drafts.compactMap { $0 })
         }
-        let candidate = try stage.prepareVerificationRows(inputs)
+        let candidate = try stage.prepareVerificationRows(
+            inputs, earlyEvaluation: first.earlySubmission == .layers)
         let forwardBuilt = now()
         times.forward = seconds(forwardStart, forwardBuilt)
         let outputs = try candidate.outputs.map { output -> GLM5NextTextOutput in

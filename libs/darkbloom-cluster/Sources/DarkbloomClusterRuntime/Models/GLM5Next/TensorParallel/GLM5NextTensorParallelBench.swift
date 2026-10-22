@@ -57,6 +57,10 @@ public enum GLM5NextTensorParallelBench {
             case oneToken = "one-token"
         }
         public var mtpCheck = MTPCheck.none
+        /// How each MTP round submits GPU work while it is still being built
+        /// (`GLM5NextTensorParallelSpeculation.EarlySubmission`): `none`,
+        /// `proposals` (the runtime's) or `layers`.
+        public var mtpEarly = "proposals"
         /// How the prompt is prefilled.
         public enum PrefillSchedule: String, Sendable {
             /// Chunks of `chunkSize`, each as `microBatches` micro-batches.
@@ -167,6 +171,13 @@ public enum GLM5NextTensorParallelBench {
         public var mtpDepth: Int?
         public var mtpCheck: String?
         public var prefillSchedule: String?
+    }
+
+    private static func earlySubmission(_ options: Options) throws -> GLM5NextTensorParallelSpeculation.EarlySubmission {
+        guard let mode = GLM5NextTensorParallelSpeculation.EarlySubmission(rawValue: options.mtpEarly) else {
+            throw ProbeError("GLM bench MTP early submission must be none, proposals or layers")
+        }
+        return mode
     }
 
     public static func run(_ options: Options, log: (String) -> Void) throws -> Report {
@@ -316,6 +327,7 @@ public enum GLM5NextTensorParallelBench {
                 pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { value in group.map { $0.allSum(value) } ?? value })
             value.acceptsProposals = options.mtpCheck != .keepFirst
+            value.earlySubmission = try earlySubmission(options)
             value.recordsPhases = true
             return value
         }
@@ -502,6 +514,7 @@ public enum GLM5NextTensorParallelBench {
                 ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
                 pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { value in group.map { $0.allSum(value) } ?? value })
+            speculation.earlySubmission = try earlySubmission(options)
             var offset = 0
             var last: (logits: MLXArray, hidden: MLXArray)?
             while offset < prompt.count {

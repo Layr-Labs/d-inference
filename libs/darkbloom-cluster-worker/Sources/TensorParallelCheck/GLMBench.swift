@@ -7,7 +7,7 @@ import MLX
 //     [--prompt-tokens N | --prompt-file TOKENS.json] [--output-count N] [--chunk N] [--repeats N]
 //     [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no]
 //     [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3]
-//     [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged]
+//     [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--prefill-schedule chunked|product|merged]
 //     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
 //     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no]]
 //     [--kv paged|contiguous]
@@ -73,7 +73,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -107,6 +107,7 @@ enum GLMBench {
             throw Failure("glm: --mtp-check takes none, keep-first or one-token, with --mtp-depth 1...3")
         }
         options.mtpCheck = check
+        options.mtpEarly = fields["--mtp-early"] ?? "proposals"
         // The product's prefill chunks (`product`), run together as the runtime does (`merged`).
         guard let schedule = GLM5NextTensorParallelBench.Options.PrefillSchedule(
                 rawValue: fields["--prefill-schedule"] ?? "chunked"),

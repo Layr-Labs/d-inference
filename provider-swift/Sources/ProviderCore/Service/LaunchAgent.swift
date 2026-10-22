@@ -273,6 +273,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
     /// on by default for the supported MiMo identities; preserve its opt-out
     /// in the provider job independently of the global cache kill switch.
+    /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
+    /// kernel wherever its parity probe finds it bit-exact, which says nothing
+    /// about speed; the stock-kernel rollback must reach the job. Spelled out
+    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLLM`.
     /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
     /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
     /// default in the SDK; their per-kernel rollbacks use the same values.
@@ -288,6 +292,7 @@ public enum LaunchAgent: Sendable {
         MiMoV26WiredResidency.environmentFlag,
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
+        "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys

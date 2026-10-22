@@ -1,4 +1,5 @@
 import Foundation
+@testable import MLXLLM
 import MLXLMCommon
 @testable import ProviderAppAttest
 import Testing
@@ -230,6 +231,30 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == rollback)
         #expect(EngineV2SlotFactory.nativeMiMoVerificationMode(wantsMTP: true, environment: out)
             == .serialTarget)
+    }
+
+    @Test func forwardsGDNPromptKernelRollbackToProviderJob() {
+        // The SDK's GDN prompt-kernel probe checks bits, not speed, so the
+        // stock-kernel rollback is how an operator recovers from a slower
+        // bit-exact kernel. launchd does not inherit the shell: the provider
+        // job resolves the foreground's mode only if its plist carries the key.
+        let key = GatedDeltaPrefill.envFlag
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "0", " OFF ", "packed", "rows", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(GatedDeltaPrefill.Mode(environmentValue: launchd[key])
+                == GatedDeltaPrefill.Mode(environmentValue: foreground[key]))
+        }
+        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "0"])
+        #expect(rollback == [key: "0"])
+        #expect(GatedDeltaPrefill.Mode(environmentValue: rollback[key]) == .stock)
     }
 
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {

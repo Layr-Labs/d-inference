@@ -304,7 +304,9 @@ install_bundle_atomically() {
     local stage="$install_dir/.install-staging-$$-$RANDOM"
     rm -rf "$stage"
     mkdir -p "$stage"
-    if ! tar xzf "$archive" -C "$stage"; then
+    # Restore ordinary release modes without changing private-state creation
+    # elsewhere in the installer or enabling tar's full-permissions mode.
+    if ! (umask 022; /usr/bin/tar xzf "$archive" -C "$stage"); then
         rm -rf "$stage"
         return 1
     fi

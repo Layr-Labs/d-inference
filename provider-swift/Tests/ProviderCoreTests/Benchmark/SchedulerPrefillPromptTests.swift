@@ -54,7 +54,8 @@ struct SchedulerPrefillPromptTests {
         let json = try source.jsonString()
         let decoded = try JSONDecoder().decode(
             SchedulerPrefillBenchmarkReport.self, from: Data(json.utf8))
-        #expect(decoded.schemaVersion == 4)
+        #expect(decoded.schemaVersion == SchedulerPrefillBenchmarkReport.currentSchemaVersion)
+        #expect(decoded.prefillChunkTokens == 512 && decoded.maxBatchedTokensPerStep == 2048)
         #expect(decoded.promptMode == mode && decoded.warmupPromptOffset == 0)
         #expect(decoded.samples.map(\.promptOffset) == (mode == .fixed ? [0, 0] : [17, 34]))
         #expect(decoded.samples.map(\.iteration) == [1, 2])
@@ -65,6 +66,9 @@ struct SchedulerPrefillPromptTests {
         let data = try JSONEncoder().encode(report(mode: .fixed))
         let jsonObject = try JSONSerialization.jsonObject(with: data)
         var object = try #require(jsonObject as? [String: Any])
+        object["schemaVersion"] = 4
+        object.removeValue(forKey: "prefillChunkTokens")
+        object.removeValue(forKey: "maxBatchedTokensPerStep")
         object.removeValue(forKey: "promptMode")
         object.removeValue(forKey: "warmupPromptOffset")
         var samples = try #require(object["samples"] as? [[String: Any]])
@@ -74,6 +78,7 @@ struct SchedulerPrefillPromptTests {
             SchedulerPrefillBenchmarkReport.self,
             from: JSONSerialization.data(withJSONObject: object))
         #expect(legacy.schemaVersion == 4 && legacy.samples.count == 2)
+        #expect(legacy.prefillChunkTokens == nil && legacy.maxBatchedTokensPerStep == nil)
         #expect(legacy.promptMode == nil && legacy.warmupPromptOffset == nil)
         #expect(legacy.samples.allSatisfy { $0.promptOffset == nil })
         let reencoded = try legacy.jsonString()
@@ -99,7 +104,8 @@ struct SchedulerPrefillPromptTests {
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: GemmaOptimizationSettings(), getenv: { _ in nil }),
             kvBackend: BenchmarkKVBackend(selection: "auto", resolved: ["contiguous"]),
-            soloPrefillStripeTokens: 2048, samples: samples,
+            soloPrefillStripeTokens: 2048, prefillChunkTokens: 512, maxBatchedTokensPerStep: 2048,
+            samples: samples,
             promptMode: mode, warmupPromptOffset: 0)
     }
 }

@@ -56,6 +56,8 @@ extension ProviderLoop {
                 guard ProviderLoop.nativeProcessAllowsReclamation(),
                     !nativeMiMoRegistry.hasRetainedFault,
                     !nativeMiMoRegistry.hasUnretiredClosingTransactions else { return }
+                // Engines also drop retained free KV segments at their next step.
+                CBv2RetainedKVSegments.requestRelease()
                 MLX.Memory.clearCache()
             },
             writeMarker: { _ in

@@ -1,0 +1,105 @@
+=== 15:55:51 job start host=m3-ultra-host bin_md5=af73d71fd626cb4cff39c679bc094120 metallib_md5=be39c9c1bab3f06ad53157b873971713
+=== 15:55:52 gemma-4-26b-qat-4bit arm A bundle=io.darkbloom.ttftw4.p1.gemma426bqat.off.1792623351 warmup=off cache_dir_before=no thermal=nominal load=1.95
+[gemma-4-26b-qat-4bit-A] ready after 10.2s
+[gemma-4-26b-qat-4bit-A] hi {"hi_total_ms": 781.3, "hi_first_ms": 36.4}
+[gemma-4-26b-qat-4bit-A] r0 ttft_ms=4401.8 prompt 8018 dec 27.4
+[gemma-4-26b-qat-4bit-A] r1 ttft_ms=2930.5 prompt 8004 dec 74.6
+[gemma-4-26b-qat-4bit-A] r2 ttft_ms=2981.9 prompt 7994 dec 73.8
+[A] cache_dir_after= 22M
+=== 15:56:43 gemma-4-26b-qat-4bit arm B bundle=io.darkbloom.ttftw4.p1.gemma426bqat.on.1792623351 warmup=on cache_dir_before=no thermal=nominal load=2.52
+[gemma-4-26b-qat-4bit-B] ready after 14.7s
+[gemma-4-26b-qat-4bit-B] hi {"hi_total_ms": 390.4, "hi_first_ms": 7.9}
+[gemma-4-26b-qat-4bit-B] r0 ttft_ms=2956.7 prompt 8038 dec 32.6
+[gemma-4-26b-qat-4bit-B] r1 ttft_ms=2929.6 prompt 7989 dec 75.0
+[gemma-4-26b-qat-4bit-B] r2 ttft_ms=2935.1 prompt 8042 dec 71.0
+2026-10-21T15:56:58-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: complete 2/2 cells in 5699 ms (attempt 1, probe 1266/106 ms)
+2026-10-21T15:57:04-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: skipped (warm shader cache) 0/2 cells in 291 ms (attempt 1, probe 178/101 ms)
+[B] cache_dir_after= 22M
+=== 15:57:37 gemma-4-26b-qat-4bit arm C bundle=io.darkbloom.ttftw4.p1.gemma426bqat.on.1792623351 warmup=off cache_dir_before=yes thermal=nominal load=2.04
+[gemma-4-26b-qat-4bit-C] ready after 4.3s
+[gemma-4-26b-qat-4bit-C] hi {"hi_total_ms": 157.2, "hi_first_ms": 35.8}
+[gemma-4-26b-qat-4bit-C] r0 ttft_ms=2935.0 prompt 8043 dec 65.3
+[gemma-4-26b-qat-4bit-C] r1 ttft_ms=2935.6 prompt 7989 dec 74.7
+[gemma-4-26b-qat-4bit-C] r2 ttft_ms=3031.4 prompt 8016 dec 74.8
+[C] cache_dir_after= 22M
+=== 15:58:20 gemma-4-26b-qat-4bit arm D bundle=io.darkbloom.ttftw4.p1.gemma426bqat.on.1792623351 warmup=on cache_dir_before=yes thermal=nominal load=1.52
+[gemma-4-26b-qat-4bit-D] ready after 4.4s
+[gemma-4-26b-qat-4bit-D] hi {"hi_total_ms": 131.5, "hi_first_ms": 8.2}
+[gemma-4-26b-qat-4bit-D] r0 ttft_ms=2915.5 prompt 8016 dec 67.2
+[gemma-4-26b-qat-4bit-D] r1 ttft_ms=2953.8 prompt 8017 dec 74.6
+[gemma-4-26b-qat-4bit-D] r2 ttft_ms=2963.9 prompt 8030 dec 74.1
+2026-10-21T15:58:24-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: skipped (warm shader cache) 0/2 cells in 249 ms (attempt 1, probe 112/105 ms)
+2026-10-21T15:58:30-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: skipped (warm shader cache) 0/2 cells in 268 ms (attempt 1, probe 149/99 ms)
+[D] cache_dir_after= 22M
+=== 15:59:03 done gemma-4-26b-qat-4bit p1
+=== 15:59:03 gemma-4-26b-qat-4bit arm B bundle=io.darkbloom.ttftw4.p2.gemma426bqat.on.1792623352 warmup=on cache_dir_before=no thermal=nominal load=1.15
+[gemma-4-26b-qat-4bit-B] ready after 14.7s
+[gemma-4-26b-qat-4bit-B] hi {"hi_total_ms": 399.5, "hi_first_ms": 9.1}
+[gemma-4-26b-qat-4bit-B] r0 ttft_ms=2934.3 prompt 7979 dec 30.1
+[gemma-4-26b-qat-4bit-B] r1 ttft_ms=2910.5 prompt 7987 dec 71.1
+[gemma-4-26b-qat-4bit-B] r2 ttft_ms=2932.9 prompt 8000 dec 74.5
+2026-10-21T15:59:18-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: complete 2/2 cells in 5744 ms (attempt 1, probe 1246/105 ms)
+2026-10-21T15:59:23-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: skipped (warm shader cache) 0/2 cells in 258 ms (attempt 1, probe 149/98 ms)
+[B] cache_dir_after= 22M
+=== 15:59:57 gemma-4-26b-qat-4bit arm A bundle=io.darkbloom.ttftw4.p2.gemma426bqat.off.1792623352 warmup=off cache_dir_before=no thermal=nominal load=1.67
+[gemma-4-26b-qat-4bit-A] ready after 9.0s
+[gemma-4-26b-qat-4bit-A] hi {"hi_total_ms": 780.8, "hi_first_ms": 38.7}
+[gemma-4-26b-qat-4bit-A] r0 ttft_ms=4368.2 prompt 8021 dec 27.6
+[gemma-4-26b-qat-4bit-A] r1 ttft_ms=3038.5 prompt 7985 dec 74.4
+[gemma-4-26b-qat-4bit-A] r2 ttft_ms=2934.3 prompt 8035 dec 70.9
+[A] cache_dir_after= 22M
+=== 16:00:47 done gemma-4-26b-qat-4bit p2
+=== 16:00:47 gpt-oss-20b arm A bundle=io.darkbloom.ttftw4.p1.gptoss20b.off.1792623351 warmup=off cache_dir_before=no thermal=nominal load=1.78
+[gpt-oss-20b-A] ready after 9.0s
+[gpt-oss-20b-A] hi {"hi_total_ms": 1521.5, "hi_first_ms": 31.2}
+[gpt-oss-20b-A] r0 ttft_ms=4054.9 prompt 8134 dec 111.2
+[gpt-oss-20b-A] r1 ttft_ms=3350.0 prompt 8145 dec 111.4
+[gpt-oss-20b-A] r2 ttft_ms=3386.3 prompt 8193 dec 111.0
+[A] cache_dir_after= 21M
+=== 16:01:38 gpt-oss-20b arm B bundle=io.darkbloom.ttftw4.p1.gptoss20b.on.1792623351 warmup=on cache_dir_before=no thermal=nominal load=3.24
+[gpt-oss-20b-B] ready after 14.2s
+[gpt-oss-20b-B] hi {"hi_total_ms": 132.5, "hi_first_ms": 9.5}
+[gpt-oss-20b-B] r0 ttft_ms=3352.5 prompt 8105 dec 111.1
+[gpt-oss-20b-B] r1 ttft_ms=3356.5 prompt 8145 dec 111.1
+[gpt-oss-20b-B] r2 ttft_ms=3360.5 prompt 8172 dec 111.1
+2026-10-21T16:01:52-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gpt-oss-20b: complete 2/2 cells in 5972 ms (attempt 1, probe 1527/87 ms)
+[B] cache_dir_after= 22M
+=== 16:02:32 gpt-oss-20b arm C bundle=io.darkbloom.ttftw4.p1.gptoss20b.on.1792623351 warmup=off cache_dir_before=yes thermal=nominal load=5.73
+[gpt-oss-20b-C] ready after 4.4s
+[gpt-oss-20b-C] hi {"hi_total_ms": 149.9, "hi_first_ms": 31.8}
+[gpt-oss-20b-C] r0 ttft_ms=3350.5 prompt 8114 dec 111.2
+[gpt-oss-20b-C] r1 ttft_ms=3353.5 prompt 8141 dec 110.8
+[gpt-oss-20b-C] r2 ttft_ms=3363.0 prompt 8154 dec 111.0
+[C] cache_dir_after= 22M
+=== 16:03:16 gpt-oss-20b arm D bundle=io.darkbloom.ttftw4.p1.gptoss20b.on.1792623351 warmup=on cache_dir_before=yes thermal=nominal load=6.35
+[gpt-oss-20b-D] ready after 4.3s
+[gpt-oss-20b-D] hi {"hi_total_ms": 129.1, "hi_first_ms": 8.4}
+[gpt-oss-20b-D] r0 ttft_ms=3366.0 prompt 8155 dec 110.5
+[gpt-oss-20b-D] r1 ttft_ms=3346.0 prompt 8120 dec 111.0
+[gpt-oss-20b-D] r2 ttft_ms=3351.1 prompt 8142 dec 111.3
+2026-10-21T16:03:20-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gpt-oss-20b: skipped (warm shader cache) 0/2 cells in 217 ms (attempt 1, probe 101/87 ms)
+[D] cache_dir_after= 22M
+=== 16:04:00 done gpt-oss-20b p1
+=== 16:04:00 gpt-oss-20b arm B bundle=io.darkbloom.ttftw4.p2.gptoss20b.on.1792623352 warmup=on cache_dir_before=no thermal=nominal load=4.72
+[gpt-oss-20b-B] ready after 14.2s
+[gpt-oss-20b-B] hi {"hi_total_ms": 128.2, "hi_first_ms": 9.7}
+[gpt-oss-20b-B] r0 ttft_ms=3368.8 prompt 8138 dec 111.6
+[gpt-oss-20b-B] r1 ttft_ms=3439.1 prompt 8195 dec 110.8
+[gpt-oss-20b-B] r2 ttft_ms=3347.5 prompt 8131 dec 111.5
+2026-10-21T16:04:14-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gpt-oss-20b: complete 2/2 cells in 6040 ms (attempt 1, probe 1565/88 ms)
+[B] cache_dir_after= 22M
+=== 16:04:54 gpt-oss-20b arm A bundle=io.darkbloom.ttftw4.p2.gptoss20b.off.1792623352 warmup=off cache_dir_before=no thermal=nominal load=2.84
+[gpt-oss-20b-A] ready after 8.0s
+[gpt-oss-20b-A] hi {"hi_total_ms": 1561.4, "hi_first_ms": 30.9}
+[gpt-oss-20b-A] r0 ttft_ms=4173.6 prompt 8155 dec 105.9
+[gpt-oss-20b-A] r1 ttft_ms=4574.3 prompt 8197 dec 110.4
+[gpt-oss-20b-A] r2 ttft_ms=3379.2 prompt 8175 dec 110.9
+[A] cache_dir_after= 22M
+=== 16:05:45 done gpt-oss-20b p2
+=== 16:05:45 runtime-generation gemma-4-26b-qat-4bit
+exit 0
+{'text': 'Expanding the menu to include soup allows the bakery to maximize its existing infrastructure and reduce waste. Since the kitchen is already equipped with ovens and prep areas, the incremental **costs** of producing soup are relatively low. Furthermore, using leftover bread to create croutons or brea'}
+=== 16:05:55 runtime-generation gpt-oss-20b
+exit 0
+{'text': '<|channel|>analysis<|message|>We need to explain in three short paragraphs why a bakery that sells bread in the morning might decide to also sell soup at lunch. Mention costs, staff, and customers. So each paragraph should be short, maybe 3-4 sentences. Should cover costs, staff, customers. Provide '}
+=== 16:06:03 job done

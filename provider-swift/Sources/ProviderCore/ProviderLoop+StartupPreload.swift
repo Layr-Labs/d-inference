@@ -234,6 +234,7 @@ extension ProviderLoop {
             freeMemoryGb: { await me.startupPreloadFreeMemoryGb() },
             load: { modelId in try await me.startupPreloadLoad(modelId: modelId) },
             selfTest: selfTestClosure,
+            shapeWarmup: { modelId in await me.startupPreloadShapeWarmup(modelId: modelId) },
             selfTestFailClosed: failClosed,
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
@@ -241,7 +242,8 @@ extension ProviderLoop {
             currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
             canLoadMore: { await me.startupPreloadHasFreeSlot() },
             onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) },
-            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) }
+            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) },
+            reclaimBeforeSkip: { await me.releaseReclaimableMemoryForLoad() }
         )
 
         let preloader = StartupPreloader(deps: deps)
@@ -337,6 +339,15 @@ extension ProviderLoop {
         // here and is WARN-logged by the preloader; the lazy-load path (which
         // MAY evict, as always) remains the fallback for live traffic.
         try await ensureModelLoaded(modelId: modelId, allowEviction: false)
+    }
+
+    /// Before registration only a local-endpoint request can preempt the
+    /// excluded shape warmup, so the first routed prompt finds its kernels
+    /// compiled. The registration gate's timeout still bounds the whole preload.
+    private func startupPreloadShapeWarmup(modelId: String) async {
+        guard !Task.isCancelled, !isShuttingDown, !servingDrain.refusing,
+            let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
+        await slot.engineV2.runShapeWarmupBeforeServing()
     }
 
     private func startupPreloadSelfTest(modelId: String) async throws -> Duration {

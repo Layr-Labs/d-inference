@@ -401,10 +401,16 @@ configuration such eviction can reach, so an idle model yields to the
 planned owner rather than to a narrower one, and refuses without evicting
 when not even the narrowest is reachable. A victim that takes work while its
 unload suspends declines it, and eviction plans again from the models still
-idle; the third decline refuses the load. Startup preload, which never
-evicts, admits Super by the same room and orders it by its planned
-requirement. The discovery footprint (`estimated_memory_gb`) is the
-narrowest configuration's requirement itself,
+idle; the third decline refuses the load. Like the ordinary gate, eviction
+first releases retained free KV segments and drops MLX's buffer cache once
+(`releaseReclaimableMemoryForLoad`), before its first eviction or a refusal
+with nothing idle, and counts those segments as reachable only until then:
+segments still parked after the release never justify an eviction.
+Pre-accept performs the same release and judges the room it leaves when
+nothing is idle or only those segments could close the gap.
+Startup preload, which never evicts, admits Super by the same room and
+orders it by its planned requirement. The discovery footprint
+(`estimated_memory_gb`) is the narrowest configuration's requirement itself,
 89,750,767,136 bytes (83.6 GiB) on every Mac. Cold capacity quotes and the
 coordinator's cold-load routing compare it and the load headroom with free
 memory less the provider's load reserve (`free_for_load_gb`), so they stay
@@ -977,6 +983,54 @@ probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo
 maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
 
+Before those probes, ordinary `EngineV2` slots run an excluded shape warmup
+once per loaded engine (`ModelCalibrationPolicy.shapeWarmup`). MLX compiles
+each kernel specialization from source on first use in a process, and macOS
+caches the compiled libraries per app, keyed by source and GPU compiler. With a
+cold cache (a new install, or the first start after macOS or the MLX kernel
+sources change), the first long customer prompt paid those compiles; with the
+warmup it matched later requests (measurements in the
+[startup shape warmup report](../reports/2026-10-21-startup-shape-warmup-first-request.md)).
+A warm cache leaves no measurable first-request penalty, so the
+warmup first runs a greedy 128-token probe twice. Only a first run that
+exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
+shape cells; otherwise they are skipped. One solo prompt covers stripe-wide
+chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
+One cell at the served width covers plain chunks beside decoding rows and decode
+or MTP verify at that width. Both use the artifact's default sampling. A cell
+counts only when every row reaches its requested length: a row the sampler
+stops early can retire before later rows join, so the cell reruns with another
+prompt, and its third try is accepted so an artifact that always stops early
+cannot keep the warmup due
+(`provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift`,
+`shapeWarmupCellTries`). No probe
+or cell trains a rate or counter. They share a 20-second wall budget that
+includes prompt rendering. A timeout or refusal completes the attempt; only
+preemption leaves it due, and the retry resumes after the probes and cells
+already finished. Each finished pass records the served width it covered
+(`ModelCalibrationState.shapeWarmupWidth`). If the probe judged the cache cold
+(or the mode is `always`) and serving concurrency later grows past that width
+(posture returns to nominal, or the KV grant grows), the warmup is due again and
+the next idle session runs only the wider width's cell
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ShapeWarmup.swift`,
+`shapeWarmupDue`); a narrower width never lowers the record. The probe judges
+the whole cache from its one short shape, so a cache that holds it but not the
+long-prompt or served-width kernels (a process stopped between the probe and the
+cells, an earlier attempt the budget cut short, or a cache that only saw short
+prompts) skips the cells, and the first such request compiles them as before.
+
+The startup preload warms each loaded model after any passing self-test, before
+registration (or before a standalone listener opens), so routed traffic cannot
+preempt it; a local-endpoint request still can. Posture does not gate this pass
+because it measures nothing, and the registration gate's timeout still bounds
+the preload. Later engines (lazy loads, MTP replacement engines) run it in the
+idle calibration session after a 0.5-second pause that lets a triggering request
+preempt first. Slots with a reviewed deadline profile run it alone under the same
+idle gate, and standalone servers retry deferred engines from their 5-second
+sweep tick. Each attempt logs its outcome, duration and probe times.
+`DARKBLOOM_TTFT_SHAPE_WARMUP=0` restores the plain probes and `always` skips the
+shader-cache probe; the launchd job forwards it.
+
 Transaction-owned native MiMo slots retain the wider bootstrap and periodic
 maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
 affordable concurrency sweeps and solo refresh after 90 seconds. The existing
@@ -1087,6 +1141,27 @@ or fences them, so staging does not wait for that chunk
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
 
+Segmented paged admission no longer waits for queued GPU work. A released row's
+free 64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`,
+outside the grant, floor and ledger charge, and the next admission of the same
+size class reinstalls them. New segments wrap zero-fill-on-demand host pages
+when their size is a whole number of VM pages, so growth neither zero-fills on
+the device nor waits on a stream synchronize under the process-wide MLX eval
+lock
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`
+(`makeSegmentedPagedBackend`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
+(`cbv2ZeroFilledPages`)). Parked backing is dropped on a refused admission, on
+a process-wide release request (memory pressure, a refused charge, a load gate
+or startup-preload check short of memory) and after 30 s of engine idleness.
+The proactive allocator-cache sweep flushes between busy engines' steps only
+when the pool crowds out admission headroom
+(`KVPoolReclaimer.proactiveWindow`); otherwise it waits for 5 s of whole-Mac
+idleness and clears while request admission waits
+(`WholeMacServiceBudget.performIfIdle`).
+`DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
+restore the previous behavior ([configuration](../reference/configuration.md)).
+
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
 correlates checkpoint callbacks to that receipt so delayed donor callbacks
@@ -1126,8 +1201,10 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `maxBatchedTokensPerStep` / `prefillChunkSize` / `maxWaiting` | 2048 / 512 / 64 (`CBv2SchedulerConfig` init defaults) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
-| `soloPrefillStripeTokens` | 2048 (`defaultSoloPrefillStripeTokens`); 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
+| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
+| `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
@@ -1138,6 +1215,65 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 
 Environment variables are named here, never defaulted; defaults live in
 [`../reference/configuration.md`](../reference/configuration.md).
+
+### Prompt geometry
+
+With one partial prefill (`maxConcurrentPartialPrefills`), the plain chunk is
+the prompt work a busy engine runs beside its decode rows: a solo stripe never
+arms beside an unpaused decode row (`SchedulerV2.plan`). Gemma 4 takes the
+2,048-token plain chunk and a 4,096-token step, so a full chunk and a finishing
+row's remainder share one step with the decode rows. The wider chunk amortizes
+each step's fixed host and readback cost over more prompt tokens and gives MoE
+expert GEMMs more rows per expert; a prompt needs a quarter of the mixed steps,
+so decode rows also spend more steps without prompt work. The chunk replaces
+Gemma 4's 2,048-token stripe rather than exceeding it, so the paged pool's
+`maxPrefillChunk` (`max(prefillChunkSize, soloPrefillStripeTokens)`,
+`makeSegmentedPagedBackend`) and every windowed-ring KV charge stay unchanged.
+The same holds for the GPT-OSS and dense Qwen opt-in below. The trade is
+inter-token latency: a decode token that shares a step with prompt work waits
+for the whole chunk, so the p90 gap shrinks while the p99 gap grows two to
+three times. The
+[2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
+record the load, engine and memory evidence; the activation effect is in
+[hardware support](hardware-support.md#serving-width-by-chip).
+
+Requests with bidirectional media blocks, Gemma 4 images and video frames,
+keep the SDK's 512-token plain chunk (`bidirectionalMediaPrefillChunkCeiling`,
+`CBv2SchedulerConfig.plainPrefillChunkSize`). A paged span-bearing chunk
+attends in one unblocked call whose score tensor grows with the chunk length
+times the history (`PagedLayerCache.prefillAttend`); a chunk that begins at a
+block still extends over the whole block. Qwen media is causal, attends in
+query blocks like text and takes the plain chunk.
+
+Other families keep 512 / 2048 (`usesWidePrefillChunk`):
+
+| Family | Reason |
+|---|---|
+| GPT-OSS (`GPTOSSModel`), dense Qwen3.5/3.8 (`Qwen35Model`) | Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
+| Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
+| MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
+| Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
+
+An explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` applies to every family, and the
+step budget follows it unless `DARKBLOOM_CBV2_STEP_TOKENS` is set, except
+where a later family policy replaces the geometry. GLM5Next takes its own
+2,048-token chunk and step limits and no stripe (`glm5NextServingScheduler`),
+and calibrated Nemotron models cap the chunk at their calibrated prefill limit
+and drop the stripe (`calibratedPrefillTokenLimit`), both in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`.
+Nemotron Super local serving takes `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`
+and a step that holds one chunk plus its decode rows
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefill.swift`,
+`NemotronSuperLocalPrefill.Policy.apply`). Scheduler-prefill
+benchmark receipts record the geometry the engine was actually built with
+(`EngineV2Factory.ProductionBuild.prefillGeometry`). Like every
+`DARKBLOOM_CBV2_*` key, either override enters the complete-checkpoint
+numerics fingerprint (`PrefixCachePolicy.completeCheckpointIdentity`) and
+disqualifies reviewed serving and deadline profiles
+(`ServingPerformanceProfiles.runtimeOverridesAreAbsent`,
+`DeadlineRuntimeEnvironment.permitsQualification`). A solo chunk on Gemma 4
+no longer counts toward `soloStripeChunks`, which still counts chunks wider
+than `prefillChunkSize`.
 
 ### Deadlines
 
@@ -2141,6 +2277,26 @@ or change consumer/OpenRouter routing.
 7. MTP is fail-open to target-only decode: artifact resolution failure or
    `DARKBLOOM_CBV2_MTP` off never refuses a load — `EngineV2SlotFactory+MTP.swift`,
    `MTPContractsV2.swift` (`envEnabled`).
+8. Default prompt geometry never widens the largest schedulable chunk or a
+   bidirectional media chunk: the wide plain chunk equals Gemma 4's former
+   stripe, and block-bearing requests keep the SDK chunk — `EngineV2Factory+Configuration.swift`
+   (`usesWidePrefillChunk`, `prefillGeometry`), `SchedulerV2.swift`
+   (`prefillChunkCap`).
+9. A Gemma 4 block chunk never exceeds the `maxPrefillChunk` its windowed
+   rings hold, although a chunk that starts at a block covers the whole block
+   and submit validation bounds blocks only by the step budget:
+   `Gemma4Processor` gives every image and video frame its own
+   `boi`/`eoi`-delimited block of `image_seq_length` or
+   `video_processor.max_soft_tokens` soft tokens (280 and 70 by default; the
+   vision family's largest image budget is 1,120). The default 2,048-token
+   chunk covers that, and a chunk override that leaves `max(chunk, stripe)`
+   below 1,120 tokens is raised to 1,120. A step budget below 1,120 is raised
+   to 1,120 as well, because submit validation refuses a block longer than the
+   step budget —
+   `libs/mlx-swift-lm/Libraries/MLXVLM/Models/Gemma4.swift` (`Gemma4Processor`),
+   `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
+   `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
+   `prefillGeometry`).
 
 ## Failure modes
 

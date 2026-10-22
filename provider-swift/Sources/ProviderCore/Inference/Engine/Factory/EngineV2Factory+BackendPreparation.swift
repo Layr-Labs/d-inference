@@ -454,7 +454,8 @@ extension EngineV2Factory {
                     maxBufferLength: MLX.GPU.deviceInfo().maxBufferSize,
                     quantization: precision.configuration,
                     nativeLayerIndices: nativeKVLayerIndices,
-                    residentPrefixCache: resolvedResidentPrefix)
+                    residentPrefixCache: resolvedResidentPrefix,
+                    environment: environment)
                 let pagedCaches = paged.makeLayerCaches()
                 // Hybrid models number caches by model layer, while paged storage
                 // is dense over attending layers. Convert before indexing the pool.

@@ -581,7 +581,12 @@ The JSON report records `promptMode` (`"rotating"` or `"fixed"`),
 seed length. These optional fields extend schema `4`; absent metadata in older
 reports remains unspecified. The flag is rejected outside `--scheduler-prefill`
 before runtime loading (`provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift`,
-`run`, `makePrompt`, `SchedulerPrefillBenchmarkReport`).
+`run`, `makePrompt`, `SchedulerPrefillBenchmarkReport`). Schema `5` adds
+`prefillChunkTokens` and `maxBatchedTokensPerStep`; with
+`soloPrefillStripeTokens` they record the scheduler the production build handed
+the warm-up engine, after serving, calibration and GLM policy
+(`EngineV2Factory.ProductionBuild.prefillGeometry`), and a measured engine built
+with different geometry fails the run.
 
 Scheduler prefill installs `MLXMemoryGuard.configureOnce` before loading weights,
 matching serving and the throughput sweep. Stderr records the selected allocator
@@ -1742,6 +1747,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
+| `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, live) |
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, checkpoint) |
@@ -1751,8 +1757,12 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
+| `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
+| `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
+| `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
+| `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 | `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | only when the shell value is exactly `1`; selects the [opt-in worker candidate](../reference/configuration.md#app-attest-worker-qualification) (`AppAttestWorkerSelection`, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) |
 

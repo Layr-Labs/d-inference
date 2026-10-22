@@ -291,7 +291,7 @@ public enum GLM5NextTensorParallelBench {
         let prompt = options.promptTokenIDs, chunk = max(1, options.chunkSize)
         // As the runtime: the request's pages are reserved before it runs.
         let pages = try stage.dsaPagePool.map { pool in
-            GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+            GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
                 GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: stage.plan.configuration,
                     contextTokens: prompt.count + options.outputCount + options.mtpDepth + 1,
                     speculative: mtp != nil)))
@@ -471,7 +471,7 @@ public enum GLM5NextTensorParallelBench {
         struct Lane {
             let cache: GLM5NextTextStageCache
             /// As the runtime's lanes: each lane's pages reserved before it runs.
-            let pages: GLM5NextTensorParallelPageReservation?
+            let pages: GLM5NextPageReservation?
             let speculation: Speculation
             var tokens: [Int]
         }
@@ -482,7 +482,7 @@ public enum GLM5NextTensorParallelBench {
             let shift = (index * 977) % max(1, base.count)
             let prompt = Array(base[shift...] + base[..<shift])
             let pages = try stage.dsaPagePool.map { pool in
-                GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
                     GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool,
                         configuration: stage.plan.configuration,
                         contextTokens: prompt.count + options.outputCount + options.mtpDepth + 1, speculative: true)))
@@ -596,7 +596,7 @@ public enum GLM5NextTensorParallelBench {
     /// One decode step's graph (logits and cache updates) by primitive name.
     static func decodeCensus(stage: GLM5NextTextStage, prompt: [Int]) throws -> [String: Int] {
         let pages = try stage.dsaPagePool.map { pool in
-            GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+            GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
                 GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: stage.plan.configuration,
                     contextTokens: prompt.count + 1, speculative: false)))
         }

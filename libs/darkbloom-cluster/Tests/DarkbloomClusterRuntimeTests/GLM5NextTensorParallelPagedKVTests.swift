@@ -98,7 +98,7 @@ struct GLM5NextTensorParallelPagedKVTests {
     final class Request {
         let cache: GLM5NextTextStageCache
         let speculation: GLM5NextTensorParallelSpeculation
-        let pages: GLM5NextTensorParallelPageReservation?
+        let pages: GLM5NextPageReservation?
         var last: Int
         var tokens: [Int] = []
 
@@ -111,7 +111,7 @@ struct GLM5NextTensorParallelPagedKVTests {
              embeddings: MLXArray? = nil,
              store: ((Int, GLM5NextTextStageCache, GLM5NextMTPCheckpoint) -> Void)? = nil) throws {
             pages = try pool.map { pool in
-                GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
                     Runtime.historyPages(pool: pool, configuration: stage.plan.configuration,
                         contextTokens: prompt.count + outputs + 3, speculative: true)))
             }

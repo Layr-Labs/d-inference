@@ -837,7 +837,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let cache: GLM5NextTextStageCache
         /// The request's page reservation (nil with contiguous histories); it
         /// ends with the request's state.
-        let pages: GLM5NextTensorParallelPageReservation?
+        let pages: GLM5NextPageReservation?
         /// Prompt tokens restored from the prefix cache.
         let start: Int
         let speculation: GLM5NextTensorParallelSpeculation?

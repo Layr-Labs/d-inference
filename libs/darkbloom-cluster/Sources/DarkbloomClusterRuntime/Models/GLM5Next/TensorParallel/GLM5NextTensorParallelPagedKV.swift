@@ -23,7 +23,7 @@ import MLXLLM
 /// agreement.
 extension GLM5NextTensorParallelResidentRuntime {
     /// Tokens per page.
-    static let dsaPageTokens = 64
+    static let dsaPageTokens = GLM5NextPageReservation.pageTokens
 
     static func pagedKV(_ environment: [String: String]) throws -> Bool {
         switch environment["DARKBLOOM_CLUSTER_GLM_PAGED_KV"] {
@@ -66,21 +66,36 @@ extension GLM5NextTensorParallelResidentRuntime {
 
     /// Opens `request`'s page reservation (nil with contiguous histories).
     /// Between steps only: it may grow the pool.
-    func reservePages(_ request: QwenLayerStageGenerationRequest) throws -> GLM5NextTensorParallelPageReservation? {
+    func reservePages(_ request: QwenLayerStageGenerationRequest) throws -> GLM5NextPageReservation? {
         guard let pool = stage?.dsaPagePool else { return nil }
         // Pages released by the last steps: every graph that read them was submitted.
         pool.recycle()
         let pages = Self.historyPages(pool: pool, configuration: descriptor.configuration.textConfig,
             contextTokens: Self.historyTokens(request), speculative: mtp != nil)
-        return GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages: pages))
+        return GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages: pages))
     }
 }
 
 /// A request's page reservation, ended when the request's state goes (its
-/// pages that prefix entries still hold stay with them).
-final class GLM5NextTensorParallelPageReservation {
+/// pages that prefix entries still hold stay with them). Tensor parallel and
+/// pipeline GLM stages alike.
+final class GLM5NextPageReservation {
+    /// Tokens per page.
+    static let pageTokens = 64
+
     let pool: GLM5NextDSAPagePool
     let account: GLM5NextDSAPageBook.Account
+
+    /// The activation type a stage without the embedding receives (its
+    /// boundary's, the configuration's `dtype`).
+    static func activationType(_ stage: GLM5NextTextStage) throws -> DType {
+        switch stage.plan.configuration.dtype {
+        case "bfloat16": return .bfloat16
+        case "float16": return .float16
+        case "float32": return .float32
+        case let other: throw ProbeError("GLM stage activation type \(other) has no paged history")
+        }
+    }
 
     init(pool: GLM5NextDSAPagePool, account: GLM5NextDSAPageBook.Account) {
         self.pool = pool; self.account = account

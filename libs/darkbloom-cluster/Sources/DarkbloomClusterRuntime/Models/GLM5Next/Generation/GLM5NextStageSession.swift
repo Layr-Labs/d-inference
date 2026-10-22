@@ -13,6 +13,8 @@ final class GLM5NextStageSession {
     let agreement: QwenLayerStageGenerationAgreement
     private let model: GLM5NextTextStage
     private var cache: GLM5NextTextStageCache?
+    /// This request's pages of the stage's pool, ended with the session.
+    private var pages: GLM5NextPageReservation?
     private var schedule: QwenLayerStageGenerationSchedule
     private var inOperation = false
     /// This request's prompt-prefix capture, when its plan keeps one.
@@ -60,7 +62,14 @@ final class GLM5NextStageSession {
         }
         _ = try qwenGenerationBoundaryGeometry(request: request, dtype: dtype, authenticatedChunking: true)
         self.model = model; self.identity = identity; self.agreement = agreement
-        let fresh = model.newCache()
+        // Every local DSA layer's history at the request's longest, in pages.
+        pages = try model.dsaPagePool.map { pool in
+            pool.recycle()
+            let layers = model.plan.layers.filter { c.layerTypes[$0] == .deepseekSparseAttention }.count
+            return GLM5NextPageReservation(pool: pool,
+                account: try pool.reserve(pages: layers * pool.pages(tokens: request.maximumTokens)))
+        }
+        let fresh = model.newCache(account: pages?.account)
         if let restoring {
             try MLX.withError { error in
                 try GLM5NextStagePrefixSnapshot.restore(restoring, into: fresh.layers, globalLayers: Array(model.plan.layers))
@@ -206,7 +215,8 @@ final class GLM5NextStageSession {
             Stream.gpu.synchronize()
             try error.check(); try check()
             Stream.cpu.synchronize(); try error.check(); try check()
-            cache = nil; imageFeatures = nil; isClosed = true
+            cache = nil; imageFeatures = nil; pages = nil; isClosed = true
+            model.dsaPagePool?.recycle()
         }
     }
 

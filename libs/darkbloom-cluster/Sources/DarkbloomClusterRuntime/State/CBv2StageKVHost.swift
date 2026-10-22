@@ -30,11 +30,13 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
         return value
     }
 
-    /// A stage's backend when the launch named none, from what the stage
-    /// serves rather than from the model or the Mac: CONTIGUOUS for a stage
-    /// that decodes one request at a time with a speculative (MTP) head, PAGED
-    /// for batch lanes and every stage without a head. Both ranks derive the
-    /// same value from the same mode and lanes; a named backend always wins.
+    /// A stage's backend when the launch named none: PAGED, for every stage
+    /// and mode (owner rule 2026-10-22: paged attention only for KV, never
+    /// contiguous), MTP stages included; a named backend (the diagnosis
+    /// switch) always wins. Both ranks derive the same value.
+    ///
+    /// History of the earlier interim default (contiguous for one-request
+    /// MTP stages), kept for the measurements it records:
     ///
     /// Interim (2026-10-12): with the head, paged storage is still slower than
     /// contiguous, on the pair and on one Mac alone. 9B at 30K, same binary:
@@ -52,8 +54,7 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     /// attention (attention only, 9B geometry at 30K: 10.6 vs 4.2 ms per
     /// 4 layers, 17.6 ms before item 24).
     public static func resolved(environment: [String: String], speculative: Bool, batchLanes: Int) throws -> Self {
-        if let value = try Self.named(environment) { return value }
-        return speculative && batchLanes <= 1 ? .contiguous : .paged
+        try Self.named(environment) ?? .paged
     }
 
     /// Extra load-agreement fields: both ranks must store and attend the same

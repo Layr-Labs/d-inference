@@ -107,13 +107,12 @@ struct CBv2PagedMTPWindowTests {
     }
 }
 
-// Interim default (2026-10-12): a stage that decodes one request at a time with
-// a speculative head stores its KV contiguously unless the launch names a
-// backend; batch lanes and stages without a head keep paged. Model-free.
-@Suite("Stage KV backend default follows what the stage serves")
+// Every stage stores its KV paged unless the launch names a backend (owner
+// rule 2026-10-22: paged only), one-request MTP stages included. Model-free.
+@Suite("Stage KV backend default is paged")
 struct ClusterStageKVBackendDefaultTests {
-    @Test func oneRequestMTPStagesDefaultToContiguousEverythingElseToPaged() throws {
-        #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: 1) == .contiguous)
+    @Test func everyStageDefaultsToPaged() throws {
+        #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: 1) == .paged)
         #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: false, batchLanes: 1) == .paged)
         for lanes in 2...8 {
             #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: lanes) == .paged)
@@ -137,6 +136,6 @@ struct ClusterStageKVBackendDefaultTests {
                 }
             }
         }
-        #expect(try ClusterStageKVBackendKind.resolved(environment: [name: "  "], speculative: true, batchLanes: 1) == .contiguous)
+        #expect(try ClusterStageKVBackendKind.resolved(environment: [name: "  "], speculative: true, batchLanes: 1) == .paged)
     }
 }

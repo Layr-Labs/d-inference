@@ -49,6 +49,14 @@ struct GLM5NextStageContract {
         }
         let model = try loader.loadTextStage(plan: plans[stageIndex], beforeTensorRead: beforeTensorRead)
         try validate(model: model, stageIndex: stageIndex)
+        // Every request's DSA histories live in this stage's page pool
+        // (`GLM5NextPageReservation`); a later stage takes the boundary's
+        // type. A stage of linear-attention layers only has no DSA history.
+        let c = model.plan.configuration
+        if model.plan.layers.contains(where: { c.layerTypes[$0] == .deepseekSparseAttention }) {
+            model.dsaPagePool = try model.makeDSAPagePool(pageSize: GLM5NextPageReservation.pageTokens,
+                activation: model.embedding == nil ? try GLM5NextPageReservation.activationType(model) : nil)
+        }
         return .init(model: model, contract: self, stageIndex: stageIndex)
     }
 

@@ -10,8 +10,9 @@ public struct ClusterWorkerLineDecoder: Sendable {
     private var ended = false
     public init(commandStream: Bool) {
         // The command stream's largest record is a reservation carrying GLM
-        // media (`mediaCommandBytes`); the codec bounds every other command.
-        maximumRecordBytes = commandStream ? ClusterWorkerLimits.mediaCommandBytes : ClusterWorkerLimits.eventBytes
+        // media (`mediaCommandBytes`), alone or inside its owner envelope
+        // (`envelopeBytes`); the codec bounds every command.
+        maximumRecordBytes = commandStream ? ClusterWorkerLimits.envelopeBytes : ClusterWorkerLimits.eventBytes
     }
     public mutating func append(_ data: Data) throws -> [Data] {
         do {

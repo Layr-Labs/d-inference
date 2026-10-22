@@ -384,6 +384,16 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             lease.releaseResources()
             lock.withLock { refusedCount += 1 }
             throw ClusterWorkerOwnerError.refused(reason)
+        } catch ClusterWorkerOwnerError.cancelled where lease.cancellationReason == .callerCancelled
+                    || lease.cancellationReason == .deadline {
+            // Its caller or its deadline cancelled it while it was being
+            // admitted: its own cleanup gives back what a rank admitted (or
+            // reads a pending answer first). When no rank had to be fenced,
+            // only this request ended and the pair serves on.
+            lease.waitForRetirement()
+            if lease.withdrewBeforeStart { lease.releaseResources(); throw ClusterWorkerOwnerError.cancelled }
+            noteRequestFailure(lease, "admission: the request was cancelled and a rank did not give it back")
+            invalidate(); lease.releaseResources(); throw ClusterWorkerOwnerError.cancelled
         } catch {
             // Named for the pair's incident (S24), as a started request's failure is.
             noteRequestFailure(lease, "admission: " + ClusterWorkerRequest.failureText(error))

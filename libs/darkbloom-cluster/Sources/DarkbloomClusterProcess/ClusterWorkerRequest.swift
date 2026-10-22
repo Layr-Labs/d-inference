@@ -9,6 +9,11 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     private let retired = WorkerCompletion()
     private let queue = DispatchQueue(label: "darkbloom.worker.request")
     private var started = false
+    /// True once the caller started the request (`start`): before that no
+    /// rank ran anything for it, so a cancel gives its reservations back.
+    private var begun = false
+    /// True when cleanup had to fence a rank (no clean answer in time).
+    private var fencedRank = false
     private var admitted = false
     private var admitting = true
     private var released = false
@@ -58,7 +63,21 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 glmMedia: index == 0 ? reservation.glmMedia : reservation.glmMedia?.withoutEncodedBytes)
             try lock.withLock {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
-                try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
+                do {
+                    try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
+                } catch ClusterWorkerOwnerError.refused(let reason) where reason != .unavailable {
+                    // The rank's endpoint could not take this reservation now
+                    // (its command queue) or carry it: nothing reached the
+                    // rank. That is this request's refusal, as a rank's own
+                    // would be, and the caller gives back what the other rank
+                    // admitted (`withdrawRefused`).
+                    submissions[index] = .refused
+                    throw ClusterWorkerOwnerError.refused(reason)
+                } catch is ClusterWorkerProtocolError {
+                    // The command could not be encoded for this rank: never sent.
+                    submissions[index] = .refused
+                    throw ClusterWorkerOwnerError.refused(.profile)
+                }
                 submissions[index] = .submitted
             }
             let event = try owner.receive(rank: index, requestID: requestID, until: deadline, cancelled: { self.isCancelled })
@@ -122,17 +141,17 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     public func start(emit: @escaping @Sendable (ClusterWorkerRequestEvent) -> Bool) throws {
         try lock.withLock {
             guard admitted && !started && cancellation == nil && !released else { throw ClusterWorkerOwnerError.unavailable }
-            callback = emit; started = true
+            callback = emit; started = true; begun = true
         }
         queue.async { self.run() }
     }
 
     public func cancel(reason: ClusterWorkerCancellationReason = .callerCancelled) {
-        let action = lock.withLock { () -> (run: Bool, first: Bool) in
-            if retired.isComplete { return (false, false) }
+        let action = lock.withLock { () -> (run: Bool, first: Bool, begun: Bool) in
+            if retired.isComplete { return (false, false, begun) }
             let first = cancellation == nil
             cancellation = cancellation ?? reason
-            if started || admitting { return (false, first) }; started = true; return (true, first)
+            if started || admitting { return (false, first, begun) }; started = true; return (true, first, begun)
         }
         if action.run { queue.async { self.cleanup(acknowledged: [false, false]) } }
         guard action.first else { return }
@@ -143,7 +162,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         // and fences a rank only when its answer does not come in time; the
         // watchdog below, later than that wait, covers a loop that never got
         // there (a consumer callback that does not return).
-        let alone = retiresAlone(reason)
+        let alone = retiresAlone(reason, begun: action.begun)
         // Cancellation cannot rely on a responsive callback or native receive.
         // The watchdog is independent of the request queue and observes real exit.
         // Its fence closes each worker's command stream; a worker still inside
@@ -167,10 +186,24 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
 
     /// A lane (the pair serves several requests at once and its workers
     /// retire lanes alone) cancelled by its caller or its deadline retires
-    /// alone. Any other cause (a rank's failure, a protocol violation, a peer
-    /// that is gone) ends the pair.
-    private func retiresAlone(_ reason: ClusterWorkerCancellationReason) -> Bool {
-        owner.lanesRetireAlone && (reason == .callerCancelled || reason == .deadline)
+    /// alone, and so does any request its caller or its deadline cancels
+    /// before it was started (`begun` false): no rank ran anything for it, a
+    /// rank that admitted it gives its reservation back (`retired(cancelled)`)
+    /// and a rank that was never asked has nothing to give back. Any other
+    /// cause (a rank's failure, a protocol violation, a peer that is gone)
+    /// ends the pair.
+    private func retiresAlone(_ reason: ClusterWorkerCancellationReason, begun: Bool) -> Bool {
+        (owner.lanesRetireAlone || !begun) && (reason == .callerCancelled || reason == .deadline)
+    }
+
+    /// The request was cancelled by its caller or its deadline before it was
+    /// started, and every rank gave back what it held (or was never asked):
+    /// only this request ended, and the pair serves on.
+    public var withdrewBeforeStart: Bool {
+        lock.withLock {
+            retired.isComplete && !begun && !fencedRank
+                && cancellation.map({ $0 == .callerCancelled || $0 == .deadline }) == true
+        }
     }
 
     /// The longest `cleanup` waits for a rank's retirement before fencing it:
@@ -324,9 +357,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             // The request's own loop stopped because it was cancelled alone;
             // a rank's failure or a protocol violation still ends the pair.
             let cancelledAlone = (error as? ClusterWorkerOwnerError) == .cancelled
-                && lock.withLock { cancellation.map(retiresAlone) ?? false }
+                && lock.withLock { cancellation.map { retiresAlone($0, begun: begun) } ?? false }
             if !cancelledAlone { owner.noteRequestFailure(self, cause) }
-            if !cancelledAlone && lock.withLock({ cancellation.map(retiresAlone) ?? false }) { owner.invalidate() }
+            if !cancelledAlone && lock.withLock({ cancellation.map { retiresAlone($0, begun: begun) } ?? false }) { owner.invalidate() }
             cancel(reason: .runtimeError) // Own the watchdog before any callback can block.
             let emit = lock.withLock { callback }
             _ = emit?(.failed("Worker request failed: \(cause); cleanup is still owned"))
@@ -354,18 +387,38 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         var acknowledged = original
         let reason = lock.withLock { cancellation ?? .runtimeError }
         let submitted = lock.withLock { submissions }
-        let alone = retiresAlone(reason)
+        let alone = retiresAlone(reason, begun: lock.withLock { begun })
         let deadline = DispatchTime.now().uptimeNanoseconds + (alone ? Self.laneRetirementWaitNanoseconds : 2_000_000_000)
         for index in 0..<2 where !acknowledged[index] {
             // Never-submitted/refused ranks have no request to cancel. Pending
             // submission can race an unread refusal, so only confirmed admission
             // permits request cancel. All other ranks need actual native cleanup.
+            if alone && (submitted[index] == .none || submitted[index] == .refused) {
+                // Never asked, or it refused: this rank holds nothing for the request.
+                acknowledged[index] = true
+                continue
+            }
+            if alone && submitted[index] == .submitted {
+                // Its answer is still on the way: read it, then give back an admission.
+                if let value = try? owner.receive(rank: index, requestID: requestID, until: deadline),
+                   value.requestID == requestID {
+                    if case .refused = value.event { acknowledged[index] = true; continue }
+                    if case .admitted = value.event,
+                       (try? owner.workers[index].sendWorkerCommand(.cancel(reason), requestID: requestID, deadline: deadline)) != nil {
+                        continue
+                    }
+                }
+                lock.withLock { fencedRank = true }
+                owner.workers[index].requestNativeCleanup(reason: cause)
+                continue
+            }
             guard submitted[index] == .admitted else {
+                lock.withLock { fencedRank = true }
                 owner.workers[index].requestNativeCleanup(reason: cause)
                 continue
             }
             do { try owner.workers[index].sendWorkerCommand(.cancel(reason), requestID: requestID, deadline: deadline) }
-            catch { owner.workers[index].requestNativeCleanup(reason: cause) }
+            catch { lock.withLock { fencedRank = true }; owner.workers[index].requestNativeCleanup(reason: cause) }
         }
         for index in 0..<2 where !acknowledged[index] {
             let worker = owner.workers[index]
@@ -379,6 +432,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             }
             if !acknowledged[index] {
                 // A lane whose rank did not retire it in time ends the pair after all.
+                lock.withLock { fencedRank = true }
                 if alone { owner.invalidate() }
                 worker.requestNativeCleanup(reason: cause); worker.waitForNativeCleanup() // No timeout can manufacture this acknowledgment.
                 acknowledged[index] = true

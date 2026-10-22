@@ -15,6 +15,16 @@ public enum ClusterWorkerLimits {
     /// rank on the leader's own Mac (`ClusterGLMMedia`). Every other command,
     /// and every record that crosses the link, stays within `commandBytes`.
     public static let mediaCommandBytes = commandBytes + ClusterGLMMedia.maximumEnvelopeBytes
+    /// One command inside its owner envelope (`ClusterOwnerWire`) or as a pipe
+    /// record: the largest command and room for the envelope's own fields.
+    /// Every hop a command takes admits this, so a command the codec admits
+    /// is never refused on its way to a rank.
+    public static let envelopeBytes = mediaCommandBytes + 64 * 1024
+    /// What one rank's command queue holds (`ClusterWorkerProcess`,
+    /// `ClusterRemoteWorkerEndpoint`): the largest command and 1 MiB of other
+    /// commands beside it. A queue that cannot take a reservation now refuses
+    /// that request alone (`ClusterWorkerOwnerError.refused(.busy)`).
+    public static let queuedCommandBytes = mediaCommandBytes + 1024 * 1024
     public static let eventBytes = 16 * 1024
     /// The standard request bounds: what every family is sized and qualified
     /// for unless its own registered row declares more (`wire*`). A family's

@@ -68,7 +68,7 @@ struct OwnerWire: Sendable {
     }
 
     private static func decodeRecord(_ data: Data, commandStream: Bool) throws -> Self {
-        try validateClusterWorkerEnvelope(data, commandStream: true) // Outer-only512KiB; embedded WorkerCodec retains its own bounds.
+        try validateClusterWorkerEnvelope(data, commandStream: true) // Outer `envelopeBytes`; embedded WorkerCodec retains its own bounds.
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw invalid("Owner object required") }
         func string(_ key: String) throws -> String {
             guard let value = object[key] as? String else { throw invalid("Owner string missing") }; return value

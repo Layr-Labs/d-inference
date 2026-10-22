@@ -106,7 +106,13 @@ private struct Harness: Sendable {
                 try lease.start { event in captured.append(event); lease.cancel(); return false }
             } else { lease.cancel() }
             try await h.awaitRetirement(lease); lease.releaseResources()
-            try require(!captured.clean && h.pair.readiness == nil, "Cancellation cannot become clean callback stop")
+            try require(!captured.clean, "Cancellation cannot become clean callback stop")
+            // Cancelled before it started, the request gives both reservations
+            // back and the pair serves on; cancelled while it runs, a pair
+            // without lanes ends.
+            try require(insideCallback ? h.pair.readiness == nil : h.pair.readiness != nil && lease.withdrewBeforeStart,
+                insideCallback ? "A cancel inside a running request must end a pair without lanes"
+                    : "A cancel before start must leave the pair serving")
             try await h.finish()
         }
     }

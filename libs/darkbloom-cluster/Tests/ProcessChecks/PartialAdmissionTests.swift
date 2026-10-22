@@ -13,8 +13,11 @@ private final class SubmissionEndpoint: ClusterWorkerEndpoint, @unchecked Sendab
     private let proof = DispatchGroup()
     private var proofGranted: Bool
     private var reserves = 0, cancels = 0
-    init(_ child: ClusterWorkerProcess, holdProof: Bool = false) {
-        self.child = child; proofGranted = !holdProof
+    /// Refuses every reservation as a full command queue does
+    /// (`ClusterWorkerOwnerError.refused(.busy)`): the rank is never asked.
+    private let queueFull: Bool
+    init(_ child: ClusterWorkerProcess, holdProof: Bool = false, queueFull: Bool = false) {
+        self.child = child; proofGranted = !holdProof; self.queueFull = queueFull
         if holdProof { proof.enter() }
     }
     var counts: (Int, Int) { lock.withLock { (reserves, cancels) } }
@@ -30,6 +33,7 @@ private final class SubmissionEndpoint: ClusterWorkerEndpoint, @unchecked Sendab
         lock.withLock {
             switch command { case .reserve: reserves += 1; case .cancel: cancels += 1; default: break }
         }
+        if queueFull, case .reserve = command { throw ClusterWorkerOwnerError.refused(.busy) }
         try child.sendWorkerCommand(command, requestID: requestID, deadline: deadline)
     }
     func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
@@ -59,6 +63,8 @@ private final class AdmissionCompletion: @unchecked Sendable {
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(30)
         let executable = URL(fileURLWithPath: CommandLine.arguments[1])
         try await requestScopedRefusals(executable)
+        try await endpointRefusals(executable)
+        try await cancelledBeforeStart(executable)
         try await servingContext(executable)
         // An unanswered submitted reservation is not a refusal: the pair is
         // quarantined. Real children enforce their protocol.
@@ -89,20 +95,66 @@ private final class AdmissionCompletion: @unchecked Sendable {
             try requirePartial(endpoints.allSatisfy(\.nativeCleanupObserved), "Missing actual child cleanup")
         }
         try await missingProof(executable)
-        print("{\"passed\":true,\"groups\":6,\"actualLocalChildren\":true,\"partialAdmission\":true,"
-            + "\"requestScopedRefusal\":true,\"servingContext\":true}")
+        print("{\"passed\":true,\"groups\":8,\"actualLocalChildren\":true,\"partialAdmission\":true,"
+            + "\"requestScopedRefusal\":true,\"endpointRefusal\":true,\"cancelBeforeStart\":true,\"servingContext\":true}")
         alarm(0)
     }
 
-    fileprivate static func launch(_ executable: URL, _ behaviors: [String], until end: UInt64) throws -> [SubmissionEndpoint] {
+    fileprivate static func launch(_ executable: URL, _ behaviors: [String], until end: UInt64,
+                                   queueFull: [Bool] = [false, false]) throws -> [SubmissionEndpoint] {
         let now = DispatchTime.now().uptimeNanoseconds
         return try (0..<2).map { rank -> SubmissionEndpoint in
             let child = try ClusterWorkerProcess(launch: .init(executable: executable,
                 arguments: [String(rank), behaviors[rank]], environment: [:]), expectedIdentity: fixtureIdentity,
                 rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
                 startupDeadline: now + 3_000_000_000, initialLeaseDeadline: end)
-            try child.launch(); return SubmissionEndpoint(child)
+            try child.launch(); return SubmissionEndpoint(child, queueFull: queueFull[rank])
         }
+    }
+
+    /// Candidate 33 (2026-10-22): a ~256K-token reservation was larger than
+    /// rank 0's owner command queue (1 MiB); the throw ended the pair ("the
+    /// request was cancelled before it started"). An endpoint that cannot
+    /// take a reservation now refuses that request alone (retryable `busy`):
+    /// the rank that had admitted it gives it back, the other was never
+    /// asked, and the same pair serves the next request.
+    static func endpointRefusals(_ executable: URL) async throws {
+        for (queueFull, reserves, cancels) in [([true, false], [1, 0], [0, 0]), ([false, true], [1, 1], [1, 0])] {
+            let end = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+            let endpoints = try launch(executable, ["normal", "normal"], until: end, queueFull: queueFull)
+            defer { for endpoint in endpoints { endpoint.requestNativeCleanup() } }
+            let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
+            var refusal: ClusterWorkerOwnerError?
+            do { _ = try pair.reserve(requestID: UUID(), reservation: reservation(until: end)) }
+            catch let error as ClusterWorkerOwnerError { refusal = error }
+            try requirePartial(refusal == .refused(.busy), "A full command queue was not this request's refusal (\(String(describing: refusal)))")
+            try requirePartial(pair.readiness != nil && pair.admissionState.isValid, "A full command queue quarantined the pair")
+            try requirePartial(endpoints.map { $0.counts.0 } == reserves, "Unexpected reservation submission")
+            try requirePartial(endpoints.map { $0.counts.1 } == cancels, "Cancel reached an unconfirmed or unasked rank")
+            try requirePartial(endpoints.allSatisfy { $0.child.termination == nil }, "A rank was fenced for a request-scoped refusal")
+            await pair.shutdown()
+            try requirePartial(endpoints.allSatisfy { $0.child.termination == .exited(0) }, "A rank did not exit cleanly")
+        }
+    }
+
+    /// A request its caller cancels after both ranks admitted it, before it
+    /// started, gives both reservations back (`retired(cancelled)`); nothing
+    /// is fenced and the pair serves the next request.
+    static func cancelledBeforeStart(_ executable: URL) async throws {
+        let end = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        let endpoints = try launch(executable, ["normal", "normal"], until: end)
+        defer { for endpoint in endpoints { endpoint.requestNativeCleanup() } }
+        let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
+        let lease = try pair.reserve(requestID: UUID(), reservation: reservation(until: end))
+        lease.cancel(reason: .callerCancelled)
+        await lease.waitUntilRetired(); lease.releaseResources()
+        try requirePartial(lease.withdrewBeforeStart, "A cancel before start was not given back cleanly")
+        try requirePartial(pair.readiness != nil && pair.admissionState.isValid, "A cancel before start quarantined the pair")
+        try requirePartial(endpoints.map { $0.counts.1 } == [1, 1], "Both admitted ranks must be told to give the reservation back")
+        try requirePartial(endpoints.allSatisfy { $0.child.termination == nil }, "A rank was fenced for a cancel before start")
+        try await serve(pair, until: end)
+        await pair.shutdown()
+        try requirePartial(endpoints.allSatisfy { $0.child.termination == .exited(0) }, "A rank did not exit cleanly")
     }
 
     static func reservation(prompt: Int = 3, output: Int = 2, until end: UInt64) -> ClusterWorkerReservation {

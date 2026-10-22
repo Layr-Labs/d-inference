@@ -452,11 +452,26 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     public func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
         try lock.withLock {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard !invalid, !cleanup, deadline > now, queuedCommands < 16 else { throw ClusterWorkerOwnerError.closed }
+            guard !invalid, !cleanup, deadline > now else { throw ClusterWorkerOwnerError.closed }
+            // A reservation this endpoint cannot take now, or cannot carry, is
+            // that request's refusal: nothing was sent and the session is as it was.
+            let reserve: Bool
+            if case .reserve = command { reserve = true } else { reserve = false }
+            guard queuedCommands < 16 else {
+                if reserve { throw ClusterWorkerOwnerError.refused(.busy) }
+                throw ClusterWorkerOwnerError.closed
+            }
             // Sequenced when written; encoded now so a bad command fails here.
-            let wire = try ClusterLinkWorkerWire.command(command, requestID: requestID, epoch: expectedIdentity.membershipEpoch,
-                session: session, sequence: 0, now: now, deliveryDeadline: deadline)
-            _ = try wire.encoded()
+            let wire: ClusterLinkWorkerWire
+            do {
+                wire = try ClusterLinkWorkerWire.command(command, requestID: requestID, epoch: expectedIdentity.membershipEpoch,
+                    session: session, sequence: 0, now: now, deliveryDeadline: deadline)
+                _ = try wire.encoded()
+            } catch let error as ClusterWorkerOwnerError {
+                throw error
+            } catch where reserve {
+                throw ClusterWorkerOwnerError.refused(.profile)
+            }
             outgoing.append(wire); queuedCommands += 1
         }
         wake.signal()

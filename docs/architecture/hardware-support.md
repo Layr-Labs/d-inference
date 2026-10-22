@@ -337,12 +337,25 @@ standalone server runs the same sequence in
   reclaimer remains separate; it cannot refund live request or load ownership.
   Its proactive sweep (buffer cache ≥ 2 GiB) flushes only after 5 s of
   whole-Mac idleness or when the cache crowds out admission headroom
-  (`KVPoolReclaimer.proactiveWindow`); every shortfall reclaim or pressure
-  sweep also asks paged pools to drop retained free KV segments, even when it
-  does not flush. Those segments are allocator-active memory, so load
-  admission counts them as reclaimable
-  (`CBv2RetainedKVSegments.retainedBytes`) and the load path releases them
-  before it evicts or refuses.
+  (`KVPoolReclaimer.proactiveWindow`). The idle flush rechecks idleness and
+  clears inside `WholeMacServiceBudget.performIfIdle`: a request admitted
+  first cancels the clear without spending the reclaim rate limit, and one
+  arriving during it is admitted afterwards. Every shortfall reclaim or
+  pressure sweep also asks paged pools to drop retained free KV segments,
+  even when it does not flush. Refused charges that bypass request reservations (paged engine
+  growth, native MiMo media work) signal that reclaim while either the idle
+  sweep or segment retention is on
+  (`GlobalKVCacheBudget.directChargeRefusalSignal`). Retained segments are
+  allocator-active memory, so load admission counts them as reclaimable
+  (`CBv2RetainedKVSegments.retainedBytes`). The load gates
+  (`ProviderLoop.evictUntilAvailable`,
+  `ProviderLoop.evictUntilNemotronSuperFits`,
+  `StandaloneServer.ensureMemoryHeadroomForLoad`) release them and drop the
+  buffer cache once (`releaseReclaimableMemoryForLoad`) before they evict or
+  refuse, and `StartupPreloader` does the same before it skips a candidate
+  (`reclaimBeforeSkip`). The post-load headroom guard above re-measures after
+  its cache flush without releasing them: that backing was already counted as
+  used when the gate admitted the load.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what

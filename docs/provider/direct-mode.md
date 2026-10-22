@@ -42,11 +42,19 @@ Requests never leave the machine and are never billed.
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
    serve.` if none remain), and preloads the selected models before listening
-   when `[backend] startup_preload` is enabled (the default). The explicit
+   when `[backend] startup_preload` is enabled (the default). When a load is
+   short of headroom the server first releases retained paged KV segments and
+   drops the MLX buffer cache once, then evicts the least recently used idle
+   slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
    model, which still loads on request. Standalone preload does not run the
-   coordinator-serving one-token startup self-test, so the first local request
-   may still compile Metal kernels. Ctrl-C during preload cancels startup
+   coordinator-serving one-token startup self-test. Each preloaded model does run
+   the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
+   before the listener opens: a short shader-cache probe, plus the shape cells
+   after a new install or a macOS or MLX kernel update. The 5-second sweep tick
+   warms a deferred, lazily loaded or MTP-upgraded engine once the server is
+   idle; a request that arrives first preempts it and may still compile Metal
+   kernels. `DARKBLOOM_TTFT_SHAPE_WARMUP=0` disables the warmup. Ctrl-C during preload cancels startup
    without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the

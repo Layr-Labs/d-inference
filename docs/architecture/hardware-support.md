@@ -295,8 +295,8 @@ flowchart TD
     B --> C{available ≥ requiredGb?}
     C -- no, idle slots exist --> D{evictionCanReach?}
     D -- no --> R1[refuse: modelLoadFailed]
-    D -- yes --> E[evict idle slot, re-check]
-    C -- no, nothing evictable --> F[drop reclaimable cache, re-measure once]
+    D -- yes --> E[first pass: release retained KV segments, drop reclaimable cache, re-check without retained credit; then evict idle slot, re-check]
+    C -- no, nothing evictable --> F[release retained KV segments, drop reclaimable cache, re-measure once]
     F --> C
     C -- yes --> P{claimPendingLoad: atomic target + assistant + setup allowance}
     P -- optional assistant cannot fit --> T[retry target-only claim once]
@@ -358,6 +358,41 @@ through the measured free memory.
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache
   reclaimer remains separate; it cannot refund live request or load ownership.
+  Its proactive sweep (buffer cache ≥ 2 GiB) flushes only after 5 s of
+  whole-Mac idleness or when the cache crowds out admission headroom
+  (`KVPoolReclaimer.proactiveWindow`). The idle flush rechecks idleness and
+  clears inside `WholeMacServiceBudget.performIfIdle`: a request admitted
+  first cancels the clear without spending the reclaim rate limit, and one
+  arriving during it is admitted afterwards. Every shortfall reclaim or
+  pressure sweep also asks paged pools to drop retained free KV segments,
+  even when it does not flush. Refused charges that bypass request
+  reservations (paged engine growth, native MiMo media work) signal that
+  reclaim while either the idle sweep or segment retention is on
+  (`GlobalKVCacheBudget.directChargeRefusalSignal`). Their shortfall is
+  exactly what usage must fall by for the refused charge to fit, including
+  commitment debt and usage already inside the reserve; MiMo's extra OS
+  reserve narrows only the system side, not the cap
+  (`provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryLedger.swift`,
+  `ProcessMemoryLedger.capacityShortfall`). Retained segments
+  (`CBv2RetainedKVSegments.retainedBytes`) are allocator-active memory that
+  only a release request returns, at each engine's next step. The load gates
+  (`ProviderLoop.evictUntilAvailable`,
+  `ProviderLoop.evictUntilNemotronSuperFits`,
+  `StandaloneServer.ensureMemoryHeadroomForLoad`) release them and drop the
+  buffer cache once (`releaseReclaimableMemoryForLoad`, which waits up to
+  250 ms) before they evict or refuse, and `StartupPreloader` does the same
+  before it skips a candidate (`reclaimBeforeSkip`). Eviction feasibility
+  counts them only to decide whether that release could make room (when not
+  even they and every idle model could, the gate refuses without releasing);
+  after it, only the memory sample shows what returned, and segments still
+  parked (a step that outlasted the wait, or segments parked since) are no
+  eviction credit (`ProviderLoop.reclaimableMemoryBytes`). Pre-accept
+  (`ProviderLoop.fastAdmissionReject`,
+  `ProviderLoop.nemotronSuperLoadIsCertainToFail`) releases and resamples
+  the same way when nothing is idle or only they could close the gap. The
+  post-load headroom guard above re-measures after its cache flush without
+  releasing them: that backing was already counted as used when the gate
+  admitted the load.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
@@ -554,6 +589,14 @@ Calibration observations are staged per cell and published only after all
 requests retire and the completion posture check passes. A cancelled or
 non-nominal cell discards those observations and remains retryable; valid
 earlier measurements and independently published serving evidence survive.
+The excluded shape warmup that precedes the startup cells uses the same
+session, idle gate and foreground lease, within the same KV and service
+budgets; only its startup-preload pass skips the posture check, because it
+measures nothing. Its probes and cells publish no observations or work totals.
+While any such session runs, the periodic proactive MLX pool sweep waits:
+its flush is device work that cancels the session, so a warmup cell longer
+than the tick could never finish. A sweep signalled just before a session
+started checks again when it runs. On-pressure reclaims still run.
 
 ### Serving width by chip
 
@@ -568,6 +611,25 @@ memory concurrency and the coordinator's per-model quality cap. Under Low Power
 Mode or a non-nominal thermal state the bridge serves and reports the configured
 width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
+
+The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV
+grant, windowed-ring size, load quotation or activation floor: the paged pool
+is sized from the largest schedulable chunk, `max(prefillChunkSize,
+soloPrefillStripeTokens)`, which Gemma 4's 2,048-token plain chunk leaves at
+its previous value, and Gemma 4 media keeps its 512-token chunk. It does let a
+Gemma mixed step carry up to 4,096 prompt tokens beside decode rows. That
+working set rides the unchanged activation reserve: the
+[2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
+put its KV-subtracted peak at eight concurrent 32k-token prompts at 3.73 GiB,
+inside the 5.5 GiB default. GPT-OSS and dense Qwen keep 512 / 2,048 by default
+because the same geometry lifted their peaks at that load further above their
+floors, GPT-OSS from 3.50 to 3.62 GiB against 3.5 and Qwen3.5-9B from 5.73 to
+6.03 GiB against 5.5. The live KV gate grants KV up to the cap minus the
+reserve (`UnifiedMemoryCap.liveKVHeadroomBytes`), so a peak above the reserve
+lands beyond the cap; even the previous geometry reaches both floors at that
+load, so they need a long-context re-measurement coordinated with platform
+admission. MoE Qwen's peak rose 2.1 GiB (`EngineV2Factory.usesWidePrefillChunk`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`).
 
 ### Deadline admission rates
 

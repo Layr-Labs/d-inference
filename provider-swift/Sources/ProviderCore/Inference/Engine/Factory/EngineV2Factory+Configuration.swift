@@ -55,12 +55,109 @@ extension EngineV2Factory {
     static func defaultSoloPrefillStripeTokens(
         for model: (any LanguageModel)?
     ) -> Int {
-        guard let model else { return defaultSoloPrefillStripeTokens }
-        // MoE subclasses the dense target, so exclude it explicitly.
-        if model is Qwen35Model, !(model is Qwen35MoEModel) {
-            return defaultDenseQwenSoloPrefillStripeTokens
+        isDenseQwen35(model) ? defaultDenseQwenSoloPrefillStripeTokens : defaultSoloPrefillStripeTokens
+    }
+
+    /// MoE subclasses the dense target, so exclude it explicitly.
+    static func isDenseQwen35(_ model: (any LanguageModel)?) -> Bool {
+        model is Qwen35Model && !(model is Qwen35MoEModel)
+    }
+
+    public static let prefillChunkKey = "DARKBLOOM_CBV2_PREFILL_CHUNK"
+    public static let stepTokenBudgetKey = "DARKBLOOM_CBV2_STEP_TOKENS"
+    /// Plain chunk, and therefore the prompt work beside decode rows, for the
+    /// family whose busy-engine serving and activation measurements back it
+    /// (`usesWidePrefillChunk`).
+    public static let widePrefillChunkTokens = 2048
+    /// Largest bidirectional block a Gemma 4 request can carry: one image at
+    /// the vision family's largest soft-token budget (catalog artifacts use
+    /// 280; video frames about 70).
+    static let gemma4MaximumMediaBlockTokens = 1120
+
+    /// Prompt geometry resolved once per engine; the paged pool is sized from it.
+    public struct PrefillGeometry: Equatable, Sendable {
+        public let prefillChunkTokens: Int
+        public let maxBatchedTokensPerStep: Int
+        public let soloPrefillStripeTokens: Int?
+        /// Plain chunk for requests with bidirectional media blocks, when it
+        /// is narrower than `prefillChunkTokens`.
+        public let bidirectionalMediaPrefillChunkCeiling: Int?
+    }
+
+    public static func prefillGeometry(
+        model: (any LanguageModel)?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> PrefillGeometry {
+        var chunk = prefillChunkTokens(model: model, environment: environment)
+        var stripe = soloPrefillStripeTokens(abovePlainChunk: chunk, model: model, environment: environment)
+        // A chunk that starts at a bidirectional block covers the whole block,
+        // and the paged window rings hold only max(chunk, stripe) tokens
+        // (`PagedSequenceKV` preconditions it). Only overrides reach this; the
+        // stripe was below the block, so it cannot arm above the raised chunk.
+        if isGemma4(model), max(chunk, stripe ?? 0) < gemma4MaximumMediaBlockTokens {
+            chunk = gemma4MaximumMediaBlockTokens
+            stripe = nil
         }
-        return defaultSoloPrefillStripeTokens
+        var budget = stepTokenBudget(abovePlainChunk: chunk, environment: environment)
+        // Submit validation refuses a block longer than the step budget
+        // (`CBv2MultimodalPlan.validate`), so the budget must hold one too.
+        if isGemma4(model) {
+            budget = max(budget, gemma4MaximumMediaBlockTokens)
+        }
+        let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
+        return PrefillGeometry(
+            prefillChunkTokens: chunk,
+            maxBatchedTokensPerStep: budget,
+            soloPrefillStripeTokens: stripe,
+            bidirectionalMediaPrefillChunkCeiling: chunk > sdkChunk ? sdkChunk : nil)
+    }
+
+    /// Gemma 4 only. GPT-OSS and dense Qwen3.5/3.8 also reached the first token
+    /// sooner under it, but at eight 32k-token prompts it lifted their
+    /// KV-subtracted activation peaks further above their activation floors
+    /// (GPT-OSS 3.50 to 3.62 GiB against 3.5; Qwen3.5-9B 5.73 to 6.03 against
+    /// 5.5), and floors move only with a platform-coordinated re-measurement.
+    /// Nemotron and Bonsai demanded checkpoints split only an armed 2,048-token
+    /// stripe; MoE Qwen's peak rises about 2 GiB; Qwen3-VL, Qwen4, MiMo and
+    /// other families have no busy-engine measurement of it.
+    static func usesWidePrefillChunk(_ model: (any LanguageModel)?) -> Bool {
+        isGemma4(model)
+    }
+
+    static func isGemma4(_ model: (any LanguageModel)?) -> Bool {
+        model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
+    }
+
+    /// Absent selects the family default. A positive explicit value applies to
+    /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
+    /// zero, negative, or malformed values restore the SDK chunk.
+    static func prefillChunkTokens(
+        model: (any LanguageModel)?, environment: [String: String]
+    ) -> Int {
+        let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
+        guard let raw = environment[prefillChunkKey] else {
+            return usesWidePrefillChunk(model) ? widePrefillChunkTokens : sdkChunk
+        }
+        guard let value = Int(raw), value > 0 else { return sdkChunk }
+        return value
+    }
+
+    /// Absent selects twice the plain chunk, never below the SDK budget, so a
+    /// full chunk and a finishing row's remainder fit beside decode rows. An
+    /// explicit value must cover the plain chunk; smaller, zero, negative, or
+    /// malformed values restore the SDK budget, raised to the plain chunk.
+    static func stepTokenBudget(
+        abovePlainChunk plainChunk: Int, environment: [String: String]
+    ) -> Int {
+        let sdkBudget = CBv2SchedulerConfig().maxBatchedTokensPerStep
+        guard let raw = environment[stepTokenBudgetKey] else {
+            let (doubled, overflow) = plainChunk.multipliedReportingOverflow(by: 2)
+            return max(sdkBudget, overflow ? Int.max : doubled)
+        }
+        guard let value = Int(raw), value >= plainChunk else {
+            return max(sdkBudget, plainChunk)
+        }
+        return value
     }
 
     /// One scheduler config sizes the paged pool and runs the engine. Keeping it
@@ -72,16 +169,18 @@ extension EngineV2Factory {
         performanceProfile: ServingPerformanceProfile? = nil,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
+        let geometry = prefillGeometry(model: model, environment: environment)
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: nativeConcurrentRequestLimit(
-                requested: maxConcurrentRequests, model: model, environment: environment))
-        config.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
-            abovePlainChunk: config.prefillChunkSize,
-            model: model,
-            environment: environment)
+                requested: maxConcurrentRequests, model: model, environment: environment),
+            maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
+            prefillChunkSize: geometry.prefillChunkTokens,
+            soloPrefillStripeTokens: geometry.soloPrefillStripeTokens)
+        // Paged span-bearing chunks attend unblocked, so bidirectional media keeps the SDK chunk.
+        config.bidirectionalMediaPrefillChunkCeiling = geometry.bidirectionalMediaPrefillChunkCeiling
         config.mixedStepPrefillTokenCap = MixedPrefillPolicy.resolve(
             modelID: modelID, profile: performanceProfile, environment: environment,
-            requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
+            requiresNarrowingFloor: isGemma4(model))
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
         if let limit = calibratedPrefillTokenLimit(model: model) {
@@ -290,5 +389,16 @@ extension EngineV2Factory {
         guard pagedPoolDType == pagedPoolDTypeName(.float32) else { return base }
         let (doubled, overflow) = base.multipliedReportingOverflow(by: 2)
         return overflow ? Int.max : doubled
+    }
+}
+
+extension EngineV2Factory.PrefillGeometry {
+    /// The geometry a built scheduler configuration carries.
+    init(scheduler: CBv2SchedulerConfig) {
+        self.init(
+            prefillChunkTokens: scheduler.prefillChunkSize,
+            maxBatchedTokensPerStep: scheduler.maxBatchedTokensPerStep,
+            soloPrefillStripeTokens: scheduler.soloPrefillStripeTokens,
+            bidirectionalMediaPrefillChunkCeiling: scheduler.bidirectionalMediaPrefillChunkCeiling)
     }
 }

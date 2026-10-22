@@ -265,6 +265,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
     /// admission-mode control. Both must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
+    /// `DARKBLOOM_TTFT_ADMISSION_FIXES`: the deadline-admission estimator
+    /// corrections are on by default; their rollback must reach the job too.
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
@@ -297,6 +299,7 @@ public enum LaunchAgent: Sendable {
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
+        DeadlineAdmissionFixes.environmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
         GLM5NextWiredResidency.environmentFlag,

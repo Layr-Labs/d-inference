@@ -569,6 +569,38 @@ Mode or a non-nominal thermal state the bridge serves and reports the configured
 width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
+### Deadline admission rates
+
+First-token deadline admission is a time check, not a memory grant. Its
+estimator corrections ([deadlines](inference.md#deadlines),
+`DARKBLOOM_TTFT_ADMISSION_FIXES`) change no KV grant, load quotation,
+activation floor, serving width or memory concurrency; a request they admit
+still passes slot and process byte admission. Their inputs are measured on the
+serving Mac, so the same request can project differently on other hardware:
+
+- Decode is charged per batch step from the step shape the engine measured. On
+  an MTP engine the charged depth follows the chip's automatic verification
+  envelope
+  (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`,
+  `MTPAutomaticVerificationPolicy.maxRectangularTokens`;
+  [chip families](../provider/hardware-requirements.md#chip-families)): a
+  smaller envelope reaches the one-token-per-row charge at fewer decode rows,
+  as the live planner does.
+- An ordinary engine's isolated-prefill anchor is its own startup calibration
+  cell, measured idle at nominal posture. Expired evidence returns to the
+  anchor only while the whole Mac is idle at nominal posture
+  (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift`,
+  `EngineV2Bridge.calibrationPosturePermitsWork`: no Low Power Mode, nominal
+  thermal state). While another resident model or device activity holds the
+  Mac, or under Low Power Mode or a non-nominal thermal state, the anchor only
+  floors the aggregate rate
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
+  their recovery probe instead.
+
+The anchor and floor shape admission only. The published isolated rate,
+capacity wire fields and the external platform's memory contract are unchanged.
+
 ### Cross-repository agreement
 
 Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.
@@ -651,6 +683,7 @@ grant or reported capacity field changes, so
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
 | Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
+| Deadline admission rate inputs | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `IsolatedPrefillAdmissionRate`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`targetFirstTokenDeadlineAdmission`) |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |

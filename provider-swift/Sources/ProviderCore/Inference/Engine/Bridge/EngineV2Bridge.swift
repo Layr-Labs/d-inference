@@ -313,6 +313,12 @@ public actor EngineV2Bridge {
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
+    /// and reset with it. Deadline admission uses it to charge decode per
+    /// batch step instead of per row.
+    var observedDecodeStep = MeasuredDecodeStep()
+    /// `DeadlineAdmissionFixes`, resolved once per bridge.
+    let admissionFixes: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
     /// of answer success. Engine timings exclude queueing and output delivery;
     /// cache-reuse samples remain in their separate workload buckets.
@@ -325,6 +331,9 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
+    /// Latest published calibration-cell isolated rate: measured idle at
+    /// nominal posture with caching off. Anchors admission's isolated rate.
+    var calibratedIsolatedPrefillTps: Double?
     var nativeMediaPrefillRates = NativeMediaPrefillRates()
     var nativeMediaBootstrapRequestID: String?
     var nativeMediaLearnedRequestIDs: Set<String> = []
@@ -391,6 +400,7 @@ public actor EngineV2Bridge {
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
+        admissionFixes: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
@@ -398,6 +408,7 @@ public actor EngineV2Bridge {
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
+        self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
@@ -494,6 +505,7 @@ public actor EngineV2Bridge {
             }
         }
         self.emitTelemetry = emitTelemetry
+        performanceMeasurements.keepsNewestObservationTime = self.admissionFixes
     }
 
     /// Deterministic timing seam for prefill-sampling tests.

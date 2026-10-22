@@ -179,6 +179,30 @@ struct LaunchAgentEnvironmentTests {
         #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
+    @Test func forwardsDeadlineAdmissionRollbackToProviderJob() {
+        // The estimator corrections are on by default; the rollback only takes
+        // effect in the launchd-managed provider process if the plist carries it.
+        let key = DeadlineAdmissionFixes.environmentKey
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        let out = LaunchAgent.passthroughEnvironment(from: [key: "0", "UNRELATED_SECRET": "excluded"])
+        #expect(out == [key: "0"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: out))
+        // The job receives the raw value; a trailing line ending still disables.
+        let templated = LaunchAgent.passthroughEnvironment(from: [key: "off\n"])
+        #expect(templated == [key: "off\n"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: templated))
+        #expect(DeadlineAdmissionFixes.resolve(environment: LaunchAgent.passthroughEnvironment(from: [:])))
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [key: "off", "UNRELATED_SECRET": "excluded"])
+        let vars = plist["EnvironmentVariables"] as? [String: String]
+        #expect(vars == [key: "off"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: vars ?? [:]))
+    }
+
     @Test func forwardsMiMoResidencyRollbackToProviderJob() {
         // Standing MiMo residency is the default; the operator's rollback is
         // only effective if it reaches the launchd-managed provider process.

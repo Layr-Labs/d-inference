@@ -82,6 +82,12 @@ struct PromptTokenCacheTests {
         #expect(PromptTokenCachePolicy.capacityBytes(environment: ["DARKBLOOM_TTFT_PROMPT_CACHE_MB": "0"]) == 0)
         #expect(PromptTokenCachePolicy.capacityBytes(environment: ["DARKBLOOM_TTFT_PROMPT_CACHE_MB": "-1"]) == 32 << 20)
         #expect(PromptTokenCachePolicy.verificationInterval(environment: ["DARKBLOOM_TTFT_PROMPT_CACHE_VERIFY": "0"]) == 0)
+        // Each rollback must reach the launchd provider job.
+        let rollback = [
+            PromptTokenCachePolicy.environmentKey: "0", PromptTokenCachePolicy.capacityEnvironmentKey: "0",
+            PromptTokenCachePolicy.verifyEnvironmentKey: "0",
+        ]
+        #expect(LaunchAgent.passthroughEnvironment(from: rollback) == rollback)
     }
 
     @Test("splitter declines tokenizers outside the exact conditions")

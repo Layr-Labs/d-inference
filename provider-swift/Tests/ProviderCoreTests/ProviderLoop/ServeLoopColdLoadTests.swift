@@ -120,6 +120,9 @@ struct ServeLoopColdLoadTests {
         #expect(!CoordinatorEvent.prefetchModel(modelId: "m", priority: 0).overtakesReleasedAdmissions)
         #expect(WorkFIFOPolicy.releasesColdLoadWaits(environment: [:]))
         #expect(!WorkFIFOPolicy.releasesColdLoadWaits(environment: ["DARKBLOOM_TTFT_COLD_LOAD_RELEASE": "0"]))
+        // The rollback must reach the launchd provider job.
+        let rollback = [WorkFIFOPolicy.coldLoadReleaseEnvironmentKey: "0"]
+        #expect(LaunchAgent.passthroughEnvironment(from: rollback) == rollback)
     }
 
     private static func body(model: String) throws -> Data {

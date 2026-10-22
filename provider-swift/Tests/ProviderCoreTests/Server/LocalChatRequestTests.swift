@@ -36,9 +36,17 @@ struct LocalChatRequestTests {
         let local = try decoder.decode(LocalChatRequest.self, from: data)
         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
         #expect(local.request == upstream)
-        #expect(local.templateControls == ChatTemplateControls(
+        // GLM refusal evidence travels with the controls: the padded effort
+        // and `preserve_thinking` are invalid for GLM and the original tools
+        // are retained.
+        let glm = try decoder.decode(GLM5NextPromptPolicy.RawControls.self, from: data)
+        #expect(glm.invalid && glm.hasOriginalTools)
+        var expected = ChatTemplateControls(
             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
-            promptDate: try #require(local.templateControls.promptDate)).withRawMiMoControls(evidence(invalid: true)))
+            promptDate: try #require(local.templateControls.promptDate))
+            .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm)
+        expected.rawMiMoTools = try decoder.decode(MiMoV26ToolEvidence.self, from: data)
+        #expect(local.templateControls == expected)
         #expect(local.request.reasoning?.enabled == true)
         #expect(local.request.streamOptions?.includeUsage == true)
         #expect(local.request.streamOptions?.continuousUsageStats == true)
@@ -61,7 +69,16 @@ struct LocalChatRequestTests {
     func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool) throws {
         let data = Data((#"{"model":"test/qwen","messages":[],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
-        let complete = expected.withRawMiMoControls(evidence(invalid: invalid))
+        let glm = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: data)
+        // GLM refuses every malformed control; the last fragment is a valid GLM
+        // thinking-off request beside an ignored unknown extension.
+        if fragment.hasPrefix(#""unknown_extension""#) {
+            #expect(glm.disablesThinking && !glm.requestsThinking)
+            try glm.validate()
+        } else {
+            #expect(throws: (any Error).self) { try glm.validate() }
+        }
+        let complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
         #expect(local.templateControls.rawMiMoControls.invalid == invalid)
@@ -80,14 +97,46 @@ struct LocalChatRequestTests {
         let local = try decoder.decode([LocalChatRequest].self, from: data)
         let upstream = try decoder.decode([OpenAIChatCompletionRequest].self, from: data)
         #expect(local.map(\.request) == upstream)
+        let glm = try decoder.decode([GLM5NextPromptPolicy.RawControls].self, from: data)
+        #expect(glm.map(\.invalid) == [false, false, true])
+        #expect(glm.map(\.disablesThinking) == [true, false, false])
+        #expect(glm.map(\.requestsThinking) == [false, false, true])
         let expected = [
-            ChatTemplateControls(enableThinking: false),
-            ChatTemplateControls(),
-            ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true)),
+            ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0]),
+            ChatTemplateControls().withRawGLM5Controls(glm[1]),
+            ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true))
+                .withRawGLM5Controls(glm[2]),
         ]
         for (item, controls) in zip(local, expected) {
             #expect(item.templateControls == controls.withPromptDate(try #require(item.templateControls.promptDate)))
         }
+    }
+
+    @Test("GLM reasoning switches decode identically on local and coordinator paths", arguments: [
+        (#""reasoning":{"enabled":true,"exclude":false},"include_reasoning":true,"chat_template_kwargs":{"thinking":true,"enable_thinking":true}"#,
+         nil, false),
+        (#""reasoning":{"enabled":true,"max_tokens":2048},"enable_thinking":true"#, .high, false),
+        (#""reasoning":{"max_tokens":512,"effort":"xhigh"}"#, .max, false),
+        (#""reasoning":{"enabled":true,"exclude":true}"#, nil, false),
+        (#""include_reasoning":false,"reasoning_effort":"high""#, .high, false),
+        (#""chat_template_kwargs":{"thinking":false}"#, nil, true),
+        (#""reasoning_effort":"none""#, nil, true),
+    ] as [(String, GLM5NextPromptPolicy.Effort?, Bool)])
+    func glmReasoningSwitchesMatchAcrossPaths(
+        fragment: String, effort: GLM5NextPromptPolicy.Effort?, disablesThinking: Bool
+    ) throws {
+        let data = Data((#"{"model":"glm","messages":[{"role":"user","content":"Hi"}],"# + fragment + "}").utf8)
+        let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
+        let remote = ProviderLoop.extractChatTemplateControls(from: data)
+        #expect(local.templateControls.rawGLM5Controls == remote.rawGLM5Controls)
+        let glm = remote.rawGLM5Controls
+        #expect(!glm.invalid)
+        #expect(glm.effort == effort)
+        #expect(glm.disablesThinking == disablesThinking)
+        #expect(glm.excludesReasoning == (fragment.contains(#""exclude":true"#)
+            || fragment.contains(#""include_reasoning":false"#)))
+        let batch = try JSONDecoder().decode([LocalChatRequest].self, from: Data("[\(String(decoding: data, as: UTF8.self))]".utf8))
+        #expect(batch.map(\.templateControls.rawGLM5Controls) == [glm])
     }
 
     @Test("invalid upstream fields keep their original decode error", arguments: [

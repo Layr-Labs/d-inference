@@ -123,7 +123,11 @@ extension ModelScanner {
             : (nil, nil)
 
         var quantization = detectQuantization(modelName: modelName, snapshotDir: snapshotDir)
-        let (sizeBytes, _) = collectWeightFiles(in: snapshotDir)
+        let glmLoad = modelType == "glm5_next" ? glm5NextLoadEstimate(snapshotDir: snapshotDir) : nil
+        // An unknown/malformed GLM layout is not a loadable disk×1.2 fallback.
+        if modelType == "glm5_next", glmLoad == nil { return nil }
+        // GLM already counted its closed inventory with checked arithmetic.
+        let sizeBytes = glmLoad?.storedBytes ?? collectWeightFiles(in: snapshotDir).sizeBytes
 
         guard sizeBytes > 0 else { return nil }
 
@@ -155,7 +159,9 @@ extension ModelScanner {
         // revalidates and claims its real bound before allocation.
         let mimoLoad = MiMoV26DiscoveryLoadFootprint.estimate(
             snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes)
-        let estimatedMemoryGb = superFootprint?.estimatedMemoryGb
+        let managedEstimateGb: Double? =
+            glmLoad.map { Double($0.totalBytes) / 1_073_741_824 } ?? superFootprint?.estimatedMemoryGb
+        let estimatedMemoryGb = managedEstimateGb
             ?? mimoLoad.map { Double($0.totalBytes) / 1_073_741_824 }
             ?? nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
             ?? (Double(residentBytes) / 1_073_741_824) * memoryOverheadFactor
@@ -190,7 +196,7 @@ extension ModelScanner {
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash,
             ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
-            nativeLoadTransientBytes: superFootprint?.nativeLoadTransientBytes
+            nativeLoadTransientBytes: glmLoad?.supplementBytes ?? superFootprint?.nativeLoadTransientBytes
                 ?? mimoLoad?.transientBytes ?? nativeLoad?.transientBytes
         )
         if ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info) {

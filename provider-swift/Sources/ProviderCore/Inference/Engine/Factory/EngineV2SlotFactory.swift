@@ -263,6 +263,7 @@ enum EngineV2SlotFactory {
                 modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: preparation,
+                maximumContextLength: sizing.maxContextLength,
                 assistantLoader: assistantLoader,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo,
@@ -270,6 +271,11 @@ enum EngineV2SlotFactory {
         }
         let snapshot = prepared.snapshot
         let servingModel = prepared.servingModel
+        // Flint's decoded configuration validates the artifact context bound.
+        // Keep backend sizing and pre-submit admission on that same authority,
+        // even when the generic sizing snapshot is absent or stale.
+        let flintContextTokens = (servingModel as? FlintModel)?.configuration.maxPositionEmbeddings
+        let maxContextLength = flintContextTokens ?? sizing.maxContextLength
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
@@ -360,11 +366,11 @@ enum EngineV2SlotFactory {
                     performanceQualificationAllowed: !mtpConfig.effectiveEnabled
                         || mtpPerformanceConfiguration != nil,
                     mtpPerformanceConfiguration: mtpPerformanceConfiguration,
+                    kvBudget: kvBudget,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
-                    maxContextLength: sizing.maxContextLength > 0
-                        ? sizing.maxContextLength : nil,
+                    maxContextLength: maxContextLength > 0 ? maxContextLength : nil,
                     environment: environment,
                     residentPrefixCache: residentPrefixCache,
                     hybridPrefixCache: hybridPrefixCache,
@@ -466,7 +472,7 @@ enum EngineV2SlotFactory {
             }
         }
 
-        let targetKVBytesPerToken: Int
+        var targetKVBytesPerToken: Int
         if let preparedBackend {
             targetKVBytesPerToken = slotKVBytesPerToken(
                 resolvedKind: preparedBackend.kind,
@@ -478,6 +484,21 @@ enum EngineV2SlotFactory {
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
         } else {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
+        }
+        // GLM step scratch grows with each row's context, so it is reported and
+        // reserved per token beside KV; its setup envelope is not per token.
+        let glm5NextTarget = EngineV2Factory.glm5NextTarget(model: servingModel)
+        var glm5NextStepSetupBytes = 0
+        if glm5NextTarget != nil, let preparedBackend {
+            guard let scratch = try preparedBackend.glm5NextStepScratch(),
+                let rate = GLM5NextCoordinatorServing.requestBytesPerToken(
+                    kvBytesPerToken: targetKVBytesPerToken,
+                    stepScratchBytesPerToken: scratch.bytesPerContextToken)
+            else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM step-scratch price unavailable")
+            }
+            targetKVBytesPerToken = rate
+            glm5NextStepSetupBytes = scratch.setupBytes
         }
         let assistantStateBytesPerToken = assistantHandle?.drafter?.requestStateBytesPerToken ?? 0
         let assistantStateTokenGranularity =
@@ -509,7 +530,7 @@ enum EngineV2SlotFactory {
         // evidence can never feed back into these construction decisions.
         let deadlineRuntime = preparedBackend.map { backend in
             DeadlineRuntimeConfiguration(
-                configuredContextTokens: sizing.maxContextLength,
+                configuredContextTokens: maxContextLength,
                 effectiveMaxConcurrency: backend.schedulerConfig.maxConcurrentRequests,
                 prefillChunkSize: backend.schedulerConfig.prefillChunkSize,
                 maxConcurrentPartialPrefills: backend.schedulerConfig.maxConcurrentPartialPrefills ?? 0,
@@ -553,7 +574,8 @@ enum EngineV2SlotFactory {
             unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
-            advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
+            advertisedContextTokens: glm5NextTarget != nil ? sizing.maxContextLength
+                : flintContextTokens ?? Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
                 ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
@@ -576,16 +598,26 @@ enum EngineV2SlotFactory {
             ssdHybridCheckpointStore: ssdHybridCheckpointStore,
             residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
+            prefixCacheConstructionFailure: attentionPreparation.status.failure,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
+        await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)
 
         do {
             try await bridge.requireServiceableOrdinaryGrant()
         } catch {
-            await bridge.shutdown()
+            try await GLM5NextRetirement.beforeRelease(bridge)
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
             throw error
+        }
+        do {
+            try await bridge.glm5NextNativeOwner?.startResidency()
+        } catch {
+            // The owner retains its model/resources; retain the actual bridge
+            // as well so a failed start cannot escape as a published bundle.
+            GLM5NextLoadFaultState.retain([bridge])
+            throw GLM5NextManagedLoadError.retirementUnproven
         }
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }

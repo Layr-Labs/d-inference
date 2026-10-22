@@ -145,6 +145,9 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Scheduler prefill: measured iterations per length.")
     var prefillIterations = 2
 
+    @Flag(name: .long, help: "Scheduler prefill only: repeat the same seed-token prompt at offset 0 for warmup and measured iterations; default rotates measured prompts by iteration * 17.")
+    var prefillFixedPrompt = false
+
     @Flag(name: .long, help: "Measure production CBv2 burst-versus-staggered request arrivals and output invariance.")
     var arrivalInvariance = false
 

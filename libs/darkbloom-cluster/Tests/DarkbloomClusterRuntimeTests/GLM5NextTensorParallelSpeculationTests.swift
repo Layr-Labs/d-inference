@@ -37,6 +37,37 @@ struct GLM5NextTensorParallelSpeculationTests {
         #expect(throws: ProbeError.self) { try Speculation.decide(zero, ranks: 2, window: 2) }
     }
 
+    /// One rank's split slot: its vocabulary half's maximum and global
+    /// argmax at each window position, the proposals, the stop flag.
+    static func split(_ maxima: [Float], _ indices: [Int], _ drafts: [Int], stop: Float = 0) -> [Float] {
+        maxima + indices.map(Float.init) + drafts.map(Float.init) + [stop]
+    }
+
+    @Test func splitRoundsTakeTheLargerHalfAndRankZeroOnATie() throws {
+        // Positions: rank 1 wins, a tie (rank 0's lower index), rank 0 wins.
+        let zero = Self.split([1.5, 2.0, 3.0], [11, 12, 13], [80_000, 12])
+        let one = Self.split([2.5, 2.0, -1.0], [80_000, 77_440, 90_000], [80_000, 12], stop: 2)
+        #expect(try Speculation.decide(zero + one, ranks: 2, window: 2, vocabularySplit: true)
+            == .init(tokens: [80_000, 12, 13], stops: [0, 2]))
+        // The first proposal missing keeps only the first target.
+        let early = Self.split([1.5, 2.0, 3.0], [11, 12, 13], [9, 12])
+        let late = Self.split([2.5, 2.0, -1.0], [80_000, 77_440, 90_000], [9, 12])
+        #expect(try Speculation.decide(early + late, ranks: 2, window: 2, vocabularySplit: true).tokens == [80_000])
+        // No proposal: the window's one token.
+        #expect(try Speculation.decide(Self.split([0.5], [3], []) + Self.split([0.25], [77_441], []),
+            ranks: 2, window: 0, vocabularySplit: true).tokens == [3])
+        // The ranks' proposals must agree; the split needs two ranks and greedy rounds.
+        #expect(throws: ProbeError.self) {
+            try Speculation.decide(zero + Self.split([2.5, 2.0, -1.0], [80_000, 77_440, 90_000], [80_000, 13]),
+                ranks: 2, window: 2, vocabularySplit: true)
+        }
+        #expect(throws: ProbeError.self) {
+            try Speculation.decide(zero + one, ranks: 2, window: 2, sampled: true, vocabularySplit: true)
+        }
+        #expect(throws: ProbeError.self) { try Speculation.decide(zero, ranks: 1, window: 2, vocabularySplit: true) }
+        #expect(Speculation.segments(windows: [2, 0], ranks: 2, split: true) == [0 ..< 18, 18 ..< 24])
+    }
+
     @Test func sampledRoundsTakeRankZerosDrawsAndCheckOnlyTheProposals() throws {
         // Rank 0 drew [11, 12, 13]; rank 1 put its argmax and adopts rank 0's draws.
         let zero = Self.slot([11, 12, 13], [11, 40]), one = Self.slot([11, 7, 9], [11, 40], stop: 3)

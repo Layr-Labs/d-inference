@@ -61,6 +61,9 @@ public enum GLM5NextTensorParallelBench {
         /// (`GLM5NextTensorParallelSpeculation.EarlySubmission`): `none`,
         /// `proposals` (the runtime's) or `layers`.
         public var mtpEarly = "proposals"
+        /// Greedy rounds between two ranks read out half the vocabulary each
+        /// (`GLM5NextTensorParallelSpeculation.splitsVocabulary`, the runtime's).
+        public var mtpVocabularySplit = true
         /// How the prompt is prefilled.
         public enum PrefillSchedule: String, Sendable {
             /// Chunks of `chunkSize`, each as `microBatches` micro-batches.
@@ -355,6 +358,7 @@ public enum GLM5NextTensorParallelBench {
                 agree: { value in group.map { $0.allSum(value) } ?? value })
             value.acceptsProposals = options.mtpCheck != .keepFirst
             value.earlySubmission = try earlySubmission(options)
+            value.splitsVocabulary = options.mtpVocabularySplit
             value.recordsPhases = true
             return value
         }
@@ -547,6 +551,7 @@ public enum GLM5NextTensorParallelBench {
                 pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { value in group.map { $0.allSum(value) } ?? value })
             speculation.earlySubmission = try earlySubmission(options)
+            speculation.splitsVocabulary = options.mtpVocabularySplit
             var offset = 0
             var last: (logits: MLXArray, hidden: MLXArray)?
             while offset < prompt.count {

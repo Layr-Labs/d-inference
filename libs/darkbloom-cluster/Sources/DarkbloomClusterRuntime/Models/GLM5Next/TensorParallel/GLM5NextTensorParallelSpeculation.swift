@@ -94,6 +94,15 @@ final class GLM5NextTensorParallelSpeculation {
         case none, proposals, layers
     }
     var earlySubmission = EarlySubmission.proposals
+    /// A greedy round between two ranks reads out only this rank's half of
+    /// the head's vocabulary rows (`prepareVerification(vocabularyPart:)`)
+    /// and agrees on each window token through the agreement sum: every
+    /// rank's slot carries its half's maximum and argmax per row, and the
+    /// larger maximum wins, rank 0 (the lower indices) on a tie, which is the
+    /// whole head's argmax with MLX's lowest-index tie rule. Each logit keeps
+    /// the whole head's bits, so the tokens are those of the whole head.
+    /// `rounds` takes the first lane's choice, for all-greedy lanes only.
+    var splitsVocabulary = true
     /// Per round, when set: host seconds building the graph, encoding it
     /// (`asyncEval` returning) and then waiting for the result. A wait near
     /// zero means the round is host-bound; a long wait, GPU-bound.
@@ -229,7 +238,30 @@ final class GLM5NextTensorParallelSpeculation {
     /// takes rank 0's tokens (its draws) and checks the proposals only. Keeps
     /// the longest prefix of proposals equal to the targets, then the target
     /// after it.
-    static func decide(_ values: [Float], ranks: Int, window: Int, sampled: Bool = false) throws -> Round {
+    /// `vocabularySplit`: each slot is instead `3 * window + 3` values, the
+    /// rank's vocabulary half's maximum and (global) argmax at each position,
+    /// the proposals and the stop flag (`slot(logits:...)`); the target is the
+    /// larger maximum's index, the lower rank's on a tie.
+    static func decide(_ values: [Float], ranks: Int, window: Int, sampled: Bool = false,
+                       vocabularySplit: Bool = false) throws -> Round {
+        if vocabularySplit {
+            let width = 3 * window + 3, columns = window + 1
+            guard window >= 0, ranks == 2, !sampled, values.count == ranks * width else {
+                throw ProbeError("GLM speculative split agreement has a wrong shape")
+            }
+            let slots = (0..<ranks).map { Array(values[($0 * width) ..< (($0 + 1) * width)]) }
+            let proposals = (2 * columns) ..< (width - 1)
+            guard slots[1][proposals] == slots[0][proposals] else {
+                throw ProbeError("GLM tensor-parallel ranks proposed different tokens")
+            }
+            let target = (0..<columns).map { j in
+                Int(slots[1][j] > slots[0][j] ? slots[1][columns + j] : slots[0][columns + j])
+            }
+            let draft = slots[0][proposals].map { Int($0) }
+            var accepted = 0
+            while accepted < window, draft[accepted] == target[accepted] { accepted += 1 }
+            return Round(tokens: Array(target[0...accepted]), stops: slots.map { $0[width - 1] })
+        }
         let width = 2 * window + 2
         guard window >= 0, ranks > 0, values.count == ranks * width else {
             throw ProbeError("GLM speculative agreement has a wrong shape")
@@ -244,6 +276,29 @@ final class GLM5NextTensorParallelSpeculation {
         var accepted = 0
         while accepted < window, draft[accepted] == target[accepted] { accepted += 1 }
         return Round(tokens: Array(target[0...accepted]), stops: slots.map { $0[width - 1] })
+    }
+
+    /// This rank's agreement slot for a window's logits `[1, 1 + window, V']`:
+    /// the target token at each position (`draw`'s, else the argmax), the
+    /// proposals and the stop flag; with `split` (`V'` this rank's
+    /// vocabulary half) the half's maximum and global argmax at each position
+    /// instead of the target (`decide(vocabularySplit:)`). Token IDs and
+    /// logits are exact in float32.
+    static func slot(logits: MLXArray, draw: ((MLXArray) -> MLXArray)?, drafts: MLXArray?, stop: Float,
+                     rank: Int, split: Bool) -> MLXArray {
+        var slot: [MLXArray]
+        if split {
+            let half = logits[0].asType(.float32)
+            let index = argMax(half, axis: -1)
+            // Vocabulary indices stay below 2^24, so they are exact in float32.
+            slot = [half.max(axis: -1), index.asType(.float32) + Float(rank * half.dim(-1))]
+        } else {
+            let targets = draw?(logits).reshaped(-1) ?? argMax(logits[0].asType(.float32), axis: -1)
+            slot = [targets.asType(.float32)]
+        }
+        if let drafts { slot.append(drafts.reshaped(-1).asType(.float32)) }
+        slot.append(MLXArray([stop]))
+        return concatenated(slot, axis: 0)
     }
 
     /// One round after the committed token `last` (not yet in `cache`):
@@ -274,19 +329,15 @@ final class GLM5NextTensorParallelSpeculation {
         let drafts = try prepareProposals(verified, window: window, propose: propose)
         if earlySubmission != .none, let drafts { asyncEval(drafts) }
         let input = concatenated([MLXArray([Int32(last)], [1, 1])] + (drafts.map { [$0] } ?? []), axis: 1)
+        let split = splitsVocabulary && draw == nil && ranks == 2
         let candidate = try stage.prepareVerification(
-            tokens: input, cache: cache, earlyEvaluation: earlySubmission == .layers)
+            tokens: input, cache: cache, earlyEvaluation: earlySubmission == .layers,
+            vocabularyPart: split ? (rank, ranks) : nil)
         guard case .final(let output) = candidate.output else {
             throw ProbeError("GLM speculative verification produced no logits")
         }
-        // Slot: the target's token at each of the 1 + window positions, the
-        // proposals, the stop flag. Token IDs are exact in float32.
-        let width = 2 * window + 2
-        let targets = draw?(output.logits).reshaped(-1) ?? argMax(output.logits[0].asType(.float32), axis: -1)
-        var slot = [targets.asType(.float32)]
-        if let drafts { slot.append(drafts.reshaped(-1).asType(.float32)) }
-        slot.append(MLXArray([stop]))
-        let local = concatenated(slot, axis: 0)
+        let width = split ? 3 * window + 3 : 2 * window + 2
+        let local = Self.slot(logits: output.logits, draw: draw, drafts: drafts, stop: stop, rank: rank, split: split)
         let empty = MLXArray.zeros([width], dtype: .float32)
         let agreed = agree(concatenated((0..<ranks).map { $0 == rank ? local : empty }, axis: 0))
         var decided: Round?
@@ -306,7 +357,8 @@ final class GLM5NextTensorParallelSpeculation {
                 try error.check()
             }
         }, keeping: { _ in
-            var round = try Self.decide(agreed.asArray(Float.self), ranks: ranks, window: window, sampled: draw != nil)
+            var round = try Self.decide(agreed.asArray(Float.self), ranks: ranks, window: window, sampled: draw != nil,
+                vocabularySplit: split)
             if !acceptsProposals { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
             decided = round
             return round.tokens.count
@@ -374,11 +426,12 @@ extension GLM5NextTensorParallelSpeculation {
     }
 
     /// Each lane's part of a multi-lane agreement, lane after lane: the
-    /// `ranks` slots of `2 * window + 2` values its own round carries.
-    static func segments(windows: [Int], ranks: Int) -> [Range<Int>] {
+    /// `ranks` slots of `2 * window + 2` values its own round carries
+    /// (`3 * window + 3` with `split`).
+    static func segments(windows: [Int], ranks: Int, split: Bool = false) -> [Range<Int>] {
         var start = 0
         return windows.map { window in
-            let width = ranks * (2 * window + 2)
+            let width = ranks * (split ? 3 * window + 3 : 2 * window + 2)
             defer { start += width }
             return start ..< start + width
         }
@@ -452,8 +505,9 @@ extension GLM5NextTensorParallelSpeculation {
         } else if first.earlySubmission != .none, drafts.contains(where: { $0 != nil }) {
             asyncEval(drafts.compactMap { $0 })
         }
+        let split = first.splitsVocabulary && ranks == 2 && lanes.allSatisfy { $0.draw == nil }
         let candidate = try stage.prepareVerificationRows(
-            inputs, earlyEvaluation: first.earlySubmission == .layers)
+            inputs, earlyEvaluation: first.earlySubmission == .layers, vocabularyPart: split ? (rank, ranks) : nil)
         let forwardBuilt = now()
         times.forward = seconds(forwardStart, forwardBuilt)
         let outputs = try candidate.outputs.map { output -> GLM5NextTextOutput in
@@ -463,12 +517,9 @@ extension GLM5NextTensorParallelSpeculation {
         // Each lane's slots exactly as its own round lays them out.
         var slots: [MLXArray] = []
         for (lane, (output, draft)) in zip(lanes, zip(outputs, drafts)) {
-            let width = 2 * lane.window + 2
-            let targets = lane.draw?(output.logits).reshaped(-1) ?? argMax(output.logits[0].asType(.float32), axis: -1)
-            var slot = [targets.asType(.float32)]
-            if let draft { slot.append(draft.reshaped(-1).asType(.float32)) }
-            slot.append(MLXArray([lane.stop]))
-            let local = concatenated(slot, axis: 0)
+            let width = split ? 3 * lane.window + 3 : 2 * lane.window + 2
+            let local = Self.slot(logits: output.logits, draw: lane.draw, drafts: draft, stop: lane.stop,
+                rank: rank, split: split)
             let empty = MLXArray.zeros([width], dtype: .float32)
             slots += (0..<ranks).map { $0 == rank ? local : empty }
         }
@@ -477,7 +528,7 @@ extension GLM5NextTensorParallelSpeculation {
         // holds whatever each lane's `draw` computes from its logits.
         let agreed = first.agree(depends(input: concatenated(slots, axis: 0),
             dependencies: outputs.map(\.logits)))
-        let segments = Self.segments(windows: lanes.map(\.window), ranks: ranks)
+        let segments = Self.segments(windows: lanes.map(\.window), ranks: ranks, split: split)
         var decided: [Round] = []
         try candidate.commit(afterEvaluating: { roots in
             try MLX.withError { error in
@@ -501,7 +552,7 @@ extension GLM5NextTensorParallelSpeculation {
             let values = agreed.asArray(Float.self)
             decided = try zip(lanes, segments).map { lane, segment in
                 var round = try Self.decide(Array(values[segment]), ranks: ranks, window: lane.window,
-                    sampled: lane.draw != nil)
+                    sampled: lane.draw != nil, vocabularySplit: split)
                 if !lane.speculation.acceptsProposals { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
                 return round
             }

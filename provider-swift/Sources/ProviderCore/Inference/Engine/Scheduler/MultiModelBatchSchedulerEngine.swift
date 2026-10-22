@@ -740,6 +740,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         reasoningParser: visionRequest.reasoningParser,
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
+                        modelType: modelType,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
                     ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
                     try checkFirstContentDeadline()
@@ -830,7 +831,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                templateControls: templateControls)
+                templateControls: templateControls,
+                // Token reuse is partitioned exactly like the prefix KV cache.
+                promptCacheScope: cacheEnabled ? requestCacheScope : nil)
             try checkFirstContentDeadline()
         } catch {
             emitToolConstraintTelemetry(
@@ -861,6 +864,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
+            modelType: modelType,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
         ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
         do {
@@ -1203,7 +1207,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
-                    withholdReasoning: withholdReasoning)
+                    withholdReasoning: withholdReasoning, streamedCalls: prepared)
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
@@ -1394,6 +1398,39 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
+                if router.streamsToolCalls {
+                    // `auto` calls already left as deltas, each validated when
+                    // its frame closed; settle a call closed by a stop token
+                    // and re-check the whole set. The other terminal checks
+                    // match the complete-call path below.
+                    do {
+                        for routed in try router.finishToolCalls(truncated: stopReason == "length") {
+                            formatOutput?.observe(routed)
+                            continuation.yield(routed)
+                        }
+                        try router.checkNativeToolFailure()
+                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
+                        try formatOutput?.validate(finishReason: stopReason)
+                    } catch {
+                        await releaseBox.fire()
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                    if (toolHandler?.parseFailureCount ?? 0) > 0 {
+                        emitToolConstraintTelemetry(
+                            operation: "tool_constraint_fallback",
+                            reason: "parser",
+                            severity: .warn)
+                    }
+                    Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
+                        completionTokens: completionTokens, startedAt: startedAt,
+                        firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
+                        stopReason: stopReason, matchedAnswerStop: answerStops?.matchedSequence,
+                        usageSignal: usageSignal)
+                    await releaseBox.fire()
+                    continuation.finish()
+                    return
+                }
                 let toolCalls = toolHandler?.finish() ?? []
                 do {
                     try router.checkNativeToolFailure()
@@ -1441,29 +1478,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 for toolCall in toolCalls {
                     continuation.yield(.toolCall(toolCall))
                 }
-
-                if let matched = answerStops?.matchedSequence {
-                    // OpenAI semantics, even if the match landed on the final
-                    // budgeted token: the stop sequence ended the answer.
-                    stopReason = "stop"
-                    usageSignal.record(matchedStopSequence: matched)
-                }
-                let now = Date()
-                let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
-                let generateTime = (lastTokenAt ?? now)
-                    .timeIntervalSince(firstTokenAt ?? startedAt)
-                continuation.yield(
-                    .info(
-                        ServerGenerationInfo(
-                            promptTokens: promptTokenCount,
-                            completionTokens: completionTokens,
-                            promptTime: max(0, promptTime),
-                            generationTime: max(0, generateTime),
-                            stopReason: stopReason,
-                            cachedPromptTokens: usageSignal.prefixCacheHitTokens
-                        )
-                    )
-                )
+                Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
+                    completionTokens: completionTokens, startedAt: startedAt,
+                    firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
+                    stopReason: stopReason, matchedAnswerStop: answerStops?.matchedSequence,
+                    usageSignal: usageSignal)
                 await releaseBox.fire()
                 continuation.finish()
         }
@@ -1497,6 +1516,38 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
             }
         }
+    }
+
+    /// The terminal usage/timing event every successful stream ends with.
+    private static func yieldTerminalInfo(
+        _ continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
+        promptTokenCount: Int, completionTokens: Int, startedAt: Date, firstTokenAt: Date?,
+        lastTokenAt: Date?, stopReason: String, matchedAnswerStop: String?,
+        usageSignal: EngineV2RequestUsageSignal
+    ) {
+        var stopReason = stopReason
+        if let matchedAnswerStop {
+            // OpenAI semantics, even if the match landed on the final
+            // budgeted token: the stop sequence ended the answer.
+            stopReason = "stop"
+            usageSignal.record(matchedStopSequence: matchedAnswerStop)
+        }
+        let now = Date()
+        let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
+        let generateTime = (lastTokenAt ?? now)
+            .timeIntervalSince(firstTokenAt ?? startedAt)
+        continuation.yield(
+            .info(
+                ServerGenerationInfo(
+                    promptTokens: promptTokenCount,
+                    completionTokens: completionTokens,
+                    promptTime: max(0, promptTime),
+                    generationTime: max(0, generateTime),
+                    stopReason: stopReason,
+                    cachedPromptTokens: usageSignal.prefixCacheHitTokens
+                )
+            )
+        )
     }
 
     #if DEBUG

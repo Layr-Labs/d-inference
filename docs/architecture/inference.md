@@ -592,6 +592,23 @@ See `libs/mlx-swift-lm/docs/bonsai2.md` for the exact activation mapping,
 checkpoint contract and qualification scope. This implementation does not
 activate a catalog entry.
 
+Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
+`prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
+a four-row recurrence kernel
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`, `GatedDeltaPrefill`).
+In each process, the first such window of each kernel instantiation (input
+dtype and head geometry) tries the `packed` and then the `rows` kernel on a
+fixed probe window and keeps the first that reproduces `gated_delta_step` bit
+for bit on the GPU, or else the stock kernel.
+Decode, MTP verification, masked updates and shorter windows always run the
+stock kernel; because a selected kernel matches it bit for bit, mixing kernels
+across chunks cannot change the recurrent state that
+[checkpoint capture](prefix-cache.md#streamed-complete-checkpoints) relies on.
+`qwen4_exp` and `qwen4_exp_text` keep their blocked-seq path.
+`DARKBLOOM_TTFT_GDN_BLOCKED`
+([configuration](../reference/configuration.md#engine-and-scheduler)) keeps the
+stock kernel or forces `packed` or `rows` for A/B measurement.
+
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
 (`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`,
@@ -869,6 +886,13 @@ inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
 
+Completed observations can reach the bridge out of engine-time order.
+`EnginePerformanceMeasurements.Rate` keeps age and expiry anchored to the newest
+observation in each aggregate, current-posture or workload-bucket series.
+Rate averaging and sample counts still follow receipt consumption order;
+an older receipt cannot move freshness backward or create a false evidence gap
+for the next observation. A heartbeat snapshot alone never renews evidence.
+
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
 first target prefill launch, after image/video/audio preparation, and ends at
@@ -1027,6 +1051,24 @@ sequenceDiagram
     S-->>C: SSE chunks / final response
 ```
 
+The chat template is rendered on every request. When caching is enabled for
+the request, `LocalTokenizerBridge` encodes the rendered prompt through
+`PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
+it cuts the text where an added token begins, under the conditions in which the
+swift-transformers encoder already encodes those pieces independently, and
+reuses the token IDs of pieces seen before in the same prefix-cache scope. New
+long prompts encode their pieces on up to four cores. The cache renders Gemma 4
+and GPT-OSS templates through `ChatTemplateLoopRewrites`, linear-time forms of
+their per-message history scans that render the same text, so render time no
+longer grows with the square of the history length. The IDs equal the unchanged
+`applyChatTemplate` path's: tokenizers or templates outside
+those conditions, or failing a load-time comparison, keep that path, and
+sampled background comparisons against the served template disable reuse on a
+mismatch, or when the served template rejects a prompt the cache rendered. Reuse
+never crosses a cache scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the
+unchanged path
+([configuration](../reference/configuration.md#prompt-preparation-and-admission)).
+
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
 deadline check → translation (`maxTokens = request.max_tokens ??
@@ -1174,6 +1216,67 @@ isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
 This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
+
+Three estimator corrections shape those inputs;
+`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
+
+Decode is charged per batch step. The decode EWMA is a per-request rate, so
+the policy carries the step shape of the requests that measured it
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift`,
+`CBv2DecodeRateShape`: token-producing rows, confirmed tokens and assigned
+width per decode step). The rows exclude the first-token step, which the rate
+does not time, unless that step's row count is unavailable
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift`,
+`EnginePrefillReceipt.firstTokenStepRows`). The engine prices each projected
+step as one measured step, `tokensPerStep / rate`, scaled by `max(1, width / stepWidth)`
+and `max(1, rows / batchRows)`, instead of summing every row's tokens. A step
+no wider and with no more decode rows than the measured steps therefore costs
+one measured step: an MTP round costs the tokens it was measured confirming,
+not its `1+k` draft width. For a single measurement the scaling is a bound
+when step time never falls and grows at most linearly with rows and width.
+Admission smooths each request's mean step duration together with its shape
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`MeasuredDecodeStep`) and passes the rate implied by that duration, so the
+priced step time and time per row stay within the measured range. Across
+batch widths this is an average of measured steps, not a bound; the routing
+heartbeat keeps the per-request decode EWMA. The projection also mirrors the
+live MTP plan's depth gates
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
+`CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows
+than `maxSpeculativeBatch`, or with no depth left inside the automatic
+verification envelope (`maxAutomaticRectangularTokens / rows - 1`; five or
+more rows at the 8-token M3-M5 envelope; both are
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`
+`CBv2MTPConfig` fields), charges each row one target token instead of `1+k`,
+and no step charges more depth than that ceiling. A projection with any media
+row keeps `1+k`, because target-only media rows can leave the planner's batch
+count. A request carrying a reviewed deadline calibration gets no shape: its
+calibrated conversion and its fallback keep the per-row charge with the
+per-request decode EWMA, at the configured `1+k` width, that its error envelope
+was measured against and that serving qualification's two-conversion proof
+(`provider-swift/Tests/ServingQualificationTests/ServingQualificationDeadlineEvidence.swift`,
+`ServingQualificationDeadlineEvidence`) assumes.
+
+Ordinary engines (without the native recovery probe) bound the aggregate
+isolated prefill rate by the startup calibration cell's idle rate
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`IsolatedPrefillAdmissionRate`): it is never priced below one eighth of that
+rate, and evidence that expired while the Mac sat idle at nominal posture is
+priced at no less than it. Evidence older than 30 minutes on an idle Mac is
+treated as absent, anchored or not, because a calibration cell can itself run
+under another process's GPU load. Idle means no other request on this engine
+and, through the shared whole-Mac service budget, no other resident model's
+request and no load, encoder preparation or cache transfer
+(`provider-swift/Sources/ProviderCore/Inference/Performance/WholeMacServiceBudget.swift`,
+`WholeMacServiceBudget.isIdle(except:)`). A fresh isolated sample in the
+request's prompt-size bucket still tightens the bounded aggregate, even below
+that floor, because the anchor comes from a short calibration cell
+(`provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift`,
+`ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
+evidence expires after 120 seconds. The published isolated rate is unchanged.
+A late older cold sample no longer restarts the combined prefill EWMA.
+
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix
 state, competing profile identities and work limits, phase rates, and a
@@ -1428,6 +1531,19 @@ reservation (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/E
 `mtpDepthWithinOutputBudget`, `beginMTPPlan`).
 The process-wide kill switch is `DARKBLOOM_CBV2_MTP` (`CBv2MTPConfig.envEnabled`;
 see [`../reference/configuration.md`](../reference/configuration.md)).
+The Qwen inline assistant speculates for one decode row only. While more rows
+decode, its rows run ordinary decode that may chain: the target forward also
+returns its hidden rows, and finalize appends them to the assistant history in
+step order and stores the carry once no successor is in flight, with no policy
+top-two or extra readback. The final prompt row's hidden is the first carry, so
+a round can follow the first token without a seed step. Opt-in is per drafter
+(`supportsOrdinaryDecodeHistory`); drafters that need the committed-observation
+fence and native completion tracking keep MTP steps
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPOrdinaryHistory.swift`,
+`finalizeMTPOrdinaryHistory`). The rollback switches are
+`DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
+(`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
+[`../reference/configuration.md`](../reference/configuration.md)).
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation
@@ -1552,8 +1668,22 @@ Both text and media paths in `MultiModelBatchSchedulerEngine` apply the
 probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
-and generated answers need not emit another marker. Explicit `.none`, other
-parser families and unrecognized prompt tails receive no prefix from the
+and generated answers need not emit another marker.
+
+A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
+no think marker also receives the empty closed block
+(`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct
+renders a bare `<|im_start|>assistant\n` generation prompt and does not
+reason; without the seed its whole answer waited for a tag or the end of
+generation. A `<think>` the model emits itself still opens reasoning in
+content state. Other Qwen types get no seed: the Qwen 3.5, 3.6 and 3.8
+templates always end in a marker, and a close-only reasoner such as
+`qwen3_next` writes its reasoning before a bare `</think>`, which a content
+seed would expose as answer text. `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0`
+disables the seed.
+
+Explicit `.none`, other parser families (`deepseekR1` keeps close-only
+parsing) and other unrecognized prompt tails receive no prefix from the
 probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
 for a streamed think-format request with an unknown tail, `contentSeed` starts
 the parser in content mode. A generated `<think>` can still open reasoning.
@@ -1600,6 +1730,40 @@ Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
 inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
 including the embedded-MTP one, advertise forced tools
 (`ToolChoiceEnforcementPolicy.swift`).
+
+### Streamed auto tool calls
+
+Chat streams (`MLXOpenAIService.streamChatCompletionFrames`, which serves the
+coordinator path and local `stream: true` requests) set `streamToolCallDeltas`.
+For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
+formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
+streaming options. Once a frame's function name resolves to a declared tool,
+the processor emits the name, then argument JSON fragments as they become
+certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
+generated, other Qwen XML parameters once they close, and framed-JSON and
+Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+because one later value outside the strict grammar makes the complete parse
+read bare scalars and composites as raw strings. When the frame closes, the
+complete parse must agree with everything already exposed
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
+`NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
+fragment and validates name and schema at frame close; the service renders
+OpenAI fragments (`index`, `id`, `type` and `function.name` first, then
+`function.arguments` pieces). A response that begins with a call therefore
+reaches its first content frame at the function name instead of the engine
+terminal, which also ends the frame loop's pre-content deadline check.
+
+| Case | Behavior |
+|---|---|
+| Undeclared or unresolvable name | Never exposed: completes in one piece with the existing validation or text fallback |
+| Parse failure, divergence or schema violation after exposure | Typed `tool_choice` violation on the stream |
+| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
+| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation |
+
+The response hash adds one `tool_call` marker per fragment in wire order; a
+complete call encodes exactly as before
+(`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
+`encodeToolCallsForHash`).
 
 ### Chat-template render check
 
@@ -2108,7 +2272,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Model adaptation and assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` (`assembleProductionBuild`) |
 | Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` (`EngineV2RefusalReason`) |
-| Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift` |
+| Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`, `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `MeasuredDecodeStep`, `IsolatedPrefillAdmissionRate`) |
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |

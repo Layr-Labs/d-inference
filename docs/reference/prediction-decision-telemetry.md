@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-22
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -26,6 +26,21 @@ terminal messages. Sources: [coordinator/protocol/profile_deadline.go](https://g
 | `projected_service_us` | Returned finite service-duration projection. Absent when unavailable/unbounded. |
 | `projected_prefill_tokens`, `projected_decode_tokens` | Engine-projected scheduled work through the target's first-token step, including work ahead of the target; not just the target request's tokens. |
 | `prefill_tps`, `decode_tps` | Effective rates passed to the engine. Native media reports the incoming target's observed prefill rate; existing queued work retains its separate legacy rate. Missing/unusable rates remain absent. |
+
+`projected_decode_tokens` remains the per-row decode sum. Without a reviewed
+calibration, the provider charges decode once per projected batch step
+([deadlines](../architecture/inference.md#deadlines),
+`DARKBLOOM_TTFT_ADMISSION_FIXES`), so `projected_service_us` is usually below
+`projected_prefill_tokens / prefill_tps + projected_decode_tokens / decode_tps`,
+the per-row charge at the same rates. There `decode_tps` is the rate implied by
+the smoothed measured decode step
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`MeasuredDecodeStep`), which can differ from the per-request
+`observed_decode_tps` the heartbeat publishes. On an MTP engine such a
+projection also caps each decode row at the depth the live planner can use, so
+`projected_decode_tokens` can count fewer than the configured `1+k` per row:
+one token per row in steps beyond the batch gate or where the automatic
+verification envelope leaves no depth. Wire fields are unchanged.
 
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+DeadlineDecision.swift`
 records returned evidence before post-submit expiry/cancellation checks can

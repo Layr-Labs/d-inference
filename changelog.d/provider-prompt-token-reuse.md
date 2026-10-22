@@ -25,7 +25,9 @@
   body is parsed once for the chat request and its extension fields instead
   of five times.
 - A request waiting for a cold model load (other than native MiMo) no longer
-  holds the coordinator work queue: other models' requests, cancels and
+  holds the coordinator work queue: resident models' requests, cancels and
   attestation challenges proceed while it loads, and a cancel for it still
-  applies when its admission returns. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0`
-  restores the serial queue.
+  applies when its admission returns. A request for another model that is not
+  resident still waits for that load, so its capacity check sees the memory
+  the load takes. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the serial
+  queue.

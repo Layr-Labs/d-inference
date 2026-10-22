@@ -9,7 +9,9 @@
 // registered for cancellation, so admission order up to that point is
 // unchanged. A coordinator cancel for it is applied when its admission ends,
 // where the serial FIFO applied it. Connection, drain and model-management
-// events wait for released admissions first, as they always did.
+// events wait for released admissions first, as they always did. So does the
+// admission check of a request for another model that is not resident: the
+// released load has not yet taken the memory or slot that check sizes.
 //
 // `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial FIFO.
 
@@ -48,6 +50,8 @@ final class WorkFIFOGate: @unchecked Sendable {
 
 /// An admission that released the work FIFO and has not returned yet.
 struct ReleasedAdmission {
+    /// The model whose load it waits for.
+    let modelId: String
     var cancelPending = false
     var waiters: [CheckedContinuation<Void, Never>] = []
 }
@@ -102,10 +106,22 @@ extension ProviderLoop {
 
     /// Called by an accepted, registered request about to wait for a model
     /// load: later events may proceed while it waits.
-    func releaseWorkFIFO(_ gate: WorkFIFOGate?, requestId: String) {
+    func releaseWorkFIFO(_ gate: WorkFIFOGate?, requestId: String, modelId: String) {
         guard let gate, releasedAdmissions[requestId] == nil else { return }
-        releasedAdmissions[requestId] = ReleasedAdmission()
+        releasedAdmissions[requestId] = ReleasedAdmission(modelId: modelId)
         if !gate.open() { releasedAdmissions.removeValue(forKey: requestId) }
+    }
+
+    /// Called before the fast admission check of a request whose model is
+    /// not resident. A released load of another model has not reserved its
+    /// memory or slot yet, so the check would admit against capacity that
+    /// load is about to take; the request waits for it, as the serial FIFO
+    /// made it wait. Requests for a resident model, or for the model being
+    /// loaded, still overtake.
+    func awaitReleasedLoads(otherThan modelId: String) async {
+        while let requestId = releasedAdmissions.first(where: { $0.value.modelId != modelId })?.key {
+            await awaitReleasedAdmission(requestId)
+        }
     }
 
     /// A coordinator cancel for a released admission is held until it returns.

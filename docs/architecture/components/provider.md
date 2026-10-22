@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -78,8 +78,10 @@ it starts waiting for the load (`ProviderLoop+WorkFIFO.swift`), so later
 inference requests, cancels and attestation challenges are not held behind
 weight loading. A coordinator cancel for the waiting request is applied when its
 admission returns, where the serial consumer applied it. Connection, drain and
-model-management events, and the end of the work stream, still wait for it.
-Native MiMo requests keep the serial consumer.
+model-management events, and the end of the work stream, still wait for it. So
+does a request for another model that is not resident, before its pre-accept
+capacity check (`awaitReleasedLoads`): the waiting load has not yet taken the
+memory or slot that check sizes. Native MiMo requests keep the serial consumer.
 `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`

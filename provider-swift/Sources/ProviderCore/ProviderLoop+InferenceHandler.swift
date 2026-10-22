@@ -442,6 +442,9 @@ extension ProviderLoop {
         // load step: a cold sample includes model-load latency and must never
         // calibrate warm quotes.
         let modelWasResidentAtDispatch = modelSlots[modelId] != nil
+        // A cold model is sized only after released loads of other models
+        // have taken their capacity (`ProviderLoop+WorkFIFO.swift`).
+        if !modelWasResidentAtDispatch { await awaitReleasedLoads(otherThan: modelId) }
         let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
         profile.mark(.admission)
         if rejectIfFirstContentDeadlineExpired(
@@ -554,7 +557,7 @@ extension ProviderLoop {
         // Accepted and registered: later events need not queue behind a cold
         // load or another load's wait. Native MiMo keeps serial admission.
         if !loadWasWarm, advertisedModels[modelId]?.modelType != "mimo_v2" {
-            releaseWorkFIFO(workFIFOGate, requestId: requestId)
+            releaseWorkFIFO(workFIFOGate, requestId: requestId, modelId: modelId)
         }
         do {
             try await ensureModelLoaded(modelId: modelId)

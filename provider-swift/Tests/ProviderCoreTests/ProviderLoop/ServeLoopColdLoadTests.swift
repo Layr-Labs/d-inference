@@ -57,19 +57,7 @@ struct ServeLoopColdLoadTests {
 
         // The load completes: the request is admitted, then cancelled, as when
         // the FIFO held the cancel behind the load.
-        let engine = PrefillScriptEngine()
-        let tokenizer = CancelledPrefixTokenizer(prompt: [1, 2, 3])
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
-        }
-        let bridge = EngineV2Bridge(
-            engine: engine, modelId: Self.coldModel, tokenizer: TokenizerHandle(tokenizer),
-            eosTokenIds: [], kvBytesPerToken: 4_000, kvBudget: budget)
-        await fixture.runtime.register(modelId: Self.coldModel, bridge: bridge)
-        await fixture.loop.installModelSlotForTesting(
-            modelId: Self.coldModel, container: cancelledPrefixContainer(tokenizer: tokenizer),
-            tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
-            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 4_000, maxContextLength: 8192, defaultMaxTokens: 4096))
+        let bridge = await Self.installResidentSlot(Self.coldModel, engine: PrefillScriptEngine(), fixture: fixture)
         await fixture.loop.modelLoadingClearLoading(Self.coldModel)
         await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel)
 
@@ -84,6 +72,54 @@ struct ServeLoopColdLoadTests {
         fixture.completeSubmission(0)
         await bridge.shutdown()
         _ = await fixture.runtime.unregister(modelId: Self.coldModel)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("a request for another cold model is admitted against the capacity the released load takes")
+    func secondColdModelWaitsForReleasedLoad() async throws {
+        // Either model fits the free memory alone; both together do not.
+        let first = "cold-load-first", second = "cold-load-second"
+        let fixture = try await ServeLoopFixture.make(models: [
+            ModelLoadingFixtures.model(first, memoryGb: 100_000),
+            ModelLoadingFixtures.model(second, memoryGb: 100_000),
+        ])
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 150_000)
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(first)
+
+        try await fixture.pushChatRequest(requestId: "first", body: Self.body(model: first))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(first) == 1 }
+        try await fixture.pushChatRequest(requestId: "second", body: Self.body(model: second))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!fixture.mock.snapshot().inferenceAccepted.contains { $0.requestId == "second" })
+
+        // The first load takes its memory and serves its request; only then is
+        // the second request checked, and rejected before acceptance.
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 50_000)
+        let engine = PrefillScriptEngine()
+        let bridge = await Self.installResidentSlot(first, engine: engine, fixture: fixture)
+        await fixture.loop.modelLoadingClearLoading(first)
+        await fixture.loop.modelLoadingResumeLoadingWaiters(first)
+
+        let rejected = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "second") > 0
+        }
+        let snapshot = try #require(rejected)
+        #expect(snapshot.inferenceAccepted.map(\.requestId) == ["first"])
+        #expect(snapshot.inferenceErrors.first { $0.requestId == "second" }?.failureCode == .capacity)
+
+        try await Self.until { engine.continuations.count == 1 }
+        let continuation = engine.continuations[0]
+        continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
+        continuation.yield(.finished(reason: .length, usage: .init(promptTokens: 3, completionTokens: 1)))
+        continuation.finish()
+        _ = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "first") > 0
+        }
+        try await Self.until { await fixture.loop.releasedAdmissionCountForTesting() == 0 }
+        await bridge.shutdown()
+        _ = await fixture.runtime.unregister(modelId: first)
         #expect(await fixture.stop(task))
     }
 
@@ -123,6 +159,25 @@ struct ServeLoopColdLoadTests {
         // The rollback must reach the launchd provider job.
         let rollback = [WorkFIFOPolicy.coldLoadReleaseEnvironmentKey: "0"]
         #expect(LaunchAgent.passthroughEnvironment(from: rollback) == rollback)
+    }
+
+    /// Makes `modelId` resident on a scripted engine, as its load would.
+    private static func installResidentSlot(
+        _ modelId: String, engine: PrefillScriptEngine, fixture: ServeLoopFixture
+    ) async -> EngineV2Bridge {
+        let tokenizer = CancelledPrefixTokenizer(prompt: [1, 2, 3])
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+        }
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: modelId, tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], kvBytesPerToken: 4_000, kvBudget: budget)
+        await fixture.runtime.register(modelId: modelId, bridge: bridge)
+        await fixture.loop.installModelSlotForTesting(
+            modelId: modelId, container: cancelledPrefixContainer(tokenizer: tokenizer),
+            tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
+            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 4_000, maxContextLength: 8192, defaultMaxTokens: 4096))
+        return bridge
     }
 
     private static func body(model: String) throws -> Data {

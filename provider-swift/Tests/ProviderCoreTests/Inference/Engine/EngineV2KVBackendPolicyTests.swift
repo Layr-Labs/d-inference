@@ -28,6 +28,7 @@ struct EngineV2KVBackendPolicyTests {
         "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
         "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
         "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b",
+        "RecursiveSI/flint-int4",
     ])
     func exactReleaseArtifactAutoPolicy(modelID: String) {
         let parsed = EngineV2KVBackendPolicy.parseSelection(
@@ -252,5 +253,19 @@ struct EngineV2KVBackendPolicyTests {
             !KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .contiguous, pagedPoolBytes: 100 * gib,
                 measuredHeadroomBytes: gib / 2))
+    }
+
+    /// Automatically paged artifacts start at the legacy width on M5 Pro, Max
+    /// and Ultra; Flint's catalog artifact is one of them.
+    @Test func flintGetsTheAutomaticPagedServingWidth() {
+        let id = "RecursiveSI/flint-int4"
+        for tier in [ChipTier.pro, .max, .ultra] {
+            #expect(ServingPerformanceProfiles.automaticConcurrency(configured: 4, modelID: id,
+                backend: .paged, chipIdentity: (.m5, tier)) == ServingPerformanceProfiles.legacyMaximumConcurrency)
+        }
+        #expect(ServingPerformanceProfiles.automaticConcurrency(configured: 4, modelID: id,
+            backend: .paged, chipIdentity: (.m4, .max)) == 4)
+        #expect(ServingPerformanceProfiles.automaticConcurrency(configured: 4, modelID: id,
+            backend: .paged, chipIdentity: (.m5, .base)) == 4)
     }
 }

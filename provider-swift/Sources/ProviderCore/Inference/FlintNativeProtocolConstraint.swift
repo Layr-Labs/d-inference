@@ -145,6 +145,22 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
         return allowed
     }
 
+    /// The allowed set depends on the budget only through `remainingTokens > 0`,
+    /// and interned state ids are never reused, so the CBv2 sampler may keep one
+    /// uploaded device mask per state. Exhausted or unknown states return nil
+    /// (no caching), as do their empty impossible-state masks.
+    func maskCacheKey(state: Int, remainingTokens: Int) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard !resourceExhausted, remainingTokens > 0, states.indices.contains(state) else { return nil }
+        return state
+    }
+
+    /// `allowedTokenIDs` has no observable effect beyond its result (its LRUs are
+    /// caches), and `nextState` interns only host-confirmed tokens, so CBv2 may
+    /// sample the next step speculatively and redraw it when the confirmed token
+    /// leaves the state (exactly the unchained token stream).
+    var allowsChainedDecode: Bool { true }
+
     func nextState(state: Int, tokenID: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard !resourceExhausted, states.indices.contains(state), vocabulary.pieces.indices.contains(tokenID) else { return nil }

@@ -2169,6 +2169,19 @@ and retains full JSON/schema post-validation. It does not import rec's scheduler
 or XGrammar runtime. Constraint memory and decode scheduling costs are described
 under [Flint memory admission](hardware-support.md#flint-memory-admission).
 
+The constraint does not stall decode. `FlintNativeProtocolConstraint` and
+`FlintAnswerStopConstraint` opt into the CBv2 engine's constrained chaining:
+step N+1 is sampled while step N is still on the GPU, using the mask of the
+state confirmed through N-1, and is redrawn from its retained logits (penalty
+state and per-row RNG step restored) when N moves to a different state, so the
+token stream is identical to unchained decode. Their `maskCacheKey` is the
+constraint state while output budget remains, because the allowed set depends
+only on the state; repeated states reuse a cached device mask instead of
+rebuilding the vocabulary-sized mask on the host. The catalog artifact
+`RecursiveSI/flint-int4` is on the automatic paged list, so it starts at the
+legacy serving width (`ServingPerformanceProfiles.legacyMaximumConcurrency`) on
+M5 Pro, Max and Ultra without an operator override.
+
 The published tool protocol has no escape for a literal `</arg_value>` in a
 top-level raw string value. `FlintRequestPolicy` rejects such historical
 arguments; syntactically indistinguishable generated frames cannot be recovered

@@ -754,6 +754,15 @@ Go `InferenceResponseChunkMessage` · Swift `InferenceResponseChunk`.
 | `data` | `string` | `String` | opt | SSE chunk text; empty when E2E encryption is active |
 | `encrypted_data` | `*EncryptedPayload` | `EncryptedPayload?` | opt | [`EncryptedPayload`](#encryptedpayload) |
 
+A [streamed `auto` tool call](../architecture/inference.md#streamed-auto-tool-calls)
+spans several chunks whose `choices[].delta.tool_calls` entries share one
+`index`: the first carries `id`, `type`, `function.name` and an empty
+`function.arguments`, later ones only `index` and a `function.arguments`
+fragment. Consumers concatenate the fragments by `index`. Every other call is
+one entry carrying the complete call
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`,
+`streamChatCompletionFrames`).
+
 ### `inference_complete`
 
 Go `InferenceCompleteMessage` · Swift `InferenceComplete`.

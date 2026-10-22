@@ -155,6 +155,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// work per rank. Tokens unchanged (each of those computes a row the same
     /// in a call of half the rows; the scatter adds as the sum does).
     static let prefillSequenceParallel = false
+    /// Prefill shares each DSA layer's sparse-row top-k selection between the
+    /// ranks by rows (`GLM5NextTextStage.installTensorParallelSelectionSplit`):
+    /// the indexer is replicated, so each rank scores and selects half the
+    /// rows and a sealed all-sum of the chosen pool IDs (float32, about 2 KiB
+    /// a row per DSA layer) gives both every row's. Tokens unchanged. Not
+    /// with `prefillSequenceParallel`.
+    static let prefillSelectionSplit = false
     /// NextN (MTP) proposals each greedy decode round verifies
     /// (`GLM5NextTensorParallelSpeculation`, at most
     /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
@@ -469,6 +476,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     try value.installTensorParallelSequenceParallel(
                         share: collective.rank, shares: collective.size,
                         reduceScatter: { group.reduceScatter($0) }, allGather: { group.allGather($0) })
+                }
+                if Self.prefillSelectionSplit {
+                    try value.installTensorParallelSelectionSplit(
+                        share: collective.rank, shares: collective.size, exchange: { group.allSum($0) })
                 }
                 loaded = value; retired = value
                 Memory.clearCache()

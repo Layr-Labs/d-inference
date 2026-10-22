@@ -1339,8 +1339,7 @@ extension ProviderLoop {
         // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
         // retained free KV segments, so drop both once before unloading a
         // resident model for room.
-        var poolDropped = !GlobalKVCacheBudget.idleCacheSweepEnabled()
-            && !EngineV2Factory.segmentRetentionEnabled()
+        var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }

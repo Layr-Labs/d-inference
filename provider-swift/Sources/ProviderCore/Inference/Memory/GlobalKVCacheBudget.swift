@@ -81,6 +81,17 @@ public actor GlobalKVCacheBudget {
         environment[idleCacheSweepEnvironmentKey] != "0"
     }
 
+    /// Busy engines keep memory that only an explicit release returns: MLX's
+    /// buffer pool (the idle-gated sweep) or retained free KV segments. Load
+    /// gates then release both once before evicting, and refused engine-owned
+    /// growth requests a reclaim. False only when both rollbacks are set.
+    static func busyEnginesKeepReclaimableMemory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        idleCacheSweepEnabled(environment: environment)
+            || EngineV2Factory.segmentRetentionEnabled(environment: environment)
+    }
+
     /// Ask engines to drop retained free KV segments, then wait briefly for it
     /// (idle engines honor it within a recheck, busy ones at their next step)
     /// so a load-time resample sees that memory. Host-zeroed backing returns
@@ -104,7 +115,8 @@ public actor GlobalKVCacheBudget {
     public init(
         capFraction: Double? = nil,
         activationReserveBytes: UInt64? = nil,
-        configReserveBytes: UInt64 = 0
+        configReserveBytes: UInt64 = 0,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         let serviceBudget = WholeMacServiceBudget()
         self.serviceBudget = serviceBudget
@@ -143,8 +155,8 @@ public actor GlobalKVCacheBudget {
             configReserveBytes: configReserveBytes,
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
         self.processLedger = ledger
-        let idleSweep = Self.idleCacheSweepEnabled()
-        self.signalsEngineRefusals = idleSweep
+        let idleSweep = Self.idleCacheSweepEnabled(environment: environment)
+        self.signalsEngineRefusals = Self.busyEnginesKeepReclaimableMemory(environment: environment)
         self.flushCache = clearCache
         self.reclaimer = KVPoolReclaimer(
             clearCache: clearCache,

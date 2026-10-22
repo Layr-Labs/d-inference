@@ -172,18 +172,26 @@ struct KVPoolIdleSweepTests {
         #expect(ledger.snapshot().chargedBytes == gib)
     }
 
-    @Test("engine owners only signal when the budget runs the idle sweep")
-    func engineRefusalSignalFollowsKillSwitch() {
+    @Test("direct-charge refusals signal a reclaim unless both busy-engine rollbacks are set")
+    func engineRefusalSignalFollowsKillSwitches() {
+        let sweepOff = ["DARKBLOOM_TTFT_IDLE_CACHE_SWEEP": "0"]
+        let retentionOff = ["DARKBLOOM_TTFT_SEGMENT_RETENTION": "0"]
         #expect(GlobalKVCacheBudget.idleCacheSweepEnabled(environment: [:]))
-        #expect(!GlobalKVCacheBudget.idleCacheSweepEnabled(
-            environment: ["DARKBLOOM_TTFT_IDLE_CACHE_SWEEP": "0"]))
+        #expect(!GlobalKVCacheBudget.idleCacheSweepEnabled(environment: sweepOff))
         #expect(EngineV2Factory.segmentRetentionEnabled(environment: [:]))
-        #expect(!EngineV2Factory.segmentRetentionEnabled(
-            environment: ["DARKBLOOM_TTFT_SEGMENT_RETENTION": "0"]))
-        let budget = GlobalKVCacheBudget(memorySnapshot: {
+        #expect(!EngineV2Factory.segmentRetentionEnabled(environment: retentionOff))
+
+        #expect(GlobalKVCacheBudget(environment: [:]).signalsEngineRefusals)
+        #expect(GlobalKVCacheBudget(environment: retentionOff).signalsEngineRefusals)
+        // Retained segments are still allocator-active memory only a release returns.
+        let retentionOnly = GlobalKVCacheBudget(environment: sweepOff)
+        #expect(retentionOnly.signalsEngineRefusals && retentionOnly.directChargeRefusalSignal() != nil)
+        let rolledBack = GlobalKVCacheBudget(environment: sweepOff.merging(retentionOff) { $1 })
+        #expect(!rolledBack.signalsEngineRefusals && rolledBack.directChargeRefusalSignal() == nil)
+        let injected = GlobalKVCacheBudget(memorySnapshot: {
             .init(total: 64 * gib, active: 0, cache: 0, systemAvailable: 64 * gib)
         })
-        #expect(!budget.signalsEngineRefusals)
+        #expect(!injected.signalsEngineRefusals)
     }
 
     @Test("the segmented factory retains min(2 GiB, grant / 8) with host zeros unless rolled back")

@@ -1538,8 +1538,7 @@ public actor StandaloneServer {
         // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
         // retained free KV segments, so drop both once before evicting a
         // cached model for room.
-        var poolDropped = !GlobalKVCacheBudget.idleCacheSweepEnabled()
-            && !EngineV2Factory.segmentRetentionEnabled()
+        var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while await availableMemoryGb() < requiredGb {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,

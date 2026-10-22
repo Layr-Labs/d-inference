@@ -56,6 +56,7 @@ struct FlintRelayLogprobsLiveTests {
         try await loop.ensureModelLoaded(modelId: id, allowEviction: false)
         let bridge = try #require(await loop.slotBridgeForTesting(modelId: id))
         try #require(await bridge.kvBackendKind == .paged)
+        try #require(bridge.kvQuantization == .native && bridge.kvCheckpointQuantization == .native)
         let receipt = receiptPath.map { URL(fileURLWithPath: $0) }
         if let receipt { try Data().write(to: receipt) }
 

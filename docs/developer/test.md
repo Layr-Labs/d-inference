@@ -841,6 +841,7 @@ unavailable hardware honestly. Local validation does not authorize deployment.
 Run `make provider-test` for repository checks. Focused provider suites are
 `FlintPolicyTests`, `FlintDiscoveryTests`, `FlintTemplateReplayTests`,
 `FlintToolChoicePromptPolicyTests`, `FlintContextAdmissionTests`,
+`FlintPagedOnlyBackendTests`, `ModelBenchmarkDispatchTests`,
 `FlintNativeProtocolTests` and `FlintNativeProtocolFactoryTests`; SDK suites
 are `FlintTests`, `FlintToolTests`, `FlintPrefixTests` and
 `ToolCallParserIntegrationTests`. `FlintToolChoicePromptPolicyTests`

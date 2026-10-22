@@ -2070,7 +2070,11 @@ the automatic crash-loop guard cannot move it to contiguous, and paged
 construction failures refuse the load. An explicit `contiguous` selection, the
 paged kill switch or a model-capability veto also refuses the load instead of
 serving contiguous. Pass `--kv-backend paged` to its qualification benchmarks
-and record the resolved backend in every performance receipt.
+and record the resolved backend in every performance receipt. The plain
+`darkbloom benchmark` command runs Flint through the production CBv2 session
+(`ModelBenchmark.usesNativeGeneration`), and `--sweep` skips its scalar,
+non-paged prefill pass for Flint (`ThroughputSweep.measuresScalarPrefill`);
+measure paged prefill with `--scheduler-prefill`.
 
 Flint always decides for itself whether to reason; it has no trained switch,
 effort level or budget, and its pinned template reads none of these controls

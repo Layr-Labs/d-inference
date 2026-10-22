@@ -37,11 +37,13 @@ struct FlintPagedOnlyBackendTests {
     }
 
     private func prepare(
-        _ selection: EngineV2KVBackendSelection, environment: [String: String]
+        _ selection: EngineV2KVBackendSelection, environment: [String: String],
+        preflight: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> EngineV2Factory.ProductionBackendPreparation {
         try EngineV2Factory.prepareProductionBackend(
             model: flint(), modelID: modelID, kvBytesCapacity: capacity, maxConcurrentRequests: 2,
-            kvBackend: selection, maxContextLength: 2048, environment: environment)
+            kvBackend: selection, maxContextLength: 2048, environment: environment,
+            pagedPreflightOverride: preflight)
     }
 
     @Test("the default (automatic) and explicit paged selections resolve to paged")
@@ -69,16 +71,56 @@ struct FlintPagedOnlyBackendTests {
         #expect(prepared.kind == .paged && prepared.fallbackReason == nil)
     }
 
+    /// The production error a failed preparation threw, so each refusal is
+    /// checked for its own reason rather than for any error of the type.
+    private func refusal(_ body: () throws -> EngineV2Factory.ProductionBackendPreparation)
+        -> EngineV2ProductionError?
+    {
+        do {
+            _ = try body()
+            return nil
+        } catch {
+            return error as? EngineV2ProductionError
+        }
+    }
+
+    @Test("paged construction failures refuse Flint under the default selection")
+    func pagedFailuresRefuseInsteadOfDegrading() throws {
+        struct PreflightFailure: Error {}
+        let dtype = refusal { try prepare(.auto, environment: environment([EngineV2Factory.pagedPoolDTypeEnvKey: "int3"])) }
+        guard case .invalidPagedPoolDType(let raw)? = dtype else {
+            Issue.record("invalid paged dtype must refuse, got \(String(describing: dtype))")
+            return
+        }
+        #expect(raw == "int3")
+        let preflight = refusal {
+            try prepare(.auto, environment: environment(), preflight: { _ in throw PreflightFailure() })
+        }
+        guard case .pagedUnavailable(let reason)? = preflight else {
+            Issue.record("a failed paged preflight must refuse, got \(String(describing: preflight))")
+            return
+        }
+        #expect(reason.hasPrefix("kernel_preflight"), "\(reason)")
+        // Positive control: the same preflight hook passing keeps paged.
+        #expect(try prepare(.auto, environment: environment(), preflight: { _ in }).kind == .paged)
+    }
+
     @Test("explicit contiguous and the paged kill switch refuse Flint instead of serving contiguous")
     func contiguousIsRefused() throws {
-        #expect(throws: EngineV2ProductionError.self) {
-            try prepare(.contiguous, environment: environment())
-        }
-        for selection in [EngineV2KVBackendSelection.auto, .paged] {
-            #expect(throws: EngineV2ProductionError.self, "\(selection)") {
-                try prepare(selection,
-                    environment: environment([EngineV2KVBackendPolicy.killSwitchEnvKey: "0"]))
+        let cases: [(EngineV2KVBackendSelection, [String: String], String)] = [
+            (.contiguous, [:], "Flint requires the paged KV backend; resolved contiguous"),
+            (.auto, [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"],
+             "Flint requires the paged KV backend; resolved contiguous (kill_switch)"),
+            (.paged, [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"],
+             "Flint requires the paged KV backend; resolved contiguous (kill_switch)"),
+        ]
+        for (selection, overrides, expected) in cases {
+            let error = refusal { try prepare(selection, environment: environment(overrides)) }
+            guard case .pagedUnavailable(let reason)? = error else {
+                Issue.record("\(selection) must refuse, got \(String(describing: error))")
+                continue
             }
+            #expect(reason == expected, "\(selection)")
         }
     }
 }

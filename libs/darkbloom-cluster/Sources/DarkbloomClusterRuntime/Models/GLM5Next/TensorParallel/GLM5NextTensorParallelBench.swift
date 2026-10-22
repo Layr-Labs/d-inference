@@ -86,6 +86,18 @@ public enum GLM5NextTensorParallelBench {
         /// row, in pieces), outside the timed prefill: the reordering gate
         /// (perplexity and top-1 agreement between two runs).
         public var perplexity = false
+        /// With `mtpDepth` > 0: this many requests decode together. Lane i's
+        /// prompt is the prompt rotated by `i * 977` tokens (its own context and
+        /// routing), prefilled alone in `chunkSize` chunks; then every lane's
+        /// window is verified per round in ONE forward
+        /// (`GLM5NextTensorParallelSpeculation.rounds`, `lanesBatched`) or one
+        /// lane after another (`round`, the time-sliced lanes), until each
+        /// lane has `outputCount` tokens.
+        public var lanes = 1
+        public var lanesBatched = true
+        /// Batched rounds also evaluate the NextN proposals before the forward
+        /// is built, to time them alone (serializes what otherwise overlaps).
+        public var lanesSplitEval = false
         public init(modelDirectory: URL, mode: Mode, shardRank: Int = 0, promptTokenIDs: [Int],
                     chunkSize: Int = 2048, outputCount: Int = 64, repeats: Int = 2, float32Partials: Bool = true) {
             self.modelDirectory = modelDirectory; self.mode = mode; self.shardRank = shardRank
@@ -122,6 +134,13 @@ public enum GLM5NextTensorParallelBench {
         public var promptNLL: Double?
         public var promptPerplexity: Double?
         public var promptGreedyTokenIDs: [Int]?
+        /// Lanes mode: lanes, every lane's tokens per second together, per
+        /// round median wall milliseconds, and (batched) the median host
+        /// milliseconds of `rounds`' phases.
+        public var lanes: Int? = nil
+        public var laneTokenIDs: [[Int]]? = nil
+        public var lanesRoundP50Milliseconds: Double? = nil
+        public var lanesPhasesP50Milliseconds: [String: Double]? = nil
     }
 
     public struct Report: Codable, Sendable {
@@ -238,7 +257,16 @@ public enum GLM5NextTensorParallelBench {
                     String(format: " prefill graphs %@ peak transient %.0f MiB",
                         graphs.map(String.init).joined(separator: ","), Double(r.prefillPeakTransientBytes ?? 0) / 1048576)
                 } ?? "")
-                + (r.promptPerplexity.map { String(format: " prompt ppl %.6f nll %.8f", $0, r.promptNLL ?? 0) } ?? ""))
+                + (r.promptPerplexity.map { String(format: " prompt ppl %.6f nll %.8f", $0, r.promptNLL ?? 0) } ?? "")
+                + (r.lanes.map { lanes in
+                    String(format: " lanes %d %@ aggregate %.2f tok/s round p50 %.2f ms", lanes,
+                        options.lanesBatched ? "batched" : "time-sliced", r.decodeTokensPerSecond,
+                        r.lanesRoundP50Milliseconds ?? 0)
+                        + (r.lanesPhasesP50Milliseconds.map { phases in
+                            " phases p50 ms " + ["proposals", "proposal_wait", "forward", "agreement", "encode", "wait", "total"]
+                                .map { String(format: "%@=%.2f", $0, phases[$0] ?? 0) }.joined(separator: " ")
+                        } ?? "")
+                } ?? ""))
         }
         try residency.end()
         return Report(mode: options.mode.rawValue, rank: group?.rank ?? options.shardRank, size: group?.size ?? 1,
@@ -251,6 +279,7 @@ public enum GLM5NextTensorParallelBench {
 
     private static func generate(stage: GLM5NextTextStage, mtp: GLM5NextMTP?, group: QwenTensorParallelGroup?,
                                  options: Options) throws -> Run {
+        if options.lanes > 1, let mtp { return try generateLanes(stage: stage, mtp: mtp, group: group, options: options) }
         let prompt = options.promptTokenIDs, chunk = max(1, options.chunkSize)
         let cache = stage.newCache()
         // Each rank proposes and verifies itself; with a peer, every round's
@@ -416,6 +445,97 @@ public enum GLM5NextTensorParallelBench {
             mtpWaitP50Milliseconds: speculation.map { median($0.phases.map(\.wait)) },
             prefillGraphs: graphs, prefillPeakTransientBytes: peakTransient, promptNLL: scored?.nll,
             promptPerplexity: scored.map { exp($0.nll) }, promptGreedyTokenIDs: scored?.greedy)
+    }
+
+    /// `Options.lanes`: several requests' greedy MTP decode, batched or time-sliced.
+    private static func generateLanes(stage: GLM5NextTextStage, mtp: GLM5NextMTP, group: QwenTensorParallelGroup?,
+                                      options: Options) throws -> Run {
+        typealias Speculation = GLM5NextTensorParallelSpeculation
+        let chunk = max(1, options.chunkSize)
+        struct Lane {
+            let cache: GLM5NextTextStageCache
+            let speculation: Speculation
+            var tokens: [Int]
+        }
+        let prefillStart = DispatchTime.now().uptimeNanoseconds
+        var lanes: [Lane] = []
+        for index in 0 ..< options.lanes {
+            let base = options.promptTokenIDs
+            let shift = (index * 977) % max(1, base.count)
+            let prompt = Array(base[shift...] + base[..<shift])
+            let cache = stage.newCache()
+            let speculation = try Speculation(mtp: mtp, depth: options.mtpDepth, rank: group?.rank ?? 0,
+                ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
+                agree: { value in group.map { $0.allSum(value) } ?? value })
+            var offset = 0
+            var last: (logits: MLXArray, hidden: MLXArray)?
+            while offset < prompt.count {
+                let end = min(prompt.count, offset + chunk)
+                let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
+                let candidate = try stage.prepareForward(tokens: tokens, cache: cache,
+                    readout: end == prompt.count ? .lastToken : .none)
+                switch candidate.output {
+                case .final(let output):
+                    try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
+                    last = (output.logits[0..., -1, 0...], output.hidden[0..., (-1)..., 0...])
+                case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
+                case .streams: throw ProbeError("GLM bench prefill produced no hidden rows")
+                }
+                try candidate.commit { roots in eval(roots + (try speculation.evaluationTargets())) }
+                offset = end
+            }
+            guard let last else { throw ProbeError("GLM bench prefill produced no logits") }
+            let first = Int(argMax(last.logits.asType(.float32), axis: -1).item(Int32.self))
+            try speculation.begin(carry: first, lastHidden: last.hidden)
+            lanes.append(.init(cache: cache, speculation: speculation, tokens: [first]))
+        }
+        let prefillSeconds = seconds(since: prefillStart)
+        var steps: [Double] = []
+        var phases: [Speculation.RoundsTiming] = []
+        let decodeStart = DispatchTime.now().uptimeNanoseconds
+        // Decode encodes under the runtime's command-buffer limits, as the lanes do.
+        try GPU.withCommandBufferLimits(GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
+        while true {
+            let active = lanes.indices.filter { lanes[$0].tokens.count < options.outputCount }
+            if active.isEmpty { break }
+            let roundStart = DispatchTime.now().uptimeNanoseconds
+            let windows = active.map { min(options.mtpDepth, options.outputCount - lanes[$0].tokens.count - 1) }
+            if options.lanesBatched {
+                let rounds = try Speculation.rounds(stage: stage, lanes: zip(active, windows).map { index, window in
+                    .init(speculation: lanes[index].speculation, cache: lanes[index].cache,
+                        last: lanes[index].tokens[lanes[index].tokens.count - 1], window: window, stop: 0)
+                }, evaluatesProposals: options.lanesSplitEval, timing: { phases.append($0) })
+                for (index, round) in zip(active, rounds) { lanes[index].tokens += round.tokens }
+            } else {
+                for (index, window) in zip(active, windows) {
+                    let round = try lanes[index].speculation.round(stage: stage, cache: lanes[index].cache,
+                        last: lanes[index].tokens[lanes[index].tokens.count - 1], window: window, stop: 0)
+                    lanes[index].tokens += round.tokens
+                }
+            }
+            steps.append(seconds(since: roundStart))
+        }
+        }
+        let decodeSeconds = seconds(since: decodeStart)
+        let decoded = lanes.reduce(0) { $0 + $1.tokens.count - 1 }
+        let sorted = steps.sorted()
+        func percentile(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] * 1000 }
+        func p50(_ values: [Double]) -> Double { median(values) * 1000 }
+        let phaseMedians: [String: Double]? = phases.isEmpty ? nil : [
+            "proposals": p50(phases.map(\.proposals)), "proposal_wait": p50(phases.map(\.proposalWait)),
+            "forward": p50(phases.map(\.forward)), "agreement": p50(phases.map(\.agreement)),
+            "encode": p50(phases.map(\.encode)), "wait": p50(phases.map(\.wait)), "total": p50(phases.map(\.total)),
+        ]
+        let promptCount = options.promptTokenIDs.count * options.lanes
+        return Run(prefillSeconds: prefillSeconds, prefillTokensPerSecond: Double(promptCount) / prefillSeconds,
+            decodeTokensPerSecond: Double(decoded) / decodeSeconds, stepP50Milliseconds: percentile(0.5),
+            stepP90Milliseconds: percentile(0.9), tokenIDs: lanes[0].tokens, topLogits: [],
+            mtpRounds: lanes.reduce(0) { $0 + $1.speculation.rounds },
+            mtpProposedTokens: lanes.reduce(0) { $0 + $1.speculation.proposedTokens },
+            mtpAcceptedTokens: lanes.reduce(0) { $0 + $1.speculation.acceptedTokens },
+            prefillGraphs: nil, prefillPeakTransientBytes: nil, promptNLL: nil, promptPerplexity: nil,
+            promptGreedyTokenIDs: nil, lanes: options.lanes, laneTokenIDs: lanes.map(\.tokens),
+            lanesRoundP50Milliseconds: percentile(0.5), lanesPhasesP50Milliseconds: phaseMedians)
     }
 
     /// Mean negative log-likelihood of prompt tokens 1 ... n-1 from the

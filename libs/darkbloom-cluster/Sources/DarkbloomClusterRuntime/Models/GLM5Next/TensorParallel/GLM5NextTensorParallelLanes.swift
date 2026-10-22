@@ -40,6 +40,14 @@ import MLXLMCommon
 /// collective, agreement or protocol failure ends every lane and the pair, as
 /// it ends one request.
 extension GLM5NextTensorParallelResidentRuntime {
+    static let laneTiming: GLM5NextTensorParallelLaneRank.LaneTiming = {
+        switch ProcessInfo.processInfo.environment["DARKBLOOM_CLUSTER_LANE_TIMING"] {
+        case "1": return .on
+        case "split": return .split
+        default: return .off
+        }
+    }()
+
     /// One lane count keeps the agreement bytes it always had.
     static func laneAgreementFields(_ lanes: QwenBatchSettings) -> [String] {
         lanes.batching ? ["glm5-next-tp-lanes-v1", "lanes=\(lanes.lanes)"] : []
@@ -298,6 +306,13 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
     /// bitwise its own round's), then each one-token unit's own step, in unit
     /// order. Both ranks run the same units, so the same collectives in the
     /// same order.
+    /// `DARKBLOOM_CLUSTER_LANE_TIMING`: `1` logs every batched decode step's
+    /// host phases (`GLM5NextTensorParallelSpeculation.RoundsTiming`);
+    /// `split` also evaluates the NextN proposals before the forward is built
+    /// (their GPU time alone; it serializes what otherwise overlaps). A
+    /// diagnostic: no collective changes, results are the same.
+    enum LaneTiming { case off, on, split }
+
     func decode(_ units: [GLM5NextTensorParallelDecodeUnit<Lane>], whileRunning: (Int) throws -> Void,
                 check: () throws -> Void) throws -> [[Int]] {
         try GPU.withCommandBufferLimits(GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
@@ -318,8 +333,16 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
                 return .init(speculation: speculation, cache: unit.lane.opened.cache, last: unit.last, window: window,
                     stop: 0, draw: unit.lane.draw, propose: unit.lane.propose)
             }
+            let timing = Runtime.laneTiming
             let rounds = try GLM5NextTensorParallelSpeculation.rounds(stage: stage, lanes: lanes, whileRunning: {
                 for index in speculating { try whileRunning(index) }
+            }, evaluatesProposals: timing == .split, timing: timing == .off ? nil : { [rank] t in
+                func ms(_ seconds: Double) -> String { String(format: "%.2f", seconds * 1000) }
+                log("darkbloom-tensor-parallel-lane-step-v1 rank=\(rank) lanes=\(lanes.count)"
+                    + " rows=\(lanes.reduce(0) { $0 + $1.window + 1 }) proposals_ms=\(ms(t.proposals))"
+                    + " proposal_wait_ms=\(ms(t.proposalWait)) forward_ms=\(ms(t.forward))"
+                    + " agreement_ms=\(ms(t.agreement)) encode_ms=\(ms(t.encode)) wait_ms=\(ms(t.wait))"
+                    + " total_ms=\(ms(t.total))")
             })
             for (index, round) in zip(speculating, rounds) {
                 units[index].lane.sampler?.commitRound(round.tokens)

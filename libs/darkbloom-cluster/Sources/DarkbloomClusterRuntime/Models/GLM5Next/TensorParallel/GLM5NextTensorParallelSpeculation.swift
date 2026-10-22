@@ -378,9 +378,29 @@ extension GLM5NextTensorParallelSpeculation {
     /// must pass the same lanes in the same order with the same `last` and
     /// `window`, derived from agreed tokens only. Evaluates the round (one
     /// host read); `whileRunning` as in `round`.
-    static func rounds(stage: GLM5NextTextStage, lanes: [Lane], whileRunning: () throws -> Void = {})
+    /// Host seconds of one `rounds` call, for measurement (`timing`).
+    struct RoundsTiming {
+        /// Every lane's NextN priming and proposals built (and, with
+        /// `evaluatesProposals`, evaluated: `proposalWait`).
+        var proposals = 0.0
+        var proposalWait = 0.0
+        /// The rows forward built (`prepareVerificationRows`).
+        var forward = 0.0
+        /// Slots and the agreement sum built.
+        var agreement = 0.0
+        /// `asyncEval` returning (encoding), then waiting for the GPU.
+        var encode = 0.0
+        var wait = 0.0
+        var total: Double { proposals + proposalWait + forward + agreement + encode + wait }
+    }
+
+    static func rounds(stage: GLM5NextTextStage, lanes: [Lane], whileRunning: () throws -> Void = {},
+                       evaluatesProposals: Bool = false, timing: ((RoundsTiming) -> Void)? = nil)
         throws -> [Round]
     {
+        func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+        func seconds(_ from: UInt64, _ to: UInt64) -> Double { Double(to - from) / 1e9 }
+        var times = RoundsTiming()
         guard let first = lanes.first?.speculation,
               Set(lanes.map { ObjectIdentifier($0.speculation) }).count == lanes.count,
               lanes.allSatisfy({ $0.speculation.rank == first.rank && $0.speculation.ranks == first.ranks
@@ -402,7 +422,18 @@ extension GLM5NextTensorParallelSpeculation {
             inputs.append(.init(tokens: concatenated([MLXArray([Int32(lane.last)], [1, 1])] + (draft.map { [$0] } ?? []),
                 axis: 1), cache: lane.cache))
         }
+        let proposed = now()
+        times.proposals = seconds(started, proposed)
+        var forwardStart = proposed
+        if evaluatesProposals {
+            // Measurement only: the proposals' graphs alone, before the forward.
+            eval(drafts.compactMap { $0 } + (try lanes.flatMap { try $0.speculation.evaluationTargets() }))
+            forwardStart = now()
+            times.proposalWait = seconds(proposed, forwardStart)
+        }
         let candidate = try stage.prepareVerificationRows(inputs)
+        let forwardBuilt = now()
+        times.forward = seconds(forwardStart, forwardBuilt)
         let outputs = try candidate.outputs.map { output -> GLM5NextTextOutput in
             guard case .final(let value) = output else { throw ProbeError("GLM speculative verification produced no logits") }
             return value
@@ -430,11 +461,14 @@ extension GLM5NextTensorParallelSpeculation {
             try MLX.withError { error in
                 let all = roots + [agreed] + (try lanes.flatMap { try $0.speculation.evaluationTargets() })
                 let built = DispatchTime.now().uptimeNanoseconds
+                times.agreement = seconds(forwardBuilt, built)
                 asyncEval(all)
                 let encoded = DispatchTime.now().uptimeNanoseconds
                 try whileRunning()
                 eval(all)
                 let done = DispatchTime.now().uptimeNanoseconds
+                times.encode = seconds(built, encoded)
+                times.wait = seconds(encoded, done)
                 for lane in lanes where lane.speculation.recordsPhases {
                     lane.speculation.phases.append((Double(built - started) / 1e9, Double(encoded - built) / 1e9,
                         Double(done - encoded) / 1e9))
@@ -459,6 +493,7 @@ extension GLM5NextTensorParallelSpeculation {
             speculation.pending = (MLXArray(round.tokens.map(Int32.init), [1, kept]), output.hidden[0..., ..<kept, 0...])
             speculation.record(round, window: lane.window)
         }
+        timing?(times)
         return decided
     }
 }

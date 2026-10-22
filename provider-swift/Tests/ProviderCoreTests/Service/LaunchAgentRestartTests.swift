@@ -187,6 +187,10 @@ struct LaunchAgentEnvironmentTests {
         let out = LaunchAgent.passthroughEnvironment(from: [key: "0", "UNRELATED_SECRET": "excluded"])
         #expect(out == [key: "0"])
         #expect(!DeadlineAdmissionFixes.resolve(environment: out))
+        // The job receives the raw value; a trailing line ending still disables.
+        let templated = LaunchAgent.passthroughEnvironment(from: [key: "off\n"])
+        #expect(templated == [key: "off\n"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: templated))
         #expect(DeadlineAdmissionFixes.resolve(environment: LaunchAgent.passthroughEnvironment(from: [:])))
         let plist = LaunchAgent.makeServicePlist(
             label: "io.darkbloom.provider",

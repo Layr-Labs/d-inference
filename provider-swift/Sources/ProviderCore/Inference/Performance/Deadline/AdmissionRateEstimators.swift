@@ -11,7 +11,7 @@ enum DeadlineAdmissionFixes {
 
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let raw = environment[environmentKey]?
-            .trimmingCharacters(in: .whitespaces).lowercased() else { return true }
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return true }
         return !["0", "false", "no", "off"].contains(raw)
     }
 

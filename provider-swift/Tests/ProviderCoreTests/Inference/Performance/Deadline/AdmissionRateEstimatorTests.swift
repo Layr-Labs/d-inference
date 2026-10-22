@@ -30,10 +30,11 @@ struct AdmissionRateEstimatorTests {
         let key = DeadlineAdmissionFixes.environmentKey
         #expect(key == "DARKBLOOM_TTFT_ADMISSION_FIXES")
         #expect(DeadlineAdmissionFixes.resolve(environment: [:]))
-        for value in ["1", "true", "on", ""] {
+        for value in ["1", "true", "on", "", "\n", "1\n"] {
             #expect(DeadlineAdmissionFixes.resolve(environment: [key: value]))
         }
-        for value in ["0", "false", "OFF", " no "] {
+        // Values from a file or deployment template can carry line endings.
+        for value in ["0", "false", "OFF", " no ", "0\n", "off\r\n", "\tfalse\n", "\nno"] {
             #expect(!DeadlineAdmissionFixes.resolve(environment: [key: value]))
         }
     }

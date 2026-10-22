@@ -2,6 +2,7 @@
 // Resolve backend policy and prepare KV resources before engine/cache assembly.
 
 import Foundation
+import MLXLLM
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -184,7 +185,7 @@ extension EngineV2Factory {
         let layerKinds = adapter.layerKinds
         let modelCapabilities = adapter.modelCapabilities
         let precision = try EngineV2KVQuantizationPolicy.resolve(
-            modelType: nil, modelID: modelID ?? "", environment: environment)
+            modelType: model is FlintModel ? "flint" : nil, modelID: modelID ?? "", environment: environment)
         let glm5Next = glm5NextTarget(model: model)
         // GLM has no contiguous representation, so automatic selection is paged
         // for every GLM identity. Vetoes below still refuse it instead of degrading.

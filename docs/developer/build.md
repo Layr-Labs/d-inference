@@ -280,6 +280,29 @@ artifact removal is intended. Never erase live provider state as build cleanup.
 Do not repair an old backend trigger by reintroducing backend build targets here.
 Backend build and deployment configuration belongs in the platform repository.
 
+## Flint native dependency build
+
+1. Use `libs/mlx-swift-lm` at `65eaceb8b90bc65d01c2d2fb4a8801584f4ead7a`
+   ([SDK #322](https://github.com/Layr-Labs/mlx-swift-lm/pull/322)) and
+   `libs/mlx-swift` at `67dc752856ca3904e5de85b28e2f46ee3b182f62`.
+2. Run `make provider-build`. It builds the metallib from the nested MLX source
+   actually compiled by Cmlx. Preserve binary and metallib hashes with physical
+   evidence; rebuilding tests alone does not refresh a release benchmark binary.
+3. For Flint serving, select native live KV and native checkpoint precision,
+   including when general configuration supplies `balanced` checkpoint storage:
+
+   ```bash
+   export DARKBLOOM_CBV2_KV_QUANTIZATION=native
+   export DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native
+   ```
+
+   See [native Flint](../architecture/inference.md#native-flint) for the enforced
+   precision contract. The official artifact remains unchanged; the provider
+   executes in Swift/MLX without a Python inference process.
+
+Verify with [Flint tests](test.md#flint-native-validation); see the
+[SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) for provenance.
+
 ## Nemotron Super component qualification
 
 The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)

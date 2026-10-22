@@ -2032,6 +2032,133 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
+### Native Flint
+
+`model_type: flint` resolves to `FlintModel` and the production CBv2 adapter.
+The model derives its full/sliding layer map from the checkpoint: per-head QK
+normalization, learned attention sinks, RoPE only on sliding layers, dense early
+MLPs and sigmoid-routed experts with a shared expert. Router correction bias
+changes selection only; selected sigmoid probabilities are normalized. The
+output head and routed weighted reduction use FP32 arithmetic inputs/reduction.
+
+`FlintModel.cbv2Prefill` implements `CBv2LanguageModelPrefillForwardable`: every
+prompt token traverses the full trunk and writes KV. Evaluation-only chunks omit
+the vocabulary projection; a chunk requiring logits projects only its last
+position, with FP32 head inputs. Ordinary forward retains full logits and packed
+prefill remains disabled. This removes unused head work; its throughput effect
+requires a matched benchmark. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`.
+
+The strict model-owned loader accepts the documented BF16 layout or Recursive's
+mixed affine export (group-64 INT4 projections/experts, INT8 embeddings, BF16
+sensitive tensors), with native BF16 KV for the official export. It rejects
+missing/extra/duplicate tensors, conflicting aliases and unsupported geometry
+rather than silently filling a checkpoint.
+This format is not NVFP4. Native KV and native checkpoint precision are required;
+select both explicitly when the provider's general checkpoint setting is
+`balanced`. `EngineV2KVQuantizationPolicy.resolve` rejects non-native selections;
+the production factory also checks an explicitly supplied checkpoint selection.
+Reduced KV and MTP are not supported by this integration.
+
+Select `engine_v2_kv_backend = "paged"` for paged serving and pass
+`--kv-backend paged` to its qualification benchmarks. Explicit selection refuses
+paged construction failures; automatic selection follows the general artifact
+allowlist and does not establish that a Flint slot used paged attention. Record
+the resolved backend in every performance receipt. Contiguous measurements are
+separate reference results, not evidence of paged throughput.
+
+Flint chooses reasoning automatically. `FlintRequestPolicy` rejects explicit
+reasoning effort/enabled controls, media and combined JSON response-format/tool
+requests. Output limits remain ordinary completion-token limits.
+`ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
+exact `model_type: flint` request, including requests without tools. It verifies
+the rendered assistant boundary and pinned tokenizer markers. Custom stop
+strings are rejected because independent stop-string matching could terminate
+an unfinished reasoning span or call. Other model families retain their policies.
+
+| Prepared tool choice | Native output boundary |
+|---|---|
+| `none` | Optional initial reasoning, then ordinary content; no top-level call |
+| `auto` | Optional initial reasoning, then content or declared calls; content may precede calls |
+| `required` | Optional initial reasoning, then at least one declared call; visible prose is prohibited |
+| Named function | Required-call behavior restricted to the selected function |
+
+Because this constraint enforces required/named framing,
+`ToolChoicePromptPolicy.prepare` keeps the caller's messages and the trained
+template for exact `flint` rather than adding the generic tool-only instruction
+to system and user text. Named choice still renders only the selected
+declaration, and name, schema and cardinality validation are unchanged. The
+verified artifact type selects this path, never the catalog ID or a request
+field. With the generic instruction, a greedy paged named-tool request wrote
+its call inside an unclosed reasoning span; reasoning masks the observation
+stop, so the call repeated until the 512-token budget and the request failed.
+With native framing the same request closed reasoning and emitted one valid
+call. The model can still quote calls inside reasoning; that text stays
+reasoning and stops stay masked there, as in rec. The prompt-token change is
+request-normalization v9, mirrored by the platform prompt sidecar.
+
+`parallel_tool_calls=false` prevents a second call. The byte-level boundary
+machine recognizes markers split across tokens and checks the entire candidate
+piece, including text after a close. Effective EOS token IDs are masked while
+reasoning or a call is open. Answer termination permits end-of-text/user EOS;
+observation EOS is permitted only after a completed call. Developer EOS is never
+a successful assistant terminator. Reasoning also excludes textual stop-marker
+spellings, including spellings assembled from ordinary tokens. A tool-looking
+quotation inside reasoning remains reasoning; the first `</think>` closes that
+channel, without enabling nested-reasoning semantics.
+
+The constraint receives the exact prepared tool specifications. Declared string
+arguments retain raw whitespace even when they begin with `{` or `[`. Structured
+JSON values protect quoted delimiters and escapes; payload text cannot switch
+channels or create nested calls. Dedicated EOS tokens remain unavailable inside
+payloads because the engine terminates on their IDs. Their literal spellings can
+still be represented by ordinary token pieces inside opaque values.
+
+This is an envelope constraint, not a full JSON-Schema sampler. The `.flint`
+complete-frame parser and `ToolConstraintValidation.validate` still reject
+malformed JSON, duplicate arguments, schema violations and invalid call sets
+before tool calls are exposed. Auto mode does not require the finite schema
+compiler to accept every schema. Native `<think>` output is separated from
+content, and `FlintTemplateNormalization` preserves null object values and array
+positions during template replay. A valid envelope does not prove a useful
+answer: output-budget exhaustion does not synthesize a close, and the constraint
+does not force nonempty visible content.
+
+The protocol design credits Recursive's Apache-2.0
+[pinned rec grammar](https://github.com/recursive-oss/rec/blob/e53663b262af4cb1ca498e596ca8b1a2d79e0800/engine/src/rec_mlx/grammar_builder.py).
+The independent Swift implementation adds required/named and single-call policy,
+covers the artifact's developer EOS in addition to rec's three stop markers,
+and retains full JSON/schema post-validation. It does not import rec's scheduler
+or XGrammar runtime. Constraint memory and decode scheduling costs are described
+under [Flint memory admission](hardware-support.md#flint-memory-admission).
+
+The published tool protocol has no escape for a literal `</arg_value>` in a
+top-level raw string value. `FlintRequestPolicy` rejects such historical
+arguments; syntactically indistinguishable generated frames cannot be recovered
+unambiguously. Arbitrary delimiter-bearing strings are not a supported
+round-trip contract. Malformed or incomplete frames fail closed.
+
+The loaded Flint configuration supplies the context bound to both backend
+sizing and bridge admission. Prompt tokens plus the reserved output budget
+must fit that bound; excess requests return HTTP 400 before success or SSE
+headers. The limit is not replaced with the largest locally tested prompt.
+Native memory admission still bounds executable work on the current host. [Physical validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+is separate from architecture registration and public catalog activation.
+
+Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintRequestPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintTemplateNormalization.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ToolChoicePromptPolicy.swift` (`prepare`),
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift` (`make`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift` (`FlintNativeProtocolConstraint`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift` (`FlintNativeProtocolBoundary`),
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
+`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,
+and [SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) (Prince Canuma/mlx-vlm, MIT;
+Recursive rec, Apache-2.0, immutable revisions and full license texts).
+
 ## Related
 
 - [`prefix-cache.md`](prefix-cache.md) — KV layouts, resident prefix reuse, SSD tier

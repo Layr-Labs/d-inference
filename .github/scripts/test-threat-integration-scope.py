@@ -109,7 +109,11 @@ class IntegrationScopeTests(unittest.TestCase):
         self.assertEqual(replay["omitted_units"], 0)
         self.assertEqual(scanner.active_request["integration_source_units"], 4)
         self.assertEqual(scanner.active_request["integration_source_omitted"], 0)
-        self.assertCountEqual(replay["units"], scanner.source[0])
+        restored = [dict(id=u["source_id"], **{k: v for k, v in u.items() if k != "source_id"})
+                    for u in replay["units"]]
+        self.assertCountEqual(restored, scanner.source[0])
+        self.assertTrue(all("id" not in u for u in replay["units"]))
+        self.assertEqual(message["expected_covered_units"], ["0"])
         self.assertEqual([u["id"] for u in message["units"]], ["0"])
         self.assertTrue(any(u.get("text") == "1 | answer = 42\n" for u in replay["units"]))
 
@@ -123,7 +127,8 @@ class IntegrationScopeTests(unittest.TestCase):
         self.assertEqual(len(replay["units"]) + replay["omitted_units"], len(original))
         self.assertTrue(any(u.get("kind") == "patch" for u in replay["units"]))
         for unit in replay["units"]:
-            self.assertEqual(unit, original[unit["id"]])
+            self.assertEqual(dict(id=unit["source_id"], **{k: v for k, v in unit.items() if k != "source_id"}),
+                             original[unit["source_id"]])
 
     def test_replay_cannot_expand_selective_scope_or_follow_summary_paths(self):
         calls = Responses()
@@ -136,8 +141,8 @@ class IntegrationScopeTests(unittest.TestCase):
         replay = calls.requests[-1][1]["integration_source"]
         allowed = {u["id"] for u in selected}
         self.assertEqual(replay["reviewed_units"], len(allowed))
-        self.assertTrue(all(u["id"] in allowed for u in replay["units"]))
-        self.assertFalse(any(u["id"] in {s["id"] for s in scanner.source[0]}
+        self.assertTrue(all(u["source_id"] in allowed for u in replay["units"]))
+        self.assertFalse(any(u["source_id"] in {s["id"] for s in scanner.source[0]}
                              for u in replay["units"]))
 
     def test_cached_source_reconstructs_the_same_integration_replay(self):

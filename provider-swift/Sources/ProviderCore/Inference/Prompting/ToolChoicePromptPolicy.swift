@@ -26,13 +26,17 @@ enum ToolChoicePromptPolicy {
     ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true
-        // This exact native text path enforces required/named framing in the
+        // These exact native text paths enforce required/named framing in the
         // sampler. Keep the trained template and original messages instead of
         // injecting a second tool-only instruction into system and user text.
-        // Schema/name/cardinality checks remain mandatory. Keep this predicate
-        // synchronized with the coordinator prompt sidecar and contract version.
-        let nativeFramingHandlesChoice = Qwen4SupportPolicy.isOwnedModelID(request.model)
-            && modelType == "qwen4_exp" && !MediaIngest.hasMedia(request)
+        // Schema/name/cardinality checks remain mandatory. Flint is selected by
+        // its verified artifact type alone: ToolConstraintFactory installs its
+        // native constraint for every exact-Flint request or refuses it, and
+        // FlintRequestPolicy refuses media. Keep this predicate synchronized
+        // with the coordinator prompt sidecar and contract version.
+        let nativeFramingHandlesChoice = modelType == "flint"
+            || (Qwen4SupportPolicy.isOwnedModelID(request.model)
+                && modelType == "qwen4_exp" && !MediaIngest.hasMedia(request))
         switch request.toolChoice {
         case nil, .mode(.auto):
             try ToolConstraintValidation.rejectReservedSchemaMetadata(

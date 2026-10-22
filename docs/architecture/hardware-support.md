@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -118,7 +118,7 @@ owns the limits and their source mappings.
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16. The gpt-oss-20b floor is max(2.56 GiB eager, 3.20 GiB compiled) B=8 peak over resident plus slack, from the 2026-07-10 M4 Max sweep (`libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-paged-gate-2026-07-09.md`, added in SDK commit `d72ce578`). That SDK revision still clamped the expert SwiGLU with float32 `MLXArray(limit)` bounds (introduced in `51ea0c4b`, removed in `f2eb29b8`, SDK #326), so the sweep ran with float32 activations after layer 0. No sweep has re-measured the floor with bf16 activations | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
@@ -171,6 +171,32 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 
 `ramPrefix` is always 0 in production — there is no RAM prefix-cache carve
 ([`prefix-cache.md`](prefix-cache.md)).
+
+Fused causal prompt attention changes the prefill transient, not these
+constants. An eligible full-attention prompt chunk takes one `.causal` SDPA
+call instead of 128-query blocks. The fused kernel materializes no scores, so
+the route drops the per-block score tensors of MLX's composed path (head_dim
+256), the per-block BOOL masks on paged storage and the output concat; it adds
+no allocation
+([eligibility](inference.md#scheduler-and-loop-configuration); `usesFusedCausalPrefill` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift`).
+On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
+13.86 GB to 12.03 GB because its head_dim 256 layers take the fused kernel.
+`defaultActivationReserveBytes`, `measuredActivationFloorsBytes`,
+`minimumLoadKVBytes` and the KV slot grants are intentionally unchanged:
+
+- The default reserve is sized from gemma-4, whose layers keep the blocked
+  path. The gpt-oss-20b floor comes from the 2026-07-10 sweep, which ran the
+  blocked path; the fused route only removes allocations from that path, so
+  the floor stays an upper bound. The Nemotron Super floor is the residue its
+  request and prefill-lane charges do not hold, not a prompt-attention
+  transient. No floor has been re-measured on the fused route, and a lower
+  floor needs a new measurement.
+- `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores the blocked path that the
+  2026-07-10 sweep ran.
+- K/V layout and dtype do not change, so KV bytes per token, slot grants and
+  advertised capacity do not change. A lower live transient shows up only
+  through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
 
 ### Load gate (`ModelLoadAdmission`)
 
@@ -578,6 +604,50 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Coordinator mirror | [coordinator/registry/servability.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/servability.go), [coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go) |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
+
+### Flint memory admission
+
+The native Flint adapter uses the existing attention-only geometry and memory
+admission path. Its sliding/full map comes from the loaded configuration, so
+full-layer KV growth and bounded sliding windows retain distinct accounting.
+Neither the official INT4 package size nor one short-generation peak establishes
+a supported RAM tier or full-context concurrency. No Flint-specific activation
+floor, OS reserve reduction or hardware cap is introduced.
+The [prefill output optimization](inference.md#native-flint) retains all trunk
+work and KV writes, so it does not reduce the admitted context or KV allowance.
+
+The native protocol constraint also runs for tool-less requests. Its cached
+vocabulary projection and per-request framing/mask caches add host work and
+memory. `FlintNativeVocabulary` retains at most four cached vocabulary entries
+with weak tokenizer ownership. `FlintNativeProtocolConstraint.maximumStates`
+is `8192`; its state-mask and broad-mask caches each retain at most four entries.
+`FlintNativeProtocolBoundary.maxKeyBytes` is `1024`, `maxJSONDepth` is `128`,
+and retained raw-string key metadata is limited to 65,536 UTF-8 bytes per
+constraint. These bounds do not replace weight, activation or KV admission.
+State-pool exhaustion produces a constraint failure rather than unconstrained
+generation; key/depth bounds restrict continuations or reject declarations.
+
+Vocabulary projection is cached, and ordinary opaque text reuses canonical
+framing states. The existing `CBv2TokenConstraintSampler.mask` still scans broad
+allowed-token sets. Constrained requests also disable ordinary decode chaining
+and are ineligible for MTP. An unconstrained diagnostic run therefore does not
+measure the production serving path, even when it uses the same checkpoint.
+No throughput improvement or higher concurrency follows from these changes.
+Sources: `provider-swift/Sources/ProviderCore/Inference/FlintNativeVocabulary.swift`
+(`FlintNativeVocabulary`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift`
+(`FlintNativeProtocolConstraint`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift`
+(`FlintNativeProtocolBoundary`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/TokenConstraintSamplerV2.swift`
+(`CBv2TokenConstraintSampler.mask`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`
+(`mtpBasicEligible`).
+
+See [Flint validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+and `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`
+(`EngineV2Factory.ProductionModelAdapter`).
 
 ## Related
 

@@ -183,6 +183,19 @@ struct DiffusionGemmaReasoningEmissionTests {
         return (failed, thought, content, calls)
     }
 
+    /// Drops only the request declarations a Responses object echoes back.
+    private func withoutEchoedRequestTools(_ text: String) throws -> String {
+        try text.components(separatedBy: "\n").map { line in
+            guard line.hasPrefix("data: "), line != "data: [DONE]",
+                  var object = try JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8)) as? [String: Any],
+                  var response = object["response"] as? [String: Any] else { return line }
+            response["tools"] = nil
+            response["tool_choice"] = nil
+            object["response"] = response
+            return "data: " + String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        }.joined(separator: "\n")
+    }
+
     private func requestData(id: String, responses: Bool, reasoning: Bool, stream: Bool = true) throws -> Data {
         let function: [String: Any] = ["name": "get_weather", "parameters": ["type": "object",
             "properties": ["city": ["type": "string"]], "required": ["city"], "additionalProperties": false]]

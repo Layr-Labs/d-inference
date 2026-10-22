@@ -352,6 +352,25 @@ default).
 | Thermal state (`nominal`, `fair`, `serious`, `critical`) is sampled from `ProcessInfo.thermalState`, sent to the coordinator as `thermal_state`, and written to the daemon state file read by `darkbloom status` | `provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift`, `provider-swift/Sources/ProviderCore/Protocol/Types.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
 | Optional experimental fan control (Macs with a fan and a validated GPU sensor) | [`fan-control.md`](./fan-control.md) |
 
+## Flint validation scope
+
+The [native Flint implementation](../architecture/inference.md#native-flint)
+accepts the official text-only artifact; physical verification currently targets
+one Apple M5 Max with 128 GiB RAM.
+
+| Contract or evidence | Scope | Source |
+|---|---|---|
+| Memory admission | No new minimum RAM tier or concurrency guarantee; full/sliding accounting remains in force | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`, `ProductionModelAdapter`; [memory model](../architecture/hardware-support.md#flint-memory-admission) |
+| Context | Artifact context bound is retained; full 262,144-token qualification remains outstanding | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintConfiguration.swift`, `FlintConfiguration` |
+| Precision | Official package uses native BF16 KV; live and checkpoint selections must be native | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| NAX dispatch | Captured official INT4 layers 0–2 and head execute dense `affine_qmm_t_nax` and routed `affine_gather_qmm_rhs_nax_nt`; FP32 head uses a portable fallback. This establishes those operators' execution, not a whole-model speedup | SDK `FlintCaptureTests`; [validation procedure](../developer/test.md#flint-native-validation) |
+| NAX comparison | `MLX_METAL_NO_NAX` is a build-time definition; `MLX_ENABLE_TF32` is a process-start precision control. Initial numerical checks use `MLX_ENABLE_TF32=0` without changing fleet defaults | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp` |
+| Performance | New measurements of the prefill output optimization are pending. The 2× M3 Ultra prefill and 400 decode tok/s targets are not met | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`, `cbv2Prefill`; [measurement requirements](../developer/test.md#flint-native-validation) |
+
+Existing system swap is distinct from swap growth during a measured run.
+Earlier throughput samples precede the current optimization and were taken with
+another inference service present; they do not qualify this revision.
+
 ## Related
 
 - [`../architecture/hardware-support.md`](../architecture/hardware-support.md) — the memory constants, cap formulas and load gate

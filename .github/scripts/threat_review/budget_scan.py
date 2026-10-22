@@ -38,6 +38,10 @@ Its complete flag covers only replay of this model's reviewed source scope, not
 the entire PR or unchanged dependencies. Omitted units are explicitly counted.
 Only the primary units array requires covered_units acknowledgment; replayed
 source does not add new coverage. Preserve any material unresolved uncertainty.
+If response_repair is present, the preceding response had invalid analysis text.
+Review the same units again and provide a complete, nonempty analysis within the
+4000-character bound. Earlier validated findings and uncertainty are retained;
+a repair cannot dismiss them. All other validation requirements still apply.
 """
 
 
@@ -78,6 +82,7 @@ class Scanner:
         self.use_cache = True
         self.manual_review_reasons = []
         self.diagnostics = []
+        self.response_repairs = []
         self.active_request = {}
         self.diagnostic_checkpoint = diagnostic_checkpoint
         self.reviewed_evidence, self.reviewed_source_ids = {}, {}
@@ -90,6 +95,7 @@ class Scanner:
                 "depth_batches_pending": self.depth_pending,
                 "integration_completed": self.integration, "reused_batches": self.reused,
                 "manual_review_reasons": self.manual_review_reasons, "diagnostics": self.diagnostics,
+                "response_repairs": self.response_repairs,
                 "active_request": {**self.active_request, **getattr(self.paid, "last_request", {})},
                 **self.paid.metrics()}
 
@@ -144,13 +150,57 @@ class Scanner:
                                 missing_units=len(expected - acknowledged),
                                 unexpected_units=len(acknowledged - expected),
                                 duplicate_units=len(ids) - len(acknowledged))
+        if type(response["needs_deeper_review"]) is not bool:
+            raise ReviewFailure("Invalid review decision", "BATCH_DECISION_INVALID")
         analysis = response["analysis"]
         if not isinstance(analysis, str) or not analysis.strip() or len(analysis) > 4000:
             raise ReviewFailure("Invalid batch analysis", "BATCH_ANALYSIS_INVALID",
                                 analysis_characters=len(analysis) if isinstance(analysis, str) else None,
                                 analysis_limit=4000)
-        if type(response["needs_deeper_review"]) is not bool:
-            raise ReviewFailure("Invalid review decision", "BATCH_DECISION_INVALID")
+
+    def repair_analysis(self, model, batch, evidence, message, response, error):
+        # Only a completed, acknowledged, citation-valid response is repairable.
+        # One extra request for the entire scan; transport/JSON/coverage failures
+        # and cached invalid responses never authorize a paid retry.
+        if error.diagnostic["code"] != "BATCH_ANALYSIS_INVALID":
+            raise error
+        self.retain(response["findings"], model)
+        if not isinstance(response["analysis"], str) or self.response_repairs:
+            raise error
+        if self.paid.stopped:
+            raise BudgetStopped(self.paid.stopped)
+        active = {**self.active_request, **getattr(self.paid, "last_request", {})}
+        repair = {**failure_record(error, active), "status": "pending"}
+        self.response_repairs.append(repair)
+        self.checkpoint(self.snapshot())  # durable advice before another paid call
+        self.active_request.update(phase="provider_call", response_attempt=2)
+        if hasattr(self.paid, "last_request"):
+            self.paid.last_request = {}
+        self.diagnostic_checkpoint(self.snapshot())
+        request = {**message, "response_repair": {"code": "BATCH_ANALYSIS_INVALID", "analysis_limit": 4000}}
+        try:
+            corrected = model_call(json.dumps(request), evidence, self.context.text,
+                                   self.paid.key, model, self.paid, SCHEMA, INSTRUCTIONS)
+            self.active_request["phase"] = "validating"
+            self.diagnostic_checkpoint(self.snapshot())
+            try:
+                self.validate(corrected, batch, evidence)
+            except ReviewFailure as validation_error:
+                if validation_error.diagnostic["code"] == "BATCH_ANALYSIS_INVALID":
+                    self.retain(corrected["findings"], model)
+                raise
+        except Exception:
+            repair["status"] = "failed"
+            raise
+        repair["status"] = "completed"
+        # A formatting repair cannot resample away an earlier security finding
+        # or uncertainty. Both responses passed the same citation/decision checks.
+        findings = list(response["findings"])
+        findings.extend(f for f in corrected["findings"] if f not in findings)
+        if len(findings) >= 32:
+            raise FindingCapacityReached(findings)
+        return dict(corrected, findings=findings,
+                    needs_deeper_review=response["needs_deeper_review"] or corrected["needs_deeper_review"])
 
     def call(self, model, stage, batch):
         self.active_request = {"model": model, "stage": stage, "batch_sha256": digest(batch),
@@ -191,7 +241,10 @@ class Scanner:
                                   self.paid.key, model, self.paid, SCHEMA, INSTRUCTIONS)
             self.active_request["phase"] = "validating"
             self.diagnostic_checkpoint(self.snapshot())
-            self.validate(response, batch, evidence)
+            try:
+                self.validate(response, batch, evidence)
+            except ReviewFailure as error:
+                response = self.repair_analysis(model, batch, evidence, message, response, error)
         self.active_request["phase"] = "validated"
         if stage == "source":
             reviewed = self.reviewed_evidence.setdefault(model, {})

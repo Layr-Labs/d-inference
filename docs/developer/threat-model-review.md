@@ -1,6 +1,6 @@
 # Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
@@ -121,7 +121,7 @@ Material uncertainty still requires human review; no model flag is overridden.
 | Risky or uncertain changes | Selected Opus review for auth, attestation, encryption, billing, workflows, findings or model uncertainty. |
 | Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request, followed by integration of its selected source analyses. |
 | Repeat push | Identical analysis reused; changed inputs invalidate source and integration results. |
-| Failure or budget exhaustion | Completed findings retained; unfinished coverage explicit; no automatic paid retries. |
+| Failure or budget exhaustion | Completed findings retained; unfinished coverage explicit. One bounded analysis-text repair is the only response-recovery exception. |
 | Head changes during a call | Original-head results saved; stale findings not posted as current. |
 | Clean review | Explicit comment, never a security approval. |
 | Cost | Reported dollars separated from unknown-cost reservations, plus request count, reused batches and provider cache-hit tokens. |
@@ -151,6 +151,15 @@ validation still enforces every original bound, coverage ID, citation and review
 decision. Empty or whitespace-only analysis is invalid even for a clean batch.
 Finding title/detail and analysis limits count raw characters, including whitespace
 padding, in both the budgeted scanner and the legacy review path.
+The budgeted scanner permits **one analysis repair request per entire scan** when
+a fresh completed response has valid fields, citations, exact unit acknowledgment
+and a boolean decision, but its analysis string is blank or too long. It saves
+validated findings first, then requests the same model and source again with an
+explicit repair marker. The ordinary call, time, request and dollar limits apply;
+the repair receives no extra allowance. Original findings and uncertainty are
+retained even if the corrected response omits them. A second invalid response,
+invalid cached entry, unknown backup accounting or failed checkpoint cannot
+authorize another repair. Failed repairs leave the scan incomplete.
 Sol also sets the required `additionalModelRequestFields.text.format.strict=true`
 ([AWS model contract](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html));
 that model-specific field is not sent to Claude.
@@ -279,7 +288,14 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    unavailable; it is never invented. The smoke test also writes safe failure
    metadata to its existing usage artifact.
 4. Fix the diagnosed cause before a maintainer reruns the existing workflow.
-   Invalid responses do not trigger an automatic paid retry or provider switch.
+   Except for the single analysis-text repair described above, invalid responses
+   do not trigger an automatic paid retry or provider switch. `response_repairs`
+   records the original validation code, model, batch, request ID and
+   pending/completed/failed status without response text. Comments show the
+   repair count separately from terminal failures. `PR_CLOSED` distinguishes a
+   closed/merged PR from a model failure, while `PR_REVISION_CHANGED` identifies
+   work superseded by a new head or target. Both halt further spending and
+   prevent outdated findings from being published as current advice.
    These artifacts are content-free diagnostics suitable for a public repository,
    not raw-response recordings; use the AWS request ID with authorized provider
    diagnostics when additional evidence is needed.

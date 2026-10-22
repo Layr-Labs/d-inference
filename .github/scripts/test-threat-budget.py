@@ -463,6 +463,86 @@ class ScanTests(unittest.TestCase):
         self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET])
         self.assertFalse(result["findings"])
 
+    @staticmethod
+    def change_response(response, **changes):
+        result = json.loads(response["choices"][0]["message"]["content"])
+        result.update(changes)
+        response["choices"][0]["message"]["content"] = json.dumps(result)
+        return response
+
+    def test_empty_analysis_gets_one_explicit_repair_with_identical_source(self):
+        self.files[0]["filename"] = "docs/guide.md"
+        def reply(body):
+            response = self.service.completion(body)
+            return self.change_response(response, analysis="") if len(self.service.calls) == 1 else response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertTrue(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                              fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(len(self.service.calls), 3)
+        first, repair = [json.loads(b["messages"][1]["content"]) for b in self.service.calls[:2]]
+        self.assertEqual(repair.pop("response_repair")["code"], "BATCH_ANALYSIS_INVALID")
+        self.assertEqual(first, repair)
+        self.assertEqual(result["response_repairs"][0]["status"], "completed")
+        self.assertEqual(result["response_repairs"][0]["analysis_characters"], 0)
+        self.assertTrue(any(s.get("response_repairs") for s in self.checkpoints))
+
+    def test_repair_retains_original_findings_and_uncertainty(self):
+        def reply(body):
+            response = self.service.completion(body)
+            if len(self.service.calls) == 1:
+                return self.change_response(response, analysis=" ", findings=[fixtures.FINDING],
+                                            needs_deeper_review=True)
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["findings"][0]["title"], fixtures.FINDING["title"])
+        self.assertTrue(any(s["findings"] and s["covered_units"] == 0 for s in self.checkpoints))
+        integration = next(json.loads(b["messages"][1]["content"]) for b in self.service.calls
+                           if json.loads(b["messages"][1]["content"])["stage"] == "integration")
+        self.assertTrue(integration["units"][0]["needs_deeper_review"])
+        self.assertEqual(integration["units"][0]["findings"], [fixtures.FINDING])
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
+    def test_second_invalid_analysis_stops_without_another_repair(self):
+        def reply(body):
+            return self.change_response(self.service.completion(body, [fixtures.FINDING]), analysis="")
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(len(self.service.calls), 2)
+        self.assertEqual(result["covered_units"], 0)
+        self.assertTrue(result["findings"])
+        self.assertEqual(result["diagnostics"][0]["code"], "BATCH_ANALYSIS_INVALID")
+        self.assertEqual(result["response_repairs"][0]["status"], "failed")
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
+    def test_repair_allowance_is_for_the_whole_scan(self):
+        def reply(body):
+            response = self.service.completion(body)
+            return response if len(self.service.calls) == 2 else self.change_response(response, analysis="")
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(len(result["response_repairs"]), 1)
+        self.assertTrue(result["errors"])
+        self.assertFalse(result["integration_completed"])
+
+    def test_invalid_citations_coverage_and_decision_never_authorize_repair(self):
+        for changes in ({"findings": [dict(fixtures.FINDING, line=999)]},
+                        {"covered_units": []}, {"needs_deeper_review": "false"}):
+            with self.subTest(changes=changes):
+                self.service.calls.clear()
+                self.service.reply = lambda body: self.change_response(
+                    self.service.completion(body), analysis="", **changes)
+                result, _ = self.scan()
+                self.assertEqual(len(self.service.calls), 1)
+                self.assertEqual(result["response_repairs"], [])
+                self.assertTrue(result["errors"])
+
     def test_identical_inputs_reuse_every_batch_without_spend(self):
         self.scan()
         count = len(self.service.calls)
@@ -973,6 +1053,103 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(saved["review"], report["review"])
         self.assertNotIn("Review not completed", body)
         self.assertFalse(self.service.calls)
+
+    def test_bedrock_analysis_repair_across_all_selected_models_and_stages(self):
+        self.env["THREAT_REVIEW_REQUIRE_CLEARANCE"] = "true"  # fresh evidence for each case
+        for alias, stage in (("sonnet", "source"), ("sonnet", "integration"), ("opus", "source"),
+                             ("sol", "source"), ("sol", "integration")):
+            with self.subTest(model=alias, stage=stage):
+                damaged = False
+                def reply(request):
+                    nonlocal damaged
+                    sent = json.loads(request["messages"][0]["content"][0]["text"])
+                    response = self.bedrock_response(request)
+                    if request["modelId"].endswith("/" + alias) and sent["stage"] == stage and not damaged:
+                        damaged = True
+                        result = json.loads(response["output"]["message"]["content"][0]["text"])
+                        result["analysis"] = ""
+                        response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+                    return response
+                body, report, diagnostic, requests = self.bedrock_run(reply)
+                self.assertTrue(damaged)
+                self.assertEqual(len(requests), 6)
+                self.assertTrue(clean(report, fixtures.HEAD, fixtures.BASE))
+                self.assertEqual(diagnostic["response_repairs"][0]["status"], "completed")
+                self.assertEqual(diagnostic["response_repairs"][0]["request_id"],
+                                 "12345678-1234-1234-1234-123456789abc")
+                self.assertIn("Analysis repair: 1/1 completed", body)
+                self.assertFalse(self.service.calls)
+
+    def test_bedrock_analysis_repair_cannot_exceed_call_cap(self):
+        def reply(request):
+            response = self.bedrock_response(request)
+            result = json.loads(response["output"]["message"]["content"][0]["text"])
+            result.update(analysis="", findings=[fixtures.FINDING])
+            response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+            return response
+        body, report, diagnostic, requests = self.bedrock_run(reply, BEDROCK_SCAN_MAX_CALLS="1")
+        self.assertEqual(len(requests), 1)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "BEDROCK_CALL_LIMIT")
+        self.assertTrue(report["review"]["findings"])
+        self.assertEqual(diagnostic["response_repairs"][0]["status"], "failed")
+        self.assertFalse(self.service.calls)
+
+    def test_analysis_repair_stops_before_transport_after_failed_checkpoint(self):
+        def reply(request):
+            response = self.bedrock_response(request)
+            result = json.loads(response["output"]["message"]["content"][0]["text"])
+            result.update(analysis="", findings=[fixtures.FINDING])
+            response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+            self.service.fail_write = True
+            return response
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(report["review"]["findings"])
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "STATE_WRITE_FAILED")
+        self.assertFalse(self.service.calls)
+
+    def test_interrupted_repair_does_not_reuse_original_request_metadata(self):
+        count = 0
+        def reply(request):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise KeyboardInterrupt("PRIVATE_INTERRUPTED_REPAIR")
+            response = self.bedrock_response(request)
+            result = json.loads(response["output"]["message"]["content"][0]["text"])
+            result["analysis"] = ""
+            response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+            return response
+        with self.assertRaises(KeyboardInterrupt):
+            self.bedrock_run(reply)
+        diagnostic = json.loads((self.root / "diagnostics.json").read_text())
+        active = diagnostic["active_request"]
+        self.assertEqual(active["phase"], "provider_call")
+        self.assertEqual(active["response_attempt"], 2)
+        self.assertNotIn("request_id", active)
+        self.assertNotIn("stop_reason", active)
+        self.assertNotIn("call", active)
+        self.assertEqual(diagnostic["response_repairs"][0]["request_id"],
+                         "12345678-1234-1234-1234-123456789abc")
+        self.assertNotIn("PRIVATE_INTERRUPTED_REPAIR", json.dumps(diagnostic))
+
+    def test_closed_pr_has_a_distinct_stop_reason_before_any_model_call(self):
+        collect = self.github.files
+        pull = self.github.pull
+        def files(count):
+            result = collect(count)
+            self.github.pull = lambda: dict(pull(), state="closed", merged=True)
+            return result
+        self.github.files = files
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(self.root / "diagnostics.json")
+        body = self.run_review()
+        self.assertIn("PR closed or merged", body)
+        self.assertFalse(self.service.calls)
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertEqual(saved["review"]["diagnostics"][0]["code"], "PR_CLOSED")
+        self.assertFalse(clean(saved, fixtures.HEAD, fixtures.BASE))
 
     def assert_fallback_accounting_halts_recovered_primary(self, mode):
         def fallback(body):

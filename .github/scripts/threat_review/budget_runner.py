@@ -11,7 +11,7 @@ from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render
 from .runner import same_revision, verify_diff
 from .source import complete_files
 from .state import State
-from .diagnostics import failure_record, write_diagnostics
+from .diagnostics import ReviewFailure, failure_record, write_diagnostics
 
 
 def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False, clearance=False):
@@ -36,6 +36,12 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
     if snapshot.get("diagnostics"):
         body += "\n\nFailure diagnostics: " + "; ".join(
             f"`{item['code']}`" for item in snapshot["diagnostics"])
+    if snapshot.get("response_repairs"):
+        repairs = snapshot["response_repairs"]
+        completed = sum(item["status"] == "completed" for item in repairs)
+        body += (f"\n\nAnalysis repair: {completed}/{len(repairs)} completed; "
+                 "one extra request maximum per scan, charged within the existing provider limits. "
+                 "Earlier findings and uncertainty are retained.")
     # The legacy renderer's full-text-model claim does not describe this engine.
     body = re.sub(r"(?m)^Coverage: .*", "", body)
     if clearance:
@@ -104,8 +110,10 @@ def run(event, env, github=None, state=None, paid_factory=PaidCalls):
 
     def alive():
         current = github.pull()
+        if current.get("state") != "open":
+            raise ReviewFailure("PR closed or merged; review stopped without merge clearance", "PR_CLOSED")
         if not same_revision(current, head, base_ref):
-            raise ReviewUnavailable("PR revision changed")
+            raise ReviewFailure("PR revision changed; outdated review stopped", "PR_REVISION_CHANGED")
         if diff_base:
             verify_diff(github, current, base, head, diff_base)
 

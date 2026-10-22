@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -454,6 +454,10 @@ counts; finding-text and both scan paths' analysis tests enforce raw character
 limits including padding.
 Lifecycle tests ensure failed backup accounting also stops a recovered primary
 while preserving already validated findings.
+Response-repair tests inject empty analysis in Sonnet, Opus and Sol source and
+integration passes, preserve original findings and uncertainty, and stop at a
+second invalid response, exhausted call budget or failed checkpoint. PR closure
+has a distinct lifecycle stop code and cannot grant merge clearance.
 Live smoke tests establish model compatibility separately.
 
 From the repository root:

@@ -172,6 +172,32 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 `ramPrefix` is always 0 in production — there is no RAM prefix-cache carve
 ([`prefix-cache.md`](prefix-cache.md)).
 
+Fused causal prompt attention changes the prefill transient, not these
+constants. An eligible full-attention prompt chunk takes one `.causal` SDPA
+call instead of 128-query blocks. The fused kernel materializes no scores, so
+the route drops the per-block score tensors of MLX's composed path (head_dim
+256), the per-block BOOL masks on paged storage and the output concat; it adds
+no allocation
+([eligibility](inference.md#scheduler-and-loop-configuration); `usesFusedCausalPrefill` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift`).
+On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
+13.86 GB to 12.03 GB because its head_dim 256 layers take the fused kernel.
+`defaultActivationReserveBytes`, `measuredActivationFloorsBytes`,
+`minimumLoadKVBytes` and the KV slot grants are intentionally unchanged:
+
+- The default reserve is sized from gemma-4, whose layers keep the blocked
+  path. The gpt-oss-20b floor comes from the 2026-07-10 sweep, which ran the
+  blocked path; the fused route only removes allocations from that path, so
+  the floor stays an upper bound. The Nemotron Super floor is the residue its
+  request and prefill-lane charges do not hold, not a prompt-attention
+  transient. No floor has been re-measured on the fused route, and a lower
+  floor needs a new measurement.
+- `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores the blocked path that the
+  2026-07-10 sweep ran.
+- K/V layout and dtype do not change, so KV bytes per token, slot grants and
+  advertised capacity do not change. A lower live transient shows up only
+  through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
+
 ### Load gate (`ModelLoadAdmission`)
 
 GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage

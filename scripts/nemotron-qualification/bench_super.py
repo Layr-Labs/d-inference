@@ -50,9 +50,12 @@ class Bench:
 
     def measured(self, body, memory=True):
         """One request at concurrency 1 with a fresh runner memory window."""
+        engine_before = self.runner._diagnostics("GET", "/runner/engine")
         if memory:
             self.runner.reset_peaks()
         sample = self.runner.chat(body, timeout=self.args.request_timeout)
+        sample["engine_before"] = engine_before
+        sample["engine_after"] = self.runner._diagnostics("GET", "/runner/engine")
         if memory:
             snapshot = self.runner.memory()
             sample["memory_window"] = snapshot["window"]
@@ -125,6 +128,7 @@ class Bench:
             for body in bodies[index]:
                 results[index].append(self.runner.chat(body, timeout=self.args.request_timeout))
 
+        engine_before = self.runner._diagnostics("GET", "/runner/engine")
         self.runner.reset_peaks()
         start = time.perf_counter()
         threads = [threading.Thread(target=worker, args=(index,)) for index in range(level)]
@@ -133,6 +137,7 @@ class Bench:
         for thread in threads:
             thread.join()
         wall = time.perf_counter() - start
+        engine_after = self.runner._diagnostics("GET", "/runner/engine")
         snapshot = self.runner.memory()
         samples = [sample for worker_results in results for sample in worker_results]
         ok = [s for s in samples if s["status"] == 200 and not s.get("error")]
@@ -146,7 +151,8 @@ class Bench:
                 "aggregate_output_tokens_per_s": output_tokens / wall if wall > 0 else None,
                 "latency_s": client.summarize([s["total_s"] for s in ok]),
                 "ttft_s": client.summarize([s["ttft_s"] for s in ok]),
-                "memory_window": snapshot["window"], "samples": samples}
+                "memory_window": snapshot["window"], "samples": samples,
+                "engine_before": engine_before, "engine_after": engine_after}
 
 
 def summary(samples):

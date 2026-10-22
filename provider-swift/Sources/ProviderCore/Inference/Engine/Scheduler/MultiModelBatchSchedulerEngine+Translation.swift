@@ -158,17 +158,19 @@ extension MultiModelBatchSchedulerEngine {
     /// remains authoritative to preserve that authenticated boundary.
     /// `logprobs`/`topLogprobs` overlay the OpenAI knobs of the same names
     /// onto the internal shape; on the coordinator path they arrive via
-    /// `EngineV2LogprobsPlumbing`.
+    /// `EngineV2LogprobsPlumbing`. `engineStopStrings: false` withholds `stop`
+    /// from the engine's raw-text holdback when a native constraint owns it.
     static func translate(
         openAIRequest request: OpenAIChatCompletionRequest,
         defaultMaxTokens: Int,
         logprobs: Bool? = nil,
         topLogprobs: Int? = nil,
         logitBias: [String: Float]? = nil,
-        seed: UInt64? = nil
+        seed: UInt64? = nil,
+        engineStopStrings: Bool = true
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
-            guard let stops = request.stop, !stops.isEmpty else { return nil }
+            guard engineStopStrings, let stops = request.stop, !stops.isEmpty else { return nil }
             return .multiple(stops)
         }()
         return ChatCompletionRequest(

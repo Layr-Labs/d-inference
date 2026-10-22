@@ -20,7 +20,7 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
     let initialState = 0
     let fallbackTokenID: Int
     private let vocabulary: FlintNativeVocabulary
-    private let rules: FlintNativeProtocolBoundary.Rules
+    let rules: FlintNativeProtocolBoundary.Rules
     private let lock = NSLock()
     private var states = [FlintNativeProtocolBoundary()]
     private var stateIndex = [FlintNativeProtocolBoundary(): 0]
@@ -160,4 +160,10 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
     }
 
     var cachedStateCount: Int { lock.lock(); defer { lock.unlock() }; return states.count }
+
+    /// Read-only interned boundary, for answer-stop classification only.
+    func boundary(at state: Int) -> FlintNativeProtocolBoundary? {
+        lock.lock(); defer { lock.unlock() }
+        return states.indices.contains(state) ? states[state] : nil
+    }
 }

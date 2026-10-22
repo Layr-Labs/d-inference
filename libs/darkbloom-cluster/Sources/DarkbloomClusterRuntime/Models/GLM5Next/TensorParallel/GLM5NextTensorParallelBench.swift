@@ -91,6 +91,11 @@ public enum GLM5NextTensorParallelBench {
         /// The probe's chunk starts at each of these offsets in turn, after the
         /// prompt's first tokens prefilled the product's way.
         public var divergenceStarts = [0]
+        /// A re-cut prefill (`microBatchTokens`, `prefixOnBulkGrid`) and the
+        /// divergence probe's other cut keep the product's DSA selections
+        /// (`GLM5NextTensorParallelPrefillPlan.make(pinsSelections:)`); off,
+        /// each micro-batch selects among its own call's candidates.
+        public var pinsSelections = true
         /// `product` and `merged`: chunks whose micro-batches all have at
         /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
         /// rows run as micro-batches of at most this many rows instead (nil:
@@ -285,7 +290,7 @@ public enum GLM5NextTensorParallelBench {
             for start in options.divergenceStarts {
                 try divergenceProbe(stage: stage, prompt: options.promptTokenIDs, start: start,
                     count: tokens, microBatchTokens: options.divergenceMicroBatchTokens,
-                    microBatches: options.microBatches, log: log)
+                    microBatches: options.microBatches, pinsSelections: options.pinsSelections, log: log)
             }
         }
         for repeatIndex in 0 ..< (options.divergenceTokens == nil ? max(1, options.repeats) : 0) {
@@ -393,7 +398,9 @@ public enum GLM5NextTensorParallelBench {
                 bulkTokens: runtime.bulkPrefillChunkTokens, microBatches: max(1, options.microBatches),
                 mergedTokens: options.prefillSchedule == .merged ? options.mergedTokens : 0,
                 microBatchTokens: options.microBatchTokens, coalescing: options.prefillSchedule == .merged,
-                tailTokens: options.prefixOnBulkGrid ? runtime.bulkPrefillChunkTokens : nil)
+                tailTokens: options.prefixOnBulkGrid ? runtime.bulkPrefillChunkTokens : nil,
+                selectionKeepAt: options.keepsPrefix ? ((prompt.count - 1) / chunkTokens) * chunkTokens : 0,
+                pinsSelections: options.pinsSelections)
             let prefix = GLM5NextTensorParallelPrefixCache(budgetBytes: 8 << 30)
             let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation,
                 observe: options.perplexity ? { rows.append(($0, $1)) } : nil) { end, kept, history in
@@ -788,9 +795,12 @@ extension GLM5NextTensorParallelBench {
     /// sublayer (with its sum), `output` alone the feed-forward one. Every
     /// line is logged; both ranks run the same collectives. After the last
     /// layer both cuts read out (stream mean, final norm, head) and their
-    /// hidden rows and last-row logits are compared too.
+    /// hidden rows and last-row logits are compared too. With
+    /// `pinsSelections` the other cut keeps the product cut's DSA selections
+    /// (`GLM5NextPrefillSegment.selectionRows`).
     static func divergenceProbe(stage: GLM5NextTextStage, prompt: [Int], start: Int = 0, count: Int,
-                                microBatchTokens: Int, microBatches: Int, log: (String) -> Void) throws {
+                                microBatchTokens: Int, microBatches: Int, pinsSelections: Bool = false,
+                                log: (String) -> Void) throws {
         guard start >= 0, count > 0, start + count <= prompt.count else {
             throw ProbeError("GLM divergence probe: tokens \(start) ..< \(start + count) are outside the prompt")
         }
@@ -819,10 +829,10 @@ extension GLM5NextTensorParallelBench {
         let cacheA = prefix.copy(), cacheB = prefix.copy()
         let a = try stage.beginForward(tokens: tokens, cache: cacheA, segments: [.init(microBatchRows: product)],
             readout: .lastToken)
-        let b = try stage.beginForward(tokens: tokens, cache: cacheB, segments: [.init(microBatchRows: other)],
-            readout: .lastToken)
+        let b = try stage.beginForward(tokens: tokens, cache: cacheB,
+            segments: [.init(microBatchRows: other, selectionRows: pinsSelections ? product : nil)], readout: .lastToken)
         log("divergence start=\(start) tokens=\(count) cut_a=\(product.map(String.init).joined(separator: "+"))"
-            + " cut_b=\(other.map(String.init).joined(separator: "+")) layers=\(stage.layers.count)")
+            + " cut_b=\(other.map(String.init).joined(separator: "+")) pinned=\(pinsSelections ? 1 : 0) layers=\(stage.layers.count)")
         /// Rows (axis 1) whose bits differ, the first of them, and the largest absolute difference.
         func difference(_ x: MLXArray, _ y: MLXArray) -> String {
             guard x.shape == y.shape, x.dtype == y.dtype else { return "shape \(x.shape) vs \(y.shape)" }

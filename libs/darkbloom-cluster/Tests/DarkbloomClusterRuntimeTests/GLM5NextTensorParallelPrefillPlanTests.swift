@@ -200,6 +200,72 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         #expect(product.chunks.map(\.tokens) == [8192, 8192, 8192, 4096, 2828])
     }
 
+    /// Re-cut plans keep the product's DSA selections: every segment cut
+    /// unlike the product's micro-batches carries those over its rows
+    /// (`Segment.selectionRows`), with larger micro-batches, coalesced chunks
+    /// and the bulk grid (whose product keeps prefixes every chunk), from a
+    /// cold or a restored start; frames rebuilt from their bounds carry the
+    /// same; without `pinsSelections` none does.
+    @Test func reCutSegmentsKeepTheProductsSelections() throws {
+        let chunk = 4096, bulk = 8192
+        func make(_ count: Int, start: Int, bulkGrid: Bool, limit: Int?, coalescing: Bool, merged: Int,
+                  pins: Bool = true) -> Plan {
+            let keepAt = ((count - 1) / (bulkGrid ? bulk : chunk)) * (bulkGrid ? bulk : chunk)
+            return Plan.make(promptCount: count, start: start, chunkTokens: chunk, keepAt: keepAt, bulkTokens: bulk,
+                microBatches: 2, mergedTokens: merged, microBatchTokens: limit, coalescing: coalescing,
+                tailTokens: bulkGrid ? bulk : nil, selectionKeepAt: ((count - 1) / chunk) * chunk, pinsSelections: pins)
+        }
+        func selections(_ plan: Plan) -> [[Int]?] { plan.chunks.flatMap(\.segments).map(\.selectionRows) }
+        // 31.5K: 8K micro-batches keep the bulk chunks' 4K halves and the boundary chunk's 2K ones.
+        #expect(selections(make(31_500, start: 0, bulkGrid: false, limit: 8_192, coalescing: false, merged: 16_384))
+            == [[4_096, 4_096], [4_096, 4_096], [4_096, 4_096], [2_048, 2_048], nil])
+        // The bulk grid's tail (2 x 3,462) keeps the product's 2 x 2,048 + 2 x 1,414.
+        #expect(selections(make(31_500, start: 0, bulkGrid: true, limit: nil, coalescing: false, merged: 0))
+            == [nil, nil, nil, [2_048, 2_048, 1_414, 1_414]])
+        // A tail over product halves under the measured bound (14,000: 2 x 856) keeps the product's chunks.
+        let short = make(14_000, start: 0, bulkGrid: true, limit: nil, coalescing: false, merged: 0)
+        #expect(short.chunks.map(\.tokens) == [8_192, 4_096, 1_712] && selections(short).allSatisfy { $0 == nil })
+        #expect(make(14_000, start: 0, bulkGrid: true, limit: nil, coalescing: false, merged: 0, pins: false)
+            .chunks.map(\.tokens) == [8_192, 5_808])
+        for count in stride(from: 1_500, through: 70_000, by: 1_733) {
+            let keepAt = ((count - 1) / chunk) * chunk
+            for start in Set([0, ((count - 1) / bulk) * bulk]).sorted() {
+                let product = Plan.make(promptCount: count, start: start, chunkTokens: chunk, keepAt: keepAt,
+                    bulkTokens: bulk, microBatches: 2, mergedTokens: 0).chunks.flatMap(\.segments)
+                let productEnds = Set(product.flatMap { segment in
+                    segment.microBatchRows.reduce(into: [segment.start]) { $0.append($0[$0.count - 1] + $1) } })
+                for (bulkGrid, limit, coalescing, merged) in [(false, 8_192, false, 16_384), (false, 16_384, true, 32_768),
+                        (true, nil, false, 16_384), (true, 8_192, true, 16_384)] as [(Bool, Int?, Bool, Int)] {
+                    let label = "prompt \(count) start \(start) grid \(bulkGrid) limit \(limit ?? 0) merged \(merged)"
+                    let plan = make(count, start: start, bulkGrid: bulkGrid, limit: limit, coalescing: coalescing,
+                        merged: merged)
+                    for segment in plan.chunks.flatMap(\.segments) {
+                        if segment.selectionRows != nil, bulkGrid, limit == nil {
+                            #expect((segment.microBatchRows + segment.selectionRows!).allSatisfy {
+                                $0 >= Plan.tailInvariantRows }, "\(label) tail \(segment.start)")
+                        }
+                        let rows = segment.selectionRows ?? segment.microBatchRows
+                        let ends = rows.reduce(into: [segment.start]) { $0.append($0[$0.count - 1] + $1) }
+                        #expect(ends == productEnds.filter { (segment.start ... segment.end).contains($0) }.sorted(),
+                            "\(label) segment \(segment.start)..<\(segment.end)")
+                    }
+                    #expect(selections(make(count, start: start, bulkGrid: bulkGrid, limit: limit,
+                        coalescing: coalescing, merged: merged, pins: false)).allSatisfy { $0 == nil }, "\(label)")
+                    // Frames rebuilt from their bounds are the plan's graphs, selections included.
+                    var offset = start
+                    for graph in plan.chunks {
+                        let frame = try Plan.frame(start: offset, end: graph.end, promptCount: count, chunkTokens: chunk,
+                            keepAt: ((count - 1) / (bulkGrid ? bulk : chunk)) * (bulkGrid ? bulk : chunk),
+                            bulkTokens: bulk, microBatches: 2, microBatchTokens: limit, coalescing: coalescing,
+                            tailTokens: bulkGrid ? bulk : nil, selectionKeepAt: keepAt)
+                        #expect(frame.segments == graph.segments, "\(label) frame \(offset)")
+                        offset = graph.end
+                    }
+                }
+            }
+        }
+    }
+
     @Test func endpointPromptsRunInFewGraphs() {
         func shape(_ count: Int) -> [[Int]] {
             Self.runtimePlan(promptCount: count, merged: GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens)

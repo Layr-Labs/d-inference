@@ -32,6 +32,17 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         let start: Int
         let end: Int
         let microBatchRows: [Int]
+        /// The product's micro-batches over these rows when this segment is
+        /// cut otherwise (`GLM5NextPrefillSegment.selectionRows`): every row's
+        /// DSA top-k pools are chosen among the candidates its product
+        /// micro-batch has, so the cut keeps the product's selections. nil:
+        /// the product's own micro-batches, or selections not kept.
+        let selectionRows: [Int]?
+
+        init(start: Int, end: Int, microBatchRows: [Int], selectionRows: [Int]? = nil) {
+            self.start = start; self.end = end; self.microBatchRows = microBatchRows
+            self.selectionRows = selectionRows == microBatchRows ? nil : selectionRows
+        }
     }
 
     struct Chunk: Equatable, Sendable {
@@ -59,8 +70,20 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// prefill site has its own chunking test). The router's FP32 GEMM
     /// changes its K order below about 1,400 rows (1,280: 91 % of logits differ
     /// by up to 7e-6; 1,414 and up: bitwise), so the bound keeps a margin
-    /// (`GLM5NextRowCountInvarianceTests`, `GLM53_ROW_COUNT_PROBE=1`).
+    /// (`GLM5NextRowCountInvarianceTests`, `GLM53_ROW_COUNT_PROBE=1`). One
+    /// exception, after a history: the DSA selector's order among exactly
+    /// tied scores at the top-k boundary depends on the call's candidate
+    /// count (on the model, layers 19 and 35 past 16K tokens), which a re-cut
+    /// keeps the product's through `Segment.selectionRows`.
     static let rowCountInvariantRows = 2048
+    /// The fewest rows measured to give every op the same bits as a bigger
+    /// call, without `rowCountInvariantRows`' margin: the router's FP32 GEMM
+    /// is bitwise from 1,414 rows (1,280 is not; `GLM5NextRowCountInvarianceTests.routerThreshold`),
+    /// the other ops from 1,000. With kept selections the bulk grid's tail
+    /// runs as one chunk only when its micro-batches and the product's over
+    /// it all have at least this many (31.5K: 2 x 3,462 for 2 x 2,048 +
+    /// 2 x 1,414); otherwise it keeps the product's chunks.
+    static let tailInvariantRows = 1414
     /// The kept prompt-prefix boundary, when the plan crosses it.
     var keptBoundary: Int? {
         chunks.lazy.compactMap { chunk in chunk.keptAfter.map { chunk.segments[$0 - 1].end } }.first
@@ -84,11 +107,21 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// `tailTokens`: past the kept boundary (or with none kept), a rest of at
     /// most this many tokens that starts on the `chunkTokens` grid runs as one
     /// chunk (`GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid`) instead
-    /// of chunk-aligned pieces. A different cut of those rows: not the same
-    /// bits as without.
+    /// of chunk-aligned pieces; with `pinsSelections`, only when every
+    /// micro-batch on either side has at least `tailInvariantRows` rows.
+    ///
+    /// Either cut computes every row's DSA top-k selection differently from
+    /// the product's only through the selector's tie order, which depends on
+    /// the call's candidate count (`GLM5NextSparseAttention.selectTokens(selectionHistories:)`);
+    /// with `pinsSelections` every re-cut segment carries the product's
+    /// micro-batches over its rows (`Segment.selectionRows`: the plan from
+    /// `start` without either option, kept at `selectionKeepAt`, the
+    /// product's boundary, when the bulk grid moves it), so its rows keep the
+    /// product's selections and so its bits. Without, a re-cut changes bits.
     static func make(promptCount: Int, start: Int, chunkTokens: Int, keepAt: Int, bulkTokens: Int,
                      microBatches: Int, mergedTokens: Int, microBatchTokens: Int? = nil,
-                     coalescing: Bool = false, tailTokens: Int? = nil) -> Self {
+                     coalescing: Bool = false, tailTokens: Int? = nil, selectionKeepAt: Int? = nil,
+                     pinsSelections: Bool = true) -> Self {
         precondition(promptCount > 0 && (0 ..< promptCount).contains(start) && chunkTokens > 0 && microBatches > 0
             && keepAt >= 0 && mergedTokens >= 0 && (microBatchTokens ?? 1) > 0, "GLM tensor-parallel prefill plan bounds")
         func invariant(_ tokens: Int) -> Bool {
@@ -102,6 +135,15 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
             let rows = (0 ..< parts).map { (($0 + 1) * tokens / parts) - ($0 * tokens / parts) }
             return rows.allSatisfy { $0 >= rowCountInvariantRows } ? rows : product
         }
+        /// The tail from `offset` as one chunk computes the product's bits
+        /// (its selections kept): every micro-batch on either side is in the
+        /// measured invariant range.
+        func tailKeepsBits(_ offset: Int) -> Bool {
+            let product = make(promptCount: promptCount, start: offset, chunkTokens: chunkTokens,
+                keepAt: selectionKeepAt ?? keepAt, bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0)
+            let own = GLM5NextPrefillSegment.chunk(tokens: promptCount - offset, microBatches: microBatches).microBatchRows
+            return (own + product.chunks.flatMap(\.segments).flatMap(\.microBatchRows)).allSatisfy { $0 >= tailInvariantRows }
+        }
         var segments: [Segment] = []
         var offset = start
         let bulk = (bulkTokens / chunkTokens) * chunkTokens
@@ -110,7 +152,8 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
             // prefixes (or the prompt's end), then chunk-aligned ones.
             let limit = keepAt > offset ? keepAt : promptCount
             let end: Int
-            if let tail = tailTokens, keepAt <= offset, offset % chunkTokens == 0, promptCount - offset <= tail {
+            if let tail = tailTokens, keepAt <= offset, offset % chunkTokens == 0, promptCount - offset <= tail,
+               !pinsSelections || tailKeepsBits(offset) {
                 end = promptCount
             } else {
                 end = offset % chunkTokens == 0 && bulk > chunkTokens && offset + bulk <= limit
@@ -125,6 +168,10 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
             }
             offset = end
         }
+        if pinsSelections, microBatchTokens != nil || tailTokens != nil {
+            segments = pinned(segments, to: make(promptCount: promptCount, start: start, chunkTokens: chunkTokens,
+                keepAt: selectionKeepAt ?? keepAt, bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0))
+        }
         // Kept after the segment that ends there, unless it is the last one.
         let kept = keepAt > start ? segments.dropLast().firstIndex { $0.end == keepAt } : nil
         let groups = group(segments.map { $0.end - $0.start }, microBatches: segments.map(\.microBatchRows.count),
@@ -138,6 +185,21 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
             first += count
         }
         return .init(chunks: chunks)
+    }
+
+    /// `segments` each with the micro-batches `product` cuts its rows into
+    /// (`Segment.selectionRows`). Both plans start at the same position, and
+    /// every segment starts and ends where a product micro-batch does (a
+    /// segment that did not would keep its own selections).
+    static func pinned(_ segments: [Segment], to product: Self) -> [Segment] {
+        let rows = product.chunks.flatMap(\.segments).flatMap(\.microBatchRows)
+        let ends = rows.reduce(into: [segments.first?.start ?? 0]) { $0.append($0[$0.count - 1] + $1) }
+        return segments.map { segment in
+            let inside = ends.filter { $0 >= segment.start && $0 <= segment.end }
+            guard inside.first == segment.start, inside.last == segment.end else { return segment }
+            return .init(start: segment.start, end: segment.end, microBatchRows: segment.microBatchRows,
+                selectionRows: zip(inside.dropFirst(), inside).map { $0 - $1 })
+        }
     }
 
     /// Consecutive groups of segments (their counts), each at most `limit`
@@ -178,13 +240,14 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// frame's segments from its bounds alone.
     static func frame(start: Int, end: Int, promptCount: Int, chunkTokens: Int, keepAt: Int, bulkTokens: Int,
                       microBatches: Int, microBatchTokens: Int? = nil, coalescing: Bool = false,
-                      tailTokens: Int? = nil) throws -> Chunk {
+                      tailTokens: Int? = nil, selectionKeepAt: Int? = nil, pinsSelections: Bool = true) throws -> Chunk {
         guard (start + 1 ... promptCount).contains(end) else {
             throw ProbeError("GLM tensor-parallel prefill frame \(start)..<\(end) is outside the prompt")
         }
         let plan = make(promptCount: promptCount, start: start, chunkTokens: chunkTokens, keepAt: keepAt,
             bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0, microBatchTokens: microBatchTokens,
-            coalescing: coalescing, tailTokens: tailTokens)
+            coalescing: coalescing, tailTokens: tailTokens, selectionKeepAt: selectionKeepAt,
+            pinsSelections: pinsSelections)
         let segments = plan.chunks.map { $0.segments[0] }.prefix { $0.end <= end }
         guard segments.last?.end == end else {
             throw ProbeError("GLM tensor-parallel prefill frame \(start)..<\(end) is off the chunk grid")
@@ -247,7 +310,9 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
              speculation: GLM5NextTensorParallelSpeculation?, inputs: Inputs? = nil) throws {
             self.chunk = chunk; self.cache = cache; self.prompt = prompt; self.speculation = speculation
             self.inputs = inputs
-            let segments = chunk.segments.map { GLM5NextPrefillSegment(microBatchRows: $0.microBatchRows) }
+            let segments = chunk.segments.map {
+                GLM5NextPrefillSegment(microBatchRows: $0.microBatchRows, selectionRows: $0.selectionRows)
+            }
             let readout: GLM5NextTextStageReadout = chunk.end == prompt.count ? .lastToken : .none
             if let embedded = try inputs?(chunk.start, chunk.end) {
                 prefill = try stage.beginForward(embeddings: embedded, cache: cache, segments: segments,

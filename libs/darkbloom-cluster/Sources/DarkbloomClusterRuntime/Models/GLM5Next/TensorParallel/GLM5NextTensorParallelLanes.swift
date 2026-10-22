@@ -316,7 +316,8 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         }
         guard lane.offset < count else { return nil }
         let end = Runtime.prefillFrameEnd(offset: lane.offset, promptCount: count, chunk: lane.opened.chunk,
-            keepAt: lane.opened.keepAt, merging: Self.merges(decoding: decoding))
+            keepAt: lane.opened.keepAt, merging: Self.merges(decoding: decoding),
+            selectionKeepAt: lane.opened.selectionKeepAt)
         let slice = Runtime.prefillSlice(from: 0, layers: layers, tokens: end - lane.offset, slicing: decoding)
         return .init(offset: lane.offset, end: end, final: end == count, layers: slice,
             finishes: slice.upperBound == layers)

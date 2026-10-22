@@ -329,7 +329,9 @@ swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewrites
 `PromptTokenCacheTests` loads synthetic tokenizers through the production
 `LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
 pre-tokenizer families, with no download, and requires piecewise, cached and
-cross-turn token IDs to equal the unchanged path. `ChatTemplateLoopRewritesTests`
+cross-turn token IDs to equal the unchanged path. A marker template that only
+the served loop renders, or raises for, checks that a background comparison
+disables reuse. `ChatTemplateLoopRewritesTests`
 renders random agent histories through skeleton templates built from each loop
 rewrite's matched blocks and requires the rewritten render to equal the
 original. Set `PROMPT_TOKEN_CACHE_MODEL_DIRS` to colon-separated local model

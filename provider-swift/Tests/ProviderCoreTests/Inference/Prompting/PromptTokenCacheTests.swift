@@ -146,6 +146,43 @@ struct PromptTokenCacheTests {
         #expect(disabled.storedBytes == 0)
     }
 
+    @Test("a background comparison that disagrees with the unchanged path disables reuse")
+    func backgroundMismatchDisablesReuse() async throws {
+        let (fixture, tokenizer, cache) = try await Self.markerTemplateTokenizer()
+        defer { fixture.remove() }
+        let caching = try #require(tokenizer as? any PromptTokenCaching)
+        let messages = Self.toolTurn(then: "diverge")
+        let unchanged = try tokenizer.applyChatTemplate(messages: messages, tools: nil, additionalContext: nil)
+        let cached = try caching.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: nil, promptCacheScope: "tenant")
+        #expect(cached != unchanged)
+
+        try await Self.awaitDisabled(cache)
+        #expect(try caching.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: nil, promptCacheScope: "tenant") == unchanged)
+    }
+
+    @Test("a background comparison whose unchanged path throws disables reuse")
+    func backgroundReferenceFailureDisablesReuse() async throws {
+        let (fixture, tokenizer, cache) = try await Self.markerTemplateTokenizer()
+        defer { fixture.remove() }
+        let caching = try #require(tokenizer as? any PromptTokenCaching)
+        let messages = Self.toolTurn(then: "raise")
+        #expect(throws: (any Error).self) {
+            try tokenizer.applyChatTemplate(messages: messages, tools: nil, additionalContext: nil)
+        }
+        let cached = try caching.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: nil, promptCacheScope: "tenant")
+        #expect(!cached.isEmpty)
+
+        try await Self.awaitDisabled(cache)
+        // The scoped call now takes the unchanged path, which rejects the prompt.
+        #expect(throws: (any Error).self) {
+            try caching.applyChatTemplate(
+                messages: messages, tools: nil, additionalContext: nil, promptCacheScope: "tenant")
+        }
+    }
+
     /// Runs over real local artifacts: set `PROMPT_TOKEN_CACHE_MODEL_DIRS` to
     /// colon-separated model directories (tokenizer files and chat template).
     @Test("real chat templates tokenize identically through the cache")
@@ -178,6 +215,65 @@ struct PromptTokenCacheTests {
 
     private static func body(_ messages: [[String: Any]]) throws -> Data {
         try JSONSerialization.data(withJSONObject: ["model": "synthetic", "messages": messages, "max_tokens": 16])
+    }
+
+    /// A synthetic tokenizer, loaded with the default cache settings, whose
+    /// template carries the Gemma 4 tool-response scan followed by a marker
+    /// check. The served scan keeps visiting the message that stops it and
+    /// every later one; the rewritten scan stops there. So only the served
+    /// template renders a marker's text or raises for it, while the load-time
+    /// probes, which carry no marker, agree and the rewrite is kept.
+    private static func markerTemplateTokenizer() async throws
+        -> (SyntheticTokenizer, any MLXLMCommon.Tokenizer, PromptTokenCache)
+    {
+        let scan = ChatTemplateLoopRewrites.gemma4ToolResponseScan.replacements[0].old
+        let template = """
+            {%- set loop_messages = messages -%}
+            {%- for message in loop_messages -%}
+                {{- '<|im_start|>' + message['role'] + '\\n' -}}
+                {%- if message['content'] is string -%}{{- message['content'] -}}{%- endif -%}
+                {%- if message.get('tool_calls') -%}
+                    {%- set ns_tool_scan = namespace(stopped=false) -%}
+                    \(scan)
+                        {%- else -%}
+                            {{- '<tool_call>' + (loop_messages[k]['content'] | string) + '</tool_call>' -}}
+                        {%- endif -%}
+                        {%- if loop_messages[k]['content'] == 'diverge' -%}{{- ' served only' -}}{%- endif -%}
+                        {%- if loop_messages[k]['content'] == 'raise' -%}{{- raise_exception('served only') -}}{%- endif -%}
+                    {%- endfor -%}
+                {%- endif -%}
+                {{- '<|im_end|>\\n' -}}
+            {%- endfor -%}
+            {%- if add_generation_prompt -%}{{- '<|im_start|>assistant\\n' -}}{%- endif -%}
+            """
+        let fixture = try SyntheticTokenizer(family: .qwen, template: template)
+        let tokenizer = try await LocalTokenizerLoader(environment: [:]).load(from: fixture.directory)
+        let cache = try #require((tokenizer as? any PromptTokenCaching)?.promptTokenCache)
+        #expect(cache.templateLoopRewrites == ["gemma4-tool-response-scan"])
+        #expect(cache.isActive && cache.verifiesInBackground)
+        return (fixture, tokenizer, cache)
+    }
+
+    /// A tool round trip followed by a user message that stops the scan.
+    private static func toolTurn(then marker: String) -> [[String: any Sendable]] {
+        [
+            ["role": "user", "content": "Look it up."],
+            ["role": "assistant", "content": "", "tool_calls": [[
+                "id": "call_0", "type": "function",
+                "function": ["name": "lookup", "arguments": ["key": "k"] as [String: any Sendable]] as [String: any Sendable],
+            ] as [String: any Sendable]]],
+            ["role": "tool", "content": "found", "tool_call_id": "call_0"],
+            ["role": "user", "content": marker],
+        ]
+    }
+
+    /// The background comparison runs detached, at background priority.
+    private static func awaitDisabled(_ cache: PromptTokenCache) async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while cache.isActive, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!cache.isActive)
     }
 
     private static func data(added: [String], lstrip: Bool = false, postProcessor: [String: Any]) -> Config {
@@ -246,7 +342,7 @@ struct SyntheticTokenizer {
 
     let directory: URL
 
-    init(family: Family) throws {
+    init(family: Family, template: String? = nil) throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("prompt-token-cache-\(family.rawValue)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -255,7 +351,7 @@ struct SyntheticTokenizer {
         var config: [String: Any] = ["tokenizer_class": "GPT2Tokenizer", "eos_token": "<|im_end|>"]
         if family == .metaspace { config["unk_token"] = "<unk>" }
         try Self.write(config, to: directory.appendingPathComponent("tokenizer_config.json"))
-        try Self.template.write(
+        try (template ?? Self.template).write(
             to: directory.appendingPathComponent("chat_template.jinja"), atomically: true, encoding: .utf8)
     }
 

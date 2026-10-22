@@ -17,7 +17,12 @@ import ProviderCoreFoundation
 import Tokenizers
 
 public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
-    public init() {}
+    /// The prompt token cache settings (`PromptTokenCachePolicy`).
+    private let environment: [String: String]
+
+    public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.environment = environment
+    }
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
         let upstream: any Tokenizers.Tokenizer
@@ -26,7 +31,7 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
             upstream = try PreTrainedTokenizer(
                 tokenizerConfig: .init(inputs.configurationDictionary()),
                 tokenizerData: .init(inputs.dataDictionary()))
-        } else if PromptTokenCachePolicy.isEnabled() {
+        } else if PromptTokenCachePolicy.isEnabled(environment: environment) {
             // The steps of `AutoTokenizer.from(modelFolder:)`, keeping the
             // configurations for the prompt token cache.
             let hub = LanguageModelConfigurationFromHub(modelFolder: directory)
@@ -50,7 +55,7 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
         }
         return LocalTokenizerBridge(
             upstream, chatTemplate: chatTemplate, modelType: modelType,
-            promptCacheConfigurations: configurations)
+            promptCacheConfigurations: configurations, environment: environment)
     }
 }
 
@@ -67,7 +72,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
 
     init(
         _ upstream: any Tokenizers.Tokenizer, chatTemplate: String?, modelType: String?,
-        promptCacheConfigurations: PromptTokenCache.Configurations? = nil
+        promptCacheConfigurations: PromptTokenCache.Configurations?, environment: [String: String]
     ) {
         self.upstream = upstream
         self.chatTemplate = chatTemplate.map {
@@ -81,7 +86,8 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
             promptTokenCache = PromptTokenCache(
                 upstream: pretrained, configurations: promptCacheConfigurations,
                 chatTemplate: template,
-                selfCheckContext: NemotronTemplateFilters.additionalContext(modelType: modelType))
+                selfCheckContext: NemotronTemplateFilters.additionalContext(modelType: modelType),
+                environment: environment)
         } else {
             promptTokenCache = nil
         }

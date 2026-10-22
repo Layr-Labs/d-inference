@@ -52,8 +52,9 @@ enum PromptTokenCachePolicy {
     }
 
     /// The first prompts of each tokenizer, then one in N, are re-tokenized on
-    /// the unchanged path in the background; a mismatch turns the cache off for
-    /// that tokenizer. `0` disables the check.
+    /// the unchanged path in the background; a mismatch, or an unchanged path
+    /// that throws, turns the cache off for that tokenizer. `0` disables the
+    /// check.
     static func verificationInterval(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int {
         guard let raw = environment[verifyEnvironmentKey],
             let interval = Int(raw.trimmingCharacters(in: .whitespaces)), interval >= 0
@@ -345,6 +346,7 @@ final class PromptTokenCache: @unchecked Sendable {
     }
 
     var isActive: Bool { lock.withLock { !disabled } }
+    var verifiesInBackground: Bool { verificationInterval > 0 }
     var storedBytes: Int { store.storedBytes }
     var cutTokens: [String] { splitter.cutTokens }
 
@@ -556,9 +558,10 @@ final class PromptTokenCache: @unchecked Sendable {
         }
         guard served <= PromptTokenCachePolicy.verifiedFirstPrompts || served % verificationInterval == 0 else { return }
         Task.detached(priority: .background) { [weak self] in
-            guard let self, let expected = self.reference(
-                messages: messages, tools: tools, additionalContext: additionalContext),
-                expected != tokens
+            // A reference that throws (nil) disagrees too: the unchanged path
+            // would have rejected a prompt this cache served.
+            guard let self, self.reference(
+                messages: messages, tools: tools, additionalContext: additionalContext) != tokens
             else { return }
             self.lock.withLock { self.disabled = true }
             ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "prompt-cache")

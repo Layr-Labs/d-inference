@@ -1036,10 +1036,11 @@ reuses the token IDs of pieces seen before in the same prefix-cache scope. New
 long prompts encode their pieces on up to four cores. The cache renders Gemma 4
 and GPT-OSS templates through `ChatTemplateLoopRewrites`, linear-time forms of
 their per-message history scans that render the same text, so a long agent
-history no longer costs seconds of rendering. The IDs equal the unchanged
-`applyChatTemplate` path's: tokenizers or templates outside those conditions,
-or failing a load-time comparison, keep that path, and sampled background
-comparisons against the served template disable reuse on a mismatch. Reuse
+history no longer costs up to 0.72 s of rendering on every request. The IDs
+equal the unchanged `applyChatTemplate` path's: tokenizers or templates outside
+those conditions, or failing a load-time comparison, keep that path, and
+sampled background comparisons against the served template disable reuse on a
+mismatch, or when the served template rejects a prompt the cache rendered. Reuse
 never crosses a cache scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the
 unchanged path
 ([configuration](../reference/configuration.md#prompt-preparation-and-admission)).

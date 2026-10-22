@@ -4,7 +4,8 @@
   between special tokens) already seen in the same prefix-cache scope, so a
   follow-up turn of a long conversation no longer re-tokenizes its history.
   Token IDs equal the previous path's; a load-time self-check and sampled
-  background comparisons disable reuse on any mismatch. On an M3 Ultra a
+  background comparisons disable reuse on any mismatch, including a prompt
+  the previous path would have rejected. On an M3 Ultra a
   27–38K-token follow-up turn now prepares in 5–8 ms instead of 102–264 ms,
   and new long prompts prepare 2.3–3.4× faster, encoded on several cores.
   `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the previous path.

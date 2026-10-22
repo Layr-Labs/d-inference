@@ -1201,6 +1201,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
+                var formatOutput = prepared.responseFormat.map(FlintResponseFormatOutput.init)
                 startedAt = Date()
 
                 #if DEBUG
@@ -1262,7 +1263,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let text = answerStops?.ingest(generated) ?? generated
                         if !text.isEmpty {
                             do {
-                                for routed in try router.process(text) { continuation.yield(routed) }
+                                for routed in try router.process(text) {
+                                    formatOutput?.observe(routed)
+                                    continuation.yield(routed)
+                                }
                             } catch {
                                 await cancelUpstream()
                                 if nativeMediaTerminalDrain {
@@ -1367,9 +1371,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // defense in depth for every mode.
                 do {
                     if let tail = answerStops?.finish(), !tail.isEmpty {
-                        for routed in try router.process(tail) { continuation.yield(routed) }
+                        for routed in try router.process(tail) {
+                            formatOutput?.observe(routed)
+                            continuation.yield(routed)
+                        }
                     }
-                    for routed in try router.finishText() { continuation.yield(routed) }
+                    for routed in try router.finishText() {
+                        formatOutput?.observe(routed)
+                        continuation.yield(routed)
+                    }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1387,7 +1397,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let residual = toolHandler?.takeResidualText(),
                     !residual.isEmpty
                 {
-                    continuation.yield(router.visibleEvent(residual))
+                    let visible = router.visibleEvent(residual)
+                    formatOutput?.observe(visible)
+                    continuation.yield(visible)
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(
@@ -1398,6 +1410,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 do {
                     try ToolConstraintValidation.validate(
                         toolCalls, prepared: prepared)
+                } catch {
+                    await releaseBox.fire()
+                    continuation.finish(throwing: error)
+                    return
+                }
+                do {
+                    // Exact-Flint response_format: the completed content, not
+                    // a truncated or schema-invalid prefix, reaches success.
+                    try formatOutput?.validate(finishReason: stopReason)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)

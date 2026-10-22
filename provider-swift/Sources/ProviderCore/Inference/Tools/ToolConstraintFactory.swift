@@ -41,7 +41,7 @@ enum ToolConstraintFactory {
                 let constraint = try FlintNativeProtocolConstraint(mode: prepared.mode,
                     maxTokens: request.maxTokens ?? defaultMaxTokens, vocabulary: vocabulary,
                     allowsParallel: prepared.allowsParallelCalls, allowedToolNames: prepared.allowedToolNames,
-                    tools: prepared.tools?.map { $0.toolSpec() })
+                    tools: prepared.tools?.map { $0.toolSpec() }, responseFormat: prepared.responseFormat?.grammar)
                 guard !stops.isEmpty else { return constraint }
                 return FlintAnswerStopConstraint(base: constraint, vocabulary: vocabulary,
                     stops: FlintAnswerStops(stops))

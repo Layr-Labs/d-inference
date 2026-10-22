@@ -10,6 +10,8 @@ enum ToolChoicePromptPolicy {
         let compiledTools: [CompiledToolSchema]?
         let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
+        /// Exact-Flint JSON content contract. When present, no call is allowed.
+        var responseFormat: FlintResponseFormat? = nil
 
         var requiresToolCall: Bool {
             switch mode {
@@ -23,6 +25,40 @@ enum ToolChoicePromptPolicy {
         _ request: OpenAIChatCompletionRequest,
         modelType: String? = nil,
         allowInternalSchemaMetadata: Bool = true
+    ) throws -> Prepared {
+        guard let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType) else {
+            return try prepareToolChoice(
+                request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        }
+        var prepared: Prepared
+        if request.toolChoice != .mode(.none), let tools = request.tools, !tools.isEmpty {
+            // Recursive's Flint contract: tools plus a response format get only
+            // the response format, whatever tool_choice asked for. Declarations
+            // still render as the template receives them (original messages, no
+            // forcing text), but no call may be generated or returned.
+            try validateToolNames(tools)
+            if case .function(let name)? = request.toolChoice,
+               !tools.contains(where: { $0.function.name == name }) {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "tool_choice names an undeclared function")
+            }
+            try ToolConstraintValidation.rejectReservedSchemaMetadata(
+                tools, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+            prepared = Prepared(
+                messages: request.messages, tools: tools, mode: .none, compiledTools: nil,
+                allowsParallelCalls: false, allowedToolNames: [])
+        } else {
+            prepared = try prepareToolChoice(
+                request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        }
+        prepared.responseFormat = responseFormat
+        return prepared
+    }
+
+    private static func prepareToolChoice(
+        _ request: OpenAIChatCompletionRequest,
+        modelType: String?,
+        allowInternalSchemaMetadata: Bool
     ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true

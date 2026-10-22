@@ -5,8 +5,10 @@
 // 3b93f9053b530488405ae9fca51d4900d6ce21f0. This independently implemented
 // Swift boundary machine uses optional reasoning followed by content/calls.
 // Unlike rec, it supports required/named and single-call policy, covers the
-// artifact's developer EOS, and leaves JSON/schema validity to the existing
-// native parser/validator. See the SDK ThirdPartyNotices/Flint.md for notices.
+// artifact's developer EOS, and leaves call-argument JSON/schema validity to
+// the existing native parser/validator. A JSON response_format instead
+// constrains content with FlintJSONState (FlintJSONContentAutomaton.swift).
+// See the SDK ThirdPartyNotices/Flint.md for notices.
 
 import Foundation
 import MLXLMCommon
@@ -31,7 +33,8 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
     private static let maximumMaskEntries = 4
 
     init(mode: ToolConstraintMode, maxTokens: Int, vocabulary: FlintNativeVocabulary,
-         allowsParallel: Bool, allowedToolNames: Set<String>, tools: [[String: any Sendable]]?) throws {
+         allowsParallel: Bool, allowedToolNames: Set<String>, tools: [[String: any Sendable]]?,
+         responseFormat: FlintJSONGrammar? = nil) throws {
         guard maxTokens > 0,
               vocabulary.pieces.indices.contains(vocabulary.fallbackTokenID),
               vocabulary.stopTokenIDs.contains(vocabulary.fallbackTokenID) else {
@@ -58,6 +61,13 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
         }
         guard !requiresCall || !names.isEmpty else {
             throw ToolConstraintSchemaError.invalid("Flint required tool choice needs declared functions")
+        }
+        if responseFormat != nil {
+            // A response format gets only the response format: no call frame.
+            guard !requiresCall else {
+                throw ToolConstraintSchemaError.invalid("Flint response_format cannot require a tool call")
+            }
+            names = []
         }
         var rawKeys = [String: Set<String>]()
         var declaredNames = Set<String>()
@@ -89,7 +99,8 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
         self.maxTokens = maxTokens
         self.vocabulary = vocabulary
         self.fallbackTokenID = vocabulary.fallbackTokenID
-        rules = .init(requiresCall: requiresCall, allowsParallel: allowsParallel, names: names, rawKeys: rawKeys)
+        rules = .init(requiresCall: requiresCall, allowsParallel: allowsParallel, names: names, rawKeys: rawKeys,
+            json: responseFormat)
     }
 
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
@@ -119,6 +130,9 @@ final class FlintNativeProtocolConstraint: CBv2TokenConstraint, @unchecked Senda
                 if broadMasks.count == Self.maximumMaskEntries { broadMasks.removeFirst() }
                 broadMasks.append((rejected, stops, allowed))
             }
+        } else if boundary.searchesByteOrderedVocabulary(rules) {
+            allowed = vocabulary.acceptedTokens(from: boundary) { $0.consume($1, rules: rules) }
+            if !stops.isEmpty { allowed = (allowed + Array(stops)).sorted() }
         } else {
             let candidates = boundary.firstBytes(rules: rules).map { bytes in
                 bytes.sorted().flatMap { vocabulary.byFirstByte[Int($0)] }

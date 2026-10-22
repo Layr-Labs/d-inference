@@ -31,18 +31,23 @@ struct FlintPolicyTests {
                 try FlintRequestPolicy.validateControls(controls, modelType: "flint")
             }
         }
-        for fields in [
-            #""reasoning":{"enabled":false}"#, #""reasoning":{"effort":"high"}"#,
-            #""response_format":{"type":"json_object"},"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]"#,
-        ] {
+        func request(_ fields: String) throws -> OpenAIChatCompletionRequest {
             let data = Data(
                 (#"{"model":"RecursiveSI/flint-int4","messages":[{"role":"user","content":"hello"}],"#
                     + fields + "}").utf8)
-            let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: data)
+            return try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: data)
+        }
+        for fields in [#""reasoning":{"enabled":false}"#, #""reasoning":{"effort":"high"}"#] {
+            let request = try request(fields)
             #expect(throws: MultiModelBatchSchedulerEngineError.self) {
                 try FlintRequestPolicy.validate(request, controls: .init(), modelType: "flint")
             }
         }
+        // Recursive's contract: tools plus a response format get only the
+        // response format (FlintResponseFormatTests covers the effective policy).
+        try FlintRequestPolicy.validate(
+            request(#""response_format":{"type":"json_object"},"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]"#),
+            controls: .init(), modelType: "flint")
         try FlintRequestPolicy.validateControls(.init(), modelType: "flint")
     }
 

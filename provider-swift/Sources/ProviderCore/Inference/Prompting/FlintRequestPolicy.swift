@@ -29,10 +29,6 @@ enum FlintRequestPolicy {
                 "Flint selects reasoning automatically; explicit reasoning controls are unsupported"
             )
         }
-        if request.responseFormat?.requiresJSONOutput == true, !(request.tools?.isEmpty ?? true) {
-            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "Flint does not support combining JSON response_format with tools")
-        }
         if MediaIngest.hasMedia(request) {
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(request.model)
         }

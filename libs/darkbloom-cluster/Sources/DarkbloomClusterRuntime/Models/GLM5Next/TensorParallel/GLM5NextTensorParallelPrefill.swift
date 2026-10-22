@@ -317,8 +317,24 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// priming built), and the commit's evaluation; MLX's active memory at
     /// its start and end, its peak and the memory limit (GB); the operation
     /// limit it encoded under. A tp-check rank and a serving rank print the
-    /// same line for the same frame. Never set in production.
-    static let frameTiming = ProcessInfo.processInfo.environment["DARKBLOOM_GLM_PREFILL_FRAME_TIMING"] == "1"
+    /// same line for the same frame. A serving rank also turns it on when the
+    /// file `frameTimingSwitch` exists under its home at load (read once,
+    /// `enableFrameTimingFromSwitch`; no environment needed). Never on in
+    /// production.
+    nonisolated(unsafe) static var frameTiming =
+        ProcessInfo.processInfo.environment["DARKBLOOM_GLM_PREFILL_FRAME_TIMING"] == "1"
+    static let frameTimingSwitch = ".darkbloom/cluster-setup/prefill-frame-timing"
+
+    /// Turns frame timing on when `frameTimingSwitch` exists under this
+    /// process's home; returns the source (`env`, `file` or `off`) for the
+    /// load line. Call once, before the first frame.
+    static func enableFrameTimingFromSwitch() -> String {
+        if frameTiming { return "env" }
+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(frameTimingSwitch)
+        guard FileManager.default.fileExists(atPath: file.path) else { return "off" }
+        frameTiming = true
+        return "file"
+    }
 
     final class FrameClock {
         var build: UInt64 = 0

@@ -277,6 +277,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         GLM5NextTensorParallelPrefillPlan.commandBuffers = prefillCommandBuffers
+        let frameTiming = GLM5NextTensorParallelPrefillPlan.enableFrameTimingFromSwitch()
         let lanes = try QwenBatchSettings.fromEnvironment(environment)
         let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
@@ -506,7 +507,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
-                    + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0)")
+                    + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0) frame_timing=\(frameTiming)")
                 phases.mark("loaded")
                 log(phases.line(rank: collective.rank, path: path))
             }

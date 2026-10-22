@@ -82,18 +82,50 @@ final class QwenStageTokenSampler {
         return pendingLogprobs.map(Self.tokenLogprobs)
     }
 
+    /// The current round's verify window (`verifyRound`), kept for its
+    /// logprobs when the request asks for them.
+    private var verifiedWindow: MLXArray?
+
+    /// A speculative round's committed tokens' logprobs, read back, once,
+    /// after the round's tokens were agreed: token j's from window row j, the
+    /// row whose draw it is (the accepted proposals' and the bonus token's).
+    /// The product's raw (pre-transform) logprobs of each row
+    /// (`LogitsPipelineV2.process`), gathered as the product gathers a step's
+    /// (`CBv2Logprobs.gather`), with `wire.topLogprobs` alternatives. Empty
+    /// when the request asks for none. A row of the window can differ from
+    /// the one-token step's row by rounding only (its batched forward), never
+    /// in the token it drew.
+    func takeRoundLogprobs(tokens: [Int]) -> [ClusterWorkerTokenLogprobs] {
+        defer { verifiedWindow = nil }
+        guard wire.capturedLogprobs != nil, let window = verifiedWindow, !tokens.isEmpty,
+              window.ndim == 3, tokens.count <= window.dim(1) else { return [] }
+        let rows = window[0, ..<tokens.count].asType(.float32)
+        let raw = rows - logSumExp(rows, axis: -1, keepDims: true)
+        let gathered = CBv2Logprobs.gather(rawLogprobs: raw, sampledTokens: MLXArray(tokens.map(Int32.init)),
+            k: wire.topLogprobs)
+        return Self.tokenLogprobs(gathered, rows: tokens.count, top: wire.topLogprobs)
+    }
+
     /// The token `sample` produced, read back.
     func commit(_ token: Int) { selected.append(token) }
 
     /// One token's gathered logprobs, read back (row 0).
     static func tokenLogprobs(_ step: CBv2StepLogprobs) -> ClusterWorkerTokenLogprobs {
-        let chosen = step.gathered.chosen.asType(.float32).asArray(Float.self)
-        let values = step.gathered.topValues.asType(.float32).asArray(Float.self)
-        let indices = step.gathered.topIndices.asType(.int32).asArray(Int32.self)
-        let count = min(step.topLogprobsPerRow.first ?? 0, values.count, indices.count)
-        return .init(logprob: chosen.first ?? -.infinity, top: (0 ..< count).map {
-            .init(tokenID: Int(indices[$0]), logprob: values[$0])
-        })
+        tokenLogprobs(step.gathered, rows: 1, top: step.topLogprobsPerRow.first ?? 0)[0]
+    }
+
+    /// `rows` tokens' gathered logprobs, read back, each with `top` alternatives.
+    static func tokenLogprobs(_ gathered: CBv2Logprobs.Gathered, rows: Int, top: Int) -> [ClusterWorkerTokenLogprobs] {
+        let chosen = gathered.chosen.asType(.float32).asArray(Float.self)
+        let k = gathered.topValues.dim(-1)
+        let values = gathered.topValues.asType(.float32).asArray(Float.self)
+        let indices = gathered.topIndices.asType(.int32).asArray(Int32.self)
+        // `gather` lays them out [rows] and [rows, k].
+        let count = max(0, min(top, k, rows > 0 ? min(values.count, indices.count) / rows : 0))
+        return (0 ..< rows).map { row in
+            ClusterWorkerTokenLogprobs(logprob: row < chosen.count ? chosen[row] : -.infinity,
+                top: (0 ..< count).map { .init(tokenID: Int(indices[row * k + $0]), logprob: values[row * k + $0]) })
+        }
     }
 
     /// Graph only: the keyed target sample at every column of a verify window
@@ -148,6 +180,7 @@ final class QwenStageTokenSampler {
     /// verify window `[1, W, V]`, column j at index `nextOutputIndex + j`, as
     /// `[1, W]` (once per round, after its first `W - 1` proposals).
     func verifyRound(_ window: MLXArray) -> MLXArray {
+        if wire.capturedLogprobs != nil { verifiedWindow = window }
         let current = round ?? SpeculativeRound(self)
         round = current
         return current.verify(window)

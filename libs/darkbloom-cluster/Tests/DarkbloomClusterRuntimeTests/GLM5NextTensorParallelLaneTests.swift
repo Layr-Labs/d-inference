@@ -193,19 +193,24 @@ struct GLM5NextTensorParallelLaneTests {
         #expect(run.natives[0].openedAtTick[id]! >= 20)
     }
 
-    /// Logprob lanes beside each other (a stop answer, an EOS, an output
-    /// limit): rank 0 publishes every token with that token's own logprobs,
-    /// taken once each, then the lane's telemetry once, before its finish;
-    /// rank 1 publishes neither.
+    /// Logprob lanes beside each other (an output limit, an EOS, a stop
+    /// answer), two in MTP rounds and one in steps: rank 0 keeps each agreed
+    /// token's logprobs as its round or step draws it and publishes every
+    /// token with its own, taken once each, then the lane's telemetry once,
+    /// before its finish; rank 1 publishes neither.
     @Test func logprobLanesPublishEachTokensLogprobsAndTheirTelemetry() throws {
         let run = try FakePair(lanes: 3)
         for native in run.natives { native.reportsLogprobs = true }
         let specs: [FakePair.Spec] = [
-            .init(tick: 0, prompt: 9, output: 12),
+            .init(tick: 0, prompt: 8, output: 12),
             .init(tick: 1, prompt: 6, output: 10, eosAt: 7),
             .init(tick: 2, prompt: 5, output: 9, stopAnswerAt: 3),
         ]
         try run.serve(specs)
+        // The even prompts' lanes speculate (`FakeLaneNative.speculates`), with logprobs.
+        #expect(run.natives[0].logprobRounds[run.ids[0], default: 0] > 0)
+        #expect(run.natives[0].logprobRounds[run.ids[1], default: 0] > 0)
+        #expect(run.natives[0].logprobRounds[run.ids[2], default: 0] == 0)
         for index in specs.indices {
             let id = run.ids[index]
             let zero = run.hosts[0].record(id), one = run.hosts[1].record(id)
@@ -275,6 +280,8 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
         let request: QwenLayerStageGenerationRequest
         var offset = 0
         var agreed = 0
+        /// Rank 0, `reportsLogprobs`: each drawn token's, by output index, until published.
+        var logprobs: [Int: ClusterWorkerTokenLogprobs] = [:]
         init(request: QwenLayerStageGenerationRequest) { self.request = request }
         var solo: [Int] { FakeLaneNative.solo(prompt: request.promptTokenIDs, count: request.outputCount + 1) }
     }
@@ -291,8 +298,18 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     var tick: () -> Int = { 0 }
     /// Every request asks for logprobs; rank 0 gives each agreed token's.
     var reportsLogprobs = false
-    private var taken: Set<String> = []
     private(set) var takenTwice: [String] = []
+    /// Rank 0: MTP rounds each logprob lane ran.
+    private(set) var logprobRounds: [UUID: Int] = [:]
+    /// Rank 0: keeps the logprobs of the tokens a step or round drew, as the
+    /// GLM native does (`keepLogprobs`, `keepRoundLogprobs`).
+    private func keep(_ lane: Lane, from start: Int, _ fresh: [Int], round: Bool) {
+        guard reportsLogprobs, rank == 0 else { return }
+        for (offset, token) in fresh.enumerated() {
+            lane.logprobs[start + offset] = Self.logprobs(token: token, ordinal: start + offset)
+        }
+        if round { logprobRounds[lane.request.requestID, default: 0] += 1 }
+    }
     static let telemetry = ClusterWorkerRequestTelemetry(mtpDrafted: 4, mtpAccepted: 3, mtpRounds: 2)
     static func logprobs(token: Int, ordinal: Int) -> ClusterWorkerTokenLogprobs {
         .init(logprob: -Float(ordinal) / 8, top: [.init(tokenID: token, logprob: -Float(ordinal) / 8)])
@@ -335,6 +352,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
         lane.offset = frame.end
         guard frame.final else { return nil }
         lane.agreed = 1
+        keep(lane, from: 0, [lane.solo[0]], round: false)
         return lane.solo[0]
     }
 
@@ -353,6 +371,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
             try whileRunning(index)
             let kept = unit.window.map { ($0 + n) % ($0 + 1) + 1 } ?? 1
             lane.agreed += kept
+            keep(lane, from: n, Array(solo[n ..< n + kept]), round: unit.window != nil)
             try check()
             return Array(solo[n ..< n + kept])
         }
@@ -364,10 +383,12 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
 
     func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs? {
         guard reportsLogprobs else { return nil }
-        guard rank == 0, ordinal < lane.agreed else { throw ProbeError("fake logprobs of a token not agreed on rank 0") }
-        let key = "\(lane.request.requestID)/\(ordinal)"
-        if !taken.insert(key).inserted { takenTwice.append(key) }
-        return Self.logprobs(token: lane.solo[ordinal], ordinal: ordinal)
+        guard rank == 0 else { throw ProbeError("fake logprobs taken on rank 1") }
+        guard let value = lane.logprobs.removeValue(forKey: ordinal) else {
+            takenTwice.append("\(lane.request.requestID)/\(ordinal)")
+            throw ProbeError("fake token \(ordinal) has no logprobs (never drawn, or taken twice)")
+        }
+        return value
     }
 
     func telemetry(_ lane: Lane) -> ClusterWorkerRequestTelemetry? {

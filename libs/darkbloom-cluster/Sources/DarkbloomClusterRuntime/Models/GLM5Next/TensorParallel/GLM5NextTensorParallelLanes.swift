@@ -274,10 +274,9 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         if opened.stopped, rank == 0 { book.cancel(id) }
         try check()
         let sampler = request.sampler
-        // As one request: every request speculates (bias and penalties too),
-        // except one that asks for logprobs, which decodes one token a step
-        // (the product's logprob rows are MTP-ineligible: `mtpBasicEligible`).
-        let speculates = opened.speculation != nil && !Runtime.capturesLogprobs(sampler)
+        // As one request: every request speculates (bias, penalties and
+        // logprobs too: `Runtime.capturesLogprobs`).
+        let speculates = opened.speculation != nil
         if let speculation = opened.speculation { runtime.installDraftProbe(speculation, sampler: sampler) }
         return Lane(request: request, sampler: sampler, opened: opened, speculates: speculates,
             draw: speculates ? runtime.verificationDraw(sampler) : nil,
@@ -360,6 +359,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
                     + " total_ms=\(ms(t.total))")
             })
             for (index, round) in zip(speculating, rounds) {
+                try keepRoundLogprobs(units[index].lane, tokens: round.tokens)
                 units[index].lane.sampler?.commitRound(round.tokens)
                 results[index] = round.tokens
             }
@@ -386,10 +386,19 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         return results.map { $0! }
     }
 
+    /// Rank 0, after a round's tokens were agreed: keeps each one's logprobs,
+    /// from the verify window row whose draw it is, as the one-request path
+    /// does (`QwenStageTokenSampler.takeRoundLogprobs`).
+    private func keepRoundLogprobs(_ lane: Lane, tokens: [Int]) throws {
+        guard rank == 0, let sampler = lane.sampler, Runtime.capturesLogprobs(sampler) else { return }
+        let gathered = sampler.takeRoundLogprobs(tokens: tokens)
+        guard gathered.count == tokens.count else { throw ProbeError("GLM tensor-parallel lane round has no logprobs") }
+        for value in gathered { lane.logprobs[lane.drawn] = value; lane.drawn += 1 }
+    }
+
     /// Rank 0, after a one-token step's (or the prefill's) token was agreed:
     /// keeps the logprobs the product sampler gathered with it, as the
-    /// one-request path publishes them. A logprob lane never speculates, so
-    /// each agreed token had its own draw.
+    /// one-request path publishes them.
     private func keepLogprobs(_ lane: Lane) throws {
         guard rank == 0, let sampler = lane.sampler, Runtime.capturesLogprobs(sampler) else { return }
         guard let drawn = sampler.takePendingLogprobs() else {

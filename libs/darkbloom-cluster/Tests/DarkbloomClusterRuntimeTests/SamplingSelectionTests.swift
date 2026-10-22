@@ -144,6 +144,58 @@ struct SamplingSelectionTests {
         #expect(plain.sampler?.takePendingLogprobs() == nil)
     }
 
+    /// A logprob request in an MTP round (owner: MTP always on): each
+    /// committed token's logprobs come from the verify window row whose draw
+    /// it is, gathered as the one-token step gathers its row; the round's
+    /// draws are the step path's (logprob requests verify by replay). Run on
+    /// the CPU device: no GPU needed.
+    @Test func roundLogprobsAreEachWindowRowsStepGather() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let asks = ClusterWorkerSampling(temperature: 0.7, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+                repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 7,
+                stream: 0x8000_0000_0000_0042, logitBias: [], topLogprobs: 3)
+            let speculating = try request(asks), stepping = try request(asks)
+            let round = try #require(speculating.sampler), step = try #require(stepping.sampler)
+            let rows = (3..<6).map { row($0) }
+            var expected: [(token: Int, logprobs: ClusterWorkerTokenLogprobs)] = []
+            for values in rows {
+                let drawn = step.sample(logits(values))
+                eval(drawn)
+                let token = Int(drawn.reshaped([-1]).asType(.int32).item(Int32.self))
+                expected.append((token, try #require(step.takePendingLogprobs())))
+                step.commit(token)
+            }
+            // Proposals from the same rows are the step path's draws: all kept.
+            let proposals = (0..<2).map {
+                round.propose(MLXArray(rows[$0]).reshaped([1, 1, vocabulary]).asType(.bfloat16), step: $0)
+            }
+            let window = MLXArray(rows.flatMap { $0 }).reshaped([1, 3, vocabulary]).asType(.bfloat16)
+            let draws = round.verifyRound(window)
+            eval([draws] + proposals)
+            let tokens = draws.asArray(Int32.self).map(Int.init)
+            #expect(tokens == expected.map(\.token))
+            let gathered = round.takeRoundLogprobs(tokens: tokens)
+            #expect(gathered.count == 3)
+            for (value, reference) in zip(gathered, expected.map(\.logprobs)) {
+                #expect(abs(value.logprob - reference.logprob) <= 1e-5)
+                #expect(value.top.map(\.tokenID) == reference.top.map(\.tokenID))
+                #expect(zip(value.top, reference.top).allSatisfy { abs($0.logprob - $1.logprob) <= 1e-5 })
+            }
+            // Once per round; a round that kept fewer tokens reads only their rows.
+            #expect(round.takeRoundLogprobs(tokens: tokens).isEmpty)
+            round.commitRound(tokens)
+            _ = round.propose(MLXArray(row(6)).reshaped([1, 1, vocabulary]).asType(.bfloat16), step: 0)
+            let next = round.verifyRound(MLXArray(row(6) + row(7)).reshaped([1, 2, vocabulary]).asType(.bfloat16))
+            eval(next)
+            let first = Int(next.asArray(Int32.self)[0])
+            #expect(round.takeRoundLogprobs(tokens: [first]).map(\.top.count) == [3])
+            // A request without logprobs keeps no window.
+            let plain = try #require(try request(sampling()).sampler)
+            _ = plain.verifyRound(window)
+            #expect(plain.takeRoundLogprobs(tokens: tokens).isEmpty)
+        }
+    }
+
     @Test func greedyWithLogitBiasStillAppliesTheBias() throws {
         let biased = try request(sampling(temperature: 0, bias: [.init(tokenID: 5, bias: 100)]))
         #expect(try select(biased, steps: 8) == Array(repeating: 5, count: 8))

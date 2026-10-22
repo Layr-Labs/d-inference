@@ -997,11 +997,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
     }
 
-    /// The request asks for each token's logprobs. Such a request decodes one
-    /// token per step, never in MTP rounds, on every rank (both read the same
-    /// sampling): the product's logprob rows are MTP-ineligible
-    /// (`EngineLoopV2.mtpBasicEligible`), and each step's gather by rank 0's
-    /// product sampler then belongs to the token it agrees.
+    /// The request asks for each token's logprobs. It decodes in MTP rounds
+    /// like every request (owner: MTP always on; the product instead makes
+    /// logprob rows MTP-ineligible, `EngineLoopV2.mtpBasicEligible`). Rank 0
+    /// gathers them with the product's gather after each token is agreed: a
+    /// step's from its row (`QwenStageTokenSampler.takePendingLogprobs`), a
+    /// round's from the verify window row whose draw each token is
+    /// (`takeRoundLogprobs`). No collective: the logits are already evaluated.
     static func capturesLogprobs(_ sampler: QwenStageTokenSampler?) -> Bool {
         sampler?.wire.capturedLogprobs != nil
     }
@@ -1082,18 +1084,30 @@ public final class GLM5NextTensorParallelResidentRuntime {
             unanswered = false
             if try !channel.answer(), stopKeep == 0 { clientStopped = true; stopKeep = Float(tokens.count) }
         }
+        // Rank 0, a logprob request: the agreed tokens' logprobs not yet
+        // published, in order (a step's or a round's, `capturesLogprobs`).
+        var logprobQueue: [ClusterWorkerTokenLogprobs] = [], logprobNext = 0
+        let logs = rank == 0 && Self.capturesLogprobs(sampler)
+        /// After a step's token was agreed: the gather its draw made.
+        func keepStepLogprobs() throws {
+            guard logs else { return }
+            guard let drawn = sampler?.takePendingLogprobs() else {
+                throw ProbeError("GLM tensor-parallel token has no logprobs")
+            }
+            logprobQueue.append(drawn)
+        }
         /// Commits one agreed token on this rank (and publishes it on rank 0);
         /// the request's own end (EOS or length) at it, else nil.
         func commit(_ value: Int) throws -> ClusterWorkerFinishReason? {
             tokens.append(value)
             if rank == 0 {
-                // A logprob request decodes one token per step on this path, so the
-                // sampler's last gather is this token's (`QwenStageTokenSampler`).
-                let logprobs = try sampler?.wire.capturedLogprobs.map { _ in
-                    guard let drawn = sampler?.takePendingLogprobs() else {
+                var logprobs: ClusterWorkerTokenLogprobs?
+                if logs {
+                    guard logprobNext < logprobQueue.count else {
                         throw ProbeError("GLM tensor-parallel token has no logprobs")
                     }
-                    return drawn
+                    logprobs = logprobQueue[logprobNext]; logprobNext += 1
+                    if logprobNext == logprobQueue.count { logprobQueue.removeAll(); logprobNext = 0 }
                 }
                 try channel.publishToken(tokens.count - 1, value, prompt.count + tokens.count - 1, logprobs)
                 unanswered = true
@@ -1105,7 +1119,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             case .clientStop, .proceed: return nil
             }
         }
-        if let speculation, let lastHidden, !Self.capturesLogprobs(sampler) {
+        if let speculation, let lastHidden {
             // The first token is agreed as a plain step's; then each round
             // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
             // and when the loop ends follow from agreed tokens only, so both
@@ -1115,6 +1129,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             // memory) stops committing, still ends where the other rank
             // would, and carries its flag in the next round it submits.
             let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
+            try keepStepLogprobs()
             sampler?.commit(first)
             // Sampled: coupled proposals on every rank (`proposalSelection`);
             // rank 0 draws the keyed target sample at every window column, at
@@ -1149,6 +1164,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     finish = .clientStop; break
                 }
                 fresh = round.tokens; last = fresh[fresh.count - 1]; agreedCount += fresh.count
+                if logs {
+                    let gathered = sampler?.takeRoundLogprobs(tokens: fresh) ?? []
+                    guard gathered.count == fresh.count else { throw ProbeError("GLM tensor-parallel round has no logprobs") }
+                    logprobQueue += gathered
+                }
                 sampler?.commitRound(fresh)
                 // Tokens that end the request are taken now (no next round).
                 let ends = fresh.indices.contains {
@@ -1190,6 +1210,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     finish = .clientStop; break
                 }
                 if stopKeep == 0 {
+                    try keepStepLogprobs()
                     sampler?.commit(value)
                     if let end = try commit(value) { finish = end; break steps }
                     if localStop() { stopKeep = Float(tokens.count) }

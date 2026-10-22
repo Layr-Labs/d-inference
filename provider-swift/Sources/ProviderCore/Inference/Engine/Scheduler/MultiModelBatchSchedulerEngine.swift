@@ -324,7 +324,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Only invalid native-control evidence warrants this extra read-only
         // resident lookup. It must never load/provision, infer type from the
         // requested name, or convert cancellation into a cold-model fallback.
-        if templateControls.rawMiMoControls.invalid {
+        if templateControls.rawMiMoControls.invalid || templateControls.rawFlintControls.invalid {
             let knownType: String?
             if let tokenizerProvider {
                 do { knownType = try await tokenizerProvider(request.model).modelType }
@@ -996,7 +996,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
                 .init(modelId: modelId, modelType: modelType)),
-            answerStopFilter: answerStopFilter
+            answerStopFilter: answerStopFilter,
+            withholdReasoning: FlintRequestPolicy.withholdsReasoning(
+                request, controls: templateControls, modelType: modelType)
         )
     }
 
@@ -1110,7 +1112,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
         absorbStrayThinkClose: Bool = false,
-        answerStopFilter: FlintAnswerStopFilter? = nil
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        withholdReasoning: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1135,7 +1138,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeMiMoChannels: nativeMiMoChannels,
                 nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                 absorbStrayThinkClose: absorbStrayThinkClose,
-                answerStopFilter: answerStopFilter)
+                answerStopFilter: answerStopFilter,
+                withholdReasoning: withholdReasoning)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1168,7 +1172,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeMiMoThinkingEnabled: Bool = true,
         nativeMediaTerminalDrain: Bool = false,
         absorbStrayThinkClose: Bool = false,
-        answerStopFilter: FlintAnswerStopFilter? = nil
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1197,7 +1202,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoChannels: nativeMiMoChannels,
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
-                    absorbStrayThinkClose: absorbStrayThinkClose)
+                    absorbStrayThinkClose: absorbStrayThinkClose,
+                    withholdReasoning: withholdReasoning)
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
@@ -1263,7 +1269,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let text = answerStops?.ingest(generated) ?? generated
                         if !text.isEmpty {
                             do {
-                                for routed in try router.process(text) {
+                                let events = try router.process(text)
+                                // Before any later frame: see recordWithheldReasoning.
+                                usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                                for routed in events {
                                     formatOutput?.observe(routed)
                                     continuation.yield(routed)
                                 }
@@ -1370,13 +1379,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // and fail closed here before a call is exposed. This remains
                 // defense in depth for every mode.
                 do {
+                    var events: [MLXServerGenerationEvent] = []
                     if let tail = answerStops?.finish(), !tail.isEmpty {
-                        for routed in try router.process(tail) {
-                            formatOutput?.observe(routed)
-                            continuation.yield(routed)
-                        }
+                        events += try router.process(tail)
                     }
-                    for routed in try router.finishText() {
+                    events += try router.finishText()
+                    usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                    for routed in events {
                         formatOutput?.observe(routed)
                         continuation.yield(routed)
                     }

@@ -17,12 +17,16 @@ def path_depth(path):
     name = parts[-1]
     support = (parts[0] in ("docs", "changelog.d")
                or any(part in ("test", "tests", "__tests__", "testdata") for part in parts[:-1])
-               or name.endswith((".md", ".mdx", ".rst", "test.swift", "tests.swift"))
-               or TEST_NAME.search(name))
+               or name.endswith((".md", ".mdx", ".rst")))
     if support:
         return None
     if CRITICAL.search(path):
         return SOL
+    # Swift production names such as AppAttest.swift also end in "test.swift".
+    # Only explicit test trees or delimited test/spec names are support hints;
+    # a filename hint cannot downgrade critical source outside those trees.
+    if TEST_NAME.search(name):
+        return None
     return OPUS if RISK.search(path) else None
 
 

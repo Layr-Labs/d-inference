@@ -732,6 +732,8 @@ duplicate Opus passes reduces those critical-code fixtures from 100 to 69 and
 197 to 135 requests without losing source coverage. Routing regressions retain
 full Sonnet review of clean support files, escalate their findings and uncertainty,
 preserve workflow and renamed-path risk, and target exact integration citations.
+Production `AppAttest.swift`, `Attest.swift`, `AuthLatest.swift` and critical
+test-named files retain independent depth outside explicit support trees.
 Global uncertainty still denies clearance without triggering a blanket rescan;
 cached results preserve the same selected scope. Adapter tests stop after
 exactly 500 requests, apply the larger native output default and preserve fixed

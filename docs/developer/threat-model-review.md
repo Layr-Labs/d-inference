@@ -381,6 +381,9 @@ mixed batch, and renames retain the old path's risk. Workflows always receive So
 including workflows named for tests or docs. Documentation, changelog and test
 paths retain full Sonnet coverage and cross-file integration; findings or uncertainty
 still escalate them. These path rules are routing heuristics, not proof of safety.
+Outside explicit support trees, critical source takes precedence over test-name
+hints. Swift production names such as `AppAttest.swift` are not test suffixes;
+Swift test files outside a test tree retain ordinary production-path routing.
 Explicit local diagnostic deep scans retain the all-model contract.
 
 Sonnet integration findings select the source batches containing their validated

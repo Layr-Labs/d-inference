@@ -98,6 +98,19 @@ class DepthPolicyTests(unittest.TestCase):
         _, _, calls = self.scan(self.files(".github/workflows/test-docs.yml"))
         self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, SOL, SOL])
 
+    def test_production_attest_and_test_named_sources_keep_independent_depth(self):
+        for path, expected in (("provider-swift/Sources/Security/AppAttest.swift", SOL),
+                               ("provider-swift/Sources/Security/Attest.swift", SOL),
+                               ("provider-swift/Sources/AuthLatest.swift", OPUS),
+                               ("src/test-crypto.py", SOL),
+                               ("src/CryptoTests.swift", SOL),
+                               ("src/AuthTests.swift", OPUS)):
+            with self.subTest(path=path):
+                _, _, calls = self.scan(self.files(path))
+                depth = [model for model, message in calls.requests
+                         if model != SONNET and message["stage"] == "source"]
+                self.assertEqual(depth, [expected])
+
     def test_support_uncertainty_still_escalates_to_opus(self):
         def reply(model, message):
             return {"needs_deeper_review": model == SONNET and message["stage"] == "source"}

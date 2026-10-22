@@ -12,6 +12,8 @@ Normal reviews send critical source directly to Sol instead of repeating it with
 Opus first. All source still receives Sonnet review and cross-file integration;
 clean tests/docs avoid filename-only depth, and integration findings target their
 cited batches. Global uncertainty requires human review without a blanket rescan.
+Production attestation filenames are not mistaken for Swift test suffixes;
+critical source outside explicit support trees takes precedence over filename hints.
 
 Paid manual dispatches and GitHub job reruns are disabled. Incomplete reviews
 explicitly require a human and cannot grant merge clearance. Advisory mode and

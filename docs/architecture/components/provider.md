@@ -80,8 +80,11 @@ weight loading. A coordinator cancel for the waiting request is applied when its
 admission returns, where the serial consumer applied it. Connection, drain and
 model-management events, and the end of the work stream, still wait for it. So
 does a request for another model that is not resident, before its pre-accept
-capacity check (`awaitReleasedLoads`): the waiting load has not yet taken the
-memory or slot that check sizes. Native MiMo requests keep the serial consumer.
+capacity check (`awaitReleasedLoads`): the waiting load may not yet hold the
+memory or slot that check sizes. A request for the model being loaded is checked
+at once; if the check fails, it waits for that load and is checked again,
+because the load already holds the memory the check sized for a second copy.
+Native MiMo requests keep the serial consumer.
 `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`

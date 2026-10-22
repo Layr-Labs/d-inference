@@ -123,6 +123,49 @@ struct ServeLoopColdLoadTests {
         #expect(await fixture.stop(task))
     }
 
+    @Test("a request for the model being loaded is checked again after that load, not against a second copy")
+    func sameModelRequestRechecksAfterReleasedLoad() async throws {
+        // The model fits the free memory once; its in-flight load then holds it.
+        let fixture = try await ServeLoopFixture.make(models: [
+            ModelLoadingFixtures.model(Self.coldModel, memoryGb: 100_000),
+        ])
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 150_000)
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(Self.coldModel)
+
+        try await fixture.pushChatRequest(requestId: "first", body: Self.body(model: Self.coldModel))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1 }
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 50_000)
+        try await fixture.pushChatRequest(requestId: "follower", body: Self.body(model: Self.coldModel))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(ServeLoopFixture.terminalCount(fixture.mock.snapshot(), requestId: "follower") == 0)
+
+        // The load completes; both requests are served from it, as when the
+        // FIFO held the second request behind the load.
+        let engine = PrefillScriptEngine()
+        let bridge = await Self.installResidentSlot(Self.coldModel, engine: engine, fixture: fixture)
+        await fixture.loop.modelLoadingClearLoading(Self.coldModel)
+        await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel)
+
+        try await Self.until { engine.continuations.count == 2 }
+        #expect(fixture.mock.snapshot().inferenceAccepted.map(\.requestId) == ["first", "follower"])
+        for continuation in engine.continuations {
+            continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
+            continuation.yield(.finished(reason: .length, usage: .init(promptTokens: 3, completionTokens: 1)))
+            continuation.finish()
+        }
+        let served = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "first") > 0
+                && ServeLoopFixture.terminalCount($0, requestId: "follower") > 0
+        }
+        #expect(try #require(served).inferenceErrors.isEmpty)
+        try await Self.until { await fixture.loop.releasedAdmissionCountForTesting() == 0 }
+        await bridge.shutdown()
+        _ = await fixture.runtime.unregister(modelId: Self.coldModel)
+        #expect(await fixture.stop(task))
+    }
+
     @Test("the kill switch keeps the FIFO serial behind a load wait")
     func killSwitchKeepsSerialAdmission() async throws {
         let fixture = try await ServeLoopFixture.make(models: [ModelLoadingFixtures.model(Self.coldModel)])

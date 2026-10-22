@@ -443,9 +443,14 @@ extension ProviderLoop {
         // calibrate warm quotes.
         let modelWasResidentAtDispatch = modelSlots[modelId] != nil
         // A cold model is sized only after released loads of other models
-        // have taken their capacity (`ProviderLoop+WorkFIFO.swift`).
+        // have taken their capacity, and a rejection while a released load of
+        // the same model runs is checked again after it
+        // (`ProviderLoop+WorkFIFO.swift`).
         if !modelWasResidentAtDispatch { await awaitReleasedLoads(otherThan: modelId) }
-        let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        var fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        if fastAdmissionRejected, await awaitReleasedLoads(of: modelId) {
+            fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        }
         profile.mark(.admission)
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,

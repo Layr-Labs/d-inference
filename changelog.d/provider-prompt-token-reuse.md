@@ -29,5 +29,6 @@
   attestation challenges proceed while it loads, and a cancel for it still
   applies when its admission returns. A request for another model that is not
   resident still waits for that load, so its capacity check sees the memory
-  the load takes. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the serial
-  queue.
+  the load takes. A request for the model being loaded that fails that check
+  while the load runs is checked again once the load returns, as before.
+  `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the serial queue.

@@ -339,7 +339,8 @@ directories to repeat both comparisons on real chat templates. `InboundChatReque
 checks the merged admission body decode against the separate decoders, and
 `ServeLoopColdLoadTests` drives the serve loop with a request parked on a model
 load, including a request for a second cold model that fits only without the
-first. `darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
+first, and a request for the loading model when a second copy would not fit.
+`darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
 and the body decode on the CPU with only the tokenizer loaded and the background
 comparisons off; it exits 2 if any token ID or decoded field differs.
 

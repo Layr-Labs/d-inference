@@ -11,7 +11,9 @@
 // where the serial FIFO applied it. Connection, drain and model-management
 // events wait for released admissions first, as they always did. So does the
 // admission check of a request for another model that is not resident: the
-// released load has not yet taken the memory or slot that check sizes.
+// released load may not hold the memory or slot that check sizes yet. A request
+// for the model being loaded is checked at once and, if rejected, checked again
+// after that load, which may already hold the memory sized for a second copy.
 //
 // `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial FIFO.
 
@@ -113,13 +115,28 @@ extension ProviderLoop {
     }
 
     /// Called before the fast admission check of a request whose model is
-    /// not resident. A released load of another model has not reserved its
+    /// not resident. A released load of another model may not hold its
     /// memory or slot yet, so the check would admit against capacity that
     /// load is about to take; the request waits for it, as the serial FIFO
     /// made it wait. Requests for a resident model, or for the model being
     /// loaded, still overtake.
     func awaitReleasedLoads(otherThan modelId: String) async {
-        while let requestId = releasedAdmissions.first(where: { $0.value.modelId != modelId })?.key {
+        await awaitReleasedLoads { $0 != modelId }
+    }
+
+    /// Called when the fast admission check rejected a request for a model
+    /// that a released admission is loading. That load may already hold the
+    /// memory the check sized for a second copy, so the request waits for it
+    /// and is checked again, as the serial FIFO checked it after the load.
+    /// False when no released admission loads `modelId`.
+    func awaitReleasedLoads(of modelId: String) async -> Bool {
+        guard releasedAdmissions.values.contains(where: { $0.modelId == modelId }) else { return false }
+        await awaitReleasedLoads { $0 == modelId }
+        return true
+    }
+
+    private func awaitReleasedLoads(where loadsModel: (String) -> Bool) async {
+        while let requestId = releasedAdmissions.first(where: { loadsModel($0.value.modelId) })?.key {
             await awaitReleasedAdmission(requestId)
         }
     }

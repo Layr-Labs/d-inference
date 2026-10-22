@@ -730,7 +730,9 @@ Workload tests segment large fixtures into 31 and 62 source batches, then comple
 all three selected models, hierarchical integrations and one repair, including
 a 197-request scan beyond the former emergency ceiling. Adapter tests stop after
 exactly 500 requests, apply the larger native output default and preserve fixed
-probe limits. Lifecycle tests verify stage admission failure identifies the
+probe limits. Client configuration tests preserve single-attempt transport and
+allow more response time for workload mode. Lifecycle tests verify stage admission
+failure identifies the
 unadmitted integration rather than the previous source call, manual GitHub job
 reruns perform no paid work, runtime configuration stays bounded and every final
 incomplete outcome requires human review. Workflow checks restrict manual dispatch

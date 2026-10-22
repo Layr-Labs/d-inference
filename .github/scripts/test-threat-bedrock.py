@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import runpy
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -331,6 +332,23 @@ class BedrockTests(unittest.TestCase):
         self.assertEqual(len(self.client.requests), 500)
         self.assertEqual(self.client.requests[-1]["inferenceConfig"]["maxTokens"], 16384)
         self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_larger_workload_has_time_for_output_without_sdk_retries(self):
+        for policy, seconds in (("fixed", 240), ("workload", 600)):
+            with self.subTest(policy=policy):
+                configs = []
+                def config(**values):
+                    configs.append(values)
+                    return values
+                modules = {"boto3": SimpleNamespace(client=lambda *args, **kwargs: self.client),
+                           "botocore": SimpleNamespace(), "botocore.config": SimpleNamespace(Config=config)}
+                env = dict(self.env, BEDROCK_SCAN_CALL_POLICY=policy, BEDROCK_SCAN_CREDENTIALS_READY="true")
+                self.calls = BedrockCalls(None, 1, "123-1", "synthetic", "index", env, fallback_factory=Backup)
+                self.calls.plan_calls(1)
+                with patch.dict("sys.modules", modules):
+                    self.invoke()
+                self.assertEqual(configs, [{"connect_timeout": 10, "read_timeout": seconds,
+                                            "retries": {"total_max_attempts": 1, "mode": "standard"}}])
 
     def test_workload_emergency_ceiling_stops_before_the_unadmitted_stage(self):
         self.env.update(BEDROCK_SCAN_CALL_POLICY="workload", BEDROCK_SCAN_MAX_WORKLOAD_CALLS="3")

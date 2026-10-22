@@ -130,7 +130,8 @@ class BedrockCalls:
             import boto3
             from botocore.config import Config
             self.client = boto3.client("bedrock-runtime", region_name=self.env.get("BEDROCK_SCAN_AWS_REGION", "us-east-1"),
-                                       config=Config(connect_timeout=10, read_timeout=240,
+                                       config=Config(connect_timeout=10,
+                                                     read_timeout=600 if self.call_policy == "workload" else 240,
                                                      retries={"total_max_attempts": 1, "mode": "standard"}))
         system = payload["messages"][0]["content"] + "\n" + self.prefix
         schema = payload["response_format"]["json_schema"]["schema"]

@@ -158,6 +158,9 @@ variables `BEDROCK_SCAN_MAX_WORKLOAD_CALLS` (1–500, default 500) and
 variable uses the generous default; invalid values stop before paid work.
 The call ceiling is a backstop, not a request target: stage admission allocates
 only the actual scheduled work plus one shared repair.
+Each native workload request has a 600-second response timeout to allow larger
+output; fixed probes retain 240 seconds. SDK retries remain disabled, and the
+50-minute whole-scan deadline can interrupt either timeout.
 These workload bounds are not a repository-wide dollar cap. AWS charges
 are reconciled through dedicated profile tags and the usage metadata artifact.
 Fork PRs keep the capped OpenRouter route unless a maintainer explicitly sets

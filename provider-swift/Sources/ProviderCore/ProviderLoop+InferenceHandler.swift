@@ -1061,6 +1061,11 @@ extension ProviderLoop {
             if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
+            // Visible output only (content, reasoning, tool names and argument
+            // text): the cancelled-stream billing floor. Streamed calls add one
+            // hash marker per fragment to `fullResponseText`, which would
+            // otherwise inflate that floor.
+            var deliveredText = ""
             var promptTokens = 0
             var completionTokens = 0
             // Profiler frame counters (locals; written to the profile once at
@@ -1159,6 +1164,7 @@ extension ProviderLoop {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
+                            deliveredText += content
                             // Count only NON-empty content toward the billing
                             // floor: parseStreamChunk returns a non-nil but empty
                             // contentDelta for SSE frames carrying "content":""
@@ -1170,11 +1176,18 @@ extension ProviderLoop {
                         }
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
+                            deliveredText += reasoning
                             frameHadContent = true
                             reasoningText += reasoning
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            for call in toolCalls {
+                                deliveredText += (call.function?.name ?? "") + (call.function?.arguments ?? "")
+                            }
+                            // A streamed call's first fragment is content: the
+                            // pre-content deadline no longer applies once a
+                            // call is visible, so it is never discarded late.
                             frameHadContent = true
                         }
                         if frameHadContent {
@@ -1347,7 +1360,7 @@ extension ProviderLoop {
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
                     deliveredCompletionTokenFloor: tokenizer.inner.encode(
-                        text: fullResponseText, addSpecialTokens: false
+                        text: deliveredText, addSpecialTokens: false
                     ).count,
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,

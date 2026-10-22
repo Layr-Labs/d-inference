@@ -1508,8 +1508,22 @@ Both text and media paths in `MultiModelBatchSchedulerEngine` apply the
 probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
-and generated answers need not emit another marker. Explicit `.none`, other
-parser families and unrecognized prompt tails receive no prefix from the
+and generated answers need not emit another marker.
+
+A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
+no think marker also receives the empty closed block
+(`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct
+renders a bare `<|im_start|>assistant\n` generation prompt and does not
+reason; without the seed its whole answer waited for a tag or the end of
+generation. A `<think>` the model emits itself still opens reasoning in
+content state. Other Qwen types get no seed: the Qwen 3.5, 3.6 and 3.8
+templates always end in a marker, and a close-only reasoner such as
+`qwen3_next` writes its reasoning before a bare `</think>`, which a content
+seed would expose as answer text. `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0`
+disables the seed.
+
+Explicit `.none`, other parser families (`deepseekR1` keeps close-only
+parsing) and other unrecognized prompt tails receive no prefix from the
 probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
 for a streamed think-format request with an unknown tail, `contentSeed` starts
 the parser in content mode. A generated `<think>` can still open reasoning.
@@ -1556,6 +1570,40 @@ Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
 inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
 including the embedded-MTP one, advertise forced tools
 (`ToolChoiceEnforcementPolicy.swift`).
+
+### Streamed auto tool calls
+
+Chat streams (`MLXOpenAIService.streamChatCompletionFrames`, which serves the
+coordinator path and local `stream: true` requests) set `streamToolCallDeltas`.
+For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
+formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
+streaming options. Once a frame's function name resolves to a declared tool,
+the processor emits the name, then argument JSON fragments as they become
+certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
+generated, other Qwen XML parameters once they close, and framed-JSON and
+Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+because one later value outside the strict grammar makes the complete parse
+read bare scalars and composites as raw strings. When the frame closes, the
+complete parse must agree with everything already exposed
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
+`NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
+fragment and validates name and schema at frame close; the service renders
+OpenAI fragments (`index`, `id`, `type` and `function.name` first, then
+`function.arguments` pieces). A response that begins with a call therefore
+reaches its first content frame at the function name instead of the engine
+terminal, which also ends the frame loop's pre-content deadline check.
+
+| Case | Behavior |
+|---|---|
+| Undeclared or unresolvable name | Never exposed: completes in one piece with the existing validation or text fallback |
+| Parse failure, divergence or schema violation after exposure | Typed `tool_choice` violation on the stream |
+| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
+| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation |
+
+The response hash adds one `tool_call` marker per fragment in wire order; a
+complete call encodes exactly as before
+(`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
+`encodeToolCallsForHash`).
 
 ### Chat-template render check
 

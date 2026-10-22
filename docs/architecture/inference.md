@@ -977,6 +977,54 @@ probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo
 maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
 
+Before those probes, ordinary `EngineV2` slots run an excluded shape warmup
+once per loaded engine (`ModelCalibrationPolicy.shapeWarmup`). MLX compiles
+each kernel specialization from source on first use in a process, and macOS
+caches the compiled libraries per app, keyed by source and GPU compiler. With a
+cold cache (a new install, or the first start after macOS or the MLX kernel
+sources change), the first long customer prompt paid those compiles; with the
+warmup it matched later requests (measurements in the
+[startup shape warmup report](../reports/2026-10-21-startup-shape-warmup-first-request.md)).
+A warm cache leaves no measurable first-request penalty, so the
+warmup first runs a greedy 128-token probe twice. Only a first run that
+exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
+shape cells; otherwise they are skipped. One solo prompt covers stripe-wide
+chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
+One cell at the served width covers plain chunks beside decoding rows and decode
+or MTP verify at that width. Both use the artifact's default sampling. A cell
+counts only when every row reaches its requested length: a row the sampler
+stops early can retire before later rows join, so the cell reruns with another
+prompt, and its third try is accepted so an artifact that always stops early
+cannot keep the warmup due
+(`provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift`,
+`shapeWarmupCellTries`). No probe
+or cell trains a rate or counter. They share a 20-second wall budget that
+includes prompt rendering. A timeout or refusal completes the attempt; only
+preemption leaves it due, and the retry resumes after the probes and cells
+already finished. Each finished pass records the served width it covered
+(`ModelCalibrationState.shapeWarmupWidth`). If the probe judged the cache cold
+(or the mode is `always`) and serving concurrency later grows past that width
+(posture returns to nominal, or the KV grant grows), the warmup is due again and
+the next idle session runs only the wider width's cell
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ShapeWarmup.swift`,
+`shapeWarmupDue`); a narrower width never lowers the record. The probe judges
+the whole cache from its one short shape, so a cache that holds it but not the
+long-prompt or served-width kernels (a process stopped between the probe and the
+cells, an earlier attempt the budget cut short, or a cache that only saw short
+prompts) skips the cells, and the first such request compiles them as before.
+
+The startup preload warms each loaded model after any passing self-test, before
+registration (or before a standalone listener opens), so routed traffic cannot
+preempt it; a local-endpoint request still can. Posture does not gate this pass
+because it measures nothing, and the registration gate's timeout still bounds
+the preload. Later engines (lazy loads, MTP replacement engines) run it in the
+idle calibration session after a 0.5-second pause that lets a triggering request
+preempt first. Slots with a reviewed deadline profile run it alone under the same
+idle gate, and standalone servers retry deferred engines from their 5-second
+sweep tick. Each attempt logs its outcome, duration and probe times.
+`DARKBLOOM_TTFT_SHAPE_WARMUP=0` restores the plain probes and `always` skips the
+shader-cache probe; the launchd job forwards it.
+
 Transaction-owned native MiMo slots retain the wider bootstrap and periodic
 maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
 affordable concurrency sweeps and solo refresh after 90 seconds. The existing

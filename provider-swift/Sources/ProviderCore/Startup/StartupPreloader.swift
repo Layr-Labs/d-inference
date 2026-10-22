@@ -1,7 +1,7 @@
 import Foundation
 
 /// StartupPreloader -- sequential boot-time model preload with memory
-/// admission and an optional per-model self-test decode.
+/// admission, an optional per-model self-test decode and shape warmup.
 ///
 /// Fixes the fleet-rollover cold-start failure mode: after a release restart
 /// the provider used to register (and attract routing) with NOTHING loaded, so
@@ -52,6 +52,10 @@ public struct StartupPreloader: Sendable {
         /// Optional 1-token decode through the serving path after each load.
         /// nil = self-test disabled. Returns the decode duration.
         public var selfTest: (@Sendable (String) async throws -> Duration)?
+        /// Optional excluded first-use shape warmup after the load and a
+        /// passing self-test, before the next candidate and before the caller
+        /// serves: the first routed prompt then finds its kernels compiled.
+        public var shapeWarmup: (@Sendable (String) async -> Void)?
         /// When true, a failed self-test retires the model (see `retire`).
         public var selfTestFailClosed: Bool
         /// Retire a model whose self-test failed (fail-closed only):
@@ -85,6 +89,7 @@ public struct StartupPreloader: Sendable {
             freeMemoryGb: @escaping @Sendable () async -> Double,
             load: @escaping @Sendable (String) async throws -> Void,
             selfTest: (@Sendable (String) async throws -> Duration)? = nil,
+            shapeWarmup: (@Sendable (String) async -> Void)? = nil,
             selfTestFailClosed: Bool = false,
             retire: @escaping @Sendable (String) async -> Void = { _ in },
             onSelfTestFailed: @escaping @Sendable (String, String) -> Void = { _, _ in },
@@ -97,6 +102,7 @@ public struct StartupPreloader: Sendable {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
             self.selfTest = selfTest
+            self.shapeWarmup = shapeWarmup
             self.selfTestFailClosed = selfTestFailClosed
             self.retire = retire
             self.onSelfTestFailed = onSelfTestFailed
@@ -179,13 +185,18 @@ public struct StartupPreloader: Sendable {
                 continue
             }
 
-            guard let selfTest = deps.selfTest else { continue }
+            guard let selfTest = deps.selfTest else {
+                await deps.shapeWarmup?(modelId)
+                continue
+            }
             let selfTestStart = clock.now
             do {
                 let decodeTook = try await selfTest(modelId)
                 deps.log(
                     "startup self-test: '\(modelId)' decoded 1 token in \(Self.secs(decodeTook)) "
                         + "(end-to-end \(Self.secs(clock.now - selfTestStart)))")
+                // A failed self-test never warms; cancellation stops at the next candidate.
+                await deps.shapeWarmup?(modelId)
             } catch is CancellationError {
                 break
             } catch {

@@ -291,6 +291,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.
+    /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
+    /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
@@ -311,6 +313,7 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.verifyEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
+        ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,

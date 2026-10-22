@@ -554,6 +554,14 @@ Calibration observations are staged per cell and published only after all
 requests retire and the completion posture check passes. A cancelled or
 non-nominal cell discards those observations and remains retryable; valid
 earlier measurements and independently published serving evidence survive.
+The excluded shape warmup that precedes the startup cells uses the same
+session, idle gate and foreground lease, within the same KV and service
+budgets; only its startup-preload pass skips the posture check, because it
+measures nothing. Its probes and cells publish no observations or work totals.
+While any such session runs, the periodic proactive MLX pool sweep waits:
+its flush is device work that cancels the session, so a warmup cell longer
+than the tick could never finish. A sweep signalled just before a session
+started checks again when it runs. On-pressure reclaims still run.
 
 ### Serving width by chip
 

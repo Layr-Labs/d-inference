@@ -3,7 +3,7 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 
-/// Greedy speculative decode for GLM tensor parallel with the model's own
+/// Speculative decode for GLM tensor parallel with the model's own
 /// NextN (MTP) layer, which every rank holds whole (replicated: its drafts
 /// need no sums, and the head it shares with the stage is replicated too).
 ///
@@ -17,6 +17,15 @@ import MLXLMCommon
 /// after the last kept token and every DSA history drops the rest, so a
 /// rejected proposal costs no replay. The NextN history is fed only verified
 /// pairs (target token, preceding target hidden row), never a proposal.
+///
+/// A sampled request (stateless transforms only, as in the product) keeps
+/// the product's target-prefix pre-sampling instead of the argmax: rank 0
+/// draws the keyed target sample at every window column at its own output
+/// index (`QwenStageTokenSampler.verify`), a proposal is kept while it equals
+/// that sample, and the sample at the first mismatch is the round's last
+/// token. Each committed token is the draw the one-token sampled path makes
+/// at that index from the same logits; rank 1 puts its argmax (only so its
+/// slot depends on the window, like rank 0's) and adopts rank 0's draws.
 ///
 /// Both ranks propose and verify from identical inputs, so they agree; they
 /// still check it. Each round carries one small sum in which every rank puts
@@ -133,18 +142,20 @@ final class GLM5NextTensorParallelSpeculation {
     }
 
     /// Reads a round's evaluated agreement: `ranks` slots of `2 * window + 2`
-    /// values, each the target's greedy token at the `window + 1` positions,
-    /// the `window` proposals and the stop flag. Every rank's tokens and
-    /// proposals must be equal (only the stop flags may differ). Keeps the
-    /// longest prefix of proposals equal to the targets, then the target
+    /// values, each the target's token at the `window + 1` positions, the
+    /// `window` proposals and the stop flag. Every rank's tokens and
+    /// proposals must be equal (only the stop flags may differ); `sampled`
+    /// takes rank 0's tokens (its draws) and checks the proposals only. Keeps
+    /// the longest prefix of proposals equal to the targets, then the target
     /// after it.
-    static func decide(_ values: [Float], ranks: Int, window: Int) throws -> Round {
+    static func decide(_ values: [Float], ranks: Int, window: Int, sampled: Bool = false) throws -> Round {
         let width = 2 * window + 2
         guard window >= 0, ranks > 0, values.count == ranks * width else {
             throw ProbeError("GLM speculative agreement has a wrong shape")
         }
         let slots = (0..<ranks).map { Array(values[($0 * width) ..< (($0 + 1) * width)]) }
-        guard slots.allSatisfy({ $0.dropLast() == slots[0].dropLast() }) else {
+        let compared = sampled ? (window + 1) ..< (2 * window + 1) : 0 ..< (width - 1)
+        guard slots.allSatisfy({ $0[compared] == slots[0][compared] }) else {
             throw ProbeError("GLM tensor-parallel ranks verified different tokens")
         }
         let target = slots[0][0...window].map { Int($0) }
@@ -161,9 +172,14 @@ final class GLM5NextTensorParallelSpeculation {
     /// agreed tokens only. Evaluates the round (one host read).
     /// `whileRunning` runs once the round is submitted and before its result
     /// is read (the caller hands the last round's tokens to its owner then);
-    /// what it does cannot change this round.
+    /// what it does cannot change this round. `draw`, for a sampled request,
+    /// gives this rank's target token at every column of the window's logits
+    /// `[1, 1 + window, V]` (rank 0 its keyed samples); nil takes the argmax.
+    /// Every rank's slot must be computed from the logits: the agreement sum
+    /// is ordered after the window's layer sums only by that dependency.
     func round(stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, last: Int, window: Int,
-               stop: Float, whileRunning: () throws -> Void = {}) throws -> Round {
+               stop: Float, draw: ((MLXArray) -> MLXArray)? = nil,
+               whileRunning: () throws -> Void = {}) throws -> Round {
         guard let verified = pending, (0...depth).contains(window) else {
             throw ProbeError("GLM speculative round without its verified pairs or beyond its depth")
         }
@@ -179,10 +195,10 @@ final class GLM5NextTensorParallelSpeculation {
         guard case .final(let output) = candidate.output else {
             throw ProbeError("GLM speculative verification produced no logits")
         }
-        // Slot: the target's greedy token at each of the 1 + window positions,
-        // the proposals, the stop flag. Token IDs are exact in float32.
+        // Slot: the target's token at each of the 1 + window positions, the
+        // proposals, the stop flag. Token IDs are exact in float32.
         let width = 2 * window + 2
-        let targets = argMax(output.logits[0].asType(.float32), axis: -1)
+        let targets = draw?(output.logits).reshaped(-1) ?? argMax(output.logits[0].asType(.float32), axis: -1)
         var slot = [targets.asType(.float32)]
         if let drafts { slot.append(drafts.reshaped(-1).asType(.float32)) }
         slot.append(MLXArray([stop]))
@@ -206,7 +222,7 @@ final class GLM5NextTensorParallelSpeculation {
                 try error.check()
             }
         }, keeping: { _ in
-            var round = try Self.decide(agreed.asArray(Float.self), ranks: ranks, window: window)
+            var round = try Self.decide(agreed.asArray(Float.self), ranks: ranks, window: window, sampled: draw != nil)
             if !acceptsProposals { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
             decided = round
             return round.tokens.count

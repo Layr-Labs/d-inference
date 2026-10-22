@@ -532,7 +532,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             return false
         }
-        // Greedy requests decode speculatively. Every request primes the NextN
+        // Greedy requests decode speculatively, and so do sampled ones whose
+        // transforms do not depend on their history (as in the product; bias
+        // and penalties decode one token per step). Every request primes the NextN
         // history over its prompt (cheap: no attention, MoE or readout), so
         // every prefix entry carries the history at its boundary.
         let speculation = try mtp.map {
@@ -639,7 +641,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             case .clientStop, .proceed: return nil
             }
         }
-        if let speculation, sampler == nil, let lastHidden {
+        if let speculation, sampler?.admitsSpeculativeVerification ?? true, let lastHidden {
             // The first token is agreed as a plain step's; then each round
             // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
             // and when the loop ends follow from agreed tokens only, so both
@@ -649,6 +651,19 @@ public final class GLM5NextTensorParallelResidentRuntime {
             // memory) stops committing, still ends where the other rank
             // would, and carries its flag in the next round it submits.
             let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
+            sampler?.commit(first)
+            // Sampled: rank 0 draws the keyed target sample at every window
+            // column, at output indexes from the sampler's committed count.
+            // Rank 1 puts the window's argmax, which the agreement ignores:
+            // its slot must depend on the window's logits, or the round's
+            // one evaluation may run the agreement sum before the layer sums
+            // on rank 1 only, and the ranks' sums no longer pair up.
+            let draw: ((MLXArray) -> MLXArray)? = sampler.map { sampler in
+                { logits in
+                    (rank == 0 ? sampler.verify(logits) ?? argMax(logits, axis: -1) : argMax(logits, axis: -1))
+                        .asType(.float32)
+                }
+            }
             try speculation.begin(carry: first, lastHidden: lastHidden)
             var agreedCount = 1, last = first, fresh: [Int] = []
             /// Takes one agreed token; true when the request ends at it.
@@ -664,7 +679,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             rounds: while !ended {
                 let taken = agreedCount
                 let round = try speculation.round(stage: stage, cache: cache, last: last,
-                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep,
+                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep, draw: draw,
                     whileRunning: {
                         for (index, value) in fresh.enumerated() {
                             _ = try take(value, counted: taken - fresh.count + index + 1)
@@ -676,6 +691,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     finish = .clientStop; break
                 }
                 fresh = round.tokens; last = fresh[fresh.count - 1]; agreedCount += fresh.count
+                sampler?.commitRound(fresh)
                 // Tokens that end the request are taken now (no next round).
                 let ends = fresh.indices.contains {
                     request.stopTokenIDs.contains(fresh[$0]) || agreedCount - fresh.count + $0 + 1 >= request.outputCount

@@ -37,6 +37,19 @@ struct GLM5NextTensorParallelSpeculationTests {
         #expect(throws: ProbeError.self) { try Speculation.decide(zero, ranks: 2, window: 2) }
     }
 
+    @Test func sampledRoundsTakeRankZerosDrawsAndCheckOnlyTheProposals() throws {
+        // Rank 0 drew [11, 12, 13]; rank 1 put its argmax and adopts rank 0's draws.
+        let zero = Self.slot([11, 12, 13], [11, 40]), one = Self.slot([11, 7, 9], [11, 40], stop: 3)
+        #expect(try Speculation.decide(zero + one, ranks: 2, window: 2, sampled: true)
+            == .init(tokens: [11, 12], stops: [0, 3]))
+        // Greedy reading of the same values: the ranks' tokens differ.
+        #expect(throws: ProbeError.self) { try Speculation.decide(zero + one, ranks: 2, window: 2) }
+        // The proposals must still be equal.
+        #expect(throws: ProbeError.self) {
+            try Speculation.decide(zero + Self.slot([11, 7, 9], [11, 41]), ranks: 2, window: 2, sampled: true)
+        }
+    }
+
     @Test func requestChargeIsZeroWithoutSpeculationAndGrowsWithDepth() throws {
         let c = try GLM5NextMetadataTestFixture(layers: 8).configuration.textConfig
         let profile = try QwenLayerStageGenerationProfile(identifier: "glm-tp-mtp-fixture",

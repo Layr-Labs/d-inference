@@ -35,7 +35,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     public func readiness() -> DistributedResidentReadiness? {
         guard let value = pair.readiness else { return nil }
         return .init(identity: identity, profileID: profile.id, requestCapacityBytes: value.requestCapacityBytes,
-            servingContextTokens: value.servingContextTokens)
+            servingContextTokens: value.servingContextTokens, media: value.media)
     }
     public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         pair.setInvalidationHandler(handler)
@@ -86,13 +86,24 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             && identity.artifactSHA256 == "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034") else {
             throw DistributedEngineError.refused(.mediaUnsupported)
         }
+        // GLM images and video on the tensor-parallel pair: only when both ranks
+        // serve the media contract, for the model and configuration they loaded.
+        let glmMedia = try request.clusterGLMMedia.map { try ClusterGLMMedia.decodeBounded($0) }
+        guard glmMedia == nil || (identity.modelID == ClusterGLMImageCandidate.runtimeModelID
+            && glmMedia?.configurationSHA256 == identity.configurationSHA256
+            && glmMedia?.carriesEncodedBytes == true && stillImages == nil && media == nil
+            && pair.readiness?.media == ClusterGLMMedia.contract) else {
+            throw DistributedEngineError.refused(.mediaUnsupported)
+        }
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,
-            route: media == nil && stillImages == nil ? decided?.workerRoute : nil, mimoImages:media, stillImages:stillImages)
+            route: media == nil && stillImages == nil && glmMedia == nil ? decided?.workerRoute : nil,
+            mimoImages:media, stillImages:stillImages, glmMedia: glmMedia)
         // Encode the COMPLETE bounded command before sending either rank.
         // Use largest legal sequence metadata so a later pipe header cannot
-        // exceed the command bound after rank 0 has already reserved.
+        // exceed the command bound (a GLM media reservation's own bound)
+        // after rank 0 has already reserved.
         _ = try ClusterWorkerCodec.encode(.init(membershipEpoch:identity.membershipEpoch,
             sequence:UInt64(Int64.max)-1,requestID:UUID(),command:.reserve(value)))
         // CBv2 request IDs may be reused after retirement. Each native request

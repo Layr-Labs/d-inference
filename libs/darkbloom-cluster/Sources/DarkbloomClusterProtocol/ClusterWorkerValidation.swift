@@ -31,6 +31,7 @@ enum ClusterWorkerValidation {
         try workerRequire(value.servingContextTokens.map { (1...p.maximumContextTokens).contains($0) } ?? true,
             "Invalid serving context")
         try workerRequire(value.linkProbe?.valid ?? true, "Invalid link probe")
+        try workerRequire(value.media.map { $0 == ClusterGLMMedia.contract } ?? true, "Unknown worker media contract")
     }
     static func reservation(_ value: ClusterWorkerReservation) throws {
         try workerRequire(text(value.profileID, maximum: 128)
@@ -48,6 +49,14 @@ enum ClusterWorkerValidation {
             try workerRequire(value.mimoImages == nil && value.route == nil
                 && value.profileID == ClusterStillImages.glmProfileID, "Still images require the GLM pipeline")
             try media.validateStructure(promptCount: value.promptTokenIDs.count)
+        }
+        if let media = value.glmMedia {
+            // Bound to the prompt by both ranks, the GLM row's markers by the runtime.
+            try workerRequire(value.stillImages == nil && value.mimoImages == nil && value.route == nil
+                && value.profileID == ClusterGLMImageCandidate.textProfileID,
+                "GLM media rides alone, on the GLM row's text profile, on the pair as placed")
+            try media.validateStructure()
+            try workerRequire(media.featureTokens < value.promptTokenIDs.count, "GLM media exceeds the prompt")
         }
         if let media = value.mimoImages {
             try workerRequire(value.profileID.hasSuffix(ClusterMiMoImages.profileSuffix) && value.route == nil,

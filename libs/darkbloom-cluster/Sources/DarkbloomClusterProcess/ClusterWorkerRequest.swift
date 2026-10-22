@@ -53,7 +53,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 deadlineUptimeNanoseconds: reservation.deadlineUptimeNanoseconds,
                 capacityLimitBytes: min(capacity, reservation.capacityLimitBytes - bytes),
                 // Both ranks get the request's sampling (the selecting rank draws with it) and its route.
-                sampling: reservation.sampling, route: reservation.route, mimoImages: reservation.mimoImages, stillImages: reservation.stillImages)
+                sampling: reservation.sampling, route: reservation.route, mimoImages: reservation.mimoImages, stillImages: reservation.stillImages,
+                // GLM media bytes go to rank 0 alone, which runs the vision tower; rank 1 gets their digests.
+                glmMedia: index == 0 ? reservation.glmMedia : reservation.glmMedia?.withoutEncodedBytes)
             try lock.withLock {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
                 try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)

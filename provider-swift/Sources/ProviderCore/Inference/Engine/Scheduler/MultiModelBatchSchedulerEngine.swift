@@ -534,6 +534,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
+        // GLM images and video on the tensor-parallel pair: the product's own
+        // media preparation on this leader, the vision tower on rank 0.
+        if glmMedia, let bridge = engineV2Bridge, bridge.clusterGLMMediaIngress != nil {
+            do {
+                return try await prepareClusterGLMMedia(request: request, templateControls: templateControls,
+                    requestUsage: requestUsage, prepared: prepared, toolHandler: toolHandler, acquired: consume acquired)
+            } catch { await releaseBox.fire(); throw error }
+        }
         if glmMedia, let bridge = engineV2Bridge, await bridge.clusterGLMImageConfiguration != nil {
             do {
                 return try await prepareClusterGLMImage(request: request, templateControls: templateControls,
@@ -1080,6 +1088,95 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 reasoningPrefix: reasoningPrefix,
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                     .init(modelId: request.model, modelType: acquired.modelType)))
+        } catch { await bridge.cancel(requestId: id); throw error }
+    }
+
+    /// GLM-5.3-Flash images and video on the tensor-parallel pair, served as
+    /// the single-Mac product serves them: the same tool-choice rule, the same
+    /// prompt, spans and patches (`DistributedGLMMediaIngress`), no token
+    /// constraint, no prefix reuse, the same sampling translation and the same
+    /// error answers. The pair's ranks run the vision tower and decode.
+    private func prepareClusterGLMMedia(request: OpenAIChatCompletionRequest,
+        templateControls: ChatTemplateControls, requestUsage: EngineV2RequestUsageSignal,
+        prepared: ToolChoicePromptPolicy.Prepared, toolHandler: BatchedToolStreamHandler?,
+        acquired: consuming AcquiredModel
+    ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try checkFirstContentDeadline()
+        guard let bridge = acquired.engineV2Bridge, let ingress = bridge.clusterGLMMediaIngress else {
+            throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(request.model)
+        }
+        let modelType = acquired.modelType
+        var visionRequest = request
+        visionRequest.tools = prepared.tools
+        visionRequest.messages = ChatTemplateFixes.normalizeMessages(prepared.messages,
+            context: ChatTemplateFixContext(modelId: request.model, modelType: modelType))
+        guard prepared.mode == .auto || prepared.mode == .none
+            || ToolChoiceEnforcementPolicy.supportsForcedMedia(
+                context: .init(modelId: request.model, modelType: modelType), nativeWrapperLoaded: false) else {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "inference-enforced tool_choice is not supported for multimodal requests")
+        }
+        let host: DistributedGLMMediaIngress.Prepared
+        do {
+            profile?.mark(.promptPrepStart)
+            let started = SuspendingClock.now
+            // GLM normalizes the original request exactly as its text path does.
+            host = try await ingress.prepare(request: request, controls: templateControls,
+                tokenizer: acquired.tokenizer.inner)
+            if let profile {
+                let micros = RequestProfileBuilder.microseconds(SuspendingClock.now - started)
+                let count = Int64(host.tokens.count)
+                profile.update { f, now in
+                    f.mark(.promptPrepEnd, offsetUs: now); f.set(.promptTokens, count); f.add(.visionPrep, us: micros)
+                }
+            }
+        } catch {
+            if let failure = error as? PreContentDeadlineFailure { throw failure }
+            if error is CancellationError { throw CancellationError() }
+            if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+            if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
+            if let visionError = error as? EngineV2VisionPrefillError {
+                switch visionError {
+                case .noProcessedMedia:
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                        "multimodal_rejected: media parts must be attached to user "
+                            + "messages; none of this request's media was consumable")
+                case .unsupportedMedia(let detail):
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("multimodal_rejected: \(detail)")
+                default: break
+                }
+            }
+            let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
+            (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
+                modelId: request.model, mediaKind: mediaKind, error: error))
+            throw MultiModelBatchSchedulerEngineError.requestRejected(
+                "engine_v2 media prefill construction failed (media=\(mediaKind.rawValue)): "
+                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started; retry on another provider")
+        }
+        try checkFirstContentDeadline()
+        let id = "req-" + UUID().uuidString
+        let upstream = try await bridge.submitTokenized(promptTokens: host.tokens,
+            request: Self.translate(openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
+                logprobs: engineV2Logprobs != nil ? true : nil, topLogprobs: engineV2Logprobs?.topLogprobs,
+                logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed),
+            requestId: id, cacheScope: cacheScope, cacheEnabled: false, logprobsChannel: engineV2Logprobs?.channel,
+            usageSignal: requestUsage, clusterGLMMedia: host.wire, mediaKind: host.mediaKind,
+            firstContentDeadline: firstContentDeadline, profile: profile, measurementPurpose: measurementPurpose)
+        do {
+            try checkFirstContentDeadline()
+            // Seed the parser from the rendered media prompt: reasoning for an
+            // open block, content for a closed one (thinking-disabled media).
+            let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+                reasoningParser: visionRequest.reasoningParser, stream: visionRequest.stream,
+                promptTokens: host.tokens,
+                decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+            ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            return try await makeDeadlineCheckedEventStream(
+                upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
+                toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
+                reasoningPrefix: reasoningPrefix,
+                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                    .init(modelId: request.model, modelType: modelType)))
         } catch { await bridge.cancel(requestId: id); throw error }
     }
 

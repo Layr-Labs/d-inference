@@ -126,6 +126,7 @@ extension EngineV2Bridge {
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
         clusterStillImages: Data? = nil,
+        clusterGLMMedia: Data? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -152,6 +153,18 @@ extension EngineV2Bridge {
             try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
                 startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
         }
+        if let clusterGLMMedia {
+            // The tensor-parallel pair's media: only on a bridge bound to it,
+            // never beside another media form, every span bound to the prompt.
+            guard mimoClusterImages == nil, clusterStillImages == nil, multimodal == nil,
+                  let ingress = clusterGLMMediaIngress else { throw DistributedEngineError.refused(.mediaUnsupported) }
+            let media = try ClusterGLMMedia.decodeBounded(clusterGLMMedia), c = ingress.configuration
+            guard media.configurationSHA256 == ingress.configurationSHA256 else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
+                startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
+        }
         let imageBoundCacheScope: String
         if let mimoClusterImages {
             let media = try ClusterMiMoImages.decodeBounded(mimoClusterImages)
@@ -159,7 +172,8 @@ extension EngineV2Bridge {
             imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
         } else { imageBoundCacheScope = cacheScope }
         // Never manufacture an authenticated scope from an image digest.
-        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && (mimoClusterImages == nil || !cacheScope.isEmpty)
+        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil
+            && (mimoClusterImages == nil || !cacheScope.isEmpty)
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
@@ -278,6 +292,7 @@ extension EngineV2Bridge {
         )
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
+        cbv2Request.clusterGLMMedia = clusterGLMMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
         if servesDistributedPair, let minP = request.min_p { cbv2Request.sampling.minP = minP }

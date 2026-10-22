@@ -25,6 +25,15 @@ import MLXLMCommon
 /// largest of their transients. A lane the host cannot hold now is refused,
 /// alone; the running lanes go on.
 ///
+/// Media: a lane carrying images or video runs the solo request's media path
+/// (`GLM5NextTensorParallelMedia`): rank 0 prepares its patches from the
+/// reservation on, off the executor, and joins it only once that ended, so
+/// the running lanes never wait for a decode; when it joins, its features are
+/// made and agreed in its open, its prefill frames splice them and prime the
+/// NextN history, and it decodes in MTP rounds as any lane. Its media charge
+/// (`GLM5NextTensorParallelMedia.requestBytes`) is held with its state for
+/// its whole life.
+///
 /// Isolation: a lane that ends (its stop token, its output limit, its owner's
 /// stop answer), is cancelled, or passes its deadline leaves both ranks at a
 /// step boundary and its worker retires it; the other lanes go on. A native,
@@ -105,14 +114,18 @@ extension GLM5NextTensorParallelResidentRuntime {
                 promptTokenIDs: value.promptTokenIDs, chunkSize: value.chunkSize, outputCount: value.outputCount,
                 stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
+            let media = try reservedMedia(value)
+            let mediaBytes = media?.requestBytes ?? 0
             let context = request.maximumTokens
-            let charge = try requestCharge.bytes(contextTokens: context)
+            let charge = try QwenLongPrefillCheckedBytes.sum([try requestCharge.bytes(contextTokens: context), mediaBytes])
             guard charge <= value.capacityLimitBytes, laneBook.count < lanes.lanes else {
                 throw ProbeError("GLM lane reservation exceeds its owner ceiling or every lane is taken")
             }
-            let state = try Self.laneStateBytes(configuration: descriptor.configuration.textConfig,
+            // A media lane holds its media charge for its whole life, beside its state.
+            let state = try QwenLongPrefillCheckedBytes.sum([try Self.laneStateBytes(
+                configuration: descriptor.configuration.textConfig,
                 contextTokens: context, speculative: mtp != nil,
-                historyTokens: requestCharge.historyTokens(contextTokens: context))
+                historyTokens: requestCharge.historyTokens(contextTokens: context)), mediaBytes])
             let transient = max(0, charge - state)
             // Every held lane's state, and the largest forward's transients.
             let held = laneBook.reservations()
@@ -123,16 +136,28 @@ extension GLM5NextTensorParallelResidentRuntime {
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,
-                laneStateBytes: state, transientBytes: transient), lanes: lanes.lanes)
+                laneStateBytes: state, transientBytes: transient, media: media?.media), lanes: lanes.lanes)
+            // Rank 0 prepares the patches off the executor; the lane joins once
+            // that ended (`GLM5NextTensorParallelLaneReservation.joinable`).
+            if collective.rank == 0 { media?.media.startPreparation() }
             return charge
         }
     }
 
     public func startLane(requestID: UUID) throws { try laneBook.start(requestID) }
-    /// Thread-safe: the lane leaves the loop at its next step boundary.
-    public func cancelLane(requestID: UUID) { laneBook.cancel(requestID) }
+    /// Thread-safe: the lane leaves the loop at its next step boundary (a
+    /// media lane still preparing stops preparing and joins only to leave).
+    public func cancelLane(requestID: UUID) {
+        laneBook.cancel(requestID)
+        laneBook.reservation(requestID)?.media?.cancelPreparation()
+    }
     /// Gives back a lane that was reserved but never started.
-    public func withdrawLane(requestID: UUID) -> Bool { laneBook.withdraw(requestID) }
+    public func withdrawLane(requestID: UUID) -> Bool {
+        let media = laneBook.reservation(requestID)?.media
+        guard laneBook.withdraw(requestID) else { return false }
+        media?.cancelPreparation()
+        return true
+    }
     /// Started lanes wait for the loop; the worker re-enters it while any do.
     public var hasStartedLanes: Bool { laneBook.hasStarted }
 
@@ -171,6 +196,7 @@ extension GLM5NextTensorParallelResidentRuntime {
                 }
                 collective.logDataPlaneStatus()
             } catch {
+                for lane in laneBook.reservations() { lane.media?.cancelPreparation() }
                 laneBook.clear(); prefix.sweep(); control.fail()
                 throw error
             }
@@ -217,7 +243,15 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
     }
 
     func open(_ request: QwenLayerStageGenerationRequest, check: () throws -> Void) throws -> Lane {
-        let opened = try runtime.openRequest(request, stage: stage)
+        let id = request.requestID, book = runtime.laneBook
+        let reservation = book.reservation(id)
+        // A media lane's features are made and agreed here, as one request's;
+        // a rank's cancel or deadline before then stops it on both ranks.
+        let opened = try runtime.openRequest(request, stage: stage, media: reservation?.media, stop: {
+            book.isCancelled(id) || DispatchTime.now().uptimeNanoseconds >= (reservation?.deadline ?? 0)
+        })
+        // Rank 0 then retires it at the next step, before any frame of it is planned.
+        if opened.stopped, rank == 0 { book.cancel(id) }
         try check()
         let sampler = request.sampler
         // As one request: every request speculates (bias and penalties too).
@@ -320,7 +354,8 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
             + " stored=\(lane.stored.map(String.init).joined(separator: "_")) prefix_entries=\(runtime.prefix.count) prefix_bytes=\(runtime.prefix.bytesInUse)"
             + " output=\(kept) finish=\(leave.finish?.rawValue ?? "cancelled") sampled=\(lane.sampler == nil ? 0 : 1)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
-            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Runtime.proposalFields(speculation, sampler: lane.sampler))
+            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Runtime.proposalFields(speculation, sampler: lane.sampler)
+            + " media_frames=\(lane.opened.media?.media.frames.count ?? 0) media_tokens=\(lane.opened.media?.featureCount ?? 0)")
         return (lane.opened.start, lane.stored)
     }
 }

@@ -189,20 +189,36 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// token's logits `[1, vocabulary]` and hidden row `[1, 1, hidden]` when
     /// the frame ends the prompt, and the kept boundary with the stage cache at
     /// it (evaluated) and the NextN history at it.
+    ///
+    /// `inputs` (a media prompt, `GLM5NextTensorParallelMedia.embeddings`):
+    /// the input embeddings `[1, n, hidden]` of prompt positions
+    /// `lower ..< upper` with media rows replaced by their features, or nil
+    /// where those positions hold none. A frame with media rows runs from its
+    /// embeddings through the same segments and micro-batches
+    /// (`GLM5NextTextStage.prepareForward(embeddings:cache:segments:readout:snapshotAfter:)`:
+    /// the token path's rows with those inputs, so merging stays bitwise), and
+    /// the NextN history is primed with the same rows.
     static func run(_ chunk: Chunk, stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, prompt: [Int],
-                    speculation: GLM5NextTensorParallelSpeculation?, observe: ((Int, MLXArray) throws -> Void)? = nil)
+                    speculation: GLM5NextTensorParallelSpeculation?, observe: ((Int, MLXArray) throws -> Void)? = nil,
+                    inputs: ((_ lower: Int, _ upper: Int) throws -> MLXArray?)? = nil)
         throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?,
                    kept: (end: Int, cache: GLM5NextTextStageCache, history: GLM5NextMTPCheckpoint?)?) {
         let last = chunk.end == prompt.count
-        let tokens = MLXArray(prompt[chunk.start ..< chunk.end].map(Int32.init), [1, chunk.tokens])
-        let candidate = try stage.prepareForward(tokens: tokens, cache: cache,
-            segments: chunk.segments.map { GLM5NextPrefillSegment(microBatchRows: $0.microBatchRows) },
-            readout: last ? .lastToken : .none, snapshotAfter: chunk.snapshotAfter)
+        let segments = chunk.segments.map { GLM5NextPrefillSegment(microBatchRows: $0.microBatchRows) }
+        let candidate: GLM5NextTextStageCandidate
+        if let embedded = try inputs?(chunk.start, chunk.end) {
+            candidate = try stage.prepareForward(embeddings: embedded, cache: cache, segments: segments,
+                readout: last ? .lastToken : .none, snapshotAfter: chunk.snapshotAfter)
+        } else {
+            let tokens = MLXArray(prompt[chunk.start ..< chunk.end].map(Int32.init), [1, chunk.tokens])
+            candidate = try stage.prepareForward(tokens: tokens, cache: cache, segments: segments,
+                readout: last ? .lastToken : .none, snapshotAfter: chunk.snapshotAfter)
+        }
         var checkpoint: GLM5NextMTPCheckpoint?
         if let speculation {
             for (index, segment) in chunk.segments.enumerated() {
                 try speculation.primePrompt(prompt, from: segment.start, to: segment.end,
-                    hidden: candidate.segmentHidden[index])
+                    hidden: candidate.segmentHidden[index], inputs: inputs)
                 if index + 1 == chunk.keptAfter { checkpoint = try speculation.checkpoint() }
             }
         }
@@ -226,12 +242,13 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     func run(stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, prompt: [Int],
              speculation: GLM5NextTensorParallelSpeculation?,
              observe: ((Int, MLXArray) throws -> Void)? = nil,
+             inputs: ((_ lower: Int, _ upper: Int) throws -> MLXArray?)? = nil,
              keep: (Int, GLM5NextTextStageCache, GLM5NextMTPCheckpoint?) throws -> Void)
         throws -> (logits: MLXArray, lastHidden: MLXArray) {
         var result: (logits: MLXArray, lastHidden: MLXArray)?
         for chunk in chunks {
             let frame = try Self.run(chunk, stage: stage, cache: cache, prompt: prompt, speculation: speculation,
-                observe: observe)
+                observe: observe, inputs: inputs)
             if let final = frame.final { result = final }
             if let kept = frame.kept { try keep(kept.end, kept.cache, kept.history) }
         }

@@ -29,6 +29,9 @@ public actor EngineV2Bridge {
     /// MLX cache or grows the surviving models' memory grants.
     let draftMiMoImageConfiguration: Data?
     let clusterGLMImageConfiguration: Data?
+    /// GLM images and video on the tensor-parallel pair (`ClusterGLMMedia`):
+    /// present only when both ranks serve the media contract.
+    let clusterGLMMediaIngress: DistributedGLMMediaIngress?
     var ownedEngine: (any CBv2Engine)?
     struct NativeShutdownIdentity: Equatable {
         let engineID: UUID
@@ -402,6 +405,7 @@ public actor EngineV2Bridge {
         distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
         draftMiMoImageConfiguration: Data? = nil,
         clusterGLMImageConfiguration: Data? = nil,
+        clusterGLMMediaIngress: DistributedGLMMediaIngress? = nil,
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
@@ -410,6 +414,7 @@ public actor EngineV2Bridge {
     ) {
         self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
         self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
+        self.clusterGLMMediaIngress = clusterGLMMediaIngress
         self.ownedEngine = engine
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId

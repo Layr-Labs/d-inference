@@ -232,9 +232,10 @@ struct DistributedInstalledPlan: Sendable {
     ///   `defaultBatchLanes`.
     /// - Tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
     ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
-    ///   own arithmetic, so a request's tokens are those it gets alone. Image
-    ///   requests are not served in this mode (each is refused at reservation,
-    ///   alone), so the capability's image candidate does not change the lanes.
+    ///   own arithmetic, so a request's tokens are those it gets alone. A
+    ///   lane carrying images or video runs the same tensor-parallel media
+    ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
+    ///   capability's image candidate does not change the lanes.
     static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
                                   hasPrivateImages: Bool) -> Int? {
         switch mode {

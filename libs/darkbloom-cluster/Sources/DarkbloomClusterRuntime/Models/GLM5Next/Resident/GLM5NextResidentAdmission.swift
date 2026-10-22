@@ -332,7 +332,7 @@ struct GLM5NextResidentAdmission {
     }
 
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
-        guard value.mimoImages == nil, value.stillImages == nil || descriptor.includesVision,
+        guard value.mimoImages == nil, value.glmMedia == nil, value.stillImages == nil || descriptor.includesVision,
               value.profileID == descriptor.profile.identifier, value.route == nil,
               value.stopTokenIDs == Array(Set(value.stopTokenIDs)).sorted(),
               value.capacityLimitBytes > 0,

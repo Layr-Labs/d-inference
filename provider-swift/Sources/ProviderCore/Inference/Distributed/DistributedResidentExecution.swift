@@ -83,13 +83,17 @@ public struct DistributedResidentReadiness: Sendable {
     /// resident, re-derived while idle. Nil when the owner states none (the
     /// profile's maximum applies). A longer request is refused before admission.
     public let servingContextTokens: Int?
+    /// The media contract both ranks serve (`ClusterGLMMedia.contract` for GLM
+    /// images and video on the tensor-parallel pair); nil serves text only.
+    public let media: String?
 
     public init(identity: DistributedResidentIdentity, profileID: String, requestCapacityBytes: Int,
-                servingContextTokens: Int? = nil) {
+                servingContextTokens: Int? = nil, media: String? = nil) {
         self.identity = identity
         self.profileID = profileID
         self.requestCapacityBytes = requestCapacityBytes
         self.servingContextTokens = servingContextTokens
+        self.media = media
     }
 }
 
@@ -314,6 +318,14 @@ extension DistributedResidentExecutionProfile {
             guard request.mimoClusterImages == nil, id == ClusterStillImages.glmProfileID,
                   let media = try? ClusterStillImages.decodeBounded(wire),
                   (try? media.validateStructure(promptCount: request.promptTokens.count)) != nil else { return .mediaUnsupported }
+        }
+        if let wire = request.clusterGLMMedia {
+            // GLM images and video on the tensor-parallel pair: the text row's
+            // profile, the envelope alone, bound to this prompt's spans.
+            guard request.clusterStillImages == nil, request.mimoClusterImages == nil,
+                  id == ClusterGLMImageCandidate.textProfileID,
+                  let media = try? ClusterGLMMedia.decodeBounded(wire),
+                  media.featureTokens < request.promptTokens.count else { return .mediaUnsupported }
         }
         if let wire = request.mimoClusterImages {
             guard id == "registered_mimo_v26_flash_mopd_greedy_generation_v1" + ClusterMiMoImages.profileSuffix,

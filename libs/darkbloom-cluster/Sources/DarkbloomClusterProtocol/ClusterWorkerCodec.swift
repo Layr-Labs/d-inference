@@ -17,7 +17,16 @@ public enum ClusterWorkerCodec {
         case .shutdown: value["kind"] = "shutdown"
         case .keepWarm(let ordinal): value["kind"] = "keepWarm"; value["ordinal"] = ordinal
         }
-        return try encoded(value, maximum: ClusterWorkerLimits.commandBytes)
+        return try encoded(value, maximum: maximumBytes(frame.command))
+    }
+
+    /// A reservation carrying GLM media bytes may use `mediaCommandBytes`;
+    /// every other command stays within `commandBytes`.
+    static func maximumBytes(_ command: ClusterWorkerCommand) -> Int {
+        if case .reserve(let r) = command, r.glmMedia?.carriesEncodedBytes == true {
+            return ClusterWorkerLimits.mediaCommandBytes
+        }
+        return ClusterWorkerLimits.commandBytes
     }
 
     /// A rank-lease renewal line: outside the request sequence, so it carries
@@ -79,8 +88,9 @@ public enum ClusterWorkerCodec {
 
     /// One control-pipe line: a lease renewal or a sequenced command.
     public static func decodeControl(_ data: Data) throws -> ClusterWorkerControlLine {
-        var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)
+        var r = try reader(data, maximum: ClusterWorkerLimits.mediaCommandBytes)
         guard r.peekString("kind") == "extendDeadline" else { return .command(try decodeCommand(data)) }
+        try workerRequire(data.count <= ClusterWorkerLimits.commandBytes, "Worker record exceeds byte limit")
         try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
         _ = try r.string("kind")
         let renewal = try ClusterWorkerLeaseRenewal(membershipEpoch: r.uuid("membershipEpoch"), renewal: r.uint("renewal"),
@@ -117,7 +127,7 @@ public enum ClusterWorkerCodec {
     }
 
     public static func decodeCommand(_ data: Data) throws -> ClusterWorkerCommandFrame {
-        var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)
+        var r = try reader(data, maximum: ClusterWorkerLimits.mediaCommandBytes)
         let (epoch, sequence, requestID) = try header(&r)
         let command: ClusterWorkerCommand
         switch try r.string("kind") {
@@ -131,6 +141,7 @@ public enum ClusterWorkerCodec {
         }
         try r.finish()
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence, requestID: requestID, command: command)
+        try workerRequire(data.count <= maximumBytes(command), "Worker record exceeds byte limit")
         try ClusterWorkerValidation.command(frame); return frame
     }
 
@@ -245,6 +256,7 @@ public enum ClusterWorkerCodec {
             try workerRequire(bytes.count <= 135_000,"MiMo envelope exceeds bound")
             value["mimoImages"] = bytes.base64EncodedString()
         }
+        if let media = r.glmMedia { value["glmMedia"] = media.wireObject() }
         return value
     }
     private static func reservation(_ object: [String: Any]) throws -> ClusterWorkerReservation {
@@ -273,10 +285,11 @@ public enum ClusterWorkerCodec {
             }
             media = try ClusterMiMoImages.decodeBounded(bytes)
         } else { media = nil }
+        let glmMedia = r.values["glmMedia"] == nil ? nil : try ClusterGLMMedia.decode(wire: r.object("glmMedia"))
         let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: r.ints("promptTokenIDs"),
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
             deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
-            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages)
+            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages, glmMedia: glmMedia)
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {
@@ -297,6 +310,7 @@ public enum ClusterWorkerCodec {
          "executionPlanSHA256": r.executionPlanSHA256, "requestCapacityBytes": r.requestCapacityBytes]
             .merging(r.servingContextTokens.map { ["servingContextTokens": $0] } ?? [:]) { first, _ in first }
             .merging(r.linkProbe.map { ["linkProbe": linkProbe($0)] } ?? [:]) { first, _ in first }
+            .merging(r.media.map { ["media": $0] } ?? [:]) { first, _ in first }
     }
     private static func linkProbe(_ p: ClusterWorkerLinkProbe) -> [String: Any] {
         ["transport": p.transport, "keyed": p.keyed,
@@ -336,7 +350,8 @@ public enum ClusterWorkerCodec {
         }
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
-            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe)
+            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe,
+            media: r.values["media"] == nil ? nil : try r.string("media"))
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

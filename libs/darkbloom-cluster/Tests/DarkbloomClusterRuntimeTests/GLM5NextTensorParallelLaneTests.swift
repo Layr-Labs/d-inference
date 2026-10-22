@@ -160,6 +160,39 @@ struct GLM5NextTensorParallelLaneTests {
         #expect(run.natives[0].mostDecodeUnitsInOneStep >= 2)
     }
 
+    @Test func aMediaLaneJoinsOnceRankZeroPreparedItWhileTheOthersRun() throws {
+        let run = try FakePair(lanes: 3)
+        // Lane 1 carries media whose preparation on rank 0 ends at tick 30;
+        // lane 2 arrives after it and runs meanwhile.
+        let specs: [FakePair.Spec] = [
+            .init(tick: 0, prompt: 6, output: 30),
+            .init(tick: 1, prompt: 5, output: 12, mediaReadyTick: 30),
+            .init(tick: 2, prompt: 4, output: 8),
+        ]
+        try run.serve(specs)
+        for (index, spec) in specs.enumerated() {
+            let id = run.ids[index]
+            #expect(run.hosts[0].record(id).tokens == FakeLaneNative.solo(prompt: run.prompts[index], count: spec.output),
+                "lane \(index) publishes its solo tokens")
+            #expect(run.hosts[0].record(id).finish == .length && run.hosts[1].record(id).finish == .length)
+        }
+        let opened = run.natives[0].opened
+        #expect(opened.firstIndex(of: run.ids[2])! < opened.firstIndex(of: run.ids[1])!,
+            "the later text lane joins before the media lane is prepared")
+        #expect(run.natives[0].openedAtTick[run.ids[1]]! >= 30)
+        #expect(run.natives[1].opened == opened, "rank 1 joins what rank 0 names")
+        #expect(run.books.allSatisfy { $0.isEmpty })
+    }
+
+    @Test func aLoneMediaLaneKeepsTheLoopUntilItIsPrepared() throws {
+        let run = try FakePair(lanes: 2)
+        try run.serve([.init(tick: 0, prompt: 7, output: 9, mediaReadyTick: 20)])
+        let id = run.ids[0]
+        #expect(run.hosts[0].record(id).tokens == FakeLaneNative.solo(prompt: run.prompts[0], count: 9))
+        #expect(run.hosts[0].record(id).finish == .length && run.hosts[1].record(id).finish == .length)
+        #expect(run.natives[0].openedAtTick[id]! >= 20)
+    }
+
     @Test func aSingleLaneRunsAsOneRequest() throws {
         let run = try FakePair(lanes: 8)
         try run.serve([.init(tick: 0, prompt: 10, output: 20)])
@@ -225,6 +258,10 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     let prefixEnabled = true
     let link: FakeLink
     private(set) var mostDecodeUnitsInOneStep = 0
+    /// Requests in the order this rank opened them, and rank 0's script tick then.
+    private(set) var opened: [UUID] = []
+    private(set) var openedAtTick: [UUID: Int] = [:]
+    var tick: () -> Int = { 0 }
 
     init(rank: Int, link: FakeLink) { self.rank = rank; self.link = link }
 
@@ -246,6 +283,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
         let digest = Float(QwenTensorParallelResidentRuntime.digest64(request.fingerprint) & 0xFFFF)
         let summed = try link.exchange(rank: rank, kind: "open", rank == 0 ? [digest, 0] : [0, digest])
         guard summed[0] == summed[1] else { throw ProbeError("fake ranks opened different requests") }
+        opened.append(request.requestID); openedAtTick[request.requestID] = tick()
         return Lane(request: request)
     }
 
@@ -359,6 +397,8 @@ final class FakePair: @unchecked Sendable {
         var cancelAt: Int?
         var cancelRanks: Set<Int> = []
         var deadlineTicks: Int?
+        /// The request carries media; rank 0's preparation ends at this tick.
+        var mediaReadyTick: Int?
     }
     let lanes: Int
     let link = FakeLink()
@@ -374,6 +414,7 @@ final class FakePair: @unchecked Sendable {
     private var clock: UInt64 = 1_000_000
     private var startedOnZero: [UUID: Int] = [:]
     private var cancelledOn: [Int: Set<UUID>] = [0: [], 1: []]
+    private var prepared = Set<UUID>()
     private let profile: QwenLayerStageGenerationProfile
 
     init(lanes: Int) throws {
@@ -383,7 +424,10 @@ final class FakePair: @unchecked Sendable {
             maximumChunkTokens: 4, maximumOutputTokens: 64, maximumContextTokens: 160)
         natives = [FakeLaneNative(rank: 0, link: link), FakeLaneNative(rank: 1, link: link)]
         hosts = [FakeLaneHost(rank: 0, pair: self), FakeLaneHost(rank: 1, pair: self)]
+        for native in natives { native.tick = { [unowned self] in self.lock.withLock { self.tick } } }
     }
+
+    func isPrepared(_ id: UUID) -> Bool { lock.withLock { prepared.contains(id) } }
 
     var now: UInt64 { lock.withLock { clock } }
 
@@ -410,11 +454,25 @@ final class FakePair: @unchecked Sendable {
                         let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: id,
                             promptTokenIDs: prompts[index], chunkSize: 4, outputCount: spec.output,
                             stopTokenIDs: [FakeLaneNative.stopToken])
-                        for book in books {
-                            try book.reserve(id, .init(request: request, deadline: deadline, laneStateBytes: 1), lanes: specs.count)
+                        for (rank, book) in books.enumerated() {
+                            // Rank 0's media lane prepares until its tick; rank 1 prepares nothing.
+                            var media: GLM5NextTensorParallelMedia?
+                            if spec.mediaReadyTick != nil {
+                                let value = try GLM5NextTensorParallelMediaTests.request(rank: rank)
+                                if rank == 0 {
+                                    value.startPreparation { [self] in
+                                        while !isPrepared(id) { try await Task.sleep(nanoseconds: 200_000) }
+                                        return []
+                                    }
+                                }
+                                media = value
+                            }
+                            try book.reserve(id, .init(request: request, deadline: deadline, laneStateBytes: 1,
+                                media: media), lanes: specs.count)
                         }
                         try books[0].start(id); startedOnZero[id] = 0
                     }
+                    if spec.mediaReadyTick == tick { prepared.insert(id) }
                     if spec.cancelAt == tick {
                         for rank in spec.cancelRanks { books[rank].cancel(id); cancelledOn[rank]!.insert(id) }
                     }

@@ -33,6 +33,16 @@ public struct ClusterWorkerPairReadiness: Sendable {
     /// admit now (`ClusterWorkerPair.servingContextTokens`); a request longer
     /// than this is refused before either rank is asked.
     public let servingContextTokens: Int
+    /// The media contract both ranks serve (`ClusterWorkerReady.media`); nil
+    /// when either serves text only.
+    public let media: String?
+    public init(identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, executionPlanSHA256: String,
+                requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane?, servingContextTokens: Int,
+                media: String? = nil) {
+        self.identity = identity; self.profile = profile; self.executionPlanSHA256 = executionPlanSHA256
+        self.requestCapacityBytes = requestCapacityBytes; self.dataPlane = dataPlane
+        self.servingContextTokens = servingContextTokens; self.media = media
+    }
 }
 
 /// How long a pair's owner waits for a rank to answer. None of these waits
@@ -154,7 +164,8 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             // One keyed session or none: ranks that disagree are not a pair.
             guard a.dataPlane == b.dataPlane, a.dataPlane.map({ $0.peerVerified }) ?? true else { return nil }
             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
-                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane, servingContextTokens: servingContextLocked)
+                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane, servingContextTokens: servingContextLocked,
+                media: a.media == b.media ? a.media : nil)
         }
     }
 

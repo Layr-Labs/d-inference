@@ -9,7 +9,7 @@ struct GLM5NextMetadataTestFixture {
     let index: Data
     let shards: [String: GLM5NextHeaderInventory.Shard]
 
-    init(layers: Int = 45) throws {
+    init(layers: Int = 45, textDType: String = "float32") throws {
         let kinds = (0..<layers).map { $0 % 4 == 3 ? "deepseek_sparse_attention" : "linear_attention" }
         let dense = min(3, layers)
         let text: [String: Any] = [
@@ -38,7 +38,7 @@ struct GLM5NextMetadataTestFixture {
             "num_nextn_predict_layers": 1, "hidden_act": "silu", "swiglu_limit": 10, "rms_norm_eps": 1e-5,
             "attention_bias": false, "attention_dropout": 0, "max_position_embeddings": 256,
             "initializer_range": 0.02, "use_cache": true, "tie_word_embeddings": false,
-            "dtype": "float32", "pad_token_id": 0, "eos_token_id": [1, 2, 3],
+            "dtype": textDType, "pad_token_id": 0, "eos_token_id": [1, 2, 3],
         ]
         let root: [String: Any] = [
             "model_type": "glm5_next", "architectures": ["Glm5NextForConditionalGeneration"],

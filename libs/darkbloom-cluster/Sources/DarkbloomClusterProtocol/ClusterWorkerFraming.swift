@@ -9,20 +9,27 @@ public struct ClusterWorkerLineDecoder: Sendable {
     private var failed = false
     private var ended = false
     public init(commandStream: Bool) {
-        maximumRecordBytes = commandStream ? ClusterWorkerLimits.commandBytes : ClusterWorkerLimits.eventBytes
+        // The command stream's largest record is a reservation carrying GLM
+        // media (`mediaCommandBytes`); the codec bounds every other command.
+        maximumRecordBytes = commandStream ? ClusterWorkerLimits.mediaCommandBytes : ClusterWorkerLimits.eventBytes
     }
     public mutating func append(_ data: Data) throws -> [Data] {
         do {
             try workerRequire(!failed && !ended && data.count <= Self.readChunkBytes, "Framer failed, ended or read chunk exceeds bound")
             var records: [Data] = []
-            for byte in data {
-                try workerRequire(pending.count < maximumRecordBytes, "Unterminated worker record exceeds limit")
-                pending.append(byte)
-                if byte == 10 {
-                    try workerRequire(pending.count > 1, "Empty worker record")
-                    records.append(pending); pending = Data()
-                }
+            // Each line feed ends a record, which may hold at most
+            // `maximumRecordBytes` bytes, its line feed included.
+            var rest = data[...]
+            while let end = rest.firstIndex(of: 10) {
+                let piece = rest[...end]
+                try workerRequire(pending.count + piece.count <= maximumRecordBytes, "Unterminated worker record exceeds limit")
+                pending.append(contentsOf: piece)
+                try workerRequire(pending.count > 1, "Empty worker record")
+                records.append(pending); pending = Data()
+                rest = rest[rest.index(after: end)...]
             }
+            try workerRequire(pending.count + rest.count <= maximumRecordBytes, "Unterminated worker record exceeds limit")
+            pending.append(contentsOf: rest)
             return records
         } catch { failed = true; throw error }
     }

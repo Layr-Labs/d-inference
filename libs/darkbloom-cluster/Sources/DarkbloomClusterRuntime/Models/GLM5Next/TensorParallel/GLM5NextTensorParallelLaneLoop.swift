@@ -7,10 +7,17 @@ struct GLM5NextTensorParallelLaneReservation: ClusterBatchLaneReservation {
     let request: QwenLayerStageGenerationRequest
     let deadline: UInt64
     /// The lane's named state while it is held beside the other lanes
-    /// (`GLM5NextTensorParallelResidentRuntime.laneStateBytes`).
+    /// (`GLM5NextTensorParallelResidentRuntime.laneStateBytes`), and its
+    /// media's charge.
     let laneStateBytes: Int
     /// The rest of its request's charge: the transients of its own forward.
     var transientBytes = 0
+    /// The request's images and video; nil for text.
+    var media: GLM5NextTensorParallelMedia? = nil
+
+    /// Rank 0 joins a started lane once this holds: a media lane's
+    /// preparation ended (or was cancelled), so its open never waits for it.
+    var joinable: Bool { media?.joinable ?? true }
 }
 
 /// One decode unit the decode seam runs: a lane, the agreed token it decodes
@@ -66,8 +73,10 @@ protocol GLM5NextTensorParallelLaneNative: AnyObject {
 /// 1. Leaves: a lane whose request ended (rank 0 heard every answer), was
 ///    stopped by its owner's answer, was cancelled, or passed its deadline
 ///    (on either rank) retires its native state on both ranks; the others go on.
-/// 2. Joins, first come first served, into free slots: both ranks check the
-///    request and vote its prompt prefix, as one request does.
+/// 2. Joins, first come first served among the started lanes that are
+///    joinable (a media lane once rank 0 prepared its patches), into free
+///    slots: both ranks check the request and vote its prompt prefix, as one
+///    request does. The loop goes on while a started lane waits to be joinable.
 /// 3. At most one prefill frame, of the earliest joined lane still prefilling,
 ///    on that request's own chunk grid (`prefillFrameEnd`), so every frame is
 ///    the frame the request alone runs.
@@ -202,7 +211,7 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
         }
         var joining: [Int] = []
         while let free = (0..<lanes).first(where: { slots[$0] == nil && leaving[$0] == nil }),
-              let (id, reservation) = book.takeStarted() {
+              let (id, reservation) = book.takeStarted(where: \.joinable) {
             slots[free] = Record(id: id, slot: free, order: order, reservation: reservation)
             order += 1; joining.append(free)
         }
@@ -216,7 +225,8 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
         let prefilling = slots.values.filter { $0.native != nil && !$0.prefilled }.min { $0.order < $1.order }
         // With no lane decoding, the frame may merge chunks: nobody waits on it.
         let frame = prefilling.flatMap { native.nextFrame($0.native!, merging: decoding.isEmpty) }
-        var plan = Wire.Plan(step: step, stop: slots.isEmpty && leaving.isEmpty, lanes: lanes, depth: native.depth,
+        var plan = Wire.Plan(step: step, stop: slots.isEmpty && leaving.isEmpty && !book.hasStarted, lanes: lanes,
+            depth: native.depth,
             prefixEnabled: native.prefixEnabled, slots: Array(repeating: .init(), count: lanes))
         for (slot, value) in leaving {
             plan.slots[slot] = .init(state: .leaving, requestID: value.0.id, tokens: value.0.tokens.count,

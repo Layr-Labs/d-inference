@@ -8,7 +8,8 @@ import Testing
 /// product's (the loop the runtime ran before merging, transcribed below);
 /// merged, the same chunks with the same micro-batches run in fewer graphs,
 /// and on a tiny stage the merged prefill is bit for bit the chunk-by-chunk
-/// one (logits, last hidden row, cache, NextN history, kept prefix).
+/// one (logits, last hidden row, cache, NextN history, kept prefix), for a
+/// text prompt and for one whose media rows are features.
 @Suite("GLM tensor-parallel prefill plan", .serialized)
 struct GLM5NextTensorParallelPrefillPlanTests {
     typealias Plan = GLM5NextTensorParallelPrefillPlan
@@ -267,11 +268,12 @@ struct GLM5NextTensorParallelPrefillPlanTests {
     /// Prefill of a tiny whole-model stage with a NextN layer, either by the
     /// runtime's loop before merging (`legacy`) or by `plan`.
     static func prefill(_ stage: GLM5NextTextStage, mtp: GLM5NextMTP, prompt: [Int], chunk: Int, bulk: Int,
-                        merged: Int, legacy: Bool = false) throws -> Prefilled {
+                        merged: Int, legacy: Bool = false, prefix: Bool = true,
+                        inputs: ((Int, Int) throws -> MLXArray?)? = nil) throws -> Prefilled {
         let speculation = try GLM5NextTensorParallelSpeculation(mtp: mtp, depth: 1, rank: 0, ranks: 1,
             primeRows: 3, agree: { $0 })
         let cache = stage.newCache()
-        let keepAt = ((prompt.count - 1) / chunk) * chunk
+        let keepAt = prefix ? ((prompt.count - 1) / chunk) * chunk : 0
         var kept: [(Int, [MLXArray], [MLXArray])] = []
         func keep(_ end: Int, _ cache: GLM5NextTextStageCache, _ history: GLM5NextMTPCheckpoint?) throws {
             let state = cache.copy().layers.flatMap { $0.state }, arrays = history?.arrays ?? []
@@ -284,12 +286,16 @@ struct GLM5NextTensorParallelPrefillPlanTests {
                                             bulk: bulk, microBatches: 2) {
                 let last = chunk.end == prompt.count
                 let tokens = MLXArray(prompt[chunk.start ..< chunk.end].map(Int32.init), [1, chunk.end - chunk.start])
-                let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
+                // A media chunk as the runtime ran it before merging: its embeddings.
+                let candidate = try inputs?(chunk.start, chunk.end).map {
+                    try stage.prepareForward(embeddings: $0, cache: cache, readout: last ? .lastToken : .none)
+                } ?? stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
                 switch candidate.output {
                 case .final(let output):
-                    try speculation.primePrompt(prompt, from: chunk.start, to: chunk.end, hidden: output.hidden)
+                    try speculation.primePrompt(prompt, from: chunk.start, to: chunk.end, hidden: output.hidden,
+                        inputs: inputs)
                 case .hidden(let hidden):
-                    try speculation.primePrompt(prompt, from: chunk.start, to: chunk.end, hidden: hidden)
+                    try speculation.primePrompt(prompt, from: chunk.start, to: chunk.end, hidden: hidden, inputs: inputs)
                 case .streams: throw ProbeError("tiny stage returned streams")
                 }
                 try candidate.commit { roots in try fence(roots + (try speculation.evaluationTargets())) }
@@ -304,7 +310,8 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         }
         let plan = Plan.make(promptCount: prompt.count, start: 0, chunkTokens: chunk, keepAt: keepAt,
             bulkTokens: bulk, microBatches: 2, mergedTokens: merged)
-        let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation, keep: keep)
+        let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation, inputs: inputs,
+            keep: keep)
         let history = try speculation.evaluationTargets()
         try fence(history + [result.logits, result.lastHidden])
         return .init(logits: result.logits, lastHidden: result.lastHidden, cache: cache, history: history, kept: kept)
@@ -341,6 +348,54 @@ struct GLM5NextTensorParallelPrefillPlanTests {
             for (x, y) in zip(value.kept, legacy.kept) {
                 #expect(x.0 == y.0 && Self.same(x.1, y.1) && Self.same(x.2, y.2), "merged \(merged)")
             }
+        }
+    }
+
+    /// A media prompt (`GLM5NextTensorParallelMedia`: no prompt prefix, feature
+    /// rows spliced over its media positions, the NextN history primed with
+    /// them): merged frames are the chunk-by-chunk media prefill bit for bit,
+    /// with media spans that cross chunk and graph boundaries.
+    @Test func mergedMediaPrefillIsTheChunkByChunkPrefillBitForBit() throws {
+        defer {
+            do { try MLX.withError { error in Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check() } }
+            catch { Issue.record(error, "GLM prefill plan fixture cleanup fence failed") }
+        }
+        let artifact = try GLM5NextStageSessionTests.Artifact()
+        let loader = try artifact.loader()
+        let c = loader.configuration.textConfig
+        let stage = try loader.loadTextStage(plan: .init(configuration: c, layers: 0 ..< c.hiddenLayers))
+        let mtp = try loader.loadMTP(stage: stage)
+        let embedding = try #require(stage.embedding)
+        let prompt = (0 ..< 37).map { 4 + ($0 * 7) % 23 }
+        // Segments 8, 8, 8, 8, 4, 1 (no kept prefix); media 5..<9 crosses the
+        // first segment boundary, 14..<19 the first merged graph's end (16).
+        let media: [Range<Int>] = [5 ..< 9, 14 ..< 19]
+        let dtype = embedding(MLXArray([Int32(4)], [1, 1])).dtype
+        let features = MLXRandom.normal([prompt.count, c.hiddenSize], key: MLXRandom.key(11)).asType(dtype)
+        try Self.fence([features])
+        let inputs: (Int, Int) throws -> MLXArray? = { lower, upper in
+            let rows = media.compactMap { span -> (Range<Int>, MLXArray)? in
+                let lo = max(span.lowerBound, lower), hi = min(span.upperBound, upper)
+                return lo < hi ? (lo ..< hi, features[lo ..< hi]) : nil
+            }
+            guard !rows.isEmpty else { return nil }
+            let tokens = MLXArray(prompt[lower ..< upper].map(Int32.init), [1, upper - lower])
+            return GLM5NextTensorParallelMedia.splice(text: embedding(tokens), start: lower, rows: rows)
+        }
+        let legacy = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: 0, legacy: true,
+            prefix: false, inputs: inputs)
+        let text = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: 0, legacy: true,
+            prefix: false)
+        #expect(!Self.same([legacy.logits], [text.logits]), "the media rows change the result")
+        for merged in [0, 16, 64] {
+            let value = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: merged,
+                prefix: false, inputs: inputs)
+            #expect(Self.same([value.logits, value.lastHidden], [legacy.logits, legacy.lastHidden]), "merged \(merged)")
+            let (a, b) = (value.cache.layers.flatMap(\.state), legacy.cache.layers.flatMap(\.state))
+            try Self.fence(a + b)
+            #expect(value.cache.offset == prompt.count && Self.same(a, b), "merged \(merged)")
+            #expect(Self.same(value.history, legacy.history), "merged \(merged)")
+            #expect(value.kept.isEmpty && legacy.kept.isEmpty)
         }
     }
 }

@@ -211,7 +211,7 @@ struct OwnerWire: Sendable {
             command: .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize,
                 deadlineUptimeNanoseconds: end.partialValue, capacityLimitBytes: r.capacityLimitBytes,
-                sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages)))
+                sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages, glmMedia: r.glmMedia)))
     }
     static func invalid(_ reason: String) -> ClusterOwnerStateError { .invalid(reason) }
 }

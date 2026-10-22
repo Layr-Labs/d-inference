@@ -45,7 +45,8 @@ public enum GLM5NextResidentCapabilityMetadata {
             arithmeticPolicyID: adapter.arithmeticPolicyID,
             arithmeticPolicySHA256: try GLM5NextStageContract.policySHA256(spec.executionPolicy),
             supportedPrefillSchedules: spec.supportedPrefillSchedules,
-            // Images are served by the pipeline only; tensor parallel is text-only.
+            // The private PNG image candidate is pipeline-only; tensor parallel serves
+            // images and video under the text profile (`ClusterGLMMedia`, READY's `media`).
             supportedGenerationModes: imageCandidate ? [.pipeline] : spec.supportedGenerationModes,
             glmImages: imageCandidate ? .init() : nil)
     }

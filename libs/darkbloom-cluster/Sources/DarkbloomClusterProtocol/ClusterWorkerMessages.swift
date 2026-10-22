@@ -11,6 +11,10 @@ public enum ClusterWorkerLimits {
     /// bytes each for a vocabulary below 1,000,000): 8 MiB holds a
     /// `wirePromptTokens` prompt with its stop tokens, sampling and routes.
     public static let commandBytes = 8 * 1024 * 1024
+    /// The one larger command: a reservation carrying GLM media bytes to the
+    /// rank on the leader's own Mac (`ClusterGLMMedia`). Every other command,
+    /// and every record that crosses the link, stays within `commandBytes`.
+    public static let mediaCommandBytes = commandBytes + ClusterGLMMedia.maximumEnvelopeBytes
     public static let eventBytes = 16 * 1024
     /// The standard request bounds: what every family is sized and qualified
     /// for unless its own registered row declares more (`wire*`). A family's
@@ -246,14 +250,18 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     public let servingContextTokens: Int?
     /// The link as a tensor-parallel load measured it; nil from other modes.
     public let linkProbe: ClusterWorkerLinkProbe?
+    /// The media contract this rank serves (`ClusterGLMMedia.contract`); nil:
+    /// text only, and then the record's bytes are those of a worker without it.
+    public let media: String?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
-                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil) {
+                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens
         self.linkProbe = linkProbe
+        self.media = media
     }
 }
 
@@ -275,17 +283,22 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let sampling: ClusterWorkerSampling?
     public let mimoImages: ClusterMiMoImages?
     public let stillImages: ClusterStillImages?
+    /// GLM image and video input on the tensor-parallel pair; nil is text, and
+    /// then the reservation's bytes are exactly those of a worker without media.
+    public let glmMedia: ClusterGLMMedia?
     /// Which way this request goes (`ClusterRequestRouter`); nil is the pair as
     /// placed, and then the reservation's bytes are exactly those of a worker
     /// without routes.
     public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil) {
+                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+                glmMedia: ClusterGLMMedia? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
         self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
+        self.glmMedia = glmMedia
     }
 }
 

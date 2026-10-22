@@ -149,7 +149,12 @@ final class GLM5NextTensorParallelSpeculation {
     /// chunk's target hidden rows `[1, end - start, H]`: position p pairs
     /// `prompt[p + 1]` with row p. The last prompt position waits for the
     /// first generated token (`begin`). History only: no proposal is needed.
-    func primePrompt(_ prompt: [Int], from start: Int, to end: Int, hidden: MLXArray) throws {
+    /// `inputs`, when given, returns the target's input embeddings
+    /// `[1, n, H]` for prompt positions `lower ..< upper` where they are not
+    /// token embeddings (image or video features), nil where they are: those
+    /// rows are primed with what the target was fed.
+    func primePrompt(_ prompt: [Int], from start: Int, to end: Int, hidden: MLXArray,
+                     inputs: ((_ lower: Int, _ upper: Int) throws -> MLXArray?)? = nil) throws {
         let paired = min(end, prompt.count - 1)
         guard start >= 0, start <= paired, end <= prompt.count,
               hidden.ndim == 3, hidden.dim(0) == 1, hidden.dim(1) == end - start else {
@@ -158,10 +163,15 @@ final class GLM5NextTensorParallelSpeculation {
         var position = start
         while position < paired {
             let next = min(paired, position + primeRows)
-            try mtp.primeHistory(
-                shiftedTokens: MLXArray(prompt[(position + 1)...next].map(Int32.init), [1, next - position]),
-                targetHidden: hidden[0..., (position - start) ..< (next - start), 0...],
-                at: state.committedInputCount, state: state)
+            let rows = hidden[0..., (position - start) ..< (next - start), 0...]
+            if let embedded = try inputs?(position + 1, next + 1) {
+                try mtp.primeHistory(shiftedEmbeddings: embedded, targetHidden: rows,
+                    at: state.committedInputCount, state: state)
+            } else {
+                try mtp.primeHistory(
+                    shiftedTokens: MLXArray(prompt[(position + 1)...next].map(Int32.init), [1, next - position]),
+                    targetHidden: rows, at: state.committedInputCount, state: state)
+            }
             position = next
         }
     }

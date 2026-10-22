@@ -118,6 +118,19 @@ final class ClusterBatchLaneBook<Reservation: ClusterBatchLaneReservation>: @unc
         }
     }
 
+    /// The oldest started lane that is `ready`, now joined (a lane that is
+    /// not ready yet keeps its place; `ready` must not use the book).
+    func takeStarted(where ready: (Reservation) -> Bool) -> (UUID, Reservation)? {
+        lock.withLock {
+            guard let index = started.firstIndex(where: { reserved[$0].map(ready) ?? false }) else { return nil }
+            let id = started.remove(at: index); joined.insert(id)
+            return (id, reserved[id]!)
+        }
+    }
+
+    /// One charged lane's reservation.
+    func reservation(_ id: UUID) -> Reservation? { lock.withLock { reserved[id] } }
+
     /// That started lane, now joined (rank 1 joins what rank 0 named).
     func takeStarted(_ id: UUID) -> Reservation? {
         lock.withLock {

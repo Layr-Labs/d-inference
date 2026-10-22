@@ -20,7 +20,7 @@ public enum PromptPreparationBenchmark {
         let tokenizer = try await LocalTokenizerLoader().load(from: modelDirectory)
         var rows: [[String: Any]] = []
         var allIdentical = true
-        for shape in [SyntheticConversation.Shape.chat, .agent] {
+        for shape in [SyntheticConversation.Shape.chat, .agent, .loop] {
             for length in lengths {
                 let conversation = SyntheticConversation(shape: shape, targetTokens: length)
                 let body = try conversation.body(modelID: modelID, previousTurn: false)
@@ -78,6 +78,7 @@ public enum PromptPreparationBenchmark {
         let report: [String: Any] = [
             "model": modelID,
             "prompt_cache_active": PromptPreparationProbe.promptCacheIsActive(tokenizer),
+            "template_loop_rewrites": PromptPreparationProbe.templateLoopRewrites(tokenizer),
             "iterations": max(1, iterations),
             "active_processors": ProcessInfo.processInfo.activeProcessorCount,
             "rows": rows,
@@ -110,6 +111,8 @@ struct SyntheticConversation {
     enum Shape: String {
         case chat
         case agent
+        /// An agent loop of short tool steps: many messages per token.
+        case loop
     }
 
     let shape: Shape
@@ -118,8 +121,13 @@ struct SyntheticConversation {
 
     init(shape: Shape, targetTokens: Int) {
         self.shape = shape
-        generator = TextGenerator(seed: UInt64(targetTokens) &* 2_654_435_761 &+ (shape == .agent ? 1 : 0))
+        let seedOffset: UInt64 = shape == .chat ? 0 : shape == .agent ? 1 : 2
+        generator = TextGenerator(seed: UInt64(targetTokens) &* 2_654_435_761 &+ seedOffset)
         messages.append(["role": "system", "content": "You are a careful senior engineer. " + generator.prose(characters: 2400)])
+        if shape == .loop {
+            appendToolLoop(targetTokens: targetTokens)
+            return
+        }
         var characters = 0
         var turn = 0
         // About 3.6 characters per token across prose, code and JSON.
@@ -146,7 +154,33 @@ struct SyntheticConversation {
         messages.append(["role": "user", "content": "Continue with the next step and summarize what changed."])
     }
 
-    /// The previous turn ends at the user message before the final exchange.
+    /// One task, then tool calls with short results; every sixth step the
+    /// assistant reports and the user says to continue. Ends on a result.
+    private mutating func appendToolLoop(targetTokens: Int) {
+        messages.append(["role": "user", "content": generator.prose(characters: 400)])
+        var characters = 2800
+        var step = 0
+        while Double(characters) / 3.6 < Double(targetTokens) {
+            let id = "call_\(step)"
+            let arguments = "{\"path\": \"/workspace/Sources/Module\(step % 7)/File\(step).swift\"}"
+            messages.append(["role": "assistant", "content": "", "tool_calls": [[
+                "id": id, "type": "function",
+                "function": ["name": ["read_file", "search_code", "run_command"][step % 3], "arguments": arguments],
+            ]]])
+            let result = step % 2 == 0 ? generator.code(characters: 260) : generator.json(characters: 260)
+            messages.append(["role": "tool", "tool_call_id": id, "content": result])
+            characters += result.count + arguments.count + 40
+            if step % 6 == 5 {
+                let report = generator.prose(characters: 160)
+                messages += [["role": "assistant", "content": report], ["role": "user", "content": "Continue."]]
+                characters += report.count + 9
+            }
+            step += 1
+        }
+    }
+
+    /// The previous turn ends at the user message before the final exchange
+    /// (for a tool loop, before the last tool step).
     func body(modelID: String, previousTurn: Bool) throws -> Data {
         var body: [String: Any] = [
             "model": modelID,
@@ -154,7 +188,7 @@ struct SyntheticConversation {
             "max_tokens": 256,
             "stream": true,
         ]
-        if shape == .agent { body["tools"] = Self.tools }
+        if shape != .chat { body["tools"] = Self.tools }
         return try JSONSerialization.data(withJSONObject: body)
     }
 

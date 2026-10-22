@@ -279,7 +279,9 @@ public enum LaunchAgent: Sendable {
     /// verification is the MiMo default; each rollback must reach the job.
     /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
     /// prompt-token reuse is on by default; exact `0` is the rollback.
-    /// `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial FIFO.
+    /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
+    /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
+    /// fully serial FIFO.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
@@ -290,6 +292,7 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
+        ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 

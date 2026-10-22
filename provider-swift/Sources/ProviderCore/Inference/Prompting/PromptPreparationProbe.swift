@@ -57,4 +57,9 @@ public struct PromptPreparationProbe {
     public static func promptCacheIsActive(_ tokenizer: any MLXLMCommon.Tokenizer) -> Bool {
         (tokenizer as? any PromptTokenCaching)?.promptTokenCache?.isActive == true
     }
+
+    /// The chat-template loop rewrites the prompt token cache renders with.
+    public static func templateLoopRewrites(_ tokenizer: any MLXLMCommon.Tokenizer) -> [String] {
+        (tokenizer as? any PromptTokenCaching)?.promptTokenCache?.templateLoopRewrites ?? []
+    }
 }

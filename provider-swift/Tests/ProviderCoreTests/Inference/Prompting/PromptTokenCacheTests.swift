@@ -4,6 +4,7 @@ import CryptoKit
 import Foundation
 import Hub
 import MLXLMCommon
+import ProviderCoreFoundation
 import Testing
 
 @testable import ProviderBenchmark
@@ -155,6 +156,11 @@ struct PromptTokenCacheTests {
 
             let tokenizer = try await LocalTokenizerLoader().load(from: directory)
             let cache = try #require((tokenizer as? any PromptTokenCaching)?.promptTokenCache)
+            // Every loop rewrite that matches the served template also passes
+            // the load-time comparison with it.
+            let served = try String(contentsOf: directory.appendingPathComponent("chat_template.jinja"), encoding: .utf8)
+            #expect(cache.templateLoopRewrites
+                == ChatTemplateLoopRewrites.apply(to: normalizeSwiftJinjaTemplate(served)).applied, "\(path)")
             var generator = FragmentGenerator(seed: 11, addedTokens: cache.cutTokens)
             for index in 0..<200 {
                 let text = generator.text(fragments: 1 + index % 30)

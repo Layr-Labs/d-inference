@@ -13,11 +13,11 @@
 // is looked up by SHA-256 over (cache scope, piece bytes), and only pieces not
 // seen before are encoded, in parallel when several large ones are missing.
 // Token IDs equal the unchanged path's: the render replays
-// `PreTrainedTokenizer.applyChatTemplate` over the same compiled template and
-// configuration, a load-time self-check compares both paths, and a sampled
-// background check keeps comparing them while serving. Pieces are partitioned
-// by the prefix KV cache's scope, so a faster hit reveals nothing across
-// tenants.
+// `PreTrainedTokenizer.applyChatTemplate` over the same template (or its
+// `ChatTemplateLoopRewrites` form) and configuration, a load-time self-check
+// compares both paths, and a sampled background check keeps comparing them
+// against the unchanged template while serving. Pieces are partitioned by the
+// prefix KV cache's scope, so a faster hit reveals nothing across tenants.
 //
 // `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the unchanged path.
 
@@ -292,9 +292,15 @@ final class PromptTokenCache: @unchecked Sendable {
         "mask_token", "additional_special_tokens",
     ]
 
+    private static let templateOptions = Template.Options(lstripBlocks: true, trimBlocks: true)
+
     private let upstream: PreTrainedTokenizer
     private let chatTemplate: String
-    private let template: Template
+    /// The unchanged template, or its `ChatTemplateLoopRewrites` form when
+    /// that passed the self-check. Chosen once, during initialization.
+    private var template: Template
+    /// Names of the loop rewrites `template` renders with.
+    private(set) var templateLoopRewrites: [String] = []
     private let specialTokenContext: [String: Value]
     private let splitter: PromptPieceSplitter
     private let store: PromptPieceTokenStore
@@ -312,7 +318,7 @@ final class PromptTokenCache: @unchecked Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         guard let splitter = PromptPieceSplitter(tokenizerData: configurations.tokenizerData),
-            let template = try? Template(chatTemplate, with: .init(lstripBlocks: true, trimBlocks: true)),
+            let template = try? Template(chatTemplate, with: Self.templateOptions),
             let specialTokenContext = try? Self.specialTokenContext(configurations.tokenizerConfig)
         else { return nil }
         self.upstream = upstream
@@ -323,6 +329,17 @@ final class PromptTokenCache: @unchecked Sendable {
         self.store = PromptPieceTokenStore(capacityBytes: PromptTokenCachePolicy.capacityBytes(environment: environment))
         self.workers = PromptTokenCachePolicy.encodeWorkers()
         self.verificationInterval = PromptTokenCachePolicy.verificationInterval(environment: environment)
+        // Linear-time loop forms only when they agree with the unchanged path.
+        if ChatTemplateLoopRewrites.isEnabled(environment: environment) {
+            let rewrite = ChatTemplateLoopRewrites.apply(to: chatTemplate)
+            if !rewrite.applied.isEmpty, let rewritten = try? Template(rewrite.template, with: Self.templateOptions) {
+                self.template = rewritten
+                templateLoopRewrites = rewrite.applied
+                if selfCheckPasses(context: selfCheckContext) { return }
+                self.template = template
+                templateLoopRewrites = []
+            }
+        }
         guard selfCheckPasses(context: selfCheckContext) else { return nil }
     }
 
@@ -473,7 +490,9 @@ final class PromptTokenCache: @unchecked Sendable {
     }
 
     /// Both paths over prompts that exercise every cut token in content,
-    /// multi-turn history and a tool round trip; both throwing also agrees.
+    /// multi-turn history, a tool round trip and a tool loop (consecutive
+    /// calls, a multi-result run, final answers between calls: every scan the
+    /// loop rewrites replace); both throwing also agrees.
     private func selfCheckPasses(context: [String: any Sendable]?) -> Bool {
         let probe = "Hello\u{3000}wörld, café 東京 🙂\n\n  indented\tline \(String(repeating: "x", count: 64))"
         let literalTokens = splitter.cutTokens.joined(separator: " a\n")
@@ -489,16 +508,26 @@ final class PromptTokenCache: @unchecked Sendable {
                 ] as [String: any Sendable],
             ] as [String: any Sendable],
         ]
+        func call(_ id: String) -> [String: any Sendable] {
+            ["role": "assistant", "content": "", "tool_calls": [[
+                "id": id, "type": "function",
+                "function": ["name": "lookup", "arguments": ["key": id] as [String: any Sendable]] as [String: any Sendable],
+            ] as [String: any Sendable]]]
+        }
+        func result(_ id: String) -> [String: any Sendable] {
+            ["role": "tool", "content": "{\"value\": \"\(id)\"}", "tool_call_id": id, "name": "lookup"]
+        }
         let probes: [([[String: any Sendable]], [[String: any Sendable]]?)] = [
             ([["role": "system", "content": "You are helpful."], ["role": "user", "content": probe]], nil),
             ([["role": "user", "content": "a \(literalTokens) b"], ["role": "assistant", "content": probe],
               ["role": "user", "content": "again: " + probe]], nil),
-            ([["role": "user", "content": probe],
-              ["role": "assistant", "content": "", "tool_calls": [[
-                  "id": "call_0", "type": "function",
-                  "function": ["name": "lookup", "arguments": ["key": "k"] as [String: any Sendable]] as [String: any Sendable],
-              ] as [String: any Sendable]]],
-              ["role": "tool", "content": "{\"value\": 1}", "tool_call_id": "call_0", "name": "lookup"]], [tool]),
+            ([["role": "user", "content": probe], call("call_0"), result("call_0")], [tool]),
+            ([["role": "system", "content": "Use tools."], ["role": "user", "content": probe],
+              call("call_1"), result("call_1"), call("call_2"), result("call_2"), result("call_3"),
+              ["role": "assistant", "content": "Found both."], ["role": "user", "content": "again: " + probe],
+              ["role": "assistant", "content": "Checking."], call("call_4"), result("call_4"),
+              call("call_5"), result("call_5"), ["role": "assistant", "content": "Done."],
+              ["role": "user", "content": "Thanks."], call("call_6"), result("call_6")], [tool]),
         ]
         let scope = "darkbloom.prompt-cache.self-check"
         var rendered = 0

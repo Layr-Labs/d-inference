@@ -41,7 +41,8 @@ extension StandaloneServer {
             load: { id in try await owner.ensureModelLoaded(id, allowEviction: false) },
             log: { line in standaloneLogger.info("\(line)") },
             currentRequiredGb: { id in await owner.startupPreloadRequiredGb(for: id) },
-            canLoadMore: { await owner.startupPreloadHasFreeSlot() }
+            canLoadMore: { await owner.startupPreloadHasFreeSlot() },
+            reclaimBeforeSkip: { await owner.releaseReclaimableMemoryForLoad() }
         ))
         return await preloader.run(candidates: plan)
     }

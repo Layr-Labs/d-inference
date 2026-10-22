@@ -93,6 +93,29 @@ private enum PreloadStubError: Error, LocalizedError {
     }
 }
 
+/// Free memory that a reclaim (retained KV segments, buffer pool) raises.
+private final class ReclaimableMemory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var free: Double
+    private let afterReclaim: Double
+    private var count = 0
+
+    init(freeGb: Double, afterReclaimGb: Double) {
+        free = freeGb
+        afterReclaim = afterReclaimGb
+    }
+
+    var freeGb: Double { lock.withLock { free } }
+    var reclaims: Int { lock.withLock { count } }
+
+    func reclaim() {
+        lock.withLock {
+            count += 1
+            free = afterReclaim
+        }
+    }
+}
+
 private func candidate(_ id: String, requiredGb: Double = 1.0) -> StartupPreloader.Candidate {
     StartupPreloader.Candidate(modelId: id, requiredGb: requiredGb)
 }
@@ -170,6 +193,29 @@ struct StartupPreloaderTests {
         let warns = recorder.logs.filter { $0.contains("WARN") && $0.contains("big-26b") }
         #expect(!warns.isEmpty)
         #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+    }
+
+    @Test("a short sample reclaims what a load would, then samples again, before skipping")
+    func shortSampleReclaimsBeforeSkipping() async {
+        let recorder = PreloadRecorder()
+        let memory = ReclaimableMemory(freeGb: 8, afterReclaimGb: 25)
+        var deps = makeDeps(recorder: recorder)
+        deps.freeMemoryGb = { memory.freeGb }
+        deps.reclaimBeforeSkip = { memory.reclaim() }
+        // The requirement is resolved again after the reclaim (Super's
+        // tracks its claim room): 30 GB short, then 20 GB once reclaimed.
+        deps.currentRequiredGb = { id in id == "retained" ? (memory.reclaims == 0 ? 30 : 20) : nil }
+
+        let summary = await StartupPreloader(deps: deps).run(candidates: [
+            candidate("retained", requiredGb: 30),
+            candidate("too-big", requiredGb: 100),
+            candidate("fits", requiredGb: 2),
+        ])
+
+        #expect(summary.loaded == ["retained", "fits"])
+        #expect(summary.skippedInsufficientMemory == ["too-big"])
+        // Once per short candidate; a fitting one never reclaims.
+        #expect(memory.reclaims == 2)
     }
 
     @Test("a skipped candidate does not consume the live slot limit")
@@ -562,6 +608,24 @@ struct StartupPreloadGateTests {
 
         let outcome = await loop.runStartupPreloadGateForTesting()
         #expect(outcome == .disabled)
+    }
+
+    @Test("a short sample releases retained KV segments before the preload skips")
+    func shortSampleReleasesRetainedSegmentsBeforeSkipping() async throws {
+        let recorder = PreloadRecorder()
+        let loop = try await makePreloadLoop(
+            models: [preloadModelInfo("a", memoryGb: 2)],
+            backend: BackendSettings(preloadModels: ["a"], startupSelftest: false))
+        await loop.setStartupPreloadFreeMemoryOverrideForTesting({ 0 })
+        await loop.setStartupPreloadLoadOverrideForTesting({ id in recorder.recordLoad(id) })
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        _ = await loop.runStartupPreloadGateForTesting()
+        #expect(recorder.loads.isEmpty, "the pinned sample stays short, so the candidate is skipped")
+        #expect(engine.parkedBytes == 0)
     }
 
     @Test("registration is deferred until warm when the preload beats the timeout")

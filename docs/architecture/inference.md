@@ -1113,6 +1113,15 @@ reservation (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/E
 `mtpDepthWithinOutputBudget`, `beginMTPPlan`).
 The process-wide kill switch is `DARKBLOOM_CBV2_MTP` (`CBv2MTPConfig.envEnabled`;
 see [`../reference/configuration.md`](../reference/configuration.md)).
+The Qwen inline assistant speculates for one decode row only. While more rows
+decode, its rows run ordinary decode that may chain: the target forward also
+returns its hidden rows, and finalize appends them to the assistant history in
+step order and stores the carry once no successor is in flight, with no policy
+top-two or extra readback. The final prompt row's hidden is the first carry, so
+a round can follow the first token without a seed step. Opt-in is per drafter
+(`supportsOrdinaryDecodeHistory`; native completion tracking keeps MTP steps).
+Rollbacks: `DARKBLOOM_TTFT_QWEN_MTP_CHAINED=0` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY=0`
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPOrdinaryHistory.swift`).
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation

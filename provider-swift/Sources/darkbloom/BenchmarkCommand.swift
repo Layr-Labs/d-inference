@@ -126,6 +126,9 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Runtime generation: read the public/synthetic prompt from a UTF-8 file (at most 4 MiB).")
     var runtimePromptFile: String?
 
+    @Option(name: .long, help: "Runtime generation: comma-separated concurrent batch sizes (e.g. 1,2,4,8). One production slot per size, warmed by one identical batch; greedy rows with distinct prompts; per-token arrival timing as JSON.")
+    var runtimeConcurrency: String?
+
     @Option(name: .long, help: "Runtime generation: fixed UTC template date YYYY-MM-DD for paired runs.")
     var runtimePromptDate = PromptRenderDate.capture().value
 
@@ -300,6 +303,20 @@ struct Benchmark: AsyncParsableCommand {
                 else { throw RuntimeGenerationBenchmark.Failure.invalidArguments }
                 input = text
             } else { input = prompt }
+            if let runtimeConcurrency {
+                let result = try await RuntimeConcurrencyBenchmark.run(
+                    modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
+                    batchSizes: runtimeConcurrency.split(separator: ",").compactMap {
+                        Int($0.trimmingCharacters(in: .whitespaces))
+                    },
+                    maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
+                    assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
+                    renderDate: runtimePromptDate,
+                    checkpointQuantizationConfig: checkpointPrecision.rawValue)
+                print(result.json)
+                if !result.succeeded { throw ExitCode(2) }
+                return
+            }
             let result = try await RuntimeGenerationBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
                 maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
@@ -393,7 +410,10 @@ struct Benchmark: AsyncParsableCommand {
     }
 
     func benchmarkModeConflict() -> String? {
-        if !runtimeGeneration && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil) {
+        if !runtimeGeneration
+            && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil
+                || runtimeConcurrency != nil)
+        {
             return "Runtime options require --runtime-generation"
         }
         if let runtimeAssistantDirectory,

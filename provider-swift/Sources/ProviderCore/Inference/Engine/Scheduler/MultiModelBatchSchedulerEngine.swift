@@ -232,7 +232,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         templateControls: ChatTemplateControls = .init(),
         nativeLocalCacheScope: String? = nil,
         modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
-        seedsContentForUnknownPromptTail: Bool = false
+        seedsContentForUnknownPromptTail: Bool = false,
+        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil
     ) {
         self.measurementPurpose = .serving
         self.acquire = acquire
@@ -251,10 +252,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.nativeLocalCacheScope = nativeLocalCacheScope
         self.cacheEnabled = true
         self.donationDemand = nil
-        // The --local path serves SSE frames inside the upstream router, so
-        // there is no provider seam to decorate frames with logprobs on this
-        // init (same visible behavior as the legacy engine: none emitted).
-        self.engineV2Logprobs = nil
+        // The single-Mac --local path serves SSE frames inside the upstream
+        // router, so there is no provider seam to decorate frames with
+        // logprobs (none emitted). The cluster's API decorates its own frames
+        // (`LocalChatUploadResponder`) and passes the plumbing here.
+        self.engineV2Logprobs = engineV2Logprobs
         // Same reason: the --local path decodes the raw body inside the
         // upstream router, so `logit_bias`/`seed` cannot be recovered here
         // (the upstream request shape omits them — see the KNOWN DEVIATION on
@@ -456,9 +458,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             ? (nativeLocalCacheScope ?? cacheScope) : cacheScope
         let prepared: ToolChoicePromptPolicy.Prepared
         let nativeMiMoThinkingEnabled: Bool
+        // GLM on a cluster pair prompt-forces and post-validates required/named
+        // tool choice and JSON output; the single-Mac GLM slot refuses them.
+        let glm5PairPostValidation = GLM5NextPromptPolicy.applies(modelType: modelType)
+            ? await engineV2Bridge?.servesDistributedPair == true : false
         do {
             try checkFirstContentDeadline()
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType,
+                glm5PairPostValidation: glm5PairPostValidation)
             try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
             request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
@@ -469,10 +476,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             } else { nativeMiMoThinkingEnabled = true }
             try DiffusionGemmaReasoningControl.validate(
                 request: request, controls: templateControls, modelType: modelType)
-            prepared = try ToolChoicePromptPolicy.prepare(
+            var preparedRequest = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
-                allowInternalSchemaMetadata: allowInternalToolSchemaMetadata)
+                allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
+                glm5PairPostValidation: glm5PairPostValidation)
+            preparedRequest.glm5PairExcludesReasoning = glm5PairPostValidation
+                && templateControls.rawGLM5Controls.excludesReasoning
+            prepared = preparedRequest
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -1000,8 +1011,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // span. Empty initial content state keeps native splitting active
             // without fabricating prompt/seed bytes. Output permission is the
             // independently validated Boolean, never this generic probe.
+            // A forced GLM call on a pair splits reasoning first, so only text
+            // after the think block counts as visible before the call.
             nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
                 ChatTemplateFixContext(modelId: modelId, modelType: modelType))
+                || (prepared.glm5PairPostValidation && prepared.requiresToolCall) || prepared.glm5PairExcludesReasoning
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil),
@@ -1289,7 +1303,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoChannels: nativeMiMoChannels,
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
-                    absorbStrayThinkClose: absorbStrayThinkClose)
+                    absorbStrayThinkClose: absorbStrayThinkClose,
+                    withholdsReasoning: prepared.glm5PairExcludesReasoning)
                 startedAt = Date()
 
                 #if DEBUG

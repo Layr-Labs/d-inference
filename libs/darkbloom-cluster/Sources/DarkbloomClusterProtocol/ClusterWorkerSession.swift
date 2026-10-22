@@ -103,13 +103,15 @@ public struct ClusterWorkerSession: Sendable {
                 try current(frame.requestID); try workerRequire(phase == .reserving, "Refusal follows admission")
                 if reason == .unavailable { locallyAvailable = false }
                 requestID = nil; request = nil; phase = .idle
-            case .committedToken(let ordinal, let token, let committed):
+            case .committedToken(let ordinal, let token, let committed, let logprobs):
                 try current(frame.requestID); try deadline(now)
                 try workerRequire(rank == 0 && phase == .running && lastDecision != .cleanStop && ordinal == tokenCount
                     && tokenCount < request!.outputCount && token < profile.vocabularySize
                     && committed == request!.promptTokenIDs.count + ordinal, "Token is not the next committed output")
                 // A prior EOS/limit decision cannot authorize another token.
                 if let lastToken { try workerRequire(!request!.stopTokenIDs.contains(lastToken), "Token follows EOS") }
+                try workerRequire(logprobs?.top.count == request!.sampling?.capturedLogprobs,
+                    "Token logprobs differ from the request's")
                 tokenCount += 1; lastToken = token; lastDecision = nil; phase = .decision
             case .promptCache(let reused, let stored):
                 try current(frame.requestID); try deadline(now)

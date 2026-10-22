@@ -208,6 +208,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                 switch command.command {
                 case .reserve(let value):
                     do {
+                        try Self.requireLogprobCapture(value, runtime: runtime)
                         let bytes = try runtime.reserve(command.requestID!, value)
                         try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
                         admittedNotStarted = command.requestID
@@ -227,9 +228,9 @@ final class WorkerCoordinator: @unchecked Sendable {
                     // the answer after submitting its next step (the token credit
                     // still holds: the session refuses a token before the answer).
                     let reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
-                        publish: { ordinal, token, frontier in
-                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier),
-                                requestID: id)
+                        publishToken: { ordinal, token, frontier, logprobs in
+                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier,
+                                logprobs: logprobs), requestID: id)
                         },
                         answer: { try self.nextDecision() == .proceed }))
                     // The native facade returns only after bilateral retirement
@@ -527,11 +528,24 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
     }
 
+    /// A request asking for logprobs reaches only a runtime that sends them;
+    /// any other refuses it alone (unsupported) and stays available.
+    static func requireLogprobCapture(_ value: ClusterWorkerReservation, runtime: any WorkerRuntime) throws {
+        guard value.sampling?.capturedLogprobs == nil || runtime.capturesLogprobs else {
+            throw ClusterResidentRequestRefusal(reason: .unsupported,
+                message: "This runtime does not send token logprobs")
+        }
+    }
+
     /// One queued command on the executor. True after the model was released
     /// by an acknowledged shutdown.
     private func applyLaneCommand(_ command: ClusterWorkerCommandFrame, runtime: any WorkerRuntime) throws -> Bool {
         switch command.command {
         case .reserve(let value):
+            if value.sampling?.capturedLogprobs != nil, !runtime.capturesLogprobs {
+                try publish(.refused(.unsupported), requestID: command.requestID)
+                return false
+            }
             do {
                 let bytes = try runtime.reserveLane(command.requestID!, value)
                 try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)

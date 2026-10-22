@@ -22,7 +22,7 @@ enum ToolStreamPreparation {
         }
         let context = ChatTemplateFixContext(modelId: request.model, modelType: modelType)
         let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
-            mode: prepared.mode, modelContext: context)
+            mode: prepared.mode, modelContext: context, glm5PairPostValidation: prepared.glm5PairPostValidation)
         try ToolChoiceEnforcementPolicy.validateParser(
             format, strategy: strategy, modelContext: context)
         return BatchedToolStreamHandler(format: format,

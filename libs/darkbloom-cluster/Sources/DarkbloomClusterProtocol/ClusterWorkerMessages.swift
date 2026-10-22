@@ -7,12 +7,28 @@ public enum ClusterWorkerProtocolError: Error, Equatable, Sendable {
 /// Software ceilings, never permission to allocate native state or load a model.
 public enum ClusterWorkerLimits {
     public static let version = 1
-    public static let commandBytes = 512 * 1024
+    /// A reservation carries its whole prompt as JSON token IDs (at most seven
+    /// bytes each for a vocabulary below 1,000,000): 8 MiB holds a
+    /// `wirePromptTokens` prompt with its stop tokens, sampling and routes.
+    public static let commandBytes = 8 * 1024 * 1024
     public static let eventBytes = 16 * 1024
+    /// The standard request bounds: what every family is sized and qualified
+    /// for unless its own registered row declares more (`wire*`). A family's
+    /// limits and memory plan use these; a registered row with a longer native
+    /// context names its own within the wire bounds.
     public static let promptTokens = 32_768
     public static let outputTokens = 32_768
     // Leave room for the full prompt budget as well as a 32K completion.
     public static let contextTokens = promptTokens + outputTokens
+    /// What the wire carries and validates: the longest native context a
+    /// registered model declares (GLM-5.3-Flash, `max_position_embeddings`
+    /// 1,048,576) and the longest output a provider lists for one (Z.AI lists
+    /// 131,072 for GLM-5.3-Flash). Each profile names its own limits within
+    /// these; a request is held to its profile, and each rank's live memory
+    /// gate decides whether it fits.
+    public static let wireContextTokens = 1_048_576
+    public static let wirePromptTokens = wireContextTokens
+    public static let wireOutputTokens = 131_072
     public static let stopTokens = 256
     public static let vocabularySize = 262_144
     public static let deadlineNanoseconds: UInt64 = 3_600_000_000_000
@@ -325,11 +341,28 @@ public struct ClusterWorkerRequestTelemetry: Equatable, Sendable {
     }
 }
 
+/// The decoding rank's log probabilities for one committed token, from the
+/// model's raw (pre-transform) distribution as the product reports them
+/// (`CBv2Logprobs`): the token's own, then the `top` most likely tokens in
+/// descending order. Sent only for a request whose sampling asks for them.
+/// Values travel as IEEE-754 bit patterns, like `ClusterWorkerSampling`.
+public struct ClusterWorkerTokenLogprobs: Equatable, Sendable {
+    public struct Alternative: Equatable, Sendable {
+        public let tokenID: Int
+        public let logprob: Float
+        public init(tokenID: Int, logprob: Float) { self.tokenID = tokenID; self.logprob = logprob }
+    }
+    public let logprob: Float
+    public let top: [Alternative]
+    public init(logprob: Float, top: [Alternative]) { self.logprob = logprob; self.top = top }
+}
+
 public enum ClusterWorkerEvent: Equatable, Sendable {
     case ready(ClusterWorkerReady)
     case admitted(reservedBytes: Int)
     case refused(ClusterWorkerRefusal)
-    case committedToken(ordinal: Int, tokenID: Int, committedTokens: Int)
+    /// `logprobs` only when the request's sampling asks for them (`ClusterWorkerSampling.topLogprobs`).
+    case committedToken(ordinal: Int, tokenID: Int, committedTokens: Int, logprobs: ClusterWorkerTokenLogprobs? = nil)
     /// This rank's prefix cache for the running request: prompt tokens it
     /// restored instead of computing (after both ranks agreed to), and the
     /// prompt frontiers it kept after both ranks retired cleanly (ascending,

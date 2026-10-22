@@ -293,7 +293,7 @@ func directory() throws -> URL {
         if case .admitted = try event(e).event {} else { throw OwnerWire.invalid("Expected admission") }
         try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
         for i in 0..<2 {
-            if case .committedToken(let ordinal, _, _) = try event(e).event { try require(ordinal == i, "Token ordinal differs") }
+            if case .committedToken(let ordinal, _, _, _) = try event(e).event { try require(ordinal == i, "Token ordinal differs") }
             else { throw OwnerWire.invalid("Expected token") }
             try e.sendWorkerCommand(.tokenDecision(ordinal: i, decision: .proceed), requestID: id, deadline: deadline)
         }

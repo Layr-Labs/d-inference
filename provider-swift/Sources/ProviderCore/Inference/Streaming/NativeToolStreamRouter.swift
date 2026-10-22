@@ -13,6 +13,8 @@ struct NativeToolStreamRouter {
     private let nativeMiMoChannels: Bool
     private let nativeMiMoRequiresConstraint: Bool
     private let rejectMiMoThought: Bool
+    /// Reasoning is split and withheld: the request asked not to see it.
+    private let withholdsReasoning: Bool
     private var rejectedNativeGemmaReasoning = false
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
@@ -22,8 +24,9 @@ struct NativeToolStreamRouter {
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
-         absorbStrayThinkClose: Bool = false) {
+         absorbStrayThinkClose: Bool = false, withholdsReasoning: Bool = false) {
         self.handler = handler
+        self.withholdsReasoning = withholdsReasoning
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
         self.nativeMiMoChannels = nativeMiMoChannels
@@ -115,7 +118,7 @@ struct NativeToolStreamRouter {
                         rejectedNativeGemmaReasoning = true
                         throw disabledNativeReasoningFailure
                     }
-                } else {
+                } else if !withholdsReasoning {
                     events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
                 }
             }

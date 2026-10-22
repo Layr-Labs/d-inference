@@ -436,9 +436,12 @@ extension ProviderLoop {
         let modelId = chatRequest.model
         // This metadata is provider-authored, never a caller model_type/name
         // heuristic. Revalidate against the actual acquired slot below.
+        // A cluster pair also serves GLM reasoning exclusion (`servesDistributedPair`).
+        let pairSlot = await modelSlots[modelId]?.engineV2.servesDistributedPair == true
         do {
             try ProviderPromptContractPipeline.validateNativeControls(templateControls,
-                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
+                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType,
+                glm5PairPostValidation: pairSlot)
         } catch {
             rejectInvalidRequest() // Never publish raw decrypted validation details.
             return
@@ -643,8 +646,10 @@ extension ProviderLoop {
         // <think> tokens for a Gemma build. The slot carries the type captured at
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
+        let servesPair = await slot.engineV2.servesDistributedPair
         do {
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType,
+                glm5PairPostValidation: servesPair)
         } catch {
             await finishAcceptedRequestWithoutTask(requestId: requestId)
             rejectInvalidRequest()

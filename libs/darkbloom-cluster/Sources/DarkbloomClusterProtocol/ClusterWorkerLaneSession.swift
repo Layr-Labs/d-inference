@@ -143,13 +143,15 @@ public struct ClusterWorkerLaneSession: Sendable {
                 try workerRequire(requests[id]!.phase == .reserving, "Refusal follows admission")
                 if reason == .unavailable { locallyAvailable = false }
                 requests[id] = nil
-            case .committedToken(let ordinal, let token, let committed):
+            case .committedToken(let ordinal, let token, let committed, let logprobs):
                 let id = try current(frame.requestID); try deadline(id, now)
                 let r = requests[id]!
                 try workerRequire(rank == 0 && r.phase == .running && r.lastDecision != .cleanStop && ordinal == r.tokenCount
                     && r.tokenCount < r.reservation.outputCount && token < profile.vocabularySize
                     && committed == r.reservation.promptTokenIDs.count + ordinal, "Token is not the next committed output")
                 if let last = r.lastToken { try workerRequire(!r.reservation.stopTokenIDs.contains(last), "Token follows EOS") }
+                try workerRequire(logprobs?.top.count == r.reservation.sampling?.capturedLogprobs,
+                    "Token logprobs differ from the request's")
                 requests[id]!.tokenCount += 1; requests[id]!.lastToken = token
                 requests[id]!.lastDecision = nil; requests[id]!.phase = .decision
             case .promptCache(let reused, let stored):

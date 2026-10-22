@@ -2,7 +2,9 @@ import Foundation
 import DarkbloomClusterProtocol
 
 public enum ClusterWorkerRequestEvent: Sendable {
-    case token(Int), finished(ClusterWorkerFinishReason), failed(String)
+    /// A committed token, with rank 0's logprobs for it when the request asks for them.
+    case token(Int, ClusterWorkerTokenLogprobs? = nil)
+    case finished(ClusterWorkerFinishReason), failed(String)
     /// Both ranks restored `reused` prompt tokens from their prefix caches and
     /// both now hold `stored` frontiers of this prompt. Delivered once, just
     /// before `finished`, only when either is not empty.

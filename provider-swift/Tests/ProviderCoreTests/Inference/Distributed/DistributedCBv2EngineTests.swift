@@ -195,7 +195,7 @@ struct DistributedCBv2EngineTests {
         var cases: [(CBv2Request, DistributedRequestRefusal)] = []
         var request = distributedTestRequest(); request.sampling.temperature = .nan; cases.append((request, .invalidSampling))
         request = distributedTestRequest(); request.sampling.logitBias = [1: .infinity]; cases.append((request, .invalidSampling))
-        request = distributedTestRequest(); request.sampling.topLogprobs = 1; cases.append((request, .logprobsUnsupported))
+        request = distributedTestRequest(); request.sampling.topLogprobs = 21; cases.append((request, .logprobsUnsupported))
         request = distributedTestRequest(); request.priority = 1; cases.append((request, .priorityUnsupported))
         request = distributedTestRequest(); request.promptTokens = []; cases.append((request, .emptyPrompt))
         request = distributedTestRequest(); request.promptTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
@@ -209,6 +209,34 @@ struct DistributedCBv2EngineTests {
             #expect(throws: DistributedEngineError.refused(reason)) { try engine.submit(invalid) }
         }
         #expect(owner.reserveCount == 0)
+        await engine.shutdown()
+    }
+
+    /// Logprobs are served: the decoding rank gets `topLogprobs` (also for a
+    /// greedy request, which then draws with the product's sampler), and each
+    /// token's logprobs reach the client's delta with that token.
+    @Test func logprobsReachTheRankAndComeBackWithTheirToken() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        var request = distributedTestRequest(maxTokens: 2)
+        request.sampling.topLogprobs = 2
+        let stream = try engine.submit(request)
+        let lp = CBv2TokenLogprob(token: 4, logprob: -0.5, topLogprobs: [(token: 4, logprob: -0.5), (token: 7, logprob: -1.5)])
+        owner.last.send(.loggedToken(4, lp))
+        owner.last.send(.token(5))
+        owner.last.acknowledge()
+        let events = await distributedCollect(stream)
+        let deltas = events.compactMap { event -> [CBv2TokenLogprob]?? in
+            if case .delta(_, _, let logprobs) = event { return .some(logprobs) }
+            return nil
+        }
+        #expect(deltas.count == 2)
+        #expect(deltas.first??.first?.logprob == -0.5)
+        #expect(deltas.first??.first?.topLogprobs.map(\.token) == [4, 7])
+        #expect(deltas.last! == nil)
+        let reserved = try #require(owner.reservedRequests.last)
+        let wire = try #require(DistributedSampling.wire(for: reserved, vocabularySize: 100))
+        #expect(wire.topLogprobs == 2 && !wire.isStochastic && !wire.admitsSpeculativeVerification)
         await engine.shutdown()
     }
 

@@ -96,10 +96,12 @@ struct GLM5NextTensorParallelLaneTests {
         let linear = c.linearAttention
         let settled = linear.numHeads * linear.headDim * linear.headDim * 4
             + 3 * linear.numHeads * linear.headDim * linear.shortConvKernelSize * 4
+        // A speculating lane's captured verification windows (and last round's adopted state).
+        let windows = 2 * kda * (Runtime.mtpDepth + 1) * settled
         #expect(plain == 20_000 * row * dsa + settled * kda)
-        #expect(long == plain + 20_000 * row)
+        #expect(long == plain + 20_000 * row + windows)
         // Below 128 tokens the cache's first growth (256 rows) is charged.
-        #expect(short == 256 * row * (dsa + 1) + settled * kda)
+        #expect(short == 256 * row * (dsa + 1) + settled * kda + windows)
         #expect(throws: ProbeError.self) {
             try Runtime.laneStateBytes(configuration: c, contextTokens: 0, speculative: false, allocationBound: identity)
         }

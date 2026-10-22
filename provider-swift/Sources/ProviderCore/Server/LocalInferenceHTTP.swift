@@ -106,6 +106,30 @@ func makeLocalInferenceApplication(
             engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let service = serviceForTemplateControls(.init())
+    // The cluster's API only: a request that asks for logprobs gets them on
+    // its own frames (`LocalChatUploadResponder.logprobs`).
+    let serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)?
+    // The cluster's API reports `completion_tokens_details.reasoning_tokens`
+    // as the coordinator path does: the returned reasoning, re-tokenized.
+    let reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)?
+    if distributedResponses != nil {
+        serviceForLogprobs = { (controls: ChatTemplateControls, logprobs: EngineV2LogprobsPlumbing) -> MLXOpenAIService in
+            MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
+                acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
+                defaultMaxTokens: defaultMaxTokens, templateControls: controls,
+                nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
+                seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
+                responseStore: responseStore, metrics: metrics)
+        }
+        reasoningTokenCounter = { (model: String) async -> (@Sendable (String) -> Int)? in
+            guard let resolution = try? await tokenizerProvider(model) else { return nil }
+            let tokenizer = resolution.tokenizer
+            return { (text: String) -> Int in tokenizer.inner.encode(text: text, addSpecialTokens: false).count }
+        }
+    } else {
+        serviceForLogprobs = nil
+        reasoningTokenCounter = nil
+    }
     let router = MLXServerApplication.buildRouter(service: service)
     if let clusterStatus {
         router.get("/v1/cluster/status") { request, _ async throws -> Response in
@@ -146,6 +170,8 @@ func makeLocalInferenceApplication(
         reasoningParserFor: reasoningParserFor,
         // Like the response store above: one per application, so both serve modes continue conversations alike.
         responseConversations: LocalResponseConversationStore(),
+        serviceForLogprobs: serviceForLogprobs,
+        reasoningTokenCounter: reasoningTokenCounter,
         serviceForRawChat: { body, request in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
                 responseStore: responseStore, metrics: metrics) { return service }

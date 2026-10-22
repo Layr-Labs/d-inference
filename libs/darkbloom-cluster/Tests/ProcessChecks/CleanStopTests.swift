@@ -13,7 +13,7 @@ private final class Events: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [ClusterWorkerRequestEvent] = []
     func append(_ value: ClusterWorkerRequestEvent) { lock.withLock { values.append(value) } }
-    var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id) = $0 { return id }; return nil } } }
+    var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id, _) = $0 { return id }; return nil } } }
     var finish: ClusterWorkerFinishReason? {
         lock.withLock { values.lazy.compactMap { if case .finished(let reason) = $0 { return reason }; return nil }.first }
     }

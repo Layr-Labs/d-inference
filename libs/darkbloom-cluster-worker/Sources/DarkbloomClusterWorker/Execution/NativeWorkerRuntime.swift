@@ -123,7 +123,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     func refreshServingContext() -> Int? {
         switch owner {
         case .qwenDense(let runtime): runtime.refreshServingContext()
-        case .qwenTensorParallel, .mimoV26, .glm5Next, .glm5NextTensorParallel: nil
+        case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
+        case .qwenTensorParallel, .mimoV26, .glm5Next: nil
         }
     }
     // Batch lanes: the Qwen family's pipeline lanes and GLM tensor parallel's.
@@ -133,6 +134,12 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5NextTensorParallel(let runtime): runtime.lanes.lanes
         case .qwenTensorParallel, .mimoV26, .glm5Next: 1
         }
+    }
+    /// GLM tensor parallel publishes each token's logprobs from its decoding
+    /// rank on its one-request path; its batch lanes do not carry them yet.
+    var capturesLogprobs: Bool {
+        if case .glm5NextTensorParallel(let runtime) = owner { return runtime.lanes.lanes == 1 }
+        return false
     }
     func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
         switch owner {

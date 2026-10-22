@@ -96,9 +96,10 @@ public enum ClusterWorkerCodec {
         case .ready(let r): value["kind"] = "ready"; value["ready"] = ready(r)
         case .admitted(let bytes): value["kind"] = "admitted"; value["reservedBytes"] = bytes
         case .refused(let reason): value["kind"] = "refused"; value["reason"] = reason.rawValue
-        case .committedToken(let ordinal, let token, let committed):
+        case .committedToken(let ordinal, let token, let committed, let logprobs):
             value["kind"] = "committedToken"; value["ordinal"] = ordinal
             value["tokenID"] = token; value["committedTokens"] = committed
+            if let logprobs { value["logprobs"] = Self.logprobs(logprobs) }
         case .promptCache(let reused, let stored):
             value["kind"] = "promptCache"; value["reusedTokens"] = reused; value["storedFrontiers"] = stored
         case .requestTelemetry(let t):
@@ -141,7 +142,8 @@ public enum ClusterWorkerCodec {
         case "ready": event = .ready(try ready(r.object("ready")))
         case "admitted": event = .admitted(reservedBytes: try r.int("reservedBytes"))
         case "refused": event = .refused(try r.enumeration("reason"))
-        case "committedToken": event = .committedToken(ordinal: try r.int("ordinal"), tokenID: try r.int("tokenID"), committedTokens: try r.int("committedTokens"))
+        case "committedToken": event = .committedToken(ordinal: try r.int("ordinal"), tokenID: try r.int("tokenID"),
+            committedTokens: try r.int("committedTokens"), logprobs: try r.optionalObject("logprobs").map(Self.logprobs))
         case "promptCache": event = .promptCache(reusedTokens: try r.int("reusedTokens"), storedFrontiers: try r.ints("storedFrontiers"))
         case "requestTelemetry": event = .requestTelemetry(try telemetry(r.object("telemetry")))
         case "finished": event = .finished(try r.enumeration("reason"))
@@ -185,6 +187,20 @@ public enum ClusterWorkerCodec {
     private static func header(_ r: inout WorkerObject) throws -> (UUID, UInt64, UUID?) {
         try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
         return try (r.uuid("membershipEpoch"), r.uint("sequence"), r.optionalUUID("requestID"))
+    }
+    private static func logprobs(_ l: ClusterWorkerTokenLogprobs) -> [String: Any] {
+        ["logprobBits": Int(l.logprob.bitPattern), "topTokenIDs": l.top.map(\.tokenID),
+         "topLogprobBits": l.top.map { Int($0.logprob.bitPattern) }]
+    }
+    private static func logprobs(_ object: [String: Any]) throws -> ClusterWorkerTokenLogprobs {
+        var r = WorkerObject(object)
+        let bits = try r.int("logprobBits"), tokens = try r.ints("topTokenIDs"), top = try r.ints("topLogprobBits")
+        try workerRequire(tokens.count == top.count
+            && ([bits] + top).allSatisfy({ (0...Int(UInt32.max)).contains($0) }), "Invalid token logprobs")
+        try r.finish()
+        return .init(logprob: Float(bitPattern: UInt32(bits)), top: zip(tokens, top).map {
+            .init(tokenID: $0.0, logprob: Float(bitPattern: UInt32($0.1)))
+        })
     }
     private static func telemetry(_ t: ClusterWorkerRequestTelemetry) -> [String: Any] {
         var result: [String: Any] = [:]

@@ -105,6 +105,45 @@ struct SamplingSelectionTests {
         #expect(a != greedy)
     }
 
+    /// A request asking for logprobs is drawn by the product's sampler (also
+    /// greedy), which gathers its token's raw log-softmax and the top
+    /// alternatives with the draw; the token is the plain argmax, and the
+    /// values are the raw distribution's (no transform applied).
+    @Test func logprobsAreTheRawDistributionsAndTravelWithTheToken() throws {
+        let asks = ClusterWorkerSampling(temperature: 0, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 7,
+            stream: 0x8000_0000_0000_0042, logitBias: [], topLogprobs: 3)
+        let greedy = try select(request(nil), steps: 4)
+        let value = try request(asks)
+        let sampler = try #require(value.sampler)
+        #expect(!sampler.admitsSpeculativeVerification)
+        for step in 0..<4 {
+            let raw = row(step)
+            let drawn = sampler.sample(logits(raw))
+            eval(drawn)
+            let token = Int(drawn.reshaped([-1]).asType(.int32).item(Int32.self))
+            let logprobs = try #require(sampler.takePendingLogprobs())
+            #expect(sampler.takePendingLogprobs() == nil)
+            sampler.commit(token)
+            #expect(token == greedy[step])
+            // Reference: log-softmax of the bf16 row the rank saw, in double.
+            let seen = MLXArray(raw).asType(.bfloat16).asType(.float32).asArray(Float.self).map(Double.init)
+            let peak = seen.max()!, total = seen.reduce(0) { $0 + exp($1 - peak) }
+            let reference = seen.map { $0 - peak - log(total) }
+            #expect(abs(Double(logprobs.logprob) - reference[token]) < 1e-3)
+            #expect(logprobs.top.count == 3 && logprobs.top[0].tokenID == token)
+            #expect(zip(logprobs.top, logprobs.top.dropFirst()).allSatisfy { $0.logprob >= $1.logprob })
+            // The three largest values (ties in bf16 may order their tokens either way).
+            let expected = reference.sorted(by: >).prefix(3)
+            #expect(zip(logprobs.top, expected).allSatisfy { abs(Double($0.logprob) - $1) < 1e-3 })
+            #expect(logprobs.top.allSatisfy { abs(Double($0.logprob) - reference[$0.tokenID]) < 1e-3 })
+        }
+        // A request without logprobs gathers none.
+        let plain = try request(sampling())
+        _ = plain.sampler?.sample(logits(row(0)))
+        #expect(plain.sampler?.takePendingLogprobs() == nil)
+    }
+
     @Test func greedyWithLogitBiasStillAppliesTheBias() throws {
         let biased = try request(sampling(temperature: 0, bias: [.init(tokenID: 5, bias: 100)]))
         #expect(try select(biased, steps: 8) == Array(repeating: 5, count: 8))

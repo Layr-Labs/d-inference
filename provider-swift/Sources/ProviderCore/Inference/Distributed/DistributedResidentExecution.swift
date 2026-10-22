@@ -96,6 +96,9 @@ public struct DistributedResidentReadiness: Sendable {
 public enum DistributedResidentEvent: Sendable {
     /// One target-authoritative committed token. Draft/MTP tokens are not accepted.
     case token(Int)
+    /// A committed token with the decoding rank's raw logprobs for it, for a
+    /// request that asks for them (`CBv2SamplingParams.topLogprobs`).
+    case loggedToken(Int, CBv2TokenLogprob)
     case finished(CBv2FinishReason)
     /// Both peers restored `reused` prompt tokens from their rank-local prefix
     /// caches and both now hold `stored` prompt frontiers. Once, before the
@@ -104,6 +107,16 @@ public enum DistributedResidentEvent: Sendable {
     /// What the ranks measured of the request (hand-off, MTP acceptance).
     /// Once, before the finish, only when either rank sent any.
     case telemetry(DistributedRankTelemetry)
+}
+
+extension DistributedResidentEvent {
+    /// The committed token this event carries, with or without logprobs.
+    var committedToken: Int? {
+        switch self {
+        case .token(let token), .loggedToken(let token, _): token
+        case .finished, .promptCache, .telemetry: nil
+        }
+    }
 }
 
 /// Both ranks' own measurements of one request (PROD-PLAN S24). Values only.
@@ -277,7 +290,8 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         case .contextTooLong:
             return "The prompt plus max_tokens is above this model's context\(limit(profile?.maxContextTokens)) on this cluster."
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
-        case .logprobsUnsupported: return "logprobs are not supported on this cluster."
+        case .logprobsUnsupported:
+            return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
         case .constrainedDecodingUnsupported: return "Constrained decoding is not supported for this model on this cluster."
         case .mediaUnsupported: return "Media input is not supported on this cluster."
         case .priorityUnsupported: return "Request priority is not supported on this cluster."
@@ -307,7 +321,9 @@ extension DistributedResidentExecutionProfile {
                   (try? images.validate(prompt:request.promptTokens)) != nil else { return .mediaUnsupported }
         }
         if request.tokenConstraint != nil { return .constrainedDecodingUnsupported }
-        if p.topLogprobs != 0 { return .logprobsUnsupported }
+        // The decoding rank gathers them as the product does; a runtime that
+        // cannot refuses the request alone (unsupported, retryable).
+        if !(0...ClusterWorkerSampling.maximumTopLogprobs).contains(p.topLogprobs) { return .logprobsUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
         if request.promptTokens.count > maxPromptTokens { return .promptTooLong }
@@ -356,7 +372,7 @@ enum DistributedSampling {
             repetitionContextSize: min(max(0, p.repetitionContextSize), ClusterWorkerLimits.contextTokens),
             frequencyPenalty: p.frequencyPenalty, presencePenalty: p.presencePenalty,
             seed: p.seed ?? 0, stream: request.id.raw,
-            logitBias: logitBias(p.logitBias, vocabularySize: vocabularySize))
+            logitBias: logitBias(p.logitBias, vocabularySize: vocabularySize), topLogprobs: p.topLogprobs)
         return value.isGreedyNoOp ? nil : value
     }
 }

@@ -10,6 +10,16 @@ enum ToolChoicePromptPolicy {
         let compiledTools: [CompiledToolSchema]?
         let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
+        /// A GLM request served by a cluster pair: required/named tool choice
+        /// and JSON output are prompt-forced and post-validated (fail closed)
+        /// instead of refused. Set by the scheduler from the acquired slot's
+        /// engine, never from the request; the single-Mac GLM path keeps its
+        /// refusals.
+        var glm5PairPostValidation = false
+        /// A GLM request served by a cluster pair that asked not to see its
+        /// reasoning (`reasoning.exclude`, `include_reasoning: false`): the
+        /// reasoning is generated, counted and withheld.
+        var glm5PairExcludesReasoning = false
 
         var requiresToolCall: Bool {
             switch mode {
@@ -22,7 +32,31 @@ enum ToolChoicePromptPolicy {
     static func prepare(
         _ request: OpenAIChatCompletionRequest,
         modelType: String? = nil,
-        allowInternalSchemaMetadata: Bool = true
+        allowInternalSchemaMetadata: Bool = true,
+        glm5PairPostValidation: Bool = false
+    ) throws -> Prepared {
+        var prepared = try preparing(request, modelType: modelType,
+            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        prepared.glm5PairPostValidation = glm5PairPostValidation
+        // GLM on a pair: `parallel_tool_calls: false` with automatic choice
+        // asks for at most one call, which the validator then holds it to.
+        if glm5PairPostValidation, prepared.mode == .auto, !prepared.allowsParallelCalls,
+           prepared.tools?.isEmpty == false {
+            prepared = Prepared(messages: appendingToLastUser(singleCallInstruction, in: prepared.messages),
+                tools: prepared.tools, mode: prepared.mode, compiledTools: prepared.compiledTools,
+                allowsParallelCalls: false, allowedToolNames: prepared.allowedToolNames,
+                glm5PairPostValidation: true)
+        }
+        return prepared
+    }
+
+    static let singleCallInstruction =
+        "If you call a tool in this response, call exactly one tool once; make any further call after its result."
+
+    private static func preparing(
+        _ request: OpenAIChatCompletionRequest,
+        modelType: String?,
+        allowInternalSchemaMetadata: Bool
     ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true
@@ -194,6 +228,18 @@ enum ToolChoicePromptPolicy {
         var messages = addingInstruction(instruction, to: messages)
         guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
             return messages
+        }
+        appendInstruction(instruction, to: &messages[userIndex])
+        return messages
+    }
+
+    private static func appendingToLastUser(
+        _ instruction: String,
+        in messages: [OpenAIChatMessage]
+    ) -> [OpenAIChatMessage] {
+        var messages = messages
+        guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
+            return addingInstruction(instruction, to: messages)
         }
         appendInstruction(instruction, to: &messages[userIndex])
         return messages

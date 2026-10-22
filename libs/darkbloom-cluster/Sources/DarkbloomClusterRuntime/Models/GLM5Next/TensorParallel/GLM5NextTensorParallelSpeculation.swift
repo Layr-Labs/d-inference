@@ -112,7 +112,10 @@ final class GLM5NextTensorParallelSpeculation {
     private var probeHits: MLXArray?
     private(set) var probedRounds = 0
 
-    init(mtp: GLM5NextMTP, depth: Int, rank: Int, ranks: Int, primeRows: Int,
+    /// `historyTokens`: the most columns the NextN history grows to (the
+    /// request's charged length, `GLM5NextDSACache.capacityLimit`); nil is the
+    /// cache's own doubling.
+    init(mtp: GLM5NextMTP, depth: Int, rank: Int, ranks: Int, primeRows: Int, historyTokens: Int? = nil,
          agree: @escaping (MLXArray) -> MLXArray) throws {
         guard (1...GLM5NextMTP.maximumProposalDepth).contains(depth),
               depth + 1 <= GLM5NextTextStage.maximumVerificationTokens,
@@ -124,7 +127,9 @@ final class GLM5NextTensorParallelSpeculation {
         self.primeRows = primeRows; self.agree = agree
         proposedByPosition = Array(repeating: 0, count: depth)
         acceptedByPosition = Array(repeating: 0, count: depth)
-        state = try mtp.newRequestState()
+        let state = try mtp.newRequestState()
+        state.historyCapacityLimit = historyTokens
+        self.state = state
     }
 
     /// The draft probe's kept counts per rule, as `name:count` (one host

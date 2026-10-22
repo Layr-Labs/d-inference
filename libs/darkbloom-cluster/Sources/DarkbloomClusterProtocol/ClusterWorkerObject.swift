@@ -49,6 +49,7 @@ struct WorkerObject {
         guard let value = try take(key) as? [String: Any] else { throw ClusterWorkerProtocolError.invalid("Expected object: " + key) }
         return value
     }
+    mutating func optionalObject(_ key: String) throws -> [String: Any]? { values[key] == nil ? nil : try object(key) }
     mutating func objects(_ key: String) throws -> [[String: Any]] {
         guard let value = try take(key) as? [[String: Any]] else { throw ClusterWorkerProtocolError.invalid("Expected object array: " + key) }
         return value

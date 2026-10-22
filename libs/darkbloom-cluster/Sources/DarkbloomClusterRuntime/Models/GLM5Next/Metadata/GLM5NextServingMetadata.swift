@@ -96,7 +96,10 @@ enum GLM5NextServingResources {
 
     /// The envelope of one rank: load capacity is the GPU's resident capacity
     /// (hardware, never transient free or file-cache memory); the request
-    /// capacity is the quotation of the row's whole scope on this rank's layers.
+    /// capacity is the quotation of the row's memory scope on this rank's
+    /// layers (`GLM5NextResidentDescriptor.memoryProfile`). The workspace
+    /// evidence covers the profile's whole scope, so a runtime that charges a
+    /// longer request at its own context (tensor parallel) quotes it here too.
     static func envelope(descriptor: GLM5NextResidentDescriptor, inventory: GLM5NextWeightInventory,
                          rank: Int, buildSHA256: String) throws -> GLM5NextResidentResourceEnvelope {
         let environment = try environmentSHA256(buildSHA256: buildSHA256)
@@ -158,7 +161,11 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
         specification = try GLM5NextRegisteredSpecification.specification(configuration: configuration)
         fullConfiguration = try JSONDecoder().decode(GLM5NextConfiguration.self, from: configuration)
         self.configuration = fullConfiguration.textConfig
-        profile = try specification.profile(imageCandidate: imageCandidate)
+        // The planner sizes the pair for the memory plan's request (the
+        // standard 32,768 + 32,768 tokens), as every LOAD gate charges it; the
+        // capability advertises the native limits, and a longer request is
+        // charged at its own context when a rank reserves it.
+        profile = try specification.memoryProfile(imageCandidate: imageCandidate)
         guard let allocation = Memory.allocationFootprintPolicy(), let extra = allocation.maximumExtraBytes else {
             throw ProbeError("GLM placement needs the allocator's buffer bounds")
         }

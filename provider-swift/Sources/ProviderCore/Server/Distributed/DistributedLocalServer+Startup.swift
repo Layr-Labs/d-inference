@@ -22,7 +22,7 @@ extension DistributedLocalServer {
         // The handle a single-Mac slot of this model uses (Gemma's pinned
         // tool-constraint contract included), so tool_choice takes one path.
         let loaded = try await tokenizerLoader(session.model.directory)
-        let tokenizer = TokenizerHandle.serving(loaded.inner,
+        let tokenizer = try TokenizerHandle.pairServing(loaded.inner,
             modelType: session.model.modelType, modelDirectory: session.model.directory)
         try session.validateModelInputs()
         try requirePreparing(target, phase: expected)

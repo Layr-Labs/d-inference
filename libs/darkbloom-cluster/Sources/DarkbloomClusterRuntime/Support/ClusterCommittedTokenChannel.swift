@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Rank 0's committed tokens to its owner, in two halves, so a runtime can
@@ -11,11 +12,24 @@ import Foundation
 /// that reads answers late may compute a step or round past a stop, which
 /// it never publishes.
 public struct ClusterCommittedTokenChannel {
-    public let publish: (Int, Int, Int) throws -> Void
+    /// One committed token with the decoding rank's logprobs for it, when the
+    /// request asks for them (`ClusterWorkerSampling.topLogprobs`).
+    public let publishToken: (Int, Int, Int, ClusterWorkerTokenLogprobs?) throws -> Void
     public let answer: () throws -> Bool
 
     public init(publish: @escaping (Int, Int, Int) throws -> Void, answer: @escaping () throws -> Bool) {
-        self.publish = publish; self.answer = answer
+        self.publishToken = { ordinal, token, frontier, _ in try publish(ordinal, token, frontier) }
+        self.answer = answer
+    }
+
+    public init(publishToken: @escaping (Int, Int, Int, ClusterWorkerTokenLogprobs?) throws -> Void,
+                answer: @escaping () throws -> Bool) {
+        self.publishToken = publishToken; self.answer = answer
+    }
+
+    /// A committed token without logprobs.
+    public func publish(_ ordinal: Int, _ token: Int, _ frontier: Int) throws {
+        try publishToken(ordinal, token, frontier, nil)
     }
 
     /// The one-call form (publish, then wait for the answer) as a channel,

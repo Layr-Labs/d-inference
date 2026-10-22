@@ -31,3 +31,10 @@ public struct CBv2FirstTokenDeadlineAdmission: Sendable { public init() {} }
 public enum CBv2FirstTokenUnboundedReason: Sendable, Equatable { case unsupportedScheduler }
 public enum CBv2FirstTokenProjectedWork: Sendable, Equatable { case unbounded(reason: CBv2FirstTokenUnboundedReason? = nil) }
 public enum CBv2FinishReason: Sendable, Equatable { case stop, length, cancelled, error(String) }
+public struct CBv2TokenLogprob: Sendable {
+    public var token: Int, logprob: Float
+    public var topLogprobs: [(token: Int, logprob: Float)]
+    public init(token: Int, logprob: Float, topLogprobs: [(token: Int, logprob: Float)] = []) {
+        self.token = token; self.logprob = logprob; self.topLogprobs = topLogprobs
+    }
+}

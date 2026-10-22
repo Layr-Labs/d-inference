@@ -41,7 +41,8 @@ enum ToolChoiceEnforcementPolicy {
 
     static func forcedStrategy(
         mode: ToolConstraintMode,
-        modelContext: ChatTemplateFixContext
+        modelContext: ChatTemplateFixContext,
+        glm5PairPostValidation: Bool = false
     ) throws -> Strategy {
         switch mode {
         case .required, .named:
@@ -51,6 +52,11 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
+        // GLM on a cluster pair: the forcing instruction plus the native GLM
+        // parser's withheld calls, validated at EOS (`NativeToolStreamRouter`).
+        if glm5PairPostValidation, GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
+            return .structuredPostValidation
+        }
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2" {
             return .structuredPostValidation
@@ -149,6 +155,13 @@ enum ToolChoiceEnforcementPolicy {
                 guard format == .mimoV2 else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                         "native MiMo tool_choice requires the native MiMo parser")
+                }
+                return
+            }
+            if GLM5NextPromptPolicy.applies(modelType: modelContext?.modelType) {
+                guard format == .glm5 else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "GLM tool_choice requires the native GLM parser")
                 }
                 return
             }

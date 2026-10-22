@@ -44,7 +44,7 @@ public struct PairDriver: Sendable {
         func record(_ event: ClusterWorkerRequestEvent) -> Bool {
             lock.lock(); defer { lock.unlock() }
             switch event {
-            case .token(let id):
+            case .token(let id, _):
                 tokens.append(id); stamps.append(DispatchTime.now().uptimeNanoseconds)
                 if tokens.count == 1 { first() }
                 // false is the owner's clean stop: no further token is wanted.

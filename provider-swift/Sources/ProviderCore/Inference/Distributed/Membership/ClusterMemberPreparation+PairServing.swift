@@ -36,7 +36,8 @@ extension ClusterMemberPreparation {
         }
         try requireUnchanged()
         let loaded = try await LocalTokenizerLoader().load(from: installed.directory)
-        let tokenizer = TokenizerHandle.serving(loaded, modelType: installed.modelType, modelDirectory: installed.directory)
+        let tokenizer = try TokenizerHandle.pairServing(loaded, modelType: installed.modelType,
+            modelDirectory: installed.directory)
         try requireUnchanged()
         let wire = plan.capability.profile
         let profile = try DistributedResidentExecutionProfile(id: wire.id, vocabularySize: wire.vocabularySize,

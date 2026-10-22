@@ -92,7 +92,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             route: media == nil && stillImages == nil ? decided?.workerRoute : nil, mimoImages:media, stillImages:stillImages)
         // Encode the COMPLETE bounded command before sending either rank.
         // Use largest legal sequence metadata so a later pipe header cannot
-        // exceed 512 KiB after rank 0 has already reserved.
+        // exceed the command bound after rank 0 has already reserved.
         _ = try ClusterWorkerCodec.encode(.init(membershipEpoch:identity.membershipEpoch,
             sequence:UInt64(Int64.max)-1,requestID:UUID(),command:.reserve(value)))
         // CBv2 request IDs may be reused after retirement. Each native request
@@ -137,8 +137,8 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
         try native.start { [consumerStop] event in
             switch event {
-            case .token(let token):
-                let more = emit(.token(token))
+            case .token(let token, let logprobs):
+                let more = emit(logprobs.map { .loggedToken(token, Self.logprob(token, $0)) } ?? .token(token))
                 if !more { consumerStop.record() }
                 return more
             case .finished(let reason):
@@ -152,6 +152,11 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
             case .telemetry(let rank0, let rank1): return emit(.telemetry(.init(rank0: rank0, rank1: rank1)))
             }
         }
+    }
+    /// The rank's logprobs in the product's engine shape.
+    static func logprob(_ token: Int, _ value: ClusterWorkerTokenLogprobs) -> CBv2TokenLogprob {
+        CBv2TokenLogprob(token: token, logprob: value.logprob,
+            topLogprobs: value.top.map { (token: $0.tokenID, logprob: $0.logprob) })
     }
     func cancel() { native.cancel() }
     func requestCleanStop() -> Bool {

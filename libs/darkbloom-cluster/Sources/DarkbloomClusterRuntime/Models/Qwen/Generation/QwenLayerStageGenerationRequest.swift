@@ -36,10 +36,10 @@ struct QwenLayerStageGenerationProfile: Equatable, Encodable {
         guard !identifier.isEmpty, identifier.utf8.count <= 128,
               identifier.utf8.allSatisfy({ (33...126).contains($0) }),
               (1...262_144).contains(vocabularySize), (1...8192).contains(hiddenSize),
-              (1...ClusterWorkerLimits.promptTokens).contains(maximumPromptTokens),
+              (1...ClusterWorkerLimits.wirePromptTokens).contains(maximumPromptTokens),
               (1...maximumPromptTokens).contains(maximumChunkTokens),
-              (1...ClusterWorkerLimits.outputTokens).contains(maximumOutputTokens),
-              (maximumPromptTokens...ClusterWorkerLimits.contextTokens).contains(maximumContextTokens),
+              (1...ClusterWorkerLimits.wireOutputTokens).contains(maximumOutputTokens),
+              (maximumPromptTokens...ClusterWorkerLimits.wireContextTokens).contains(maximumContextTokens),
               residualStreams == nil || residualStreams == 4 else {
             throw ProbeError("Generation profile exceeds native software bounds")
         }

@@ -56,7 +56,9 @@ struct ClusterWorkerProtocolTests {
         try fullLengthOutput(); try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
         try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try laneCancellation()
         try tensorParallelModes()
-        print("{\"passed\":true,\"groups\":14,\"modelExecution\":false,\"localPipeIO\":true}")
+        try logprobs()
+        try nativeContext()
+        print("{\"passed\":true,\"groups\":16,\"modelExecution\":false,\"localPipeIO\":true}")
     }
 
     /// Both ranks must accept and retain the requested 32K output budget.
@@ -83,13 +85,67 @@ struct ClusterWorkerProtocolTests {
             try check(decoded == frame, "32K output reservation must not be truncated")
             try session.accept(decoded, now: 10)
         }
-        for output in [0, 32_769] {
+        for output in [0, ClusterWorkerLimits.wireOutputTokens + 1] {
             let invalid = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: [1],
                 stopTokenIDs: [], outputCount: output, chunkSize: 1,
                 deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
             try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(
                 membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(invalid))) }
         }
+    }
+
+    /// A model's native context crosses the wire: a 1,048,575-token prompt
+    /// with the largest token IDs fits one command, both ranks' sessions admit
+    /// it under a native profile (1,048,576 context, 65,536 output), and the
+    /// serving context a rank's memory gate reports may be anything up to it.
+    /// Beyond the wire's bounds is refused.
+    static func nativeContext() throws {
+        let p = ClusterWorkerProfile(id: "native-context", vocabularySize: 262_144,
+            maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536,
+            maximumChunkTokens: 2048, maximumContextTokens: 1_048_576)
+        let prompt = Array(repeating: 262_143, count: 1_048_575)
+        let reservation = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: prompt,
+            stopTokenIDs: Array(261_888..<262_144), outputCount: 1, chunkSize: 2048,
+            deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+        let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(Int64.max) - 1,
+            requestID: requestID, command: .reserve(reservation))
+        let bytes = try ClusterWorkerCodec.encode(frame)
+        try check(bytes.count <= ClusterWorkerLimits.commandBytes, "A native-context reservation fits one command")
+        let decoded = try ClusterWorkerCodec.decodeCommand(bytes)
+        try check(decoded == frame, "A native-context reservation round-trips")
+        var lines = ClusterWorkerLineDecoder(commandStream: true), records: [Data] = []
+        for start in stride(from: 0, to: bytes.count, by: ClusterWorkerLineDecoder.readChunkBytes) {
+            records += try lines.append(bytes.subdata(in: start ..< min(bytes.count, start + ClusterWorkerLineDecoder.readChunkBytes)))
+        }
+        try check(records == [bytes], "A native-context command is one pipe record")
+        for rank in 0...1 {
+            var session = try ClusterWorkerSession(identity: identity, rank: rank, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256)
+            let r = ClusterWorkerReady(identity: identity, rank: rank, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024,
+                servingContextTokens: 700_000)
+            try session.accept(ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(ClusterWorkerEventFrame(
+                membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(r)))), now: 10)
+            try session.accept(ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(
+                membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(reservation)))), now: 10)
+        }
+        let token = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID,
+            event: .committedToken(ordinal: 0, tokenID: 1, committedTokens: 1_048_576))
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(token)) == token, "The last native position")
+        let warm = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0, requestID: nil,
+            event: .keptWarm(ordinal: 1, microseconds: 1, servingContextTokens: 1_048_576))
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(warm)) == warm, "A native serving context")
+        let wide = ClusterWorkerProfile(id: "wide", vocabularySize: 512, maximumPromptTokens: 1_048_576,
+            maximumOutputTokens: ClusterWorkerLimits.wireOutputTokens + 1, maximumChunkTokens: 2048,
+            maximumContextTokens: 1_048_576)
+        try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+            requestID: nil, event: .ready(.init(identity: identity, rank: 0, profile: wide,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024)))) }
+        let long = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: Array(repeating: 1, count: 1_048_577),
+            stopTokenIDs: [], outputCount: 1, chunkSize: 2048, deadlineUptimeNanoseconds: 1000,
+            capacityLimitBytes: 900, sampling: nil)
+        try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
+            requestID: requestID, command: .reserve(long))) }
     }
 
     /// Round-2 fixes: the serving context travels in readiness and in every
@@ -342,6 +398,64 @@ struct ClusterWorkerProtocolTests {
             sampling: variant(bias: [.init(tokenID: 512, bias: 1)]))))
         try refuses { try c.event(.admitted(reservedBytes: 800)) }
         var ok = try Conversation(); try ok.start(sampled)
+    }
+    /// A request asking for logprobs carries `topLogprobs`; each of its
+    /// committed tokens carries exactly that many alternatives, and no other
+    /// request's tokens carry any. Values travel bit-exact.
+    static func logprobs() throws {
+        let asks = ClusterWorkerSampling(temperature: 0, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: [],
+            topLogprobs: 2)
+        // Greedy, yet the decoding rank must draw (and gather) with the product's sampler.
+        try check(!asks.isGreedyNoOp && !asks.isStochastic && !asks.admitsSpeculativeVerification
+            && asks.capturedLogprobs == 2, "Logprob flags")
+        let value = ClusterWorkerReservation(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: asks)
+        let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(value))
+        try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "topLogprobs round trip")
+        // A request without logprobs keeps its exact bytes.
+        let plain = ClusterWorkerSampling(temperature: 0.7, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: [])
+        let plainBytes = String(decoding: try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch,
+            sequence: 0, requestID: requestID, command: .reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3],
+            stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
+            sampling: plain)))), as: UTF8.self)
+        try check(!plainBytes.contains("topLogprobs"), "No logprob field without logprobs")
+        for bad in [21, -1] {
+            let s = ClusterWorkerSampling(temperature: 0.7, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+                repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: [],
+                topLogprobs: bad)
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: requestID, command: .reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3],
+                stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
+                sampling: s)))) }
+        }
+        let two = ClusterWorkerTokenLogprobs(logprob: -0.125, top: [.init(tokenID: 9, logprob: -0.125),
+                                                                     .init(tokenID: 40, logprob: -.infinity)])
+        let event = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 3, requestID: requestID,
+            event: .committedToken(ordinal: 0, tokenID: 9, committedTokens: 3, logprobs: two))
+        let decoded = try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(event))
+        try check(decoded == event, "Token logprobs round trip")
+        guard case .committedToken(_, _, _, let back?) = decoded.event,
+              back.logprob.bitPattern == Float(-0.125).bitPattern, back.top[1].logprob == -.infinity else {
+            throw TestFailure(message: "Token logprobs are not bit-exact")
+        }
+        for bad in [ClusterWorkerTokenLogprobs(logprob: .nan, top: []), ClusterWorkerTokenLogprobs(logprob: 0.5, top: []),
+                    ClusterWorkerTokenLogprobs(logprob: -1, top: [.init(tokenID: 262_144, logprob: -1)]),
+                    ClusterWorkerTokenLogprobs(logprob: -1, top: (0..<21).map { .init(tokenID: $0, logprob: -1) })] {
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 3,
+                requestID: requestID, event: .committedToken(ordinal: 0, tokenID: 9, committedTokens: 3, logprobs: bad))) }
+        }
+        // The session holds every token to the request's own count.
+        var c = try Conversation(); try c.start(value)
+        try refuses { try c.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3)) }
+        var wrong = try Conversation(); try wrong.start(value)
+        try refuses { try wrong.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3,
+            logprobs: .init(logprob: -1, top: [.init(tokenID: 9, logprob: -1)]))) }
+        var ok = try Conversation(); try ok.start(value)
+        try ok.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3, logprobs: two))
+        var none = try Conversation(); try none.start()
+        try refuses { try none.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3, logprobs: two)) }
     }
     static func lifecycle() throws {
         var c = try Conversation(); try c.start()

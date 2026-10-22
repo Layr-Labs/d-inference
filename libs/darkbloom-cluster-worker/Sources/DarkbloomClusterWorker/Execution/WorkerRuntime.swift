@@ -56,6 +56,11 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// past its deadline) and the other lanes go on; false when cancelling a
     /// started lane ends the batch.
     var retiresCancelledLanes: Bool { get }
+    /// The runtime sends each committed token's logprobs when a request's
+    /// sampling asks for them (`ClusterWorkerSampling.topLogprobs`). A runtime
+    /// that does not is never given such a request: it is refused as
+    /// unsupported before reservation.
+    var capturesLogprobs: Bool { get }
 }
 
 extension WorkerRuntime {
@@ -84,4 +89,5 @@ extension WorkerRuntime {
         throw WorkerFailure.invalid("This runtime serves one request at a time")
     }
     var retiresCancelledLanes: Bool { false }
+    var capturesLogprobs: Bool { false }
 }

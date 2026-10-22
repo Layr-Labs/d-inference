@@ -56,7 +56,8 @@ enum ToolConstraintFactory {
             else { return nil }
         } else {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
-                mode: prepared.mode, modelContext: modelContext)
+                mode: prepared.mode, modelContext: modelContext,
+                glm5PairPostValidation: prepared.glm5PairPostValidation)
             if strategy == .structuredPostValidation {
                 if Qwen4ModelIdentity.isQualified(modelContext.modelId),
                    modelContext.modelType == "qwen4_exp" {

@@ -59,6 +59,28 @@ struct GLM5NextRequestStateBudget: Equatable {
         let hostBytes: Int
     }
 
+    /// How a DSA history's token columns are bounded.
+    enum HistoryBound: Equatable {
+        /// The cache's own doubling (`GLM5NextDSACache`, no capacity limit):
+        /// up to `max(256, 2 * context)` columns, charged three times
+        /// (committed, tentative and the growth copy).
+        case geometric
+        /// A cache whose growth stops at this many columns
+        /// (`GLM5NextDSACache.capacityLimit`, at least the context): charged
+        /// twice, the history and the one fresh buffer an append writes before
+        /// the history it replaces is released.
+        case reserved(tokens: Int)
+
+        func columns(contextTokens: Int) throws -> (capacity: Int, copies: Int) {
+            switch self {
+            case .geometric: return (max(256, try GLM5NextRequestStateBudget.product([2, contextTokens])), 3)
+            case .reserved(let tokens):
+                guard tokens >= contextTokens else { throw ProbeError("GLM history bound is below its context") }
+                return (tokens, 2)
+            }
+        }
+    }
+
     /// Must match the owner's negotiated authenticated transport limits.
     struct TransportTerms: Codable, Equatable {
         let maximumRecordPlaintextBytes: Int
@@ -92,7 +114,8 @@ struct GLM5NextRequestStateBudget: Equatable {
                          workspace: WorkspaceEvidence?, transport: TransportTerms?,
                          maximumBufferBytes: Int,
                          allocationBound: (Int) throws -> Int,
-                         hostAllocationBound: (Int) throws -> Int) throws -> Self {
+                         hostAllocationBound: (Int) throws -> Int,
+                         history: HistoryBound = .geometric) throws -> Self {
         let c = inventory.configuration.textConfig
         try scope.validate(configuration: c)
         guard (0...1).contains(rank), !layers.isEmpty, layers.lowerBound >= 0,
@@ -128,9 +151,10 @@ struct GLM5NextRequestStateBudget: Equatable {
         let chunk = scope.maximumChunkTokens
         // GLM5NextDSACache starts at the first append length, then grows to
         // max(end, 2*capacity, 256). Without truncation, capacity <= max(256,2*N).
-        // Charge committed + tentative + growth padding, plus new input columns.
+        // Charge committed + tentative + growth padding, plus new input columns
+        // (`HistoryBound`: a capacity-limited cache is charged at its limit).
         // All three floating histories use <= FP32; validity is one byte.
-        let capacity = max(256, try product([2, scope.maximumContextTokens]))
+        let (capacity, copies) = try history.columns(contextTokens: scope.maximumContextTokens)
         let dsaLayers = layers.filter { c.layerTypes[$0] == .deepseekSparseAttention }.count
         var dsa = 0
         if dsaLayers > 0 {
@@ -138,7 +162,7 @@ struct GLM5NextRequestStateBudget: Equatable {
                           try product([c.indexHeadDim, 4]),
                           try product([c.indexHeadDim, 4]), 1]
             let one = try sum(widths.map { width in
-                try sum([native(product([capacity, width]), copies: 3),
+                try sum([native(product([capacity, width]), copies: copies),
                          native(product([chunk, width]))])
             })
             dsa = try product([one, dsaLayers])

@@ -69,6 +69,14 @@ final class GLM5NextTensorParallelPrefixCache {
     func store(scope: String, prompt: [Int], length: Int, cache: GLM5NextTextStageCache,
                mtp: GLM5NextMTPCheckpoint? = nil) {
         guard enabled else { return }
+        // An entry above the budget is never kept: skip it before its compact
+        // copy exists (a long prompt's would be tens of GB beside the request,
+        // outside its charge). The logical bytes are a lower bound of the
+        // buffers below, so every entry kept before is still kept.
+        let logical = cache.layers.reduce(0) { total, layer in
+            total + ((layer as? GLM5NextDSACache)?.state.reduce(0) { $0 + $1.nbytes } ?? 0)
+        }
+        guard logical <= budgetBytes else { return }
         let kept = cache.copy()
         for case let history as GLM5NextDSACache in kept.layers { Self.compact(history) }
         let arrays = kept.layers.flatMap { $0.innerState() } + (mtp?.arrays ?? [])

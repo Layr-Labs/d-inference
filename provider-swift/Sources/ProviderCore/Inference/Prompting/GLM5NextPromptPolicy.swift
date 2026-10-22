@@ -181,12 +181,15 @@ enum GLM5NextPromptPolicy {
             return result
         }
 
-        func validate() throws {
+        /// `admitsReasoningExclusion`: a cluster pair serves `reasoning.exclude`
+        /// and `include_reasoning: false` by withholding the reasoning it
+        /// generates (`ToolChoicePromptPolicy.Prepared.glm5PairExcludesReasoning`).
+        func validate(admitsReasoningExclusion: Bool = false) throws {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
                     "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, and Boolean clear_thinking and reasoning switches")
             }
-            guard !excludesReasoning else {
+            guard !excludesReasoning || admitsReasoningExclusion else {
                 throw MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
             }
             // Contradictory spellings are refused, never reconciled.
@@ -197,10 +200,10 @@ enum GLM5NextPromptPolicy {
     }
 
     static func additionalContext(
-        request: OpenAIChatCompletionRequest, controls: ChatTemplateControls
+        request: OpenAIChatCompletionRequest, controls: ChatTemplateControls, admitsReasoningExclusion: Bool = false
     ) throws -> [String: any Sendable] {
         let raw = controls.rawGLM5Controls
-        try raw.validate()
+        try raw.validate(admitsReasoningExclusion: admitsReasoningExclusion)
         guard controls.preserveThinking == nil else { throw invalid("preserve_thinking is unsupported") }
         var thinkingOff = raw.disablesThinking
         var thinkingOn = raw.requestsThinking
@@ -241,11 +244,15 @@ enum GLM5NextPromptPolicy {
         prepared: ToolChoicePromptPolicy.Prepared,
         controls: ChatTemplateControls
     ) throws -> ProviderPromptContractPipeline.NormalizedInput {
-        let context = try additionalContext(request: request, controls: controls)
-        guard !prepared.requiresToolCall else {
+        let context = try additionalContext(request: request, controls: controls,
+            admitsReasoningExclusion: prepared.glm5PairPostValidation)
+        // On a cluster pair these are prompt-forced and validated before any
+        // call or JSON content is exposed (`ToolChoiceEnforcementPolicy`,
+        // `OpenAIResponseFormatSupport`); the single-Mac path refuses them.
+        guard !prepared.requiresToolCall || prepared.glm5PairPostValidation else {
             throw invalid("required/named tool_choice is not qualified by the native prompt format")
         }
-        guard request.responseFormat?.requiresJSONOutput != true else {
+        guard request.responseFormat?.requiresJSONOutput != true || prepared.glm5PairPostValidation else {
             throw invalid("JSON output mode and constrained JSON schemas are not qualified")
         }
         guard !MediaIngest.hasMedia(request) else { throw invalid("native media is not qualified") }

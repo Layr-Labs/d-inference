@@ -244,10 +244,11 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             while finish == nil {
                 let value = try event(0)
                 switch value {
-                case .committedToken(let ordinal, let token, let committed):
+                case .committedToken(let ordinal, let token, let committed, let logprobs):
                     guard !cleanStop, ordinal == count, count < reservation.outputCount,
                           committed == reservation.promptTokenIDs.count + ordinal, token < owner.profile.vocabularySize,
-                          last.map({ !reservation.stopTokenIDs.contains($0) }) ?? true else {
+                          last.map({ !reservation.stopTokenIDs.contains($0) }) ?? true,
+                          logprobs?.top.count == reservation.sampling?.capturedLogprobs else {
                         throw ClusterWorkerOwnerError.invalid("Unexpected committed worker token")
                     }
                     count += 1; last = token
@@ -255,7 +256,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                     // The token is committed on both ranks and is delivered even
                     // when a clean stop was requested meanwhile; the stop is the
                     // answer to it.
-                    let wanted = emit?(.token(token)) ?? false
+                    let wanted = emit?(.token(token, logprobs)) ?? false
                     if isCancelled { throw ClusterWorkerOwnerError.cancelled }
                     let keepGoing = wanted && !cleanStopWasRequested
                     cleanStop = !keepGoing

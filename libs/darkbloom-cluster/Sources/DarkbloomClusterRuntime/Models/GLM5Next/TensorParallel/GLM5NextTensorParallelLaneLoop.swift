@@ -9,6 +9,8 @@ struct GLM5NextTensorParallelLaneReservation: ClusterBatchLaneReservation {
     /// The lane's named state while it is held beside the other lanes
     /// (`GLM5NextTensorParallelResidentRuntime.laneStateBytes`).
     let laneStateBytes: Int
+    /// The rest of its request's charge: the transients of its own forward.
+    var transientBytes = 0
 }
 
 /// One decode unit the decode seam runs: a lane, the agreed token it decodes

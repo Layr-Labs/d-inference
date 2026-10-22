@@ -14,7 +14,7 @@ private final class Captured: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [ClusterWorkerRequestEvent] = []
     func append(_ value: ClusterWorkerRequestEvent) { lock.withLock { values.append(value) } }
-    var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id) = $0 { return id }; return nil } } }
+    var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id, _) = $0 { return id }; return nil } } }
     var clean: Bool { lock.withLock { values.contains { if case .finished = $0 { return true }; return false } } }
     var failureText: String? { lock.withLock { values.lazy.compactMap { if case .failed(let text) = $0 { return text }; return nil }.first } }
     var telemetry: (ClusterWorkerRequestTelemetry?, ClusterWorkerRequestTelemetry?)? {

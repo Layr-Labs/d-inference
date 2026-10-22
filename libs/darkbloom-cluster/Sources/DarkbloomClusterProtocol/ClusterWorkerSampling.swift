@@ -27,6 +27,8 @@ public struct ClusterWorkerSampling: Equatable, Sendable {
     public static let greedyTemperature: Float = 1e-5
     /// The most logit-bias entries one request may carry.
     public static let maximumLogitBiasEntries = 4096
+    /// OpenAI's ceiling for `top_logprobs`.
+    public static let maximumTopLogprobs = 20
 
     public let temperature: Float
     public let topP: Float
@@ -40,15 +42,23 @@ public struct ClusterWorkerSampling: Equatable, Sendable {
     public let stream: UInt64
     /// Ascending by token, each token at most once.
     public let logitBias: [LogitBias]
+    /// The product's `CBv2SamplingParams.topLogprobs`: 0 reports none; n > 0
+    /// sends each committed token's raw log probability and its n most likely
+    /// alternatives with the token (`ClusterWorkerTokenLogprobs`).
+    public let topLogprobs: Int
 
     public init(temperature: Float, topP: Float, topK: Int, minP: Float, repetitionPenalty: Float,
                 repetitionContextSize: Int, frequencyPenalty: Float, presencePenalty: Float,
-                seed: UInt64, stream: UInt64, logitBias: [LogitBias]) {
+                seed: UInt64, stream: UInt64, logitBias: [LogitBias], topLogprobs: Int = 0) {
         self.temperature = temperature; self.topP = topP; self.topK = topK; self.minP = minP
         self.repetitionPenalty = repetitionPenalty; self.repetitionContextSize = repetitionContextSize
         self.frequencyPenalty = frequencyPenalty; self.presencePenalty = presencePenalty
-        self.seed = seed; self.stream = stream; self.logitBias = logitBias
+        self.seed = seed; self.stream = stream; self.logitBias = logitBias; self.topLogprobs = topLogprobs
     }
+
+    /// How many alternatives each committed token carries, or nil when the
+    /// request reports no logprobs.
+    public var capturedLogprobs: Int? { topLogprobs > 0 ? topLogprobs : nil }
 
     /// The draw is random (not an argmax).
     public var isStochastic: Bool { temperature >= Self.greedyTemperature }
@@ -61,23 +71,28 @@ public struct ClusterWorkerSampling: Equatable, Sendable {
     public var dependsOnHistory: Bool {
         !logitBias.isEmpty || hasRepetitionPenalty || frequencyPenalty != 0 || presencePenalty != 0
     }
-    /// Nothing here changes a plain argmax: the reservation needs no sampling.
-    public var isGreedyNoOp: Bool { !isStochastic && !dependsOnHistory }
+    /// Nothing here changes a plain argmax or asks for logprobs: the
+    /// reservation needs no sampling.
+    public var isGreedyNoOp: Bool { !isStochastic && !dependsOnHistory && topLogprobs == 0 }
     /// Speculative decoding verifies drafts against keyed target samples,
     /// as the product's target-prefix acceptance does. Only the stateless
-    /// transforms are reproduced position by position.
-    public var admitsSpeculativeVerification: Bool { !dependsOnHistory }
+    /// transforms are reproduced position by position, and, as in the
+    /// product, a request that captures logprobs decodes one token per step.
+    public var admitsSpeculativeVerification: Bool { !dependsOnHistory && topLogprobs == 0 }
 }
 
 enum ClusterWorkerSamplingCodec {
     static func encode(_ s: ClusterWorkerSampling) -> [String: Any] {
-        ["temperatureBits": Int(s.temperature.bitPattern), "topPBits": Int(s.topP.bitPattern), "topK": s.topK,
+        var value: [String: Any] = ["temperatureBits": Int(s.temperature.bitPattern), "topPBits": Int(s.topP.bitPattern), "topK": s.topK,
          "minPBits": Int(s.minP.bitPattern), "repetitionPenaltyBits": Int(s.repetitionPenalty.bitPattern),
          "repetitionContextSize": s.repetitionContextSize,
          "frequencyPenaltyBits": Int(s.frequencyPenalty.bitPattern),
          "presencePenaltyBits": Int(s.presencePenalty.bitPattern),
          "seed": hex(s.seed), "stream": hex(s.stream),
          "logitBiasTokenIDs": s.logitBias.map(\.tokenID), "logitBiasBits": s.logitBias.map { Int($0.bias.bitPattern) }]
+        // Absent for a request without logprobs: its bytes are those of a worker without them.
+        if s.topLogprobs > 0 { value["topLogprobs"] = s.topLogprobs }
+        return value
     }
 
     static func decode(_ object: [String: Any]) throws -> ClusterWorkerSampling {
@@ -95,11 +110,13 @@ enum ClusterWorkerSamplingCodec {
         let tokens = try r.ints("logitBiasTokenIDs"), bits = try r.ints("logitBiasBits")
         try workerRequire(tokens.count == bits.count && bits.allSatisfy({ (0...Int(UInt32.max)).contains($0) }),
             "Invalid logit bias")
+        let topLogprobs = try r.optionalInt("topLogprobs") ?? 0
         try r.finish()
         return .init(temperature: temperature, topP: topP, topK: topK, minP: minP, repetitionPenalty: repetitionPenalty,
             repetitionContextSize: repetitionContextSize, frequencyPenalty: frequencyPenalty,
             presencePenalty: presencePenalty, seed: seed, stream: stream,
-            logitBias: zip(tokens, bits).map { .init(tokenID: $0.0, bias: Float(bitPattern: UInt32($0.1))) })
+            logitBias: zip(tokens, bits).map { .init(tokenID: $0.0, bias: Float(bitPattern: UInt32($0.1))) },
+            topLogprobs: topLogprobs)
     }
 
     static func validate(_ s: ClusterWorkerSampling) throws {
@@ -111,6 +128,7 @@ enum ClusterWorkerSamplingCodec {
             && s.logitBias.count <= ClusterWorkerSampling.maximumLogitBiasEntries
             && s.logitBias.allSatisfy({ (0..<ClusterWorkerLimits.vocabularySize).contains($0.tokenID) })
             && zip(s.logitBias, s.logitBias.dropFirst()).allSatisfy({ $0.tokenID < $1.tokenID })
+            && (0...ClusterWorkerSampling.maximumTopLogprobs).contains(s.topLogprobs)
             && !s.isGreedyNoOp, "Invalid worker sampling")
     }
 

@@ -8,11 +8,12 @@ enum ProviderPromptContractPipeline {
         let tools: [[String: any Sendable]]?
         let additionalContext: [String: any Sendable]?
     }
-    static func validateNativeControls(_ controls: ChatTemplateControls, modelType: String?) throws {
+    static func validateNativeControls(_ controls: ChatTemplateControls, modelType: String?,
+                                       glm5PairPostValidation: Bool = false) throws {
         try controls.rawMiMoControls.validate(modelType: modelType)
         try FlintRequestPolicy.validateControls(controls, modelType: modelType)
         if GLM5NextPromptPolicy.applies(modelType: modelType) {
-            try controls.rawGLM5Controls.validate()
+            try controls.rawGLM5Controls.validate(admitsReasoningExclusion: glm5PairPostValidation)
         }
     }
     static func tokenizeProviderBody(
@@ -61,7 +62,8 @@ enum ProviderPromptContractPipeline {
         templateControls: ChatTemplateControls,
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
-        try validateNativeControls(templateControls, modelType: modelType)
+        try validateNativeControls(templateControls, modelType: modelType,
+            glm5PairPostValidation: prepared.glm5PairPostValidation)
         try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
         if GLM5NextPromptPolicy.applies(modelType: modelType) {
             guard !preserveMiMoMediaParts else {

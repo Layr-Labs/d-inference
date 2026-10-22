@@ -138,6 +138,19 @@ public final class TokenizerHandle: @unchecked Sendable {
             Gemma4ToolConstraintContract.isVerified(modelType: modelType, modelDirectory: modelDirectory))
     }
 
+    /// A cluster pair's handle: `serving`, over the tokenizer a single-Mac
+    /// slot of the model renders with. For GLM-5.3-Flash that is the
+    /// thinking-off tokenizer the single-Mac load installs
+    /// (`GLM5NextManagedLoad`), so `reasoning.enabled: false` and effort
+    /// `none` close the think block on the pair as they do on one Mac.
+    static func pairServing(
+        _ inner: any MLXLMCommon.Tokenizer, modelType: String?, modelDirectory: URL
+    ) throws -> TokenizerHandle {
+        let rendering: any MLXLMCommon.Tokenizer = GLM5NextPromptPolicy.applies(modelType: modelType)
+            ? try GLM5NextThinkingTokenizer(base: inner) : inner
+        return serving(rendering, modelType: modelType, modelDirectory: modelDirectory)
+    }
+
     func gemmaVocabulary(
         stopTokenIDs: Set<Int>
     ) throws -> GemmaTokenVocabulary {

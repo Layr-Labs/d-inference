@@ -650,6 +650,34 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.exits.reasons, [])
     }
 
+    /// A runtime that does not send token logprobs refuses a request that asks
+    /// for them, alone, before reserving anything, and keeps serving.
+    func testLogprobRequestIsRefusedByARuntimeWithoutThem() throws {
+        let h = try Harness(), first = UUID(), second = UUID()
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        let asks = ClusterWorkerSampling(temperature: 0, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: [],
+            topLogprobs: 1)
+        let plain = h.reservation()
+        try h.send(.reserve(.init(profileID: plain.profileID, promptTokenIDs: plain.promptTokenIDs, stopTokenIDs: [],
+            outputCount: plain.outputCount, chunkSize: plain.chunkSize,
+            deadlineUptimeNanoseconds: plain.deadlineUptimeNanoseconds, capacityLimitBytes: plain.capacityLimitBytes,
+            sampling: asks)), id: first)
+        XCTAssertEqual(try h.event().event, .refused(.unsupported))
+        try h.send(.reserve(h.reservation()), id: second)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.start, id: second)
+        for ordinal in 0..<2 {
+            XCTAssertEqual(try h.event().event, .committedToken(ordinal: ordinal, tokenID: 7 + ordinal, committedTokens: 3 + ordinal))
+            try h.send(.tokenDecision(ordinal: ordinal, decision: .proceed), id: second)
+        }
+        XCTAssertEqual(try h.event().event, .finished(.length))
+        XCTAssertEqual(try h.event().event, .retired(.clean))
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
+    }
+
     /// The owner gives back a reservation that never started because the
     /// other rank refused the request: `cancel` is answered `retired(cancelled)`,
     /// the runtime's reservation is released and the worker keeps serving.

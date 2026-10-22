@@ -99,7 +99,7 @@ func milliseconds(_ value: UInt64) -> String { String(format: "%.3f", Double(val
             sent = now()
             try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
             for ordinal in 0..<4 {
-                guard case .committedToken(let committed, _, _) = try event(e), committed == ordinal else { throw OwnerWire.invalid("Expected token \(ordinal)") }
+                guard case .committedToken(let committed, _, _, _) = try event(e), committed == ordinal else { throw OwnerWire.invalid("Expected token \(ordinal)") }
                 request.append(now() - sent)
                 sent = now()
                 try e.sendWorkerCommand(.tokenDecision(ordinal: ordinal, decision: .proceed), requestID: id, deadline: deadline)

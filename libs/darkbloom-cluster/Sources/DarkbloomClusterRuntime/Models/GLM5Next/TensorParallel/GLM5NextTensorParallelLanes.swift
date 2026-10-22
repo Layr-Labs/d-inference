@@ -17,12 +17,13 @@ import MLXLMCommon
 /// batched executor that verifies several lanes' windows in one forward
 /// replaces that seam and nothing else.
 ///
-/// Memory: the load charged one whole request (`requestReserveBytes`: both
-/// stages' request state at the profile's longest context, the sum and bulk
-/// prefill workspaces, NextN work and windows). Lanes run one forward at a
-/// time, so that whole allowance stays one; beside it, every other held lane
-/// is charged its own named state at its own context (`laneStateBytes`). A
-/// lane the host cannot hold now is refused, alone; the running lanes go on.
+/// Memory: a request's whole charge at its own context
+/// (`GLM5NextTensorParallelRequestCharge`: both stages' request state, the sum
+/// and bulk prefill workspaces, NextN work and windows) is its named state
+/// (`laneStateBytes`) and the transients of its forward. Lanes run one
+/// forward at a time, so the host holds every held lane's state and the
+/// largest of their transients. A lane the host cannot hold now is refused,
+/// alone; the running lanes go on.
 ///
 /// Isolation: a lane that ends (its stop token, its output limit, its owner's
 /// stop answer), is cancelled, or passes its deadline leaves both ranks at a
@@ -38,17 +39,25 @@ extension GLM5NextTensorParallelResidentRuntime {
     /// One lane's named state on a rank while it is held beside others, at
     /// its own context (prompt plus output tokens): every DSA layer's latent
     /// and index histories (replicated under TP) at the cache's growth bound
-    /// `max(256, 2 * context)`, every KDA layer's settled convolution and
+    /// (`historyTokens`, the request's capped length, or the doubling's
+    /// `max(256, 2 * context)`), every KDA layer's settled convolution and
     /// recurrent state (whole heads, as the request budget charges them), and
-    /// the NextN history when it decodes speculatively. One copy each: the
-    /// transient copies of a growth or a verification window belong to the
-    /// one forward that runs, inside the whole allowance.
+    /// the NextN history when it decodes speculatively. One copy each at the
+    /// doubling's bound. At a capped length, the histories also carry the
+    /// fresh buffer an append writes before the one it replaces is released
+    /// (twice, the NextN history a round's checkpoint and two drafts: three
+    /// times): every speculating lane's round appends in the one batched
+    /// verification forward (`decode`), so those copies coexist. Prefill
+    /// frames still run one lane at a time, inside its request's whole charge.
     static func laneStateBytes(configuration c: GLM5NextTextConfiguration, contextTokens: Int, speculative: Bool,
+                               historyTokens: Int? = nil,
                                allocationBound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound)
         throws -> Int {
         typealias Bytes = QwenLongPrefillCheckedBytes
         guard contextTokens > 0 else { throw ProbeError("GLM lane state needs a positive context") }
-        let capacity = max(256, try Bytes.product([2, contextTokens]))
+        let capacity = try (historyTokens.map { GLM5NextRequestStateBudget.HistoryBound.reserved(tokens: $0) } ?? .geometric)
+            .columns(contextTokens: contextTokens).capacity
+        let (copies, nextNCopies) = historyTokens == nil ? (1, 1) : (2, 3)
         let history = try Bytes.sum([c.kvLoraRank * 4, c.indexHeadDim * 4, c.indexHeadDim * 4, 1].map {
             try allocationBound(Bytes.product([capacity, $0]))
         })
@@ -66,8 +75,9 @@ extension GLM5NextTensorParallelResidentRuntime {
             allocationBound(Bytes.product([depth, linear.numHeads, linear.headDim, linear.headDim, 4])),
             allocationBound(Bytes.product([depth, 3, linear.numHeads, linear.headDim, linear.shortConvKernelSize, 4]))]),
             2, kdaLayers]) : 0
-        return try Bytes.sum([Bytes.product([history, dsaLayers]),
-            Bytes.product([Bytes.sum([recurrent, convolution]), kdaLayers]), speculative ? history : 0, windows])
+        return try Bytes.sum([Bytes.product([history, dsaLayers, copies]),
+            Bytes.product([Bytes.sum([recurrent, convolution]), kdaLayers]),
+            speculative ? Bytes.product([history, nextNCopies]) : 0, windows])
     }
 
     func withExclusiveOperation<T>(_ body: () throws -> T) throws -> T {
@@ -95,19 +105,26 @@ extension GLM5NextTensorParallelResidentRuntime {
                 promptTokenIDs: value.promptTokenIDs, chunkSize: value.chunkSize, outputCount: value.outputCount,
                 stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            guard requestReserveBytes <= value.capacityLimitBytes, laneBook.count < lanes.lanes else {
+            let context = request.maximumTokens
+            let charge = try requestCharge.bytes(contextTokens: context)
+            guard charge <= value.capacityLimitBytes, laneBook.count < lanes.lanes else {
                 throw ProbeError("GLM lane reservation exceeds its owner ceiling or every lane is taken")
             }
             let state = try Self.laneStateBytes(configuration: descriptor.configuration.textConfig,
-                contextTokens: value.promptTokenIDs.count + value.outputCount, speculative: mtp != nil)
-            let others = try laneBook.stateBytes()
+                contextTokens: context, speculative: mtp != nil,
+                historyTokens: requestCharge.historyTokens(contextTokens: context))
+            let transient = max(0, charge - state)
+            // Every held lane's state, and the largest forward's transients.
+            let held = laneBook.reservations()
+            let states = try QwenLongPrefillCheckedBytes.sum([state] + held.map(\.laneStateBytes))
+            let largest = max(transient, held.map(\.transientBytes).max() ?? 0)
             try prefix.yieldingMemory {
-                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([requestReserveBytes, others]))
+                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([states, largest]))
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,
-                laneStateBytes: state), lanes: lanes.lanes)
-            return requestReserveBytes
+                laneStateBytes: state, transientBytes: transient), lanes: lanes.lanes)
+            return charge
         }
     }
 

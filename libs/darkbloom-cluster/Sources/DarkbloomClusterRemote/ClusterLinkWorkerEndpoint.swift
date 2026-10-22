@@ -58,7 +58,10 @@ public enum ClusterLinkWorkerError: Error, Equatable, Sendable {
 public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     /// The opaque tag of the worker wire on a link edge.
     public static let tag: UInt16 = 0x5708
-    public static let maximumBytes = 1_048_576
+    /// A command crosses base64-encoded in `worker`: the largest worker
+    /// command (`ClusterWorkerLimits.commandBytes`, a reservation with a
+    /// `wirePromptTokens` prompt) is 4/3 of it, with room for the other fields.
+    public static let maximumBytes = 12 * 1024 * 1024
     public static let version = 1
 
     public enum Kind: String, Codable, Sendable {

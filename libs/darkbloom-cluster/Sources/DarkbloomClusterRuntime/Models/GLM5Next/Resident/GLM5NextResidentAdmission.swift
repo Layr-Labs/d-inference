@@ -18,7 +18,19 @@ public struct GLM5NextResidentDescriptor {
     public let fingerprint: String
     let includesVision: Bool
     let configuration: GLM5NextConfiguration
+    /// What the pair advertises and a reservation is held to.
     let profile: QwenLayerStageGenerationProfile
+    /// The request every LOAD gate and the memory plan charge: the profile
+    /// itself, or a smaller standard request when the profile is the model's
+    /// native context (`GLM5NextRegisteredSpecification.memoryLimits`). A
+    /// runtime that charges each request at its own context admits beyond it
+    /// (tensor parallel); one that does not serves up to it (the pipeline).
+    let memoryProfile: QwenLayerStageGenerationProfile
+
+    /// A memory scope within the profile's limits.
+    struct MemoryScope: Equatable {
+        let promptTokens: Int, outputTokens: Int, contextTokens: Int
+    }
 
     public init(modelID: String, artifactIdentity: GLM5NextArtifactIdentity,
                 artifactAggregateSHA256: String, configurationBytes: Data, cut: Int,
@@ -27,6 +39,22 @@ public struct GLM5NextResidentDescriptor {
                 maximumOutputTokens: Int, maximumContextTokens: Int,
                 generationMode: QwenResidentGenerationMode = .pipeline,
                 prefixReuse: Bool = false, batchSize: Int = 1, includesVision: Bool = false) throws {
+        try self.init(modelID: modelID, artifactIdentity: artifactIdentity, artifactAggregateSHA256: artifactAggregateSHA256,
+            configurationBytes: configurationBytes, cut: cut, storage: storage, executionPolicy: executionPolicy,
+            profileID: profileID, maximumPromptTokens: maximumPromptTokens, maximumChunkTokens: maximumChunkTokens,
+            maximumOutputTokens: maximumOutputTokens, maximumContextTokens: maximumContextTokens,
+            generationMode: generationMode, prefixReuse: prefixReuse, batchSize: batchSize,
+            includesVision: includesVision, memoryScope: nil)
+    }
+
+    init(modelID: String, artifactIdentity: GLM5NextArtifactIdentity,
+         artifactAggregateSHA256: String, configurationBytes: Data, cut: Int,
+         storage: GLM5NextWeightInventory.Storage, executionPolicy: GLM5NextExecutionPolicy,
+         profileID: String, maximumPromptTokens: Int, maximumChunkTokens: Int,
+         maximumOutputTokens: Int, maximumContextTokens: Int,
+         generationMode: QwenResidentGenerationMode = .pipeline,
+         prefixReuse: Bool = false, batchSize: Int = 1, includesVision: Bool = false,
+         memoryScope: MemoryScope?) throws {
         guard generationMode == .pipeline, !prefixReuse, batchSize == 1 else {
             throw ProbeError("GLM resident currently requires regular pipeline, cold prefix and batch size one")
         }
@@ -68,6 +96,22 @@ public struct GLM5NextResidentDescriptor {
             maximumPromptTokens: maximumPromptTokens, maximumChunkTokens: maximumChunkTokens,
             maximumOutputTokens: maximumOutputTokens, maximumContextTokens: maximumContextTokens,
             residualStreams: 4)
+        let memoryProfile: QwenLayerStageGenerationProfile
+        if let memoryScope, memoryScope.contextTokens < maximumContextTokens {
+            guard (1...maximumPromptTokens).contains(memoryScope.promptTokens),
+                  (1...maximumOutputTokens).contains(memoryScope.outputTokens),
+                  (memoryScope.promptTokens...maximumContextTokens).contains(memoryScope.contextTokens) else {
+                throw ProbeError("GLM memory scope exceeds the resident profile")
+            }
+            memoryProfile = try QwenLayerStageGenerationProfile(identifier: profileID,
+                vocabularySize: c.vocabularySize, hiddenSize: c.hiddenSize, activationDType: c.dtype,
+                maximumPromptTokens: memoryScope.promptTokens,
+                maximumChunkTokens: min(maximumChunkTokens, memoryScope.promptTokens),
+                maximumOutputTokens: memoryScope.outputTokens, maximumContextTokens: memoryScope.contextTokens,
+                residualStreams: 4)
+        } else {
+            memoryProfile = profile
+        }
         // Exercise the actual driver's compact-byte bound at the advertised cap.
         let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
             promptTokenIDs: Array(repeating: 0, count: maximumChunkTokens),
@@ -92,6 +136,8 @@ public struct GLM5NextResidentDescriptor {
             try GLM5NextStageContract.policySHA256(executionPolicy), profile.fingerprint,
             "pipeline", "prefix=false", "batch=1", "mtp=false"]
         if includesVision { fields.append("still-images=v1") }
+        // Only a memory scope below the profile changes the bytes it always had.
+        if memoryProfile.fingerprint != profile.fingerprint { fields.append("memory=" + memoryProfile.fingerprint) }
         for name in artifactIdentity.files.keys.sorted() {
             let file = artifactIdentity.files[name]!
             fields += [name, String(file.bytes), file.sha256]
@@ -100,7 +146,7 @@ public struct GLM5NextResidentDescriptor {
         self.modelID = modelID; self.artifactIdentity = artifactIdentity
         self.artifactAggregateSHA256 = artifactAggregateSHA256; self.cut = cut
         self.storage = storage; self.executionPolicy = executionPolicy
-        self.configuration = configuration; self.profile = profile
+        self.configuration = configuration; self.profile = profile; self.memoryProfile = memoryProfile
     }
 
     var wireProfile: ClusterWorkerProfile {
@@ -178,7 +224,7 @@ public struct GLM5NextResidentResourceEnvelope {
             throw ProbeError("Experimental calibration allowance is not serving workspace evidence")
         }
         self.calibrationOnly = calibrationOnly
-        let p = descriptor.profile
+        let p = descriptor.memoryProfile
         let scope = GLM5NextRequestStateBudget.Scope(maximumContextTokens: p.maximumContextTokens,
             maximumPromptTokens: p.maximumPromptTokens, maximumOutputTokens: p.maximumOutputTokens,
             maximumChunkTokens: p.maximumChunkTokens, includesVision: descriptor.includesVision)
@@ -292,6 +338,14 @@ struct GLM5NextResidentAdmission {
               value.capacityLimitBytes > 0,
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("GLM reservation differs from its profile, capacity, route or deadline")
+        }
+        // The pipeline's LOAD charged its memory scope, never more: a longer
+        // request is not charged here, so it is not served here (its READY
+        // says so too: `servingContextTokens`).
+        let memory = descriptor.memoryProfile
+        guard value.promptTokenIDs.count <= memory.maximumPromptTokens, value.outputCount <= memory.maximumOutputTokens,
+              value.promptTokenIDs.count + value.outputCount <= memory.maximumContextTokens else {
+            throw ProbeError("GLM pipeline request exceeds the context its LOAD charged")
         }
         if let media = value.stillImages {
             let c = descriptor.configuration

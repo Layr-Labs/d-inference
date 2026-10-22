@@ -14,7 +14,7 @@ enum DistributedHTTPEventStream {
     // Budget framing as well as decoded text: 32K individual JSON/SSE deltas
     // can exceed the previous 8 MiB bound. This is a cumulative wire allowance,
     // not a buffer allocation; the pump and per-frame bounds remain unchanged.
-    static let maximumStreamBytes = ClusterWorkerLimits.outputTokens * 2048 + maximumFrameBytes
+    static let maximumStreamBytes = ClusterWorkerLimits.wireOutputTokens * 2048 + maximumFrameBytes
     static let maximumTerminalBytes = 4_096
     enum Failure: Error, Equatable { case outputLimit, malformedFrame, missingTerminal }
 

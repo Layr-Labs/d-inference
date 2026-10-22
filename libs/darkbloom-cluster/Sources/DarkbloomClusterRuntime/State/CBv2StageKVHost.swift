@@ -94,9 +94,11 @@ final class CBv2StageKVHost {
 
     static let segmentBytes = 64 << 20
 
-    /// Builds the host for a dense or routed-expert Qwen 3.5 stage, or the
-    /// contiguous host of a Gemma 4 stage's batch lanes. Other families keep
-    /// their own per-request contiguous geometry.
+    /// Builds the host for a dense or routed-expert Qwen 3.5 stage, a Gemma 4
+    /// stage (its sliding layers as page rings, as the single-Mac product
+    /// pages `gemma-4-26b-qat-4bit`) or a Nemotron 3.5 stage (its attention
+    /// layers; its Mamba state stays per request). Other families keep their
+    /// own per-request contiguous geometry.
     init(model: any LanguageModel, kind: ClusterStageKVBackendKind, lanes: Int,
          maximumTokensPerRequest: Int, maximumChunkTokens: Int) throws {
         guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= ClusterWorkerLimits.contextTokens,
@@ -104,19 +106,35 @@ final class CBv2StageKVHost {
             throw ProbeError("Stage KV host needs 1...8 lanes and a bounded request length")
         }
         if let gemma = model as? Gemma4LayerStageModel {
-            // Its sliding rings are kept contiguous: the paged pool's windowed
-            // rows are not qualified for the cluster yet.
-            guard kind == .contiguous else {
-                throw ProbeError("Gemma stage batch lanes keep contiguous KV storage (\(ClusterStageKVBackendKind.environmentName)=contiguous)")
-            }
+            // Every layer owns its rows (no shared keys/values), keyed by the
+            // stage's own storage index; a sliding layer's row is a page ring
+            // of its window plus one speculative span (`PagedKVPool.ringPageCount`).
             let geometry = try gemma.layerStageRequestGeometry(maximumTokens: maximumTokensPerRequest)
+            // A paged request holds whole pages: a ring a page past the window,
+            // a full layer rounded up to a page (`CBv2PagedKVResidency`).
+            let perRequest = kind == .paged
+                ? max(geometry.kvCapacityBytes, try Self.pagedRequestBytes(kinds: geometry.kinds, dtype: geometry.kvDType,
+                    maximumTokens: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens))
+                : geometry.kvCapacityBytes
             let capacity = try QwenLongPrefillCheckedBytes.sum([
-                QwenLongPrefillCheckedBytes.product([geometry.kvCapacityBytes, lanes]), Self.segmentBytes])
-            let caches: [any CBv2AttendingLayerCache] = geometry.kinds.enumerated().map {
-                CBv2LayerCache(layerIndex: $0.offset, kind: $0.element)
+                QwenLongPrefillCheckedBytes.product([perRequest, lanes]), Self.segmentBytes])
+            let caches: [any CBv2AttendingLayerCache]
+            switch kind {
+            case .paged:
+                let paged = try Self.pagedBackend(kinds: geometry.kinds, dtype: geometry.kvDType,
+                    capacity: capacity, maximumTokensPerRequest: maximumTokensPerRequest,
+                    maximumChunkTokens: maximumChunkTokens)
+                caches = paged.makeLayerCaches()
+                backend = paged
+            case .contiguous:
+                caches = geometry.kinds.enumerated().map { CBv2LayerCache(layerIndex: $0.offset, kind: $0.element) }
+                backend = CBv2ContiguousKVBackend(config: .init(bytesCapacity: capacity, kvDType: geometry.kvDType))
+            }
+            guard caches.count == geometry.kinds.count,
+                  zip(caches, geometry.kinds).allSatisfy({ $0.kind == $1 && $0.rows.isEmpty }) else {
+                throw ProbeError("Stage KV host caches differ from the Gemma stage's layers")
             }
             self.kind = kind; layerKinds = geometry.kinds
-            backend = CBv2ContiguousKVBackend(config: .init(bytesCapacity: capacity, kvDType: geometry.kvDType))
             self.caches = caches; bank = CBv2LayerCacheBank(caches: caches)
             kvDType = geometry.kvDType; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
             capacityBytes = capacity
@@ -125,7 +143,8 @@ final class CBv2StageKVHost {
         let kinds: [CBv2LayerKind]
         if let model = model as? Qwen35TextModel { kinds = model.cbv2LayerKinds }
         else if let model = model as? Qwen35Model { kinds = model.cbv2LayerKinds }
-        else { throw ProbeError("Stage KV host supports the Qwen 3.5 stage models only") }
+        else if let model = model as? NemotronH35Model { kinds = model.cbv2LayerKinds }
+        else { throw ProbeError("Stage KV host supports the Qwen 3.5, Gemma 4 and Nemotron 3.5 stage models only") }
         guard !kinds.isEmpty,
               let types = (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
               types.count == kinds.count, let dtype = types.first,
@@ -151,30 +170,22 @@ final class CBv2StageKVHost {
         func compact(_ make: (Int, CBv2LayerKind) throws -> any CBv2AttendingLayerCache) throws -> [any CBv2AttendingLayerCache] {
             if let model = model as? Qwen35TextModel { return try model.newCacheV2(makeLayerCache: make) }
             if let model = model as? Qwen35Model { return try model.newCacheV2(makeLayerCache: make) }
-            throw ProbeError("Stage KV host supports the Qwen 3.5 stage models only")
+            if let model = model as? NemotronH35Model { return try model.newCacheV2(makeLayerCache: make) }
+            throw ProbeError("Stage KV host supports the Qwen 3.5, Gemma 4 and Nemotron 3.5 stage models only")
         }
         let backend: any CBv2KVBackend
         let caches: [any CBv2AttendingLayerCache]
         switch kind {
         case .paged:
-            let paged: PagedKVBackend
-            do {
-                paged = try PagedKVBackend(layerKinds: kinds, config: PagedKVPoolConfig(
-                    capacityBytes: capacity, dtype: dtype,
-                    maxPrefillChunk: maximumChunkTokens,
-                    nominalMaxSequenceLength: maximumTokensPerRequest,
-                    maxBufferLength: GPU.deviceInfo().maxBufferSize,
-                    segmentSizeBytes: Self.segmentBytes,
-                    layerDTypes: types), slabCommitment: .atFirstAdmission)
-            } catch {
-                throw ProbeError("Paged KV backend is ineligible for this stage: \(error)")
-            }
+            let paged = try Self.pagedBackend(kinds: kinds, dtype: dtype, capacity: capacity,
+                maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
             let storage = paged.makeLayerCaches()
             // Item 23: a one-request host's prompt chunks attend a transient
             // contiguous mirror instead of re-gathering the history per chunk.
             // The mirror is one more copy of the prefilling request's KV,
-            // which `perRequest` bounds; batch lanes keep the gather.
-            if lanes == 1 {
+            // which `perRequest` bounds; batch lanes keep the gather. (Qwen
+            // only: qualified there.)
+            if lanes == 1, !(model is NemotronH35Model) {
                 for cache in storage { cache.prefillMirrorAllowed = true }
             }
             caches = try compact { layer, _ in
@@ -214,6 +225,40 @@ final class CBv2StageKVHost {
         backend.bytesReserved == 0 && backend.bytesInUse == 0 && caches.allSatisfy { $0.rows.isEmpty }
     }
 
+    /// The segmented paged pool every hosted stage takes its pages from: one
+    /// group per attention geometry, a sliding layer's row a ring.
+    static func pagedBackend(kinds: [CBv2LayerKind], dtype: DType, capacity: Int, maximumTokensPerRequest: Int,
+                             maximumChunkTokens: Int) throws -> PagedKVBackend {
+        do {
+            return try PagedKVBackend(layerKinds: kinds, config: PagedKVPoolConfig(
+                capacityBytes: capacity, dtype: dtype,
+                maxPrefillChunk: maximumChunkTokens,
+                nominalMaxSequenceLength: maximumTokensPerRequest,
+                maxBufferLength: GPU.deviceInfo().maxBufferSize,
+                segmentSizeBytes: Self.segmentBytes,
+                layerDTypes: Array(repeating: dtype, count: kinds.count)), slabCommitment: .atFirstAdmission)
+        } catch {
+            throw ProbeError("Paged KV backend is ineligible for this stage: \(error)")
+        }
+    }
+
+    /// One request's keys and values on the paged pool at `maximumTokens`:
+    /// each layer's whole pages as the pool reserves them (a sliding layer's
+    /// at most its ring).
+    static func pagedRequestBytes(kinds: [CBv2LayerKind], dtype: DType, maximumTokens: Int,
+                                  maximumChunkTokens: Int) throws -> Int {
+        let residency = CBv2PagedKVResidency(config: PagedKVPoolConfig(capacityBytes: 1, dtype: dtype,
+            maxPrefillChunk: maximumChunkTokens, nominalMaxSequenceLength: maximumTokens,
+            segmentSizeBytes: Self.segmentBytes))
+        return try QwenLongPrefillCheckedBytes.sum(try kinds.map { kind in
+            guard let rows = residency.residentRows(layer: kind, tokens: maximumTokens) else {
+                throw ProbeError("Paged request bytes overflow")
+            }
+            return try QwenLongPrefillCheckedBytes.product([rows, kind.kvHeads, kind.headDim + kind.valueHeadDim,
+                dtype.size])
+        })
+    }
+
     /// One line for whoever launched the worker: sizes only.
     func report(_ purpose: String) {
         log("darkbloom-stage-kv-v1 backend=\(kind.rawValue) purpose=\(purpose) lanes=\(lanes)"
@@ -237,10 +282,13 @@ extension CBv2StageKVHost {
         })
     }
 
-    /// True for the stage models whose request geometry takes a host: the
-    /// Qwen 3.5 stages always, a Gemma 4 stage for its batch lanes.
+    /// True for the stage models whose request geometry takes a host (so
+    /// their KV is paged unless the diagnosis switch names contiguous): the
+    /// Qwen 3.5 and Gemma 4 stages, and a one-lane Nemotron 3.5 stage (its
+    /// batch lanes are not built: `decodeBatch` has no Nemotron forward).
     static func supports(_ model: any LanguageModel, lanes: Int) -> Bool {
-        if model is Gemma4LayerStageModel { return lanes > 1 }
+        if model is Gemma4LayerStageModel { return true }
+        if model is NemotronH35Model { return lanes == 1 }
         return (model is Qwen35TextModel || model is Qwen35Model) && !(model is any LayerStageFrameForwarding)
             && !(model is NemotronHModel)
     }

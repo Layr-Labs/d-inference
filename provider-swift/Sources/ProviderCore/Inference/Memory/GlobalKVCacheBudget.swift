@@ -64,9 +64,11 @@ public actor GlobalKVCacheBudget {
     static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
     /// The reclaimer's fenced flush of MLX's buffer cache.
     private nonisolated let flushCache: @Sendable () -> Void
-    /// Engine-owned charge refusals (paged growth) signal the same
-    /// shortfall-gated reclaim as request reservations, because the proactive
-    /// sweep no longer flushes for busy engines while headroom is healthy.
+    /// Refused charges by owners that bypass request reservations (paged
+    /// engine growth, native MiMo media work) signal the same shortfall-gated
+    /// reclaim as request reservations, because busy engines keep memory no
+    /// proactive sweep returns while headroom is healthy
+    /// (`busyEnginesKeepReclaimableMemory`).
     nonisolated let signalsEngineRefusals: Bool
 
     /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0` restores the threshold-only sweep,
@@ -440,11 +442,15 @@ public actor GlobalKVCacheBudget {
     }
 
     nonisolated func makeEngineMemoryOwner() -> EngineProcessMemoryOwner {
-        guard signalsEngineRefusals else { return EngineProcessMemoryOwner(ledger: processLedger) }
+        EngineProcessMemoryOwner(ledger: processLedger, onRefusal: directChargeRefusalSignal())
+    }
+
+    /// The non-blocking shortfall signal for an owner that charges the ledger
+    /// directly; nil unless `signalsEngineRefusals`.
+    nonisolated func directChargeRefusalSignal() -> (@Sendable (UInt64) -> Void)? {
+        guard signalsEngineRefusals else { return nil }
         let reclaimer = reclaimer
-        return EngineProcessMemoryOwner(ledger: processLedger) { shortfall in
-            reclaimer.scheduleReclaim(shortfall: shortfall)
-        }
+        return { shortfall in reclaimer.scheduleReclaim(shortfall: shortfall) }
     }
 
     private static func makeLedger(

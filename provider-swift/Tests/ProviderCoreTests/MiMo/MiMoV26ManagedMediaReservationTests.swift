@@ -97,4 +97,39 @@ final class MiMoV26ManagedMediaReservationTests: XCTestCase {
         XCTAssertFalse(service.deadlineWork(modelID: "peer", epoch: "peer-epoch").known)
         XCTAssertEqual(ledger.snapshot().chargedBytes, 4096)
     }
+
+    /// A refused media charge requests the shortfall reclaim (retained KV
+    /// segments, then MLX's buffer cache) like a refused request reservation,
+    /// including when only the extra system reserve refused it.
+    func testCapacityRefusalSignalsShortfallReclaim() throws {
+        let usage = ControlledUsage()
+        usage.setAvailable(10_000)
+        let ledger = ProcessMemoryLedger(
+            policy: .init(epoch: 1, capBytes: 1 << 20, reserveBytes: 0),
+            readUsage: { usage.read() })
+        let signals = ShortfallSignals()
+
+        // 8,000 B fits the 10,000 B the ledger has left; the 4,000 B system
+        // reserve refuses it, short by 2,000 B.
+        XCTAssertThrowsError(try MiMoV26ManagedMediaReservation(initialBytes: 8_000, hostBytes: 0,
+            maximumBytes: 1 << 20, additionalSystemReserveBytes: 4_000, ledger: ledger,
+            serviceBudget: .init(), onRefusal: { signals.record($0) }))
+        XCTAssertEqual(signals.values, [2_000])
+
+        let reservation = try MiMoV26ManagedMediaReservation(initialBytes: 4_000, hostBytes: 4_000,
+            maximumBytes: 1 << 20, additionalSystemReserveBytes: 4_000, ledger: ledger,
+            serviceBudget: .init(), onRefusal: { signals.record($0) })
+        XCTAssertEqual(signals.values, [2_000], "an admitted charge signals nothing")
+        // Growing to 9,000 B needs 5,000 B more beside the reserve; 6,000 B remain.
+        XCTAssertThrowsError(try reservation.reserveDecodeWorkingBytes(9_000))
+        XCTAssertEqual(signals.values, [2_000, 3_000])
+        XCTAssertEqual(ledger.snapshot().chargedBytes, 4_000)
+    }
+
+    private final class ShortfallSignals: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [UInt64] = []
+        var values: [UInt64] { lock.withLock { recorded } }
+        func record(_ shortfall: UInt64) { lock.withLock { recorded.append(shortfall) } }
+    }
 }

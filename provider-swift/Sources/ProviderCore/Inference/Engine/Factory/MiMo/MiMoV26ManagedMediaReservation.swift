@@ -27,6 +27,9 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
     private var state: ProcessMemoryLedger.OwnerState
     private let additionalSystemReserveBytes: UInt64
     private let maximumBytes: UInt64
+    /// Non-blocking reclaim signal with an upper bound of what a refused
+    /// charge was short by (`GlobalKVCacheBudget.directChargeRefusalSignal`).
+    private let onRefusal: (@Sendable (UInt64) -> Void)?
     private var retired = false
     private var failed: [MiMoV26FailedMediaWork] = []
     private var failedRateActivity: WholeMacUnboundedActivity?
@@ -39,7 +42,7 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
     convenience init(plan: MiMoV26MultimodalPlan, bytes: Int, maximumBytes: UInt64,
          additionalSystemReserveBytes: UInt64, ledger: ProcessMemoryLedger,
          serviceBudget: WholeMacServiceBudget,
-         audioBinding: AudioBinding? = nil) throws {
+         audioBinding: AudioBinding? = nil, onRefusal: (@Sendable (UInt64) -> Void)? = nil) throws {
         guard bytes > 0, let amount = UInt64(exactly: bytes), amount <= maximumBytes,
               additionalSystemReserveBytes > 0, plan.audioPlan == nil || audioBinding != nil else {
             throw MiMoV26MultimodalError.reservationRejected
@@ -47,7 +50,7 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
         try audioBinding?.validate()
         try self.init(initialBytes:amount, hostBytes:0, maximumBytes:maximumBytes,
             additionalSystemReserveBytes:additionalSystemReserveBytes, ledger:ledger,
-            serviceBudget:serviceBudget)
+            serviceBudget:serviceBudget, onRefusal:onRefusal)
         planBinding = (plan.preparationSHA256,plan.loadedOwnerIdentity)
         self.audioBinding = audioBinding
         nativeBytes = amount
@@ -57,12 +60,13 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
     /// copies, already-accounted transport state or target KV.
     init(initialBytes: UInt64, hostBytes: UInt64, maximumBytes: UInt64,
          additionalSystemReserveBytes: UInt64, ledger: ProcessMemoryLedger,
-         serviceBudget: WholeMacServiceBudget) throws {
+         serviceBudget: WholeMacServiceBudget, onRefusal: (@Sendable (UInt64) -> Void)? = nil) throws {
         guard initialBytes > 0, hostBytes <= initialBytes, initialBytes <= maximumBytes,
               additionalSystemReserveBytes > 0 else { throw MiMoV26MultimodalError.reservationRejected }
         self.ledger = ledger; self.additionalSystemReserveBytes = additionalSystemReserveBytes
         self.serviceBudget = serviceBudget
         self.maximumBytes = maximumBytes
+        self.onRefusal = onRefusal
         self.hostBytes = hostBytes; hostCompleted = hostBytes == 0
         // Real reader is initialized before any reservation/transaction lock.
         ledger.prepareUsageReader()
@@ -75,7 +79,10 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
             _ = ledger.retire(state.owner) // exact cold, zero-charge owner only
             if let refusal = error as? ProcessMemoryLedger.Refusal {
                 switch refusal {
-                case .insufficientCapacity, .stalePolicy:
+                case .insufficientCapacity:
+                    signalShortfall(growthBytes: initialBytes)
+                    throw MiMoV26MultimodalError.reservationRejected
+                case .stalePolicy:
                     throw MiMoV26MultimodalError.reservationRejected
                 default: break
                 }
@@ -103,7 +110,10 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
                     additionalSystemReserveBytes:additionalSystemReserveBytes)
             } catch let refusal as ProcessMemoryLedger.Refusal {
                 switch refusal {
-                case .insufficientCapacity, .stalePolicy:
+                case .insufficientCapacity:
+                    signalShortfall(growthBytes: bytes > state.chargedBytes ? bytes - state.chargedBytes : 0)
+                    throw MiMoV26MultimodalError.reservationRejected
+                case .stalePolicy:
                     throw MiMoV26MultimodalError.reservationRejected
                 default: throw refusal
                 }
@@ -127,7 +137,10 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
                     additionalSystemReserveBytes:additionalSystemReserveBytes)
             } catch let refusal as ProcessMemoryLedger.Refusal {
                 switch refusal {
-                case .insufficientCapacity, .stalePolicy:
+                case .insufficientCapacity:
+                    signalShortfall(growthBytes: total > state.chargedBytes ? total - state.chargedBytes : 0)
+                    throw MiMoV26MultimodalError.reservationRejected
+                case .stalePolicy:
                     throw MiMoV26MultimodalError.reservationRejected
                 default: throw refusal
                 }
@@ -152,12 +165,29 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
                     additionalSystemReserveBytes: additionalSystemReserveBytes)
             } catch let refusal as ProcessMemoryLedger.Refusal {
                 switch refusal {
-                case .insufficientCapacity, .stalePolicy:
+                case .insufficientCapacity:
+                    signalShortfall(growthBytes: 0)
+                    throw MiMoV26MultimodalError.reservationRejected
+                case .stalePolicy:
                     throw MiMoV26MultimodalError.reservationRejected
                 default: throw refusal
                 }
             }
         }
+    }
+    /// A refused charge (`growthBytes` more than this owner held) signals
+    /// the reclaim a refused request reservation schedules. The ledger
+    /// snapshot omits the extra system reserve, which can shrink headroom by
+    /// at most its own size, so the shortfall is an upper bound: retained KV
+    /// segments are always asked back, and MLX's buffer cache is flushed only
+    /// when it certainly covers the refusal.
+    private func signalShortfall(growthBytes: UInt64) {
+        guard let onRefusal else { return }
+        let snapshot = ledger.snapshot()
+        let (reserved, reserveOverflow) = growthBytes.addingReportingOverflow(additionalSystemReserveBytes)
+        let (needed, debtOverflow) = reserved.addingReportingOverflow(snapshot.commitmentDebtBytes)
+        let bound = reserveOverflow || debtOverflow ? UInt64.max : needed
+        if bound > snapshot.remainingBytes { onRefusal(bound - snapshot.remainingBytes) }
     }
     func retainAfterFailedDrain(_ work: MiMoV26FailedMediaWork) {
         lock.withLock {

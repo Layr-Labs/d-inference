@@ -281,6 +281,18 @@ struct AdmissionRateEstimatorTests {
         timing.decodeSteps = 0
         usage.timing = timing
         #expect(EngineV2Bridge.engineDecodeShape(usage: usage, nativeBlock: false) == .init(batchRows: 1))
+        // The rate starts after the first-token step, so its rows are excluded
+        // when known: an eight-row first step, then one solo decode step.
+        timing.decodeSteps = 1
+        timing.batchRowsSum = 9
+        usage.timing = timing
+        usage.completionTokens = 2
+        #expect(EngineV2Bridge.engineDecodeShape(usage: usage, nativeBlock: false).batchRows == 4.5)
+        #expect(EngineV2Bridge.engineDecodeShape(usage: usage, nativeBlock: false,
+            firstTokenStepRows: 8) == .init(batchRows: 1))
+        // Inconsistent first-step rows fall back to averaging over that step.
+        #expect(EngineV2Bridge.engineDecodeShape(usage: usage, nativeBlock: false,
+            firstTokenStepRows: 10).batchRows == 4.5)
     }
 
     @Test("a completed request's terminal timing reaches the measured decode shape")
@@ -306,6 +318,39 @@ struct AdmissionRateEstimatorTests {
         continuation.finish()
         await consumer.value
         #expect(await bridge.observedDecodeStep.shape == .init(batchRows: 4, tokensPerStep: 3, stepWidth: 4))
+        await bridge.shutdown()
+    }
+
+    @Test("the first-token step's rows stay out of the decode-step shape")
+    func firstTokenStepRowsExcluded() async throws {
+        let (bridge, engine) = bridge(fixes: true)
+        let request = ChatCompletionRequest(model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: "user", content: "hi")], max_tokens: 32)
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
+            request: request, requestId: "wide-first-step")
+        let consumer = Task { for await _ in stream {} }
+        let continuation = try #require(engine.continuations.first)
+        // The first token was confirmed in an eight-row step...
+        var prefill = CBv2Usage(promptTokens: 200, completionTokens: 0)
+        var prefillTiming = CBv2RequestTiming()
+        prefillTiming.firstTokenNanos = 1_000_000
+        prefillTiming.batchRowsSum = 8
+        prefill.timing = prefillTiming
+        engine.completePrefill(prefill)
+        // ...and the nine decode steps the rate measures ran solo.
+        var usage = CBv2Usage(promptTokens: 200, completionTokens: 10)
+        var timing = CBv2RequestTiming()
+        timing.firstTokenNanos = 1_000_000
+        timing.lastTokenNanos = 91_000_000
+        timing.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        timing.decodeSteps = 9
+        timing.batchRowsSum = 17
+        usage.timing = timing
+        continuation.yield(.finished(reason: .stop, usage: usage))
+        continuation.finish()
+        await consumer.value
+        // Averaging over the first-token step as well would report 1.7 rows.
+        #expect(await bridge.observedDecodeStep.shape == .init(batchRows: 1))
         await bridge.shutdown()
     }
 

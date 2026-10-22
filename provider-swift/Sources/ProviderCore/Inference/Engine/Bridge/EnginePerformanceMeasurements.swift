@@ -104,6 +104,13 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         }
     }
 
+    /// Token-producing rows of the step that confirmed the first token. The
+    /// engine stamps prompt-completion timing at that step, the row's first
+    /// participation; nil before it or when no rows were reported.
+    var firstTokenStepRows: UInt64? {
+        lock.withLock { sample.map(\.usage.timing.batchRowsSum).flatMap { $0 > 0 ? $0 : nil } }
+    }
+
     var overlap: EngineMeasurementActivity.Overlap {
         var result = activity.snapshot(activityID)
         if isolationGuard?.isValid == false { result.contended = true }

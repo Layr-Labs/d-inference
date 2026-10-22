@@ -1,0 +1,852 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift
+@@ -0,0 +1,78 @@
++import Foundation
++import Darwin
++import DarkbloomClusterBootstrap
++import DarkbloomClusterProcess
++
++/// Created before the configured native child. Only this local triple contains
++/// uptime; the authenticated owner wire never forwards it to another Mac.
++public final class ClusterOwnerBootstrapAttachment: @unchecked Sendable {
++    public let profile: ClusterOwnerBootstrapProfile
++    public let deadlineUptimeNanoseconds: UInt64
++    private let listener: ClusterBootstrapListener
++    private let condition = NSCondition()
++    private var connection: ClusterBootstrapConnection?
++    private var pending: ClusterBootstrapRound?
++    private var reply: Data?
++    private var failed = false
++    private var completed = false
++
++    init(profile: ClusterOwnerBootstrapProfile, deadline: UInt64) throws {
++        self.profile = profile; deadlineUptimeNanoseconds = deadline
++        listener = try .init(deadlineUptimeNanoseconds: deadline)
++    }
++    public var workerArguments: [String] {
++        ["--bootstrap-socket-path", listener.socketPath, "--bootstrap-owner-pid", String(getpid()),
++         "--bootstrap-deadline-uptime-nanoseconds", String(deadlineUptimeNanoseconds)]
++    }
++    func cancel() {
++        condition.lock(); failed = true; let value = connection; condition.broadcast(); condition.unlock()
++        listener.cancel(); value?.cancel()
++    }
++    func acceptReply(sequence: UInt64, bytes: Data) throws {
++        condition.lock(); defer { condition.unlock() }
++        guard !failed, let pending, pending.sequence == sequence, reply == nil,
++              bytes.count == pending.contribution.count * 2 else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
++        let start = pending.identity.rank * pending.contribution.count
++        guard Data(bytes.dropFirst(start).prefix(pending.contribution.count)) == pending.contribution else { throw OwnerWire.invalid("Bootstrap reply changed local contribution") }
++        // Check both native scalar rows before they can influence allocation.
++        for rank in 0..<2 { try profile.validate(sequence: sequence, contribution: Data(bytes.dropFirst(rank * pending.contribution.count).prefix(pending.contribution.count))) }
++        reply = bytes; condition.broadcast()
++    }
++    func requireCompleted() throws {
++        condition.lock(); defer { condition.unlock() }
++        while !failed && !completed && DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds {
++            _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
++        }
++        guard completed && !failed else { throw OwnerWire.invalid("Native readiness precedes authenticated bootstrap completion") }
++    }
++    func run(child: ClusterWorkerProcess, binding: ClusterOwnerBinding,
++             publish: @Sendable (UInt64, Data) throws -> Void) throws {
++        do {
++            guard let pid = child.launchedProcessIdentifier else { throw OwnerWire.invalid("Bootstrap lacks actual child PID") }
++            let connection = try listener.accept(processID: pid,
++                identity: .init(membershipEpoch: binding.identity.membershipEpoch, rank: binding.rank),
++                deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
++            condition.lock()
++            guard !failed else { condition.unlock(); connection.cancel(); throw ClusterBootstrapError.closed }
++            self.connection = connection; condition.unlock()
++            for expected in 0..<profile.rounds {
++                let round = try connection.receiveRound()
++                guard round.sequence == UInt64(expected) else { throw OwnerWire.invalid("Bootstrap local sequence differs") }
++                try profile.validate(sequence: round.sequence, contribution: round.contribution)
++                condition.lock(); pending = round; reply = nil; condition.unlock()
++                try publish(round.sequence, round.contribution)
++                condition.lock()
++                while !failed && reply == nil && DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds {
++                    _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
++                }
++                let value = reply; let valid = !failed; condition.unlock()
++                guard valid, let value else { throw ClusterWorkerOwnerErrorProxy.deadline }
++                try connection.reply(to: round, gathered: value)
++                condition.lock(); pending = nil; reply = nil; condition.unlock()
++            }
++            condition.lock(); completed = true; condition.broadcast(); condition.unlock()
++            // Initialization rounds are complete, not proof of native retirement.
++            connection.cancel()
++        } catch { cancel(); throw error }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift
+@@ -0,0 +1,73 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Closed profile of the current native two-peer mesh. It is not an RDMA struct
++/// implementation. The installed build must independently confirm its C ABI.
++public enum ClusterOwnerBootstrapProfile: String, Sendable {
++    case mesh2 = "jaccl_mesh2_i32le_destination32_v1"
++    public var rounds: Int { 4 }
++    func validate(sequence: UInt64, contribution: Data) throws {
++        switch sequence {
++        case 0: guard contribution == Data([2, 0, 0, 0]) else { throw OwnerWire.invalid("Mesh container length must be native int32 two") }
++        case 1: guard contribution.count == 64 else { throw OwnerWire.invalid("Mesh destination payload must be two native32-byte entries") }
++        case 2, 3: guard contribution == Data([0, 0, 0, 0]) else { throw OwnerWire.invalid("Mesh barrier must be native int32 zero") }
++        default: throw OwnerWire.invalid("Unsupported mesh round or topology")
++        }
++    }
++}
++
++/// Root-controller coordination only. Native callback waits never run on an
++/// endpoint reader, the owner's command loop, or a provider callback queue.
++public final class ClusterOwnerBootstrapRelay: @unchecked Sendable {
++    public let profile: ClusterOwnerBootstrapProfile
++    public let identity: ClusterWorkerIdentity
++    public let executionPlanSHA256: String
++    public let deadlineUptimeNanoseconds: UInt64
++    private let condition = NSCondition()
++    private var bindings: [ClusterOwnerBinding?] = [nil, nil]
++    private var pending: [Data?] = [nil, nil]
++    private var returned: [Bool] = [false, false]
++    private var active: [Bool] = [false, false]
++    private var sequence: UInt64 = 0
++    private var failed = false
++
++    public init(identity: ClusterWorkerIdentity, executionPlanSHA256: String,
++                profile: ClusterOwnerBootstrapProfile = .mesh2, deadlineUptimeNanoseconds: UInt64) throws {
++        guard identity.peers.count == 2, deadlineUptimeNanoseconds > DispatchTime.now().uptimeNanoseconds,
++              executionPlanSHA256.utf8.count == 64 else { throw OwnerWire.invalid("Invalid bootstrap relay configuration") }
++        self.identity = identity; self.executionPlanSHA256 = executionPlanSHA256; self.profile = profile
++        self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
++    }
++    public func cancel() { condition.lock(); failed = true; condition.broadcast(); condition.unlock() }
++    public func exchange(binding: ClusterOwnerBinding, sequence requested: UInt64, contribution: Data) throws -> Data {
++        condition.lock(); defer { condition.unlock() }
++        do {
++            let rank = binding.rank
++            guard binding.identity == identity, binding.executionPlanSHA256 == executionPlanSHA256,
++                  !failed, !active[rank], DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else { throw OwnerWire.invalid("Bootstrap peer or concurrent round differs") }
++            if let prior = bindings[rank] {
++                guard prior.route == binding.route else { throw OwnerWire.invalid("Bootstrap owner lease/incarnation changed") }
++            } else { bindings[rank] = binding }
++            if let other = bindings[1 - rank] {
++                guard other.profile == binding.profile, other.route.clusterID == binding.route.clusterID,
++                      other.route.leaseID != binding.route.leaseID else { throw OwnerWire.invalid("Bootstrap common configuration differs") }
++            }
++            // A fast rank may arrive at the next round while the other returns
++            // the prior reply. Do not admit it before the prior round is drained.
++            while !failed && requested == sequence + 1 && returned[rank] { try wait() }
++            guard !failed, requested == sequence, pending[rank] == nil else { throw OwnerWire.invalid("Bootstrap round replay or skip") }
++            try profile.validate(sequence: requested, contribution: contribution)
++            active[rank] = true; pending[rank] = contribution; condition.broadcast()
++            while !failed && pending.contains(where: { $0 == nil }) { try wait() }
++            guard !failed, DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds, let a = pending[0], let b = pending[1], a.count == b.count else { throw OwnerWire.invalid("Bootstrap rank lengths differ") }
++            var result = a; result.append(b)
++            returned[rank] = true; active[rank] = false
++            if returned.allSatisfy({ $0 }) { pending = [nil, nil]; returned = [false, false]; sequence += 1; condition.broadcast() }
++            return result
++        } catch { failed = true; condition.broadcast(); throw error }
++    }
++    private func wait() throws {
++        guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerErrorProxy.deadline }
++        _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift
+@@ -14,7 +14,7 @@
+     init(input: Int32, output: Int32, readingCommands: Bool) throws {
+         let i = fcntl(input, F_DUPFD_CLOEXEC, 3), o = fcntl(output, F_DUPFD_CLOEXEC, 3)
+         guard i >= 0, o >= 0 else { if i >= 0 { Darwin.close(i) }; if o >= 0 { Darwin.close(o) }; throw OwnerWire.invalid("Cannot own owner pipes") }
+-        self.input = i; self.output = o; decoder = .init(commandStream: readingCommands)
++        self.input = i; self.output = o; decoder = .init(commandStream: true) // Both owner directions capped512KiB; native event decoding remains16KiB.
+         for fd in [i, o] {
+             guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0 else {
+                 Darwin.close(i); Darwin.close(o); throw OwnerWire.invalid("Cannot bound owner IO")
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift
+@@ -16,6 +16,9 @@
+     var deliveryRemaining: UInt64?
+     var payload: Data?
+     var termination: ClusterOwnerTermination?
++    var bootstrapProfile: ClusterOwnerBootstrapProfile?
++    var bootstrapSequence: UInt64?
++    var bootstrapBytes: Data?
+ 
+     func encoded(commandStream: Bool) throws -> Data {
+         var object: [String: Any] = ["version": 1, "kind": kind, "epoch": epoch.uuidString.lowercased(),
+@@ -26,6 +29,9 @@
+         if let remaining { object["remainingNanoseconds"] = NSNumber(value: remaining) }
+         if let deliveryRemaining { object["deliveryRemainingNanoseconds"] = NSNumber(value: deliveryRemaining) }
+         if let payload { object["worker"] = try JSONSerialization.jsonObject(with: payload) }
++        if let bootstrapProfile { object["bootstrapProfile"] = bootstrapProfile.rawValue }
++        if let bootstrapSequence { object["bootstrapSequence"] = NSNumber(value: bootstrapSequence) }
++        if let bootstrapBytes { object["bootstrapBytes"] = bootstrapBytes.base64EncodedString() }
+         if let termination {
+             switch termination {
+             case .launchFailed: object["termination"] = "launchFailed"
+@@ -41,7 +47,7 @@
+     }
+ 
+     static func decode(_ data: Data, commandStream: Bool) throws -> Self {
+-        try validateClusterWorkerEnvelope(data, commandStream: commandStream)
++        try validateClusterWorkerEnvelope(data, commandStream: true) // Outer-only512KiB; embedded WorkerCodec retains its own bounds.
+         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw invalid("Owner object required") }
+         func string(_ key: String) throws -> String {
+             guard let value = object[key] as? String else { throw invalid("Owner string missing") }; return value
+@@ -56,13 +62,27 @@
+         }
+         guard try uint("version") == 1 else { throw invalid("Owner version differs") }
+         let kind = try string("kind")
+-        let allowed = commandStream ? ["open", "command", "fence", "release"] : ["hello", "event", "terminal", "released"]
++        let allowed = commandStream ? ["open", "command", "fence", "release", "bootstrapReply"] : ["hello", "event", "terminal", "released", "bootstrapRound"]
+         guard allowed.contains(kind) else { throw invalid("Wrong owner message direction") }
+         var keys: Set<String> = ["version", "kind", "epoch", "lease", "sequence"]
+         let inc: UUID?
+         if kind == "open" { inc = nil } else { inc = try uuid("incarnation"); keys.insert("incarnation") }
+         var value = Self(kind: kind, epoch: try uuid("epoch"), lease: try uuid("lease"), incarnation: inc, sequence: try uint("sequence"))
++        if ["open", "hello"].contains(kind), object["bootstrapProfile"] != nil {
++            keys.insert("bootstrapProfile")
++            guard let profile = ClusterOwnerBootstrapProfile(rawValue: try string("bootstrapProfile")) else { throw invalid("Unknown bootstrap profile") }
++            value.bootstrapProfile = profile
++        }
+         switch kind {
++        case "bootstrapRound", "bootstrapReply":
++            keys.formUnion(["bootstrapSequence", "bootstrapBytes"])
++            value.bootstrapSequence = try uint("bootstrapSequence")
++            let encoded = try string("bootstrapBytes")
++            let cap = kind == "bootstrapRound" ? 65_536 : 131_072
++            guard encoded.utf8.count <= ((cap + 2) / 3) * 4, let bytes = Data(base64Encoded: encoded),
++                  bytes.count > 0, bytes.count <= cap, bytes.base64EncodedString() == encoded,
++                  value.bootstrapSequence! < 4 else { throw invalid("Bootstrap payload exceeds closed bounds") }
++            value.bootstrapBytes = bytes
+         case "open":
+             keys.formUnion(["clusterID", "remainingNanoseconds"])
+             value.clusterID = try string("clusterID")
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -13,6 +13,10 @@
+     public let localLifetimeDeadlineUptimeNanoseconds: UInt64
+     let clusterID: String
+     let leaseID = UUID()
++    private let bootstrapRelay: ClusterOwnerBootstrapRelay?
++    private var bootstrapReplies: [(UInt64, Data)] = []
++    private var bootstrapBusy = false
++    private var nextBootstrapSequence: UInt64 = 0
+     private let process = Process()
+     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
+     private let lock = NSLock()
+@@ -41,21 +45,26 @@
+ 
+     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,
+                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
+-                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64) throws {
++                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws {
+         try self.init(transport: configuration.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
+             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
+-            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds)
++            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
+     }
+     // Internal local-child seam exists solely for CPU service tests. Production
+     // callers cannot substitute an arbitrary shell/transport through this API.
+     init(transport: ClusterWorkerLaunch, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
+          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
+-         lifetimeDeadlineUptimeNanoseconds: UInt64) throws {
++         lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws {
+         _ = try ClusterOwnerBinding(clusterID: clusterID, ownerIncarnation: UUID(), leaseID: leaseID,
+             identity: expectedIdentity, profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256)
+         let now = DispatchTime.now().uptimeNanoseconds
+         guard lifetimeDeadlineUptimeNanoseconds > now,
+               lifetimeDeadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else { throw OwnerWire.invalid("Invalid remote lifetime") }
++        if let bootstrapRelay {
++            guard bootstrapRelay.identity == expectedIdentity, bootstrapRelay.executionPlanSHA256 == executionPlanSHA256,
++                  bootstrapRelay.deadlineUptimeNanoseconds <= lifetimeDeadlineUptimeNanoseconds else { throw OwnerWire.invalid("Bootstrap relay configuration differs") }
++        }
++        self.bootstrapRelay = bootstrapRelay
+         self.clusterID = clusterID; self.expectedIdentity = expectedIdentity; expectedProfile = profile; self.rank = rank
+         self.executionPlanSHA256 = executionPlanSHA256; localLifetimeDeadlineUptimeNanoseconds = lifetimeDeadlineUptimeNanoseconds
+         process.executableURL = transport.executable; process.arguments = transport.arguments; process.environment = transport.environment
+@@ -78,6 +87,7 @@
+     }
+     private func fail() {
+         let call = lock.withLock { invalid = true; ready = nil; if !cleanup { fenceRequested = true }; return notificationLocked() }
++        bootstrapRelay?.cancel()
+         arrivals.signal(); if let call { notifications.async(execute: call) }
+     }
+     /// Called under Pair/Request locks: validates and queues only, never performs
+@@ -113,15 +123,16 @@
+             let now = DispatchTime.now().uptimeNanoseconds
+             guard now < localLifetimeDeadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
+             let open = OwnerWire(kind: "open", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
+-                incarnation: nil, sequence: 0, clusterID: clusterID, remaining: localLifetimeDeadlineUptimeNanoseconds - now)
++                incarnation: nil, sequence: 0, clusterID: clusterID, remaining: localLifetimeDeadlineUptimeNanoseconds - now, bootstrapProfile: bootstrapRelay?.profile)
+             try pipe.write(open.encoded(commandStream: true), until: min(localLifetimeDeadlineUptimeNanoseconds, now + 5_000_000_000)); sequence += 1
+             var sentFence = false, sentRelease = false
+             while process.isRunning {
+                 let now = DispatchTime.now().uptimeNanoseconds
+                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
+-                let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?) in
+-                    let next = !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
+-                    return (incarnation, fenceRequested && !cleanup, releaseRequested, next)
++                let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?) in
++                    let bootstrap = !invalid && !bootstrapReplies.isEmpty ? bootstrapReplies.removeFirst() : nil
++                    let next = bootstrap == nil && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
++                    return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap)
+                 }
+                 if let incarnation = work.0 {
+                     let frame: OwnerWire?
+@@ -130,6 +141,11 @@
+                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
+                     } else if work.1 && !sentFence {
+                         frame = OwnerWire(kind: "fence", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentFence = true
++                    } else if let (round, bytes) = work.4 {
++                        frame = OwnerWire(kind: "bootstrapReply", epoch: expectedIdentity.membershipEpoch,
++                            lease: leaseID, incarnation: incarnation, sequence: sequence,
++                            bootstrapSequence: round, bootstrapBytes: bytes)
++                        writeDeadline = min(writeDeadline, bootstrapRelay!.deadlineUptimeNanoseconds)
+                     } else if let (command, deadline) = work.3 {
+                         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
+                         frame = try OwnerWire.command(command, lease: leaseID, incarnation: incarnation, sequence: sequence, now: now, deliveryDeadline: deadline)
+@@ -178,22 +194,34 @@
+     }
+     private func accept(_ frame: OwnerWire) throws {
+         var complete = false, invalidateEvent = false
++        var bootstrapWork: (ClusterOwnerBinding, UInt64, Data)?
+         try lock.withLock {
+             guard frame.epoch == expectedIdentity.membershipEpoch, frame.lease == leaseID,
+                   frame.sequence == nextWireEvent else { throw OwnerWire.invalid("Remote owner epoch/lease/replay differs") }
+             if frame.kind == "hello" {
+-                guard nextWireEvent == 0, incarnation == nil, let inc = frame.incarnation, let launch = frame.launchID else { throw OwnerWire.invalid("Repeated owner incarnation") }
++                guard nextWireEvent == 0, incarnation == nil, frame.bootstrapProfile == bootstrapRelay?.profile, let inc = frame.incarnation, let launch = frame.launchID else { throw OwnerWire.invalid("Repeated owner incarnation") }
+                 incarnation = inc; launchID = launch
+             } else {
+                 guard incarnation != nil, frame.incarnation == incarnation else { throw OwnerWire.invalid("Remote incarnation differs") }
+                 switch frame.kind {
++                case "bootstrapRound":
++                    guard let bootstrapRelay, ready == nil, !cleanup,
++                          frame.bootstrapSequence == nextBootstrapSequence, let bytes = frame.bootstrapBytes else {
++                        throw OwnerWire.invalid("Unexpected bootstrap round")
++                    }
++                    try bootstrapRelay.profile.validate(sequence: nextBootstrapSequence, contribution: bytes)
++                    guard !bootstrapBusy else { throw OwnerWire.invalid("Concurrent bootstrap round") }
++                    if invalid { nextBootstrapSequence += 1; break } // Drain valid in-flight round; keep reading terminal/released.
++                    let binding = try ClusterOwnerBinding(clusterID: clusterID, ownerIncarnation: incarnation!, leaseID: leaseID,
++                        identity: expectedIdentity, profile: expectedProfile, rank: rank, executionPlanSHA256: executionPlanSHA256)
++                    bootstrapBusy = true; bootstrapWork = (binding, nextBootstrapSequence, bytes)
+                 case "event":
+                     guard !cleanup, let payload = frame.payload else { throw OwnerWire.invalid("Event after native terminal") }
+                     let event = try ClusterWorkerCodec.decodeEvent(payload)
+                     guard event.membershipEpoch == expectedIdentity.membershipEpoch, event.sequence == nextNativeEvent,
+                           incoming.count < 32 else { throw OwnerWire.invalid("Native event replay or queue bound") }
+                     if case .ready(let value) = event.event {
+-                        guard nextNativeEvent == 0, value.identity == expectedIdentity, value.profile == expectedProfile,
++                        guard nextNativeEvent == 0, bootstrapRelay == nil || nextBootstrapSequence == 4, value.identity == expectedIdentity, value.profile == expectedProfile,
+                               value.rank == rank, value.executionPlanSHA256 == executionPlanSHA256 else { throw OwnerWire.invalid("Remote readiness differs") }
+                         ready = value
+                     } else { guard nextNativeEvent > 0 else { throw OwnerWire.invalid("Event precedes readiness") } }
+@@ -208,6 +236,17 @@
+             }
+             nextWireEvent += 1
+         }
++        if let (binding, sequence, bytes) = bootstrapWork {
++            DispatchQueue(label: "darkbloom.remote-bootstrap.\(rank)").async {
++                do {
++                    let gathered = try self.bootstrapRelay!.exchange(binding: binding, sequence: sequence, contribution: bytes)
++                    try self.lock.withLock {
++                        guard !self.invalid, !self.cleanup, self.bootstrapReplies.isEmpty else { throw OwnerWire.invalid("Bootstrap reply queue unavailable") }
++                        self.bootstrapReplies.append((sequence, gathered)); self.nextBootstrapSequence += 1; self.bootstrapBusy = false
++                    }
++                } catch { self.fail() }
++            }
++        }
+         if complete { nativeEnded.leave() }
+         if complete || invalidateEvent { fail() }
+         arrivals.signal()
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
+@@ -12,9 +12,16 @@
+     public typealias NativeFactory = @Sendable (ClusterOwnerBinding, UInt64) throws -> ClusterWorkerProcess
+     public typealias BindingFactory = @Sendable (UUID, UUID, UUID) throws -> ClusterOwnerBinding
+ 
++    public typealias AttachedNativeFactory = @Sendable (ClusterOwnerBinding, UInt64, ClusterOwnerBootstrapAttachment?) throws -> ClusterWorkerProcess
+     public static func serve(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
+-                             maximumLifetimeNanoseconds: UInt64,
+-                             binding: BindingFactory, native: NativeFactory) throws {
++                             maximumLifetimeNanoseconds: UInt64, binding: BindingFactory, native: NativeFactory) throws {
++        try serveConfigured(input: input, output: output, clusterID: clusterID, leaseDirectory: leaseDirectory,
++            maximumLifetimeNanoseconds: maximumLifetimeNanoseconds, bootstrapProfile: nil, binding: binding,
++            native: { binding, deadline, _ in try native(binding, deadline) })
++    }
++    public static func serveConfigured(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
++                             maximumLifetimeNanoseconds: UInt64, bootstrapProfile: ClusterOwnerBootstrapProfile?,
++                             binding: BindingFactory, native: AttachedNativeFactory) throws {
+         let pipe = try ClusterOwnerPipe(input: input, output: output, readingCommands: true)
+         let begin = DispatchTime.now().uptimeNanoseconds
+         guard maximumLifetimeNanoseconds > 0, maximumLifetimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds else {
+@@ -22,7 +29,7 @@
+         }
+         guard let bytes = try pipe.read(until: begin + 5_000_000_000) else { throw ClusterWorkerOwnerErrorProxy.deadline }
+         let open = try OwnerWire.decode(bytes, commandStream: true)
+-        guard open.kind == "open", open.sequence == 0, open.clusterID == clusterID, let duration = open.remaining else {
++        guard open.kind == "open", open.sequence == 0, open.clusterID == clusterID, open.bootstrapProfile == bootstrapProfile, let duration = open.remaining else {
+             throw OwnerWire.invalid("Owner open differs from installed configuration")
+         }
+         let ownerBinding = try binding(open.epoch, open.lease, UUID())
+@@ -34,12 +41,14 @@
+         let launchID = UUID()
+         try state.beginNativeLaunch(launchID, now: DispatchTime.now().uptimeNanoseconds)
+         try lease.record(binding: ownerBinding, launchID: launchID)
+-        let context = ServiceContext(pipe: pipe, state: state, launchID: launchID)
++        let attachment = try bootstrapProfile.map { try ClusterOwnerBootstrapAttachment(profile: $0,
++            deadline: min(state.lifetimeDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds + 30_000_000_000)) }
++        let context = ServiceContext(pipe: pipe, state: state, launchID: launchID, attachment: attachment)
+         // Hello establishes a fresh incarnation before any native readiness.
+         try context.publish(kind: "hello", launchID: launchID)
+         let child: ClusterWorkerProcess
+         do {
+-            child = try native(ownerBinding, state.lifetimeDeadlineUptimeNanoseconds)
++            child = try native(ownerBinding, state.lifetimeDeadlineUptimeNanoseconds, attachment)
+             context.child = child
+             guard child.launchedProcessIdentifier == nil, child.termination == nil, !child.nativeCleanupObserved, child.expectedIdentity == ownerBinding.identity, child.rank == ownerBinding.rank,
+                   child.expectedProfile == ownerBinding.profile, child.executionPlanSHA256 == ownerBinding.executionPlanSHA256,
+@@ -58,6 +67,15 @@
+             } else { try context.recordTerminal(.launchFailed) }
+             try? context.publishTerminal()
+             throw error // Sticky journal: no remote release acknowledgement.
++        }
++        if let attachment {
++            context.attachmentTasks.enter()
++            DispatchQueue(label: "darkbloom.owner.bootstrap-attachment").async {
++                defer { context.attachmentTasks.leave() }
++                do { try attachment.run(child: child, binding: ownerBinding) { sequence, bytes in
++                    try context.publish(kind: "bootstrapRound", bootstrapSequence: sequence, bootstrapBytes: bytes)
++                } } catch { context.lock.withLock { context.state.disconnect() }; child.requestNativeCleanup() }
++            }
+         }
+         let relay = DispatchGroup(); relay.enter()
+         DispatchQueue(label: "darkbloom.owner.native-events").async {
+@@ -86,6 +104,7 @@
+             }
+         } catch {
+             context.lock.withLock { context.state.disconnect() }
++            attachment?.cancel()
+             child.requestNativeCleanup(); child.waitForNativeCleanup(); relay.wait()
+             // Even if actual cleanup succeeded, loss of the release handshake
+             // leaves the durable journal unresolved and prevents another load.
+@@ -98,6 +117,7 @@
+     let pipe: ClusterOwnerPipe
+     let lock = NSLock()
+     let writeLock = NSLock()
++    let attachmentTasks = DispatchGroup()
+     var state: ClusterOwnerLeaseState
+     let launchID: UUID
+     var child: ClusterWorkerProcess?
+@@ -110,19 +130,21 @@
+     var session: ClusterWorkerSession
+     let deadline: UInt64
+     let binding: ClusterOwnerBinding
+-    init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID) {
++    let attachment: ClusterOwnerBootstrapAttachment?
++    init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID, attachment: ClusterOwnerBootstrapAttachment?) {
+         self.pipe = pipe; self.state = state; self.launchID = launchID
+-        deadline = state.lifetimeDeadlineUptimeNanoseconds; binding = state.binding
++        deadline = state.lifetimeDeadlineUptimeNanoseconds; binding = state.binding; self.attachment = attachment
+         // Binding was validated by its initializer.
+         session = try! ClusterWorkerSession(identity: state.binding.identity, rank: state.binding.rank,
+             profile: state.binding.profile, executionPlanSHA256: state.binding.executionPlanSHA256)
+     }
+-    func publish(kind: String, payload: Data? = nil, launchID: UUID? = nil, termination: ClusterOwnerTermination? = nil) throws {
++    func publish(kind: String, payload: Data? = nil, launchID: UUID? = nil, termination: ClusterOwnerTermination? = nil, bootstrapSequence: UInt64? = nil, bootstrapBytes: Data? = nil) throws {
+         try writeLock.withLock {
+             let route = binding.route
+             let frame = OwnerWire(kind: kind, epoch: route.membershipEpoch, lease: route.leaseID,
+                 incarnation: route.ownerIncarnation, sequence: nextOutgoing, launchID: launchID,
+-                payload: payload, termination: termination)
++                payload: payload, termination: termination, bootstrapProfile: kind == "hello" ? attachment?.profile : nil,
++                bootstrapSequence: bootstrapSequence, bootstrapBytes: bootstrapBytes)
+             try pipe.write(frame.encoded(commandStream: false), until: min(deadline + 2_000_000_000, DispatchTime.now().uptimeNanoseconds + 500_000_000))
+             nextOutgoing += 1
+         }
+@@ -134,7 +156,7 @@
+             if let admissionDeadline, now >= admissionDeadline { state.disconnect() }
+             return state.requiresNativeFence
+         }
+-        if fence { child?.requestNativeCleanup() }
++        if fence { attachment?.cancel(); child?.requestNativeCleanup() }
+     }
+     func control(_ control: ClusterOwnerControl, now: UInt64) throws {
+         _ = try state.accept(.init(route: state.binding.route, sequence: state.nextControlSequence, control: control), now: now)
+@@ -153,7 +175,10 @@
+             nextIncoming += 1
+             let now = DispatchTime.now().uptimeNanoseconds
+             switch frame.kind {
+-            case "fence": state.disconnect(); child?.requestNativeCleanup()
++            case "fence": state.disconnect(); attachment?.cancel(); child?.requestNativeCleanup()
++            case "bootstrapReply":
++                guard let attachment, let sequence = frame.bootstrapSequence, let bytes = frame.bootstrapBytes else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
++                try attachment.acceptReply(sequence: sequence, bytes: bytes)
+             case "release": guard terminalPublished else { throw OwnerWire.invalid("Release before native terminal") }
+             case "command":
+                 let command = try frame.localCommand(now: now, lifetimeDeadline: deadline)
+@@ -192,6 +217,7 @@
+                     if DispatchTime.now().uptimeNanoseconds < deadline { continue }; throw ClusterWorkerOwnerError.deadline
+                 }
+                 catch ClusterWorkerOwnerError.closed { break }
++                if case .ready = frame.event { try attachment?.requireCompleted() }
+                 try lock.withLock {
+                     let now = DispatchTime.now().uptimeNanoseconds
+                     try session.accept(frame, now: now)
+@@ -215,6 +241,7 @@
+             }
+         } catch { lock.withLock { state.disconnect() }; child.requestNativeCleanup() }
+         child.waitForNativeCleanup()
++        attachment?.cancel()
+         do {
+             guard let termination = child.termination else { throw OwnerWire.invalid("Missing actual native terminal") }
+             try recordTerminal(termination)
+@@ -230,6 +257,8 @@
+         }
+     }
+     func publishTerminal() throws {
++        attachment?.cancel()
++        attachmentTasks.wait() // No attachment publication can follow native terminal.
+         guard let terminal = lock.withLock({ state.status.nativeTerminal }) else { throw OwnerWire.invalid("No native terminal") }
+         // Serialize the flag with input acceptance, but never hold that lock over IO.
+         lock.withLock { terminalPublished = true }
+--- a/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift
++++ b/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift
+@@ -1,12 +1,23 @@
+ import Foundation
+ import Darwin
+ import DarkbloomClusterProtocol
++import DarkbloomClusterBootstrap
+ 
+ /// Model-free child used only by the pipe-owner CPU tests.
+ @main struct FakeClusterWorker {
+     static func main() throws {
+-        guard CommandLine.arguments.count == 3, let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
++        guard [3, 9].contains(CommandLine.arguments.count), let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
+         let behavior = CommandLine.arguments[2]
++        if behavior.hasPrefix("bootstrap") {
++            guard CommandLine.arguments.count == 9, CommandLine.arguments[3] == "--bootstrap-socket-path",
++                  CommandLine.arguments[5] == "--bootstrap-owner-pid", CommandLine.arguments[7] == "--bootstrap-deadline-uptime-nanoseconds",
++                  let owner = Int32(CommandLine.arguments[6]), let deadline = UInt64(CommandLine.arguments[8]) else { exit(64) }
++            let connection = try ClusterBootstrapConnection.connect(path: CommandLine.arguments[4], ownerProcessID: owner,
++                identity: .init(membershipEpoch: fixtureIdentity.membershipEpoch, rank: rank), deadlineUptimeNanoseconds: deadline)
++            let parts = [Data(behavior == "bootstrap-bad-length" ? [1, 0, 0, 0] : [2, 0, 0, 0]),
++                Data(repeating: UInt8(rank + 1), count: 64), Data([0, 0, 0, 0]), Data([0, 0, 0, 0])]
++            for (sequence, bytes) in parts.enumerated() { _ = try connection.exchange(sequence: UInt64(sequence), contribution: bytes) }
++        }
+         if behavior == "hang" { signal(SIGTERM, SIG_IGN) }
+         var session = try ClusterWorkerSession(identity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan)
+         var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
+--- a/libs/darkbloom-cluster/Tests/RemoteChecks/FakeOwner.swift
++++ b/libs/darkbloom-cluster/Tests/RemoteChecks/FakeOwner.swift
+@@ -11,6 +11,38 @@
+         let directory = URL(fileURLWithPath: CommandLine.arguments[2])
+         let behavior = CommandLine.arguments[4]
+         if behavior == "transport-exit" { return }
++        if behavior == "inflight-round" {
++            let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: STDOUT_FILENO, readingCommands: true)
++            let deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
++            guard let line = try pipe.read(until: deadline) else { return }
++            let open = try OwnerWire.decode(line, commandStream: true), incarnation = UUID(), launch = UUID()
++            let binding = try ClusterOwnerBinding(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: open.lease,
++                identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
++            let lease = try ClusterDeviceLease(directoryURL: directory)
++            try lease.record(binding: binding, launchID: launch)
++            let child = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "hang"], environment: [:]),
++                expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
++                startupDeadline: deadline, lifetimeDeadline: deadline)
++            try child.launch()
++            _ = try child.receiveWorkerEvent(until: deadline)
++            try pipe.write(OwnerWire(kind: "hello", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 0,
++                launchID: launch, bootstrapProfile: .mesh2).encoded(commandStream: false), until: deadline)
++            guard let stop = try pipe.read(until: deadline), try OwnerWire.decode(stop, commandStream: true).kind == "fence" else {
++                child.requestNativeCleanup(); child.waitForNativeCleanup(); return
++            }
++            // Controlled transit: this valid round arrives after local invalidation.
++            try pipe.write(OwnerWire(kind: "bootstrapRound", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 1,
++                bootstrapSequence: 0, bootstrapBytes: Data([2, 0, 0, 0])).encoded(commandStream: false), until: deadline)
++            child.requestNativeCleanup(); child.waitForNativeCleanup()
++            guard case .signalled(let signal) = child.termination else { throw ClusterOwnerStateError.invalid("Expected actual native signal exit") }
++            try pipe.write(OwnerWire(kind: "terminal", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 2,
++                launchID: launch, termination: .signalled(signal: signal)).encoded(commandStream: false), until: deadline)
++            guard let release = try pipe.read(until: deadline), try OwnerWire.decode(release, commandStream: true).kind == "release" else { return }
++            try lease.resolve()
++            try pipe.write(OwnerWire(kind: "released", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 3)
++                .encoded(commandStream: false), until: deadline)
++            return
++        }
+         if behavior == "wrong-terminal" {
+             let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: STDOUT_FILENO, readingCommands: true)
+             let end = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+@@ -22,14 +54,15 @@
+                 sequence: 1, launchID: launch, termination: .exited(status: 0)).encoded(commandStream: false), until: end)
+             return
+         }
+-        try ClusterWorkerOwnerService.serve(input: STDIN_FILENO, output: STDOUT_FILENO,
++        try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
+             clusterID: "cpu-test", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
++            bootstrapProfile: behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
+             binding: { epoch, lease, incarnation in
+                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fake epoch differs") }
+                 return try .init(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: lease,
+                     identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
+-            }, native: { binding, deadline in
+-                try .init(launch: .init(executable: executable, arguments: [String(rank), behavior], environment: [:]),
++            }, native: { binding, deadline, attachment in
++                try .init(launch: .init(executable: executable, arguments: [String(rank), behavior] + (attachment?.workerArguments ?? []), environment: [:]),
+                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
+                     executionPlanSHA256: binding.executionPlanSHA256,
+                     startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), lifetimeDeadline: deadline)
+--- a/libs/darkbloom-cluster/Tests/RemoteChecks/RemoteOwnerTests.swift
++++ b/libs/darkbloom-cluster/Tests/RemoteChecks/RemoteOwnerTests.swift
+@@ -26,7 +26,11 @@
+         try ownerEOF(owner, worker)
+         try admissionExpiry(owner, worker)
+         try blockedCallback(owner, worker)
+-        print("remote-owner: 9 CPU groups passed")
++        try bootstrap(owner, worker)
++        try invalidBootstrap(owner, worker)
++        try bootstrapContracts()
++        try cancelledInflightRound(owner, worker)
++        print("remote-owner: 13 CPU groups passed")
+     }
+     static func codec() throws {
+         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
+@@ -78,10 +82,10 @@
+         try rejects { _ = try ClusterSSHConfiguration(host: "peer;touch-bad", user: "gaj", port: 22,
+             knownHostsFile: known, identityFile: key, installedDarkbloom: "/bin/sh -c") }
+     }
+-    static func endpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String, rank: Int = 0) throws -> ClusterRemoteWorkerEndpoint {
++    static func endpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String, rank: Int = 0, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws -> ClusterRemoteWorkerEndpoint {
+         try .init(transport: .init(executable: owner, arguments: [worker, dir.path, String(rank), behavior], environment: [:]),
+             clusterID: "cpu-test", expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: rank,
+-            executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++            executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 15_000_000_000, bootstrapRelay: bootstrapRelay)
+     }
+     static func event(_ endpoint: ClusterRemoteWorkerEndpoint) throws -> ClusterWorkerEventFrame {
+         try endpoint.receiveWorkerEvent(until: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+@@ -205,4 +209,77 @@
+         request.releaseResources()
+     }
+ 
+-}
++    static func bootstrap(_ owner: URL, _ worker: String) throws {
++        let a = try directory(), b = try directory()
++        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
++        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
++            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++        let first = try endpoint(owner, worker, a, behavior: "bootstrap-normal", rank: 0, bootstrapRelay: relay)
++        let second = try endpoint(owner, worker, b, behavior: "bootstrap-normal", rank: 1, bootstrapRelay: relay)
++        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++        let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
++            promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
++            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800))
++        try request.start { _ in true }
++        let end = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
++        while !request.isRetired && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
++        try require(request.isRetired, "Bootstrap-attached paired request did not retire")
++        request.releaseResources()
++        let done = DispatchSemaphore(value: 0)
++        Task.detached { await pair.shutdown(); done.signal() }
++        try require(done.wait(timeout: .now() + 4) == .success, "Bootstrap-attached owners did not shut down")
++        try require(first.nativeCleanupObserved && second.nativeCleanupObserved, "Missing bootstrap native cleanup proof")
++    }
++    static func invalidBootstrap(_ owner: URL, _ worker: String) throws {
++        let a = try directory(), b = try directory()
++        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
++        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
++            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
++        let first = try endpoint(owner, worker, a, behavior: "bootstrap-bad-length", rank: 0, bootstrapRelay: relay)
++        let second = try endpoint(owner, worker, b, behavior: "bootstrap-normal", rank: 1, bootstrapRelay: relay)
++        try rejects { _ = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 4_000_000_000) }
++        first.requestNativeCleanup(); second.requestNativeCleanup()
++        let end = DispatchTime.now().uptimeNanoseconds + 4_000_000_000
++        while (!first.nativeCleanupObserved || !second.nativeCleanupObserved) && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
++        try require(first.nativeCleanupObserved && second.nativeCleanupObserved, "Invalid scalar failed to fence attached natives")
++    }
++
++    static func bootstrapContracts() throws {
++        for (sequence, bytes) in [(UInt64(0), Data([1, 0, 0, 0])), (1, Data(repeating: 0, count: 32)),
++                                   (2, Data([1, 0, 0, 0])), (3, Data([0, 0])), (4, Data([0, 0, 0, 0]))] {
++            try rejects { try ClusterOwnerBootstrapProfile.mesh2.validate(sequence: sequence, contribution: bytes) }
++        }
++        let binding = try ClusterOwnerBinding(clusterID: "cpu-test", ownerIncarnation: UUID(), leaseID: UUID(),
++            identity: fixtureIdentity, profile: fixtureProfile, rank: 0, executionPlanSHA256: fixturePlan)
++        let skip = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
++            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 1_000_000_000)
++        try rejects { _ = try skip.exchange(binding: binding, sequence: 1, contribution: Data(repeating: 0, count: 64)) }
++        let cancelled = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
++            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 1_000_000_000)
++        cancelled.cancel()
++        try rejects { _ = try cancelled.exchange(binding: binding, sequence: 0, contribution: Data([2, 0, 0, 0])) }
++        var wrong = OwnerWire(kind: "bootstrapReply", epoch: fixtureIdentity.membershipEpoch, lease: UUID(), incarnation: UUID(), sequence: 1,
++            bootstrapSequence: 0, bootstrapBytes: Data(repeating: 0, count: 131_073))
++        try rejects { _ = try wrong.encoded(commandStream: true) }
++        wrong.bootstrapBytes = Data([2, 0, 0, 0, 2, 0, 0, 0]); wrong.bootstrapSequence = 4
++        try rejects { _ = try wrong.encoded(commandStream: true) }
++    }
++
++    static func cancelledInflightRound(_ owner: URL, _ worker: String) throws {
++        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
++        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
++            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 6_000_000_000)
++        let e = try endpoint(owner, worker, dir, behavior: "inflight-round", rank: 0, bootstrapRelay: relay)
++        e.requestNativeCleanup()
++        let end = DispatchTime.now().uptimeNanoseconds + 6_000_000_000
++        while !e.nativeCleanupObserved && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
++        try require(e.nativeCleanupObserved, "Valid in-flight round closed terminal-proof channel after cancel")
++        var size: UInt64 = 1
++        while size != 0 && DispatchTime.now().uptimeNanoseconds < end {
++            if let n = try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent("native-device.lease").path)[.size] as? NSNumber { size = n.uint64Value }
++            Thread.sleep(forTimeInterval: 0.01)
++        }
++        try require(size == 0, "In-flight cancel lost owner release acknowledgement")
++    }
++
++}
+--- a/libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
++++ b/libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
+@@ -4,10 +4,10 @@
+ task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-remote-owner.XXXXXX")"
+ trap 'rm -rf "$task_build"' EXIT
+ task_target="$(uname -m)-apple-macos14.0"
+-for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterRemote; do
++for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterRemote; do
+   task_links=(-I "$task_build" -L "$task_build")
+   if [[ "$task_module" != DarkbloomClusterProtocol ]]; then task_links+=(-lDarkbloomClusterProtocol); fi
+-  if [[ "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProcess); fi
++  if [[ "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProcess -lDarkbloomClusterBootstrap); fi
+   xcrun swiftc -swift-version 6 -warnings-as-errors -enable-testing -target "$task_target" -emit-library -emit-module \
+     -module-name "$task_module" -emit-module-path "$task_build/$task_module.swiftmodule" \
+     -I "$task_build" -L "$task_build" "${task_links[@]}" -Xlinker -rpath -Xlinker "$task_build" \
+@@ -17,8 +17,12 @@
+   task_source="$task_root/Tests/RemoteChecks/$task_name.swift"
+   if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
+   xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+-    -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterRemote \
++    -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
+     -Xlinker -rpath -Xlinker "$task_build" "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" \
+     "$task_source" -o "$task_build/$task_name"
+ done
+ "$task_build/RemoteOwnerTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
++
++xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" \
++  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
++  -Xlinker -rpath -Xlinker "$task_build" "$task_root/Tools/ConfiguredOwner/main.swift" -o "$task_build/configured-owner"
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tools/ConfiguredOwner/build.sh
+@@ -0,0 +1,22 @@
++#!/bin/bash
++set -euo pipefail
++if [[ $# != 1 ]]; then echo 'usage: build.sh NEW_OUTPUT_DIRECTORY' >&2; exit 64; fi
++task_root="$(cd "$(dirname "$0")/../.." && pwd)"
++task_build="$1"
++if [[ -e "$task_build" ]]; then echo 'output must not exist' >&2; exit 64; fi
++mkdir -p "$task_build"
++task_build="$(cd "$task_build" && pwd)"
++task_target="$(uname -m)-apple-macos14.0"
++for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterRemote; do
++  task_links=(-I "$task_build" -L "$task_build")
++  if [[ "$task_module" == DarkbloomClusterProcess || "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProtocol); fi
++  if [[ "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProcess -lDarkbloomClusterBootstrap); fi
++  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
++    -module-name "$task_module" -emit-module-path "$task_build/$task_module.swiftmodule" \
++    "${task_links[@]}" -Xlinker -install_name -Xlinker "@rpath/lib$task_module.dylib" \
++    -Xlinker -rpath -Xlinker @loader_path "$task_root/Sources/$task_module"/*.swift \
++    -o "$task_build/lib$task_module.dylib"
++done
++xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" \
++  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
++  -Xlinker -rpath -Xlinker @executable_path "$task_root/Tools/ConfiguredOwner/main.swift" -o "$task_build/darkbloom-owner-qualification"
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tools/ConfiguredOwner/main.swift
+@@ -0,0 +1,83 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++
++// Private qualification executable. Installed SSH command remains fixed; its
++// trusted local owner.json supplies paths/identity, never an outer wire frame.
++struct OwnerSettings: Decodable {
++    let schema: String
++    let clusterID: String
++    let workerExecutable: String
++    let modelDirectory: String
++    let leaseDirectory: String
++    let stageCut: Int
++    let maximumLifetimeSeconds: Int
++    let workerEnvironment: [String: String]
++    let readyTemplateBase64: String
++}
++func settings(_ path: String) throws -> OwnerSettings {
++    let fd = Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
++    guard fd >= 0 else { throw ClusterOwnerStateError.invalid("Cannot open configured owner settings") }
++    defer { Darwin.close(fd) }
++    var before = stat(), after = stat()
++    guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG, before.st_uid == geteuid(),
++          before.st_mode & 0o022 == 0, before.st_size > 0, before.st_size <= 16_384 else {
++        throw ClusterOwnerStateError.invalid("Unsafe or oversized owner settings")
++    }
++    var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
++    while true {
++        let n = Darwin.read(fd, &buffer, buffer.count)
++        if n < 0 && errno == EINTR { continue }
++        guard n >= 0, data.count + max(0, n) <= 16_384 else { throw ClusterOwnerStateError.invalid("Owner settings read failed") }
++        if n == 0 { break }; data.append(contentsOf: buffer.prefix(n))
++    }
++    guard fstat(fd, &after) == 0, before.st_dev == after.st_dev, before.st_ino == after.st_ino,
++          before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
++          before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec, before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
++          before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { throw ClusterOwnerStateError.invalid("Owner settings changed") }
++    if data.last != 10 { data.append(10) }
++    try validateClusterWorkerEnvelope(data, commandStream: true)
++    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) ==
++        Set(["schema", "clusterID", "workerExecutable", "modelDirectory", "leaseDirectory", "stageCut",
++             "maximumLifetimeSeconds", "workerEnvironment", "readyTemplateBase64"]) else { throw ClusterOwnerStateError.invalid("Owner settings fields differ") }
++    let value = try JSONDecoder().decode(OwnerSettings.self, from: data)
++    guard value.schema == "darkbloom_configured_worker_owner_v1", (1...300).contains(value.maximumLifetimeSeconds),
++          [4, 8, 12, 16].contains(value.stageCut), value.workerExecutable.hasPrefix("/"), value.modelDirectory.hasPrefix("/"),
++          value.leaseDirectory.hasPrefix("/") else { throw ClusterOwnerStateError.invalid("Owner configuration outside current worker scope") }
++    return value
++}
++let args = Array(CommandLine.arguments.dropFirst())
++guard args == ["cluster", "worker-owner", "--stdio"] else { throw ClusterOwnerStateError.invalid("Expected fixed cluster worker-owner --stdio command") }
++let path = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("owner.json").path
++let config = try settings(path)
++guard let template = Data(base64Encoded: config.readyTemplateBase64),
++      case .ready(let ready) = try ClusterWorkerCodec.decodeEvent(template).event,
++      ready.identity.membershipEpoch == UUID(uuidString: "00000000-0000-0000-0000-000000000000") else {
++    throw ClusterOwnerStateError.invalid("Expected native ready template with zero placeholder epoch")
++}
++try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
++    clusterID: config.clusterID, leaseDirectory: URL(fileURLWithPath: config.leaseDirectory),
++    maximumLifetimeNanoseconds: UInt64(config.maximumLifetimeSeconds) * 1_000_000_000,
++    bootstrapProfile: .mesh2, binding: { epoch, lease, incarnation in
++        let identity = ClusterWorkerIdentity(membershipEpoch: epoch, modelID: ready.identity.modelID,
++            artifactSHA256: ready.identity.artifactSHA256, configurationSHA256: ready.identity.configurationSHA256,
++            peers: ready.identity.peers)
++        return try .init(clusterID: config.clusterID, ownerIncarnation: incarnation, leaseID: lease,
++            identity: identity, profile: ready.profile, rank: ready.rank, executionPlanSHA256: ready.executionPlanSHA256)
++    }, native: { binding, deadline, attachment in
++        guard let attachment else { throw ClusterOwnerStateError.invalid("Authenticated physical bootstrap is required") }
++        let identity = binding.identity
++        var arguments = ["--model-dir", config.modelDirectory, "--rank", String(binding.rank), "--stage-cut", String(config.stageCut),
++            "--membership-epoch", identity.membershipEpoch.uuidString.lowercased(), "--model-id", identity.modelID,
++            "--artifact-sha256", identity.artifactSHA256, "--configuration-sha256", identity.configurationSHA256,
++            "--peer0-id", identity.peers[0].id, "--peer0-build-sha256", identity.peers[0].buildSHA256,
++            "--peer1-id", identity.peers[1].id, "--peer1-build-sha256", identity.peers[1].buildSHA256,
++            "--deadline-uptime-nanoseconds", String(deadline)]
++        arguments += attachment.workerArguments
++        return try .init(launch: .init(executable: URL(fileURLWithPath: config.workerExecutable), arguments: arguments,
++            environment: config.workerEnvironment), expectedIdentity: identity, rank: binding.rank, profile: binding.profile,
++            executionPlanSHA256: binding.executionPlanSHA256,
++            startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 90_000_000_000), lifetimeDeadline: deadline)
++    })

@@ -1,0 +1,51 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedCheckpoint.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedCheckpoint.swift
+@@ -67,16 +67,38 @@
+         }
+ 
+         func digest() throws -> SHA256.Digest {
+-            var hash = SHA256()
+-            let blockSize = 4 * 1024 * 1024
+-            var offset = 0
+-            while offset < size {
+-                let block = try data(offset: offset, count: min(blockSize, size - offset))
+-                hash.update(data: block)
+-                offset += block.count
+-            }
+-            try checkUnchanged()
+-            return hash.finalize()
++            // This freshly opened descriptor is exclusively owned during hashing.
++            // Avoid retaining newly read checksum pages; this does not evict old cache.
++            guard fcntl(descriptor, F_NOCACHE, 1) == 0 else {
++                throw ProbeError("Cannot disable checkpoint checksum caching: \(path)")
++            }
++            do {
++                var hash = SHA256()
++                let blockSize = 4 * 1024 * 1024
++                var buffer = Data(count: min(blockSize, size))
++                var offset = 0
++                while offset < size {
++                    let count = min(blockSize, size - offset)
++                    try buffer.withUnsafeMutableBytes { bytes in
++                        let block = UnsafeMutableRawBufferPointer(rebasing: bytes[..<count])
++                        try read(into: block, offset: offset)
++                        hash.update(bufferPointer: UnsafeRawBufferPointer(block))
++                    }
++                    offset += count
++                }
++                try checkUnchanged()
++                let digest = hash.finalize()
++                // Payload loading must retain its ordinary cached-read policy.
++                guard fcntl(descriptor, F_NOCACHE, 0) == 0 else {
++                    throw ProbeError("Cannot restore checkpoint read caching: \(path)")
++                }
++                return digest
++            } catch {
++                // Never replace a primary read/identity error with cleanup failure.
++                // Constructor failure releases this owned descriptor; no success escapes.
++                _ = fcntl(descriptor, F_NOCACHE, 0)
++                throw error
++            }
+         }
+     }
+ 

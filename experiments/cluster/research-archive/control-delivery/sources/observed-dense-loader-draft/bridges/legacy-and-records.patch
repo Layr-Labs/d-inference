@@ -1,0 +1,187 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/LocalCorrectnessStorage.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/LocalCorrectnessStorage.swift
+@@ -5,10 +5,10 @@
+ /// Validation uses verified descriptors and never materializes selected tensors.
+ enum LocalCorrectnessStorage {
+     static let maximumManifestPayloadBytes = 8 * 1024 * 1024 * 1024
+-    static let maximumSourceModelTensorBytes = 6 * 1024 * 1024 * 1024
++    static let maximumSourceModelTensorBytes = QwenDenseLegacySourceBounds.maximumSourceModelTensorBytes
+     static let maximumRankLoadedTensorBytes = 4 * 1024 * 1024 * 1024
+     static let maximumCombinedLoadedTensorBytes = 8 * 1024 * 1024 * 1024
+-    static let maximumHostTensorBytes = 512 * 1024 * 1024
++    static let maximumHostTensorBytes = QwenDenseLegacySourceBounds.maximumHostTensorBytes
+ 
+     static func validateByteCounts(sourceModelTensorBytes: Int, rankLoadedTensorBytes: [Int],
+                                    rankLargestHostTensorBytes: [Int]) throws {
+--- a/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenLayerSource.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenLayerSource.swift
+@@ -55,28 +55,17 @@
+             expectedAggregateSHA256: expectedAggregateSHA256,
+             maximumPayloadBytes: LocalCorrectnessStorage.maximumManifestPayloadBytes)
+         try check()
+-        let expected = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+-        var tensors: [QwenStageSourceTensor] = [], bytes = 0, largest = 0
+-        for name in prepared.canonical.keys.sorted() {
+-            let tensor = prepared.canonical[name]!
+-            guard tensor.parts.count == 1, tensor.byteCount > 0,
+-                  tensor.byteCount <= LocalCorrectnessStorage.maximumHostTensorBytes,
+-                  tensor.shape == prepared.expectedShapes[name], let parameter = expected[name],
+-                  (tensor.dtype == .uint32) == (parameter.dtype == .uint32),
+-                  [.uint32, .float16, .bfloat16, .float32].contains(tensor.dtype) else {
+-                throw ProbeError("Stage source requires exact bounded full tensor shape/dtype: \(name)")
+-            }
+-            let sum = bytes.addingReportingOverflow(tensor.byteCount)
+-            guard !sum.overflow, sum.partialValue <= LocalCorrectnessStorage.maximumSourceModelTensorBytes else {
+-                throw ProbeError("Layer-stage canonical source exceeds 6 GiB")
+-            }
+-            bytes = sum.partialValue; largest = max(largest, tensor.byteCount)
++        let validated = try QwenDenseObservedSourceValidation.validateLegacy(
++            observedQwenDenseSource(prepared, model: model), convertBF16: convert, purpose: .layerStage)
++        let bytes = validated.sourceBytes, largest = validated.largestSourceBytes
++        var tensors: [QwenStageSourceTensor] = []
++        for record in validated.tensors {
++            let name = record.canonical.name, tensor = prepared.canonical[name]!
+             let part = tensor.parts[0]
+             tensors.append(QwenStageSourceTensor(sourceName: name, canonicalPartName: part.name,
+                 file: part.tensor.file.path, offset: part.tensor.offset, shape: tensor.shape,
+                 sourceDType: String(describing: tensor.dtype),
+-                loadedDType: String(describing: qwenStageLoadedDType(tensor.dtype, convert: convert)),
+-                byteCount: tensor.byteCount))
++                loadedDType: record.loadedDType, byteCount: tensor.byteCount))
+         }
+         let mappings = try plan.parameters(canonicalSourceNames: tensors.map(\.sourceName))
+         guard bytes > 0, mappings.count == tensors.count,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageLoadReceipt.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageLoadReceipt.swift
+@@ -26,95 +26,3 @@
+     }
+ }
+ 
+-struct QwenStageSourceTensor: Codable {
+-    let sourceName: String
+-    /// PreparedQwenCheckpoint has already sanitized this name. The original
+-    /// storage is bound by the verified file, exact descriptor offset and size.
+-    let canonicalPartName: String
+-    let file: String
+-    let offset: Int
+-    let shape: [Int]
+-    let sourceDType: String
+-    let loadedDType: String
+-    let byteCount: Int
+-}
+-
+-struct QwenStageActiveTensor: Codable {
+-    let sourceName: String
+-    let localName: String
+-    let shape: [Int]
+-    let sourceDType: String
+-    let loadedDType: String
+-    let byteCount: Int
+-}
+-
+-struct QwenStageInertParameter: Codable {
+-    let localName: String
+-    let shape: [Int]
+-    let dtype: String
+-    let byteCount: Int
+-}
+-
+-struct QwenStageInertModule: Codable {
+-    let path: String
+-    /// "module-replacement" or "parameter-only-replacement". The pinned final
+-    /// RMSNorm is a plain let child, so Module.update cannot replace its object.
+-    let replacementKind: String
+-    let responsibility: String
+-    let parameters: [QwenStageInertParameter]
+-}
+-
+-struct QwenStageStorageSummary: Codable {
+-    let stageIndex: Int
+-    let constructionConfigurationSHA256: String
+-    let stagePlanSHA256: String
+-    let activeMappingSHA256: String
+-    let activeParameterLayoutSHA256: String
+-    let parameterLayoutSHA256: String
+-    let loadedTensorBytes: Int
+-    let activeTensorCount: Int
+-    /// Declared bytes of explicit inert parameters, not measured allocation/RSS.
+-    let inertTensorBytes: Int
+-    let inertTensorCount: Int
+-}
+-
+-/// Common across independently loaded stages. Descriptor bytes are conserved
+-/// exactly; inactive placeholders are accounted separately, never as source.
+-struct QwenLayerStageStorageCommitment: Codable {
+-    let schemaVersion: Int
+-    let verifiedAggregateSHA256: String
+-    let sourceConfigurationSHA256: String
+-    let planSHA256: String
+-    let sourceTensorManifestSHA256: String
+-    let sourceModelTensorBytes: Int
+-    let largestSourceTensorBytes: Int
+-    let sourceTensorCount: Int
+-    let canonicalTensorCount: Int
+-    let bf16ConversionEnabled: Bool
+-    let stages: [QwenStageStorageSummary]
+-}
+-
+-struct QwenLayerStageLoadReceipt: Codable {
+-    let schemaVersion: Int
+-    let stageIndex: Int
+-    let verifiedAggregateSHA256: String
+-    let sourceConfigurationSHA256: String
+-    let constructionConfigurationSHA256: String
+-    let planSHA256: String
+-    let stagePlanSHA256: String
+-    let sourceTensorManifestSHA256: String
+-    let sourceParameterLayoutSHA256: String
+-    let parameterLayoutSHA256: String
+-    let activeParameterLayoutSHA256: String
+-    let activeMappingSHA256: String
+-    let embeddingActivationDType: String
+-    let bf16ConversionEnabled: Bool
+-    let sourceModelTensorBytes: Int
+-    let loadedTensorBytes: Int
+-    let largestHostTensorBytes: Int
+-    let activeTensors: [QwenStageActiveTensor]
+-    let inertModules: [QwenStageInertModule]
+-    let inertTensorBytes: Int
+-    let storageCommitment: QwenLayerStageStorageCommitment
+-    let storageCommitmentSHA256: String
+-}
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenDiagnosticLoading.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenDiagnosticLoading.swift
+@@ -90,29 +90,10 @@
+     let expectedLayout: String
+ 
+     init(prepared: PreparedQwenCheckpoint, model: Module, convertBF16: Bool) throws {
+-        let parameters = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+-        var total = 0, largest = 0
+-        var layout: [String] = []
+-        for name in prepared.canonical.keys.sorted() {
+-            let tensor = prepared.canonical[name]!
+-            guard tensor.parts.count == 1, tensor.byteCount > 0,
+-                  tensor.byteCount <= LocalCorrectnessStorage.maximumHostTensorBytes,
+-                  tensor.shape == prepared.expectedShapes[name], let expected = parameters[name],
+-                  (tensor.dtype == .uint32) == (expected.dtype == .uint32) else {
+-                throw ProbeError("Verified diagnostic requires bounded, exact full tensor shapes and dtypes: \(name)")
+-            }
+-            let sum = total.addingReportingOverflow(tensor.byteCount)
+-            guard !sum.overflow, sum.partialValue <= LocalCorrectnessStorage.maximumSourceModelTensorBytes else {
+-                throw ProbeError("Verified diagnostic canonical source exceeds the 6 GiB byte limit")
+-            }
+-            total = sum.partialValue
+-            largest = max(largest, tensor.byteCount)
+-            let dtype = convertBF16 && tensor.dtype == .float16 ? DType.bfloat16 : tensor.dtype
+-            layout.append("\(name):\(dtype):\(tensor.shape)")
+-        }
+-        guard total > 0 else { throw ProbeError("Verified diagnostic has no canonical tensors") }
+-        sourceBytes = total; largestSourceBytes = largest
+-        expectedLayout = sha256(Data(layout.sorted().joined(separator: "\n").utf8))
++        let validated = try QwenDenseObservedSourceValidation.validateLegacy(
++            observedQwenDenseSource(prepared, model: model), convertBF16: convertBF16, purpose: .diagnostic)
++        sourceBytes = validated.sourceBytes; largestSourceBytes = validated.largestSourceBytes
++        expectedLayout = validated.expectedLayoutSHA256
+     }
+ }
+ 

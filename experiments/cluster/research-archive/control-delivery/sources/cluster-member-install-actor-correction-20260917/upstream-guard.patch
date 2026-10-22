@@ -1,0 +1,22 @@
+--- old/context.py
++++ new/upstream_context.py
+@@ -2,7 +2,7 @@
+ import hashlib
+ import importlib.util
+ from pathlib import Path
+-BASE=Path(__file__).resolve().parent
++BASE=Path('/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917')
+ ADAPTER=BASE.parent/'cluster-native-member-shared-requests-draft-20260917'
+ ADAPTER_SHA='1e8019ad6af9314979d5182bf61eb47671f9b22d5eb176b1cd97345c805e7c38'
+ CORRECTION=BASE.parent/'cluster-native-member-shared-requests-cancellation-correction-20260917'
+--- old/guards.py
++++ new/upstream_guards.py
+@@ -3,7 +3,7 @@
+ import json
+ from pathlib import Path
+ import source_inventory as inventory
+-from context import BASE,ADAPTER,ADAPTER_SHA,PRIOR,ORIGINAL,WORKSPACE,OUTPUT,SOURCE,original,CORRECTION,CORRECTION_SHA,INVOCATION_METHODS
++from upstream_context import BASE,ADAPTER,ADAPTER_SHA,PRIOR,ORIGINAL,WORKSPACE,OUTPUT,SOURCE,original,CORRECTION,CORRECTION_SHA,INVOCATION_METHODS
+ 
+ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+ def save(path,value):

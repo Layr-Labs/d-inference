@@ -1,0 +1,1779 @@
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -392,6 +392,10 @@
+ 				return
+ 			}
+ 			regMsg := msg.Payload.(*protocol.RegisterMessage)
++			if err := regMsg.ValidateExecutionRole(); err != nil {
++				_ = conn.Close(websocket.StatusPolicyViolation, "invalid execution role")
++				return
++			}
+ 			// The version string is provider-controlled and flows into semver
+ 			// parsing memos, metric tags and logs; a legitimate build id is a
+ 			// few dozen bytes. Reject anything larger before it reaches the
+@@ -412,6 +416,17 @@
+ 				return
+ 			}
+ 			provider = s.registry.Register(providerID, conn, regMsg)
++			if regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
++				ack, err := json.Marshal(protocol.ClusterMemberAcceptedMessage{
++					Type:                    protocol.TypeClusterMemberAccepted,
++					ExecutionRole:           protocol.ExecutionRoleClusterMember,
++					MemberRegistrationNonce: regMsg.MemberRegistrationNonce,
++					ProviderID:              providerID,
++				})
++				if err != nil || provider.WriteTextControl(loopCtx, ack) != nil {
++					return
++				}
++			}
+ 			s.attachProviderLocation(providerID, provider, r)
+ 			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
+ 				// No duplicate eviction or account/MDM continuation after failed
+--- /dev/null
++++ b/coordinator/protocol/execution_role.go
+@@ -0,0 +1,44 @@
++package protocol
++
++import "fmt"
++
++// ExecutionRole restricts a connection. It grants no trust or model capability.
++// Empty is the legacy solo wire representation; role is immutable until disconnect.
++type ExecutionRole string
++
++const (
++	ExecutionRoleSolo          ExecutionRole = ""
++	ExecutionRoleClusterMember ExecutionRole = "cluster_member"
++	TypeClusterMemberAccepted                = "cluster_member_accepted"
++)
++
++func (m *RegisterMessage) ValidateExecutionRole() error {
++	switch m.ExecutionRole {
++	case ExecutionRoleSolo:
++		if m.MemberRegistrationNonce != "" || len(m.ClusterModels) != 0 {
++			return fmt.Errorf("protocol: member fields require member role")
++		}
++	case ExecutionRoleClusterMember:
++		// Old coordinators see an empty ordinary inventory and cannot cold-route it.
++		if len(m.Models) != 0 || len(m.MemberRegistrationNonce) != 64 {
++			return fmt.Errorf("protocol: invalid member registration")
++		}
++		for _, c := range m.MemberRegistrationNonce {
++			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
++				return fmt.Errorf("protocol: invalid member nonce")
++			}
++		}
++	default:
++		return fmt.Errorf("protocol: unsupported execution role")
++	}
++	return nil
++}
++
++// Confirms protocol support and the exact WebSocket registration only. It does
++// not attest hardware, authorize owners, issue a key, or promise readiness.
++type ClusterMemberAcceptedMessage struct {
++	Type                    string        `json:"type"`
++	ExecutionRole           ExecutionRole `json:"execution_role"`
++	MemberRegistrationNonce string        `json:"member_registration_nonce"`
++	ProviderID              string        `json:"provider_id"`
++}
+--- /dev/null
++++ b/coordinator/protocol/execution_role_test.go
+@@ -0,0 +1,49 @@
++package protocol
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++func TestMemberRoleLegacyOmissionAndClosedValidation(t *testing.T) {
++	base := RegisterMessage{Type: TypeRegister, Models: []ModelInfo{}}
++	encoded, err := json.Marshal(base)
++	if err != nil || strings.Contains(string(encoded), "execution_role") || strings.Contains(string(encoded), "cluster_models") {
++		t.Fatal("legacy role fields emitted", err)
++	}
++	for _, raw := range []string{
++		`{"type":"register","models":[],"execution_role":"bogus"}`,
++		`{"type":"register","models":[],"cluster_models":[{"id":"x"}]}`,
++		`{"type":"register","models":[],"member_registration_nonce":"` + strings.Repeat("a", 64) + `"}`,
++		`{"type":"register","models":[],"execution_role":"cluster_member","member_registration_nonce":"short"}`,
++		`{"type":"register","models":[{"id":"x"}],"execution_role":"cluster_member","member_registration_nonce":"` + strings.Repeat("a", 64) + `"}`,
++	} {
++		var decoded ProviderMessage
++		if err := DecodeProviderMessage([]byte(raw), &decoded); err == nil {
++			t.Fatal("invalid role accepted", raw)
++		}
++	}
++	base.ExecutionRole = ExecutionRoleClusterMember
++	base.MemberRegistrationNonce = strings.Repeat("a", 64)
++	base.ClusterModels = []ModelInfo{{ID: "cluster-model"}}
++	encoded, err = json.Marshal(base)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var decoded ProviderMessage
++	if err := DecodeProviderMessage(encoded, &decoded); err != nil {
++		t.Fatal(err)
++	}
++	m := decoded.Payload.(*RegisterMessage)
++	if len(m.Models) != 0 || len(m.ClusterModels) != 1 || m.ExecutionRole != ExecutionRoleClusterMember {
++		t.Fatal("role inventory lost")
++	}
++	// An old decoder sees NO routable model even though it ignores added fields.
++	var old struct {
++		Models []ModelInfo `json:"models"`
++	}
++	if err := json.Unmarshal(encoded, &old); err != nil || len(old.Models) != 0 {
++		t.Fatal("old server gets solo inventory", err)
++	}
++}
+--- a/coordinator/protocol/messages.go
++++ b/coordinator/protocol/messages.go
+@@ -217,6 +217,9 @@
+ 
+ // RegisterMessage is sent when a provider first connects.
+ type RegisterMessage struct {
++	ExecutionRole               ExecutionRole                      `json:"execution_role,omitempty"`
++	MemberRegistrationNonce     string                             `json:"member_registration_nonce,omitempty"`
++	ClusterModels               []ModelInfo                        `json:"cluster_models,omitempty"`
+ 	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
+ 	Type                        string                             `json:"type"`
+ 	Hardware                    Hardware                           `json:"hardware"`
+@@ -1007,6 +1010,9 @@
+ 		if err := json.Unmarshal(data, &msg); err != nil {
+ 			return fmt.Errorf("protocol: failed to unmarshal register: %w", err)
+ 		}
++		if err := msg.ValidateExecutionRole(); err != nil {
++			return err
++		}
+ 		pm.Payload = &msg
+ 
+ 	case TypeAppAttestShadow:
+--- /dev/null
++++ b/coordinator/registry/execution_role.go
+@@ -0,0 +1,16 @@
++package registry
++
++import "github.com/eigeninference/d-inference/coordinator/protocol"
++
++// Only the pair selector may pass pairEligibility. Its complete hardware,
++// release, process-key, freshness and bilateral ownership gates still follow.
++func (p *Provider) executionRolePermitsLocked(pairEligibility bool) bool {
++	switch p.executionRole {
++	case protocol.ExecutionRoleSolo:
++		return true
++	case protocol.ExecutionRoleClusterMember:
++		return pairEligibility
++	default:
++		return false
++	}
++}
+--- /dev/null
++++ b/coordinator/registry/execution_role_test.go
+@@ -0,0 +1,109 @@
++package registry
++
++import (
++	"errors"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestClusterMemberNeverSoloRoutesEvenWithAdvertisedLoadedOrColdModels(t *testing.T) {
++	r, members, request := pairTestRegistry(t)
++	for _, p := range members {
++		p.mu.Lock()
++		p.executionRole = protocol.ExecutionRoleClusterMember
++		p.mu.Unlock()
++	}
++	for _, cold := range []bool{false, true} {
++		for _, p := range members {
++			p.mu.Lock()
++			if cold {
++				p.BackendCapacity.Slots = nil
++				p.WarmModels = nil
++				p.CurrentModel = ""
++			}
++			p.mu.Unlock()
++		}
++		if findRoutableProvider(r, pairTestModel) != nil {
++			t.Fatal("member entered solo route")
++		}
++		if count, _, _ := r.QuickCapacityCheck(pairTestModel, 1, 1, RequestTraits{}); count != 0 {
++			t.Fatal("member counted as capacity")
++		}
++		r.mu.RLock()
++		members[0].mu.Lock()
++		ordinary, _ := r.providerRoutingGateReasonLockedEx(members[0], pairTestModel, RequestTraits{}, true, time.Now(), false, false)
++		_, reason := r.warmPoolCandidateReasonLocked(members[0], pairTestModel, time.Now())
++		warm := r.providerHasWarmModelLocked(members[0], pairTestModel, time.Now())
++		members[0].mu.Unlock()
++		_, loadable := r.modelLoadCandidatePendingLocked(members[1], pairTestModel, time.Now())
++		r.mu.RUnlock()
++		if ordinary || warm || loadable || reason != warmColdMemberOnly {
++			t.Fatal("role bypass via private/warm/load reader", reason)
++		}
++	}
++	for _, call := range []func() error{
++		func() error { return r.SendLoadModel(members[0].ID, pairTestModel) },
++		func() error { return r.SendPrefetchModel(members[0].ID, pairTestModel, 1) },
++		func() error {
++			return r.SendDesiredModels(members[0].ID, []protocol.DesiredModelEntry{{DesiredBuild: pairTestModel}})
++		},
++	} {
++		if !errors.Is(call(), ErrVerifiedPairBusy) {
++			t.Fatal("member received solo command")
++		}
++	}
++	h, _ := pairTestActive(t, r, members, request)
++	if _, err := r.ValidateVerifiedPair(h); err != nil {
++		t.Fatal("member strict pair selection failed", err)
++	}
++	// Exact same strict trust flags remain necessary in the pair-only context.
++	members[0].SetAttested(false, TrustNone)
++	if _, err := r.ValidateVerifiedPair(h); err == nil {
++		t.Fatal("member role upgraded trust")
++	}
++}
++
++func TestClusterMemberRegistrationRoleImmutableAcrossModelsAndReconnect(t *testing.T) {
++	r := New(testLogger())
++	p := r.Register("member", nil, &protocol.RegisterMessage{ExecutionRole: protocol.ExecutionRoleClusterMember,
++		MemberRegistrationNonce: strings.Repeat("a", 64), ClusterModels: []protocol.ModelInfo{{ID: pairTestModel}}, Models: []protocol.ModelInfo{}})
++	if p.executionRole != protocol.ExecutionRoleClusterMember || len(p.Models) != 1 {
++		t.Fatal("cluster inventory not installed")
++	}
++	duplicate := r.Register("member", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: pairTestModel}}})
++	if duplicate != p || duplicate.executionRole != protocol.ExecutionRoleClusterMember {
++		t.Fatal("duplicate registration changed role")
++	}
++	r.Disconnect("member")
++	q := r.Register("member-new", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: pairTestModel}}})
++	if q == p || q.executionRole != protocol.ExecutionRoleSolo {
++		t.Fatal("role inherited across connections")
++	}
++}
++
++func TestClusterMemberReconnectCannotReusePairGrant(t *testing.T) {
++	r, members, request := pairTestRegistry(t)
++	for _, p := range members {
++		p.mu.Lock()
++		p.executionRole = protocol.ExecutionRoleClusterMember
++		p.mu.Unlock()
++	}
++	h, m := pairTestActive(t, r, members, request)
++	r.Disconnect(members[0].ID)
++	pairTestDone(t, h)
++	replacement := pairTestMember(t, r, "new-member-connection", "serial-a")
++	replacement.mu.Lock()
++	replacement.executionRole = protocol.ExecutionRoleClusterMember
++	replacement.mu.Unlock()
++	if _, err := r.ValidateVerifiedPair(h); err == nil {
++		t.Fatal("old active grant survived disconnect")
++	}
++	if err := r.ObserveVerifiedPairOwnerReleased(h, replacement, m.TranscriptSHA256); !errors.Is(err, ErrVerifiedPairStale) {
++		t.Fatal("replacement released prior owner")
++	}
++	if _, _, err := r.ReserveVerifiedPair([2]*Provider{replacement, members[1]}, request); err == nil {
++		t.Fatal("uncertain active device reused on reconnect")
++	}
++}
+--- a/coordinator/registry/gate_reason.go
++++ b/coordinator/registry/gate_reason.go
+@@ -47,6 +47,7 @@
+ 	GateNotServingModel
+ 	GateStateRestoring
+ 	GatePairReserved
++	GateMemberOnly
+ 	// GateReasonCount is the number of reasons; it sizes the tally arrays and
+ 	// is not itself a reason.
+ 	GateReasonCount
+@@ -82,6 +83,7 @@
+ 	GateNotServingModel:      "not_serving_model",
+ 	GateStateRestoring:       "state_restoring",
+ 	GatePairReserved:         "pair_reserved",
++	GateMemberOnly:           "member_only",
+ }
+ 
+ // String returns the snake_case name of the reason ("unknown" for an
+--- a/coordinator/registry/model_loading.go
++++ b/coordinator/registry/model_loading.go
+@@ -308,7 +308,7 @@
+ 	for _, action := range actions {
+ 		if p, ok := r.providers[action.providerID]; ok {
+ 			p.mu.Lock()
+-			eligible := !r.providerPairHeldLocked(p, now, nil) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
++			eligible := p.executionRolePermitsLocked(false) && !r.providerPairHeldLocked(p, now, nil) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
+ 			p.mu.Unlock()
+ 			if !eligible {
+ 				continue
+--- a/coordinator/registry/provider.go
++++ b/coordinator/registry/provider.go
+@@ -42,10 +42,12 @@
+ 
+ // Provider represents a connected provider agent.
+ type Provider struct {
+-	ID       string
+-	Hardware protocol.Hardware
+-	Models   []protocol.ModelInfo
+-	Backend  string
++	// Immutable per connection; never restored from durable provider history.
++	executionRole protocol.ExecutionRole
++	ID            string
++	Hardware      protocol.Hardware
++	Models        []protocol.ModelInfo
++	Backend       string
+ 	// ReportedRuntimeCapabilities is normalized but untrusted Register input.
+ 	// RuntimeCapabilities remains empty until ReconcileAttestedRuntimeCapabilities
+ 	// binds that report to signed claims and approved runtime evidence.
+--- a/coordinator/registry/provider_lifecycle.go
++++ b/coordinator/registry/provider_lifecycle.go
+@@ -52,7 +52,14 @@
+ 		}
+ 	}
+ 
++	// Direct in-process callers also fail closed on malformed roles. The API
++	// rejects these before Register; an unknown role is never normalized to solo.
+ 	models := msg.Models
++	if msg.ValidateExecutionRole() == nil && msg.ExecutionRole == protocol.ExecutionRoleClusterMember {
++		models = msg.ClusterModels
++	} else if msg.ValidateExecutionRole() != nil {
++		models = nil
++	}
+ 	modelInventory, _ := uniqueProviderModels(models)
+ 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
+ 		msg.PrefixCacheStatuses, modelInventory)
+@@ -86,6 +93,7 @@
+ 		Hardware:                    msg.Hardware,
+ 		Models:                      models,
+ 		Backend:                     msg.Backend,
++		executionRole:               msg.ExecutionRole,
+ 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
+ 		RuntimeCapabilities:         nil,
+ 		PublicKey:                   pubKey,
+--- a/coordinator/registry/routing_eligibility.go
++++ b/coordinator/registry/routing_eligibility.go
+@@ -51,10 +51,13 @@
+ // The evaluation order is byte-for-byte the boolean gate's, so the two can
+ // never disagree on the verdict. Allocation-free. Caller holds r.mu and p.mu.
+ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
+-	return r.providerLivenessGateReasonAllowPairLocked(p, minTrust, allowPrivate, now, nil)
++	return r.providerLivenessGateReasonAllowPairLocked(p, minTrust, allowPrivate, now, nil, false)
+ }
+ 
+-func (r *Registry) providerLivenessGateReasonAllowPairLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time, pair *verifiedPairState) (bool, GateReason) {
++func (r *Registry) providerLivenessGateReasonAllowPairLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
++	if !p.executionRolePermitsLocked(pairEligibility) {
++		return false, GateMemberOnly
++	}
+ 	if r.providerPairHeldLocked(p, now, pair) {
+ 		return false, GatePairReserved
+ 	}
+--- a/coordinator/registry/scheduler.go
++++ b/coordinator/registry/scheduler.go
+@@ -1540,12 +1540,12 @@
+ // wrapper — so the verdict and the reason can never drift. Allocation-free.
+ // Caller holds r.mu and p.mu.
+ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
+-	return r.providerRoutingGateReasonAllowPairLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil)
++	return r.providerRoutingGateReasonAllowPairLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil, false)
+ }
+ 
+ // The pair revalidation path may pass only its own exact hold. All ordinary
+ // dispatch/plan/preflight callers pass nil and remain excluded.
+-func (r *Registry) providerRoutingGateReasonAllowPairLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState) (bool, GateReason) {
++func (r *Registry) providerRoutingGateReasonAllowPairLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
+ 	// Catalog membership + dedicated-box isolation: a request for a dedicated
+ 	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
+ 	// advertised catalog is that family. This single gate is shared by the
+@@ -1575,7 +1575,7 @@
+ 	if selfRouteOwner {
+ 		minTrust = TrustNone
+ 	}
+-	if ok, reason := r.providerLivenessGateReasonAllowPairLocked(p, minTrust, selfRouteOwner, now, pair); !ok {
++	if ok, reason := r.providerLivenessGateReasonAllowPairLocked(p, minTrust, selfRouteOwner, now, pair, pairEligibility); !ok {
+ 		return false, reason
+ 	}
+ 	// Trait eligibility: a render-broken build is fenced for EVERY request shape
+--- a/coordinator/registry/verified_pair_commands.go
++++ b/coordinator/registry/verified_pair_commands.go
+@@ -21,7 +21,7 @@
+ 		return func() {}, nil
+ 	}
+ 	p.mu.Lock()
+-	if r.providerPairHeldLocked(p, time.Now(), nil) {
++	if !p.executionRolePermitsLocked(false) || r.providerPairHeldLocked(p, time.Now(), nil) {
+ 		p.mu.Unlock()
+ 		r.mu.RUnlock()
+ 		return nil, ErrVerifiedPairBusy
+--- a/coordinator/registry/verified_pair_membership.go
++++ b/coordinator/registry/verified_pair_membership.go
+@@ -23,7 +23,7 @@
+ 	if p == nil || len(p.ID) == 0 || len(p.ID) > 128 || !utf8.ValidString(p.ID) || r.providers[p.ID] != p || p.registry != r {
+ 		return empty, ErrVerifiedPairStale
+ 	}
+-	if ok, _ := r.providerRoutingGateReasonAllowPairLockedEx(p, model, RequestTraits{}, false, now, false, false, except); !ok {
++	if ok, _ := r.providerRoutingGateReasonAllowPairLockedEx(p, model, RequestTraits{}, false, now, false, false, except, true); !ok {
+ 		return empty, ErrVerifiedPairUnavailable
+ 	}
+ 	a := p.AttestationResult
+--- a/coordinator/registry/warm_pool_controller.go
++++ b/coordinator/registry/warm_pool_controller.go
+@@ -710,6 +710,7 @@
+ 	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
+ 	warmColdStateRestoring warmColdReason = "state_restoring"
+ 	warmColdPairReserved   warmColdReason = "pair_reserved"
++	warmColdMemberOnly     warmColdReason = "member_only"
+ )
+ 
+ // warmColdReasonStrings converts a reason tally to a string-keyed map for
+@@ -745,6 +746,9 @@
+ // the boolean helpers here would change the reported reason mix — a behavior
+ // change — so the checks are kept inline.
+ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
++	if !p.executionRolePermitsLocked(false) {
++		return warmPoolCandidate{}, warmColdMemberOnly
++	}
+ 	if r.providerPairHeldLocked(p, now, nil) {
+ 		return warmPoolCandidate{}, warmColdPairReserved
+ 	}
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
+@@ -17,11 +17,12 @@
+ 
+             do {
+                 try await connectAndRun()
++                if memberRoleFailure { break }
+                 logger.info(.coordinatorConnectionClosed)
+                 backoff.reset()
+                 continue
+             } catch {
+-                if shutdownRequested { break }
++                if shutdownRequested || memberRoleFailure { break }
+ 
+                 eventContinuation?.yield(.disconnected)
+                 let delay = backoff.nextDelay()
+@@ -97,6 +98,8 @@
+         // Mid-session connection drops are published here by the persistent state
+         // handler and rethrown by a task-group child to drive the reconnect loop.
+         let (failureStream, failureCont) = AsyncStream<Error>.makeStream()
++        var memberTimeout: Task<Void, Never>?
++        defer { memberTimeout?.cancel() }
+         defer {
+             failureCont.finish()
+             // Tear down this connection on every exit (error OR clean reconnect),
+@@ -109,6 +112,7 @@
+             // quote snapshot is dropped with it so quotes never answer from a
+             // session the new coordinator connection has not seen.
+             self.sessionRegistered = false
++            self.memberNegotiation = nil
+             self.state.resetCapacitySession()
+             // Detach the inference-chunk fast path from this connection (drops any
+             // queued chunks; their requests are cancelled on disconnect). Guarded
+@@ -163,13 +167,21 @@
+ 
+         logger.info(.coordinatorTransportReady)
+ 
++        memberNegotiation = config.executionRole == .clusterMember ? .init() : nil
++        if let negotiation = memberNegotiation {
++            memberTimeout = Task { [weak self] in
++                do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }
++                guard !Task.isCancelled else { return }
++                self?.expireMemberNegotiation(nonce: negotiation.nonce)
++            }
++        }
+         try await sendRegistration(connection: connection)
+         logger.info(.coordinatorRegistrationSent)
+         // Fresh capacity-seq session for this connection (routing v2): seq
+         // restarts at 1 on the first heartbeat and out-of-band event
+         // heartbeats are permitted from here on.
+         state.resetCapacitySession()
+-        sessionRegistered = true
++        sessionRegistered = config.executionRole == .solo
+ 
+         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
+         // its iterator is terminated when the previous session's consumer task is
+@@ -191,7 +203,7 @@
+             chunkWriter.write(frames)
+         }
+ 
+-        eventContinuation?.yield(.connected)
++        if config.executionRole == .solo { eventContinuation?.yield(.connected) }
+ 
+         try await sessionLoop(
+             connection: connection,
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift
+@@ -5,6 +5,21 @@
+ import Network
+ 
+ extension CoordinatorClient {
++    /// An already-resumed old timer must not poison a replacement connection.
++    /// The nonce check and refusal run without an actor suspension between them.
++    internal func expireMemberNegotiation(nonce: String, now: ContinuousClock.Instant = .now) {
++        guard !Task.isCancelled, !sessionRegistered,
++              let current = memberNegotiation, current.nonce == nonce,
++              now >= current.deadline else { return }
++        refuseMemberNegotiation()
++    }
++    internal func refuseMemberNegotiation() {
++        memberRoleFailure = true
++        sessionRegistered = false
++        memberNegotiation = nil
++        nwConnection?.cancel()
++    }
++
+     /// Send a pre-encoded JSON frame on the current connection, if any. The
+     /// receive path's rejections (missing/invalid encrypted body) are
+     /// low-frequency, so routing them straight to the live NWConnection — rather
+@@ -29,8 +44,24 @@
+         }
+ 
+         switch parsed {
++        case .clusterMemberAccepted(let ack):
++            guard config.executionRole == .clusterMember else { return }
++            do {
++                guard var negotiation = memberNegotiation else { throw ClusterMemberControlError.negotiationFailed }
++                try negotiation.accept(ack)
++                memberNegotiation = negotiation
++                sessionRegistered = true
++                eventContinuation?.yield(.connected)
++            } catch { refuseMemberNegotiation() }
++
+         case .inferenceRequest(let request):
+             let requestId = request.requestId
++            if config.executionRole == .clusterMember {
++                sendOnCurrentConnection(encodeInferenceError(requestId: requestId,
++                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
++                    identifier: "inference_error")
++                return
++            }
+             // The receive callback anchored this before executor scheduling,
+             // UTF-8 materialization, JSON parsing, logging, validation, or
+             // base64 decoding. Downstream work must not restart the clock.
+@@ -104,6 +135,10 @@
+             eventContinuation?.yield(.cancel(requestId: requestId))
+ 
+         case .capacityProbe(let probe):
++            if config.executionRole == .clusterMember {
++                // Advisory quotes may be omitted; never evaluate solo geometry.
++                return
++            }
+             // Routing v2: answer from the lock-free published snapshot — the
+             // capacity payload of the last heartbeat this connection sent —
+             // plus the advertised catalog and the TTFT tracker. No hop to the
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift
+@@ -37,7 +37,8 @@
+             prefixCacheMemoryModels: prefixCache.protocolVersion == 2
+                 ? prefixCache.memoryModels : nil,
+             prefixCacheStatuses: prefixCache.statuses,
+-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
++            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
++            memberRegistrationNonce: memberNegotiation?.nonce
+         )
+         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
+             throw CoordinatorError.encodingFailed
+@@ -68,9 +69,9 @@
+     // MARK: - Heartbeat
+ 
+     func buildHeartbeatJSON() -> String {
+-        let isActive = state.inferenceActive
+-        let activeModel = state.currentModel
+-        let warmModels = state.warmModels
++        let isActive = config.executionRole == .solo && state.inferenceActive
++        let activeModel = config.executionRole == .solo ? state.currentModel : nil
++        let warmModels = config.executionRole == .solo ? state.warmModels : []
+         // Stamp this heartbeat's capacity payload with the next per-connection
+         // capacity_seq and publish it as the quote snapshot (routing v2).
+         // EVERY heartbeat build flows through here — the 5s baseline and the
+@@ -104,7 +105,7 @@
+         // be decoding in-flight work, but it refuses new work, and the
+         // coordinator must stop selecting it now rather than after enough
+         // 503 bounces trip a cooldown.
+-        let status: ProviderStatus = state.refusingNewWork
++        let status: ProviderStatus = config.executionRole == .clusterMember ? .idle : state.refusingNewWork
+             ? .draining : (isActive ? .serving : .idle)
+         let message = CoordinatorClientCodec.heartbeatMessage(
+             status: status,
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift
+@@ -90,7 +90,10 @@
+     /// a fresh connection (frames before `register` are a protocol violation);
+     /// the baseline heartbeat task starts after registration and needs no
+     /// gate.
++    var memberNegotiation: ClusterMemberNegotiation?
++    internal var memberRoleFailure = false
+     internal var sessionRegistered = false
++    private var connectionTask: Task<Void, Never>?
+ 
+     private let shutdownFlag = ShutdownFlag()
+ 
+@@ -210,12 +213,21 @@
+             router.yield(msg)
+         }
+ 
+-        Task { [weak self] in
++        connectionTask = Task { [weak self] in
+             guard let self else { return }
+             await self.runLoop()
+         }
+ 
+         return (eventStream, sendFn)
++    }
++
++    /// Member hosts join the real transport loop before dropping control state.
++    /// Native/device release remains independently owned by the installed host.
++    internal func shutdownAndWait() async {
++        shutdown()
++        connectionTask?.cancel()
++        await connectionTask?.value
++        connectionTask = nil
+     }
+ 
+     public func shutdown() {
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift
+@@ -15,7 +15,8 @@
+         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
+         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
++        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
++        memberRegistrationNonce: String? = nil
+     ) -> ProviderMessage {
+         // A token that arrived after the config was built (APNs slow at startup)
+         // overrides the config value so a reconnect re-registers WITH it.
+@@ -41,10 +42,10 @@
+         } else {
+             effectiveModels = baseModels
+         }
+-        let constrainedModels = toolConstraintModelIDs(effectiveModels)
++        let constrainedModels = config.executionRole == .solo ? toolConstraintModelIDs(effectiveModels) : []
+         return .register(ProviderMessage.Register(
+             hardware: config.hardware,
+-            models: effectiveModels,
++            models: config.executionRole == .clusterMember ? [] : effectiveModels,
+             backend: config.backendName,
+             version: version,
+             publicKey: config.publicKey,
+@@ -67,7 +68,10 @@
+             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
+             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
+-            appAttestProtocol: 3
++            appAttestProtocol: 3,
++            executionRole: config.executionRole,
++            memberRegistrationNonce: memberRegistrationNonce,
++            clusterModels: config.executionRole == .clusterMember ? effectiveModels : nil
+         ))
+     }
+ 
+@@ -82,7 +86,8 @@
+         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
+         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
++        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
++        memberRegistrationNonce: String? = nil
+     ) throws -> Data {
+         try ProviderProtocolCodec.encodeProviderMessage(
+             registrationMessage(
+@@ -96,7 +101,8 @@
+                 prefixCacheV2Models: prefixCacheV2Models,
+                 prefixCacheMemoryModels: prefixCacheMemoryModels,
+                 prefixCacheStatuses: prefixCacheStatuses,
+-                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
++                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
++                memberRegistrationNonce: memberRegistrationNonce
+             )
+         )
+     }
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift
+@@ -139,6 +139,7 @@
+ // MARK: - Configuration
+ 
+ public struct CoordinatorClientConfig: Sendable {
++    public let executionRole: ProviderExecutionRole
+     public let url: String
+     public let hardware: HardwareInfo
+     public let models: [ModelInfo]
+@@ -187,8 +188,10 @@
+         privateOnly: Bool = false,
+         apnsDeviceToken: String? = nil,
+         apnsEnvironment: String? = nil,
+-        idleUnloadMins: UInt64? = nil
++        idleUnloadMins: UInt64? = nil,
++        executionRole: ProviderExecutionRole = .solo
+     ) {
++        self.executionRole = executionRole
+         self.url = url
+         self.hardware = hardware
+         self.models = models
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift
+@@ -0,0 +1,41 @@
++import Foundation
++import DarkbloomClusterProcess
++import ProviderCoreFoundation
++
++/// Validates this Mac's installed setup without retaining a device lease. The
++/// future native owner must acquire its own canonical lease before it starts.
++/// An empty journal alone is insufficient: startup briefly takes the exact
++/// existing exclusive gate, so live solo/native ownership and sticky journals
++/// refuse member startup. No recovery or journal clearing occurs here.
++public struct ClusterMemberPreparation: Sendable {
++    public let model: ModelInfo
++    private let validation: DistributedInstalledValidation
++
++    public static func prepare(reference: ClusterConfigurationReference) throws -> Self {
++        let paths = try ClusterUserPaths()
++        let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory)
++        return try withExtendedLifetime(gate) {
++            let validation = try DistributedInstalledValidation.validate(reference: reference,
++                paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++            let installed = validation.model
++            guard var model = ModelScanner.parseModelInfo(snapshotDir: installed.directory,
++                    modelName: installed.publicModelID) else {
++                throw ClusterMemberControlError.incompatibleConfiguration
++            }
++            // Same on-demand integrity hasher as ordinary registration. This is
++            // the ONE selected cluster model, not a discovery-wide payload scan.
++            // WeightHasher is synchronous and has no cancellation/deadline API.
++            // This full read is outside the metadata probe's 15-second budget;
++            // the CLI owns/awaits it before any native owner or ACK timer starts.
++            guard let hash = WeightHasher.computeHash(snapshotDir: installed.directory,
++                    modelID: installed.publicModelID), hash == validation.manifest.aggregateSHA256 else {
++                throw ClusterConfigurationError.invalid("Cluster member model integrity differs from the pinned product manifest")
++            }
++            model.weightHash = hash
++            try validation.requireUnchanged()
++            return Self(model: model, validation: validation)
++        }
++    }
++
++    public func requireUnchanged() throws { try validation.requireUnchanged() }
++}
+--- a/provider-swift/Sources/ProviderCore/Protocol/Messages.swift
++++ b/provider-swift/Sources/ProviderCore/Protocol/Messages.swift
+@@ -191,6 +191,9 @@
+     case capacityQuote(CapacityQuote)
+ 
+     public struct Register: Sendable, Equatable {
++        public var executionRole: ProviderExecutionRole
++        public var memberRegistrationNonce: String?
++        public var clusterModels: [ModelInfo]?
+         public var hardware: HardwareInfo
+         public var models: [ModelInfo]
+         public var backend: String
+@@ -255,8 +258,14 @@
+             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+             toolConstraintProtocol: Int? = nil,
+             toolConstraintModels: [String]? = nil,
+-            appAttestProtocol: Int? = nil
++            appAttestProtocol: Int? = nil,
++            executionRole: ProviderExecutionRole = .solo,
++            memberRegistrationNonce: String? = nil,
++            clusterModels: [ModelInfo]? = nil
+         ) {
++            self.executionRole = executionRole
++            self.memberRegistrationNonce = memberRegistrationNonce
++            self.clusterModels = clusterModels
+             self.hardware = hardware
+             self.models = models
+             self.backend = backend
+@@ -883,6 +892,9 @@
+         case templateHashes = "template_hashes"
+         case privacyCapabilities = "privacy_capabilities"
+         case runtimeCapabilities = "runtime_capabilities"
++        case executionRole = "execution_role"
++        case memberRegistrationNonce = "member_registration_nonce"
++        case clusterModels = "cluster_models"
+         case privateOnly = "private_only"
+         case apnsDeviceToken = "apns_device_token"
+         case apnsEnvironment = "apns_environment"
+@@ -994,6 +1006,11 @@
+             if !r.runtimeCapabilities.isEmpty {
+                 try container.encode(r.runtimeCapabilities.sorted(), forKey: .runtimeCapabilities)
+             }
++            if r.executionRole != .solo {
++                try container.encode(r.executionRole, forKey: .executionRole)
++                try container.encodeIfPresent(r.memberRegistrationNonce, forKey: .memberRegistrationNonce)
++                try container.encodeIfPresent(r.clusterModels, forKey: .clusterModels)
++            }
+             if r.privateOnly {
+                 try container.encode(true, forKey: .privateOnly)
+             }
+@@ -1265,7 +1282,10 @@
+                     Int.self, forKey: .toolConstraintProtocol),
+                 toolConstraintModels: try container.decodeIfPresent(
+                     [String].self, forKey: .toolConstraintModels),
+-                appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol)
++                appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol),
++                executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
++                memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
++                clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels)
+             ))
+ 
+         case .heartbeat:
+@@ -1500,6 +1520,7 @@
+ // MARK: - Coordinator -> Provider
+ 
+ public enum CoordinatorMessage: Sendable, Equatable {
++    case clusterMemberAccepted(ClusterMemberAccepted)
+     case inferenceRequest(InferenceRequest)
+     case cancel(Cancel)
+     case attestationChallenge(AttestationChallenge)
+@@ -1691,6 +1712,7 @@
+ 
+ extension CoordinatorMessage: Codable {
+     enum TypeValue: String, Codable {
++        case clusterMemberAccepted = "cluster_member_accepted"
+         case inferenceRequest = "inference_request"
+         case cancel
+         case attestationChallenge = "attestation_challenge"
+@@ -1738,6 +1760,10 @@
+         var container = encoder.container(keyedBy: CodingKeys.self)
+ 
+         switch self {
++        case .clusterMemberAccepted(let ack):
++            try container.encode(TypeValue.clusterMemberAccepted, forKey: .type)
++            try ack.encode(to: encoder)
++
+         case .inferenceRequest(let r):
+             try container.encode(TypeValue.inferenceRequest, forKey: .type)
+             try container.encode(r.requestId, forKey: .requestId)
+@@ -1825,6 +1851,9 @@
+         let type = try container.decode(TypeValue.self, forKey: .type)
+ 
+         switch type {
++        case .clusterMemberAccepted:
++            self = .clusterMemberAccepted(try ClusterMemberAccepted(from: decoder))
++
+         case .inferenceRequest:
+             self = .inferenceRequest(InferenceRequest(
+                 requestId: try container.decode(String.self, forKey: .requestId),
+--- a/provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift
++++ b/provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift
+@@ -121,6 +121,11 @@
+         // Messages.swift, so EVERY Register field must be mirrored here too or it
+         // silently drops for every ATTESTED registration (the production-common
+         // case). private_only was historically missing here; apns_* added v0.6.0.
++        if register.executionRole != .solo {
++            try fields.append(("execution_role", encodeValue(register.executionRole)))
++            try appendIfPresent(register.memberRegistrationNonce, key: "member_registration_nonce", to: &fields)
++            try appendIfPresent(register.clusterModels, key: "cluster_models", to: &fields)
++        }
+         if register.privateOnly {
+             try fields.append(("private_only", encodeValue(true)))
+         }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift
+@@ -0,0 +1,51 @@
++import Foundation
++
++/// Restrictive registration role. Omitted legacy role remains ordinary solo.
++/// This is neither hardware attestation nor authorization to start native work.
++public enum ProviderExecutionRole: String, Codable, Sendable, Equatable {
++    case solo = ""
++    case clusterMember = "cluster_member"
++}
++
++public struct ClusterMemberAccepted: Codable, Sendable, Equatable {
++    public let executionRole: ProviderExecutionRole
++    public let memberRegistrationNonce: String
++    public let providerID: String
++    enum CodingKeys: String, CodingKey {
++        case executionRole = "execution_role"
++        case memberRegistrationNonce = "member_registration_nonce"
++        case providerID = "provider_id"
++    }
++}
++
++/// One connection's negotiation; discarded before every reconnect. The nonce
++/// prevents a late prior acknowledgment from opening the new connection.
++struct ClusterMemberNegotiation: Sendable {
++    let nonce: String
++    let deadline: ContinuousClock.Instant
++    private(set) var providerID: String?
++
++    init(now: ContinuousClock.Instant = .now) {
++        nonce = (UUID().uuidString + UUID().uuidString)
++            .replacingOccurrences(of: "-", with: "").lowercased()
++        deadline = now.advanced(by: .seconds(10))
++    }
++
++    mutating func accept(_ message: ClusterMemberAccepted,
++                         now: ContinuousClock.Instant = .now) throws {
++        guard providerID == nil, now < deadline,
++              message.executionRole == .clusterMember,
++              message.memberRegistrationNonce == nonce,
++              !message.providerID.isEmpty, message.providerID.utf8.count <= 128 else {
++            throw ClusterMemberControlError.negotiationFailed
++        }
++        providerID = message.providerID
++    }
++}
++
++public enum ClusterMemberControlError: String, Error, Sendable, LocalizedError {
++    case negotiationFailed = "Coordinator did not accept the control-only member role."
++    case incompatibleConfiguration = "Control-only member mode cannot own a solo endpoint or engine."
++    case connectionEnded = "Cluster member control connection ended."
++    public var errorDescription: String? { rawValue }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift
+@@ -0,0 +1,106 @@
++import Foundation
++
++extension ProviderLoop {
++    internal var isClusterMember: Bool { loopConfig.executionRole == .clusterMember }
++
++    /// Called before any solo subsystem can start. No model, GPU probe, cache
++    /// maintenance, update/relaunch, capacity monitor or device lease is started.
++    internal func prepareClusterMemberControl() throws {
++        guard loopConfig.localEndpoint == nil, modelSlots.isEmpty,
++              modelsLoading.isEmpty, preloadTasks.isEmpty else {
++            throw ClusterMemberControlError.incompatibleConfiguration
++        }
++        state.refusingNewWork = true
++        state.backendCapacity = BackendCapacity(slots: [], gpuMemoryActiveGb: 0,
++            gpuMemoryPeakGb: 0, gpuMemoryCacheGb: 0,
++            totalMemoryGb: Double(loopConfig.hardware.memoryGb), freeForLoadGb: 0)
++        writeDaemonState()
++    }
++
++    /// The actual event dispatcher calls this before its ordinary switch. Direct
++    /// work handlers also refuse member mode, guarding internal/test entry points.
++    internal func consumeClusterMemberEvent(_ event: CoordinatorEvent, send: SendHandle) -> Bool {
++        guard isClusterMember else { return false }
++        if memberControlRequiresStop { return true }
++        switch event {
++        case .connected:
++            // CoordinatorClient emits this only after nonce-bound role acceptance.
++            memberHadAcceptedConnection = true
++            memberConnectionID = UUID()
++            finishMemberRegistrationWait(nil)
++            writeDaemonState()
++        case .disconnected, .runtimeOutdated:
++            // No grant or key is retained across a control connection boundary.
++            memberConnectionID = nil
++            memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
++        case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _):
++            rejectClusterMemberInference(id, send: send)
++            return true
++        case .loadModel(let id):
++            rejectClusterMemberLoad(id, send: send)
++            return true
++        case .prefetchModel(let id, _):
++            rejectClusterMemberPrefetch(id, send: send)
++            return true
++        case .desiredModels:
++            // Desired solo residency has no meaning in this role. No retry or
++            // delayed task is retained, including an empty revoke.
++            return true
++        case .trustStatus(_, let status, _):
++            if status == "untrusted" || status == "offline" {
++                memberConnectionID = nil
++                memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
++            }
++        default: break
++        }
++        return false
++    }
++
++    internal func rejectClusterMemberInference(_ id: String, send: SendHandle) {
++        send.send(.inferenceError(requestId: id,
++            failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)))
++    }
++    internal func rejectClusterMemberLoad(_ id: String, send: SendHandle) {
++        send.send(.loadModelStatus(modelId: id, status: .failed,
++            error: "Control-only cluster member refuses solo model loading."))
++    }
++    internal func rejectClusterMemberPrefetch(_ id: String, send: SendHandle) {
++        send.send(.prefetchModelStatus(modelId: id, status: .failed,
++            bytesDone: 0, bytesTotal: 0,
++            error: "Control-only cluster member refuses autonomous model downloads."))
++    }
++
++    /// Startup waits for protocol support, not trust/readiness. The existing
++    /// coordinator still owns attestation and the future pair start grant.
++    public func waitForClusterMemberRegistration(until deadline: ContinuousClock.Instant) async throws {
++        guard isClusterMember else { throw ClusterMemberControlError.incompatibleConfiguration }
++        if memberConnectionID != nil { return }
++        guard !isShuttingDown, memberRegistrationWaiter == nil, ContinuousClock.now < deadline else {
++            throw ClusterMemberControlError.negotiationFailed
++        }
++        let waitID = UUID()
++        try await withTaskCancellationHandler {
++            try Task.checkCancellation()
++            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
++                memberRegistrationWaitID = waitID
++                memberRegistrationWaiter = continuation
++                memberRegistrationTimer = Task { [weak self] in
++                    do { try await ContinuousClock().sleep(until: deadline) } catch { return }
++                    guard !Task.isCancelled else { return }
++                    self?.finishMemberRegistrationWait(ClusterMemberControlError.negotiationFailed, expected: waitID)
++                }
++            }
++        } onCancel: {
++            Task { await self.finishMemberRegistrationWait(CancellationError(), expected: waitID) }
++        }
++    }
++
++    internal func finishMemberRegistrationWait(_ error: Error?, expected waitID: UUID? = nil) {
++        if let waitID, memberRegistrationWaitID != waitID { return }
++        memberRegistrationTimer?.cancel(); memberRegistrationTimer = nil
++        guard let waiter = memberRegistrationWaiter else { return }
++        memberRegistrationWaiter = nil
++        memberRegistrationWaitID = nil
++        if let error { waiter.resume(throwing: error) } else { waiter.resume() }
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift
+@@ -177,6 +177,7 @@
+         profile requestProfile: RequestProfileBuilder? = nil,
+         send: SendHandle
+     ) async {
++        if isClusterMember { rejectClusterMemberInference(requestId, send: send); return }
+         // Profiler accumulator anchored at frame receipt (a fresh one for
+         // direct/test callers). Registered so `handleCancellation` can stamp
+         // cancel receipt; removed on every exit that does not hand it to the
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift
+@@ -197,6 +197,7 @@
+     internal func ensureModelLoaded(
+         modelId: String, allowEviction: Bool = true
+     ) async throws {
++        guard !isClusterMember else { throw ClusterMemberControlError.incompatibleConfiguration }
+         await waitForMTPUpgrade(modelId)
+         try ModelRuntimeRequirements.requireEligible(
+             modelID: modelId, available: loopConfig.runtimeCapabilities)
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+Prefetch.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+Prefetch.swift
+@@ -40,6 +40,7 @@
+     /// `.started` status is queued; the download runs on a low-priority task and
+     /// never consumes a GPU slot or blocks inference.
+     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
++        if isClusterMember { rejectClusterMemberPrefetch(modelId, send: send); return }
+         guard ModelRuntimeRequirements.isEligible(
+             modelID: modelId, available: loopConfig.runtimeCapabilities)
+         else {
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+Preload.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+Preload.swift
+@@ -27,6 +27,7 @@
+     /// `succeeded` -- the coordinator can use this as an idempotent
+     /// "ensure warm" call.
+     internal func handleLoadModelRequest(modelId: String, send: SendHandle) {
++        if isClusterMember { rejectClusterMemberLoad(modelId, send: send); return }
+         let eligibility = ModelRuntimeRequirements.evaluate(
+             modelID: modelId, available: loopConfig.runtimeCapabilities)
+         guard eligibility.isEligible else {
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
+@@ -20,6 +20,13 @@
+ 
+     public func run() async throws {
+         defer { cancelAppAttestShadow() }
++        if isClusterMember { try prepareClusterMemberControl() }
++        defer {
++            if isClusterMember {
++                memberConnectionID = nil
++                finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
++            }
++        }
+         // Retired-knob warnings are emitted once by `Start.run()`, before
+         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
+         // reached only the coordinator-serving modes.
+@@ -32,8 +39,8 @@
+         // Maintain the entire encrypted SSD-cache root even when no model is
+         // loaded. This is metadata/file-only work: no weights or KV arrays are
+         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
+-        SSDPrefixCacheFactory.startWholeRootMaintenance()
+-        defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
++        if !isClusterMember { SSDPrefixCacheFactory.startWholeRootMaintenance() }
++        defer { if !isClusterMember { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
+ 
+         // Keep the network stack alive during sleep for APN/MDM push delivery.
+         networkAssertion.acquire()
+@@ -57,13 +64,13 @@
+         // installs too. KeepAlive stays false to avoid racing the updater.
+ 
+         // Surface any prior-run OOM and react to live memory pressure. Best-effort.
+-        startMemoryProtection()
++        if !isClusterMember { startMemoryProtection() }
+         // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
+         // drop a memory-pressure marker so a survived pressure spike isn't
+         // misreported as an OOM next launch. A real kill bypasses this.
+         defer {
+             memoryPressureMonitor?.cancel()
+-            OOMDetector.clearMarker()
++            if !isClusterMember { OOMDetector.clearMarker() }
+         }
+ 
+         // 1. Apply security hardening
+@@ -73,8 +80,10 @@
+         // prewarm before either startup preloads or the unified local endpoint
+         // can perform the first normal cold target load. This never downloads
+         // assistant bytes and fails open on timeout.
+-        await prewarmSpecDecCatalog()
+-        startMTPUpgradeMonitor()
++        if !isClusterMember {
++            await prewarmSpecDecCatalog()
++            startMTPUpgradeMonitor()
++        }
+ 
+         // Unified mode: also expose a local OpenAI endpoint off the same loaded
+         // models. It starts after the bounded metadata prewarm, but still before
+@@ -88,7 +97,7 @@
+         // Arm the loaded-models persistence now that this loop is actually
+         // serving (test instances never flip this, so their unload paths
+         // cannot clobber the real ~/.darkbloom/loaded-models.json).
+-        loadedModelsPersistenceEnabled = true
++        loadedModelsPersistenceEnabled = !isClusterMember
+ 
+         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
+         // load the previously-served / configured model set BEFORE the
+@@ -105,9 +114,11 @@
+         // after 90s, but the gate may defer for startup_preload_timeout_secs);
+         // it is cancelled once the gate returns and the capacity loop takes over.
+         writeDaemonState()
+-        let preloadLivenessRefresh = startPreloadLivenessRefresh()
+-        await runStartupPreloadGate()
+-        preloadLivenessRefresh.cancel()
++        if !isClusterMember {
++            let preloadLivenessRefresh = startPreloadLivenessRefresh()
++            await runStartupPreloadGate()
++            preloadLivenessRefresh.cancel()
++        }
+ 
+         // 2. Hash the exact mlx.metallib the live process will load. The same
+         // digest is sent as reported runtime evidence and embedded in the
+@@ -135,6 +146,10 @@
+             logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
+         }
+         #endif
++
++        if isClusterMember { try Task.checkCancellation() }
++        // Member mode receives late APNs tokens through the same live heartbeat
++        // source, without a detached watcher that can outlive control teardown.
+ 
+         // 4. Create coordinator client config. The model list is filtered
+         // through the live advertised set: identical to loopConfig.models at
+@@ -159,7 +174,8 @@
+             privateOnly: loopConfig.config.coordinator.privateOnly,
+             apnsDeviceToken: apnsDeviceToken,
+             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
+-            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
++            idleUnloadMins: isClusterMember ? nil : loopConfig.config.backend.idleTimeoutMins,
++            executionRole: loopConfig.executionRole
+         )
+ 
+         // 4. Create coordinator client and start connection
+@@ -196,7 +212,7 @@
+         // session still coming up), keep watching: when it arrives, reconnect so
+         // registration re-runs WITH the token. Otherwise the provider would stay
+         // un-attested (and unroutable under enforcement) until the process restarts.
+-        if apnsDeviceToken == nil {
++        if apnsDeviceToken == nil && !isClusterMember {
+             let log = logger
+             Task {
+                 if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
+@@ -212,15 +228,17 @@
+         // live connection without threading a handle through the prefetch
+         // callbacks. (coordinatorClient was already retained above, at creation.)
+         self.outboundSend = send
+-        self.prefetchCoordinator = makePrefetchCoordinator()
++        if !isClusterMember { self.prefetchCoordinator = makePrefetchCoordinator() }
+ 
+         // Start the idle-timeout monitor before processing events so that
+         // a rogue model-load (e.g. during `attestation_challenge` priming)
+         // followed by a long disconnect is still subject to the unload
+         // timer.
+-        startIdleMonitor()
+-        startCapacityRefreshMonitor()
+-        startAutoUpdateMonitor()
++        if !isClusterMember {
++            startIdleMonitor()
++            startCapacityRefreshMonitor()
++            startAutoUpdateMonitor()
++        }
+ 
+         logger.info(.coordinatorClientStarted)
+ 
+@@ -229,6 +247,11 @@
+         // unblocks instead of waiting for the next coordinator event.
+         await withTaskCancellationHandler {
+             for await event in events {
++                if consumeClusterMemberEvent(event, send: send) { continue }
++                if memberControlRequiresStop {
++                    await coordinator.shutdown()
++                    break
++                }
+                 switch event {
+                 case .connected:
+                     logger.info(.coordinatorConnected)
+@@ -236,7 +259,7 @@
+                     // (see `fireRetirementReconnect`) lifts with the new
+                     // session: the register it carried excluded every
+                     // retired id, so routed work is safe to admit again.
+-                    setRetirementReconnectBarrier(false)
++                    if !isClusterMember { setRetirementReconnectBarrier(false) }
+ 
+                 case .disconnected:
+                     cancelAppAttestShadow()
+@@ -323,6 +346,14 @@
+ 
+         logger.info(.coordinatorEventStreamEnded)
+         isShuttingDown = true
++        if isClusterMember {
++            memberConnectionID = nil
++            state.refusingNewWork = true
++            finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
++            await coordinator.shutdownAndWait()
++            if await coordinator.memberRoleFailure { throw ClusterMemberControlError.negotiationFailed }
++            return
++        }
+         // Quote path mirror (routing v2): a shutting-down provider quotes
+         // `slot_state` rejections for the brief window the socket stays up.
+         state.refusingNewWork = true
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop.swift
+@@ -182,6 +182,12 @@
+     internal var appAttestShadowClient: AppAttestShadowClient?
+     internal var appAttestShadowTask: Task<Void, Never>?
+     internal var appAttestShadowGeneration: UInt64 = 0
++    internal var memberControlRequiresStop = false
++    internal var memberHadAcceptedConnection = false
++    internal var memberConnectionID: UUID?
++    internal var memberRegistrationWaitID: UUID?
++    internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
++    internal var memberRegistrationTimer: Task<Void, Never>?
+     internal let loopConfig: ProviderLoopConfig
+     internal let keyPair: NodeKeyPair
+     internal let signer: (any AttestationSigner)?
+@@ -633,7 +639,7 @@
+                 ineligibleModelIds.append(model.id)
+                 continue
+             }
+-            if EngineV2SupportedModels.isSupported(model: model) {
++            if config.executionRole == .clusterMember || EngineV2SupportedModels.isSupported(model: model) {
+                 advertised[model.id] = model
+             } else {
+                 unsupportedModelIds.append(model.id)
+@@ -674,7 +680,7 @@
+         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
+         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
+         // so this cleanup cannot delete current cache data.
+-        LegacyKVCacheSweeper.sweep()
++        if config.executionRole == .solo { LegacyKVCacheSweeper.sweep() }
+         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+         self.preloadTaskStarted = preloadTaskStarted
+         self.beforeModelLoad = beforeModelLoad
+--- a/provider-swift/Sources/ProviderCore/ProviderLoopConfig.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoopConfig.swift
+@@ -5,6 +5,10 @@
+ /// Split out of `ProviderLoop.swift` so the loop file holds the actor and its
+ /// behavior, not its value-type inputs.
+ public struct ProviderLoopConfig: Sendable {
++    public let executionRole: ProviderExecutionRole
++    /// A local leader ends its native host if this accepted connection is lost.
++    /// Follower-only control processes may reconnect with a fresh negotiation.
++    public let clusterMemberStopsOnDisconnect: Bool
+     public let coordinatorURL: String
+     public let hardware: HardwareInfo
+     public let models: [ModelInfo]
+@@ -33,8 +37,12 @@
+         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+         modelHashes: [String: String] = [:],
+         modelHashFingerprints: [String: String] = [:],
+-        localEndpoint: LocalInferenceHTTPConfig? = nil
++        localEndpoint: LocalInferenceHTTPConfig? = nil,
++        executionRole: ProviderExecutionRole = .solo,
++        clusterMemberStopsOnDisconnect: Bool = false
+     ) {
++        self.executionRole = executionRole
++        self.clusterMemberStopsOnDisconnect = clusterMemberStopsOnDisconnect
+         self.coordinatorURL = coordinatorURL
+         self.hardware = hardware
+         self.models = models
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import ArgumentParser
++import ProviderCore
++
++extension Start {
++    /// Shared by the follower-only command and the local leader. Pins the
++    /// attested metallib without requireMetal, a container, or the solo device gate.
++    func makeClusterMemberLoop(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false) async throws -> ProviderLoop {
++        let prepared = try await Task.detached(priority: .userInitiated) {
++            try ClusterMemberPreparation.prepare(reference: reference)
++        }.value
++        try Task.checkCancellation()
++        let path = try configOptions.config.map {
++            URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
++        } ?? ConfigManager.defaultConfigPath()
++        let current = try DistributedStartSessionFactory(providerConfiguration: path)
++        guard current.reference == reference else {
++            throw ClusterMemberControlError.incompatibleConfiguration
++        }
++        let hardware = try HardwareDetector.detect()
++        let config = try ConfigManager.load(from: path)
++        // The existing binder copies/hashes an anonymous read-only snapshot
++        // and sets MLX's path string only; it performs no GPU initialization.
++        // Without it metallibHash() is nil and fresh release attestation fails.
++        guard bindRuntimeMetallibForMLX(from: nil) != nil else {
++            throw ClusterMemberControlError.incompatibleConfiguration
++        }
++        let hashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
++        // Hardware-only capabilities are honest here. Native/kernel capability
++        // proof belongs to the selected installed adapter, not a solo GPU probe.
++        let capabilities: Set<ProviderRuntimeCapability> = hardware.chipFamily == .m5 ? [.appleM5] : []
++        try current.withCurrentReference { _ in try prepared.requireUnchanged() }
++        try ModelRuntimeRequirements.requireEligible(modelID: prepared.model.id, available: capabilities)
++        let loopConfig = ProviderLoopConfig(
++            coordinatorURL: coordinatorURL ?? config.coordinator.url,
++            hardware: hardware, models: [prepared.model], config: config,
++            authToken: AuthTokenStore.load(), runtimeHashes: hashes,
++            runtimeCapabilities: capabilities,
++            modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
++            executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect)
++        return try ProviderLoop(config: loopConfig)
++    }
++
++    func runClusterMember() async throws {
++        let path = try configOptions.config.map {
++            URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
++        } ?? ConfigManager.defaultConfigPath()
++        let factory = try DistributedStartSessionFactory(providerConfiguration: path)
++        try ProcessLifecycle.acquireMediaServingLock()
++        ProcessLifecycle.preventSystemSleep()
++        defer { ProcessLifecycle.releaseSingleInstanceLock() }
++        let loop = try await makeClusterMemberLoop(reference: factory.reference)
++        let signals = try DistributedStartSignals()
++        defer { signals.close() }
++        let task = Task { try await loop.run() }
++        signals.attach { task.cancel() }
++        do {
++            try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
++            print("darkbloom \(ProviderCore.version) (registered cluster member; solo inference disabled)")
++            try await withTaskCancellationHandler { try await task.value }
++                onCancel: { task.cancel() }
++        } catch {
++            task.cancel(); _ = try? await task.value
++            throw error
++        }
++    }
++}
+--- a/provider-swift/Sources/darkbloom/StartCommand+Distributed.swift
++++ b/provider-swift/Sources/darkbloom/StartCommand+Distributed.swift
+@@ -10,6 +10,10 @@
+             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+         } ?? ConfigManager.defaultConfigPath()
+         let factory = try DistributedStartSessionFactory(providerConfiguration: configPath)
++        try ProcessLifecycle.acquireMediaServingLock()
++        ProcessLifecycle.preventSystemSleep()
++        defer { ProcessLifecycle.releaseSingleInstanceLock() }
++        let member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
+         let session = try await factory.prepare()
+         let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
+         let budget = try DistributedFirstTokenBudgetPolicy(
+@@ -21,13 +25,19 @@
+ 
+         // Keep the existing endpoint/PID and sleep-prevention ownership. The
+         // cluster leader never takes the native device gate from its own child.
+-        try ProcessLifecycle.acquireMediaServingLock()
+-        ProcessLifecycle.preventSystemSleep()
+-        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+         let signals = try DistributedStartSignals()
+         defer { signals.close() }
+ 
++        let memberTask = Task { try await member.run() }
++        let memberExit = Task {
++            let result = await memberTask.result
++            // A terminal control loop cannot leave this leader advertised.
++            _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++            return result
++        }
+         let task = Task {
++            try await member.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
++            try Task.checkCancellation()
+             try await server.start()
+             guard let boundPort = await server.status.boundPort else {
+                 throw DistributedStartRuntimeError.listenerStopped
+@@ -41,6 +51,7 @@
+         }
+         let stop: @Sendable () -> Void = {
+             task.cancel()
++            memberTask.cancel()
+             Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + 15_000_000_000) }
+         }
+         signals.attach(stop)
+@@ -56,14 +67,19 @@
+                 await server.stop(until: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+             }
+             let status = await cleanup.value
++            memberTask.cancel()
++            _ = await memberExit.value
+             if !status.cleanupComplete {
+                 printError("Distributed cleanup is unresolved; owner journals continue to block another session.")
+             }
+             throw error
+         }
++        memberTask.cancel()
++        let memberResult = await memberExit.value
+         guard status.cleanupComplete else {
+             throw DistributedStartRuntimeError.cleanupUnresolved
+         }
+         if status.failed { throw DistributedStartRuntimeError.sessionFailed }
++        if case .failure(let error) = memberResult, !(error is CancellationError) { throw error }
+     }
+ }
+--- a/provider-swift/Sources/darkbloom/StartCommand.swift
++++ b/provider-swift/Sources/darkbloom/StartCommand.swift
+@@ -46,16 +46,24 @@
+     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
+     var noAuth = false
+ 
+-    @Flag(help: "Use the saved distributed cluster for local serving (requires --local).")
++    @Flag(help: "Register a foreground control-only cluster member; requires a saved cluster and never serves solo inference.")
++    var clusterMember = false
++
++    @Flag(help: "Use the saved distributed cluster for local serving and register its leader as a control-only member (requires --local).")
+     var distributed = false
+ 
+     mutating func validate() throws {
++        if clusterMember {
++            guard !distributed, !local, !localEndpoint, model.isEmpty, !all, idleTimeout == nil else {
++                throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
++            }
++        }
+         guard distributed else { return }
+         guard local, !foreground, !localEndpoint else {
+-            throw ValidationError("Distributed startup currently requires --local and does not run as a coordinator service.")
+-        }
+-        guard model.isEmpty, !all, idleTimeout == nil, coordinatorURL == nil else {
+-            throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model, idle, and coordinator overrides are unavailable.")
++            throw ValidationError("Distributed startup requires --local; its coordinator connection is control-only.")
++        }
++        guard model.isEmpty, !all, idleTimeout == nil else {
++            throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model and idle overrides are unavailable.")
+         }
+     }
+ 
+@@ -85,6 +93,11 @@
+         if local && localEndpoint {
+             printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
+             throw ExitCode.failure
++        }
++
++        if clusterMember {
++            try await runClusterMember()
++            return
+         }
+ 
+         if distributed {
+--- a/provider-swift/Tests/DarkbloomCLITests/DistributedStartCommandTests.swift
++++ b/provider-swift/Tests/DarkbloomCLITests/DistributedStartCommandTests.swift
+@@ -17,8 +17,20 @@
+                        ["--distributed", "--local", "--foreground"],
+                        ["--distributed", "--local", "--all"],
+                        ["--distributed", "--local", "--model", "other"],
+-                       ["--distributed", "--local", "--idle-timeout", "2"],
+-                       ["--distributed", "--local", "--coordinator-url", "wss://example.invalid"]] {
++                       ["--distributed", "--local", "--idle-timeout", "2"]] {
++            #expect(throws: (any Error).self) { _ = try Start.parse(values) }
++        }
++    }
++
++    @Test func memberRoleSelectionAndExplicitCoordinatorParseWithoutIO() throws {
++        let member = try Start.parse(["--cluster-member", "--coordinator-url", "wss://example.invalid"])
++        #expect(member.clusterMember && !member.local && !member.distributed)
++        let leader = try Start.parse(["--local", "--distributed", "--coordinator-url", "wss://example.invalid"])
++        #expect(leader.coordinatorURL == "wss://example.invalid")
++        #expect(try Start.parse([]).clusterMember == false)
++        for values in [["--cluster-member", "--local"], ["--cluster-member", "--local-endpoint"],
++                       ["--cluster-member", "--distributed", "--local"], ["--cluster-member", "--all"],
++                       ["--cluster-member", "--model", "other"], ["--cluster-member", "--idle-timeout", "2"]] {
+             #expect(throws: (any Error).self) { _ = try Start.parse(values) }
+         }
+     }
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Coordinator/ClusterMemberRegistrationTests.swift
+@@ -0,0 +1,141 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++private func memberHardware() -> HardwareInfo {
++    .init(machineModel: "fixture", chipName: "Apple M4", chipFamily: .m4, chipTier: .pro,
++          memoryGb: 24, memoryAvailableGb: 20,
++          cpuCores: .init(total: 12, performance: 8, efficiency: 4), gpuCores: 16, memoryBandwidthGbs: 200)
++}
++private func memberConfig(role: ProviderExecutionRole) -> CoordinatorClientConfig {
++    .init(url: "wss://coordinator.invalid/ws", hardware: memberHardware(),
++          models: [.init(id: "fixture-model", modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)],
++          backendName: "mlx-swift", attestation: .init(rawBytes: Data(#"{"signed":"fixture"}"#.utf8)),
++          executionRole: role)
++}
++
++@Suite("Cluster member role negotiation")
++struct ClusterMemberRegistrationTests {
++    @Test func legacyOmissionAndMemberInventorySurviveRawAttestation() throws {
++        let solo = try CoordinatorClientCodec.encodeRegistration(from: memberConfig(role: .solo))
++        let old = try #require(JSONSerialization.jsonObject(with: solo) as? [String: Any])
++        #expect(old["execution_role"] == nil && old["cluster_models"] == nil)
++        #expect((old["models"] as? [[String: Any]])?.count == 1)
++        let negotiation = ClusterMemberNegotiation()
++        let bytes = try CoordinatorClientCodec.encodeRegistration(from: memberConfig(role: .clusterMember),
++            memberRegistrationNonce: negotiation.nonce)
++        let object = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
++        #expect(object["execution_role"] as? String == "cluster_member")
++        #expect((object["models"] as? [Any])?.isEmpty == true)
++        #expect((object["cluster_models"] as? [[String: Any]])?.first?["id"] as? String == "fixture-model")
++        guard case .register(let decoded) = try ProviderProtocolCodec.decodeProviderMessage(from: bytes) else {
++            Issue.record("wrong registration type"); return
++        }
++        #expect(decoded.executionRole == .clusterMember && decoded.models.isEmpty)
++        #expect(decoded.memberRegistrationNonce == negotiation.nonce && decoded.clusterModels?.count == 1)
++    }
++
++    @Test func explicitAckRejectsWrongNonceRoleLateAndDuplicate() throws {
++        let start = ContinuousClock.now
++        let original = ClusterMemberNegotiation(now: start)
++        func ack(_ nonce: String, role: ProviderExecutionRole = .clusterMember) -> ClusterMemberAccepted {
++            .init(executionRole: role, memberRegistrationNonce: nonce, providerID: "connection-1")
++        }
++        for bad in [ack("wrong"), ack(original.nonce, role: .solo)] {
++            var attempt = original
++            #expect(throws: ClusterMemberControlError.self) { try attempt.accept(bad, now: start) }
++            #expect(attempt.providerID == nil)
++        }
++        var late = original
++        #expect(throws: ClusterMemberControlError.self) { try late.accept(ack(original.nonce), now: original.deadline) }
++        var valid = original
++        try valid.accept(ack(original.nonce), now: start)
++        #expect(valid.providerID == "connection-1")
++        #expect(throws: ClusterMemberControlError.self) { try valid.accept(ack(original.nonce), now: start) }
++        var reconnect = ClusterMemberNegotiation(now: start)
++        #expect(reconnect.nonce != original.nonce)
++        #expect(throws: ClusterMemberControlError.self) { try reconnect.accept(ack(original.nonce), now: start) }
++        let bytes = try ProviderProtocolCodec.encodeCoordinatorMessage(.clusterMemberAccepted(ack(original.nonce)))
++        #expect(try CoordinatorClientCodec.decodeIncomingMessage(from: bytes) == .clusterMemberAccepted(ack(original.nonce)))
++    }
++
++    @Test("Real WebSocket requires explicit member acknowledgment", arguments: [false, true])
++    func realSocketRoleNegotiation(acknowledge: Bool) async throws {
++        let mock = MockCoordinator()
++        let base = try await mock.start()
++        let client = CoordinatorClient(config: .init(url: base.mockProviderWebSocketURL(),
++            hardware: memberHardware(), models: memberConfig(role: .clusterMember).models,
++            backendName: "mlx-swift", heartbeatInterval: 1, executionRole: .clusterMember),
++            stats: .init(), state: .init(), liveAPNsToken: { nil })
++        let (events, _) = await client.start()
++        do {
++            let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
++            let registration = try #require(first)
++            #expect(registration.models.isEmpty && registration.clusterModels?.count == 1)
++            #expect(await client.sessionRegistered == false)
++            if acknowledge {
++                try await mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
++            }
++            // AsyncStream cancellation resumes the losing iterator; no blocked
++            // network read is left owned by this task group.
++            let connected = try await withThrowingTaskGroup(of: Bool.self) { group in
++                group.addTask {
++                    for await event in events { if case .connected = event { return true } }
++                    return false
++                }
++                group.addTask {
++                    try await Task.sleep(for: .seconds(15))
++                    throw ClusterMemberControlError.negotiationFailed
++                }
++                defer { group.cancelAll() }
++                return try await group.next() ?? false
++            }
++            #expect(connected == acknowledge)
++            #expect(await client.memberRoleFailure == !acknowledge)
++            await client.shutdownAndWait()
++            await mock.shutdown()
++        } catch {
++            await client.shutdownAndWait()
++            await mock.shutdown()
++            throw error
++        }
++    }
++
++    @Test func staleNegotiationTimerCannotRefuseReplacement() async throws {
++        let client = CoordinatorClient(config: memberConfig(role: .clusterMember),
++            stats: .init(), state: .init(), liveAPNsToken: { nil })
++        let old = await client.testBeginMemberNegotiation()
++        let fresh = await client.testBeginMemberNegotiation()
++        await client.expireMemberNegotiation(nonce: old.nonce, now: fresh.deadline)
++        #expect(await client.memberRoleFailure == false)
++        #expect(await client.memberNegotiation?.nonce == fresh.nonce)
++        await client.expireMemberNegotiation(nonce: fresh.nonce, now: fresh.deadline)
++        #expect(await client.memberRoleFailure)
++        #expect(await client.sessionRegistered == false)
++    }
++
++    @Test func clientDoesNotPublishConnectedBeforeAckAndRefusesOldAckOnReconnect() async throws {
++        let client = CoordinatorClient(config: memberConfig(role: .clusterMember),
++            stats: .init(), state: .init(), liveAPNsToken: { nil })
++        let first = await client.testBeginMemberNegotiation()
++        #expect(await client.sessionRegistered == false)
++        let ack = ClusterMemberAccepted(executionRole: .clusterMember,
++            memberRegistrationNonce: first.nonce, providerID: "connection-1")
++        let bytes = try ProviderProtocolCodec.encodeCoordinatorMessage(.clusterMemberAccepted(ack))
++        await client.handleIncomingFrame(bytes, receivedAt: .now)
++        #expect(await client.sessionRegistered)
++        _ = await client.testBeginMemberNegotiation()
++        await client.handleIncomingFrame(bytes, receivedAt: .now)
++        #expect(await client.sessionRegistered == false)
++        #expect(await client.memberRoleFailure)
++    }
++}
++
++private extension CoordinatorClient {
++    func testBeginMemberNegotiation() -> ClusterMemberNegotiation {
++        sessionRegistered = false
++        let value = ClusterMemberNegotiation()
++        memberNegotiation = value
++        return value
++    }
++}
+--- a/provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift
+@@ -332,6 +332,11 @@
+ 
+     // MARK: Push helpers
+ 
++    public func pushClusterMemberAcceptance(nonce: String, providerID: String = "mock-member") async throws {
++        try await sendCoordinatorMessage(.clusterMemberAccepted(.init(
++            executionRole: .clusterMember, memberRegistrationNonce: nonce, providerID: providerID)))
++    }
++
+     public func pushAttestationChallenge(
+         nonce: String,
+         timestamp: String
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/ProviderLoop/ClusterMemberLoopTests.swift
+@@ -0,0 +1,111 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++private final class MemberMessages: @unchecked Sendable {
++    private let lock = NSLock()
++    private var values: [OutboundMessage] = []
++    func append(_ value: OutboundMessage) { lock.withLock { values.append(value) } }
++    var snapshot: [OutboundMessage] { lock.withLock { values } }
++}
++private func makeMemberLoop(endpoint: LocalInferenceHTTPConfig? = nil, stopOnDisconnect: Bool = false) throws -> ProviderLoop {
++    let hardware = HardwareInfo(machineModel: "fixture", chipName: "Apple M4", chipFamily: .m4, chipTier: .pro,
++        memoryGb: 24, memoryAvailableGb: 20, cpuCores: .init(total: 12, performance: 8, efficiency: 4),
++        gpuCores: 16, memoryBandwidthGbs: 200)
++    return try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused", hardware: hardware,
++        models: [.init(id: "fixture-member-model", modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)],
++        config: ProviderConfig(provider: .init(name: "member-test", memoryReserveGB: 1),
++            backend: .init(idleTimeoutMins: 0, maxModelSlots: 3),
++            coordinator: .init(heartbeatIntervalSecs: 60)),
++        localEndpoint: endpoint, executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect),
++        purgeLegacyFiles: false, attestationSigner: nil)
++}
++
++@Suite("Cluster member control loop")
++struct ClusterMemberLoopTests {
++    @Test func directLoadPrefetchInferenceAndDesiredEventsNeverStartWork() async throws {
++        let loop = try makeMemberLoop()
++        let recorder = MemberMessages(), send = SendHandle { recorder.append($0) }
++        await loop.handleLoadModelRequest(modelId: "fixture-member-model", send: send)
++        await loop.handlePrefetchModelRequest(modelId: "fixture-member-model", priority: 1, send: send)
++        // Invalid encrypted bytes must never reach decryption/admission here.
++        await loop.handleInferenceRequest(requestId: "rejected", ciphertext: Data([1]), senderPublicKey: nil,
++            cacheReceiptNonce: nil, authenticatedCacheScope: nil, send: send)
++        #expect(await loop.consumeClusterMemberEvent(.desiredModels(entries: []), send: send))
++        do { try await loop.ensureModelLoaded(modelId: "fixture-member-model"); Issue.record("member loaded model") }
++        catch { #expect(error is ClusterMemberControlError) }
++        let messages = recorder.snapshot
++        #expect(messages.count == 3)
++        if case .loadModelStatus(_, .failed, _) = messages[0] {} else { Issue.record("load started") }
++        if case .prefetchModelStatus(_, .failed, 0, 0, _) = messages[1] {} else { Issue.record("prefetch started") }
++        if case .inferenceError(_, let failure, _) = messages[2] { #expect(failure.code == .modelUnavailable) }
++        else { Issue.record("inference accepted") }
++        #expect(await loop.memberWorkIsEmpty())
++    }
++
++    @Test func emptyCapacityAndNoPersistenceOrBackgroundLoad() async throws {
++        let loop = try makeMemberLoop()
++        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: path) }
++        await loop.memberTestStateFile(path)
++        try await loop.prepareClusterMemberControl()
++        let state = await loop.state
++        #expect(state.backendCapacity?.slots.isEmpty == true)
++        #expect(state.backendCapacity?.freeForLoadGb == 0 && state.refusingNewWork)
++        #expect(await loop.memberWorkIsEmpty())
++        #expect(await loop.loadedModelsPersistenceEnabled == false)
++        let incompatible = try makeMemberLoop(endpoint: .init(host: "127.0.0.1", port: 0, authToken: nil))
++        do { try await incompatible.prepareClusterMemberControl(); Issue.record("member accepted solo endpoint") }
++        catch { #expect(error is ClusterMemberControlError) }
++    }
++
++    @Test func disconnectDropsConnectionGenerationBeforeReconnect() async throws {
++        let loop = try makeMemberLoop(), send = SendHandle { _ in }
++        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: path) }
++        await loop.memberTestStateFile(path)
++        _ = await loop.consumeClusterMemberEvent(.connected, send: send)
++        let first = try #require(await loop.memberConnectionID)
++        _ = await loop.consumeClusterMemberEvent(.disconnected, send: send)
++        #expect(await loop.memberConnectionID == nil)
++        _ = await loop.consumeClusterMemberEvent(.connected, send: send)
++        #expect(await loop.memberConnectionID != first)
++    }
++
++    @Test func acceptedLeaderControlLossLatchesStopBeforeReconnect() async throws {
++        let loop = try makeMemberLoop(stopOnDisconnect: true), send = SendHandle { _ in }
++        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: path) }
++        await loop.memberTestStateFile(path)
++        _ = await loop.consumeClusterMemberEvent(.disconnected, send: send)
++        #expect(await loop.memberControlRequiresStop == false)
++        _ = await loop.consumeClusterMemberEvent(.connected, send: send)
++        #expect(await loop.memberConnectionID != nil)
++        _ = await loop.consumeClusterMemberEvent(.disconnected, send: send)
++        #expect(await loop.memberControlRequiresStop)
++        #expect(await loop.memberConnectionID == nil)
++        _ = await loop.consumeClusterMemberEvent(.connected, send: send)
++        #expect(await loop.memberConnectionID == nil)
++    }
++
++    @Test func unacknowledgedAndCancelledRegistrationWaitsRefuse() async throws {
++        let loop = try makeMemberLoop()
++        do {
++            try await loop.waitForClusterMemberRegistration(until: .now)
++            Issue.record("expired wait succeeded")
++        } catch { #expect(error is ClusterMemberControlError) }
++        let task = Task { try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30))) }
++        task.cancel()
++        do { try await task.value; Issue.record("cancelled wait succeeded") } catch { #expect(error is CancellationError) }
++        #expect(await loop.memberRegistrationWaiter == nil)
++    }
++}
++
++private extension ProviderLoop {
++    func memberTestStateFile(_ url: URL) { daemonStateFileOverride = url }
++    func memberWorkIsEmpty() -> Bool {
++        modelSlots.isEmpty && modelsLoading.isEmpty && preloadTasks.isEmpty &&
++        prefetchCoordinator == nil && startupPreloadTask == nil && mtpUpgradeMonitorTask == nil &&
++        capacityRefreshTask == nil && inflightProfiles.isEmpty
++    }
++}

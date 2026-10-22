@@ -1,0 +1,160 @@
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop.swift
+@@ -681,13 +681,7 @@
+         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
+         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
+         // so this cleanup cannot delete current cache data.
+-<<<<<<< cluster-work
+-        if config.executionRole == .solo { LegacyKVCacheSweeper.sweep() }
+-||||||| old-master
+-        LegacyKVCacheSweeper.sweep()
+-=======
+-        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
+->>>>>>> current-master
++        if config.executionRole == .solo && purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
+         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+         self.preloadTaskStarted = preloadTaskStarted
+         self.beforeModelLoad = beforeModelLoad
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -321,12 +321,8 @@
+         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+         pagedPageSize: Int? = nil,
+         kvBackendFallbackReason: String? = nil,
+-<<<<<<< cluster-work
++        advertisedContextTokens: Int? = nil,
+         distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+-||||||| old-master
+-=======
+-        advertisedContextTokens: Int? = nil,
+->>>>>>> current-master
+         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
+     ) {
+         self.ownedEngine = engine
+--- a/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
+@@ -140,7 +140,6 @@
+                 message: ProviderLoop.sanitizedInferenceFailure(
+                     from: error, phase: .generation).message
+             )
+-<<<<<<< cluster-work
+         } catch let error as PreContentDeadlineFailure {
+             // Opt-in distributed HTTP budgets use the existing pre-content
+             // refusal mapping, before any SSE headers or content are returned.
+@@ -148,15 +147,12 @@
+                 status: HTTPResponse.Status(code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
+                 message: ProviderLoop.sanitizedInferenceFailure(
+                     from: error, phase: .generation).message)
+-||||||| old-master
+-=======
+         } catch let error as OpenAIRequestValidationError {
+             // Chat upload interception lives outside the upstream router's
+             // HTTPResponseError mapping. Preserve this fixed, content-free
+             // validation error without exposing arbitrary upstream messages.
+             return Self.openAIErrorResponse(
+                 status: error.status, message: error.localizedDescription)
+->>>>>>> current-master
+         } catch let error as MLXOpenAIServiceError {
+             return Self.openAIErrorResponse(
+                 status: HTTPResponse.Status(
+--- a/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
+@@ -101,7 +101,6 @@
+         // throws (unknown model, admission refusal) travel to
+         // `CORSResponder`'s status mapping unchanged.
+         if item.request.stream == true {
+-<<<<<<< cluster-work
+             if let distributedResponses {
+                 let response = try distributedResponses.begin()
+                 do {
+@@ -118,20 +117,16 @@
+                     }
+                     if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
+                     let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
+-                        try await requestService.streamChatCompletionFrames(request: item.request)
++                        try await requestService.streamChatCompletionFrames(
++                            request: item.request, frameGenerationErrors: false)
+                     }
+                     return DistributedHTTPEventStream.response(frames, control: response)
+                 } catch {
+                     response.disconnect(); response.finish(); throw error
+                 }
+             }
+-            let frames = try await requestService.streamChatCompletionFrames(request: item.request)
+-||||||| old-master
+-            let frames = try await requestService.streamChatCompletionFrames(request: item.request)
+-=======
+             let frames = try await requestService.streamChatCompletionFrames(
+                 request: item.request, frameGenerationErrors: true)
+->>>>>>> current-master
+             return Self.sseResponse(frames)
+         }
+         return try Self.jsonResponse(
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -34,33 +34,15 @@
+ }
+ 
+ /// The concrete responder stack the local endpoint always uses:
+-<<<<<<< cluster-work
+-/// receipt origin (outermost) → auth → CORS → MTP-augmented /metrics → chat-upload
+-||||||| old-master
+-/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
+-=======
+-/// disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
+->>>>>>> current-master
++/// receipt origin → disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
+ /// interception (32 MiB body ceiling for the media-bearing chat routes, see
+ /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+ public typealias LocalInferenceApplication =
+     Application<
+-<<<<<<< cluster-work
+-        LocalRequestOriginResponder<LocalConnectionResponder<LocalAuthResponder<
+-||||||| old-master
+-        LocalAuthResponder<
+-=======
+-        LocalDisconnectResponder<LocalAuthResponder<
+->>>>>>> current-master
++        LocalRequestOriginResponder<LocalDisconnectResponder<LocalAuthResponder<
+             CORSResponder<
+                 LocalMetricsResponder<
+-<<<<<<< cluster-work
+                     LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
+-||||||| old-master
+-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
+-=======
+-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+->>>>>>> current-master
+ 
+ /// Builds the local OpenAI-compatible Hummingbird application from a model
+ /// registry expressed as three closures. Shared by `StandaloneServer` and the
+@@ -144,27 +126,13 @@
+     let metricsResponder = LocalMetricsResponder(
+         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+     let corsResponder = CORSResponder(inner: metricsResponder)
+-<<<<<<< cluster-work
+-    // Auth rejects an unauthenticated request
+-    // before reaching the engine. Pass-through when no token is configured.
+-||||||| old-master
+-    // Auth is the outermost layer so an unauthenticated request is rejected
+-    // before reaching the engine. Pass-through when no token is configured.
+-=======
+     // Auth rejects unauthenticated requests before body/model handling. The
+-    // outer disconnect layer only binds lifetime; it does not inspect content.
+->>>>>>> current-master
++    // outer origin and disconnect layers bind timing/lifetime, not authority.
+     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+ 
+     return Application(
+-<<<<<<< cluster-work
+-        responder: LocalRequestOriginResponder(inner: LocalConnectionResponder(
++        responder: LocalRequestOriginResponder(inner: LocalDisconnectResponder(
+             inner: authedResponder, observeConnection: distributedResponses != nil)),
+-||||||| old-master
+-        responder: authedResponder,
+-=======
+-        responder: LocalDisconnectResponder(inner: authedResponder),
+->>>>>>> current-master
+         configuration: .init(
+             address: .hostname(config.host, port: Int(config.port)),
+             serverName: "darkbloom-provider"

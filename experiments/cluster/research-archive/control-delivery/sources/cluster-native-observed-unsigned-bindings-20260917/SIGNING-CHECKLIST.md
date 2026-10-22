@@ -1,0 +1,13 @@
+# Observed unsigned artifacts for signing
+
+The Provider 117-test/19-suite pass and matching CLI build are joined to the same 13,859-file candidate inventory. The numerical native package joins 38 XCTest + 7 Swift Testing runtime methods, 19 worker methods, capability controls and actual native description output to one 3,081-source/9,832-dependency composition. All recorded commands ended naturally with their owned groups absent. This assembly replayed the exact Provider completion labels and the two explicit member-negotiation cases from retained logs; it ran no tests or binaries.
+
+Current release-unsigned Provider CLI: `8bb652d7bc43d57ed4899487c27ae4e5abf4fd26731cdf00fd687867cdf7c786` (145761856 bytes). Numerical worker: `3d9c016f5e1946e004c4ad7ea9f002e008534722e48d79faf24aa09b27822c39` (44874104 bytes). Full native resources, descriptions, policy, source and phase receipts are in observed-bindings.json.
+
+These are software-qualified artifacts, not a signed release, device trust, encrypted hardware inference or serving authorization. “Unsigned” means no release-signing qualification; no codesign inspection was run and no claim about incidental ad-hoc Mach-O signatures is made. Large binaries/metallib were not rehashed under the no-bulk-IO constraint: their hashes come from the matching actual build/package receipts; current file type/size was checked. Small metadata/descriptions/resources and receipt joins were rehashed.
+
+Before signing: preserve these actual source/build/test receipts and existing artifacts unchanged; select the authorized signing path and exact reviewed source composition. The existing validation-only workflow builds its repository ref, so a new CI build needs its own matching qualification. Do not substitute current MAIN or an older signed release.
+
+After authorized signing: populate only newly observed signedAppPath, signedCLISHA256, codeDirectorySHA256, signedProviderMetallibSHA256, signedBundleSHA256, signedValidationIdentityPath and profile metadata receipt. Keep the above unsigned identities as preimages. Rebind the actual signed owner/CLI and private release/application policy; never reuse the pre-signing SHA as the signed identity.
+
+Keep the separate numerical native bundle byte-exact. Any native/resource change requires new actual description and matching source-bound approval. Fresh current per-device SE/MDA/code attestation, private coordinator/TLS configuration, exact saved attachments and one-request approval are still required. Their fields remain null. No copying, installation, signing, CI action, coordinator mutation or physical launch was performed.

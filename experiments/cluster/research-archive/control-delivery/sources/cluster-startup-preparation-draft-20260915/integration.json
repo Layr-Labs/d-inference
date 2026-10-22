@@ -1,0 +1,134 @@
+{
+  "files": [
+    {
+      "baseSHA256": null,
+      "bytes": 3967,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerStartupPreparation.swift",
+      "role": "runtime",
+      "sha256": "67a6ca1a2be0f2ead2d9471879672cba814fc6cb289a864358f1f6d9ea544895"
+    },
+    {
+      "baseSHA256": "d69cfcb2012596ae0348a3b3c50ece02d7457070cd4949bcf76851553a85ece3",
+      "bytes": 5162,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift",
+      "role": "runtime",
+      "sha256": "936a70d3c8391b786b62609171210267a8969c7af8edad166ee0cecafb2b72bb"
+    },
+    {
+      "baseSHA256": "190553d56420dc9e0578bfcc92f949cf097376ae21eac8674d2a669db5e2d091",
+      "bytes": 8424,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift",
+      "role": "runtime",
+      "sha256": "71d146c7403a3fd8bd0e9e5ed26e75543e5e14121d88aa453098b28b088c21ea"
+    },
+    {
+      "baseSHA256": "88693236bd8f2599791a6de2f169e3a1cb2d5909606c3bb53be32fa4de5b4b18",
+      "bytes": 4072,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift",
+      "role": "runtime",
+      "sha256": "a7c1317a14d8134c0e2b47bb8710aac3f2cbe696220874483449ddbef51f8e2c"
+    },
+    {
+      "baseSHA256": null,
+      "bytes": 2157,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeStartupPreparation.swift",
+      "role": "runtime",
+      "sha256": "51af637977f9f17fe29aae253179424f5037a84839aafb0ab1a4619bdf3156a7"
+    },
+    {
+      "baseSHA256": "4dd6abd055607b36924e31542f6adf5f27fd8b4db483e9dfd70e445f13d7e69e",
+      "bytes": 3528,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift",
+      "role": "runtime",
+      "sha256": "6d3f85bedfabdacf707edb5f4cc1d13e815f5c552db614c170e3a02297196081"
+    },
+    {
+      "baseSHA256": null,
+      "bytes": 440,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentStartupPreparation.swift",
+      "role": "runtime",
+      "sha256": "771a14043543794b57c471a191ed84a6482995824e527b30b2a84f30c41bfaef"
+    },
+    {
+      "baseSHA256": null,
+      "bytes": 5141,
+      "path": "libs/darkbloom-cluster/Tests/CapabilityChecks/StartupPreparationCheck.swift",
+      "role": "fixtures",
+      "sha256": "3cf8e8a4c0a40ee1c8a7d391fcf93cbd72f2de8643c65cf1d5257d353e6a4d43"
+    },
+    {
+      "baseSHA256": "bbdd6e67676760acc5afe4a31ee7ea97a72acb4751a0b28667584b7e5ab4293d",
+      "bytes": 1397,
+      "path": "libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh",
+      "role": "fixtures",
+      "sha256": "10d027694d8b9cfffb71452d4db5b7c5fc1b81c2f44fd2ba3d63df10b4c45249"
+    },
+    {
+      "baseSHA256": "081bb2368e58fc295cf14b0e05bd589789d9fd95865c2eab1652b4de8b9678f9",
+      "bytes": 4194,
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift",
+      "role": "fixtures",
+      "sha256": "4ca95779752cc957df17e828602ad42d3c9b181457dbd156b4e6806930b0aeaa"
+    },
+    {
+      "baseSHA256": "93e9b899d19796e867ff3b276f99702ac60ae510aa5c5e4db2ce4c41cf44895d",
+      "bytes": 2521,
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh",
+      "role": "fixtures",
+      "sha256": "96f287c750a949ba4fc9783bf1e513e68578b7145bdf83a81114b511f644b7ae"
+    },
+    {
+      "baseSHA256": "19dfea8f0ada2d5746054f52519254e2ca19742ad9942139491523a959821afa",
+      "bytes": 5163,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift",
+      "role": "runtime",
+      "sha256": "0bc1b410647cdded53b10c63f5c79f27a309df33dfaf63443960d4af208c4b90"
+    },
+    {
+      "baseSHA256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e",
+      "bytes": 17133,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "role": "runtime",
+      "sha256": "9f776033a8d5c19463b592ec561531a4496abebc4e3f8ba1f2347efe3d81a722"
+    },
+    {
+      "baseSHA256": "3217c874f896e95b8c07be32c203f8b16eb46095c5573a09ac25f6b0fae16395",
+      "bytes": 6207,
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift",
+      "role": "fixtures",
+      "sha256": "fc16b39d7e396764d6b012848687b1c1e9ed0a7a82b5fcb0f69b41a8fa468020"
+    },
+    {
+      "baseSHA256": "ac437ff33af68c427b411c40bebf5254f6c690bc61b2880f0c94041d43fc426a",
+      "bytes": 15239,
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift",
+      "role": "fixtures",
+      "sha256": "491cd79ea8e3680e1967f4808be604ec39672c261a9f6ac055f307b82f9a6d59"
+    },
+    {
+      "baseSHA256": null,
+      "bytes": 7758,
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledStartupCheck.swift",
+      "role": "fixtures",
+      "sha256": "1b1d0155ff22b6fd5ec9d209eb1d63b5f390380786a7a20f84dab09e6ee66e07"
+    },
+    {
+      "baseSHA256": "6fbbf8cded1be347a2c6df07e9d3c36796e9356b801bd0f6e3ee368a8863a96a",
+      "bytes": 4140,
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/run.sh",
+      "role": "fixtures",
+      "sha256": "49a1db9d9794806f33e6b96893ea1a3cd7647495c9b547a7d2a5e6cfbdcc8423"
+    }
+  ],
+  "fixtureAndRunnerFiles": 8,
+  "fixtureRunners": [
+    "libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh",
+    "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh",
+    "provider-swift/Tests/ClusterInstalledSessionChecks/run.sh"
+  ],
+  "mainEdited": false,
+  "packageManifestChanges": false,
+  "runtimeFiles": 9,
+  "schema": "private_startup_preparation_overlay_v1",
+  "swiftFixturesExecuted": false
+}

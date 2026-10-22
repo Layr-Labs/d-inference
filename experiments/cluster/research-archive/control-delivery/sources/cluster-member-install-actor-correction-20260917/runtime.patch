@@ -1,0 +1,23 @@
+--- a/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
++++ b/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
+@@ -39,12 +39,16 @@
+             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
+             executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect)
+         let loop = try ProviderLoop(config: loopConfig)
+-        try current.withCurrentReference { _ in
+-            if let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName) {
+-                try loop.installNativePairMember(installation)
+-            }
++        let installation = try current.withCurrentReference { _ in
++            let value = try prepared.nativeMemberInstallation(chip: hardware.chipName)
+             try prepared.requireUnchanged()
++            return value
+         }
++        if let installation {
++            try await loop.installNativePairMember(installation)
++        }
++        try Task.checkCancellation()
++        try current.withCurrentReference { _ in try prepared.requireUnchanged() }
+         return loop
+     }
+ 

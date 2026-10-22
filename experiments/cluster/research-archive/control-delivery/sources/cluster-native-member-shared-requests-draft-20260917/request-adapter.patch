@@ -1,0 +1,1583 @@
+--- originals/coordinator/api/provider.go
++++ proposed/coordinator/api/provider.go
+@@ -636,7 +636,7 @@
+ 
+ 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+ 
+-		case protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh, protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
++		case protocol.TypeNativePairWorkerReady, protocol.TypeNativePairWorkerCommand, protocol.TypeNativePairWorkerEvent, protocol.TypeNativePairWorkerAttach, protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh, protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
+ 			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
+ 				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
+ 				return
+--- originals/coordinator/protocol/messages.go
++++ proposed/coordinator/protocol/messages.go
+@@ -1005,7 +1005,7 @@
+ 	pm.Type = msgType
+ 
+ 	switch msgType {
+-	case TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach, TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		msg, err := DecodeNativePairMessage(data)
+ 		if err != nil {
+ 			return err
+--- originals/coordinator/protocol/native_pair.go
++++ proposed/coordinator/protocol/native_pair.go
+@@ -11,6 +11,11 @@
+ )
+ 
+ const (
++	TypeNativePairWorkerReady      = "native_pair_worker_ready"
++	TypeNativePairWorkerCommand    = "native_pair_worker_command"
++	TypeNativePairWorkerEvent      = "native_pair_worker_event"
++	TypeNativePairWorkersReleased  = "native_pair_workers_released"
++	TypeNativePairWorkerAttach     = "native_pair_worker_attach"
+ 	TypeNativePairKeyConfirmed     = "native_pair_key_confirmed"
+ 	TypeNativePairMesh             = "native_pair_mesh"
+ 	TypeNativePairMeshReady        = "native_pair_mesh_ready"
+@@ -29,7 +34,10 @@
+ 
+ var ErrNativePairFrame = errors.New("invalid native pair public frame")
+ 
+-// Public control only. Payload is canonical native start/hello/binding, a
++// Authorization packets remain public-only. Explicit worker_* packets carry
++// bounded inference control over authenticated TLS, never diagnostic tails or
++// traffic secrets; they are separately decoded and are not mesh/key packets.
++// Authorization payload is canonical native start/hello/binding, a
+ // confirmation MAC, or the exact cleanup observation. Never a traffic secret,
+ // prompt, activation, native diagnostic tail, or arbitrary worker JSON.
+ // Sequence belongs to the original member connection, not to a grant.
+@@ -49,14 +57,14 @@
+ 
+ func IsNativePairInbound(t string) bool {
+ 	switch t {
+-	case TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach, TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		return true
+ 	}
+ 	return false
+ }
+ func IsNativePairOutbound(t string) bool {
+ 	switch t {
+-	case TypeNativePairMeshReady, TypeNativePairMeshReply, TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
++	case TypeNativePairWorkersReleased, TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairMeshReady, TypeNativePairMeshReply, TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
+ 		return true
+ 	}
+ 	return false
+--- /dev/null
++++ proposed/coordinator/protocol/native_pair_worker.go
+@@ -0,0 +1,51 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/binary"
++)
++
++// Closed transport record, never a native key or executable invocation. The
++// member is responsible for strict worker codec/identity/state validation.
++const NativePairWorkerPayloadLimit = 16 * 1024
++
++func IsNativePairWorker(kind string) bool {
++	switch kind {
++	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach:
++		return true
++	}
++	return false
++}
++
++type NativePairWorkerPacket struct {
++	Kind                           byte
++	DeliverySlack, GenerationSlack uint64
++	Payload                        []byte
++}
++
++func DecodeNativePairWorkerPacket(b []byte, kind string, transcript [32]byte) (NativePairWorkerPacket, error) {
++	var p NativePairWorkerPacket
++	if transcript == [32]byte{} || len(b) < 59 || len(b) > 58+NativePairWorkerPayloadLimit || !bytes.Equal(b[:5], []byte("DBNW\x01")) || !bytes.Equal(b[6:38], transcript[:]) {
++		return p, ErrNativePairFrame
++	}
++	expected := byte(0)
++	switch kind {
++	case TypeNativePairWorkerReady:
++		expected = 1
++	case TypeNativePairWorkerCommand:
++		expected = 2
++	case TypeNativePairWorkerEvent:
++		expected = 3
++	}
++	if expected == 0 || b[5] != expected || binary.BigEndian.Uint32(b[54:58]) != uint32(len(b)-58) {
++		return p, ErrNativePairFrame
++	}
++	p.Kind = expected
++	p.DeliverySlack = binary.BigEndian.Uint64(b[38:46])
++	p.GenerationSlack = binary.BigEndian.Uint64(b[46:54])
++	p.Payload = append([]byte(nil), b[58:]...)
++	if p.DeliverySlack > 3600000000000 || p.GenerationSlack > 3600000000000 || (expected != 2 && (p.DeliverySlack != 0 || p.GenerationSlack != 0)) {
++		return NativePairWorkerPacket{}, ErrNativePairFrame
++	}
++	return p, nil
++}
+--- originals/coordinator/registry/native_pair_handlers.go
++++ proposed/coordinator/registry/native_pair_handlers.go
+@@ -14,7 +14,8 @@
+ )
+ 
+ // Handle is called by the real provider read loop with its retained attachment,
+-// never with a provider ID taken from the message. All peer bytes are public.
++// never with a provider ID taken from the message. Only the distinct worker
++// records may carry inference control, inside the authenticated TLS connection.
+ // A failure cancels the exact session; its active devices remain quarantined.
+ func (c *NativePairCoordinator) Handle(n *NativePairConnection, m *protocol.NativePairMessage) error {
+ 	if c == nil {
+@@ -74,6 +75,9 @@
+ 		}
+ 		c.removeReleasedLocked(s)
+ 		return nil
++	}
++	if protocol.IsNativePairWorker(m.Type) {
++		return c.handleWorkerLocked(s, rank, m.Type, payload)
+ 	}
+ 	if s.stopped || c.closed || c.revoked[s.approval.policy.ID] || !time.Now().Before(s.approval.policy.NotAfter) {
+ 		return ErrNativePairApproval
+--- originals/coordinator/registry/native_pair_relay.go
++++ proposed/coordinator/registry/native_pair_relay.go
+@@ -168,6 +168,23 @@
+ 	if !released {
+ 		return
+ 	} // Only the actual Registry phase proves its hold ended.
++	if (s.workerAttached[0] || s.workerAttached[1]) && !s.workerReleasePublished {
++		if !s.workerReleaseStarted {
++			s.workerReleaseStarted = true
++			s.workerReleaseDone = make(chan struct{})
++			var frames [2][]byte
++			payload := nativePairWorkersReleased(s.starts)
++			for rank := range frames {
++				if s.workerAttached[rank] {
++					frames[rank], _ = c.messageLocked(s, rank, protocol.TypeNativePairWorkersReleased, payload)
++				}
++			}
++			// Exactly one bounded publication task per session. It cannot wait
++			// under mu, and connection reuse remains blocked until it finishes.
++			go c.publishWorkersReleased(s, frames)
++		}
++		return
++	}
+ 	if c.sessions[s.membership.Epoch] == s {
+ 		delete(c.sessions, s.membership.Epoch)
+ 	}
+--- originals/coordinator/registry/native_pair_types.go
++++ proposed/coordinator/registry/native_pair_types.go
+@@ -24,28 +24,36 @@
+ 	session                           *NativePairSession
+ }
+ type NativePairSession struct {
+-	coordinator           *NativePairCoordinator
+-	handle                *VerifiedPairHandle
+-	membership            VerifiedPairMembership
+-	approval              nativeApprovedRuntime
+-	connections           [2]*NativePairConnection
+-	starts                [2]protocol.NativeAuthorizationStart
+-	hellos                [2][]byte
+-	confirmations         [2]bool
+-	keyConfirmed          [2]bool
+-	meshRound             uint8
+-	meshPending           [2][]byte
+-	committed             bool
+-	stopped               bool
+-	writersEnded          bool
+-	cancellationPublished bool // both terminal enqueue/close attempts completed
+-	writersStopped        chan struct{}
+-	queues                [2]chan []byte
+-	queuedBytes           [2]int // includes the one frame currently in the actual WS writer
+-	queuedFrames          [2]int
+-	ctx                   context.Context
+-	stop                  context.CancelFunc
+-	workers               sync.WaitGroup
++	coordinator            *NativePairCoordinator
++	handle                 *VerifiedPairHandle
++	membership             VerifiedPairMembership
++	approval               nativeApprovedRuntime
++	connections            [2]*NativePairConnection
++	starts                 [2]protocol.NativeAuthorizationStart
++	hellos                 [2][]byte
++	confirmations          [2]bool
++	keyConfirmed           [2]bool
++	meshRound              uint8
++	meshPending            [2][]byte
++	workerReady            [2]bool
++	workerReadyPayload     [2][]byte
++	workerAttached         [2]bool
++	workerReleaseStarted   bool
++	workerReleasePublished bool
++	workerReleaseDone      chan struct{}
++	workerRecords          [2]uint64
++	workerBytes            [2]uint64
++	committed              bool
++	stopped                bool
++	writersEnded           bool
++	cancellationPublished  bool // both terminal enqueue/close attempts completed
++	writersStopped         chan struct{}
++	queues                 [2]chan []byte
++	queuedBytes            [2]int // includes the one frame currently in the actual WS writer
++	queuedFrames           [2]int
++	ctx                    context.Context
++	stop                   context.CancelFunc
++	workers                sync.WaitGroup
+ }
+ 
+ // All mutable native session/control fields are protected by mu. Lock order is
+--- /dev/null
++++ proposed/coordinator/registry/native_pair_worker.go
+@@ -0,0 +1,119 @@
++package registry
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"time"
++)
++
++func nativePairWorkersReleased(starts [2]protocol.NativeAuthorizationStart) []byte {
++	out := []byte("DBWA\x01")
++	for _, start := range starts {
++		b, _ := start.Canonical()
++		h := sha256.Sum256(b)
++		out = append(out, h[:]...)
++	}
++	return out
++}
++
++// Called only after actual Registry Released AND the original cancellation and
++// relay-worker joins. Priority FIFO places this before any replacement prepare.
++func (c *NativePairCoordinator) publishWorkersReleased(s *NativePairSession, frames [2][]byte) {
++	var failed [2]bool
++	for rank, payload := range frames {
++		if !s.workerAttached[rank] {
++			continue
++		}
++		p := s.connections[rank].provider
++		if len(payload) == 0 || p.EnqueueText(context.Background(), payload) != nil {
++			failed[rank] = true
++			p.closeWriterNow()
++		}
++	}
++	c.mu.Lock()
++	for rank, bad := range failed {
++		if bad {
++			s.connections[rank].closed = true
++		}
++	}
++	s.workerReleasePublished = true
++	c.removeReleasedLocked(s)
++	close(s.workerReleaseDone)
++	c.mu.Unlock()
++}
++
++// Same real committed pair, original connections/sequences, existing bounded
++// writers and cleanup. This does not advertise solo or aggregate serving slots.
++func (c *NativePairCoordinator) handleWorkerLocked(s *NativePairSession, rank int, kind string, payload []byte) error {
++	if !s.committed || s.stopped || c.closed || c.revoked[s.approval.policy.ID] || !time.Now().Before(s.approval.policy.NotAfter) {
++		return ErrNativePairControl
++	}
++	if _, e := c.registry.ValidateVerifiedPair(s.handle); e != nil {
++		return e
++	}
++	common := s.starts[rank].Common
++	if common.Schedule != 1 || common.MaximumTransportFrame != 131112 || common.MaximumPlaintext != 131072 || common.MaximumRecords != 1024 || common.MaximumCumulativePlaintext != 16777216 {
++		return ErrNativePairControl
++	}
++	if kind == protocol.TypeNativePairWorkerAttach {
++		b, _ := s.starts[rank].Canonical()
++		h := sha256.Sum256(b)
++		if s.workerAttached[rank] || !bytes.Equal(payload, append([]byte("DBWX\x01"), h[:]...)) {
++			return ErrNativePairControl
++		}
++		s.workerAttached[rank] = true
++		return nil
++	}
++	if !s.workerAttached[0] || !s.workerAttached[1] || !s.keyConfirmed[0] || !s.keyConfirmed[1] || s.meshRound != 4 {
++		return ErrNativePairControl
++	}
++	binding, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		return e
++	}
++	packet, e := protocol.DecodeNativePairWorkerPacket(payload, kind, sha256.Sum256(binding))
++	if e != nil {
++		return e
++	}
++	if s.workerRecords[rank] >= 128 || s.workerBytes[rank] > 2*1024*1024-uint64(len(payload)) {
++		return ErrNativePairControl
++	}
++	switch kind {
++	case protocol.TypeNativePairWorkerReady:
++		if s.workerReady[rank] {
++			return ErrNativePairControl
++		}
++		s.workerReady[rank] = true
++		s.workerReadyPayload[rank] = append([]byte(nil), payload...)
++		if s.workerReady[0] && s.workerReady[1] {
++			if e = c.enqueueLocked(s, 0, protocol.TypeNativePairWorkerReady, s.workerReadyPayload[1]); e != nil {
++				return e
++			}
++			s.workerReadyPayload = [2][]byte{}
++		}
++	case protocol.TypeNativePairWorkerCommand:
++		if rank != 0 || !s.workerReady[0] || !s.workerReady[1] {
++			return ErrNativePairControl
++		}
++		if !time.Now().Before(s.membership.ExpiresAt.Add(-time.Duration(packet.DeliverySlack))) {
++			return ErrNativePairControl
++		}
++		if e = c.enqueueLocked(s, 1, kind, payload); e != nil {
++			return e
++		}
++	case protocol.TypeNativePairWorkerEvent:
++		if rank != 1 || !s.workerReady[0] || !s.workerReady[1] {
++			return ErrNativePairControl
++		}
++		if e = c.enqueueLocked(s, 0, kind, payload); e != nil {
++			return e
++		}
++	default:
++		return ErrNativePairControl
++	}
++	s.workerRecords[rank]++
++	s.workerBytes[rank] += uint64(len(payload))
++	return nil
++}
+--- /dev/null
++++ proposed/coordinator/registry/native_pair_worker_test.go
+@@ -0,0 +1,209 @@
++package registry
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"encoding/binary"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"testing"
++	"time"
++)
++
++func protectedWorkerFixture(t *testing.T, mesh bool) (*nativePairFixture, *NativePairSession, [32]byte) {
++	t.Helper()
++	f := newNativePairFixture(t)
++	// Explicit fixture-only approval installed BEFORE reserving any real grant.
++	f.policy.Schedule = 1
++	f.policy.MaximumPlaintext = 131072
++	f.policy.MaximumTransportFrame = 131112
++	f.policy.MaximumRecords = 1024
++	f.policy.MaximumCumulativePlaintext = 16777216
++	catalog, e := NewNativeRuntimeCatalog([]NativeRuntimeApproval{f.policy})
++	if e != nil {
++		t.Fatal(e)
++	}
++	f.c.mu.Lock()
++	f.c.catalog = catalog
++	f.c.mu.Unlock()
++	s := f.active(t)
++	for rank := range f.n {
++		b, _ := s.starts[rank].Canonical()
++		h := sha256.Sum256(b)
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerAttach, append([]byte("DBWX\x01"), h[:]...))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	if !mesh {
++		return f, s, [32]byte{}
++	}
++	for rank := range f.n {
++		b, _ := s.starts[rank].Canonical()
++		hello := append([]byte("DBNH\x01"), b...)
++		key := make([]byte, 32)
++		key[0] = byte(9 + rank)
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairHello, append(hello, key...))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairBinding)
++	}
++	for rank := range f.n {
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairConfirmation, bytes.Repeat([]byte{byte(rank + 1)}, 32))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPeerConfirmation)
++	}
++	b, _ := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	digest := sha256.Sum256(b)
++	for rank := range f.n {
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairKeyConfirmed, protocol.NativePairKeyConfirmed(digest))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairMeshReady)
++	}
++	for round := uint8(0); round < 4; round++ {
++		for rank := range f.n {
++			p, _ := protocol.NativePairMeshPacket(digest, uint8(rank), round, meshValue(rank, round), false)
++			if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairMesh, p)); e != nil {
++				t.Fatal(e)
++			}
++		}
++		for rank := range f.n {
++			f.read(t, rank, protocol.TypeNativePairMeshReply)
++		}
++	}
++	return f, s, digest
++}
++func workerFixturePacket(kind byte, digest [32]byte, slack uint64, payload []byte) []byte {
++	b := append([]byte{'D', 'B', 'N', 'W', 1, kind}, digest[:]...)
++	b = binary.BigEndian.AppendUint64(b, slack)
++	b = binary.BigEndian.AppendUint64(b, 0)
++	b = binary.BigEndian.AppendUint32(b, uint32(len(payload)))
++	return append(b, payload...)
++}
++func TestNativePairWorkerRelayRequiresBothReadyAndPreservesOriginalScope(t *testing.T) {
++	f, s, d := protectedWorkerFixture(t, true)
++	// Opaque fixture bytes test transport, not a native Ready or allocation claim.
++	for rank := range f.n {
++		p := workerFixturePacket(1, d, 0, []byte("fixture-ready"))
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerReady, p)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerReady)
++	original := workerFixturePacket(2, d, uint64(time.Second), []byte("fixture-command"))
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairWorkerCommand, original)); e != nil {
++		t.Fatal(e)
++	}
++	got := f.read(t, 1, protocol.TypeNativePairWorkerCommand)
++	payload, _ := got.PayloadBytes()
++	if !bytes.Equal(payload, original) || got.ExpiresAtUnixNano != s.membership.ExpiresAt.UnixNano() {
++		t.Fatal("relay changed bytes/deadline")
++	}
++	event := workerFixturePacket(3, d, 0, []byte("fixture-event"))
++	if e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairWorkerEvent, event)); e != nil {
++		t.Fatal(e)
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerEvent)
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("worker record changed ownership")
++	}
++}
++func TestNativePairWorkerWrongDirectionContextAndExpiredSlackQuarantine(t *testing.T) {
++	for _, bad := range []string{"before-ready", "wrong-rank", "context", "expired-slack", "repeat-ready"} {
++		t.Run(bad, func(t *testing.T) {
++			f, s, d := protectedWorkerFixture(t, true)
++			kind := protocol.TypeNativePairWorkerCommand
++			rank := 0
++			slack := uint64(0)
++			if bad != "before-ready" {
++				for r := range f.n {
++					p := workerFixturePacket(1, d, 0, []byte("fixture-ready"))
++					if e := f.c.Handle(f.n[r], f.signed(t, s, r, protocol.TypeNativePairWorkerReady, p)); e != nil {
++						t.Fatal(e)
++					}
++				}
++				f.read(t, 0, protocol.TypeNativePairWorkerReady)
++			}
++			if bad == "wrong-rank" {
++				rank = 1
++			}
++			if bad == "context" {
++				d[0] ^= 1
++			}
++			if bad == "expired-slack" {
++				slack = uint64(time.Hour)
++			}
++			tag := byte(2)
++			if bad == "repeat-ready" {
++				kind = protocol.TypeNativePairWorkerReady
++				tag = 1
++			}
++			p := workerFixturePacket(tag, d, slack, []byte("fixture"))
++			if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, kind, p)); e == nil {
++				t.Fatal("bad request record accepted")
++			}
++			if f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("failed request freed owners")
++			}
++		})
++	}
++}
++func TestNativePairWorkerCleanupNeedsBothActualOriginalReleasesBeforeReuse(t *testing.T) {
++	f, s, _ := protectedWorkerFixture(t, false)
++	f.c.Cancel(s)
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairCancel)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal(e)
++	}
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[0]))); e != nil {
++		t.Fatal(e)
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("one release freed pair")
++	}
++	for _, ch := range f.frames {
++		select {
++		case <-ch:
++			t.Fatal("aggregate before bilateral release")
++		default:
++		}
++	}
++	if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e == nil {
++		t.Fatal("replacement before bilateral proof")
++	}
++	if e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[1]))); e != nil {
++		t.Fatal(e)
++	}
++	for rank := range f.n {
++		m := f.read(t, rank, protocol.TypeNativePairWorkersReleased)
++		b, _ := m.PayloadBytes()
++		if !bytes.Equal(b, nativePairWorkersReleased(s.starts)) {
++			t.Fatal("receipt changed original starts")
++		}
++	}
++	f.c.mu.Lock()
++	done := s.workerReleaseDone
++	f.c.mu.Unlock()
++	select {
++	case <-done:
++	case <-ctx.Done():
++		t.Fatal("publication task did not join")
++	}
++	if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e != nil {
++		t.Fatal("replacement blocked after exact proof", e)
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++	}
++}
+--- /dev/null
++++ proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift
+@@ -0,0 +1,66 @@
++import Foundation
++import CryptoKit
++import DarkbloomClusterProtocol
++import DarkbloomClusterSecurity
++
++/// Exact local experiment configuration, not a coordinator grant. The caller
++/// must independently verify the installed executable/owner/resources and the
++/// complete saved descriptor before constructing this value. Acceptance still
++/// requires the same committed start and completed authenticated bootstrap.
++public struct ClusterOwnerProtectedReady: Sendable {
++    public static let operationalChargeBytes = 186_302_720
++    public static let resourcePolicySHA256 = "17cc0e02c144ef20fd4a489aa8c602069639d0005bfaf3dfea1762e46e6d5cf2"
++    private let start: Data
++    private let identity: ClusterWorkerIdentity
++    private let profile: ClusterWorkerProfile
++    private let rank: Int
++    private let plan: String
++
++    public init(verifiedDescription: Data, expectedDescriptionSHA256: String,
++                start: ClusterNativeAuthorizationStart, identity: ClusterWorkerIdentity,
++                profile: ClusterWorkerProfile) throws {
++        func hex(_ b: Data) -> String { b.map { String(format: "%02x", $0) }.joined() }
++        guard verifiedDescription.count <= 32 * 1024,
++              hex(Data(SHA256.hash(data: verifiedDescription))) == expectedDescriptionSHA256,
++              let o = try JSONSerialization.jsonObject(with: verifiedDescription) as? [String: Any],
++              o["schema"] as? String == "qwen9b_protected_runtime_description_v1",
++              o["staticProfile"] as? String == "qwen9b_short_records_experiment_v1",
++              o["bootstrapProfile"] as? String == ClusterOwnerBootstrapProfile.nativeKeyPreludeMesh2.rawValue,
++              o["prefillSchedule"] as? String == "serial_v1", o["stageCut"] as? Int == 16,
++              o["promptTokens"] as? Int == 32, o["chunkTokens"] as? Int == 16, o["outputTokens"] as? Int == 2,
++              (o["stopTokenIDs"] as? [Int]) == [],
++              o["runtimeBinarySHA256"] as? String == hex(start.common.nativeRuntimeSHA256),
++              o["capabilitySHA256"] as? String == hex(start.common.capabilitySHA256),
++              o["selectedPlanSHA256"] as? String == hex(start.common.planSHA256),
++              o["profileFingerprint"] as? String == hex(start.common.profileSHA256),
++              o["resourcePolicySHA256"] as? String == Self.resourcePolicySHA256,
++              hex(start.common.resourcePolicySHA256) == Self.resourcePolicySHA256,
++              let resourceBase64=o["resourcePolicyBase64"] as? String, let resource=Data(base64Encoded:resourceBase64),
++              resource.base64EncodedString()==resourceBase64, hex(Data(SHA256.hash(data:resource)))==Self.resourcePolicySHA256,
++              start.common.schedule == .serial, start.common.maximumTransportFrameBytes == 131_112,
++              start.common.limits.maximumPlaintextBytes == 131_072,
++              start.common.limits.maximumRecordsPerDirection == 1024, start.common.limits.maximumCumulativePlaintextBytesPerDirection == 16_777_216,
++              identity.membershipEpoch == start.common.epoch, identity.artifactSHA256 == hex(start.common.artifactSHA256),
++              identity.peers.count == 2, identity.peers.allSatisfy({ $0.buildSHA256 == hex(start.common.nativeRuntimeSHA256) }),
++              profile.id == "registered_qwen35_9b_greedy_generation_v1", profile.vocabularySize == 248_320,
++              profile.maximumPromptTokens == 8192, profile.maximumOutputTokens == 128,
++              profile.maximumChunkTokens == 512, profile.maximumContextTokens == 8320 else {
++            throw ClusterOwnerStateError.invalid("Protected experiment readiness configuration differs")
++        }
++        self.start = start.canonicalBytes; self.identity = identity; self.profile = profile
++        rank = start.rank; plan = hex(start.common.planSHA256)
++    }
++    func require(start: ClusterNativeAuthorizationStart, profile: ClusterOwnerBootstrapProfile) throws {
++        guard profile == .nativeKeyPreludeMesh2, start.canonicalBytes == self.start else {
++            throw ClusterOwnerStateError.invalid("Protected Ready changed its committed owner")
++        }
++    }
++    public func validate(_ ready: ClusterWorkerReady) throws {
++        guard ready.identity == identity, ready.rank == rank, ready.profile == profile,
++              ready.executionPlanSHA256 == plan,
++              ready.requestCapacityBytes > Self.operationalChargeBytes,
++              ready.requestCapacityBytes <= ClusterWorkerLimits.capacityBytes else {
++            throw ClusterOwnerStateError.invalid("Protected Ready lacks its actual ordinary plus operational allowance")
++        }
++    }
++}
+--- originals/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -14,6 +14,7 @@
+     let clusterID: String
+     let leaseID: UUID
+     private let nativeKeyRelay: ClusterOwnerNativeKeyRelay?
++    private let protectedReady: ClusterOwnerProtectedReady?
+     private var selectedBootstrapProfile: ClusterOwnerBootstrapProfile? { nativeKeyRelay?.profile ?? bootstrapRelay?.profile }
+     private var selectedBootstrapDeadline: UInt64? { nativeKeyRelay?.deadlineUptimeNanoseconds ?? bootstrapRelay?.deadlineUptimeNanoseconds }
+     private let bootstrapRelay: ClusterOwnerBootstrapRelay?
+@@ -87,10 +88,10 @@
+     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
+                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
+                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
+-                            nativeKeyRelay: ClusterOwnerNativeKeyRelay) throws {
++                            nativeKeyRelay: ClusterOwnerNativeKeyRelay, protectedReady: ClusterOwnerProtectedReady? = nil) throws {
+         try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
+             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
+-            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, nativeKeyRelay: nativeKeyRelay)
++            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, nativeKeyRelay: nativeKeyRelay, protectedReady: protectedReady)
+     }
+ 
+     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,
+@@ -105,7 +106,12 @@
+     init(transport: ClusterWorkerLaunch, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
+          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
+          lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
+-         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil) throws {
++         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil, protectedReady: ClusterOwnerProtectedReady? = nil) throws {
++        self.protectedReady = protectedReady
++        if let protectedReady {
++            guard let nativeKeyRelay else { throw OwnerWire.invalid("Protected Ready requires the retained native key relay") }
++            try protectedReady.require(start: nativeKeyRelay.start, profile: nativeKeyRelay.profile)
++        }
+         self.nativeKeyRelay = nativeKeyRelay
+         self.leaseID = nativeKeyRelay?.start.leaseID ?? UUID()
+         guard bootstrapRelay == nil || nativeKeyRelay == nil else { throw OwnerWire.invalid("Ambiguous bootstrap relay") }
+@@ -292,7 +298,11 @@
+                     guard event.membershipEpoch == expectedIdentity.membershipEpoch, event.sequence == nextNativeEvent,
+                           incoming.count < 32 else { throw OwnerWire.invalid("Native event replay or queue bound") }
+                     if case .ready(let value) = event.event {
+-                        guard nativeKeyRelay == nil, nextNativeEvent == 0, bootstrapRelay == nil || nextBootstrapSequence == 4, value.identity == expectedIdentity, value.profile == expectedProfile,
++                        if let nativeKeyRelay {
++                            guard let protectedReady, nextBootstrapSequence == UInt64(nativeKeyRelay.profile.rounds), !bootstrapBusy, bootstrapReplies.isEmpty else { throw OwnerWire.invalid("Protected Ready precedes its exact authorized bootstrap") }
++                            try protectedReady.validate(value)
++                        }
++                        guard nextNativeEvent == 0, bootstrapRelay == nil || nextBootstrapSequence == 4, value.identity == expectedIdentity, value.profile == expectedProfile,
+                               value.rank == rank, value.executionPlanSHA256 == executionPlanSHA256 else { throw OwnerWire.invalid("Remote readiness differs") }
+                         ready = value
+                     } else { guard nextNativeEvent > 0 else { throw OwnerWire.invalid("Event precedes readiness") } }
+--- originals/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
++++ proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
+@@ -23,6 +23,7 @@
+     public static func serveConfigured(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
+                              maximumLifetimeNanoseconds: UInt64, bootstrapProfile: ClusterOwnerBootstrapProfile?,
+                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
++                             protectedReady: (@Sendable (ClusterNativeAuthorizationStart, ClusterOwnerBinding) throws -> ClusterOwnerProtectedReady)? = nil,
+                              binding: BindingFactory, native: AttachedNativeFactory) throws {
+         let pipe = try ClusterOwnerPipe(input: input, output: output, readingCommands: true)
+         let begin = DispatchTime.now().uptimeNanoseconds
+@@ -54,6 +55,12 @@
+                   ownerBinding.executionPlanSHA256 == nativeStart.common.planSHA256.map({ String(format: "%02x", $0) }).joined(),
+                   ownerBinding.identity.artifactSHA256 == nativeStart.common.artifactSHA256.map({ String(format: "%02x", $0) }).joined() else { throw OwnerWire.invalid("Configured native plan differs") }
+         }
++        let protectedPolicy: ClusterOwnerProtectedReady?
++        if let protectedReady {
++            guard let nativeStart, bootstrapProfile == .nativeKeyPreludeMesh2 else { throw OwnerWire.invalid("Protected Ready needs the combined authorized owner") }
++            protectedPolicy = try protectedReady(nativeStart, ownerBinding)
++            try protectedPolicy!.require(start: nativeStart, profile: .nativeKeyPreludeMesh2)
++        } else { protectedPolicy = nil }
+         let lease = try ClusterDeviceLease(directoryURL: leaseDirectory)
+         let localNow = DispatchTime.now().uptimeNanoseconds
+         var remaining = min(duration, maximumLifetimeNanoseconds)
+@@ -68,7 +75,7 @@
+         try lease.record(binding: ownerBinding, launchID: launchID)
+         let attachment = try bootstrapProfile.map { try ClusterOwnerBootstrapAttachment(profile: $0,
+             deadline: min(state.lifetimeDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds + 30_000_000_000), nativeStart: nativeStart) }
+-        let context = ServiceContext(pipe: pipe, state: state, launchID: launchID, attachment: attachment)
++        let context = ServiceContext(pipe: pipe, state: state, launchID: launchID, attachment: attachment, protectedReady: protectedPolicy)
+         // Hello establishes a fresh incarnation before any native readiness.
+         try context.publish(kind: "hello", launchID: launchID)
+         let child: ClusterWorkerProcess
+@@ -156,7 +163,9 @@
+     let deadline: UInt64
+     let binding: ClusterOwnerBinding
+     let attachment: ClusterOwnerBootstrapAttachment?
+-    init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID, attachment: ClusterOwnerBootstrapAttachment?) {
++    let protectedReady: ClusterOwnerProtectedReady?
++    init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID, attachment: ClusterOwnerBootstrapAttachment?, protectedReady: ClusterOwnerProtectedReady?) {
++        self.protectedReady = protectedReady
+         self.pipe = pipe; self.state = state; self.launchID = launchID
+         deadline = state.lifetimeDeadlineUptimeNanoseconds; binding = state.binding; self.attachment = attachment
+         // Binding was validated by its initializer.
+@@ -255,9 +264,12 @@
+                     if DispatchTime.now().uptimeNanoseconds < deadline { continue }; throw ClusterWorkerOwnerError.deadline
+                 }
+                 catch ClusterWorkerOwnerError.closed { break }
+-                if case .ready = frame.event {
+-                    guard attachment?.profile.requiresNativeAuthorization != true else { throw OwnerWire.invalid("Native authorization/mesh alone cannot publish model readiness") }
++                if case .ready(let ready) = frame.event {
+                     try attachment?.requireCompleted()
++                    if attachment?.profile.requiresNativeAuthorization == true {
++                        guard let protectedReady else { throw OwnerWire.invalid("Native authorization/mesh alone cannot publish model readiness") }
++                        try protectedReady.validate(ready)
++                    }
+                 }
+                 try lock.withLock {
+                     let now = DispatchTime.now().uptimeNanoseconds
+--- originals/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift
+@@ -20,8 +20,9 @@
+         if changed { connection.cancel(); onInvalidation(self) }
+     }
+ 
+-    /// One serialized write, at most two waiting callers (key reply, cancel,
+-    /// release); no generic SendHandle queue and no secret-bearing payload.
++    /// One serialized write and at most two waiting callers. Worker request
++    /// records may contain inference control on this authenticated TLS socket;
++    /// native private/shared traffic keys never enter these frames.
+     func send(type: String, epoch: String, generation: UInt64, payload: Data, until: UInt64) throws {
+         try lock.withLock {
+             guard live, waiting < 3 else { throw NativePairMemberError.queue }
+@@ -53,7 +54,7 @@
+             guard bytes.count <= NativePairMessage.maximumFrameBytes, isLive,
+                   DispatchTime.now().uptimeNanoseconds < until else { throw NativePairMemberError.deadline }
+             let completion = NativePairWriteCompletion()
+-            let context = NWConnection.ContentContext(identifier: "native-pair-public", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
++            let context = NWConnection.ContentContext(identifier: "native-pair-control", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
+             connection.send(content: bytes, contentContext: context, isComplete: true,
+                 completion: .contentProcessed { error in completion.finish(error == nil) })
+             guard completion.wait(until: until), isLive else { throw NativePairMemberError.inactive }
+--- originals/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift
+@@ -63,6 +63,19 @@
+             cancel?.cancel(notify: false); start?.run()
+         } catch { detach(expected); throw NativePairMemberError.binding }
+     }
++    func cancelRequests() {let current=lock.withLock{session};current?.cancel(notify:true)}
++    func requestOwner(profile:DistributedResidentExecutionProfile,until deadline:UInt64) throws -> NativePairRequestExecutionOwner {
++        let current = try lock.withLock { () throws -> NativePairMemberSession in
++            guard installation.rank==0, installation.protectedRuntime != nil, let session,
++                  connection === session.connection, session.connection.isLive else {throw NativePairMemberError.inactive}
++            return session
++        }
++        let owner=try current.requestOwner(profile:profile,until:deadline)
++        try lock.withLock {
++            guard session === current, connection === current.connection,current.connection.isLive else {throw NativePairMemberError.inactive}
++        }
++        return owner
++    }
+     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
+         lock.withLock {
+             guard session === old else { return }
+--- originals/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift
+@@ -8,6 +8,7 @@
+ /// with B's coordinator approval, never authority to start on their own.
+ /// This key-only increment cannot publish model readiness or serving capacity.
+ public struct NativePairMemberInstallation: Sendable {
++    private(set) var protectedRuntime: DistributedInstalledNativeAttachment?
+     let policy: NativePairMemberPolicy
+     let rank: Int
+     let clusterID: String
+@@ -49,8 +50,15 @@
+         localOwner = try .init(installedDarkbloom: installedOwner); self.ownerSHA256 = ownerSHA256
+         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
+     }
++    func withProtectedRuntime(_ observation: DistributedInstalledNativeAttachment) throws -> Self {
++        guard bootstrapProfile == .nativeKeyPreludeMesh2,
++              try observation.attachment.policyBytes == policy.bytes,
++              observation.attachment.ownerSHA256 == ownerSHA256 else { throw NativePairMemberError.binding }
++        var value = self; value.protectedRuntime = observation; return value
++    }
+     func prepare(start: ClusterNativeAuthorizationStart, deadline: UInt64) throws -> [DistributedInstalledFiles.Identity] {
+         try policy.require(start)
++        try protectedRuntime?.requireUnchanged()
+         guard start.rank == rank else { throw NativePairMemberError.binding }
+         let gate = try ClusterDeviceExclusion(directoryURL: leaseDirectory)
+         return try withExtendedLifetime(gate) {
+@@ -69,7 +77,8 @@
+             artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256, peers: identity.peers)
+         return try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
+             expectedIdentity: fresh, profile: profile, rank: rank,
+-            executionPlanSHA256: Self.hex(policy.hashes[0]), lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay)
++            executionPlanSHA256: Self.hex(policy.hashes[0]), lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay,
++            protectedReady: protectedRuntime?.readyPolicy(start: start, identity: fresh, profile: profile))
+     }
+     static func hex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
+ }
+--- originals/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift
+@@ -22,6 +22,7 @@
+     private var combinedMesh: Bool { installation.bootstrapProfile == .nativeKeyPreludeMesh2 }
+     private var nextRound: UInt64 = 0
+     private var endpoint: ClusterRemoteWorkerEndpoint?
++    private var requests: NativePairRequestBridge?
+     private var timer: DispatchSourceTimer?
+     private var outcome: String = "preparing"
+     private let onFinished: @Sendable (NativePairMemberSession, Bool) -> Void
+@@ -39,6 +40,7 @@
+         let prepDelta = UInt64(prepare - wallUnixNanoseconds), lifetimeDelta = UInt64(expires - wallUnixNanoseconds)
+         guard prepDelta <= 30_000_000_000, lifetimeDelta <= 900_000_000_000,
+               receivedAt <= UInt64.max - lifetimeDelta else { throw NativePairMemberError.deadline }
++        guard installation.protectedRuntime == nil || lifetimeDelta <= 300_000_000_000 else {throw NativePairMemberError.deadline}
+         let cleanup = (receivedAt + lifetimeDelta).addingReportingOverflow(3_000_000_000)
+         guard !cleanup.overflow else { throw NativePairMemberError.deadline }
+         self.installation = installation; self.connection = connection; self.start = start
+@@ -58,6 +60,18 @@
+     }
+     func accept(_ message: NativePairMessage, receivedAt: UInt64 = DispatchTime.now().uptimeNanoseconds) throws {
+         let payload = Data(base64Encoded: message.payload)!
++        if message.type == "native_pair_workers_released" {
++            try acceptAllWorkersReleased(message, payload: payload); return
++        }
++        if ["native_pair_worker_ready", "native_pair_worker_command", "native_pair_worker_event"].contains(message.type) {
++            condition.lock()
++            let current=requests
++            let allowed = !stopped && committed && nextRound==7 && message.epoch==epoch && message.generation==generation
++                && message.prepareBeforeUnixNano==prepareUnixNanoseconds && message.expiresAtUnixNano==expiresUnixNanoseconds
++            condition.unlock()
++            guard allowed, let current else {throw NativePairMemberError.inactive}
++            try current.receive(message);return
++        }
+         condition.lock(); defer { condition.unlock() }
+         guard message.epoch == epoch, message.generation == generation,
+               message.prepareBeforeUnixNano == prepareUnixNanoseconds, message.expiresAtUnixNano == expiresUnixNanoseconds,
+@@ -96,7 +110,8 @@
+         if stopped || outcome == "released" || outcome == "releasing" { condition.unlock(); return }
+         stopped = true; if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }
+         if notify { cancellationPublication.enter() }
+-        let endpoint = endpoint; condition.broadcast(); condition.unlock()
++        let endpoint = endpoint, requests = requests; condition.broadcast(); condition.unlock()
++        requests?.invalidate()
+         endpoint?.requestNativeCleanup() // Independent of SE signing and WebSocket writes.
+         if notify { DispatchQueue.global().async {
+             defer { self.cancellationPublication.leave() }
+@@ -115,6 +130,7 @@
+     }
+     private func runOwned() {
+         var clean = false
++        var requestViewsReleased = installation.protectedRuntime == nil
+         do {
+             let pins = try installation.prepare(start: start, deadline: prepareDeadline)
+             condition.lock()
+@@ -137,27 +153,82 @@
+             // concurrent cancel wins between this check and actual Process.run.
+             condition.lock(); let allowed = !stopped && committed; condition.unlock()
+             guard allowed else { throw NativePairMemberError.inactive }
++            if installation.protectedRuntime != nil {
++                var attachment=Data([68,66,78,88,1]);attachment.append(contentsOf:SHA256.hash(data:start.canonicalBytes))
++                try send("native_pair_worker_attach",attachment)
++            }
+             let created = try installation.launch(start: start, until: lifetimeDeadline, relay: relay)
+-            condition.lock(); endpoint = created; launched = true; let cancelled = stopped; condition.unlock()
+-            if cancelled { created.requestNativeCleanup() }
++            condition.lock();endpoint=created;launched=true;let cancelledBeforeBridge=stopped;condition.unlock()
++            if cancelledBeforeBridge {created.requestNativeCleanup()}
++            let bridge: NativePairRequestBridge?
++            if installation.protectedRuntime != nil {
++                bridge=try NativePairRequestBridge(endpoint:created,installation:installation,start:start,
++                    lifetime:lifetimeDeadline,cleanupDeadline:cleanupDeadline,
++                    context:{[weak self] in guard let self else {throw NativePairMemberError.inactive};return try self.requestBinding()},
++                    send:{[weak self] packet,deadline in
++                        guard let self else {throw NativePairMemberError.inactive}
++                        let bound=DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(500_000_000)
++                        guard !bound.overflow else {throw NativePairMemberError.deadline}
++                        try self.connection.send(type:packet.kind.messageType,epoch:self.epoch,generation:self.generation,
++                            payload:packet.bytes,until:min(deadline,min(self.lifetimeDeadline,bound.partialValue)))
++                    },cancel:{[weak self] in self?.cancel(notify:true)})
++            } else {bridge=nil}
++            condition.lock(); endpoint = created; requests=bridge; launched = true; let cancelled = stopped; condition.broadcast(); condition.unlock()
++            bridge?.run()
++            if cancelled { bridge?.invalidate();created.requestNativeCleanup() }
+             clean = created.waitForOwnerReleased(deadline: cleanupDeadline)
+             guard clean, created.nativeCleanupObserved, created.ownerDeviceLeaseReleasedObserved,
+                   created.ownerTermination == .exited(0) else { throw NativePairMemberError.inactive }
++            guard bridge?.localOwnerReleased(until:cleanupDeadline) ?? true else {throw NativePairMemberError.deadline}
+             condition.lock(); outcome = "releasing"; condition.unlock()
+             guard cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success else { throw NativePairMemberError.deadline }
+             var receipt = Data([68, 66, 78, 82, 1]); receipt.append(contentsOf: SHA256.hash(data: start.canonicalBytes)); receipt.append(contentsOf: [1, 1, 1])
+             try send("native_pair_owner_released", receipt, cleanup: true)
+             condition.lock(); outcome = "released"; condition.unlock()
++            requestViewsReleased = bridge?.waitAllOwnersReleased(until:cleanupDeadline) ?? true
++            guard requestViewsReleased else {throw NativePairMemberError.deadline}
+         } catch {
+             cancel(notify: true)
+-            condition.lock(); if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
++            condition.lock(); if outcome != "released" || !requestViewsReleased { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
+         }
+         let cancelJoined = cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success
+         condition.lock()
+-        let reusable = cancelJoined && ((!committed && !launched) || (clean && outcome == "released"))
++        let reusable = cancelJoined && ((!committed && !launched) || (clean && outcome == "released" && requestViewsReleased))
+         timer?.cancel(); timer = nil
+         condition.unlock()
+         onFinished(self, reusable)
++    }
++    private func requestBinding() throws -> ClusterNativeKeyBinding {
++        condition.lock();defer{condition.unlock()}
++        try requireLive()
++        guard committed, nextRound==7, let peerBinding else {throw NativePairMemberError.inactive}
++        return try ClusterNativeKeyBinding(encoded:peerBinding)
++    }
++    private func acceptAllWorkersReleased(_ message: NativePairMessage,payload:Data) throws {
++        condition.lock();defer{condition.unlock()}
++        guard installation.protectedRuntime != nil, committed, message.epoch==epoch, message.generation==generation,
++              message.prepareBeforeUnixNano==prepareUnixNanoseconds,message.expiresAtUnixNano==expiresUnixNanoseconds,
++              payload.count==69,payload.prefix(5)==Data([68,66,78,65,1]),let requests,
++              endpoint?.nativeCleanupObserved == true,endpoint?.ownerDeviceLeaseReleasedObserved == true,
++              endpoint?.ownerTermination == .exited(0) else {throw NativePairMemberError.binding}
++        let localDigest=Data(SHA256.hash(data:start.canonicalBytes))
++        guard payload.subdata(in:(5+start.rank*32)..<(37+start.rank*32))==localDigest else {throw NativePairMemberError.binding}
++        if let peerBinding {
++            let binding=try ClusterNativeKeyBinding(encoded:peerBinding)
++            for rank in 0..<2 {
++                guard payload.subdata(in:(5+rank*32)..<(37+rank*32))==Data(SHA256.hash(data:binding.hellos[rank].start.canonicalBytes)) else {throw NativePairMemberError.binding}
++            }
++        }
++        // Coordinator sends this only from real Registry Released, after both
++        // authenticated owner proofs and its terminal publication barriers.
++        try requests.observeAllOwnersReleased()
++    }
++    func requestOwner(profile:DistributedResidentExecutionProfile,until deadline:UInt64) throws -> NativePairRequestExecutionOwner {
++        condition.lock()
++        while !stopped && requests==nil && DispatchTime.now().uptimeNanoseconds<deadline {_ = condition.wait(until:Date(timeIntervalSinceNow:0.02))}
++        let bridge=requests;let allowed = !stopped && committed && start.rank==0;condition.unlock()
++        guard allowed,let bridge else {throw NativePairMemberError.inactive}
++        return try bridge.requestOwner(profile:profile,until:min(deadline,lifetimeDeadline))
+     }
+     private func ownerInvalidated() {
+         condition.lock(); let completedPrelude = nextRound == UInt64(installation.bootstrapProfile.rounds); condition.unlock()
+--- /dev/null
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift
+@@ -0,0 +1,129 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++import DarkbloomClusterSecurity
++
++/// Request views of the original retained endpoint; no process factory, SSH
++/// connection or independent device/state owner exists here. Pair remains the
++/// sole bilateral reservation/token/retirement/accounting implementation.
++final class NativePairRequestBridge: @unchecked Sendable {
++    let endpoint: ClusterRemoteWorkerEndpoint
++    let lifetime, cleanupDeadline: UInt64
++    private let installation: NativePairMemberInstallation
++    private let start: ClusterNativeAuthorizationStart
++    private let context: @Sendable () throws -> ClusterNativeKeyBinding
++    private let cancel: @Sendable () -> Void
++    private let condition=NSCondition(), pump=DispatchGroup(), released=DispatchGroup()
++    private let writer: NativePairRequestWriter
++    private var local: NativePairRetainedEndpoint?, remote: NativePairRetainedEndpoint?
++    private var nextCommand: UInt64=0
++    private var invalid=false, releaseObserved=false, ownerClaimed=false
++    private var pair: ClusterWorkerPair?
++    init(endpoint: ClusterRemoteWorkerEndpoint, installation: NativePairMemberInstallation,
++         start: ClusterNativeAuthorizationStart, lifetime: UInt64, cleanupDeadline: UInt64,
++         context: @escaping @Sendable () throws -> ClusterNativeKeyBinding,
++         send: @escaping @Sendable (NativePairWorkerPacket,UInt64) throws -> Void,
++         cancel: @escaping @Sendable () -> Void) throws {
++        guard installation.protectedRuntime != nil else {throw NativePairMemberError.unconfigured}
++        self.endpoint=endpoint;self.installation=installation;self.start=start
++        self.lifetime=lifetime;self.cleanupDeadline=cleanupDeadline;self.context=context;self.cancel=cancel
++        writer=NativePairRequestWriter(send:send,failed:cancel);pump.enter();released.enter()
++    }
++    func run() {DispatchQueue(label:"darkbloom.native-member.requests.read").async {self.readNative()}}
++    private func readNative() {
++        defer {pump.leave()}
++        do {
++            let first=try endpoint.receiveWorkerEvent(until:lifetime)
++            guard case .ready(let ready)=first.event else {throw NativePairMemberError.binding}
++            let binding=try context(), runtime=installation.protectedRuntime!
++            let localPolicy=try runtime.readyPolicy(start:start,identity:endpoint.expectedIdentity,profile:endpoint.expectedProfile)
++            try localPolicy.validate(ready)
++            let l=NativePairRetainedEndpoint(identity:endpoint.expectedIdentity,profile:endpoint.expectedProfile,
++                rank:start.rank,plan:endpoint.executionPlanSHA256,lifetime:lifetime,readyPolicy:localPolicy,
++                send:{[endpoint] command,id,deadline in try endpoint.sendWorkerCommand(command,requestID:id,deadline:deadline)},cancel:cancel)
++            try l.accept(first)
++            var r: NativePairRetainedEndpoint?
++            if start.rank == 0 {
++                let peerPolicy=try runtime.readyPolicy(start:binding.hellos[1].start,identity:endpoint.expectedIdentity,profile:endpoint.expectedProfile)
++                r=NativePairRetainedEndpoint(identity:endpoint.expectedIdentity,profile:endpoint.expectedProfile,rank:1,
++                    plan:endpoint.executionPlanSHA256,lifetime:lifetime,readyPolicy:peerPolicy,
++                    send:{[weak self] command,id,deadline in guard let self else {throw NativePairMemberError.inactive};try self.sendCommand(command,id:id,deadline:deadline)},cancel:cancel)
++            }
++            condition.lock();guard !invalid else {condition.unlock();throw NativePairMemberError.inactive}
++            local=l;remote=r;condition.broadcast();condition.unlock()
++            try writer.submit(.init(kind:.ready,transcript:binding.transcriptSHA256,payload:ClusterWorkerCodec.encode(first)),until:lifetime)
++            while true {
++                let event: ClusterWorkerEventFrame
++                do {event=try endpoint.receiveWorkerEvent(until:cleanupDeadline)}
++                catch ClusterWorkerOwnerError.closed {break}
++                if start.rank == 0 {try l.accept(event)}
++                else {try writer.submit(.init(kind:.event,transcript:binding.transcriptSHA256,payload:ClusterWorkerCodec.encode(event)),until:lifetime)}
++            }
++        } catch {cancel()}
++        if endpoint.nativeCleanupObserved {condition.lock();let l=local;condition.unlock();l?.observeCleanup()}
++    }
++    private func sendCommand(_ command: ClusterWorkerCommand,id: UUID?,deadline: UInt64) throws {
++        let binding=try context()
++        condition.lock();defer{condition.unlock()}
++        guard !invalid, start.rank==0, nextCommand<UInt64(Int64.max) else {throw NativePairMemberError.inactive}
++        let frame=ClusterWorkerCommandFrame(membershipEpoch:start.common.epoch,sequence:nextCommand,requestID:id,command:command)
++        let packet=try NativePairWorkerPacket.command(frame,transcript:binding.transcriptSHA256,lifetime:lifetime,deliveryDeadline:deadline)
++        try writer.submit(packet,until:deadline);nextCommand += 1
++    }
++    func receive(_ message: NativePairMessage) throws {
++        let binding=try context()
++        let packet=try NativePairWorkerPacket(Data(base64Encoded:message.payload)!,type:message.type,transcript:binding.transcriptSHA256)
++        condition.lock();let allowed = !invalid;let remote=remote;condition.unlock()
++        guard allowed else {throw NativePairMemberError.inactive}
++        if start.rank==1 {
++            guard packet.kind == .command else {throw NativePairMemberError.binding}
++            let (frame,delivery)=try packet.localCommand(lifetime:lifetime,now:DispatchTime.now().uptimeNanoseconds)
++            condition.lock();defer{condition.unlock()}
++            guard frame.membershipEpoch==start.common.epoch,frame.sequence==nextCommand else {throw NativePairMemberError.binding}
++            try endpoint.sendWorkerCommand(frame.command,requestID:frame.requestID,deadline:delivery);nextCommand += 1
++        } else {
++            guard let remote, packet.kind == .ready || packet.kind == .event else {throw NativePairMemberError.binding}
++            let frame=try ClusterWorkerCodec.decodeEvent(packet.payload)
++            if packet.kind == .ready {guard case .ready=frame.event else {throw NativePairMemberError.binding}}
++            else {if case .ready=frame.event {throw NativePairMemberError.binding}}
++            try remote.accept(frame)
++        }
++    }
++    func invalidate() {
++        condition.lock();invalid=true;let endpoints=[local,remote].compactMap{$0};condition.broadcast();condition.unlock()
++        writer.invalidate();for value in endpoints {value.invalidate()}
++    }
++    /// Local cleanup proof is observed directly. Queued publication can never
++    /// delay native cleanup; failure to join only prevents release/reuse.
++    func localOwnerReleased(until deadline: UInt64) -> Bool {
++        condition.lock();let l=local;condition.unlock()
++        if endpoint.nativeCleanupObserved {l?.observeCleanup()}
++        let pumpJoined=pump.wait(timeout:.init(uptimeNanoseconds:deadline)) == .success
++        return pumpJoined && writer.join(until:deadline)
++    }
++    /// Caller has authenticated the coordinator's exact original all-owner
++    /// release receipt. This is the only proof that completes the remote view.
++    func observeAllOwnersReleased() throws {
++        condition.lock()
++        guard !releaseObserved else {condition.unlock();throw NativePairMemberError.binding}
++        releaseObserved=true;invalid=true
++        let endpoints=[local,remote].compactMap{$0};condition.broadcast();condition.unlock()
++        for value in endpoints {value.observeCleanup()}
++        released.leave()
++    }
++    func waitAllOwnersReleased(until deadline: UInt64) -> Bool {released.wait(timeout:.init(uptimeNanoseconds:deadline)) == .success}
++    func requestOwner(profile: DistributedResidentExecutionProfile, until deadline: UInt64) throws -> NativePairRequestExecutionOwner {
++        condition.lock()
++        while !invalid && local==nil && DispatchTime.now().uptimeNanoseconds<deadline {_ = condition.wait(until:Date(timeIntervalSinceNow:0.02))}
++        guard !invalid, start.rank==0, !ownerClaimed, let local,let remote else {condition.unlock();throw NativePairMemberError.inactive}
++        ownerClaimed=true;condition.unlock()
++        do {
++            let pair=try ClusterWorkerPair(workers:[local,remote],startupDeadline:min(deadline,lifetime),maximumRequests:1)
++            guard profile.requestTimeout <= .seconds(300) else {throw NativePairMemberError.binding}
++            let owner=NativePairRequestExecutionOwner(try DistributedPipeExecutionOwner(pair:pair,profile:profile,chunkSize:16))
++            condition.lock();guard !invalid else {condition.unlock();throw NativePairMemberError.inactive};self.pair=pair;condition.unlock()
++            return owner
++        } catch {cancel();throw error}
++    }
++}
+--- /dev/null
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift
+@@ -0,0 +1,29 @@
++import Foundation
++import MLXLMCommon
++
++/// Thin fixed-workload gate before the unchanged bilateral owner reserves any
++/// state or consumes its one experimental request slot. It owns no process.
++public final class NativePairRequestExecutionOwner: DistributedDeadlineExecutionOwner, @unchecked Sendable {
++    private let owner: DistributedPipeExecutionOwner
++    init(_ owner: DistributedPipeExecutionOwner) {self.owner=owner}
++    public func readiness() -> DistributedResidentReadiness? {owner.readiness()}
++    public func setReadinessInvalidationHandler(_ handler:@escaping @Sendable ()->Void) {owner.setReadinessInvalidationHandler(handler)}
++    public func projectFirstToken(_ request:CBv2Request,admission:CBv2FirstTokenDeadlineAdmission)->CBv2FirstTokenProjectedWork {
++        owner.projectFirstToken(request,admission:admission) // remains unbounded until measured
++    }
++    private func require(_ request:CBv2Request) throws {
++        guard request.promptTokens.count==32,request.maxTokens==2,request.stopTokens.isEmpty,request.stopStrings.isEmpty else {
++            throw DistributedEngineError.unsupportedRequest("Protected experiment requires its exact saved short workload")
++        }
++    }
++    public func reserve(_ request:CBv2Request,identity:DistributedResidentIdentity,profileID:String,capacityLimit:Int) throws -> any DistributedResidentRequestLease {
++        try require(request)
++        return try owner.reserve(request,identity:identity,profileID:profileID,capacityLimit:capacityLimit)
++    }
++    public func reserve(_ request:CBv2Request,identity:DistributedResidentIdentity,profileID:String,capacityLimit:Int,
++                        deadlineContext:DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        try require(request)
++        return try owner.reserve(request,identity:identity,profileID:profileID,capacityLimit:capacityLimit,deadlineContext:deadlineContext)
++    }
++    public func shutdown() async {await owner.shutdown()}
++}
+--- /dev/null
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestWriter.swift
+@@ -0,0 +1,36 @@
++import Foundation
++
++/// Bounded serial publication off Pair/Request locks. Invalidation interrupts
++/// queued work; an already-entered synchronous signer remains non-preemptible.
++final class NativePairRequestWriter: @unchecked Sendable {
++    private let condition = NSCondition()
++    private var pending: [(NativePairWorkerPacket,UInt64)] = []
++    private var running=false, invalid=false
++    private let send: @Sendable (NativePairWorkerPacket,UInt64) throws -> Void
++    private let failed: @Sendable () -> Void
++    init(send: @escaping @Sendable (NativePairWorkerPacket,UInt64) throws -> Void, failed: @escaping @Sendable () -> Void) {
++        self.send=send;self.failed=failed
++    }
++    func submit(_ packet: NativePairWorkerPacket, until: UInt64) throws {
++        condition.lock()
++        guard !invalid, pending.count < 16, DispatchTime.now().uptimeNanoseconds < until else {
++            condition.unlock();throw NativePairMemberError.queue
++        }
++        pending.append((packet,until)); let launch = !running; running=true;condition.unlock()
++        if launch { DispatchQueue(label:"darkbloom.native-member.requests.write").async { self.drain() } }
++    }
++    private func drain() {
++        while true {
++            condition.lock()
++            if invalid || pending.isEmpty {running=false;condition.broadcast();condition.unlock();return}
++            let item=pending.removeFirst();condition.unlock()
++            do {try send(item.0,item.1)} catch {invalidate();failed()}
++        }
++    }
++    func invalidate() {condition.lock();invalid=true;pending=[];condition.broadcast();condition.unlock()}
++    func join(until deadline: UInt64) -> Bool {
++        condition.lock();defer{condition.unlock()}
++        while running && DispatchTime.now().uptimeNanoseconds < deadline {_ = condition.wait(until:Date(timeIntervalSinceNow:0.02))}
++        return !running && pending.isEmpty
++    }
++}
+--- /dev/null
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedEndpoint.swift
+@@ -0,0 +1,87 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++
++/// A non-owning view of an already committed member's worker. It never launches
++/// an owner. Missing authenticated cleanup keeps the completion unresolved.
++final class NativePairRetainedEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
++    let expectedIdentity: ClusterWorkerIdentity
++    let expectedProfile: ClusterWorkerProfile
++    let rank: Int
++    let executionPlanSHA256: String
++    let localLifetimeDeadlineUptimeNanoseconds: UInt64
++    private let readyPolicy: ClusterOwnerProtectedReady
++    private let sendBody: @Sendable (ClusterWorkerCommand, UUID?, UInt64) throws -> Void
++    private let cancelBody: @Sendable () -> Void
++    private let condition = NSCondition(), cleanup = DispatchGroup()
++    private var events: [ClusterWorkerEventFrame] = []
++    private var nextEvent: UInt64 = 0
++    private var ready: ClusterWorkerReady?
++    private var invalid = false, cleaned = false, notified = false
++    private var handler: (@Sendable () -> Void)?
++    init(identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int, plan: String, lifetime: UInt64,
++         readyPolicy: ClusterOwnerProtectedReady,
++         send: @escaping @Sendable (ClusterWorkerCommand, UUID?, UInt64) throws -> Void,
++         cancel: @escaping @Sendable () -> Void) {
++        expectedIdentity=identity;expectedProfile=profile;self.rank=rank;executionPlanSHA256=plan
++        localLifetimeDeadlineUptimeNanoseconds=lifetime;self.readyPolicy=readyPolicy;sendBody=send;cancelBody=cancel
++        cleanup.enter()
++    }
++    var readiness: ClusterWorkerReady? { condition.lock(); defer { condition.unlock() }; return invalid || cleaned ? nil : ready }
++    var nativeCleanupObserved: Bool { condition.lock(); defer { condition.unlock() }; return cleaned }
++    func accept(_ frame: ClusterWorkerEventFrame) throws {
++        condition.lock(); defer { condition.unlock() }
++        guard !invalid, frame.membershipEpoch == expectedIdentity.membershipEpoch,
++              frame.sequence == nextEvent, events.count < 32 else { throw NativePairMemberError.binding }
++        if case .ready(let value) = frame.event {
++            guard nextEvent == 0, frame.requestID == nil else { throw NativePairMemberError.binding }
++            try readyPolicy.validate(value); ready=value
++        } else { guard nextEvent > 0 else { throw NativePairMemberError.binding } }
++        events.append(frame); nextEvent += 1; condition.broadcast()
++    }
++    func invalidate(cleanupObserved: Bool = false) {
++        condition.lock(); invalid=true; ready=nil; events.removeAll(keepingCapacity:false)
++        let complete = cleanupObserved && !cleaned
++        if complete { cleaned=true }
++        let notify = !notified ? handler : nil
++        if notify != nil { notified=true }; condition.broadcast(); condition.unlock()
++        if complete { cleanup.leave() }
++        if let notify { DispatchQueue.global().async(execute: notify) }
++    }
++    /// Actual normal owner cleanup closes admission while allowing already
++    /// validated terminal events to drain. It does not undo cancellation.
++    func observeCleanup() {
++        condition.lock()
++        let complete = !cleaned
++        cleaned=true; ready=nil; condition.broadcast(); condition.unlock()
++        if complete { cleanup.leave() }
++    }
++    func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
++        condition.lock(); self.handler=handler; let notify=invalid && !notified
++        if notify { notified=true }; condition.unlock()
++        if notify { DispatchQueue.global().async(execute: handler) }
++    }
++    func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
++        condition.lock(); let allowed = !invalid && !cleaned && ready != nil; condition.unlock()
++        guard allowed, deadline <= localLifetimeDeadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.closed }
++        if case .reserve(let value) = command { try NativePairWorkerPacket.requireExperiment(value) }
++        try sendBody(command,requestID,deadline)
++    }
++    func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
++        condition.lock(); defer { condition.unlock() }
++        while DispatchTime.now().uptimeNanoseconds < deadline {
++            if cancelled() { throw ClusterWorkerOwnerError.cancelled }
++            if invalid { throw ClusterWorkerOwnerError.closed }
++            if !events.isEmpty { return events.removeFirst() }
++            if cleaned { throw ClusterWorkerOwnerError.closed }
++            _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
++        }
++        throw ClusterWorkerOwnerError.deadline
++    }
++    func requestNativeCleanup() { invalidate(); cancelBody() }
++    func waitForNativeCleanup() { cleanup.wait() }
++    func waitUntilNativeCleanup() async {
++        await withCheckedContinuation { continuation in cleanup.notify(queue: .global()) { continuation.resume() } }
++    }
++}
+--- originals/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift
++++ proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift
+@@ -56,6 +56,6 @@
+             nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
+             metallib: URL(fileURLWithPath: attachment.metallib.path),
+             resourceLibrary: URL(fileURLWithPath: attachment.resourceLibrary.path), chip: chip,
+-            bootstrapProfile: .nativeKeyPreludeMesh2)
++            bootstrapProfile: .nativeKeyPreludeMesh2).withProtectedRuntime(nativeAttachment)
+     }
+ }
+--- originals/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift
++++ proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift
+@@ -1,14 +1,17 @@
+ import Foundation
+ import CoreFoundation
+ import DarkbloomClusterProtocol
++import DarkbloomClusterRemote
++import DarkbloomClusterSecurity
+ 
+ /// A verified metadata observation, never native readiness or runtime approval.
+ /// Its initializer is private; the saved label alone cannot create this value.
+ struct DistributedInstalledNativeAttachment: Sendable {
+     let attachment: ClusterNativeMemberAttachment
+     private let inputs: [DistributedInstalledFiles.Identity]
+-    private init(attachment: ClusterNativeMemberAttachment, inputs: [DistributedInstalledFiles.Identity]) {
+-        self.attachment = attachment; self.inputs = inputs
++    private let description: Data
++    private init(attachment: ClusterNativeMemberAttachment, inputs: [DistributedInstalledFiles.Identity], description: Data) {
++        self.attachment = attachment; self.inputs = inputs; self.description = description
+     }
+     static func prepare(validation: DistributedInstalledValidation, deadline: UInt64) throws -> Self? {
+         let plan = validation.plan
+@@ -37,11 +40,20 @@
+         try validateDescription(raw, attachment: attachment, capability: plan.capability,
+             capabilitySHA256: plan.configuration.capabilitySHA256, planSHA256: plan.partition.planSHA256)
+         try executable.requireUnchanged(); try validation.requireUnchanged()
+-        let result = Self(attachment: attachment, inputs: inputs)
++        let result = Self(attachment: attachment, inputs: inputs, description: raw)
+         try result.requireUnchanged(); try DistributedInstalledFiles.check(deadline)
+         return result
+     }
+     func requireUnchanged() throws { for input in inputs { try input.requireUnchanged() } }
++
++    func readyPolicy(start: ClusterNativeAuthorizationStart, identity: ClusterWorkerIdentity,
++                     profile: ClusterWorkerProfile) throws -> ClusterOwnerProtectedReady {
++        try requireUnchanged()
++        try NativePairMemberPolicy(attachment.policyBytes).require(start)
++        return try .init(verifiedDescription: description,
++            expectedDescriptionSHA256: attachment.protectedRuntimeDescriptionSHA256,
++            start: start, identity: identity, profile: profile)
++    }
+ 
+     // CPU-fixture seam validates actual producer-shaped raw bytes. It does not
+     // create the IO-verified installation value or authorize a child.
+--- originals/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift
++++ proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift
+@@ -22,6 +22,8 @@
+                       Date().timeIntervalSince1970 * 1_000_000_000 < Double(policy.notAfter) else {
+                     throw ClusterConfigurationError.invalid("Protected owner start rank or original policy lifetime differs")
+                 }
++            }, protectedReady: { start, binding in
++                try native.readyPolicy(start: start, identity: binding.identity, profile: binding.profile)
+             }, binding: { epoch, lease, incarnation in
+                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
+             }, native: { binding, deadline, bootstrap in
+--- originals/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift
++++ proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift
+@@ -1,7 +1,7 @@
+ import DarkbloomClusterProtocol
+ import Foundation
+ 
+-/// Public-only mirror of coordinator/protocol/native_pair.go. This value does
++/// Signed member-envelope mirror of coordinator/protocol/native_pair.go. This value does
+ /// not authorize a native child; only a future owned, live member handler may
+ /// translate an explicitly committed start into prelude A. The existing member
+ /// loop does not consume these messages in this increment.
+@@ -18,8 +18,8 @@
+     public let expiresAtUnixNano: Int64?
+ 
+     public static let maximumFrameBytes = 64 * 1024
+-    public static let inboundTypes: Set<String> = ["native_pair_key_confirmed", "native_pair_mesh", "native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released", "native_pair_cancel"]
+-    public static let outboundTypes: Set<String> = ["native_pair_mesh_ready", "native_pair_mesh_reply", "native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_cancel"]
++    public static let inboundTypes: Set<String> = ["native_pair_key_confirmed", "native_pair_mesh", "native_pair_worker_ready", "native_pair_worker_command", "native_pair_worker_event", "native_pair_worker_attach", "native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released", "native_pair_cancel"]
++    public static let outboundTypes: Set<String> = ["native_pair_workers_released", "native_pair_mesh_ready", "native_pair_mesh_reply", "native_pair_worker_ready", "native_pair_worker_command", "native_pair_worker_event", "native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_cancel"]
+     public enum Invalid: Error { case publicFrame }
+     enum CodingKeys: String, CodingKey {
+         case type, version, epoch, generation, sequence, payload, signature
+@@ -77,7 +77,8 @@
+         }
+     }
+     /// Existing Secure Enclave P-256 signs SHA256 of this domain-bound value.
+-    /// No traffic secret or inference payload belongs in this message type.
++    /// Traffic secrets never belong here. Explicit worker_* records carry bounded
++    /// inference control only over the already authenticated TLS connection.
+     public func signingBytes() throws -> Data {
+         try validate()
+         var b = Data("darkbloom/coordinator-native-pair/member-message/v1\0".utf8)
+--- /dev/null
++++ proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairWorkerPacket.swift
+@@ -0,0 +1,79 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Distinct inference-control records on the authenticated member TLS socket.
++/// Native traffic keys never leave A; these are not public key/mesh records.
++/// Deadlines are fixed slack from the original membership lifetime, not a new
++/// duration at receipt and not another Mac's uptime clock.
++struct NativePairWorkerPacket: Sendable {
++    enum Kind: UInt8, Sendable { case ready = 1, command = 2, event = 3
++        var messageType: String {
++            switch self { case .ready: "native_pair_worker_ready"; case .command: "native_pair_worker_command"
++            case .event: "native_pair_worker_event" }
++        }
++    }
++    static let maximumPayload = 16 * 1024
++    let kind: Kind
++    let transcript: Data
++    let deliverySlack, generationSlack: UInt64
++    let payload: Data
++    init(kind: Kind, transcript: Data, deliverySlack: UInt64 = 0, generationSlack: UInt64 = 0, payload: Data) throws {
++        guard transcript.count == 32, !transcript.allSatisfy({ $0 == 0 }), !payload.isEmpty,
++              payload.count <= Self.maximumPayload,
++              deliverySlack <= ClusterWorkerLimits.deadlineNanoseconds,
++              generationSlack <= ClusterWorkerLimits.deadlineNanoseconds,
++              kind == .command || (deliverySlack == 0 && generationSlack == 0) else { throw NativePairMemberError.binding }
++        self.kind = kind; self.transcript = transcript; self.deliverySlack = deliverySlack
++        self.generationSlack = generationSlack; self.payload = payload
++    }
++    var bytes: Data {
++        var b = Data([68,66,78,87,1,kind.rawValue]); b.append(transcript)
++        func append<T: FixedWidthInteger & UnsignedInteger>(_ n: T) {
++            for shift in stride(from: T.bitWidth-8, through: 0, by: -8) { b.append(UInt8(truncatingIfNeeded: n >> shift)) }
++        }
++        append(deliverySlack); append(generationSlack); append(UInt32(payload.count)); b.append(payload); return b
++    }
++    init(_ b: Data, type: String, transcript: Data) throws {
++        guard b.count >= 59, b.count <= 58 + Self.maximumPayload,
++              b.prefix(5) == Data([68,66,78,87,1]), let kind = Kind(rawValue: b[5]),
++              kind.messageType == type, b.subdata(in: 6..<38) == transcript else { throw NativePairMemberError.binding }
++        func number(_ range: Range<Int>) -> UInt64 { b.subdata(in: range).reduce(0) { ($0 << 8) | UInt64($1) } }
++        guard number(54..<58) == UInt64(b.count-58) else { throw NativePairMemberError.binding }
++        try self.init(kind: kind, transcript: transcript, deliverySlack: number(38..<46),
++            generationSlack: number(46..<54), payload: b.subdata(in: 58..<b.count))
++    }
++    static func command(_ frame: ClusterWorkerCommandFrame, transcript: Data,
++                        lifetime: UInt64, deliveryDeadline: UInt64) throws -> Self {
++        let now = DispatchTime.now().uptimeNanoseconds
++        guard deliveryDeadline > now, deliveryDeadline <= lifetime else { throw NativePairMemberError.deadline }
++        var command = frame.command, generationSlack: UInt64 = 0
++        if case .reserve(let r) = command {
++            try requireExperiment(r)
++            guard r.deadlineUptimeNanoseconds > now, r.deadlineUptimeNanoseconds <= lifetime else { throw NativePairMemberError.deadline }
++            generationSlack = lifetime - r.deadlineUptimeNanoseconds
++            command = .reserve(copy(r, deadline: 1)) // explicit wire sentinel; never a remote uptime
++        }
++        return try .init(kind: .command, transcript: transcript, deliverySlack: lifetime-deliveryDeadline,
++            generationSlack: generationSlack, payload: ClusterWorkerCodec.encode(.init(membershipEpoch: frame.membershipEpoch,
++                sequence: frame.sequence, requestID: frame.requestID, command: command)))
++    }
++    func localCommand(lifetime: UInt64, now: UInt64) throws -> (ClusterWorkerCommandFrame, UInt64) {
++        guard kind == .command, lifetime > deliverySlack, lifetime-deliverySlack > now else { throw NativePairMemberError.deadline }
++        let f = try ClusterWorkerCodec.decodeCommand(payload)
++        var command = f.command
++        if case .reserve(let r) = command {
++            try Self.requireExperiment(r)
++            guard r.deadlineUptimeNanoseconds == 1, lifetime > generationSlack, lifetime-generationSlack > now else { throw NativePairMemberError.deadline }
++            command = .reserve(Self.copy(r, deadline: lifetime-generationSlack))
++        } else if generationSlack != 0 { throw NativePairMemberError.binding }
++        return (.init(membershipEpoch: f.membershipEpoch, sequence: f.sequence, requestID: f.requestID, command: command), lifetime-deliverySlack)
++    }
++    static func requireExperiment(_ r: ClusterWorkerReservation) throws {
++        guard r.profileID == "registered_qwen35_9b_greedy_generation_v1", r.promptTokenIDs.count == 32,
++              r.outputCount == 2, r.chunkSize == 16, r.stopTokenIDs.isEmpty else { throw NativePairMemberError.binding }
++    }
++    private static func copy(_ r: ClusterWorkerReservation, deadline: UInt64) -> ClusterWorkerReservation {
++        .init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
++            outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: r.capacityLimitBytes)
++    }
++}
+--- originals/provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift
++++ proposed/provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift
+@@ -11,5 +11,18 @@
+                   available: loopConfig.runtimeCapabilities) else { throw NativePairMemberError.unconfigured }
+         nativePairMemberControl = NativePairMemberControl(installation: installation, signer: signer)
+     }
++    /// Explicit experiment request attachment to the original member session.
++    /// No inference engine/device/SSH owner is created. Callers retain this loop
++    /// through all request retirement and actual bilateral owner cleanup.
++    public func nativePairRequestOwner(profile:DistributedResidentExecutionProfile,
++                                       deadlineUptimeNanoseconds:UInt64) async throws -> NativePairRequestExecutionOwner {
++        guard isClusterMember,let control=nativePairMemberControl else {throw NativePairMemberError.unconfigured}
++        return try await withTaskCancellationHandler {
++            try Task.checkCancellation()
++            return try await Task.detached {
++                try control.requestOwner(profile:profile,until:deadlineUptimeNanoseconds)
++            }.value
++        } onCancel: {control.cancelRequests()}
++    }
+     public var nativePairMemberStatus: String? { nativePairMemberControl?.status }
+ }
+--- /dev/null
++++ proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift
+@@ -0,0 +1,125 @@
++import Foundation
++import CryptoKit
++import Testing
++import DarkbloomClusterProtocol
++import DarkbloomClusterRemote
++import DarkbloomClusterSecurity
++@testable import ProviderCore
++
++@Suite("Retained protected member requests")
++struct NativePairSharedRequestTests {
++    @Test func workerPacketHasIndependentCanonicalBytes() throws {
++        let digest=Data(repeating:0x7f,count:32)
++        let p=try NativePairWorkerPacket(kind:.command,transcript:digest,deliverySlack:1,generationSlack:2,payload:Data("abc".utf8))
++        let hex=p.bytes.map{String(format:"%02x",$0)}.joined()
++        #expect(hex=="44424e570102"+String(repeating:"7f",count:32)+"0000000000000001000000000000000200000003616263")
++        let decoded=try NativePairWorkerPacket(p.bytes,type:"native_pair_worker_command",transcript:digest)
++        #expect(decoded.deliverySlack==1 && decoded.generationSlack==2 && decoded.payload==Data("abc".utf8))
++    }
++    @Test func workerPacketRejectsDirectionContextTruncationAndLimits() throws {
++        let d=Data(repeating:1,count:32),p=try NativePairWorkerPacket(kind:.ready,transcript:d,payload:Data([1]))
++        for length in [0,5,38,58,p.bytes.count-1] {
++            #expect(throws:(any Error).self){try NativePairWorkerPacket(Data(p.bytes.prefix(length)),type:"native_pair_worker_ready",transcript:d)}
++        }
++        #expect(throws:(any Error).self){try NativePairWorkerPacket(p.bytes,type:"native_pair_worker_event",transcript:d)}
++        #expect(throws:(any Error).self){try NativePairWorkerPacket(p.bytes,type:"native_pair_worker_ready",transcript:Data(repeating:2,count:32))}
++        #expect(throws:(any Error).self){try NativePairWorkerPacket(kind:.event,transcript:d,deliverySlack:1,payload:Data([1]))}
++        #expect(throws:(any Error).self){try NativePairWorkerPacket(kind:.event,transcript:d,payload:Data(repeating:1,count:16385))}
++    }
++    @Test func requestDeadlinesUseOriginalLifetimeSlackWithoutTransitRestart() throws {
++        let now=DispatchTime.now().uptimeNanoseconds,lifetime=now+5_000_000_000,generation=now+3_000_000_000,delivery=now+1_000_000_000
++        let r=ClusterWorkerReservation(profileID:"registered_qwen35_9b_greedy_generation_v1",promptTokenIDs:Array(repeating:1,count:32),
++            stopTokenIDs:[],outputCount:2,chunkSize:16,deadlineUptimeNanoseconds:generation,capacityLimitBytes:500_000_000)
++        let p=try NativePairWorkerPacket.command(.init(membershipEpoch:UUID(),sequence:0,requestID:UUID(),command:.reserve(r)),
++            transcript:Data(repeating:1,count:32),lifetime:lifetime,deliveryDeadline:delivery)
++        let (translated,end)=try p.localCommand(lifetime:lifetime,now:now+500_000_000)
++        #expect(end==delivery)
++        guard case .reserve(let value)=translated.command else {Issue.record("reserve lost");return}
++        #expect(value.deadlineUptimeNanoseconds==generation)
++        #expect(throws:(any Error).self){try p.localCommand(lifetime:lifetime,now:delivery)}
++        let otherClock:UInt64=100_000_000_000
++        let (other,otherEnd)=try p.localCommand(lifetime:otherClock,now:otherClock-5_000_000_000)
++        #expect(otherEnd==otherClock-4_000_000_000)
++        guard case .reserve(let converted)=other.command else {Issue.record("reserve lost");return}
++        #expect(converted.deadlineUptimeNanoseconds==otherClock-2_000_000_000)
++    }
++    @Test func requestAdapterKeepsExactNativeWorkload() throws {
++        func value(prompt:Int=32,output:Int=2,chunk:Int=16,stops:[Int]=[])->ClusterWorkerReservation {
++            .init(profileID:"registered_qwen35_9b_greedy_generation_v1",promptTokenIDs:Array(repeating:1,count:prompt),stopTokenIDs:stops,
++                outputCount:output,chunkSize:chunk,deadlineUptimeNanoseconds:1,capacityLimitBytes:1)
++        }
++        try NativePairWorkerPacket.requireExperiment(value())
++        for bad in [value(prompt:31),value(output:1),value(chunk:32),value(stops:[2])] {
++            #expect(throws:(any Error).self){try NativePairWorkerPacket.requireExperiment(bad)}
++        }
++    }
++    @Test func protectedReadyRequiresExactBindingAndActualChargedCapacity() throws {
++        let f=try Fixture()
++        try f.gate.validate(f.ready())
++        #expect(throws:(any Error).self){try f.gate.validate(f.ready(capacity:186_302_720))}
++        #expect(throws:(any Error).self){try f.gate.validate(f.ready(rank:1))}
++        var changed=f.description;changed.append(32)
++        #expect(throws:(any Error).self){try ClusterOwnerProtectedReady(verifiedDescription:changed,
++            expectedDescriptionSHA256:f.descriptionHash,start:f.start,identity:f.identity,profile:f.profile)}
++    }
++    @Test func retainedViewPreservesSequenceAndNeverInfersCleanup() throws {
++        let f=try Fixture(),end=DispatchTime.now().uptimeNanoseconds+1_000_000_000
++        let view=NativePairRetainedEndpoint(identity:f.identity,profile:f.profile,rank:0,plan:f.plan,lifetime:end,
++            readyPolicy:f.gate,send:{_,_,_ in},cancel:{})
++        let ready=ClusterWorkerEventFrame(membershipEpoch:f.identity.membershipEpoch,sequence:0,requestID:nil,event:.ready(f.ready()))
++        try view.accept(ready)
++        #expect(try view.receiveWorkerEvent(until:end,cancelled:{false})==ready)
++        #expect(throws:(any Error).self){try view.accept(ready)}
++        let terminal=ClusterWorkerEventFrame(membershipEpoch:f.identity.membershipEpoch,sequence:1,requestID:UUID(),event:.finished(.length))
++        try view.accept(terminal)
++        #expect(!view.nativeCleanupObserved)
++        view.invalidate()
++        #expect(view.readiness==nil && !view.nativeCleanupObserved)
++        // Cancellation must suppress an already-queued success even before the
++        // Pair's asynchronous invalidation observer has run.
++        #expect(throws:(any Error).self){try view.receiveWorkerEvent(until:end,cancelled:{false})}
++        view.observeCleanup()
++        #expect(view.nativeCleanupObserved)
++        #expect(throws:(any Error).self){try view.receiveWorkerEvent(until:end,cancelled:{false})}
++        let clean=NativePairRetainedEndpoint(identity:f.identity,profile:f.profile,rank:0,plan:f.plan,lifetime:end,
++            readyPolicy:f.gate,send:{_,_,_ in},cancel:{})
++        try clean.accept(ready)
++        _ = try clean.receiveWorkerEvent(until:end,cancelled:{false})
++        try clean.accept(terminal)
++        clean.observeCleanup()
++        #expect(clean.readiness==nil && clean.nativeCleanupObserved)
++        #expect(try clean.receiveWorkerEvent(until:end,cancelled:{false})==terminal)
++        #expect(throws:(any Error).self){try clean.sendWorkerCommand(.shutdown,requestID:nil,deadline:end)}
++    }
++    private struct Fixture {
++        let start:ClusterNativeAuthorizationStart,identity:ClusterWorkerIdentity,profile:ClusterWorkerProfile
++        let description:Data,descriptionHash:String,plan:String,gate:ClusterOwnerProtectedReady
++        init() throws {
++            func d(_ n:UInt8)->Data{Data(repeating:n,count:32)}
++            func h(_ b:Data)->String{b.map{String(format:"%02x",$0)}.joined()}
++            let resource=Data(base64Encoded:"eyJhZGRpdGlvbmFsSG9zdEJ5dGVzIjoxNTI3NDgyODgsImFkZGl0aW9uYWxOYXRpdmVCeXRlcyI6MzM1NTQ0MzIsImFsbG9jYXRpb25OYXRpdmVTSEEyNTYiOiI0ZjQxNDljNzMzMGQ4MjY4YWM3Mjk0ZWY3YjIyNWRiMjUwNzhkMmZiODUzY2IwNmFmMWQwMmU3M2FlNjZiMjZjIiwiYWxsb2NhdGlvblJldmlld3MiOlsiMTRlOTcwYjA2ZmMwM2RmZmY5NDFjNjhkNjk5OGJjOTJmZmFjMWIyNDc4ZjMyYWVhODY5YTJmY2ZjM2UyOTFmZSIsIjczYmU3N2YxZjdkZDAwMjk1NDc2ZmU3ZjI3NjY1NWFiMjg1Y2I0ODUyNDBhODQ3OWFiMWEyNzVmYTM2NTU5ZDAiXSwiYWxsb2NhdG9ySGVhZHJvb21CeXRlcyI6MjE0NzQ4MzY0OCwiYWxsb2NhdG9yUG9saWN5IjoiZGlzYWJsZV9mcmVlZF9idWZmZXJfY2FjaGVfdjEiLCJoYXJkd2FyZU1vZGVsIjoiTWFjMTYsNyIsImtleUFuZE1ldGFkYXRhQWxsb3dhbmNlQnl0ZXMiOjEwNDg1NzYsImxvYWRpbmdIZWFkcm9vbUJ5dGVzIjo0Mjk0OTY3Mjk2LCJsb2dpY2FsSG9zdENvcGllcyI6NTI0NDQ4LCJtYXhpbXVtQ3VtdWxhdGl2ZVBsYWludGV4dEJ5dGVzUGVyRGlyZWN0aW9uIjoxNjc3NzIxNiwibWF4aW11bUZyYW1lQnl0ZXMiOjEzMTExMiwibWF4aW11bUluRmxpZ2h0T3BlcmF0aW9ucyI6MSwibWF4aW11bVBsYWludGV4dEJ5dGVzIjoxMzEwNzIsIm1heGltdW1SZWNvcmRzUGVyRGlyZWN0aW9uIjoxMDI0LCJtZXNoQmFja2luZ0J5dGVzIjoxMjUzMzc2MCwibWluaW11bUFjdHVhbEZyZWVCeXRlcyI6NjQ0MjQ1MDk0NCwib2JzZXJ2ZWROYXRpdmVJbmNyZW1lbnRCeXRlcyI6MjA5ODc5MDQsIm9ic2VydmVkUGh5c2ljYWxJbmNyZW1lbnRCeXRlcyI6NzE1MzI2NDAsIm9wZXJhdGlvbmFsU2FmZXR5Qnl0ZXMiOjY3MTA4ODY0LCJvc0J1aWxkIjoiMjZBNDI4IiwicGh5c2ljYWxNZW1vcnlCeXRlcyI6WzI1NzY5ODAzNzc2LDUxNTM5NjA3NTUyXSwicHJvZmlsZSI6InF3ZW45Yl9zaG9ydF9yZWNvcmRzX2V4cGVyaW1lbnRfdjEiLCJyZG1hTWVhc3VyZWQiOmZhbHNlLCJzY2hlbWEiOiJxd2VuOWJfcHJvdGVjdGVkX29wZXJhdGlvbmFsX3Jlc291cmNlc192MSIsInNlcGFyYXRlRGlyZWN0aW9uQ29kZWNzIjpmYWxzZSwic2VydmluZ0VuYWJsZWQiOmZhbHNlLCJzb3VyY2VCaW5kaW5ncyI6eyJhbGxvY2F0aW9uUHJvYmUiOiJkMDI0ZGZjMTQ4NDQ5MjZiZDhlZTE0NjIwODI2Y2M5YjBhZTQyOWZkOGE0NmUwOTdkN2E0MmZlZWRlODU2OThlIiwiamFjY2wvbWVzaC5jcHAiOiI5Y2VlYjk0YTUwNzExM2JlOTIwNjI1NWVmZmYxYmIwOWQ5ZDU5OGU0NGVhYmVkMzQwYzA4MDhlMjZjZTBjZjIyIiwiamFjY2wvbWVzaF9pbXBsLmgiOiIzZWEwN2RmNjdhYWUzZDAzMjdmMTExZGUzYjc2NzNjOGM3NmE2YzIzNjI2ODJkNGIwODVjZDEwYThkNTg0N2Y1IiwiamFjY2wvcmRtYS5oIjoiNzI2Zjk0Yjk2ZmViZDJlYzI5NDI2OTg3MmQ2NjcyYmNhZjBhNGZjOTdlY2JlZjk0NzRiZGY5N2I0ZTk2MjQ5OCIsImphY2NsL3JpbmdfaW1wbC5oIjoiMWY3MWIyNmE4NDQ4ZjZlZjQ2YWFmZGFlMGQzZmY3NjBiNzIzMTdjZDMyNzZhMDY5YjdkNmI5MjAyNGViMmEzMyIsImphY2NsL3NlbmRfZnJhbWUuaCI6Ijc3MTg0NmFlMDQwNmJjMjIwM2IzN2VjOTYyMGIzMTU4NDA1NDMzZmJlNzY0MjFlMzE1Mjk2NjcwYzNjNTkwYzciLCJuYXRpdmVQcmVsdWRlIjoiNjFmMjg4ODdlNjE2NWM2ZjQ4ODA3MTg4Mjg2ODIxNmM2ZTkyYmIxZjFmNmY4MWNlYzgyNmM3ZGUwMzQ5YzViZiIsInByb3RlY3RlZFNjb3BlcyI6IjQzMzhjZTViZTI1ZDk1YzdlYzY4Zjg3YWIyZmNkNTExMjJjZWVlODA1OGRlNjM2NDYzZjU4OTFmZTRmZWUxMDciLCJzZWN1cml0eS9DbHVzdGVyQXV0aGVudGljYXRlZFJlY29yZENoYW5uZWwuc3dpZnQiOiI2ZDgxNjI4ZTU3ODA2MTJjYmVkZGU3MWI4MmU1YzVlM2ZkNTNlZjMwY2MzODEwZWE5N2U5NzRhNzg4ZmVhZDlkIiwic2VjdXJpdHkvQ2x1c3RlckF1dGhlbnRpY2F0ZWRSZWNvcmRUcmFuc3BvcnQuc3dpZnQiOiI2ZjIwZTYwNWYxZDAxMTZmMTkyOTA3ZjM5NjZlM2FlZWIxYzIzNGU2NDkxMjc5YTFiZTdhMzJhMmViMGIyM2NhIiwic2VjdXJpdHkvQ2x1c3RlclJlY29yZEJ5dGVJTy5zd2lmdCI6ImQ4YTgyMzA1MWRkNjljYzEzYTFiZDZjZDZmNjkzNjNhNGEyZmNjYzVjYzM2ZGNiZDY0YjI2MjUwOWNlMjFkMTkiLCJzZWN1cml0eS9DbHVzdGVyUmVjb3JkRnJhbWluZy5zd2lmdCI6IjFiZWQ3NmE2MDE2Y2MxOGVmNGEzNWI0NWMyYWYzMDViZmU1Y2UxMzQyYzkyNWQ5ZTc0YmQ2YmNkYTU1ZWZmY2UiLCJzZWN1cml0eS9DbHVzdGVyUmVjb3JkU3RhdGUuc3dpZnQiOiI5MTU3N2E5Y2YyYjlhN2QyNzQ4NDZlMTMyNzQ3NjQ4MjVlM2NiMWRlMTQ1OWQ4Njk5NTViMWQyMTAyN2IxZTYxIiwic2VjdXJpdHkvQ2x1c3RlclJlY29yZFRyYW5zZmVyQWNjb3VudGluZy5zd2lmdCI6ImFhYjAzNmM5OTkxZjM1ZTQwZjJhN2Q4YTAyODNjOGZjNTRjNzNmNDBiM2UzNmY1MmExNTE1ZjZiNWUzNjMzOWQiLCJzZWN1cml0eS9DbHVzdGVyUmVjb3JkVHJhbnNmZXJFeHBlY3RhdGlvbi5zd2lmdCI6IjE1MWY2NzM5OTNiMzM5MWQ0ZmQwYmE5MzdjMDRkMmQ2NTMxZmIyM2JkMjQ4ZjQ2YTViNjA4Zjk3ZGRjOTZhNTciLCJzZWN1cml0eS9DbHVzdGVyUmVjb3JkVHlwZXMuc3dpZnQiOiI3MjNlMWU2M2Q5YjZmOGZjMGEzOGY0N2I5NDE1MmZhMDI2ZmJhNDc4ZDA1NjQyNDk0YjZhYWIwNWY2OTQwMzY2In0sInN1aXRlIjoiYWVzMjU2R2NtSGtkZlNoYTI1NlYxIiwid2hvbGVQcm9jZXNzUGVha1Byb3ZlbiI6ZmFsc2V9")!
++            let resourceHash=Data(SHA256.hash(data:resource))
++            let epoch=UUID(),common=try ClusterNativeAuthorizationCommon(epoch:epoch,membershipGeneration:1,nativePolicyGeneration:1,
++                membershipTranscriptSHA256:d(1),approvedNativeBindingSHA256:d(2),planSHA256:d(3),artifactSHA256:d(4),nativeRuntimeSHA256:d(5),
++                capabilitySHA256:d(6),resourcePolicySHA256:resourceHash,profileSHA256:d(8),schedule:.serial,maximumTransportFrameBytes:131112,
++                limits:.init(maximumPlaintextBytes:131072,maximumRecordsPerDirection:1024,maximumCumulativePlaintextBytesPerDirection:16777216))
++            start=try .init(common:common,rank:0,ownerIncarnation:UUID(),leaseID:UUID(),launchID:UUID())
++            identity = .init(membershipEpoch:epoch,modelID:"fixture-only",artifactSHA256:h(d(4)),configurationSHA256:h(d(9)),
++                peers:[.init(id:"a",buildSHA256:h(d(5))),.init(id:"b",buildSHA256:h(d(5)))])
++            profile = .init(id:"registered_qwen35_9b_greedy_generation_v1",vocabularySize:248320,maximumPromptTokens:8192,
++                maximumOutputTokens:128,maximumChunkTokens:512,maximumContextTokens:8320);plan=h(d(3))
++            // Narrow gate fixture only. Installed attachment separately validates
++            // the complete pinned descriptor/artifacts before making this value.
++            description=try JSONSerialization.data(withJSONObject:["schema":"qwen9b_protected_runtime_description_v1",
++                "staticProfile":"qwen9b_short_records_experiment_v1","bootstrapProfile":"native_key_prelude_mesh2_v1",
++                "prefillSchedule":"serial_v1","stageCut":16,"promptTokens":32,"chunkTokens":16,"outputTokens":2,"stopTokenIDs":[Int](),
++                "runtimeBinarySHA256":h(d(5)),"capabilitySHA256":h(d(6)),"selectedPlanSHA256":h(d(3)),
++                "profileFingerprint":h(d(8)),"resourcePolicySHA256":h(resourceHash),"resourcePolicyBase64":resource.base64EncodedString()],options:[.sortedKeys])
++            descriptionHash=h(Data(SHA256.hash(data:description)))
++            gate=try .init(verifiedDescription:description,expectedDescriptionSHA256:descriptionHash,start:start,identity:identity,profile:profile)
++        }
++        func ready(capacity:Int=186_302_721,rank:Int=0)->ClusterWorkerReady {
++            .init(identity:identity,rank:rank,profile:profile,executionPlanSHA256:plan,requestCapacityBytes:capacity)
++        }
++    }
++}

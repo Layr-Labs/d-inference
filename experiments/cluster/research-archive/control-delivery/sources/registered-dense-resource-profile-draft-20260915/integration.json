@@ -1,0 +1,27 @@
+{
+  "changes": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredResourceProfile.swift",
+      "oldSHA256": null,
+      "newSHA256": "38abce5100cd7cfeb960d58faa591368d0cf66e1862cb79fac0f93216a748f59"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift",
+      "oldSHA256": "a07b49062d7938cc6a660c958a3788417d457676ae0b2f12ab3a25e5042ca087",
+      "newSHA256": "97e054d8e8f85bdd2be8442c46ad8001e6c03f5dbd5776011095ce8076a15600"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "oldSHA256": "ecd473554fb622006714010e95685a3a9338156e431527101498d7f4d38c1fea",
+      "newSHA256": "923859237b2061fd60d2b67d2721f71130f8b592cbc53196e3932ee059d0be99"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift",
+      "oldSHA256": "a9a937d66bf1b69e0004586791e7c6b7ebfd08629b2393afb81c6a1091244a5e",
+      "newSHA256": "c3fc9c1b321b649de30b59d9b4b6cd44df9c7d15b787b9b898e7431f4fb3ee7c"
+    }
+  ],
+  "mtpLoadingSourceChanged": false,
+  "twentySevenExecutionEnabled": false,
+  "providerPolicyChanged": false
+}

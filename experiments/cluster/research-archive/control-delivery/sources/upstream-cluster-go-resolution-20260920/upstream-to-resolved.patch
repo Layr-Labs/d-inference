@@ -1,0 +1,166 @@
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -234,6 +234,7 @@
+ // them. It runs until the connection closes or the context is cancelled.
+ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
+ 	var provider *registry.Provider
++	var nativeConnection *registry.NativePairConnection
+ 	var appAttestShadow *attestservice.Session
+ 	tracker := newChallengeTracker()
+ 	var schedulerSEKey string
+@@ -248,6 +249,9 @@
+ 	// Cancel context for cleanup of the challenge loop goroutine.
+ 	loopCtx, loopCancel := context.WithCancel(ctx)
+ 	defer func() {
++		if s.nativePairs != nil {
++			s.nativePairs.Detach(nativeConnection)
++		}
+ 		loopCancel()
+ 		if s.mdmScheduler != nil {
+ 			s.mdmScheduler.Unbind(schedulerSEKey, schedulerGeneration)
+@@ -268,6 +272,10 @@
+ 	for {
+ 		_, data, err := conn.Read(loopCtx)
+ 		if err != nil {
++			// Stop pair admission before any slow session-store disconnect stamp.
++			if s.nativePairs != nil {
++				s.nativePairs.Detach(nativeConnection)
++			}
+ 			closeStatus := websocket.CloseStatus(err)
+ 			oomSuspected := false
+ 			readReason := readErrorReasonGeneric
+@@ -393,6 +401,10 @@
+ 				return
+ 			}
+ 			regMsg := msg.Payload.(*protocol.RegisterMessage)
++			if err := regMsg.ValidateExecutionRole(); err != nil {
++				_ = conn.Close(websocket.StatusPolicyViolation, "invalid execution role")
++				return
++			}
+ 			// The version string is provider-controlled and flows into semver
+ 			// parsing memos, metric tags and logs; a legitimate build id is a
+ 			// few dozen bytes. Reject anything larger before it reaches the
+@@ -432,6 +444,17 @@
+ 			provider = s.registry.Register(providerID, conn, regMsg)
+ 			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
+ 				provider.RequireVerifiedMachineIdentity()
++			}
++			if regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
++				ack, err := json.Marshal(protocol.ClusterMemberAcceptedMessage{
++					Type:                    protocol.TypeClusterMemberAccepted,
++					ExecutionRole:           protocol.ExecutionRoleClusterMember,
++					MemberRegistrationNonce: regMsg.MemberRegistrationNonce,
++					ProviderID:              providerID,
++				})
++				if err != nil || provider.WriteTextControl(loopCtx, ack) != nil {
++					return
++				}
+ 			}
+ 			s.attachProviderLocation(providerID, provider, r)
+ 			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg, authenticatedAccountID); err != nil {
+@@ -592,6 +615,14 @@
+ 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
+ 				}
+ 			}
++			if s.nativePairs != nil && regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
++				var attachErr error
++				nativeConnection, attachErr = s.nativePairs.Attach(provider, regMsg.MemberRegistrationNonce, r.TLS)
++				if attachErr != nil {
++					_ = conn.Close(websocket.StatusPolicyViolation, "native pair transport refused")
++					return
++				}
++			}
+ 			// Start challenge loop after registration
+ 			saferun.Go(s.logger, "challengeLoop", func() {
+ 				s.challengeLoop(loopCtx, providerID, provider, tracker)
+@@ -613,6 +644,12 @@
+ 			}
+ 
+ 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
++
++		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
++			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
++				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
++				return
++			}
+ 
+ 		case protocol.TypeAppAttestShadow:
+ 			if appAttestShadow != nil {
+--- a/coordinator/registry/attestation_policy.go
++++ b/coordinator/registry/attestation_policy.go
+@@ -150,6 +150,11 @@
+ 	stillApproved func(ApplicationEvidence) bool,
+ ) (needChallenge []string) {
+ 	r.mu.Lock()
++	if generation != r.releasePolicyGeneration {
++		for state := range r.verifiedPairs.states {
++			r.endVerifiedPairLocked(state)
++		}
++	}
+ 	// The same release snapshot generation binds both authorization paths.
+ 	// App Attest is re-evaluated by the API under the refreshed qualification
+ 	// and revocation policy; carrying a stale verdict forward is not safe.
+@@ -355,7 +360,8 @@
+ 		r.mu.Unlock()
+ 		return
+ 	}
+-	hook := r.onHardUntrust // capture under r.mu (race-safe)
++	hook := r.onHardUntrust           // capture under r.mu (race-safe)
++	r.disconnectVerifiedPairLocked(p) // revoke even a transient pair grant; no resurrection
+ 
+ 	p.mu.Lock()
+ 	// A missing legacy challenge is not negative security evidence. A live
+@@ -442,6 +448,10 @@
+ 		p.RuntimeCapabilities = nil
+ 	}
+ 	p.mu.Unlock()
++
++	if level != TrustHardware {
++		r.invalidateVerifiedPairForProvider(p)
++	}
+ 
+ 	// Persist trust state.
+ 	r.persistProviderNow(p)
+@@ -577,6 +587,10 @@
+ 	}
+ 	p.mu.Unlock()
+ 
++	if !transientOnly || count >= MaxFailedChallenges {
++		r.invalidateVerifiedPairForProvider(p)
++	}
++
+ 	// Persist challenge state and reputation.
+ 	r.persistProviderNow(p)
+ 	r.persistReputation(p)
+--- a/coordinator/registry/provider_capabilities.go
++++ b/coordinator/registry/provider_capabilities.go
+@@ -76,9 +76,10 @@
+ // current qualified App Attest lease that binds this SE verification key.
+ // Legacy attestations without signed claim fields remain trusted for unrelated
+ // models but receive no capabilities.
+-func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error {
++func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reconcileError error) {
+ 	r.mu.RLock()
+ 	provider := r.providers[providerID]
++	pair := r.verifiedPairs.connections[provider]
+ 	if provider == nil {
+ 		r.mu.RUnlock()
+ 		return fmt.Errorf("provider not found")
+@@ -100,8 +101,17 @@
+ 		}
+ 		provider.lastReconciledRuntimeCapabilities = append(
+ 			[]string(nil), provider.RuntimeCapabilities...)
++		// Runtime/min-version policy can revoke these flags without MarkUntrusted.
++		// Capture that loss under p.mu; a later successful refresh must not revive
++		// the prior start grant. Bind the invalidation to the observed pair only.
++		pairRevoked := reconcileError != nil || changed || !provider.RuntimeVerified ||
++			!provider.RuntimeManifestChecked || !provider.MetallibVerified ||
++			!provider.CodeAttested || !provider.FreshCodeAttested
+ 		provider.mu.Unlock()
+ 		r.mu.RUnlock()
++		if pair != nil && pairRevoked {
++			r.invalidateVerifiedPairState(pair)
++		}
+ 		if changed {
+ 			r.notifyRuntimeCapabilitiesPromoted(providerID)
+ 		}

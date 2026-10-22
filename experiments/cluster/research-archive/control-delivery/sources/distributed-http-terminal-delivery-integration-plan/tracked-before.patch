@@ -1,0 +1,1177 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9b5d97883..fa6c26c24 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,13 @@
+ # Changelog
+ 
++## Unreleased — experimental local distributed serving (2026-09-15)
++
++- Add `cluster status` with fresh local serving/session evidence and `cluster doctor` with read-only installed metadata checks on either member. Saved setup, live readiness and unperformed physical checks stay distinct; no inference or automatic journal recovery is launched.
++- Add `cluster configure` for pinned per-member setup and the authenticated `cluster worker-owner --stdio` entry. Saving setup does not install software, connect to peers or enable serving.
++- Add explicit `start --local --distributed` for the saved leader configuration, with matching default-provider references, bounded native ownership and cleanup failure propagation. Ordinary solo startup remains the default.
++- Add explicit saved prefill selection between serial (default) and one-chunk lookahead when the installed capability advertises it. Native peers agree before weight loading and retain the additional lookahead reservation and live resource gates; no benchmark capture or environment override is used by serving.
++- Limit the current adapter to registered Qwen3.5 9B 4-bit greedy text with MTP off. This integration remains experimental; broader workload qualification and release acceptance remain open. See the [CLI reference](docs/provider/cli-reference.md#darkbloom-cluster-experimental) and [configuration limits](docs/reference/configuration.md#saved-distributed-setup-experimental).
++
+ ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
+ 
+ - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.
+diff --git a/docs/design/README.md b/docs/design/README.md
+index 3eee3a0a1..94495af64 100644
+--- a/docs/design/README.md
++++ b/docs/design/README.md
+@@ -1,6 +1,6 @@
+ # Design records — what was decided, and whether it shipped
+ 
+-> Last updated: 2026-09-14 · commit `b725a72a8`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+ Plans, proposals, and architecture decision records. Each file is frozen at the
+ moment it was written except for its **Status** line, which says whether the
+@@ -36,6 +36,10 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
+ 
+ | Record | Status | Date | One line |
+ |---|---|---|---|
++| [distributed-peer-owner.md](distributed-peer-owner.md) | In progress | 2026-09-15 | Configured SSH owner transport, native process ownership, original deadlines and recovery before reuse |
++| [distributed-cluster-execution-plan.md](distributed-cluster-execution-plan.md) | In progress | 2026-09-15 | Ordered engineering plan: source refresh, physical 9B, measured partitioning, MTP, model reuse and Darkbloom integration |
++| [distributed-cluster-delivery.md](distributed-cluster-delivery.md) | In progress | 2026-09-15 | Active goal: reusable Darkbloom cluster runtime, 9B → 27B → Gemma, measured prefill and MTP comparisons on the available Macs |
++| [distributed-inference-goal.md](distributed-inference-goal.md) | Superseded by [distributed cluster delivery](distributed-cluster-delivery.md) | 2026-09-13 | Original M3 Ultra target and architecture decision; hardware-dependent completion criteria refined by the current goal |
+ | [release-090-acceptance.md](release-090-acceptance.md) | In progress | 2026-09-06 | Numerical, quality, cache and serving acceptance; backend wording differences and functional routing scope |
+ | [release-090-paged-qwen-cache.md](release-090-paged-qwen-cache.md) | In progress | 2026-09-06 | Five-artifact paged migration with Qwen-only default caching, scoped acceptance and independent rollback controls |
+ | [qwen-first-paged-ssd-rollout.md](qwen-first-paged-ssd-rollout.md) | Superseded | 2026-09-06 | Earlier three-Qwen paging scope, corrected by the five-artifact release decision |
+diff --git a/docs/developer/build.md b/docs/developer/build.md
+index f37351745..cbfddf136 100644
+--- a/docs/developer/build.md
++++ b/docs/developer/build.md
+@@ -1,6 +1,6 @@
+ # Build
+ 
+-> Last updated: 2026-09-15 · commit `53e537e4f`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+ How to build every component of Darkbloom from a fresh clone: the Go
+ coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
+@@ -21,6 +21,56 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
+ 
+ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+ 
++The optional [cluster inference experiments](../../experiments/cluster/README.md)
++have separate native build instructions and runtime bundles. They are isolated
++from the provider build and are not included in `make build`.
++The same experiment executable includes the optional
++[persistent rank worker](../../experiments/cluster/runtime/PERSISTENT_WORKERS.md);
++it does not replace the provider's production engine.
++Qwen and Gemma adapters share that executable and its native dependency bundle.
++The [resident stage build](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
++includes the aligned selected-payload reader and dedicated-rank freed-buffer
++cache policy, and passes six worker-check groups
++and 43 native adapter records. The reader requires a 16 KiB OS page size; its
++bounded anonymous scratch and descriptor policy are documented in
++[selected-stage loading](../../experiments/cluster/inference/QWEN_DENSE_STAGE_LOADING.md#aligned-selected-payload-reads).
++The [completed two-Mac cohort](../reports/2026-09-15-cluster-rdma-prefill-baseline.md)
++records physical execution separately from these build checks; the
++[continuation and timing report](../reports/2026-09-15-cluster-lookahead-generation-and-timing.md)
++records the qualified workload and measurement limits.
++The experimental lifecycle adapter in
++`provider-swift/Sources/ProviderCore/Inference/Distributed` builds with
++`ProviderCore`. It accepts an injected resident execution owner and returns the
++existing `EngineV2Bridge`. Its concrete `DistributedPipeExecutionOwner` uses the
++shared [cluster control modules](../../libs/darkbloom-cluster/README.md) to
++supervise the paired workers. These macOS 14 control targets have no MLX dependency.
++The shared `DarkbloomClusterRuntime` target contains native resident generation;
++the separate [native worker package](../../libs/darkbloom-cluster-worker/README.md)
++sets a macOS 26.2 deployment minimum and verifies actual JACCL symbols plus the
++final executable's deployment target. The control modules now include a configured
++SSH owner service, a private local bootstrap socket and the paired native bootstrap
++relay. A [private configured owner](../../libs/darkbloom-cluster/Tools/ConfiguredOwner/README.md)
++builds separately for cross-host qualification. The installed provider now has
++its own `cluster worker-owner --stdio` entry point and an opt-in
++`start --local --distributed` path, described in the
++[CLI reference](../provider/cli-reference.md). Build the Provider and native
++worker separately, install compatible artifacts on both members, then save
++their pinned configuration. A successful build alone does not qualify the
++physical deployment or its serving performance.
++The [focused tests](test.md#distributed-provider-lifecycle) include
++actual local owner/native test children and C/Swift callback ABI checks without
++model loads.
++The separate [candidate metadata exporter](../../experiments/cluster/inference/Tools/LayerStageCandidates/README.md)
++compiles a temporary Foundation/CryptoKit executable with Swift 6. It uses the
++native planning sources without MLX or model weights. The
++[recorded-service adapter](../../experiments/cluster/planning/measurements/README.md)
++needs only Python 3.9 or newer and does not rebuild the inference executable.
++
++The [external streaming benchmark](../../scripts/benchmarks/benchmark_streaming.py)
++uses Python's standard library on macOS/Linux. It requires an explicitly supplied
++serving endpoint; it does not launch a provider or build native dependencies.
++See the [streaming latency procedure](test.md#external-streaming-latency).
++
+ ## Prerequisites
+ 
+ - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
+diff --git a/docs/developer/test.md b/docs/developer/test.md
+index b32467b1a..ee0a6d9be 100644
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -1,6 +1,6 @@
+ # Test
+ 
+-> Last updated: 2026-09-15 · commit `53e537e4f`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+ How to run the unit tests for each component, the end-to-end suite that boots a
+ real coordinator + Swift provider against ephemeral Postgres, and the docs
+@@ -10,6 +10,408 @@ map: the console UI job lints and builds but does not run vitest, and the
+ benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
+ Mac with the test checkpoints cached.
+ 
++The [Qwen projection arithmetic controls](../../experiments/cluster/inference/QWEN_GDN_ARITHMETIC_VALIDATION.md)
++compare native, FP32 and padded matrix shapes on one captured input. Their
++correctness observations do not qualify distributed throughput.
++The [Qwen whole-layer stage checks](../../experiments/cluster/inference/QWEN_LAYER_STAGE_VALIDATION.md)
++compare verified stage loading and complete CBv2 state/logits against an
++independent full-model request on small saved fixtures.
++The [candidate metadata fixtures](../../experiments/cluster/inference/Tests/LayerStageCandidates/README.md)
++compile production planning code without MLX and cover unequal splits,
++parameter/state ownership, quantization remapping and supported output gates.
++
++Run the [offline prefill planner tests](../../experiments/cluster/planning/README.md)
++without model loads or SSH:
++
++```sh
++python3 -B -m unittest discover -s experiments/cluster -p 'test_planning*.py'
++```
++
++The 41 tests check the bounded lookahead cost model, unequal chunk costs,
++first-token completion, missing measurements, memory exclusion, comparable
++device groups and the [recorded-service adapter](../../experiments/cluster/planning/measurements/README.md).
++The latter covers pinned file inputs, separate clock origins, phase mutations,
++exact candidate identities and contradictory partial ownership. Tests use
++fabricated records and costs; saved-run replay is separate from these fixtures.
++
++Run the [paired prefill study tests](../../experiments/cluster/benchmarking/README.md)
++with injected CPU cohort adapters:
++
++```sh
++PYTHONPATH=experiments/cluster python3 -B -m unittest -v \
++  benchmarking.test_specification benchmarking.test_aggregate benchmarking.test_coordinator
++```
++
++The 35 tests cover the balanced ten-prompt schedule, warmup exclusion,
++median-of-prompt-medians aggregation, failure retention, context cleanup,
++interrupts and event-sink errors. They launch no model or native process;
++resident execution adapters and target-hardware qualification remain separate.
++
++### Distributed provider lifecycle
++
++Run the experimental engine's focused tests from `provider-swift`:
++
++```sh
++swift test --jobs 2 --disable-automatic-resolution \
++  --filter 'Cluster|Distributed|StartCommandTests|ProcessLifecycleTests'
++```
++
++The tests in `Tests/ProviderCoreTests/Inference/Distributed` exercise committed
++token streaming, normal completion, cancellation, peer readiness loss, deadline
++projection and rechecks, originating deadlines across queue/admission, and
++reservations retained until retirement. An injected
++owner controls execution and acknowledgements; these tests load no model and
++contact no peers. The same selection includes saved configuration, installed
++references, distributed CLI argument handling, authenticated HTTP streaming,
++listener startup/shutdown and request-origin propagation. The installed host
++uses `DistributedEngineFactory` to return the existing provider bridge;
++physical execution remains a separate qualification.
++
++Run the [installed-session control checks](../../provider-swift/Tests/ClusterInstalledSessionChecks/README.md)
++from the repository root:
++
++```sh
++bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
++```
++
++These compile the current installed-session and control sources without MLX.
++Actual local child processes exercise metadata joins, bounded file/command IO,
++partial startup, graceful drain, request-quota exhaustion, missing owner release
++acknowledgements, nonzero owner exits and lifetime expiry. The model workers are
++fabricated; these checks do not establish native inference or remote SSH trust.
++
++Run the [cluster diagnostics checks](../../provider-swift/Tests/ClusterDiagnosticsChecks/README.md)
++to verify read-only installed metadata on either role, fresh status decoding,
++local-interface discovery and uncertain device-journal states:
++
++```sh
++bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh
++cd provider-swift
++swift test --jobs 2 --filter 'clusterStatus|clusterDiagnostics|DistributedRequestObservation'
++```
++
++The first runner uses fabricated runtime descriptions and no model. The Swift
++tests additionally exercise the real local HTTP authentication/status route and
++bounded request logging. Physical peer/collective checks remain separate.
++
++Run the shared worker protocol and process-owner checks from the repository root:
++
++```sh
++bash libs/darkbloom-cluster/Tests/ProtocolChecks/run.sh
++bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
++bash libs/darkbloom-cluster/Tests/DeadlineChecks/run.sh
++bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
++bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
++bash libs/darkbloom-cluster/Tests/BootstrapChecks/run.sh
++```
++
++These compile the actual shared modules with Swift 6 and warnings as errors.
++They check bounded framing, membership/request sequencing, asymmetric named
++capacity, clean stop, partial admission failure, deadlines, and cancellation
++with blocked callbacks. The process tests launch and observe real local test
++children; they require actual exit or matching retirement acknowledgments before
++resource release. Their provider contract check uses explicit MLX value
++stand-ins, so the full `swift test` command above remains necessary for actual
++ProviderCore integration. None of these runners loads a model or establishes remote
++process ownership. The deadline runner separately exercises checked conversion
++between the provider's continuous clock and local worker uptime; the process
++runner verifies remaining budgets against actual local test children.
++The endpoint fixture withholds simulated owner proof after an actual test child
++exits and checks that capacity remains charged. The remote runner compiles the
++current pure control sources separately from MLX and checks lease identity,
++pending admission, non-clean retirement, deadlines and unresolved ownership.
++These state fixtures do not authenticate or contact remote hosts.
++The SSH runner checks the actual owner service, endpoint and durable device
++journal using local test processes, including asynchronous native failure,
++deadline conversion and withheld cleanup proof. It does not make an SSH connection.
++Its paired-bootstrap fixtures include two local owners/native children and a
++forced cancellation race: a delayed valid bootstrap round must not discard the
++subsequent actual native terminal or prevent journal release.
++The bootstrap runner checks actual direct-child Unix sockets and worker argument
++admission, then the actual C/Swift callback bridge with explicit native
++factory/cache stand-ins. Its facade and argument checks use runtime value
++stand-ins; native compilation and physical execution remain separate checks.
++
++### External streaming latency
++
++Run the CPU and local HTTP fixture tests:
++
++```sh
++python3 -B -m unittest discover -s scripts/benchmarks -p 'test_streaming_latency.py'
++```
++
++For a real request, prepare a JSON body with `stream: true`, one text completion
++and `stream_options: {"include_usage": true}`. Use `max_tokens: 128` for MTP
++comparisons; one output token cannot establish active speculation. Then run
++against the intended already-running endpoint, with a new output directory:
++
++```sh
++python3 scripts/benchmarks/benchmark_streaming.py \
++  --endpoint http://127.0.0.1:18120/v1/chat/completions \
++  --request /tmp/cluster-request.json --output /tmp/cluster-stream-result \
++  --client-label development-client --prompt-tokens 8192
++```
++
++Use `DARKBLOOM_API_KEY` in the environment when authentication is required.
++The request, raw SSE bytes, client arrival times and final receipt are retained
++in the output directory. The API key is not written to the receipt. The client
++uses one monotonic clock including connection setup, excludes role-only frames
++and keepalives, and records first reasoning and first answer content separately.
++TTFT begins at request send and ends at the first complete streamed text event,
++including reasoning. An absolute timeout bounds trickling responses too.
++
++The receipt evaluates `10 seconds + 1 ms per prompt token` separately for
++reported prompt usage and optional caller-declared counts. A failed request
++does not become a passing SLA sample because it emitted partial output.
++HTTP chunk counts are not token counts: engine prefill/decode rates and actual
++MTP engagement require corresponding server evidence. A direct endpoint run
++does not verify the OpenRouter route, and a repeated request does not establish
++uncached prefill unless the serving configuration and cache telemetry confirm it.
++
++Run the [native candidate exporter checks](../../experiments/cluster/inference/Tools/LayerStageCandidates/README.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/LayerStageCandidateExport/run.sh
++```
++
++The 14-source Swift runner passed 23 accepted/39 rejected checks, including
++retained 9B/27B metadata, wrapper forms, complete ownership, strict input pins,
++regular-file snapshots and bounded output. Actual catalog exports joined both
++saved 9B partitions to their reported active mappings; this is metadata and
++recorded timing validation, not a physical throughput result.
++
++Run the [registered dense-profile fixtures](../../experiments/cluster/inference/QWEN_DENSE_PROFILE.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/RegisteredDenseProfiles/run.sh
++```
++
++Run the [observed descriptor and checkpoint IO fixtures](../../experiments/cluster/inference/QWEN_DENSE_LOADING.md)
++under Swift 6 without MLX or downloaded model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ObservedDenseLoader/run.sh
++```
++
++These pass 22 accepted/104 rejected cases and reuse the registered-profile
++metadata fixture. The actual checkpoint constructor verifies tiny synthetic
++temporary files; this does not qualify 27B model loading or resource admission.
++
++Run the [constructor-probe admission and checkpoint-reuse fixtures](../../experiments/cluster/inference/QWEN_DENSE_CONSTRUCTOR_PROBE.md)
++without MLX or downloaded model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ConstructorProbes/run.sh
++```
++
++The standalone fixture and 15-source public runner both pass 11 accepted/41
++rejected checks and share the retained metadata input. Native constructor execution is a
++separate guarded mode; these fixtures do not qualify model loading, numerics or
++memory safety.
++
++Run the [selected-stage loading admission fixtures](../../experiments/cluster/inference/QWEN_DENSE_STAGE_LOADING.md)
++without MLX or downloaded model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/SelectedStageLoading/run.sh
++```
++
++The updated standalone fixture passed 21 accepted/122 rejected checks
++with empty stderr.
++The 32-source public runner shares the registered-profile metadata input. These
++pure CLI, budget and resource predicates do not execute the private live gate
++or materialization. Separate guarded native runs passed for both 9B halves;
++see the linked loading page for the scope of that evidence.
++These checks charge aligned scratch only while selected reads remain; allocator thresholds retain
++their existing formula.
++
++Run the [short request memory-ledger fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_LEDGER.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortRequestLedger/run.sh
++```
++
++The public runner passed 31 accepted/42 rejected checks with empty stderr. The 21-source runner reuses the shared
++registered-profile metadata. Invented allocator callbacks test exact short state,
++fusion and evidence allowances without qualifying resource admission or native
++forward execution.
++
++Run the [short full-reference loading fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_REFERENCE_LOADING.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortReferenceLoading/run.sh
++```
++
++The public runner passed 22 accepted/101 rejected checks with
++empty stderr. The 38-source runner
++reuses the shared retained metadata. Synthetic allocator/resource observations
++exercise the pure predicates, without running the private loading gate or a
++forward pass.
++
++Run the [short pair loading fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_PAIR_LOADING.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortPairLoading/run.sh
++```
++
++The updated standalone fixture passed 24 accepted/82 rejected checks with empty stderr. The 41-source runner reuses the shared
++retained metadata. Synthetic resource and allocator observations test ownership,
++ordered progress and retained inert allowances without executing the private pair
++owner, model loading or forward arithmetic.
++The checks include the scratch addition to actual-free thresholds and unchanged
++completed-state terms.
++
++Run the [short parity entry fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_PARITY.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortParity/run.sh
++```
++
++The standalone 40-source fixture and public runner passed 19 accepted/83 rejected
++checks with empty stderr. It uses the real strict parser and request admission, synthetic token
++files and fabricated CPU publication values. It checks encoded byte limits and
++no-write failure boundaries; actual forward execution remains pending.
++
++Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
++under Swift 6 without MLX:
++
++```sh
++bash experiments/cluster/inference/Tests/ResidentLayerStages/run.sh
++```
++
++These 21 cases include four joined threads exercising overlapping request and
++release attempts. They check CPU ownership and cleanup, not native model reuse.
++
++The native experiment's `--mode adapter-check` passes 43 records, preserving the
++preceding 42 byte-for-byte and in order. The new
++[`checkpoint_aligned_selected_read_check`](../../experiments/cluster/inference/Sources/ClusterInference/CheckpointAlignedReadCheck.swift)
++passes nine accepted/ten rejected cases using real temporary files, without
++model arrays: selected-byte equality, aligned/edge reads, bounds and overflow,
++EOF/interruption and mutation. This does not measure file-cache savings. The
++[resident worker checks](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md#cpu-checks)
++also pass six CPU groups; physical model completion and throughput remain
++separate from these checks.
++
++The `--stage-cut` admission checks passed eight accepted/50 rejected comparison
++cases and eight accepted/47 rejected rank cases, including stale plan binding
++and foreign modes that reuse preflight. The public short `ranks` launcher
++forwards the cut and derives parameter/state ownership from it. The
++[unequal-stage numerical checks](../../experiments/cluster/inference/QWEN_UNEQUAL_STAGE_VALIDATION.md)
++passed for a tiny 4+8 fixture and the registered 9B 12+20 split against fresh
++full-model baselines. A private two-process 12+20 run on one GPU also passed
++against the retained reference; the public model entry remains unqualified.
++Execution and audit limits are recorded separately.
++The native registered 8K reference, pair and rank modes also accept a selected
++cut. Their new admission check passed 13 accepted/58 rejected CLI cases plus
++eight accepted/14 rejected synthetic plan cases, including nil/default binding,
++all seven legal ranges, exact state ownership and rejection before file reads.
++All solo modes reject the cut. The
++[8K 12+20 checks](../../experiments/cluster/inference/QWEN_LONG_PREFILL_UNEQUAL_VALIDATION.md)
++passed within one process and across two serial loopback processes against a
++fresh same-plan reference, with separately validated local phase traces.
++The [public long-rank command](../../experiments/cluster/runtime/stage_checks/LONG_PREFILL.md)
++now forwards explicit cut 12 with serial scheduling; default halves retain both
++policies. All 109 integrated stage tests and 21 saved-default comparisons passed.
++The public cut-12 serial model entry subsequently passed on the M4 Pro against
++the same qualified reference. Other public model-entry options and unequal
++lookahead remain unqualified.
++The [registered 9B stage comparison](../../experiments/cluster/inference/QWEN_LAYER_STAGE_REAL_VALIDATION.md)
++releases the full baseline before loading stages and compares native logits
++and per-component state digests on a fixed short workload.
++The [two-process residual check](../../experiments/cluster/inference/STAGE_P2P_VALIDATION.md)
++checks native transfer bytes and owned buffers, strict frame admission,
++bootstrap timeout and peer-loss cleanup. It does not load a model. The
++[registered 9B two-process stage check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_RANK_VALIDATION.md)
++then compares complete state digests and native logit bytes with the separate
++full-model baseline.
++The [registered 9B prompt-lookahead check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_LOOKAHEAD_VALIDATION.md)
++adds explicit received/consumed acknowledgement phases, bounded prompt work
++ahead of the consumer, and independent replay of the host action trace.
++The [registered 9B prefill compute control](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_VALIDATION.md)
++defers candidate state/logit captures until the final prompt frontier, then
++checks complete final state, native logit equality and first-token selection
++against the separately recorded full model.
++The [v3 prefill rank protocol](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_RANK_PROTOCOL.md)
++adds explicit start, first-token return and post-stop release. Both schedules
++passed the [registered 9B two-process prefill check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_RANK_VALIDATION.md),
++including independent final-state/logit digests, token selection and host trace
++validation. The separate [14-cohort timing diagnostic](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_TIMING_DIAGNOSTIC.md)
++retains two excluded priming trials and six measured pairs; its descriptive
++ratios do not qualify causal acceleration or physical-cluster throughput.
++The [matched-chunk solo reference contract](../../experiments/cluster/inference/QWEN_LAYER_STAGE_SOLO_PREFILL.md)
++describes the additive full-model control, strict reference admission and timer
++boundaries. The [guarded registered-9B solo validation](../../experiments/cluster/inference/QWEN_LAYER_STAGE_SOLO_PREFILL_VALIDATION.md)
++passed independently checked final-state/logit digests and selection; its
++single timing point remains unqualified for acceleration or resident throughput.
++
++The [long-prefill profile](../../experiments/cluster/inference/QWEN_LAYER_STAGE_LONG_PREFILL.md)
++has a [passing tiny 8K native check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_LONG_PREFILL_VALIDATION.md).
++The separate [registered 9B reference command](../../experiments/cluster/inference/QWEN_LONG_PREFILL_REFERENCE.md)
++passed its [guarded native validation](../../experiments/cluster/inference/QWEN_LONG_PREFILL_REFERENCE_VALIDATION.md).
++The [full-model/two-stage check](../../experiments/cluster/inference/QWEN_LONG_PREFILL_PAIR.md)
++passed its [guarded native comparison](../../experiments/cluster/inference/QWEN_LONG_PREFILL_PAIR_VALIDATION.md).
++The new [8K rank path](../../experiments/cluster/inference/QWEN_LONG_PREFILL_RANKS.md)
++passed [guarded serial and lookahead validation](../../experiments/cluster/inference/QWEN_LONG_PREFILL_RANK_VALIDATION.md).
++The [8K solo control](../../experiments/cluster/inference/QWEN_LONG_PREFILL_SOLO.md)
++passed its [matched-workload validation](../../experiments/cluster/inference/QWEN_LONG_PREFILL_SOLO_VALIDATION.md)
++with fresh-state-through-argmax timing and post-stop evidence.
++These checks preserve the older short-prompt limits.
++The [public 8K launch commands](../../experiments/cluster/runtime/stage_checks/LONG_PREFILL.md)
++passed the 259-test cluster Python suite and saved-output schema replay;
++native execution through these public commands is still unqualified.
++The [phase tracing tests](../../experiments/cluster/inference/QWEN_PREFILL_PHASE_TRACE.md)
++compile Foundation/Darwin fixtures separately and exercise bounded event
++recording, exclusive file creation and failure before publication, without MLX.
++The [first guarded phase validation](../../experiments/cluster/inference/QWEN_PREFILL_PHASE_VALIDATION.md)
++also passed the numerical and phase-correlation audits on actual 8K execution.
++The [serial rank phase validation](../../experiments/cluster/inference/QWEN_PREFILL_RANK_PHASE_VALIDATION.md)
++checks both local stage traces separately. The public phase-forwarding option
++passed 81 integrated CPU/fake launcher tests.
++The [selected-owner trace tests](../../experiments/cluster/inference/QWEN_PREFILL_OWNER_TRACE.md)
++cover eight ordered observations, native-error precedence and publication
++after outer success; the standalone collector passed six synthetic traces,
++90 rejected calls and 11 capture/output cases.
++The [recorded owner validation](../../experiments/cluster/inference/QWEN_PREFILL_OWNER_VALIDATION.md)
++passed separate numerical and timing audits for a solo invocation and both
++serial ranks on one GPU; it does not qualify physical cluster performance.
++
++The optional [cluster launcher tests](../../experiments/cluster/runtime/README.md)
++exercise artifact/report validation and actual local process cleanup without
++models or SSH. The full Python suite passes 297 tests, including a subprocess
++regression that verifies worker imports leave the complete bundle tree, modes
++and file bytes unchanged. The [native cluster checks](../../experiments/cluster/inference/README.md)
++separately cover partition loading and numerical diagnostics; they do not qualify real-model or
++two-machine performance and are not included in `make test`.
++The [local stage launcher](../../experiments/cluster/runtime/stage_checks/README.md)
++has separate fake-process tests for bounded P2P/stage records, optional baseline
++comparison and cohort supervision. Its optional `prefill-ranks` command requires
++explicit policy/dtype and pinned baseline evidence; CPU and saved-schema checks
++are separate from the native proofs executed through the private guarded launcher.
++The [persistent worker checks](../../experiments/cluster/runtime/PERSISTENT_WORKERS.md)
++cover command framing, request ownership and whole-cohort cancellation. Their
++CPU process fixtures are separate from native synthetic cache-isolation checks.
++The [dense Qwen CBv2 checks](../../experiments/cluster/inference/CBV2_VALIDATION.md)
++exercise the production model adapter and request state with contiguous KV;
++they separately report numerical failures and do not qualify the production scheduler.
++The [Qwen output-precision checks](../../experiments/cluster/inference/QWEN_OUTPUT_PRECISION.md)
++cover down-projection storage and arithmetic, same-hidden output narrowing,
++and bounded registered 9B solo comparisons; performance qualification remains separate.
++The [registered 9B local TP checks](../../experiments/cluster/inference/REAL_QWEN_TP_VALIDATION.md)
++add bounded real-artifact admission, direct partition loading and paired solo/TP
++captures. Their numerical failures remain separate from successful execution checks.
++The [GDN input-projection checks](../../experiments/cluster/inference/QWEN_GDN_INPUT_VALIDATION.md)
++isolate full-versus-selected arithmetic on one captured input, with verified
++full loading and an independent solo control. They do not qualify model quality.
++The [Gemma checks](../../experiments/cluster/inference/README.md) also cover
++unequal aligned shard metadata and direct loading; whole-model numerical
++qualification remains separate from storage and lifecycle checks.
++
+ The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
+ and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
+ check SSE/collected reasoning, content, tool calls, usage and terminals without
+diff --git a/docs/provider/cli-reference.md b/docs/provider/cli-reference.md
+index e42458f68..12250ecaa 100644
+--- a/docs/provider/cli-reference.md
++++ b/docs/provider/cli-reference.md
+@@ -1,6 +1,6 @@
+ # Provider CLI reference
+ 
+-> Last updated: 2026-09-13 · commit `d4bab49a9`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+ Reference for the `darkbloom` command-line tool: every subcommand and flag, the
+ files and identifiers it creates, the `provider.toml` keys it reads with their
+@@ -26,7 +26,7 @@ set to any value skips it. Logging goes to stderr so launchd captures it in
+ 
+ ## Subcommands
+ 
+-Declaration order of `Darkbloom.configuration.subcommands` (21):
++Commands follow the declaration order in `Darkbloom.configuration.subcommands`:
+ 
+ | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
+ |---|---|---|---|
+@@ -37,6 +37,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
+ | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
+ | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
+ | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
++| `cluster` | Experimental saved setup (`configure`) and authenticated worker-owner entry (`worker-owner`) | `configure` only | `ClusterCommand.swift` (`Cluster`); `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
+ | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
+ | `logout` | Delete the device token | | `LogoutCommand.swift` (`Logout`) |
+ | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
+@@ -62,11 +63,24 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
+ | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
+ | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
+ | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
++| `--distributed` | flag | `false` | Experimental saved-cluster serving; requires `--local` (`Start.validate`) |
+ | `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local` |
+ | `--port <n>` | `UInt16` | `8000` | Local server port |
+ | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
+ | `--no-auth` | flag | `false` | Disable the local bearer-token check |
+ 
++`--local --distributed` starts the configured leader in this process. It refuses
++`--foreground`, `--local-endpoint`, `--model`, `--all`, `--idle-timeout` and
++`--coordinator-url`. An alternate `--config` must contain the same `[cluster]`
++reference as `~/.config/darkbloom/provider.toml`, which the installed local owner
++reads. Only the current registered Qwen3.5 9B 4-bit greedy text profile with MTP
++off is supported; see [saved-cluster limits](../reference/configuration.md#saved-distributed-setup-experimental).
++Startup failure, runtime failure or unresolved cleanup exits unsuccessfully.
++This opt-in path is experimental; live product qualification remains pending.
++Without `--distributed`, the command selects ordinary solo startup
++(`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.validate`;
++`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift`, `Start.runLocalDistributed`).
++
+ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
+ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
+ detection fails, no model is selected, or the local server does not bind within
+@@ -149,6 +163,60 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
+ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
+ (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
+ 
++### `darkbloom cluster` (experimental)
++
++| Command / option | Default | Effect | Source (`provider-swift/Sources/darkbloom/…`) |
++|---|---|---|---|
++| `configure --input <path>` | Required | Absolute path to the cluster setup JSON | `ClusterCommand.swift` (`Cluster.Configure`) |
++| `configure --capability <path>` | Required | Absolute path to canonical capability JSON from the installed native worker | `ClusterCommand.swift` (`Cluster.Configure`) |
++| `configure --capability-sha256 <sha256>` | Required | Lowercase SHA-256 of those exact capability bytes | `ClusterCommand.swift` (`Cluster.Configure.validate`) |
++| `configure --json` | `false` | Print saved references and the limited verification scope as JSON | `ClusterCommand.swift` (`Cluster.Configure.run`) |
++| `status [--json] [--config <absolute-path>]` | Local configured leader | Show saved setup separately from a fresh local serving observation; never start inference | `ClusterDiagnosticsCommand.swift` (`Cluster.Status`) |
++| `doctor [--json] [--config <absolute-path>]` | Local member only | Verify local installed metadata and report unperformed peer/physical checks; never recover or change setup | `ClusterDiagnosticsCommand.swift` (`Cluster.Doctor`) |
++| `worker-owner --stdio` | Required | Fixed entry used by the authenticated supervisor; reads the local default provider configuration, with no `--config` override | `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
++
++`configure` accepts `--config` with an absolute path and saves the `[cluster]`
++reference there; by default it uses `~/.config/darkbloom/provider.toml`. It checks
++the setup, capability and existing local SSH trust-file inputs, but does not
++install software, contact peers, load a model or enable distributed startup.
++Configure each member's own leader/follower setup before explicit startup.
++Set `prefillSchedule` in both setup JSON files to `serial_v1` (the default) or
++`one_chunk_lookahead_v1`. Lookahead requires an installed capability that advertises
++it; unsupported selections are refused. `configure` saves the selection explicitly,
++and startup requires both native ranks to agree before loading their stages.
++There is no serving environment override for this choice
++(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
++`ClusterConfigurationStore.save`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift`,
++`QwenResidentAdmission.loadAgreementFingerprint`).
++The [configuration schema](../reference/configuration.md#saved-distributed-setup-experimental)
++defines the required pins, installed paths and bounded session behavior.
++
++`status` reads the private local discovery record only to locate the server. It
++accepts loopback or a numeric address assigned to this Mac, sends a fresh nonce,
++and requires a bounded matching response from `GET /v1/cluster/status`. The route
++uses the same bearer policy as inference routes, including explicit `--no-auth`;
++that case is labeled unauthenticated. Responses are `Cache-Control: no-store`.
++The sample shows actual retained peer readiness, epoch, selected schedule,
++lifetime/admissions, MTP-off reason and cleanup/quarantine evidence. It is an
++instant observation, not a reservation or a promise that the next request fits
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusClient.swift`,
++`ClusterStatusClient.observe`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
++`DistributedInstalledSession.diagnosticObservation`).
++
++`doctor` works on either configured member. It checks the local worker executable,
++model/config/tokenizer metadata, existing SSH trust-file pins and the installed
++worker's bounded metadata-only description. It does not write a matrix, contact
++a peer, read weight payloads, run inference or perform a new collective test.
++Failed local checks produce a nonzero exit; unperformed checks remain explicit.
++A nonempty device journal means ownership is unproven, not orphaned. An empty or
++absent journal does not prove a free device; no journal is cleared
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift`,
++`ClusterDiagnostics.doctor`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift`,
++`ClusterDeviceJournalObservation.read`).
++
+ ### `darkbloom login` / `darkbloom logout`
+ 
+ `login` takes `--config` only and runs `performDeviceCodeLogin`
+@@ -753,6 +821,7 @@ override `provider.toml` for one process, are in
+ 
+ | Key | Default | Effect |
+ |---|---|---|
++| `[cluster] configuration`, `sha256` | absent | Saved setup reference only; see [cluster configuration](../reference/configuration.md#saved-distributed-setup-experimental). Requires explicit `start --local --distributed` |
+ | `[provider] memory_reserve_gb` | `4` | Unified memory withheld from model admission |
+ | `[provider] auto_update` | `true` | Startup + periodic self-update |
+ | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
+diff --git a/docs/reference/configuration.md b/docs/reference/configuration.md
+index 794116613..81fa9306c 100644
+--- a/docs/reference/configuration.md
++++ b/docs/reference/configuration.md
+@@ -1,10 +1,10 @@
+ # Configuration reference
+ 
+-> Last updated: 2026-09-14 · commit `b725a72a8`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+-Every environment variable read by the coordinator, the provider CLI
+-(`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
+-the code that reads it, and its effect. Defaults are the fallbacks at the cited
++Environment variables read by the coordinator, the provider CLI (`darkbloom`),
++console-ui and admin-ui, plus the experimental saved cluster setup: accepted
++values, defaults, readers and effects. Defaults are the fallbacks at the cited
+ symbol; a production or dev host may pin a different value in its environment
+ file. Secrets are named, never valued. Unless a row says *live*, the variable is
+ read once at process start and a restart applies a change.
+@@ -342,6 +342,105 @@ Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unpa
+ 
+ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the LaunchAgent allow-list above reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+ 
++### Saved distributed setup (experimental)
++
++[`darkbloom cluster configure`](../provider/cli-reference.md#darkbloom-cluster-experimental)
++saves setup without enabling it. The optional `[cluster]` table has exactly two
++keys; omission preserves ordinary solo startup. Each installed `worker-owner`
++reads its own default `~/.config/darkbloom/provider.toml`. A leader started with
++an alternate `--config` must select that same saved reference
++(`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift`, `Start.runLocalDistributed`).
++
++| TOML key | Default | Meaning | Source |
++|---|---|---|---|
++| `[cluster] configuration` | Absent | Absolute path to the saved canonical cluster JSON | `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift` (`ClusterConfigurationReference`) |
++| `[cluster] sha256` | Absent | Lowercase SHA-256 of that saved JSON | `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift` (`ClusterConfigurationReference`) |
++
++The required setup JSON fields below are validated by
++`provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift`
++(`ClusterConfiguration.validate`) and its closed codec in
++`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift`.
++`prefillSchedule` is the only optional field: omission means `serial_v1` for
++existing setup. New saves always write the selected value explicitly. Unknown
++fields and unsupported capability adapters, profiles, partitions or schedules
++are refused; `null` is not an omitted selection.
++
++| Field | Accepted value / effect | Source symbol |
++|---|---|---|
++| `schema` | `darkbloom_cluster_configuration_v1` | `ClusterConfiguration.schemaName` |
++| `clusterID`, `memberID`, `role` | Cluster/member labels; local `leader` (rank 0) or `follower` (rank 1) | `ClusterConfiguration.validate` |
++| `publicModelID`, `capabilitySHA256`, `selectedPlanSHA256` | Public model route, exact capability-byte pin and a partition already described by that capability | `ClusterConfiguration.validate` |
++| `prefillSchedule` | `serial_v1` (omitted/default) or `one_chunk_lookahead_v1`, restricted to the pinned capability's supported schedules | `ClusterConfiguration.selectedPrefillSchedule`, `ClusterConfiguration.validate` |
++| `chunkTokens`, `requestTimeoutSeconds` | Positive integers within capability limits; current maxima 512 tokens and 300 seconds | `ClusterConfiguration.validate` |
++| `peers` | Exactly two distinct peers in rank order, with `id`, `rank`, `host`, `port`, `user`, `ownerExecutable`, `workerExecutable`, `modelDirectory`, `runtimeBinarySHA256`, `jacclDevice`; both worker hashes match the capability | `ClusterConfiguration.Peer`, `ClusterConfiguration.validate` |
++| `coordinator` | JACCL `address` (IPv4) and `port`; not the Darkbloom coordinator URL | `ClusterConfiguration.Coordinator`, `ClusterConfiguration.validate` |
++| `trust` | Existing local SSH `identityFile`, `knownHostsFile`, `knownHostsSHA256`; private-key contents are not embedded | `ClusterConfiguration.Trust`, `ClusterConfigurationStore.validateTrust` |
++| `tokenizerFiles` | Unique relative `path`, SHA-256 and `purpose` (`tokenizer` or `chatTemplate`) entries. Startup requires pinned `tokenizer.json`, `tokenizer_config.json` and `chat_template.jinja` or `chat_template.json` | `ClusterConfiguration.TokenizerFile`; `DistributedInstalledModel.make` |
++
++The current adapter describes only registered Qwen3.5 9B 4-bit
++(`registered_qwen35_9b_greedy_generation_v1`): two ranks, B1, one active request,
++greedy text, serial or one-chunk-lookahead prefill, MTP off and no prefix reuse.
++Its ceilings are 8,192
++prompt tokens, 128 output tokens, 512-token chunks and 8,320 total context tokens.
++A resident session allows at most 16 admitted requests and a fixed 300-second
++lifetime including startup. Request deadlines are also bounded by remaining
++session lifetime and earlier HTTP budgets. The host stops at lifetime or request
++exhaustion without automatic epoch rotation. These are software limits, not
++promised memory capacity or live product qualification
++(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
++`DistributedInstalledSession.launch`;
++`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift`).
++
++The canonical capability advertises `supportedPrefillSchedules`; legacy descriptors
++that omit it support serial only and retain their original bytes. The native
++metadata producer obtains support from the same adapter definition used by native
++admission. A saved choice cannot add support to a worker
++(`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift`,
++`ClusterRuntimeCapabilityCodec`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift`,
++`QwenResidentCapabilityMetadata.describe`).
++
++Lookahead reserves its additional producer boundary, host copy and bookkeeping
++before readiness and each request. It keeps one prepared prompt chunk, does not
++prefetch decode, and retains the existing live resource gates. Capability support
++is not available-memory admission: the actual workers report their local capacity
++and can refuse a request
++(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift`,
++`QwenGenerationPrefillAllowance`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift`,
++`QwenResidentRuntime.load`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift`,
++`QwenResidentRuntime.reserve`).
++
++Saved configuration and capability files live under
++`~/.config/darkbloom/clusters/`; the device lease and unresolved ownership journal
++use `~/.darkbloom/cluster-device/`. An active lease or unresolved journal refuses
++configuration changes. Saving verifies local input pins, not remote installation,
++model payloads or readiness. Startup separately checks the installed worker and
++model/tokenizer metadata; serving readiness requires both loaded peers
++(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
++`ClusterConfigurationStore.save`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift`,
++`DistributedInstalledPreparation.prepare`).
++
++`cluster status` and `cluster doctor` consume the same saved reference without
++changing it. Status separates canonical saved pins from a fresh local leader
++response. Doctor reuses the local installed metadata validator for leader or
++follower and executes only the fixed `--describe-runtime` metadata child; peer
++connectivity, new physical collectives and recovery are not performed. Both
++commands treat a nonempty journal as unproven ownership and never infer device
++availability from a PID or empty journal
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift`,
++`ClusterDiagnostics`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledValidation.swift`,
++`DistributedInstalledValidation.validate`).
++
++The saved JACCL settings and fixed admitted arithmetic policy determine the
++native worker environment
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`,
++`DistributedInstalledPlan.nativeEnvironment`).
++
+ ### Operator-facing: daemon, paths, updates
+ 
+ | Variable | Values / type | Default | Read in | Effect |
+diff --git a/docs/reports/README.md b/docs/reports/README.md
+index bff78e031..afb45bdb8 100644
+--- a/docs/reports/README.md
++++ b/docs/reports/README.md
+@@ -1,6 +1,6 @@
+ # Reports — dated records
+ 
+-> Last updated: 2026-09-14 · commit `b725a72a8`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+ Frozen records: incident analyses, measurements, experiment results, and
+ migration records. Each file describes the code **as it was on its date**; none
+@@ -11,6 +11,12 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
+ File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
+ freshness stamp carries its own date, not the current one.
+ 
++- [Installed two-Mac HTTP TTFT](2026-09-15-cluster-installed-http-ttft.md) — short/4K passes, cold 8K misses and a warmed-session 8K pass at 16.91 seconds; representative SLA qualification remains open.
++- [Two-Mac cancellation and fresh-epoch recovery](2026-09-15-cluster-cancellation-recovery.md) — two controlled native-owner cancellations, retained charges and matching 128-token restart; HTTP recovery remains open.
++- [Qwen9B lookahead correctness and internal timing](2026-09-15-cluster-lookahead-generation-and-timing.md) — matched 128-token/final-row/state correctness and bounded internal timing; provider HTTP and recovery qualification remain open.
++- [Two-Mac resident Qwen9B generation correctness](2026-09-15-cluster-resident-generation-correctness.md) — all 128 selected tokens, final BF16 row and complete state digests match the full reference; authenticated cleanup, with no throughput or external TTFT claim.
++- [Two-Mac Qwen9B resident prefill baseline](2026-09-15-cluster-rdma-prefill-baseline.md) — completed 4/28 JACCL cohort, matching reference digests and clean retirement; 426.98 internal TPS with no speedup yet.
++- [Cluster resident Qwen9B solo baseline](2026-09-15-cluster-resident-solo-baseline.md) — real four-request resident run, 441.68 internal prefill TPS median and clean retirement; external TTFT remains pending.
+ - [App Attest 0.9.4 recovery qualification](2026-09-14-app-attest-recovery-validation.md) — recovery/identity tests, real Apple renewal format and current qualification limits.
+ - [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
+ - [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.
+diff --git a/libs/mlx-swift b/libs/mlx-swift
+--- a/libs/mlx-swift
++++ b/libs/mlx-swift
+@@ -1 +1 @@
+-Subproject commit 6d6796d7a81b656d2749d39067e0a6bea2bc2986
++Subproject commit 6d6796d7a81b656d2749d39067e0a6bea2bc2986-dirty
+diff --git a/provider-swift/Package.swift b/provider-swift/Package.swift
+index c1587bfe6..00700141b 100644
+--- a/provider-swift/Package.swift
++++ b/provider-swift/Package.swift
+@@ -19,6 +19,7 @@ let package = Package(
+         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
+     ],
+     dependencies: [
++        .package(path: "../libs/darkbloom-cluster"),
+         .package(path: "../libs/mlx-swift"),
+         .package(path: "../libs/mlx-swift-lm"),
+         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
+@@ -125,6 +126,9 @@ let package = Package(
+                 "ProviderAppAttest",
+                 "ProviderCoreFoundation",
+                 "ProviderMetallibControl",
++                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
++                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                 .product(name: "MLX", package: "mlx-swift"),
+                 .product(name: "MLXNN", package: "mlx-swift"),
+                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
+diff --git a/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift b/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
+index cda3c9f29..aa01f2ab0 100644
+--- a/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
+@@ -447,6 +447,8 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
+ }
+ 
+ public struct ProviderConfig: Sendable, Equatable, Codable {
++    /// Inert saved setup; startup requires a separate explicit distributed opt-in.
++    public var cluster: ClusterConfigurationReference?
+     public var provider: ProviderSettings
+     public var backend: BackendSettings
+     public var coordinator: CoordinatorSettings
+@@ -486,7 +488,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
+         coordinator: CoordinatorSettings = CoordinatorSettings(),
+         schedule: ScheduleConfig? = nil,
+         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+-        configVersion: Int = ProviderConfig.currentConfigVersion
++        configVersion: Int = ProviderConfig.currentConfigVersion,
++        cluster: ClusterConfigurationReference? = nil
+     ) {
+         self.provider = provider
+         self.backend = backend
+@@ -494,9 +497,11 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
+         self.schedule = schedule
+         self.gemmaOptimizations = gemmaOptimizations
+         self.configVersion = configVersion
++        self.cluster = cluster
+     }
+ 
+     enum CodingKeys: String, CodingKey {
++        case cluster
+         case provider
+         case backend
+         case coordinator
+@@ -520,6 +525,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
+ 
+     public init(from decoder: Decoder) throws {
+         let container = try decoder.container(keyedBy: CodingKeys.self)
++        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
+         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+         let mtpProbe = try container.decodeIfPresent(
+             BackendMTPMigrationProbe.self, forKey: .backend)
+diff --git a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+index ed6805e02..309c5d87b 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+@@ -103,8 +103,15 @@ extension EngineV2Bridge {
+         mediaKind: EngineV2MediaKind? = nil,
+         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+         firstContentDeadline: FirstContentDeadline?,
+-        profile: RequestProfileBuilder? = nil
++        profile: RequestProfileBuilder? = nil,
++        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
++        distributedRequestOrigin: ContinuousClock.Instant? = nil
+     ) async throws -> AsyncStream<GenerationEvent> {
++        // This is our frame-receipt clock when available, never an upstream wall
++        // timestamp. Local engines are unaffected by the distributed-only context.
++        let distributedOrigin = DistributedRequestOrigin.earliest(
++            handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
++            now: ContinuousClock.now)
+         // Validate the caller-supplied id before it becomes a dictionary key /
+         // cancel-correlation handle: a nil / empty / over-long / non-printable
+         // id is replaced with a fresh generated one (it could never correlate
+@@ -471,15 +478,29 @@ extension EngineV2Bridge {
+                 ? deadlineProjectionBypassReason(
+                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
+                 : nil)
++        let distributed = engine as? DistributedCBv2Engine
++        let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
++                                                         firstTokenDeadline: firstContentDeadline?.instant)
+         do {
++            let selectedContext = try originContext.map { original in
++                let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
++                return try distributedFirstTokenBudgetPolicy.map { policy in
++                    try policy.restricting(bounded, receivedAt: distributedOrigin,
++                                           inputTokenCount: promptTokens.count)
++                } ?? bounded
++            }
+             if let admission = deadlineAdmission {
+                 // The engine's serialized closure compares projection against
+                 // this same absolute deadline. A second task-group race would
+                 // cancel after commit and hide the generation-bound retirement
+                 // handle needed to transfer resource ownership safely.
+-                let result = try await engine.submit(
+-                    engineRequest,
+-                    firstTokenDeadline: admission)
++                let result: CBv2FirstTokenDeadlineResult
++                if let distributed, let selectedContext {
++                    result = try await distributed.submit(engineRequest, firstTokenDeadline: admission,
++                                                          deadlineContext: selectedContext)
++                } else {
++                    result = try await engine.submit(engineRequest, firstTokenDeadline: admission)
++                }
+                 switch result {
+                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
+                     profile?.observeDeadlineDecision(
+@@ -572,7 +593,11 @@ extension EngineV2Bridge {
+                 // Projection fails open when mode is off, no isolated rate has
+                 // been measured, or media makes token projection incomplete.
+                 // Absolute expiry does not: it was checked immediately above.
+-                events = try engine.submit(engineRequest)
++                if let distributed, let selectedContext {
++                    events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
++                } else {
++                    events = try engine.submit(engineRequest)
++                }
+                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
+                 if let profile {
+                     // Evaluated AFTER the submit returned: the deadline may
+@@ -623,6 +648,9 @@ extension EngineV2Bridge {
+                     usageSignal: usageSignal,
+                     failure: Self.prefixCacheFailureClass(for: error))
+             }
++            if error as? DistributedRequestDeadlineError == .firstTokenExpired {
++                throw PreContentDeadlineFailure.deadlineUnreachable
++            }
+             if let failure = error as? PreContentDeadlineFailure { throw failure }
+             if error is CancellationError { throw CancellationError() }
+             // Admission failure. The message keeps the canonical
+diff --git a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+index b2e8c0d1e..f2e13d750 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -70,6 +70,8 @@ public actor EngineV2Bridge {
+     /// construction so B=1 and batched behavior stay identical.
+     let stopTokenIds: Set<Int>
+     let defaultMaxTokens: Int
++    /// Opt-in distributed policy; ignored by ordinary local engines.
++    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
+     let maxConcurrentRequests: Int
+     /// Operational control for atomic first-token deadline admission.
+     /// Parsed once per bridge so runtime behavior cannot change mid-request.
+@@ -313,6 +315,7 @@ public actor EngineV2Bridge {
+         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+         kvBackendFallbackReason: String? = nil,
++        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
+     ) {
+         self.ownedEngine = engine
+@@ -329,6 +332,7 @@ public actor EngineV2Bridge {
+             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
+         )
+         self.defaultMaxTokens = defaultMaxTokens
++        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
+         self.maxConcurrentRequests = maxConcurrentRequests
+         self.prefillDeadlineMode = prefillDeadlineMode
+         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
+diff --git a/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift b/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift
+index 5a179e835..98c71a162 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift
+@@ -220,6 +220,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
+     public func streamChatCompletion(
+         request: OpenAIChatCompletionRequest
+     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
++        // Capture before acquisition/tokenization; the outer HTTP task scope
++        // may end once a response is returned, so carry this value explicitly.
++        let distributedRequestOrigin = DistributedRequestOrigin.current
+         let templateControls = self.templateControls.resolvingPromptDate()
+         try checkFirstContentDeadline()
+ 
+@@ -445,7 +448,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
+                         multimodal: visionPrepared.multimodalInput(),
+                         mediaKind: visionPrepared.mediaKind,
+                         firstContentDeadline: firstContentDeadline,
+-                        profile: profile
++                        profile: profile,
++                        distributedRequestOrigin: distributedRequestOrigin
+                     )
+                     do {
+                         try checkFirstContentDeadline()
+@@ -713,7 +717,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
+                     usageSignal: engineV2Usage,
+                     tokenConstraint: tokenConstraint,
+                     firstContentDeadline: firstContentDeadline,
+-                    profile: profile
++                    profile: profile,
++                    distributedRequestOrigin: distributedRequestOrigin
+                 )
+                 do {
+                     try checkFirstContentDeadline()
+diff --git a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+index 1fc7bcded..0ed4031d3 100644
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -15,6 +15,7 @@
+ 
+ import Foundation
+ import Hummingbird
++import HTTPTypes
+ import MLXLMServer
+ import NIOCore
+ 
+@@ -33,15 +34,15 @@ public struct LocalInferenceHTTPConfig: Sendable {
+ }
+ 
+ /// The concrete responder stack the local endpoint always uses:
+-/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
++/// receipt origin (outermost) → auth → CORS → MTP-augmented /metrics → chat-upload
+ /// interception (32 MiB body ceiling for the media-bearing chat routes, see
+ /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+ public typealias LocalInferenceApplication =
+     Application<
+-        LocalAuthResponder<
++        LocalRequestOriginResponder<LocalAuthResponder<
+             CORSResponder<
+                 LocalMetricsResponder<
+-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
++                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+ 
+ /// Builds the local OpenAI-compatible Hummingbird application from a model
+ /// registry expressed as three closures. Shared by `StandaloneServer` and the
+@@ -70,6 +71,7 @@ func makeLocalInferenceApplication(
+     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
+     availableModels: @escaping @Sendable () async -> [String],
+     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
++    clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
+     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+ ) -> LocalInferenceApplication {
+     // The upstream OpenAI request shape intentionally ignores Qwen's
+@@ -93,6 +95,21 @@ func makeLocalInferenceApplication(
+     }
+     let service = serviceForTemplateControls(.init())
+     let router = MLXServerApplication.buildRouter(service: service)
++    if let clusterStatus {
++        router.get("/v1/cluster/status") { request, _ async throws -> Response in
++            let header = HTTPField.Name(ClusterStatusCodec.nonceHeader)!
++            guard let nonce = request.headers[header], (try? ClusterStatusCodec.nonce(nonce)) != nil else {
++                return Response(status: .badRequest, headers: [.cacheControl: "no-store"])
++            }
++            do {
++                let bytes = try ClusterStatusCodec.encode(await clusterStatus(nonce))
++                return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
++                    body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
++            } catch {
++                return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
++            }
++        }
++    }
+     // Chat-completions POSTs are served by the interception responder with
+     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
+     // pins the Hummingbird 2 MiB default, which 413s inline media — see
+@@ -107,12 +124,12 @@ func makeLocalInferenceApplication(
+     let metricsResponder = LocalMetricsResponder(
+         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+     let corsResponder = CORSResponder(inner: metricsResponder)
+-    // Auth is the outermost layer so an unauthenticated request is rejected
++    // Auth rejects an unauthenticated request
+     // before reaching the engine. Pass-through when no token is configured.
+     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+ 
+     return Application(
+-        responder: authedResponder,
++        responder: LocalRequestOriginResponder(inner: authedResponder),
+         configuration: .init(
+             address: .hostname(config.host, port: Int(config.port)),
+             serverName: "darkbloom-provider"
+diff --git a/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift b/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
+index e893d6d81..913f1c02a 100644
+--- a/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
+@@ -140,6 +140,13 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
+                 message: ProviderLoop.sanitizedInferenceFailure(
+                     from: error, phase: .generation).message
+             )
++        } catch let error as PreContentDeadlineFailure {
++            // Opt-in distributed HTTP budgets use the existing pre-content
++            // refusal mapping, before any SSE headers or content are returned.
++            return Self.openAIErrorResponse(
++                status: HTTPResponse.Status(code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
++                message: ProviderLoop.sanitizedInferenceFailure(
++                    from: error, phase: .generation).message)
+         } catch let error as MLXOpenAIServiceError {
+             return Self.openAIErrorResponse(
+                 status: HTTPResponse.Status(
+diff --git a/provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift b/provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift
+index 4b7417ba2..9d985624a 100644
+--- a/provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift
++++ b/provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift
+@@ -208,7 +208,8 @@ public final class RequestProfileBuilder: @unchecked Sendable {
+ 
+     /// Anchor `t0p`: the WebSocket frame receipt instant.
+     public let suspendingAnchor: SuspendingClock.Instant
+-    /// The same instant on the deadline clock, read ONLY for `slept_us`.
++    /// The same provider-local receipt instant on the deadline clock. Used for
++    /// `slept_us` and the opt-in distributed generation lifetime ceiling.
+     public let continuousAnchor: ContinuousClock.Instant
+     /// Untrusted wall anchor (epoch ms) captured once at construction.
+     public let wallMs: Int64
+diff --git a/provider-swift/Sources/darkbloom/Darkbloom.swift b/provider-swift/Sources/darkbloom/Darkbloom.swift
+index 1b4e114fe..c7a7f99b2 100644
+--- a/provider-swift/Sources/darkbloom/Darkbloom.swift
++++ b/provider-swift/Sources/darkbloom/Darkbloom.swift
+@@ -34,6 +34,7 @@ struct Darkbloom: AsyncParsableCommand {
+             Doctor.self,
+             Models.self,
+             Local.self,
++            Cluster.self,
+             Login.self,
+             Logout.self,
+             Benchmark.self,
+diff --git a/provider-swift/Sources/darkbloom/StartCommand.swift b/provider-swift/Sources/darkbloom/StartCommand.swift
+index 4a8e1c03e..55ef62b99 100644
+--- a/provider-swift/Sources/darkbloom/StartCommand.swift
++++ b/provider-swift/Sources/darkbloom/StartCommand.swift
+@@ -46,6 +46,19 @@ struct Start: AsyncParsableCommand {
+     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
+     var noAuth = false
+ 
++    @Flag(help: "Use the saved distributed cluster for local serving (requires --local).")
++    var distributed = false
++
++    mutating func validate() throws {
++        guard distributed else { return }
++        guard local, !foreground, !localEndpoint else {
++            throw ValidationError("Distributed startup currently requires --local and does not run as a coordinator service.")
++        }
++        guard model.isEmpty, !all, idleTimeout == nil, coordinatorURL == nil else {
++            throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model, idle, and coordinator overrides are unavailable.")
++        }
++    }
++
+     /// Public URL of the Darkbloom Terms of Service.
+     static let termsURL = "https://darkbloom.dev/terms.html"
+ 
+@@ -74,6 +87,17 @@ struct Start: AsyncParsableCommand {
+             throw ExitCode.failure
+         }
+ 
++        if distributed {
++            try await runLocalDistributed()
++            return
++        }
++
++        // Only the process that will run inference owns the device exclusion.
++        // The launchd parent must leave it available for its foreground child.
++        if local || foreground {
++            try ProcessLifecycle.acquireInferenceDeviceExclusion()
++        }
++
+         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
+         var effectiveConfig = snapshot.config

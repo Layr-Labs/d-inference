@@ -1,0 +1,5 @@
+Root read host, Startup, HTTP, generation/session, Rotation, Teardown, Monitoring, router and response sources before freeze. Two concrete gaps were addressed in the final source: retain every admitted membership epoch to refuse third-generation ABA reuse; add explicit changed installed binding and already-started candidate refusal tests. These corrections have source assertions only until the granted compile/run.
+
+Transport's earlier pass covered Rotation, Teardown, Monitoring, router and generation/response types with no concrete blocker. Its remaining Startup/HTTP/full API pass is pending because root reassigned the reviewer to the trusted-peer security work. Root's full source pass is the immediate review; this file does not turn partial peer review into completed independent approval.
+
+The private actual-owner-child driver and compiler/process wrappers remain pending root review and execution. Their fake native child exercises actual owned process/lease/protocol cleanup, never model weights or GPU execution. `source-checks.json` reports only Python parsing, exact upstream fixture lineage and unchanged baseline controls.

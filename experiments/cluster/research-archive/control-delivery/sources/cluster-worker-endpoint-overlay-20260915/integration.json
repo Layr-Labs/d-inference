@@ -1,0 +1,35 @@
+{
+  "requiredDeadlineManifestSHA256": "9711a629399b1c32c0227b6a1615bcfc6d0e75af2d3a8b67b8a147ac2837055e",
+  "files": [
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerEndpoint.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerEndpoint.swift",
+      "sha256": "8de606b33adeda437f3f454e07b6d9f9fc68cfc8384bc9345f139bec2b72ef32",
+      "originalSHA256": null
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift",
+      "sha256": "95ccad5c27d4d4b5cb63edbca618fe3ea0feb9aaf43a8807fd9678dbac0ff46e",
+      "originalSHA256": "9699a1b94c6aaa0c811fba212b6ed62288fb4ebc1544a8dc6d8cabe1511c3202"
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift",
+      "sha256": "0033ca14abd3564d7c5c374e1ddde05c1b223c1119fd74080f06d60c1efbb66c",
+      "originalSHA256": "55b2fddf3e3ed7a9ae831db8d64dd47e0ed7f0023c3a7edcde438ae0bd9bd8ac"
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/ProcessChecks/EndpointOwnershipTests.swift",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/EndpointOwnershipTests.swift",
+      "sha256": "2fddd05dd34fa402092f46ce64f3e89a88b324bd0532f5580f58fce836d08b4d",
+      "originalSHA256": null
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/ProcessChecks/run.sh",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/run.sh",
+      "sha256": "ea87baade34af440a21ff706b3528e5976caef4e93831b1199da0ac632ed38e3",
+      "originalSHA256": "005266e9ecbc6909fcf202bdd64ba9d41334b82546d92e683a28030fdaa2e62f"
+    }
+  ]
+}

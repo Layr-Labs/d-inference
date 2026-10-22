@@ -1,0 +1,34 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -167,6 +167,10 @@
+ descriptors under unchanged legacy bounds and add optional raw-manifest pinning.
+ Their Foundation fixture passes 22 accepted/104 rejected cases, including tiny
+ checkpoint file verification; registered 27B materialization remains unwired.
++The [constructor-only probe](QWEN_DENSE_CONSTRUCTOR_PROBE.md) verifies the exact
++registered checkpoint once and inspects full/compact lazy parameter metadata.
++Its separate strict mode grants no materialization or forward permission;
++actual native constructor results remain pending.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -37,6 +37,18 @@
+ These pass 22 accepted/104 rejected cases and reuse the registered-profile
+ metadata fixture. The actual checkpoint constructor verifies tiny synthetic
+ temporary files; this does not qualify 27B model loading or resource admission.
++
++Run the [constructor-probe admission and checkpoint-reuse fixtures](../../experiments/cluster/inference/QWEN_DENSE_CONSTRUCTOR_PROBE.md)
++without MLX or downloaded model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ConstructorProbes/run.sh
++```
++
++The standalone fixture passed 11 accepted/41 rejected checks. Its 15-source public
++runner shares the retained metadata input. Native constructor execution is a
++separate guarded mode; these fixtures do not qualify model loading, numerics or
++memory safety.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

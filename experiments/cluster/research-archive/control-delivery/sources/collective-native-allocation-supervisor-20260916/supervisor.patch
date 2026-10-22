@@ -1,0 +1,771 @@
+--- a/package/run_target.py
++++ b/package/run_target.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Root-run tiny target Session GPU check; no checkpoint or remote operations."""
++"""One fixed native allocation case; no model, group or RDMA operation."""
+ import argparse
+ import os
+ from pathlib import Path
+@@ -26,6 +26,7 @@
+     parser = argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('--package-sha256', required=True)
+     parser.add_argument('--fixture', choices=sorted(JOBS), required=True)
++    parser.add_argument('--attempt', type=int, choices=range(1, 10), default=1)
+     args = parser.parse_args(arguments)
+     require(str(ROOT) == REMOTE and ROOT.resolve() == ROOT, 'Wrong fresh remote installation root')
+     require(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'Apple Silicon macOS required')
+@@ -44,18 +45,26 @@
+         runs.mkdir(mode=0o700, exist_ok=True)
+         require(runs.resolve() == runs and runs.stat().st_uid == os.geteuid()
+                 and runs.stat().st_mode & 0o077 == 0, 'Unsafe run parent')
+-        run = runs/(args.fixture+'-1')
+-        run.mkdir(mode=0o700)  # A used run directory is never overwritten.
++        candidate = runs/(args.fixture+'-'+str(args.attempt))
++        candidate.mkdir(mode=0o700)  # A used run directory is never overwritten.
++        run = candidate
+         pins = Pins(check)
+         binding = verify_package(ROOT, args.package_sha256, pins, args.fixture)
+         write_json(run/'input-binding.json', binding)
+-        memory = read_command(['/usr/sbin/sysctl', '-n', 'hw.memsize'])
+-        require(memory.strip() == str(24*1024**3), 'This root-run job is bound to the 24 GiB Mac')
+-        write_json(run/'host.json', dict(platform=platform.platform(), machine=platform.machine(),
+-            physicalMemoryBytes=int(memory.strip()), uid=os.geteuid(), expectedSSHTarget='developer@192.0.2.250'))
++        values = read_command(['/usr/sbin/sysctl', '-n', 'hw.memsize', 'hw.model', 'kern.osversion',
++                               'hw.pagesize', 'machdep.cpu.brand_string']).strip().splitlines()
++        require(len(values) == 5 and values[0] == str(24*1024**3) and values[3] == '16384'
++                and values[4] == 'Apple M4 Pro', 'This job requires the 24 GiB M4 Pro with 16 KiB pages')
++        host = dict(platform=platform.platform(), machine=platform.machine(), physicalMemoryBytes=int(values[0]),
++            hardwareModel=values[1], osBuild=values[2], pageSizeBytes=int(values[3]), cpuBrand=values[4],
++            uid=os.geteuid(), expectedSSHTarget='developer@192.0.2.250')
++        write_json(run/'host.json', host)
+         log = os.fdopen(os.open(run/'resources.jsonl', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+             0o600), 'wb', buffering=0)
+-        gate = ResourceGate(lambda row: PipeWorkers._write_all(log, canonical(row)+b'\n'))
++        def publish_resource(row):
++            PipeWorkers._write_all(log, canonical(row)+b'\n')
++            require(row['pressureLevel'] == 1, 'Allocation cases require normal pressure level 1')
++        gate = ResourceGate(publish_resource)
+         gate('prelaunch'); check()
+         before_processes = process_observation(deadline)
+         write_json(run/'processes-preflight.json', before_processes)
+@@ -78,10 +87,10 @@
+             require(not processes['prohibited'], 'Known native/owner remains live after cleanup')
+             return dict(journal=after, processObservation=processes)
+         entered = True
+-        return serve(spec, run, started, gate, pins, postflight, args.fixture)
++        return serve(spec, run, started, gate, pins, postflight, args.fixture, host)
+     except BaseException as error:
+         if run is not None and not entered and not (run/'terminal.json').exists():
+-            write_json(run/'terminal.json', dict(schema='window_state_native_observation_v1', fixture=args.fixture,
++            write_json(run/'terminal.json', dict(schema='collective_allocation_native_observation_v1', fixture=args.fixture,
+                 status='failed', nativeLaunchAttempted=False, primaryFailure=cleanup_error_text(error)[0],
+                 modelTrunkExecutionObserved=False, registeredCheckpointExecution=False, bilateralVerification=False, journalMutationPerformed=False))
+         raise
+--- a/package/target_supervision.py
++++ b/package/target_supervision.py
+@@ -21,15 +21,16 @@
+     return rows
+ 
+ 
+-def serve(spec, run, started, gate, pins, postflight, fixture):
++def serve(spec, run, started, gate, pins, postflight, fixture, host):
+     deadline = started + 90
+     job = JOBS[fixture]
+-    result = dict(schema='window_state_native_observation_v1', fixture=fixture, status='starting',
++    result = dict(schema='collective_allocation_native_observation_v1', fixture=fixture, status='starting',
+         primaryFailure=None, postflightErrors=[], cleanupErrors=[], nativeResult=None,
+         nativeLeaderReaped=False, ownedGroupsAbsent=False, outputComplete=False,
+         sourceInputsUnchanged=False, journalEmptyAfterExit=False, processInventoryClear=False,
+-        fabricatedTargetWeights=fixture != 'target', modelTrunkExecutionObserved=False, registeredCheckpointExecution=False, bilateralVerification=False,
++        fabricatedTargetWeights=False, modelTrunkExecutionObserved=False, registeredCheckpointExecution=False, bilateralVerification=False,
+         windowStateExecutionObserved=False, sharedTargetTransactionObserved=False,
++        nativeAllocationExecutionObserved=False, rdmaExecutionObserved=False, protectedServingEnabled=False,
+         registeredProfileExecution=False, throughputMeasurementValid=False,
+         protocolOwnerLeaseReleaseObserved=False, journalMutationPerformed=False)
+     pipes, primary = None, None
+@@ -62,10 +63,10 @@
+             nativePGIDs=[p.pid for p in pipes.children], supervisorPID=os.getpid(),
+             nativeArgv=list(spec.argv), nativeEnvironment=dict(spec.env), nativeAlarmSeconds=job['processAlarmSeconds'],
+             parentDeadlineMonotonic=deadline, remainingGroupWatchdogSeconds=seconds))
+-        result['nativeResult'] = pipes.collect('native-state', lambda _, raw: validate_result(raw, fixture))[0]
+-        result['modelTrunkExecutionObserved'] = fixture != 'target'
+-        result['windowStateExecutionObserved'] = fixture == 'window'
+-        result['sharedTargetTransactionObserved'] = fixture in ('session', 'target')
++        result['nativeResult'] = pipes.collect('native-state', lambda _, raw: validate_result(raw, fixture, host))[0]
++        result['nativeAllocationExecutionObserved'] = True
++        result['windowStateExecutionObserved'] = False
++        result['sharedTargetTransactionObserved'] = False
+         pipes.finish()
+         guard('native-completed')
+         result['status'] = 'completed'
+--- a/package/target_inputs.py
++++ b/package/target_inputs.py
+@@ -5,7 +5,8 @@
+ 
+ from binding_common import canonical, fields, integer, parse, pin, require, same
+ from binding_inputs import snapshot
+-from target_contract import BUNDLE, JOBS, METALLIB, PAGED, SOURCE
++from target_contract import ARTIFACT, BUNDLE, JOBS, METALLIB, PAGED, SOURCE
++from allocation_result import CASES
+ 
+ 
+ def write_new(path, raw):
+@@ -51,6 +52,7 @@
+ 
+ 
+ def verify_package(root, wanted, pins, fixture):
++    require(ARTIFACT['status'] == 'bound_passed_build', 'Native build has not been bound')
+     require(fixture in JOBS, 'Unknown native fixture')
+     root = Path(root)
+     require(root.is_dir() and root.resolve() == root, 'Package path contains a link')
+@@ -58,7 +60,7 @@
+     require(mode.st_uid == os.geteuid() and mode.st_mode & 0o077 == 0, 'Package must be private and owned')
+     package = parse(pins.read(root/'package.json', 1024**2, wanted)['raw'])
+     fields(package, 'schema files', 'package')
+-    same(package['schema'], 'window_state_native_supervisor_package_v1', 'package schema')
++    same(package['schema'], 'collective_allocation_supervisor_package_v1', 'package schema')
+     rows = package['files']
+     require(type(rows) is list and 16 <= len(rows) <= 64, 'Package member count differs')
+     seen, total = set(), 0
+@@ -79,15 +81,18 @@
+         'target_processes.py', 'worker_processes.py', 'worker_contract.py', 'reference_resources.py',
+         'binding_common.py', 'binding_inputs.py', 'mtp_journal.py',
+         'stage_checks/__init__.py', 'stage_checks/common.py', 'bundle/bundle.json',
+-        'window_result.py', 'session_result.py', 'transaction_result.py'}
++        'allocation_result.py', 'PROBE-SCHEDULE.json', 'native-binding.json',
++        'native-contract/cases.stdout'}
+     require(required <= seen, 'Package runtime closure missing')
+     bundle = parse(pins.read(root/'bundle/bundle.json', 16384, BUNDLE)['raw'])
+-    same(bundle['schema'], 'window_state_and_target_checks_bundle_v1', 'native bundle schema')
+-    same(bundle['sourceSnapshotSHA256'], SOURCE, 'native source snapshot')
+-    same(bundle['jobs'], {k:{a:b for a,b in v.items() if a != 'sha256'} for k,v in JOBS.items()}, 'native commands/alarms')
+-    expected = {job['product']:job['sha256'] for job in JOBS.values()}
+-    expected.update({'mlx.metallib': METALLIB, 'mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal': PAGED})
+-    require(type(bundle['files']) is list and len(bundle['files']) == 5, 'Native resource closure')
++    same(bundle['schema'], 'collective_allocation_native_bundle_v1', 'native bundle schema')
++    same(bundle['buildReceiptSHA256'], ARTIFACT['buildReceiptSHA256'], 'native build receipt')
++    same(bundle['nativeExecuted'], False, 'packager did not execute native cases')
++    same(bundle['remoteExecuted'], False, 'packager did not execute remotely')
++    expected = {'CollectiveAllocationCheck': ARTIFACT['nativeSHA256'],
++        'mlx.metallib': METALLIB, 'mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal': PAGED,
++        'source-identity.json': ARTIFACT['sourceIdentitySHA256']}
++    require(type(bundle['files']) is list and len(bundle['files']) == 4, 'Native resource closure')
+     actual = set()
+     for row in bundle['files']:
+         fields(row, 'path bytes sha256', 'native resource')
+@@ -96,8 +101,17 @@
+         actual.add(row['path'])
+         require(any(x == dict(path='bundle/'+row['path'], bytes=row['bytes'], sha256=row['sha256'])
+                     for x in rows), 'Native resource differs from package member')
+-    pins.read(root/'native-contract/source-snapshot.json', 4*1024**2, SOURCE, keep=False)
+-    for job in JOBS.values():
+-        require((root/'bundle'/job['product']).stat().st_mode & stat.S_IXUSR, 'Native entry is not executable')
+-    return dict(packageSHA256=wanted, fixture=fixture, nativeSHA256=JOBS[fixture]['sha256'], sourceSnapshotSHA256=SOURCE,
+-        bundleSHA256=BUNDLE, metallibSHA256=METALLIB, packageMembers=len(rows), packageBytes=total)
++    identity = parse(pins.read(root/'bundle/source-identity.json', 1024**2, ARTIFACT['sourceIdentitySHA256'])['raw'])
++    same(identity['sourceSnapshotSHA256'], SOURCE, 'native source snapshot')
++    same(identity['buildReceiptSHA256'], ARTIFACT['buildReceiptSHA256'], 'source build binding')
++    same(identity['nativeExecuted'], False, 'source identity only')
++    same(identity['resourceProfileQualified'], False, 'no resource profile inferred')
++    catalog = parse(pins.read(root/'native-contract/cases.stdout', 65_537, identity['catalog']['stdoutSHA256'])['raw'])
++    expected_cases = [dict(id=row['id'], byteCounts=[g['bytes'] for g in row['geometries']],
++        primingByteCounts=[g['bytes'] for g in row['priming']], rounds=row['rounds'], failure=row['failure'])
++        for row in CASES.values()]
++    same(catalog, expected_cases, 'actual compiled 35-case catalog')
++    require((root/'bundle/CollectiveAllocationCheck').stat().st_mode & stat.S_IXUSR, 'Native entry is not executable')
++    return dict(packageSHA256=wanted, fixture=fixture, nativeSHA256=ARTIFACT['nativeSHA256'], sourceSnapshotSHA256=SOURCE,
++        bundleSHA256=BUNDLE, metallibSHA256=METALLIB, packageMembers=len(rows), packageBytes=total,
++        compiledCatalogSHA256=identity['catalog']['stdoutSHA256'], resourceProfileQualified=False)
+--- a/package/target_processes.py
++++ b/package/target_processes.py
+@@ -10,7 +10,7 @@
+ COMMAND = ['/bin/ps', '-Aww', '-o', 'pid=,uid=,comm=']
+ OUTPUT_LIMIT = 1024 * 1024
+ NATIVE_OR_OWNER_NAMES = frozenset({'cluster-inference', 'owner-controller', 'targetverificationcheck', 'targetverificationsessioncheck',
+-    'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
++    'collectiveallocationcheck', 'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
+ 
+ 
+ def parse_processes(raw):
+--- a/package/worker_contract.py
++++ b/package/worker_contract.py
+@@ -5,8 +5,8 @@
+ import re
+ 
+ SCHEMA = "qwen_resident_benchmark_worker_v1"
+-MAX_LINE = 32 * 1024 * 1024
+-MAX_OUTPUT = 160 * 1024 * 1024
++MAX_LINE = 65_536
++MAX_OUTPUT = 1_048_576
+ SUFFIXES = (":warmup:0", ":measured:0", ":measured:1", ":measured:2")
+ 
+ 
+--- a/collect_remote.py
++++ b/collect_remote.py
+@@ -8,14 +8,15 @@
+ import sys
+ import time
+ 
+-ROOT=Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916')
++ROOT=Path('/Users/developer/DarkbloomDev/collective-native-allocation-check-20260916')
+ sys.dont_write_bytecode=True
+ sys.path.insert(0,str(ROOT))
+ from mtp_journal import device_directory, observe as observe_journal
+ from target_processes import observe as observe_processes
++from allocation_result import CASES
+ 
+-assert len(sys.argv)==2 and sys.argv[1] in ('window','session','target')
+-run=ROOT/'runs'/(sys.argv[1]+'-1')
++assert len(sys.argv)==3 and sys.argv[1] in CASES and sys.argv[2] in tuple(str(x) for x in range(1,10))
++run=ROOT/'runs'/(sys.argv[1]+'-'+sys.argv[2])
+ assert run.resolve()==run and run.is_dir()
+ files={}; total=0
+ names=sorted(run.rglob('*'))
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/collective-native-allocation-check-20260916')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+@@ -17,7 +17,7 @@
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'window_state_native_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'collective_allocation_copy_only_tree_v1', 'Wrong deployment schema')
+     files = manifest['files']
+     require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+     require(sum(x['bytes'] for x in files.values()) < 400_000_000, 'Deployment exceeded bound')
+@@ -76,7 +76,7 @@
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+     (ROOTS['check'] / 'evidence').mkdir(mode=0o700)
+-    print(json.dumps(dict(schema='window_state_native_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    print(json.dumps(dict(schema='collective_allocation_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -17,6 +17,9 @@
+ from binding_common import canonical,require
+ from binding_inputs import snapshot
+ from target_inputs import write_json,write_new
++from allocation_result import CASES
++from mtp_journal import require_empty
++from validate_returned import validate
+ 
+ 
+ def verify():
+@@ -61,11 +64,13 @@
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('action',choices=['copy','run','collect'])
+-    parser.add_argument('--fixture',choices=['window','session','target'])
++    parser.add_argument('--fixture',choices=sorted(CASES))
++    parser.add_argument('--attempt',type=int,choices=range(1,10),default=1)
+     args=parser.parse_args(); os.umask(0o077); commands=verify()
+     require((args.action=='copy') == (args.fixture is None), 'Copy has no fixture; run/collect require one')
++    require(args.action!='copy' or args.attempt==1, 'Copy creates one fresh installation')
+     suffix='' if args.fixture is None else '-'+args.fixture
+-    directory=ROOT/('physical-'+args.action+suffix+'-1');directory.mkdir(mode=0o700)
++    directory=ROOT/('physical-'+args.action+suffix+'-'+str(args.attempt));directory.mkdir(mode=0o700)
+     if args.action=='copy':
+         code=execute(commands['copyProducer'],directory,'stream',180,output_cap=400*1024**2)
+         require(code==0,'Local stream preparation failed')
+@@ -79,8 +84,8 @@
+     if args.action=='run':
+         require((ROOT/'physical-copy-1/ssh.execution.json').exists(),'Copy proof missing')
+         require(json.loads((ROOT/'physical-copy-1/ssh.execution.json').read_text())['exitCode']==0,'Copy did not succeed')
+-        return execute(commands['runRemote'][args.fixture],directory,'ssh',commands['runTimeoutSeconds'])
+-    command=shlex.join(['/usr/bin/python3','-B','-c',(ROOT/'collect_remote.py').read_text(),args.fixture])
++        return execute(commands['sshPrefix']+[shlex.join(commands['runArguments'][args.fixture]+['--attempt',str(args.attempt)])],directory,'ssh',commands['runTimeoutSeconds'])
++    command=shlex.join(['/usr/bin/python3','-B','-c',(ROOT/'collect_remote.py').read_text(),args.fixture,str(args.attempt)])
+     code=execute(commands['sshPrefix']+[command],directory,'ssh',45)
+     require(code==0,'Read-only collection failed')
+     receipt=json.loads((directory/'ssh.stdout').read_text()); returned=directory/'returned';returned.mkdir(mode=0o700)
+@@ -93,6 +98,10 @@
+         destination=returned/relative;destination.parent.mkdir(mode=0o700,parents=True,exist_ok=True);write_new(destination,raw)
+     write_json(directory/'collection.json',dict(files={k:{a:b for a,b in v.items() if a!='base64'} for k,v in receipt['files'].items()},
+         processes=receipt['processes'],journal=receipt['journal']))
++    require(not receipt['processes']['prohibited'], 'Current collection process inventory is not clear')
++    require_empty(receipt['journal'])
++    qualification=validate(returned,args.fixture,args.attempt,commands['packageSHA256'])
++    write_json(directory/'qualification.json',qualification)
+     print(json.dumps(dict(collected=len(receipt['files']),journal=receipt['journal'],processes=receipt['processes'])),flush=True)
+     return 0
+ 
+--- /dev/null
++++ b/package/allocation_result.py
+@@ -0,0 +1,114 @@
++"""Strict fixed-catalog allocation report replay; no native execution or approval."""
++from functools import lru_cache
++import hashlib
++from pathlib import Path
++from binding_common import fields, integer, parse, require, same, text
++
++SCHEDULE = parse((Path(__file__).parent/'PROBE-SCHEDULE.json').read_bytes())
++CASES = {row['id']: row for row in SCHEDULE['cases']}
++require(len(CASES) == SCHEDULE['count'] == 35, 'Fixed allocation catalog differs')
++MAXIMUM = 10_485_760
++REPORT_KEYS = '''schema scope profileQualified caseID failureMode hardwareModel osBuild suite allocatorPolicy
++maximumPlaintextBytes maximumFrameBytes maximumInFlightOperations rounds geometries elapsedNanoseconds
++baselineNativeActiveBytes observedPeakNativeActiveBytes maximumObservedNativeCacheBytes finalNativeActiveBytes
++finalNativeCacheBytes baselinePhysical finalPhysical conservativeObservedPhysicalIncrementBytes sentRecords
++openedRecords publishedArrays refusedRecords frameLengths plaintextByteCounts actualInputByteCounts
++attemptedNativeShapes attemptedNativeDTypes primingOperations unauthenticatedArraysPublished
++verifiedPlaintextDigests senderActiveBeforeCleanup receiverActiveBeforeCleanup allTrackedNativeArraysReleased
++nativeAllocationsReturnedToBaseline'''
++
++
++def native_bound(size):
++    # Exact pinned Metal policy: round above vm_page_size, then inclusive
++    # cache-reuse allowance min(n-1, 2*page-1). Host must prove 16 KiB pages.
++    if size > 16_384:
++        size = ((size + 16_383)//16_384)*16_384
++    return size + min(size-1, 32_767)
++
++
++@lru_cache(maxsize=32)
++def plaintext_digest(size):
++    integer(size, 'fixture plaintext size', 1, MAXIMUM)
++    digest = hashlib.sha256()
++    chunk = b'\x5a'*65_536
++    while size:
++        count = min(size, len(chunk)); digest.update(chunk[:count]); size -= count
++    return digest.hexdigest()
++
++
++def expected_operations(case):
++    priming = case['priming']
++    failing = case['failure'] != 'none'
++    operations = priming + case['geometries']*case['rounds']
++    count = len(operations)
++    sizes, actual, shapes, types = [], [], [], []
++    for index, geometry in enumerate(operations):
++        failure = case['failure'] if index >= len(priming) else 'none'
++        invalid = failure in ('oversize', 'shape')
++        shapes.append([MAXIMUM+1] if failure == 'oversize' else [2] if failure == 'shape' else geometry['shape'])
++        types.append('uint8' if failure == 'oversize' else 'uint32' if invalid else geometry['dtype'])
++        sizes.append(MAXIMUM+1 if failure == 'oversize' else 8 if failure == 'shape' else geometry['bytes'])
++        actual.append(4 if invalid else geometry['bytes'])
++    before_send = case['failure'] in ('beforeExport', 'oversize', 'shape')
++    before_io = before_send or case['failure'] == 'afterSeal'
++    published = len(priming) if failing else count
++    transmitted = len(priming) + (0 if before_io else 1) if failing else count
++    return dict(sentRecords=len(priming)+(0 if before_send else 1) if failing else count,
++        openedRecords=len(priming)+(1 if case['failure']=='afterOpen' else 0) if failing else count,
++        publishedArrays=published, refusedRecords=1 if failing else 0,
++        frameLengths=[geometry['bytes']+40 for geometry in operations[:transmitted]],
++        plaintextByteCounts=sizes, actualInputByteCounts=actual,
++        attemptedNativeShapes=shapes, attemptedNativeDTypes=types,
++        verifiedPlaintextDigests=[plaintext_digest(geometry['bytes']) for geometry in operations[:published]],
++        senderActiveBeforeCleanup=not (failing and before_io),
++        receiverActiveBeforeCleanup=not (failing and not before_io))
++
++
++def validate_result(raw, case_id, host=None):
++    require(type(raw) is bytes and 0 < len(raw) <= 65_536, 'Native report byte bound')
++    require(case_id in CASES, 'Unknown fixed allocation case')
++    value = parse(raw); fields(value, REPORT_KEYS, 'allocation report')
++    case = CASES[case_id]
++    constants = dict(schema='collective_native_allocation_probe_v1',
++        scope='both codec endpoints plus native staging in one process; no RDMA/group/model',
++        profileQualified=False, caseID=case_id, failureMode=case['failure'],
++        suite='aes256GcmHkdfSha256V1', allocatorPolicy='disable_freed_buffer_cache',
++        maximumPlaintextBytes=MAXIMUM, maximumFrameBytes=MAXIMUM+40,
++        maximumInFlightOperations=1, rounds=case['rounds'], primingOperations=len(case['priming']),
++        unauthenticatedArraysPublished=0, allTrackedNativeArraysReleased=True,
++        nativeAllocationsReturnedToBaseline=True)
++    for key, wanted in constants.items(): same(value[key], wanted, key)
++    for key in ('hardwareModel', 'osBuild'): text(value[key], key, 256)
++    if host is not None:
++        same(host['physicalMemoryBytes'], 24*1024**3, '24 GiB host')
++        same(host['pageSizeBytes'], 16_384, 'native allocator page size')
++        same(host['cpuBrand'], 'Apple M4 Pro', 'CPU identity')
++        same(value['hardwareModel'], host['hardwareModel'], 'native hardware identity')
++        same(value['osBuild'], host['osBuild'], 'native OS identity')
++    expected = expected_operations(case)
++    for key, wanted in expected.items(): same(value[key], wanted, key)
++    geometries = []
++    for geometry in case['geometries']:
++        geometries.append(dict(id=geometry['id'], shape=geometry['shape'], dtype=geometry['dtype'],
++            plaintextBytes=geometry['bytes'], nativeArrayBoundBytes=native_bound(geometry['bytes']),
++            nativeFrameBoundBytes=native_bound(geometry['bytes']+40)))
++    same(value['geometries'], geometries, 'exact catalog native geometry and allocation bounds')
++    integer(value['elapsedNanoseconds'], 'native elapsed', 1, 54_999_999_999)
++    for key in ('baselineNativeActiveBytes', 'observedPeakNativeActiveBytes',
++                'maximumObservedNativeCacheBytes', 'finalNativeActiveBytes', 'finalNativeCacheBytes'):
++        integer(value[key], key, 0, 24*1024**3)
++    baseline = value['baselineNativeActiveBytes']; peak = value['observedPeakNativeActiveBytes']
++    require(baseline <= peak <= baseline+256*1024**2, 'Observed native high-water exceeded fixed bound')
++    same(value['finalNativeActiveBytes'], baseline, 'native active baseline return')
++    same(value['maximumObservedNativeCacheBytes'], 0, 'native freed-buffer cache disabled')
++    same(value['finalNativeCacheBytes'], 0, 'final native cache empty')
++    for key in ('baselinePhysical', 'finalPhysical'):
++        record = value[key]; fields(record, 'currentBytes lifetimeMaximumBytes', key)
++        integer(record['currentBytes'], key+'.current', 1, 24*1024**3)
++        integer(record['lifetimeMaximumBytes'], key+'.maximum', record['currentBytes'], 24*1024**3)
++    before, after = value['baselinePhysical'], value['finalPhysical']
++    require(after['lifetimeMaximumBytes'] >= before['lifetimeMaximumBytes'], 'Lost process lifetime maximum')
++    increment = max(0, after['lifetimeMaximumBytes']-before['currentBytes'])
++    require(increment <= 512*1024**2, 'Observed process high-water exceeded fixed bound')
++    same(value['conservativeObservedPhysicalIncrementBytes'], increment, 'process increment arithmetic')
++    return value
+--- /dev/null
++++ b/package/target_contract.py
+@@ -0,0 +1,14 @@
++"""Closed allocation catalog; artifact binding is supplied only after build PASS."""
++from pathlib import Path
++from binding_common import parse
++from allocation_result import CASES, validate_result
++
++REMOTE = '/Users/developer/DarkbloomDev/collective-native-allocation-check-20260916'
++ARTIFACT = parse((Path(__file__).parent/'native-binding.json').read_bytes())
++BUNDLE = ARTIFACT['bundleSHA256']
++SOURCE = ARTIFACT['sourceSnapshotSHA256']
++METALLIB = ARTIFACT['metallibSHA256']
++PAGED = ARTIFACT['pagedSHA256']
++JOBS = {case_id: dict(product='CollectiveAllocationCheck',
++    runArguments=['run-resource-case', case_id], processAlarmSeconds=60,
++    sha256=ARTIFACT['nativeSHA256']) for case_id in CASES}
+--- /dev/null
++++ b/bind_package.py
+@@ -0,0 +1,116 @@
++"""Grant-only fresh local package assembly; no compiler, remote call or GPU run."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import shlex
++import shutil
++import sys
++sys.dont_write_bytecode = True
++ROOT = Path(__file__).resolve().parent
++sys.path.insert(0, str(ROOT/'package'))
++from binding_common import canonical, parse, require, same
++from binding_inputs import snapshot
++from target_contract import ARTIFACT, CASES, JOBS, REMOTE
++from target_inputs import write_json, write_new
++
++BUILD = ROOT.parent/'collective-native-allocation-build-20260916'
++BUNDLE = BUILD/'runtime-bundle-1'
++KNOWN_HOSTS = ROOT.parent/'owner-ssh-preflight-20260915/known_hosts'
++KNOWN_SHA = '89a73d7ca9fe16a0c1aeb0fa6cfa640ff37a02d4a2d21114e7ad5fca089443ed'
++ROOT_FILES = ('run_physical.py', 'prepare_copy.py', 'install_new_tree.py', 'collect_remote.py', 'validate_returned.py')
++
++
++def main():
++    parser = argparse.ArgumentParser(allow_abbrev=False)
++    parser.add_argument('--source-sha256', required=True)
++    parser.add_argument('--output', type=Path, required=True)
++    args = parser.parse_args(); os.umask(0o077)
++    manifest = snapshot(ROOT/'manifest.json', 1024**2)
++    same(manifest['sha256'], args.source_sha256, 'reviewed source freeze')
++    source_rows = parse(manifest['raw'])['files']
++    for row in source_rows:
++        item = snapshot(ROOT/row['path'], max(row['bytes'], 1), keep=False, empty=True)
++        require(item['sha256'] == row['sha256'] and item['size_bytes'] == row['bytes'], 'Source freeze changed')
++    bundle_raw = snapshot(BUNDLE/'bundle.json', 65_536)
++    same(bundle_raw['sha256'], ARTIFACT['bundleSHA256'], 'approved native bundle')
++    bundle = parse(bundle_raw['raw'])
++    same(bundle['buildReceiptSHA256'], ARTIFACT['buildReceiptSHA256'], 'actual build receipt')
++    receipt = snapshot(BUILD/'native-1/receipt.json', 1024**2)
++    same(receipt['sha256'], ARTIFACT['buildReceiptSHA256'], 'retained build evidence')
++    same(parse(receipt['raw'])['status'], 'passed', 'build completed')
++    same(snapshot(KNOWN_HOSTS, 1024**2)['sha256'], KNOWN_SHA, 'existing SSH trust')
++    output = args.output.absolute()
++    require(output.parent == ROOT.parent and output.parent.resolve() == output.parent and output != ROOT, 'Fresh research sibling required')
++    output.mkdir(mode=0o700)
++    package = output/'package'; package.mkdir(mode=0o700)
++    for row in source_rows:
++        name = row['path']
++        if not name.startswith('package/') and name not in ROOT_FILES: continue
++        destination = output/name; destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
++        item = snapshot(ROOT/name, max(row['bytes'], 1), empty=True)
++        same(item['sha256'], row['sha256'], 'source before copy')
++        write_new(destination, item['raw'])
++    for row in bundle['files']:
++        source = BUNDLE/row['path']
++        before = snapshot(source, max(row['bytes'], 1), keep=False, empty=True)
++        require(before['sha256'] == row['sha256'] and before['size_bytes'] == row['bytes'], 'Native bundle changed')
++        target = package/'bundle'/row['path']; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
++        with source.open('rb') as origin, target.open('xb') as destination:
++            shutil.copyfileobj(origin, destination, length=1024**2)
++        target.chmod(0o700 if row['path'] == 'CollectiveAllocationCheck' else 0o600)
++        same(snapshot(target, max(row['bytes'], 1), keep=False, empty=True)['sha256'], row['sha256'], 'Copied artifact')
++        same(snapshot(source, max(row['bytes'], 1), keep=False, empty=True), before, 'Native source remained unchanged')
++    write_new(package/'bundle/bundle.json', bundle_raw['raw'])
++    identity_raw = snapshot(BUNDLE/'source-identity.json', 1024**2)
++    same(identity_raw['sha256'], ARTIFACT['sourceIdentitySHA256'], 'native source identity')
++    identity = parse(identity_raw['raw'])
++    cases = snapshot(BUILD/'native-1/cases.stdout', 65_537)
++    same(cases['sha256'], identity['catalog']['stdoutSHA256'], 'actual compiled case list')
++    expected = [dict(id=x['id'], byteCounts=[g['bytes'] for g in x['geometries']],
++        primingByteCounts=[g['bytes'] for g in x['priming']], rounds=x['rounds'], failure=x['failure']) for x in CASES.values()]
++    same(parse(cases['raw']), expected, 'complete fixed 35-case catalog')
++    (package/'native-contract').mkdir(mode=0o700)
++    write_new(package/'native-contract/cases.stdout', cases['raw'])
++    rows = []
++    for path in sorted(package.rglob('*')):
++        if path.is_file():
++            item = snapshot(path, max(path.stat().st_size, 1), keep=False, empty=True)
++            rows.append(dict(path=str(path.relative_to(package)), bytes=item['size_bytes'], sha256=item['sha256']))
++    write_json(package/'package.json', dict(schema='collective_allocation_supervisor_package_v1', files=rows))
++    package_sha = snapshot(package/'package.json', 1024**2)['sha256']
++    deployment = {'check/'+row['path']: dict(bytes=row['bytes'], sha256=row['sha256'],
++        mode=0o700 if row['path']=='bundle/CollectiveAllocationCheck' else 0o600) for row in rows}
++    deployment['check/package.json'] = dict(bytes=(package/'package.json').stat().st_size, sha256=package_sha, mode=0o600)
++    write_json(output/'deployment.json', dict(schema='collective_allocation_copy_only_tree_v1', files=deployment))
++    deployment_sha = snapshot(output/'deployment.json', 1024**2)['sha256']
++    ssh = ['/usr/bin/ssh','-S','none','-T','-F','/dev/null','-i','/Users/developer/.ssh/id_ed25519_darkbloom_dev',
++        '-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
++        '-o','UserKnownHostsFile='+str(KNOWN_HOSTS),'-o','GlobalKnownHostsFile=/dev/null',
++        '-o','ConnectTimeout=5','-o','ConnectionAttempts=1','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2',
++        'developer@192.0.2.250']
++    run_arguments = {case: ['/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin','HOME=/Users/gaj','LANG=C',
++        'PYTHONNOUSERSITE=1','/usr/bin/python3','-B',REMOTE+'/run_target.py','--package-sha256',package_sha,'--fixture',case] for case in JOBS}
++    commands = dict(knownHosts=dict(path=str(KNOWN_HOSTS),sha256=KNOWN_SHA), sshPrefix=ssh, remoteRoot=REMOTE,
++        packageSHA256=package_sha, deploymentSHA256=deployment_sha, copyTimeoutSeconds=180, runTimeoutSeconds=135,
++        copyProducer=[sys.executable,'-B',str(output/'prepare_copy.py'),'--deployment-sha256',deployment_sha],
++        copyRemote=ssh+[shlex.join(['/usr/bin/python3','-B','-c',(output/'install_new_tree.py').read_text()])],
++        runArguments=run_arguments)
++    write_json(output/'ROOT-COMMANDS.json', commands)
++    write_new(output/'source-freeze.json', manifest['raw'])
++    write_json(output/'binding.json', dict(sourceManifestSHA256=args.source_sha256, bundleSHA256=ARTIFACT['bundleSHA256'],
++        packageSHA256=package_sha, deploymentSHA256=deployment_sha, payloadCopied=True, nativeExecuted=False, remoteExecuted=False))
++    for row in source_rows:
++        same(snapshot(ROOT/row['path'], max(row['bytes'], 1), keep=False, empty=True)['sha256'], row['sha256'], 'Source after binding')
++    final = []
++    for path in sorted(output.rglob('*')):
++        if path.is_file():
++            item = snapshot(path, max(path.stat().st_size, 1), keep=False, empty=True)
++            final.append(dict(path=str(path.relative_to(output)), bytes=item['size_bytes'], sha256=item['sha256']))
++    write_json(output/'manifest.json', dict(schema='collective_allocation_bound_supervisor_v1', files=final))
++    print(json.dumps(dict(output=str(output), packageSHA256=package_sha, deploymentSHA256=deployment_sha,
++        bundleSHA256=ARTIFACT['bundleSHA256'], nativeExecuted=False, remoteExecuted=False)), flush=True)
++
++
++if __name__ == '__main__': main()
+--- /dev/null
++++ b/validate_returned.py
+@@ -0,0 +1,123 @@
++"""Replay retained native output and independent OS/ownership receipts; never run GPU."""
++import argparse
++import hashlib
++from pathlib import Path
++import sys
++sys.dont_write_bytecode = True
++ROOT = Path(__file__).resolve().parent
++sys.path.insert(0, str(ROOT/'package'))
++from allocation_result import CASES, validate_result
++from binding_common import integer, parse, require, same
++from binding_inputs import snapshot
++from mtp_journal import require_empty
++from reference_resources import sample_local, validate_local
++from target_contract import ARTIFACT, JOBS, REMOTE
++
++
++def read(path, cap):
++    require(path.is_file() and not path.is_symlink() and path.parent.resolve() == path.parent, 'Unsafe returned evidence path')
++    return snapshot(path, cap, empty=True)['raw']
++
++
++def validate(directory, case_id, attempt, package_sha):
++    require(ARTIFACT['status'] == 'bound_passed_build' and case_id in CASES, 'Unbound allocation case')
++    integer(attempt, 'attempt', 1, 9)
++    expected_files = {'host.json', 'input-binding.json', 'journal-preflight.json', 'journal-postflight.json',
++        'owner.json', 'processes-preflight.json', 'processes-postflight.json', 'resources.jsonl', 'terminal.json',
++        'native/worker-0.stdin', 'native/worker-0.stdout', 'native/worker-0.stderr'}
++    paths = list(directory.rglob('*'))
++    require(not any(path.is_symlink() for path in paths), 'Returned tree contains a link')
++    require({str(path.relative_to(directory)) for path in paths if path.is_file()} == expected_files,
++            'Returned evidence closure differs')
++    def value(name): return parse(read(directory/name, 1_048_576))
++    host, binding, terminal, owner = (value(name) for name in ('host.json', 'input-binding.json', 'terminal.json', 'owner.json'))
++    same(binding['packageSHA256'], package_sha, 'package identity')
++    same(binding['fixture'], case_id, 'case binding')
++    same(binding['nativeSHA256'], ARTIFACT['nativeSHA256'], 'native identity')
++    same(binding['bundleSHA256'], ARTIFACT['bundleSHA256'], 'bundle identity')
++    same(binding['sourceSnapshotSHA256'], ARTIFACT['sourceSnapshotSHA256'], 'source identity')
++    same(binding['resourceProfileQualified'], False, 'not a serving profile')
++    same(host['expectedSSHTarget'], 'developer@192.0.2.250', '24 GiB target')
++    same(host['machine'], 'arm64', 'native architecture')
++    stdout = read(directory/'native/worker-0.stdout', 65_537)
++    require(stdout.endswith(b'\n') and stdout.count(b'\n') == 1, 'Expected one complete native JSONL record')
++    same(read(directory/'native/worker-0.stderr', 1_048_576), b'', 'native stderr empty')
++    same(read(directory/'native/worker-0.stdin', 1_048_576), b'', 'no native input stream')
++    report = validate_result(stdout[:-1], case_id, host)
++    same(terminal['nativeResult'], report, 'terminal retains exact native report')
++    same(terminal['schema'], 'collective_allocation_native_observation_v1', 'terminal schema')
++    same(terminal['fixture'], case_id, 'terminal case')
++    same(terminal['status'], 'completed', 'terminal completion')
++    for key in ('primaryFailure',): same(terminal[key], None, key)
++    for key in ('postflightErrors', 'cleanupErrors'): same(terminal[key], [], key)
++    for key in ('nativeLeaderReaped', 'ownedGroupsAbsent', 'outputComplete', 'sourceInputsUnchanged',
++                'journalEmptyAfterExit', 'processInventoryClear', 'nativeAllocationExecutionObserved'):
++        same(terminal[key], True, key)
++    for key in ('watchdogExpired', 'fabricatedTargetWeights', 'modelTrunkExecutionObserved',
++                'registeredCheckpointExecution', 'bilateralVerification', 'windowStateExecutionObserved',
++                'sharedTargetTransactionObserved', 'registeredProfileExecution', 'throughputMeasurementValid',
++                'protocolOwnerLeaseReleaseObserved', 'journalMutationPerformed', 'rdmaExecutionObserved', 'protectedServingEnabled'):
++        same(terminal[key], False, key)
++    same(terminal['nativeExitCodes'], [0], 'natural native exit')
++    require(type(terminal['elapsedSeconds']) in (int, float) and 0 < terminal['elapsedSeconds'] < 90,
++            'Original parent budget exceeded')
++    require(type(owner['nativePIDs']) is list and len(owner['nativePIDs']) == 1, 'One fresh native process required')
++    pid = integer(owner['nativePIDs'][0], 'owned native PID', 1)
++    same(owner['nativePGIDs'], [pid], 'owned native process group')
++    same(terminal['nativePIDs'], [pid], 'terminal native PID')
++    same(terminal['owned_group_observation'], [dict(ownedPID=pid, ownedPGID=pid, absent=True)], 'actual post-reap group absence')
++    same(owner['nativeArgv'], [REMOTE+'/bundle/CollectiveAllocationCheck', 'run-resource-case', case_id], 'exact native argv')
++    same(owner['nativeAlarmSeconds'], 60, 'native alarm')
++    integer(owner['remainingGroupWatchdogSeconds'], 'group watchdog', 61, 90)
++    remote_run = REMOTE+'/runs/'+case_id+'-'+str(attempt)
++    expected_streams = []
++    for stream in ('stderr', 'stdin', 'stdout'):
++        raw = read(directory/('native/worker-0.'+stream), 1_048_576)
++        expected_streams.append(dict(worker=0, stream=stream, path=remote_run+'/native/worker-0.'+stream,
++            bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
++    same(terminal['retained_streams'], expected_streams, 'retained native streams')
++    before, after = value('journal-preflight.json'), value('journal-postflight.json')
++    require_empty(before); require_empty(after, before)
++    same(before['path'], '/Users/developer/.darkbloom/cluster-device/native-device.lease', 'canonical journal')
++    for journal in (before, after):
++        same(journal['exclusiveObservationLockAcquired'], True, 'actual exclusive journal observation')
++        same(journal['journalMutationPerformed'], False, 'no journal repair')
++    for name in ('processes-preflight.json', 'processes-postflight.json'):
++        same(value(name)['prohibited'], [], 'actual process inventory empty')
++    same(terminal['postflight']['journal'], after, 'postflight journal receipt')
++    same(terminal['postflight']['processObservation'], value('processes-postflight.json'), 'postflight process receipt')
++    resources = [parse(line) for line in read(directory/'resources.jsonl', 1_048_576).splitlines()]
++    require(2 <= len(resources) <= 2000 and resources[0]['phase'] == 'prelaunch'
++            and resources[-1]['phase'] == 'postflight', 'Complete resource observation required')
++    previous = 0
++    for row in resources:
++        validate_local(row)
++        same(row['pressureLevel'], 1, 'normal memory pressure')
++        require(row['startedMonotonicNS'] >= previous, 'Resource observations went backwards')
++        previous = row['completedMonotonicNS']
++        def replay(command):
++            return row['rawVMStat'] if command[0] == '/usr/bin/vm_stat' else row['rawPower'] if command[0] == '/usr/bin/pmset' else row['rawMemory']
++        parsed = sample_local(read=replay)
++        for key in ('actualFreeBytes', 'pressureLevel', 'reportedSwapBytes', 'acPower'):
++            same(row[key], parsed[key], 'raw OS replay '+key)
++    require(resources[-1]['completedMonotonicNS']-resources[0]['startedMonotonicNS'] < 90*10**9,
++            'Resource observation exceeded original parent budget')
++    return dict(caseID=case_id, passed=True, actualNativeCleanup=True, standaloneGateCleanup=True,
++        resourceSamples=len(resources), minimumActualFreeBytes=min(row['actualFreeBytes'] for row in resources),
++        nativePeakIncrementBytes=report['observedPeakNativeActiveBytes']-report['baselineNativeActiveBytes'],
++        physicalPeakIncrementBytes=report['conservativeObservedPhysicalIncrementBytes'],
++        rdmaMeasured=False, modelExecuted=False, protectedServingEnabled=False, profileQualified=False)
++
++
++def main():
++    parser = argparse.ArgumentParser(allow_abbrev=False)
++    parser.add_argument('--directory', type=Path, required=True)
++    parser.add_argument('--case', choices=sorted(CASES), required=True)
++    parser.add_argument('--attempt', type=int, choices=range(1, 10), default=1)
++    parser.add_argument('--package-sha256', required=True)
++    args = parser.parse_args()
++    import json
++    print(json.dumps(validate(args.directory.resolve(), args.case, args.attempt, args.package_sha256), sort_keys=True))
++
++
++if __name__ == '__main__': main()
+--- /dev/null
++++ b/test_allocation_result.py
+@@ -0,0 +1,86 @@
++"""Independent small report controls; fake values confer no native qualification."""
++import copy
++import hashlib
++import json
++from pathlib import Path
++import sys
++import unittest
++sys.path.insert(0, str(Path(__file__).parent/'package'))
++from allocation_result import validate_result
++
++HOST = dict(physicalMemoryBytes=24*1024**3, pageSizeBytes=16384, cpuBrand='Apple M4 Pro', hardwareModel='FixtureMac', osBuild='FixtureOS')
++
++
++def report(kind='scalar'):
++    r = dict(schema='collective_native_allocation_probe_v1',
++        scope='both codec endpoints plus native staging in one process; no RDMA/group/model',
++        profileQualified=False, caseID='fresh-u32-4', failureMode='none', hardwareModel='FixtureMac', osBuild='FixtureOS',
++        suite='aes256GcmHkdfSha256V1', allocatorPolicy='disable_freed_buffer_cache',
++        maximumPlaintextBytes=10485760, maximumFrameBytes=10485800, maximumInFlightOperations=1,
++        rounds=32, geometries=[dict(id='u32-4',shape=[1],dtype='uint32',plaintextBytes=4,nativeArrayBoundBytes=7,nativeFrameBoundBytes=87)],
++        elapsedNanoseconds=1000000, baselineNativeActiveBytes=0, observedPeakNativeActiveBytes=1024,
++        maximumObservedNativeCacheBytes=0, finalNativeActiveBytes=0, finalNativeCacheBytes=0,
++        baselinePhysical=dict(currentBytes=1000000,lifetimeMaximumBytes=1100000),
++        finalPhysical=dict(currentBytes=1200000,lifetimeMaximumBytes=1500000),
++        conservativeObservedPhysicalIncrementBytes=500000, sentRecords=32, openedRecords=32,
++        publishedArrays=32, refusedRecords=0, frameLengths=[44]*32, plaintextByteCounts=[4]*32,
++        actualInputByteCounts=[4]*32, attemptedNativeShapes=[[1]]*32, attemptedNativeDTypes=['uint32']*32,
++        primingOperations=0, unauthenticatedArraysPublished=0,
++        verifiedPlaintextDigests=[hashlib.sha256(b'ZZZZ').hexdigest()]*32,
++        senderActiveBeforeCleanup=True,receiverActiveBeforeCleanup=True,
++        allTrackedNativeArraysReleased=True,nativeAllocationsReturnedToBaseline=True)
++    if kind == 'session':
++        r.update(caseID='session-only', rounds=1, geometries=[], sentRecords=0, openedRecords=0,
++            publishedArrays=0, frameLengths=[],plaintextByteCounts=[],actualInputByteCounts=[],attemptedNativeShapes=[],
++            attemptedNativeDTypes=[],verifiedPlaintextDigests=[])
++    elif kind == 'afterOpen':
++        r.update(caseID='failure-afterOpen',failureMode='afterOpen',rounds=1,
++            geometries=[dict(id='f32-512x5120',shape=[1,512,5120],dtype='float32',plaintextBytes=10485760,
++                nativeArrayBoundBytes=10518527,nativeFrameBoundBytes=10534911)],
++            sentRecords=1,openedRecords=1,publishedArrays=0,refusedRecords=1,frameLengths=[10485800],
++            plaintextByteCounts=[10485760],actualInputByteCounts=[10485760],attemptedNativeShapes=[[1,512,5120]],
++            attemptedNativeDTypes=['float32'],verifiedPlaintextDigests=[],receiverActiveBeforeCleanup=False)
++    return r
++
++
++class AllocationReports(unittest.TestCase):
++    def check(self, value, host=HOST):
++        return validate_result(json.dumps(value).encode(), value['caseID'], host)
++
++    def test_independent_scalar_session_and_post_open_refusal(self):
++        for kind in ('scalar','session','afterOpen'):
++            with self.subTest(kind=kind): self.check(report(kind))
++
++    def test_false_success_and_scope_or_geometry_substitution_refused(self):
++        for key, value in [('profileQualified',True),('unauthenticatedArraysPublished',1),('sentRecords',31),
++            ('openedRecords',33),('publishedArrays',0),('refusedRecords',1),('rounds',31),
++            ('frameLengths',[43]*32),('actualInputByteCounts',[8]*32),('verifiedPlaintextDigests',['0'*64]*32),
++            ('allTrackedNativeArraysReleased',False),('nativeAllocationsReturnedToBaseline',False),
++            ('senderActiveBeforeCleanup',False),('maximumInFlightOperations',2)]:
++            with self.subTest(key=key):
++                r=report();r[key]=value
++                with self.assertRaises(ValueError):self.check(r)
++
++    def test_native_footprint_deadline_and_identity_bounds(self):
++        for key,value in [('observedPeakNativeActiveBytes',256*1024**2+1),('finalNativeActiveBytes',1),
++            ('maximumObservedNativeCacheBytes',1),('finalNativeCacheBytes',1),('elapsedNanoseconds',55*10**9),
++            ('elapsedNanoseconds',True),('hardwareModel','OtherMac'),('osBuild','OtherOS')]:
++            with self.subTest(key=key):
++                r=report();r[key]=value
++                with self.assertRaises(ValueError):self.check(r)
++        r=report();r['finalPhysical']['lifetimeMaximumBytes']=1000000+512*1024**2+1
++        r['conservativeObservedPhysicalIncrementBytes']=512*1024**2+1
++        with self.assertRaises(ValueError):self.check(r)
++        host=copy.deepcopy(HOST);host['pageSizeBytes']=4096
++        with self.assertRaises(ValueError):self.check(report(),host)
++
++    def test_duplicate_unknown_and_unauthenticated_publication_refused(self):
++        raw=json.dumps(report()).encode();raw=raw[:-1]+b',"caseID":"fresh-u32-4"}'
++        with self.assertRaises(ValueError):validate_result(raw,'fresh-u32-4',HOST)
++        r=report();r['extra']=0
++        with self.assertRaises(ValueError):self.check(r)
++        r=report('afterOpen');r['publishedArrays']=1
++        with self.assertRaises(ValueError):self.check(r)
++
++
++if __name__ == '__main__': unittest.main()

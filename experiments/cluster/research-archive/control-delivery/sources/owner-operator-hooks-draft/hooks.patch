@@ -1,0 +1,123 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloRequest.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloRequest.swift
+@@ -8,6 +8,7 @@
+ func runQwenLongPrefillSoloRequest(loaded: LoadedModel,
+     admission: QwenRegistered9BLongPrefillReferenceAdmission,
+     onReady: () throws -> Void = {}, phaseRecorder: QwenPrefillPhaseRecorder? = nil,
++    ownerObserverFactory: QwenPrefillOwnerObserverFactory? = nil,
+     check: () throws -> Void
+ ) throws -> QwenLongPrefillSoloRequestResult {
+     var session: CBv2RequestSession?
+@@ -42,7 +43,9 @@
+                           step.frame.phase == .prefill, step.tokenIDs.count == 512 else {
+                         throw ProbeError("Long solo lost its admitted prompt frontier")
+                     }
+-                    let output = try fresh.prefillChunk(step.tokenIDs, final: step.frame.finalPromptChunk, check: checked)
++                    let observer = try qwenPrefillSelectedOwnerObserver(for: step.frame, factory: ownerObserverFactory)
++                    let output = try fresh.prefillChunk(step.tokenIDs, final: step.frame.finalPromptChunk,
++                        observer: observer, check: checked)
+                     let width = step.expectsLogits ? admission.request.vocabularySize : 1
+                     guard fresh.committedTokens == step.committedTokens,
+                           fresh.committedPromptTokens == step.committedTokens, fresh.decodeForwardCount == 0,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankRequest.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankRequest.swift
+@@ -10,6 +10,7 @@
+     local: QwenRegistered9BLongPrefillReferenceAdmission,
+     agreement: QwenLayerStageProfiledPrefillStartAgreement, collective: Collective,
+     onReady: () throws -> Void = {}, phaseRecorder: QwenPrefillPhaseRecorder? = nil,
++    ownerObserverFactory: QwenPrefillOwnerObserverFactory? = nil,
+     check: () throws -> Void
+ ) throws -> QwenLongPrefillRankRequestResult {
+     var context: QwenLayerStageProfiledPrefillComputeContext?
+@@ -58,11 +59,13 @@
+             let frames: [QwenLongPrefillRankFrame], ahead: Int, released: Int
+             let selection: QwenLayerStagePrefillTokenReceipt?
+             if transport.rank == 0 {
+-                let sent = try runQwenLongPrefillRankSender(context: fresh, transport: transport, trace: trace, check: checked)
++                let sent = try runQwenLongPrefillRankSender(context: fresh, transport: transport, trace: trace,
++                    ownerObserverFactory: ownerObserverFactory, check: checked)
+                 frames = sent.frames; ahead = sent.preparedAheadFrames
+                 released = sent.releasedOriginalBoundaryHandles; selection = nil
+             } else {
+-                let received = try runQwenLongPrefillRankReceiver(context: fresh, transport: transport, trace: trace, check: checked)
++                let received = try runQwenLongPrefillRankReceiver(context: fresh, transport: transport, trace: trace,
++                    ownerObserverFactory: ownerObserverFactory, check: checked)
+                 frames = received.frames; ahead = 0
+                 released = received.releasedOriginalBoundaryHandles; selection = received.selection
+             }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankSender.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankSender.swift
+@@ -12,6 +12,7 @@
+ /// neither policy sends another header until that drain has completed.
+ func runQwenLongPrefillRankSender(context: QwenLayerStageProfiledPrefillComputeContext,
+     transport: QwenLayerStageProfiledPrefillTransport, trace: QwenLongPrefillRankTrace,
++    ownerObserverFactory: QwenPrefillOwnerObserverFactory? = nil,
+     check: () throws -> Void
+ ) throws -> QwenLongPrefillRankSenderResult {
+     var prepared: QwenLayerStageProfiledPrefillPrepared?
+@@ -27,7 +28,8 @@
+     func prepare(_ step: QwenLayerStageProfiledPrefillRecordedRequest.Step) throws {
+         guard prepared == nil else { throw ProbeError("Long sender already owns its one prepared residual") }
+         try record("prepare.begin", frame: step.frame)
+-        prepared = try context.prepare(step, check: check)
++        let observer = try qwenPrefillSelectedOwnerObserver(for: step.frame, factory: ownerObserverFactory)
++        prepared = try context.prepare(step, observer: observer, check: check)
+         try record("prepare.committed", frame: step.frame)
+     }
+     for (index, step) in steps.enumerated() {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankReceiver.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankReceiver.swift
+@@ -11,6 +11,7 @@
+ /// finite argmax finishes before the transport issues its final consumed ACK.
+ func runQwenLongPrefillRankReceiver(context: QwenLayerStageProfiledPrefillComputeContext,
+     transport: QwenLayerStageProfiledPrefillTransport, trace: QwenLongPrefillRankTrace,
++    ownerObserverFactory: QwenPrefillOwnerObserverFactory? = nil,
+     check: () throws -> Void
+ ) throws -> QwenLongPrefillRankReceiverResult {
+     var frames: [QwenLongPrefillRankFrame] = []
+@@ -24,7 +25,8 @@
+             throw ProbeError("Long receiver lost its exact next native prompt frontier")
+         }
+         let received = try transport.receiveAndConsume(expectedFrame: step.frame, consume: { boundary in
+-            let commit = try context.consume(step, boundary: boundary, check: check)
++            let observer = try qwenPrefillSelectedOwnerObserver(for: step.frame, factory: ownerObserverFactory)
++            let commit = try context.consume(step, boundary: boundary, observer: observer, check: check)
+             guard commit.identity == context.identity, commit.frame == step.frame,
+                   commit.recordedRequestFingerprint == context.request.fingerprint,
+                   commit.committedTokens == step.committedTokens else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageProfiledPrefillComputeContext.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageProfiledPrefillComputeContext.swift
+@@ -37,6 +37,7 @@
+     }
+ 
+     func prepare(_ step: QwenLayerStageProfiledPrefillRecordedRequest.Step,
++                 observer: CBv2OwnerPhaseObserver? = nil,
+                  check: () throws -> Void) throws -> QwenLayerStageProfiledPrefillPrepared {
+         try operation {
+             try MLX.withError { error in
+@@ -45,7 +46,7 @@
+                 try requireNextStep(step)
+                 let expected = try admission.agreement.boundaryExpectation(for: step.frame)
+                 let output = try session.prefillChunk(step.tokenIDs, offset: step.frame.tokenOffset,
+-                    final: step.frame.finalPromptChunk, check: checked)
++                    final: step.frame.finalPromptChunk, observer: observer, check: checked)
+                 guard case .hidden(let boundary) = output else { throw ProbeError("Profiled producer returned the wrong output") }
+                 try validateProducedBoundary(boundary, expected: expected)
+                 let commit = try complete(step, output: boundary.array, kind: "hidden")
+@@ -56,6 +57,7 @@
+     }
+ 
+     func consume(_ step: QwenLayerStageProfiledPrefillRecordedRequest.Step, boundary: QwenLayerStageBoundary,
++                 observer: CBv2OwnerPhaseObserver? = nil,
+                  check: () throws -> Void) throws -> QwenLayerStagePrefillCommit {
+         try operation {
+             try MLX.withError { error in
+@@ -63,7 +65,7 @@
+                 guard identity.stageIndex == 1 else { throw ProbeError("Only profiled stage one consumes residuals") }
+                 try requireNextStep(step)
+                 let output = try session.prefillChunk(step.tokenIDs, offset: step.frame.tokenOffset,
+-                    final: step.frame.finalPromptChunk, incoming: boundary, check: checked)
++                    final: step.frame.finalPromptChunk, incoming: boundary, observer: observer, check: checked)
+                 let commit: QwenLayerStagePrefillCommit
+                 switch output {
+                 case .evaluationHandle(let array) where !step.frame.finalPromptChunk:

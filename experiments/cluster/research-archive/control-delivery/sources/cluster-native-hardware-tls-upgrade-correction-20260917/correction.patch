@@ -1,0 +1,65 @@
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/Tests/tls_server.go
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-upgrade-correction-20260917/Tests/tls_server.go
+@@ -20,6 +20,7 @@
+ 	"net/http"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"sync/atomic"
+ 	"time"
+ )
+@@ -78,6 +79,13 @@
+ 	counts := map[string]*atomic.Int64{}
+ 	tcpCounts := map[string]*atomic.Int64{}
+ 	servers := []*http.Server{}
++	// Fixture-only public observations: bounded selected fields, never keys/cookies.
++	requests := make(chan map[string]any, 8)
++	var droppedRequests atomic.Int64
++	bounded := func(value string, maximum int) string {
++		if len(value) > maximum { return value[:maximum] }
++		return value
++	}
+ 	for i, mode := range []string{"valid", "wrong-host", "expired"} {
+ 		key := must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+ 		dns := "localhost"
+@@ -97,7 +105,18 @@
+ 		count := new(atomic.Int64)
+ 		counts[mode] = count
+ 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+-			if r.TLS == nil || r.URL.Path != "/ws" || r.Header.Get("Upgrade") != "websocket" || r.Header.Get("Sec-WebSocket-Version") != "13" {
++			observation := map[string]any{"listener":mode, "method":bounded(r.Method,16), "path":bounded(r.URL.Path,128),
++				"upgrade":bounded(r.Header.Get("Upgrade"),128), "connection":bounded(r.Header.Get("Connection"),128),
++				"websocketVersion":bounded(r.Header.Get("Sec-WebSocket-Version"),16), "tlsPresent":r.TLS != nil, "outcome":"refused"}
++			if r.TLS != nil { observation["tlsHandshakeComplete"]=r.TLS.HandshakeComplete; observation["tlsVersion"]=r.TLS.Version }
++			observationPublished := false
++			publishObservation := func() {
++				if observationPublished { return }; observationPublished=true
++				select { case requests <- observation: default: droppedRequests.Add(1) }
++			}
++			defer publishObservation()
++			// Upgrade protocol names are case-insensitive (also net/http.Request.requiresHTTP1).
++			if r.TLS == nil || r.URL.Path != "/ws" || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || r.Header.Get("Sec-WebSocket-Version") != "13" {
+ 				http.Error(w, "refused", 400)
+ 				return
+ 			}
+@@ -120,6 +139,8 @@
+ 				return
+ 			}
+ 			count.Add(1)
++			observation["outcome"]="upgraded"
++			publishObservation() // before the hijacked socket read, which Shutdown does not join
+ 			// Hold the real upgraded TLS socket until the client cancels or deadline.
+ 			one := make([]byte, 1)
+ 			_, _ = buffer.Read(one)
+@@ -161,4 +182,11 @@
+ 		tcpResult[mode] = count.Load()
+ 	}
+ 	write("server-tcp-observation.json", must(json.Marshal(tcpResult)))
++	observedRequests := []map[string]any{}
++	for { select {
++	case observation := <-requests: observedRequests=append(observedRequests,observation)
++	default:
++		write("server-http-observation.json", must(json.Marshal(map[string]any{"requests":observedRequests,"dropped":droppedRequests.Load()})))
++		return
++	} }
+ }

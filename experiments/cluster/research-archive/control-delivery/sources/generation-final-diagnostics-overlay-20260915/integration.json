@@ -1,0 +1,70 @@
+{
+  "files": [
+    {
+      "source": "Sources/QwenGenerationDiagnosticBudget.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticBudget.swift",
+      "sha256": "797bf6b7d16eeeb2cc1d8b354b7ec623ad7e4c56bba522672e94144ccdad6559",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenGenerationDiagnosticCapture.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticCapture.swift",
+      "sha256": "01232148ede2a30a484d711e93843ef65458e98a93f272800a0833761407f97c",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenGenerationDiagnosticCompletion.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticCompletion.swift",
+      "sha256": "d2174f8637eb8c6d5476a46fddad416978e425f2a6825088f9741e987d824688",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenGenerationDiagnosticEvidence.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticEvidence.swift",
+      "sha256": "267827b751d8dd153e6b6cd3e708cb2440750ef359ca35c7eb17876a5c53e134",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenGenerationDiagnosticResources.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticResources.swift",
+      "sha256": "358e2e89f44fa02d4a69202819667361729da168d4b4f37bdf3e44ffee122f6a",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenLayerStageGenerationDriver.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "sha256": "d37a39677c3ce7a423dcaa82ac141fb0b29c4e08a787aae95cff727fe133e981",
+      "operation": "replace",
+      "baseSHA256": "88589aa0bc3ec1731e9146dc96a7288d760ef1d5997d7d277534dff8fb7834aa"
+    },
+    {
+      "source": "Sources/QwenLayerStageRankStateCapture.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageRankStateCapture.swift",
+      "sha256": "9631b547c9c6babe6fdb6ae058e61dc96450572d6a11db1500d6ae3b5aabf61b",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenLayerStageRecordedLogits.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageRecordedLogits.swift",
+      "sha256": "1fe7f75cbac12850fb8b10ceae6a9830203a2cef468e0e513016681726ffae69",
+      "operation": "add",
+      "baseSHA256": null
+    },
+    {
+      "source": "Sources/QwenRecordedState.swift",
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRecordedState.swift",
+      "sha256": "1830693f37608369acbf6683d842590b5b558374555a6c2d364fbefc5a64dede",
+      "operation": "add",
+      "baseSHA256": null
+    }
+  ],
+  "sharedRuntimeOnly": true,
+  "servingFacadeUnchanged": true,
+  "nativeTypecheckPending": true
+}

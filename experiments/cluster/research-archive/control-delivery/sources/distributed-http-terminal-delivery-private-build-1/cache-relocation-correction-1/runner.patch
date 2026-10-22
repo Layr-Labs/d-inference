@@ -1,0 +1,20 @@
+--- frozen/run-provider-tests.py
++++ run-provider-tests-2.py
+@@ -4,7 +4,7 @@
+ from pathlib import Path
+ 
+ sys.dont_write_bytecode = True
+-PLAN = Path(__file__).resolve().parent
++PLAN = Path('/Users/developer/DarkbloomDev/cluster-research/distributed-http-terminal-delivery-integration-plan')
+ spec = importlib.util.spec_from_file_location('preparation', PLAN / 'prepare-private.py')
+ prep = importlib.util.module_from_spec(spec)
+ spec.loader.exec_module(prep)
+@@ -18,7 +18,7 @@
+ integration = json.loads((PLAN / 'integration.json').read_text())
+ for item in integration['files']:
+     assert prep.sha(workspace / item['path']) == item['sha256']
+-run = output / 'provider-tests-1'
++run = output / 'provider-tests-2'
+ run.mkdir(exist_ok=False)
+ command = integration['swiftCommand']
+ began = time.monotonic()

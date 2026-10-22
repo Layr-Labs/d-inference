@@ -1,0 +1,11 @@
+--- original/prepare_expected.py
++++ proposed/prepare_expected.py
+@@ -45,7 +45,7 @@
+     result = expected(*(item['raw'] for _, _, item in saved), args.epoch,
+                       args.storage_commitment_sha256, args.numerical_policy_sha256)
+     for path, limit, item in saved:
+-        exact(snapshot(path, limit, keep=False), {k:v for k,v in item.items() if k != 'raw'}, 'input recheck')
++        exact(snapshot(path, limit, keep=False), dict(item, raw=None), 'input recheck')
+     write_result(args.output, result)
+     print(json.dumps(dict(status='prepared', candidateInputsRead=False, nativeExecutionBindingVerified=False)))
+ 

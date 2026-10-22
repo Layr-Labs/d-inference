@@ -1,0 +1,304 @@
+--- a/libs/mlx-swift/Source/Cmlx/include/mlx/c/distributed_group.h
++++ b/libs/mlx-swift/Source/Cmlx/include/mlx/c/distributed_group.h
+@@ -4,6 +4,8 @@
+ #define MLX_DISTRIBUTED_GROUP_H
+ 
+ #include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
+ 
+ #include "mlx/c/stream.h"
+ 
+@@ -42,6 +44,33 @@
+     const char* bk /* may be null */);
+ 
+ /**
++ * Synchronous owner-supplied JACCL bootstrap exchange. Return zero only after
++ * writing exactly dst_bytes, in rank order. Pointers must not escape the call.
++ * Callbacks must not throw or reenter MLX. The owner bounds waits and authenticates
++ * its channel, epoch, rank, sequence, lengths and native topology.
++ */
++typedef int (*mlx_distributed_bootstrap_gather)(
++    void* context, int rank, int size, uint64_t sequence,
++    const char* src, size_t src_bytes, char* dst, size_t dst_bytes);
++typedef void (*mlx_distributed_bootstrap_release)(void* context);
++
++/**
++ * Strict JACCL initialization through an owner callback, without TCPAllGather.
++ * Existing cached JACCL initialization is rejected; it is not reauthenticated.
++ * Both callbacks are required. When release_context is non-null, this call
++ * consumes one context reference on every path. Release can occur only when
++ * the native backend cache is destroyed, not when one group handle is freed.
++ * Callback failure is permanent. This API itself does not authenticate bytes.
++ * Bounds: 2..64 ranks, 1..1MiB per rank, at most 8MiB total; the total bound
++ * must fit all ranks at their per-rank bound. Use a fresh worker per epoch.
++ */
++int mlx_distributed_init_jaccl_with_bootstrap(
++    mlx_distributed_group* res, int expected_rank, int expected_size,
++    size_t maximum_rank_bytes, size_t maximum_total_bytes,
++    mlx_distributed_bootstrap_gather gather, void* context,
++    mlx_distributed_bootstrap_release release_context);
++
++/**
+  * Get the rank.
+  */
+ int mlx_distributed_group_rank(mlx_distributed_group group);
+--- a/libs/mlx-swift/Source/Cmlx/include-framework/mlx-c-distributed_group.h
++++ b/libs/mlx-swift/Source/Cmlx/include-framework/mlx-c-distributed_group.h
+@@ -4,6 +4,8 @@
+ #define MLX_DISTRIBUTED_GROUP_H
+ 
+ #include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
+ 
+ #include <Cmlx/mlx-c-stream.h>
+ 
+@@ -42,6 +44,33 @@
+     const char* bk /* may be null */);
+ 
+ /**
++ * Synchronous owner-supplied JACCL bootstrap exchange. Return zero only after
++ * writing exactly dst_bytes, in rank order. Pointers must not escape the call.
++ * Callbacks must not throw or reenter MLX. The owner bounds waits and authenticates
++ * its channel, epoch, rank, sequence, lengths and native topology.
++ */
++typedef int (*mlx_distributed_bootstrap_gather)(
++    void* context, int rank, int size, uint64_t sequence,
++    const char* src, size_t src_bytes, char* dst, size_t dst_bytes);
++typedef void (*mlx_distributed_bootstrap_release)(void* context);
++
++/**
++ * Strict JACCL initialization through an owner callback, without TCPAllGather.
++ * Existing cached JACCL initialization is rejected; it is not reauthenticated.
++ * Both callbacks are required. When release_context is non-null, this call
++ * consumes one context reference on every path. Release can occur only when
++ * the native backend cache is destroyed, not when one group handle is freed.
++ * Callback failure is permanent. This API itself does not authenticate bytes.
++ * Bounds: 2..64 ranks, 1..1MiB per rank, at most 8MiB total; the total bound
++ * must fit all ranks at their per-rank bound. Use a fresh worker per epoch.
++ */
++int mlx_distributed_init_jaccl_with_bootstrap(
++    mlx_distributed_group* res, int expected_rank, int expected_size,
++    size_t maximum_rank_bytes, size_t maximum_total_bytes,
++    mlx_distributed_bootstrap_gather gather, void* context,
++    mlx_distributed_bootstrap_release release_context);
++
++/**
+  * Get the rank.
+  */
+ int mlx_distributed_group_rank(mlx_distributed_group group);
+--- /dev/null
++++ b/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/distributed_bootstrap.cpp
+@@ -0,0 +1,42 @@
++#include <memory>
++
++#include "mlx/c/distributed_group.h"
++#include "mlx/c/error.h"
++#include "mlx/c/private/distributed_bootstrap.h"
++#include "mlx/c/private/mlx.h"
++
++extern "C" int mlx_distributed_init_jaccl_with_bootstrap(
++    mlx_distributed_group* res,
++    int expected_rank,
++    int expected_size,
++    size_t maximum_rank_bytes,
++    size_t maximum_total_bytes,
++    mlx_distributed_bootstrap_gather gather,
++    void* context,
++    mlx_distributed_bootstrap_release release_context) {
++  try {
++    mlx::c::detail::BootstrapContext owner(context, release_context);
++    if (!res) {
++      throw std::invalid_argument("[distributed] Missing owner bootstrap result");
++    }
++    auto state = std::make_shared<mlx::c::detail::BootstrapState>(
++        std::move(owner), expected_rank, expected_size,
++        maximum_rank_bytes, maximum_total_bytes, gather);
++    auto group = mlx::core::distributed::init(
++        true, "jaccl", [state](int rank, int size) {
++          state->bind(rank, size);
++          return [state](const char* src, char* dst, size_t n_bytes) {
++            state->all_gather(src, dst, n_bytes);
++          };
++        });
++    state->require_fresh();
++    mlx_distributed_group_set_(*res, std::move(group));
++    return 0;
++  } catch (std::exception& error) {
++    mlx_error(error.what());
++    return 1;
++  } catch (...) {
++    mlx_error("[distributed] Unknown owner bootstrap failure");
++    return 1;
++  }
++}
+--- a/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/distributed_group.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/distributed_group.h
+@@ -4,6 +4,8 @@
+ #define MLX_DISTRIBUTED_GROUP_H
+ 
+ #include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
+ 
+ #include "mlx/c/stream.h"
+ 
+@@ -42,6 +44,33 @@
+     const char* bk /* may be null */);
+ 
+ /**
++ * Synchronous owner-supplied JACCL bootstrap exchange. Return zero only after
++ * writing exactly dst_bytes, in rank order. Pointers must not escape the call.
++ * Callbacks must not throw or reenter MLX. The owner bounds waits and authenticates
++ * its channel, epoch, rank, sequence, lengths and native topology.
++ */
++typedef int (*mlx_distributed_bootstrap_gather)(
++    void* context, int rank, int size, uint64_t sequence,
++    const char* src, size_t src_bytes, char* dst, size_t dst_bytes);
++typedef void (*mlx_distributed_bootstrap_release)(void* context);
++
++/**
++ * Strict JACCL initialization through an owner callback, without TCPAllGather.
++ * Existing cached JACCL initialization is rejected; it is not reauthenticated.
++ * Both callbacks are required. When release_context is non-null, this call
++ * consumes one context reference on every path. Release can occur only when
++ * the native backend cache is destroyed, not when one group handle is freed.
++ * Callback failure is permanent. This API itself does not authenticate bytes.
++ * Bounds: 2..64 ranks, 1..1MiB per rank, at most 8MiB total; the total bound
++ * must fit all ranks at their per-rank bound. Use a fresh worker per epoch.
++ */
++int mlx_distributed_init_jaccl_with_bootstrap(
++    mlx_distributed_group* res, int expected_rank, int expected_size,
++    size_t maximum_rank_bytes, size_t maximum_total_bytes,
++    mlx_distributed_bootstrap_gather gather, void* context,
++    mlx_distributed_bootstrap_release release_context);
++
++/**
+  * Get the rank.
+  */
+ int mlx_distributed_group_rank(mlx_distributed_group group);
+--- /dev/null
++++ b/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/private/distributed_bootstrap.h
+@@ -0,0 +1,121 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <limits>
++#include <mutex>
++#include <stdexcept>
++#include <utility>
++#include <vector>
++
++namespace mlx::c::detail {
++
++using BootstrapGather = int (*)(
++    void*, int, int, uint64_t, const char*, size_t, char*, size_t);
++using BootstrapRelease = void (*)(void*);
++
++class BootstrapContext {
++ public:
++  BootstrapContext(void* value, BootstrapRelease release)
++      : value_(value), release_(release) {}
++  BootstrapContext(const BootstrapContext&) = delete;
++  BootstrapContext& operator=(const BootstrapContext&) = delete;
++  BootstrapContext(BootstrapContext&& other) noexcept
++      : value_(other.value_), release_(other.release_) {
++    other.release_ = nullptr;
++  }
++  ~BootstrapContext() {
++    if (release_) {
++      release_(value_);
++    }
++  }
++  void* value() const { return value_; }
++  bool owned() const { return release_ != nullptr; }
++
++ private:
++  void* value_;
++  BootstrapRelease release_;
++};
++
++class BootstrapState {
++ public:
++  BootstrapState(
++      BootstrapContext context,
++      int rank,
++      int size,
++      size_t maximum_rank_bytes,
++      size_t maximum_total_bytes,
++      BootstrapGather gather)
++      : context_(std::move(context)),
++        rank_(rank),
++        size_(size),
++        maximum_rank_bytes_(maximum_rank_bytes),
++        maximum_total_bytes_(maximum_total_bytes),
++        gather_(gather) {
++    if (!context_.owned() || !gather_ || rank < 0 || rank >= size ||
++        size < 2 || size > 64 || maximum_rank_bytes == 0 ||
++        maximum_rank_bytes > 1024 * 1024 || maximum_total_bytes == 0 ||
++        maximum_total_bytes > 8 * 1024 * 1024 ||
++        maximum_rank_bytes > maximum_total_bytes / static_cast<size_t>(size)) {
++      throw std::invalid_argument("[distributed] Invalid owner bootstrap bounds");
++    }
++  }
++
++  void bind(int rank, int size) {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (failed_ || bound_ || rank != rank_ || size != size_) {
++      failed_ = true;
++      throw std::runtime_error("[distributed] Owner bootstrap rank or size differs");
++    }
++    bound_ = true;
++  }
++
++  void require_fresh() {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (!bound_ || failed_) {
++      throw std::runtime_error("[distributed] Owner bootstrap requires fresh JACCL initialization");
++    }
++  }
++
++  void all_gather(const char* src, char* dst, size_t n_bytes) {
++    std::lock_guard<std::mutex> lock(mutex_);
++    try {
++      if (failed_ || !bound_ || !src || !dst || n_bytes == 0 ||
++          n_bytes > maximum_rank_bytes_ ||
++          n_bytes > maximum_total_bytes_ / static_cast<size_t>(size_) ||
++          sequence_ == std::numeric_limits<uint64_t>::max()) {
++        throw std::runtime_error("[distributed] Owner bootstrap contribution is outside bounds");
++      }
++      const size_t total = n_bytes * static_cast<size_t>(size_);
++      std::vector<char> local(src, src + n_bytes);
++      std::vector<char> gathered(total);
++      if (gather_(context_.value(), rank_, size_, sequence_, local.data(),
++                  n_bytes, gathered.data(), total) != 0) {
++        throw std::runtime_error("[distributed] Owner bootstrap exchange failed");
++      }
++      if (std::memcmp(local.data(), gathered.data() + rank_ * n_bytes, n_bytes) != 0) {
++        throw std::runtime_error("[distributed] Owner bootstrap local contribution differs");
++      }
++      std::memcpy(dst, gathered.data(), total);
++      ++sequence_;
++    } catch (...) {
++      failed_ = true;
++      throw;
++    }
++  }
++
++ private:
++  BootstrapContext context_;
++  int rank_;
++  int size_;
++  size_t maximum_rank_bytes_;
++  size_t maximum_total_bytes_;
++  BootstrapGather gather_;
++  std::mutex mutex_;
++  uint64_t sequence_{0};
++  bool bound_{false};
++  bool failed_{false};
++};
++
++} // namespace mlx::c::detail

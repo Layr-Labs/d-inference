@@ -1,0 +1,15 @@
+{
+  "actorCandidateSHA256": "0af452248f82768929f16d96005628828d0a14cf95cb624f332cfb8c14831cf2",
+  "actorManifestSHA256": "0f8d48a333f6e6c4be2a0be373ad28ef82bce06b33a792ef243e311f448053cb",
+  "files": [
+    {
+      "afterSHA256": "628ac962efb0733129e330d6409c89240351d4cdff552d1cd12b614794f23ee7",
+      "beforeSHA256": "405a2edd286403e1f9a2ea915b181b51993218a15fe18cf06e6e105704d748a7",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-member-ready-eligibility-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift"
+    }
+  ],
+  "priorOutput": "/Users/developer/DarkbloomDev/cluster-research/cluster-member-install-actor-checks-20260917",
+  "priorWrapper": "/Users/developer/DarkbloomDev/cluster-research/cluster-member-install-actor-correction-20260917",
+  "schema": "cluster_member_ready_eligibility_correction_v1"
+}

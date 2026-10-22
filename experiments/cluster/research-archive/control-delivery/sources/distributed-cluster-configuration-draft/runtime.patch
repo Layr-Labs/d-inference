@@ -1,0 +1,914 @@
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
+@@ -0,0 +1,90 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Saved operator choices, not an enabled backend or a worker admission.
++public struct ClusterConfiguration: Codable, Sendable, Equatable {
++    public static let schemaName = "darkbloom_cluster_configuration_v1"
++    public let schema: String
++    public let clusterID: String
++    public let memberID: String
++    public let role: Role
++    public let publicModelID: String
++    public let capabilitySHA256: String
++    public let selectedPlanSHA256: String
++    public let chunkTokens: Int
++    public let requestTimeoutSeconds: Int
++    public let peers: [Peer]
++    public let coordinator: Coordinator
++    public let trust: Trust
++    public let tokenizerFiles: [TokenizerFile]
++
++    public enum Role: String, Codable, Sendable { case leader, follower }
++    public struct Peer: Codable, Sendable, Equatable {
++        public let id: String
++        public let rank: Int
++        public let host: String
++        public let port: Int
++        public let user: String
++        public let ownerExecutable: String
++        public let workerExecutable: String
++        public let modelDirectory: String
++        public let runtimeBinarySHA256: String
++        public let jacclDevice: String
++    }
++    public struct Coordinator: Codable, Sendable, Equatable {
++        public let address: String
++        public let port: Int
++    }
++    public struct Trust: Codable, Sendable, Equatable {
++        public let identityFile: String
++        public let knownHostsFile: String
++        public let knownHostsSHA256: String
++    }
++    public struct TokenizerFile: Codable, Sendable, Equatable {
++        public enum Purpose: String, Codable, Sendable { case tokenizer, chatTemplate }
++        public let path: String
++        public let sha256: String
++        public let purpose: Purpose
++    }
++
++    public var localRank: Int { role == .leader ? 0 : 1 }
++
++    func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
++        func require(_ value: Bool, _ message: String) throws {
++            guard value else { throw ClusterConfigurationError.invalid(message) }
++        }
++        try require(schema == Self.schemaName, "Unsupported cluster configuration schema")
++        try require(ClusterConfigurationSyntax.label(clusterID) && ClusterConfigurationSyntax.label(memberID), "Invalid cluster/member identity")
++        try require(!publicModelID.isEmpty && publicModelID.utf8.count <= 512
++            && !publicModelID.unicodeScalars.contains(where: { $0.value < 33 || $0.value == 127 }), "Invalid public model identity")
++        try require(ClusterConfigurationSyntax.hash(capabilitySHA256) && capabilitySHA256 == rawCapabilitySHA256,
++                    "Cluster capability pin differs")
++        try require(ClusterConfigurationSyntax.hash(selectedPlanSHA256), "Invalid selected Plan pin")
++        _ = try capability.selection(planSHA256: selectedPlanSHA256)
++        try require((1...capability.profile.maximumChunkTokens).contains(chunkTokens)
++            && (1...capability.maxLifetimeSeconds).contains(requestTimeoutSeconds), "Cluster request bounds exceed the runtime capability")
++        try require(peers.count == 2 && peers.map(\.rank) == [0, 1]
++            && Set(peers.map(\.id)).count == 2, "Expected two distinct peers in rank order")
++        try require(peers[localRank].id == memberID, "Leader/follower role does not match the local ranked member")
++        try require(peers[0].host != peers[1].host, "Two cluster peers require distinct host identities")
++        for peer in peers {
++            try require(ClusterConfigurationSyntax.label(peer.id) && ClusterConfigurationSyntax.host(peer.host)
++                && ClusterConfigurationSyntax.label(peer.user, maximum: 64) && (1...65535).contains(peer.port), "Invalid SSH peer endpoint")
++            try require([peer.ownerExecutable, peer.workerExecutable, peer.modelDirectory].allSatisfy(ClusterConfigurationSyntax.sshPath),
++                        "Peer installation paths must be absolute and shell-safe")
++            // The first compatibility contract is one installed native build on
++            // both hosts. This pin is checked on installation/start, not here.
++            try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, "Peer native build differs from the capability")
++            try require(ClusterConfigurationSyntax.label(peer.jacclDevice, maximum: 64), "Invalid JACCL device name")
++        }
++        try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
++        try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)
++            && trust.identityFile != trust.knownHostsFile && ClusterConfigurationSyntax.hash(trust.knownHostsSHA256), "Invalid existing SSH trust inputs")
++        try require((1...16).contains(tokenizerFiles.count)
++            && Set(tokenizerFiles.map(\.path)).count == tokenizerFiles.count
++            && tokenizerFiles.contains(where: { $0.purpose == .tokenizer }), "Missing or duplicate tokenizer metadata pins")
++        for file in tokenizerFiles {
++            try require(ClusterConfigurationSyntax.relativePath(file.path) && ClusterConfigurationSyntax.hash(file.sha256), "Invalid tokenizer/template file pin")
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift
+@@ -0,0 +1,68 @@
++import Foundation
++import CryptoKit
++import DarkbloomClusterProtocol
++
++public enum ClusterConfigurationCodec {
++    public static let maximumBytes = 16 * 1024
++
++    /// Accept bounded pretty JSON as input, preserving strings and checking
++    /// duplicate keys/integer syntax before Foundation can discard information.
++    public static func decode(_ data: Data, capability: ClusterRuntimeCapability,
++                              capabilitySHA256: String) throws -> ClusterConfiguration {
++        guard !data.isEmpty, data.count <= maximumBytes else {
++            throw ClusterConfigurationError.invalid("Cluster configuration exceeded its byte bound")
++        }
++        var scan = Data(), quoted = false, escaped = false
++        for byte in data {
++            if quoted {
++                scan.append(byte)
++                if escaped { escaped = false }
++                else if byte == 92 { escaped = true }
++                else if byte == 34 { quoted = false }
++            } else {
++                if byte == 34 { quoted = true }
++                scan.append([9, 10, 13].contains(byte) ? 32 : byte)
++            }
++        }
++        scan.append(10)
++        try validateClusterWorkerEnvelope(scan, commandStream: true)
++        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
++            throw ClusterConfigurationError.invalid("Cluster configuration must be an object")
++        }
++        try keys(object, ["schema", "clusterID", "memberID", "role", "publicModelID", "capabilitySHA256", "selectedPlanSHA256",
++                          "chunkTokens", "requestTimeoutSeconds", "peers", "coordinator", "trust", "tokenizerFiles"])
++        guard let peers = object["peers"] as? [[String: Any]], peers.count == 2,
++              let coordinator = object["coordinator"] as? [String: Any],
++              let trust = object["trust"] as? [String: Any],
++              let files = object["tokenizerFiles"] as? [[String: Any]], (1...16).contains(files.count) else {
++            throw ClusterConfigurationError.invalid("Malformed cluster configuration objects")
++        }
++        for peer in peers {
++            try keys(peer, ["id", "rank", "host", "port", "user", "ownerExecutable", "workerExecutable", "modelDirectory", "runtimeBinarySHA256", "jacclDevice"])
++        }
++        try keys(coordinator, ["address", "port"])
++        try keys(trust, ["identityFile", "knownHostsFile", "knownHostsSHA256"])
++        for file in files { try keys(file, ["path", "sha256", "purpose"]) }
++        let value = try JSONDecoder().decode(ClusterConfiguration.self, from: data)
++        try value.validate(capability: capability, rawCapabilitySHA256: capabilitySHA256)
++        return value
++    }
++
++    public static func encode(_ value: ClusterConfiguration, capability: ClusterRuntimeCapability,
++                              capabilitySHA256: String) throws -> Data {
++        try value.validate(capability: capability, rawCapabilitySHA256: capabilitySHA256)
++        let encoder = JSONEncoder()
++        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
++        var data = try encoder.encode(value); data.append(10)
++        guard data.count <= maximumBytes else { throw ClusterConfigurationError.invalid("Cluster configuration exceeded its byte bound") }
++        return data
++    }
++
++    public static func sha256(_ data: Data) -> String {
++        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++    }
++
++    private static func keys(_ value: [String: Any], _ expected: Set<String>) throws {
++        guard Set(value.keys) == expected else { throw ClusterConfigurationError.invalid("Unknown or missing cluster configuration fields") }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationFiles.swift
+@@ -0,0 +1,254 @@
++import Foundation
++import Darwin
++
++public enum ClusterConfigurationError: Error, Equatable, CustomStringConvertible {
++    case invalid(String)
++    case busy
++    case commitUncertain(String)
++
++    public var description: String {
++        switch self {
++        case .invalid(let message): return message
++        case .busy: return "Configuration or native device lease is currently held"
++        case .commitUncertain(let path): return "Configuration publication requires inspection: \(path)"
++        }
++    }
++}
++
++/// Bounded configuration files only. This does not read model weights or private keys.
++/// Locks coordinate the provider's existing stable `<name>.lock` convention.
++enum ClusterConfigurationFiles {
++    struct Directory {
++        let descriptor: Int32
++        let path: String
++        let identity: stat
++
++        func check() throws {
++            var current = stat(), named = stat()
++            guard fstat(descriptor, &current) == 0, lstat(path, &named) == 0,
++                  current.st_dev == identity.st_dev, current.st_ino == identity.st_ino,
++                  named.st_dev == identity.st_dev, named.st_ino == identity.st_ino,
++                  current.st_uid == geteuid(), current.st_mode & 0o022 == 0,
++                  current.st_mode & S_IFMT == S_IFDIR, current.st_nlink > 0 else {
++                throw ClusterConfigurationError.invalid("Configuration directory changed")
++            }
++        }
++    }
++
++    static func requireAbsolute(_ path: String) throws {
++        guard path.hasPrefix("/"), path != "/", path.utf8.count <= 4096,
++              !path.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
++              !path.split(separator: "/", omittingEmptySubsequences: false).dropFirst().contains(where: {
++                  $0.isEmpty || $0 == "." || $0 == ".."
++              }) else { throw ClusterConfigurationError.invalid("Expected a canonical absolute file path") }
++    }
++
++    static func directory(_ url: URL, create: Bool = false, privateMode: Bool = false) throws -> Directory {
++        guard url.isFileURL else { throw ClusterConfigurationError.invalid("Expected a local directory") }
++        try requireAbsolute(url.path)
++        var fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
++        guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot open configuration root") }
++        do {
++            for component in url.path.split(separator: "/") {
++                let name = String(component)
++                var next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++                if next < 0 && errno == ENOENT && create {
++                    guard mkdirat(fd, name, 0o700) == 0 || errno == EEXIST else {
++                        throw ClusterConfigurationError.invalid("Cannot create configuration directory")
++                    }
++                    next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++                }
++                guard next >= 0 else { throw ClusterConfigurationError.invalid("Configuration directory is missing or follows a link at component \(name) (errno \(errno))") }
++                Darwin.close(fd); fd = next
++            }
++            var value = stat()
++            guard fstat(fd, &value) == 0, value.st_uid == geteuid(), value.st_mode & 0o022 == 0,
++                  !privateMode || value.st_mode & 0o077 == 0 else {
++                throw ClusterConfigurationError.invalid("Configuration directory permissions differ")
++            }
++            let result = Directory(descriptor: fd, path: url.path, identity: value)
++            try result.check(); return result
++        } catch { Darwin.close(fd); throw error }
++    }
++
++    static func read(_ url: URL, maximum: Int, privateMode: Bool = false) throws -> Data {
++        try requireAbsolute(url.path)
++        let parent = try directory(url.deletingLastPathComponent())
++        defer { Darwin.close(parent.descriptor) }
++        guard let data = try readAt(parent, name: url.lastPathComponent, maximum: maximum, privateMode: privateMode) else {
++            throw ClusterConfigurationError.invalid("Configuration input does not exist")
++        }
++        return data
++    }
++
++    static func readAt(_ parent: Directory, name: String, maximum: Int,
++                       privateMode: Bool = false) throws -> Data? {
++        try parent.check()
++        try requireName(name)
++        guard (1...1_048_576).contains(maximum) else { throw ClusterConfigurationError.invalid("Invalid configuration byte bound") }
++        let fd = openat(parent.descriptor, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
++        if fd < 0 && errno == ENOENT { return nil }
++        guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot open configuration input") }
++        defer { Darwin.close(fd) }
++        var before = stat(), after = stat(), named = stat()
++        guard fstat(fd, &before) == 0, regular(before), before.st_size > 0,
++              before.st_size <= maximum, !privateMode || before.st_mode & 0o077 == 0 else {
++            throw ClusterConfigurationError.invalid("Configuration input is unsafe, empty or oversized")
++        }
++        var result = Data(), buffer = [UInt8](repeating: 0, count: min(maximum + 1, 4096))
++        while true {
++            let n = Darwin.read(fd, &buffer, buffer.count)
++            if n < 0 && errno == EINTR { continue }
++            guard n >= 0, n <= maximum - result.count else { throw ClusterConfigurationError.invalid("Configuration input exceeded its byte bound") }
++            if n == 0 { break }
++            result.append(contentsOf: buffer.prefix(n))
++        }
++        guard fstat(fd, &after) == 0,
++              fstatat(parent.descriptor, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
++              unchanged(before, after), unchanged(after, named), result.count == before.st_size else {
++            throw ClusterConfigurationError.invalid("Configuration input changed while reading")
++        }
++        try parent.check(); return result
++    }
++
++    /// Check ownership/mode/type without reading a credential's contents.
++    static func credentialMetadata(_ url: URL, privateMode: Bool) throws {
++        try requireAbsolute(url.path)
++        let parent = try directory(url.deletingLastPathComponent())
++        defer { Darwin.close(parent.descriptor) }
++        let fd = openat(parent.descriptor, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
++        guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot open configured credential") }
++        defer { Darwin.close(fd) }
++        var value = stat(), named = stat()
++        guard fstat(fd, &value) == 0, regular(value), value.st_size > 0,
++              !privateMode || value.st_mode & 0o077 == 0,
++              fstatat(parent.descriptor, url.lastPathComponent, &named, AT_SYMLINK_NOFOLLOW) == 0,
++              unchanged(value, named) else { throw ClusterConfigurationError.invalid("Configured credential is unsafe") }
++        try parent.check()
++    }
++
++    static func withLock<T>(_ parent: Directory, name: String, requireEmpty: Bool = false,
++                            privateMode: Bool = false, _ body: () throws -> T) throws -> T {
++        try parent.check()
++        try requireName(name)
++        let fd = openat(parent.descriptor, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
++        guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot open configuration lock") }
++        defer { Darwin.close(fd) }
++        var value = stat(), named = stat()
++        guard fstat(fd, &value) == 0, regular(value), !privateMode || value.st_mode & 0o077 == 0,
++              fstatat(parent.descriptor, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
++              value.st_dev == named.st_dev, value.st_ino == named.st_ino else {
++            throw ClusterConfigurationError.invalid("Configuration lock is unsafe")
++        }
++        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw ClusterConfigurationError.busy }
++        defer { _ = flock(fd, LOCK_UN) }
++        guard fstat(fd, &value) == 0, !requireEmpty || value.st_size == 0 else {
++            throw ClusterConfigurationError.invalid("Unresolved native ownership journal; explicit recovery required")
++        }
++        try parent.check()
++        let result = try body()
++        guard fstat(fd, &value) == 0, regular(value), !privateMode || value.st_mode & 0o077 == 0,
++              !requireEmpty || value.st_size == 0,
++              fstatat(parent.descriptor, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
++              value.st_dev == named.st_dev, value.st_ino == named.st_ino else {
++            throw ClusterConfigurationError.invalid("Configuration lock changed")
++        }
++        try parent.check()
++        return result
++    }
++
++    /// Immutable, content-addressed publication. linkat never replaces an existing
++    /// destination; readers can see only a complete fsynced file. The temporary
++    /// link is removed before returning, so the admitted file has one link.
++    static func publish(_ data: Data, parent: Directory, name: String, maximum: Int) throws {
++        try requireName(name)
++        guard !data.isEmpty, data.count <= maximum else { throw ClusterConfigurationError.invalid("Configuration publication exceeded its bound") }
++        if let existing = try readAt(parent, name: name, maximum: maximum, privateMode: true) {
++            guard existing == data else { throw ClusterConfigurationError.invalid("Existing configuration content differs") }
++            return
++        }
++        let temporary = ".cluster-" + UUID().uuidString.lowercased() + ".tmp"
++        let fd = openat(parent.descriptor, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++        guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot stage configuration file") }
++        defer { Darwin.close(fd); _ = unlinkat(parent.descriptor, temporary, 0) }
++        try write(data, descriptor: fd)
++        try parent.check()
++        guard linkat(parent.descriptor, temporary, parent.descriptor, name, 0) == 0 else {
++            throw ClusterConfigurationError.invalid("Configuration publication destination appeared")
++        }
++        guard unlinkat(parent.descriptor, temporary, 0) == 0, fsync(parent.descriptor) == 0 else {
++            throw ClusterConfigurationError.commitUncertain(parent.path + "/" + name)
++        }
++        try parent.check()
++        guard try readAt(parent, name: name, maximum: maximum, privateMode: true) == data else {
++            throw ClusterConfigurationError.commitUncertain(parent.path + "/" + name)
++        }
++    }
++
++    /// Reload, transform, and atomically replace one provider TOML under the same
++    /// stable sidecar lock used by existing CLI writers. A transform failure leaves
++    /// the old bytes intact. Published cluster records may remain unreferenced if
++    /// this later pointer update fails; they are never treated as enabled setup.
++    static func update(_ url: URL, maximum: Int, transform: (Data?) throws -> Data) throws {
++        try requireAbsolute(url.path)
++        let parent = try directory(url.deletingLastPathComponent(), create: true)
++        defer { Darwin.close(parent.descriptor) }
++        try withLock(parent, name: url.lastPathComponent + ".lock") {
++            let original = try readAt(parent, name: url.lastPathComponent, maximum: maximum)
++            let next = try transform(original)
++            guard !next.isEmpty, next.count <= maximum else { throw ClusterConfigurationError.invalid("Provider configuration serialization failed or exceeded its bound") }
++            if original == next { return }
++            if original == nil {
++                try publish(next, parent: parent, name: url.lastPathComponent, maximum: maximum)
++                return
++            }
++            let temporary = ".cluster-provider-" + UUID().uuidString.lowercased() + ".tmp"
++            let fd = openat(parent.descriptor, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++            guard fd >= 0 else { throw ClusterConfigurationError.invalid("Cannot stage provider configuration") }
++            defer { Darwin.close(fd); _ = unlinkat(parent.descriptor, temporary, 0) }
++            try write(next, descriptor: fd)
++            guard try readAt(parent, name: url.lastPathComponent, maximum: maximum) == original else {
++                throw ClusterConfigurationError.invalid("Provider configuration changed outside its lock")
++            }
++            try parent.check()
++            guard renameat(parent.descriptor, temporary, parent.descriptor, url.lastPathComponent) == 0 else {
++                throw ClusterConfigurationError.invalid("Cannot publish provider configuration")
++            }
++            do {
++                guard fsync(parent.descriptor) == 0 else { throw ClusterConfigurationError.commitUncertain(url.path) }
++                try parent.check()
++                guard try readAt(parent, name: url.lastPathComponent, maximum: maximum, privateMode: true) == next else {
++                    throw ClusterConfigurationError.commitUncertain(url.path)
++                }
++            } catch { throw ClusterConfigurationError.commitUncertain(url.path) }
++        }
++    }
++
++    private static func write(_ data: Data, descriptor: Int32) throws {
++        var offset = 0
++        while offset < data.count {
++            let n = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), data.count - offset) }
++            if n < 0 && errno == EINTR { continue }
++            guard n > 0 else { throw ClusterConfigurationError.invalid("Configuration write failed") }
++            offset += n
++        }
++        guard fsync(descriptor) == 0 else { throw ClusterConfigurationError.invalid("Configuration file sync failed") }
++    }
++
++    private static func regular(_ value: stat) -> Bool {
++        value.st_mode & S_IFMT == S_IFREG && value.st_uid == geteuid() && value.st_nlink == 1 && value.st_mode & 0o022 == 0
++    }
++
++    private static func requireName(_ name: String) throws {
++        guard !name.isEmpty, name.utf8.count <= 255, name != ".", name != "..", !name.contains("/"),
++              !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
++            throw ClusterConfigurationError.invalid("Invalid configuration file name")
++        }
++    }
++
++    private static func unchanged(_ a: stat, _ b: stat) -> Bool {
++        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode && a.st_uid == b.st_uid && a.st_nlink == b.st_nlink &&
++        a.st_size == b.st_size && a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
++        a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift
+@@ -0,0 +1,103 @@
++import Foundation
++
++/// One canonical device namespace for this user's clusters. The input document
++/// cannot select a different lease directory to evade an unresolved allocation.
++public struct ClusterUserPaths: Sendable, Equatable {
++    public let homeDirectory: URL
++    public let configurationsDirectory: URL
++    public let deviceDirectory: URL
++    public var deviceLeaseFile: URL { deviceDirectory.appendingPathComponent("native-device.lease") }
++
++    public init() throws {
++        try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
++    }
++
++    // Internal fixture seam; public callers cannot choose another device gate.
++    init(homeDirectory: URL) throws {
++        guard homeDirectory.isFileURL else { throw ClusterConfigurationError.invalid("Expected a local home directory") }
++        try ClusterConfigurationFiles.requireAbsolute(homeDirectory.path)
++        self.homeDirectory = homeDirectory
++        configurationsDirectory = homeDirectory.appendingPathComponent(".config/darkbloom/clusters", isDirectory: true)
++        deviceDirectory = homeDirectory.appendingPathComponent(".darkbloom/cluster-device", isDirectory: true)
++    }
++
++    public func configurationURL(sha256: String) throws -> URL {
++        guard ClusterConfigurationSyntax.hash(sha256) else { throw ClusterConfigurationError.invalid("Invalid configuration digest") }
++        return configurationsDirectory.appendingPathComponent(sha256 + ".cluster.json")
++    }
++
++    public func capabilityURL(sha256: String) throws -> URL {
++        guard ClusterConfigurationSyntax.hash(sha256) else { throw ClusterConfigurationError.invalid("Invalid capability digest") }
++        return configurationsDirectory.appendingPathComponent(sha256 + ".capability.json")
++    }
++}
++
++/// Saved setup reference only. Its presence is never an enabled/readiness flag.
++public struct ClusterConfigurationReference: Sendable, Equatable, Codable {
++    public let configuration: String
++    public let sha256: String
++
++    public init(configuration: String, sha256: String) throws {
++        try ClusterConfigurationFiles.requireAbsolute(configuration)
++        guard ClusterConfigurationSyntax.hash(sha256) else { throw ClusterConfigurationError.invalid("Invalid saved cluster digest") }
++        self.configuration = configuration; self.sha256 = sha256
++    }
++
++    private enum CodingKeys: String, CodingKey { case configuration, sha256 }
++    public init(from decoder: Decoder) throws {
++        let keys = try decoder.container(keyedBy: AnyKey.self)
++        guard Set(keys.allKeys.map(\.stringValue)) == ["configuration", "sha256"] else {
++            throw ClusterConfigurationError.invalid("Unknown or missing saved cluster reference fields")
++        }
++        let values = try decoder.container(keyedBy: CodingKeys.self)
++        try self.init(configuration: values.decode(String.self, forKey: .configuration),
++                      sha256: values.decode(String.self, forKey: .sha256))
++    }
++    private struct AnyKey: CodingKey {
++        let stringValue: String
++        let intValue: Int? = nil
++        init?(stringValue: String) { self.stringValue = stringValue }
++        init?(intValue: Int) { return nil }
++    }
++}
++
++enum ClusterConfigurationSyntax {
++    static func hash(_ value: String) -> Bool {
++        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
++    }
++
++    static func label(_ value: String, maximum: Int = 128) -> Bool {
++        !value.isEmpty && value.utf8.count <= maximum && !value.hasPrefix("-") && value.utf8.allSatisfy {
++            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 95].contains($0)
++        }
++    }
++
++    static func sshPath(_ value: String) -> Bool {
++        value.hasPrefix("/") && value.utf8.count <= 1024 && !value.split(separator: "/").contains("..") &&
++        !value.split(separator: "/").contains(".") && !value.contains("//") && !value.hasSuffix("/") && value.utf8.allSatisfy {
++            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 47, 95].contains($0)
++        }
++    }
++
++    static func host(_ value: String) -> Bool {
++        !value.isEmpty && value.utf8.count <= 253 && !value.hasPrefix("-") && !value.hasSuffix(".") &&
++        value.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { label in
++            !label.isEmpty && label.count <= 63 && !label.hasPrefix("-") && !label.hasSuffix("-") && label.utf8.allSatisfy {
++                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45
++            }
++        }
++    }
++
++    static func ipv4(_ value: String) -> Bool {
++        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
++        return parts.count == 4 && parts.allSatisfy {
++            guard let number = Int($0), (0...255).contains(number) else { return false }
++            return String(number) == $0
++        } && parts[0] != "0" && parts[0] != "127" && (Int(parts[0]) ?? 255) < 224
++    }
++
++    static func relativePath(_ value: String) -> Bool {
++        !value.isEmpty && value.utf8.count <= 512 && !value.hasPrefix("/") && !value.hasSuffix("/") &&
++        value.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { label(String($0), maximum: 128) && $0 != "." && $0 != ".." }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationProviderStore.swift
+@@ -0,0 +1,41 @@
++import Foundation
++import TOMLKit
++
++extension ClusterConfigurationStore {
++    /// Saving setup never enables distributed startup. Existing malformed TOML
++    /// is refused instead of being replaced with defaults.
++    public func configure(configurationInput: URL, capabilityInput: URL, capabilitySHA256: String,
++                          providerConfiguration: URL) throws -> ClusterConfigurationSaveResult {
++        try save(configurationInput: configurationInput, capabilityInput: capabilityInput, capabilitySHA256: capabilitySHA256) { reference in
++            try ClusterConfigurationFiles.update(providerConfiguration, maximum: 1024 * 1024) { original in
++                try Self.updatingProviderData(original, reference: reference)
++            }
++        }
++    }
++
++    static func updatingProviderData(_ original: Data?, reference: ClusterConfigurationReference) throws -> Data {
++        let table: TOMLTable
++        if let original {
++            guard let text = String(data: original, encoding: .utf8) else {
++                throw ClusterConfigurationError.invalid("Provider configuration is not UTF-8")
++            }
++            let current = try ConfigManager.parseValidating(text)
++            if current.cluster == reference { return original }
++            table = try TOMLTable(string: text)
++        } else {
++            table = TOMLTable()
++        }
++        // Mutate the raw TOML table rather than serializing a migrated
++        // ProviderConfig. Every unrelated value (including unknown
++        // tables and old migration stamps) retains its original meaning.
++        // Formatting/comments may change; no migration is written here.
++        table["cluster"] = TOMLTable(["configuration": reference.configuration, "sha256": reference.sha256])
++        let text = table.convert()
++        guard !text.isEmpty, try ConfigManager.parseValidating(text).cluster == reference else {
++            throw ClusterConfigurationError.invalid("Provider cluster pointer did not serialize correctly")
++        }
++        let roundTrip = try TOMLTable(string: text)
++        guard roundTrip == table else { throw ClusterConfigurationError.invalid("Provider TOML values changed during serialization") }
++        return Data(text.utf8)
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift
+@@ -0,0 +1,110 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++
++public struct ClusterConfigurationSaveResult: Encodable, Sendable, Equatable {
++    public let configuration: String
++    public let configurationSHA256: String
++    public let capability: String
++    public let capabilitySHA256: String
++    public let deviceLeaseFile: String
++    public let distributedEnabled = false
++    public let readinessVerified = false
++    public let installationVerified = false
++    public let modelFilesVerified = false
++    public let remoteTrustVerified = false
++    public let existingTrustFilePinVerified = true
++
++    // Output-only; saved results are never inputs to startup/admission.
++    private enum CodingKeys: String, CodingKey {
++        case configuration, configurationSHA256, capability, capabilitySHA256, deviceLeaseFile
++        case distributedEnabled, readinessVerified, installationVerified, modelFilesVerified
++        case remoteTrustVerified, existingTrustFilePinVerified
++    }
++}
++
++/// Strict immutable records plus one atomic provider pointer update. No runtime,
++/// network, model payload, process launch, journal recovery or mode change.
++public struct ClusterConfigurationStore: Sendable {
++    public let paths: ClusterUserPaths
++    public init(paths: ClusterUserPaths) { self.paths = paths }
++
++    public struct Saved: Sendable {
++        public let configuration: ClusterConfiguration
++        public let capability: ClusterRuntimeCapability
++    }
++
++    public func load(reference: ClusterConfigurationReference) throws -> Saved {
++        let expected = try paths.configurationURL(sha256: reference.sha256)
++        guard expected.path == reference.configuration else {
++            throw ClusterConfigurationError.invalid("Saved cluster reference is outside its canonical store")
++        }
++        let data = try ClusterConfigurationFiles.read(expected, maximum: ClusterConfigurationCodec.maximumBytes, privateMode: true)
++        guard ClusterConfigurationCodec.sha256(data) == reference.sha256 else {
++            throw ClusterConfigurationError.invalid("Saved cluster configuration digest differs")
++        }
++        // The strict complete decode below remains authoritative; this bounded
++        // extraction locates the content-addressed capability and grants nothing.
++        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
++              let capabilityHash = object["capabilitySHA256"] as? String else {
++            throw ClusterConfigurationError.invalid("Saved cluster capability reference is missing")
++        }
++        let capabilityData = try ClusterConfigurationFiles.read(paths.capabilityURL(sha256: capabilityHash),
++            maximum: ClusterRuntimeCapabilityCodec.maximumBytes, privateMode: true)
++        guard ClusterConfigurationCodec.sha256(capabilityData) == capabilityHash else {
++            throw ClusterConfigurationError.invalid("Saved capability digest differs")
++        }
++        let capability = try ClusterRuntimeCapabilityCodec.decode(capabilityData)
++        let configuration = try ClusterConfigurationCodec.decode(data, capability: capability, capabilitySHA256: capabilityHash)
++        guard try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilityHash) == data else {
++            throw ClusterConfigurationError.invalid("Saved cluster configuration is not canonical")
++        }
++        return Saved(configuration: configuration, capability: capability)
++    }
++
++    // Internal transaction seam permits a small actual-file fixture without
++    // importing the provider's model/runtime dependency graph. The production
++    // caller below supplies the real TOML update, inside this same device gate.
++    func save(configurationInput: URL, capabilityInput: URL, capabilitySHA256: String,
++              updateProvider: (ClusterConfigurationReference) throws -> Void) throws -> ClusterConfigurationSaveResult {
++        guard ClusterConfigurationSyntax.hash(capabilitySHA256) else { throw ClusterConfigurationError.invalid("Invalid capability input digest") }
++        let capabilityData = try ClusterConfigurationFiles.read(capabilityInput, maximum: ClusterRuntimeCapabilityCodec.maximumBytes)
++        guard ClusterConfigurationCodec.sha256(capabilityData) == capabilitySHA256 else { throw ClusterConfigurationError.invalid("Capability input digest differs") }
++        let capability = try ClusterRuntimeCapabilityCodec.decode(capabilityData)
++        let input = try ClusterConfigurationFiles.read(configurationInput, maximum: ClusterConfigurationCodec.maximumBytes)
++        let configuration = try ClusterConfigurationCodec.decode(input, capability: capability, capabilitySHA256: capabilitySHA256)
++        let data = try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilitySHA256)
++        let digest = ClusterConfigurationCodec.sha256(data)
++        let destination = try paths.configurationURL(sha256: digest)
++        let capabilityDestination = try paths.capabilityURL(sha256: capabilitySHA256)
++        let reference = try ClusterConfigurationReference(configuration: destination.path, sha256: digest)
++
++        try validateTrust(configuration.trust)
++        let device = try ClusterConfigurationFiles.directory(paths.deviceDirectory, create: true, privateMode: true)
++        defer { Darwin.close(device.descriptor) }
++        try ClusterConfigurationFiles.withLock(device, name: paths.deviceLeaseFile.lastPathComponent, requireEmpty: true, privateMode: true) {
++            let directory = try ClusterConfigurationFiles.directory(paths.configurationsDirectory, create: true, privateMode: true)
++            defer { Darwin.close(directory.descriptor) }
++            try ClusterConfigurationFiles.withLock(directory, name: "configuration.lock", privateMode: true) {
++                try ClusterConfigurationFiles.publish(capabilityData, parent: directory, name: capabilityDestination.lastPathComponent,
++                    maximum: ClusterRuntimeCapabilityCodec.maximumBytes)
++                try ClusterConfigurationFiles.publish(data, parent: directory, name: destination.lastPathComponent,
++                    maximum: ClusterConfigurationCodec.maximumBytes)
++                _ = try load(reference: reference)
++                try validateTrust(configuration.trust)
++                try updateProvider(reference)
++            }
++        }
++        return ClusterConfigurationSaveResult(configuration: destination.path, configurationSHA256: digest,
++            capability: capabilityDestination.path, capabilitySHA256: capabilitySHA256, deviceLeaseFile: paths.deviceLeaseFile.path)
++    }
++
++    private func validateTrust(_ trust: ClusterConfiguration.Trust) throws {
++        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
++        let hosts = try ClusterConfigurationFiles.read(URL(fileURLWithPath: trust.knownHostsFile), maximum: 64 * 1024)
++        guard ClusterConfigurationCodec.sha256(hosts) == trust.knownHostsSHA256,
++              String(data: hosts, encoding: .utf8) != nil else {
++            throw ClusterConfigurationError.invalid("Existing known-hosts input pin or encoding differs")
++        }
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
+@@ -447,6 +447,8 @@
+ }
+ 
+ public struct ProviderConfig: Sendable, Equatable, Codable {
++    /// Inert saved setup; startup requires a separate explicit distributed opt-in.
++    public var cluster: ClusterConfigurationReference?
+     public var provider: ProviderSettings
+     public var backend: BackendSettings
+     public var coordinator: CoordinatorSettings
+@@ -486,7 +488,8 @@
+         coordinator: CoordinatorSettings = CoordinatorSettings(),
+         schedule: ScheduleConfig? = nil,
+         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+-        configVersion: Int = ProviderConfig.currentConfigVersion
++        configVersion: Int = ProviderConfig.currentConfigVersion,
++        cluster: ClusterConfigurationReference? = nil
+     ) {
+         self.provider = provider
+         self.backend = backend
+@@ -494,9 +497,11 @@
+         self.schedule = schedule
+         self.gemmaOptimizations = gemmaOptimizations
+         self.configVersion = configVersion
++        self.cluster = cluster
+     }
+ 
+     enum CodingKeys: String, CodingKey {
++        case cluster
+         case provider
+         case backend
+         case coordinator
+@@ -520,6 +525,7 @@
+ 
+     public init(from decoder: Decoder) throws {
+         let container = try decoder.container(keyedBy: CodingKeys.self)
++        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
+         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+         let mtpProbe = try container.decodeIfPresent(
+             BackendMTPMigrationProbe.self, forKey: .backend)
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/ClusterCommand.swift
+@@ -0,0 +1,53 @@
++import Foundation
++import ArgumentParser
++import ProviderCore
++
++struct Cluster: AsyncParsableCommand {
++    static let configuration = CommandConfiguration(commandName: "cluster",
++        abstract: "Manage saved distributed-cluster setup.", subcommands: [Configure.self])
++
++    struct Configure: AsyncParsableCommand {
++        static let configuration = CommandConfiguration(commandName: "configure",
++            abstract: "Validate and save cluster setup without enabling or starting it.")
++        @OptionGroup var configOptions: ConfigOptions
++        @Option(help: "Absolute path to the bounded cluster configuration JSON.")
++        var input: String
++        @Option(help: "Absolute path to a canonical installed-runtime capability JSON.")
++        var capability: String
++        @Option(name: .customLong("capability-sha256"), help: "Expected SHA-256 of the exact capability bytes.")
++        var capabilitySHA256: String
++        @Flag(help: "Print the saved configuration references and verification scope as JSON.")
++        var json = false
++
++        func validate() throws {
++            _ = try absolute(input); _ = try absolute(capability)
++            if let path = configOptions.config { _ = try absolute(path) }
++            guard capabilitySHA256.utf8.count == 64 && capabilitySHA256.utf8.allSatisfy({
++                (48...57).contains($0) || (97...102).contains($0)
++            }) else { throw ValidationError("Expected a lowercase SHA-256 capability pin.") }
++        }
++
++        mutating func run() async throws {
++            Darkbloom.ensureLogging()
++            // This command deliberately does not load a RuntimeSnapshot: no
++            // hardware/model discovery, update banner, enrollment or connection.
++            let paths = try ClusterUserPaths()
++            let providerPath = try configOptions.config ?? ConfigManager.defaultConfigPath().path
++            let result = try ClusterConfigurationStore(paths: paths).configure(
++                configurationInput: absolute(input), capabilityInput: absolute(capability),
++                capabilitySHA256: capabilitySHA256, providerConfiguration: absolute(providerPath))
++            if json { try printJSON(result) }
++            else {
++                print("Saved cluster setup: \(result.configuration)")
++                print("Distributed startup remains disabled. Installation, remote trust, model files and readiness still require checks.")
++            }
++        }
++
++        private func absolute(_ path: String) throws -> URL {
++            guard path.hasPrefix("/"), !path.contains("\0") else {
++                throw ValidationError("Cluster configuration inputs require absolute local paths.")
++            }
++            return URL(fileURLWithPath: path)
++        }
++    }
++}
+--- a/provider-swift/Sources/darkbloom/Darkbloom.swift
++++ b/provider-swift/Sources/darkbloom/Darkbloom.swift
+@@ -34,6 +34,7 @@
+             Doctor.self,
+             Models.self,
+             Local.self,
++            Cluster.self,
+             Login.self,
+             Logout.self,
+             Benchmark.self,
+--- /dev/null
++++ b/provider-swift/Tests/DarkbloomCLITests/ClusterCommandTests.swift
+@@ -0,0 +1,37 @@
++import ArgumentParser
++import Testing
++@testable import darkbloom
++
++@Suite("Cluster configure CLI")
++struct ClusterCommandTests {
++    private var arguments: [String] {
++        ["--input", "/Users/developer/setup.json", "--capability", "/Users/developer/capability.json",
++         "--capability-sha256", String(repeating: "a", count: 64)]
++    }
++
++    @Test("configure parses explicit pins and optional output/provider path without IO")
++    func accepted() throws {
++        let command = try Cluster.Configure.parse(arguments + ["--json", "--config", "/Users/developer/provider.toml"])
++        #expect(command.json)
++        #expect(command.input == "/Users/developer/setup.json")
++        #expect(command.configOptions.config == "/Users/developer/provider.toml")
++    }
++
++    @Test("missing pin, relative paths and enable/environment/capacity flags refuse")
++    func rejected() {
++        for values in [Array(arguments.dropLast(2)), arguments + ["--enable"], arguments + ["--capacity", "123"],
++                       arguments + ["--environment", "KEY=VALUE"],
++                       ["--input", "relative", "--capability", "/capability", "--capability-sha256", String(repeating: "a", count: 64)],
++                       ["--input", "/input", "--capability", "/capability", "--capability-sha256", String(repeating: "A", count: 64)]] {
++            #expect(throws: (any Error).self) { _ = try Cluster.Configure.parse(values) }
++        }
++    }
++
++    @Test("root dispatch registers configure while existing solo commands remain")
++    func dispatch() throws {
++        let command = try Darkbloom.parseAsRoot(["cluster", "configure"] + arguments)
++        #expect(command is Cluster.Configure)
++        #expect(Darkbloom.configuration.subcommands.contains { $0 == Start.self })
++        #expect(Darkbloom.configuration.subcommands.contains { $0 == Local.self })
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Config/ClusterConfigurationTests.swift
+@@ -0,0 +1,80 @@
++import Foundation
++import Testing
++import TOMLKit
++@testable import ProviderCore
++
++@Suite("Saved cluster setup")
++struct ClusterConfigurationTests {
++    private func reference(_ character: String = "a") throws -> ClusterConfigurationReference {
++        try ClusterConfigurationReference(configuration: "/Users/developer/.config/darkbloom/clusters/fixture.cluster.json",
++                                          sha256: String(repeating: character, count: 64))
++    }
++
++    @Test("absent setup retains ordinary provider defaults and remains absent on encode")
++    func absent() throws {
++        let original = ProviderConfig(provider: ProviderSettings(name: "fixture"))
++        #expect(original.cluster == nil)
++        let encoded = ConfigManager.serialize(original)
++        #expect(!encoded.contains("[cluster]"))
++        #expect(try ConfigManager.parseValidating(encoded) == original)
++    }
++
++    @Test("saved reference is inert and rejects extra enable or ownership fields")
++    func referenceRoundTrip() throws {
++        var config = ProviderConfig(provider: ProviderSettings(name: "fixture"))
++        config.cluster = try reference()
++        let text = ConfigManager.serialize(config)
++        #expect(try ConfigManager.parseValidating(text).cluster == config.cluster)
++        for extra in ["enabled = true", "capacity = 12", "device_lease = '/tmp/bypass'"] {
++            let invalid = "[cluster]\nconfiguration = '/Users/developer/config'\nsha256 = '\(String(repeating: "a", count: 64))'\n\(extra)\n"
++            #expect(throws: (any Error).self) { _ = try ConfigManager.parseValidating(invalid) }
++        }
++    }
++
++    @Test("pointer insertion preserves unrelated raw TOML values and migration stamp")
++    func unrelatedValues() throws {
++        let old = """
++        config_version = 1
++        [provider]
++        name = 'fixture'
++        [backend]
++        engine_v2_max_concurrent = 8
++        mtp = false
++        [future_extension]
++        value = 1.25
++        enabled = true
++        list = ['one', 'two']
++        """
++        let bytes = try ClusterConfigurationStore.updatingProviderData(Data(old.utf8), reference: reference())
++        let updated = String(decoding: bytes, as: UTF8.self)
++        let before = try TOMLTable(string: old), after = try TOMLTable(string: updated)
++        #expect(after["config_version"]?.int == 1)
++        #expect(after["future_extension"] != nil)
++        after.remove(at: "cluster")
++        #expect(before == after)
++        #expect(try ConfigManager.parseValidating(updated).cluster == reference())
++    }
++
++    @Test("repeated pointer save preserves exact existing bytes")
++    func repeatBytes() throws {
++        let value = try reference()
++        let old = Data("# keep this comment\n[cluster]\nconfiguration = '\(value.configuration)'\nsha256 = '\(value.sha256)'\n".utf8)
++        #expect(try ClusterConfigurationStore.updatingProviderData(old, reference: value) == old)
++    }
++
++    @Test("malformed existing TOML is refused; new minimal setup does not encode enabled state")
++    func refusalAndCreation() throws {
++        #expect(throws: (any Error).self) {
++            _ = try ClusterConfigurationStore.updatingProviderData(Data("[broken".utf8), reference: reference())
++        }
++        #expect(throws: (any Error).self) {
++            _ = try ClusterConfigurationStore.updatingProviderData(Data([0xff]), reference: reference())
++        }
++        let fresh = try ClusterConfigurationStore.updatingProviderData(nil, reference: reference())
++        let text = String(decoding: fresh, as: UTF8.self)
++        #expect(try ConfigManager.parseValidating(text).cluster == reference())
++        #expect(!text.contains("enabled"))
++        #expect(!text.contains("capacity"))
++        #expect(!text.contains("config_version"))
++    }
++}

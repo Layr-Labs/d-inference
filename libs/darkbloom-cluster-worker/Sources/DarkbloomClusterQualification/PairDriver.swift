@@ -717,7 +717,11 @@ public struct PairDriver: Sendable {
                         ? Double(result.tokens.count - 1) / (Double(last - first) / 1e9) : nil
                     value.totalSeconds = Double((result.concluded ?? last) - started) / 1e9
                 }
-                if !concluded || result.finish == nil {
+                if lease.cancellationReason == .deadline, pair.lanesRetireAlone {
+                    // A lane its deadline cancelled retires alone (before the
+                    // deadline itself); it is compared as a prefix of its solo run.
+                    value.finishReason = "deadline"; value.cancelledAfterTokens = result.tokens.count
+                } else if !concluded || result.finish == nil {
                     value.failure = result.failure ?? "the request did not finish before its deadline"
                     lease.cancel(reason: concluded ? .runtimeError : .deadline)
                 }

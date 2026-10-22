@@ -205,6 +205,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     }
     /// True once `requestCleanStop` was accepted.
     public var cleanStopWasRequested: Bool { lock.withLock { cleanStopRequested } }
+    /// Why the request was cancelled first, if it was.
+    public var cancellationReason: ClusterWorkerCancellationReason? { lock.withLock { cancellation } }
     /// True once the ranks were told to start: only then can a token arrive.
     var isRunning: Bool { lock.withLock { started && cancellation == nil } }
 

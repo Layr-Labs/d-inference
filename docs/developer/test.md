@@ -894,6 +894,7 @@ unavailable hardware honestly. Local validation does not authorize deployment.
 Run `make provider-test` for repository checks. Focused provider suites are
 `FlintPolicyTests`, `FlintDiscoveryTests`, `FlintTemplateReplayTests`,
 `FlintToolChoicePromptPolicyTests`, `FlintContextAdmissionTests`,
+`FlintPagedOnlyBackendTests`, `ModelBenchmarkDispatchTests`,
 `FlintNativeProtocolTests` and `FlintNativeProtocolFactoryTests`; SDK suites
 are `FlintTests`, `FlintToolTests`, `FlintPrefixTests` and
 `ToolCallParserIntegrationTests`. `FlintToolChoicePromptPolicyTests`
@@ -903,6 +904,13 @@ tool requests against the pinned template. The SDK fixture is generated independ
 `libs/mlx-swift-lm/scripts/generate-flint-oracle.py` with NumPy and credits the pinned mlx-vlm
 oracle. Numeric assertions retain their declared tolerances and run with
 `MLX_ENABLE_TF32=0`.
+
+`FlintPagedOnlyBackendTests.defaultSettingsBuildRealPagedSlot` assembles a tiny
+Flint through the production slot factory with default `BackendSettings` and no
+engine override. It checks paged attention, native KV and checkpoint precision,
+the artifact's context limit despite a conflicting sizing hint, and the default
+2,048-token solo-prefill stripe. Persistent caching is disabled only for fixture
+isolation; backend, precision and prefill environment overrides are absent.
 
 Verify the prefill output seam against full-logit forward, including identical
 KV and continuation results, sliding-window wrap and both contiguous/paged
@@ -968,7 +976,7 @@ weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and
 `RecursiveSI/flint-int4` snapshot. It starts an authenticated loopback service,
 uses a task-local encrypted-cache directory, executes real production slots,
 and stops/drains them. `DARKBLOOM_FLINT_PORT` selects an unused port;
-`DARKBLOOM_FLINT_BACKEND` selects `contiguous` or `paged`.
+Flint is paged-only, so `DARKBLOOM_FLINT_BACKEND` may only be unset or `paged`.
 `DARKBLOOM_FLINT_RECEIPTS` optionally writes synthetic response evidence to an
 owned file. Keep these model-dependent checks separate from tiny-fixture,
 public-CI and signed-release evidence.

@@ -149,6 +149,35 @@ struct FlintContextAdmissionTests {
         }
     }
 
+    /// A real slot build (no engine override) honors a per-model contiguous
+    /// override for Flint only by refusing the load: Flint is paged-only.
+    @Test func perModelContiguousOverrideRefusesTheFlintSlot() async throws {
+        let tokenizer = FlintProtocolTestTokenizer()
+        let container = ModelContainer(context: .init(configuration: .init(id: modelID,
+                extraEOSTokens: ["<|user|>", "<|observation|>", "<|developer|>"]),
+            model: try model(limit: 4_096), processor: FlintContextProcessor(), tokenizer: tokenizer))
+        do {
+            _ = try await EngineV2SlotFactory.makeProductionBundle(
+                modelId: modelID, modelType: "flint", isVLM: false, modelDirectory: nil,
+                container: container, tokenizer: TokenizerHandle(tokenizer),
+                sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 0,
+                    maxContextLength: 4_096, defaultMaxTokens: 2),
+                kvBytesCapacity: 16 << 20, maxConcurrentRequests: 1, kvBudget: nil,
+                kvBackendConfig: "auto", kvBackendConfigByModel: [modelID: "contiguous"],
+                checkpointQuantizationConfig: "balanced",
+                specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)),
+                environment: [PrefixCachePolicy.environmentFlag: "0", KVBackendGuardStore.pathEnvKey: "/dev/null"],
+                startServingTelemetry: false, emitTelemetry: { _ in })
+            Issue.record("a per-model contiguous override built a Flint slot")
+        } catch let error as EngineV2ProductionError {
+            guard case .pagedUnavailable(let reason) = error else {
+                Issue.record("unexpected refusal: \(error)")
+                return
+            }
+            #expect(reason == "Flint requires the paged KV backend; resolved contiguous")
+        }
+    }
+
     @Test(arguments: [0, -1])
     func invalidArtifactContextCannotProduceFlintModel(limit: Int) {
         #expect(throws: DecodingError.self) { try model(limit: limit) }
@@ -176,7 +205,7 @@ struct FlintContextAdmissionTests {
             sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 0,
                 maxContextLength: sizingContext, defaultMaxTokens: defaultOutput),
             kvBytesCapacity: 16 << 20, maxConcurrentRequests: 1, kvBudget: nil,
-            kvBackendConfig: "contiguous", checkpointQuantizationConfig: "native",
+            kvBackendConfig: "paged", checkpointQuantizationConfig: "native",
             specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)),
             environment: [PrefixCachePolicy.environmentFlag: "0"],
             startServingTelemetry: false, emitTelemetry: { _ in },

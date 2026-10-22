@@ -120,8 +120,16 @@ public enum ThroughputSweep {
 
         let quantBits = readQuantBits(modelDirectory: modelDirectory)
 
-        let prefill = await measurePrefill(
-            container: container, baseTokens: baseTokens, lengths: promptLengths)
+        let modelType = try ModelBenchmark.decodedModelType(
+            from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        let prefill: [ThroughputSweepReport.PrefillSample]
+        if measuresScalarPrefill(modelType: modelType) {
+            prefill = await measurePrefill(
+                container: container, baseTokens: baseTokens, lengths: promptLengths)
+        } else {
+            log("prefill sweep skipped: \(modelType ?? "model") is paged-only; use --scheduler-prefill")
+            prefill = []
+        }
         let decodeOutcome = try await measureDecode(
             container: container,
             modelID: modelID,
@@ -192,6 +200,13 @@ public enum ThroughputSweep {
     }
 
     // MARK: - Prefill
+
+    /// The sweep's prefill pass runs the model's own scalar caches, which are
+    /// not paged. Flint is served only on paged attention, so its paged prefill
+    /// is measured by the scheduler-prefill benchmark instead.
+    static func measuresScalarPrefill(modelType: String?) -> Bool {
+        modelType != "flint"
+    }
 
     /// For each requested length L, run a single forward pass over an L-token
     /// prompt and report `L / prefill_seconds`. The whole sweep runs inside one

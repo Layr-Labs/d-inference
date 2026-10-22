@@ -246,6 +246,12 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         var drawn = 0
         /// The frame in progress (layer slices left to run) and whether it merges.
         var slices: (frame: GLM5NextTensorParallelPrefillPlan.Slices, merging: Bool)?
+        /// Timing of the request's start on this rank (the prefill line): its
+        /// open, and its frames' and slices' wall time, in nanoseconds.
+        var openNanoseconds: UInt64 = 0
+        var prefillNanoseconds: UInt64 = 0
+        var prefillSteps = 0
+        var firstStepUptime: UInt64 = 0
 
         init(request: QwenLayerStageGenerationRequest, sampler: QwenStageTokenSampler?, opened: Runtime.OpenedRequest,
              speculates: Bool, draw: ((MLXArray) -> MLXArray)?, propose: GLM5NextMTP.ProposalSelection?) {
@@ -271,6 +277,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
     }
 
     func open(_ request: QwenLayerStageGenerationRequest, check: () throws -> Void) throws -> Lane {
+        let started = DispatchTime.now().uptimeNanoseconds
         let id = request.requestID, book = runtime.laneBook
         let reservation = book.reservation(id)
         // A media lane's features are made and agreed here, as one request's;
@@ -286,9 +293,11 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         // logprobs too: `Runtime.capturesLogprobs`).
         let speculates = opened.speculation != nil
         if let speculation = opened.speculation { runtime.installDraftProbe(speculation, sampler: sampler) }
-        return Lane(request: request, sampler: sampler, opened: opened, speculates: speculates,
+        let lane = Lane(request: request, sampler: sampler, opened: opened, speculates: speculates,
             draw: speculates ? runtime.verificationDraw(sampler) : nil,
             propose: speculates ? runtime.proposalSelection(sampler) : nil)
+        lane.openNanoseconds = DispatchTime.now().uptimeNanoseconds - started
+        return lane
     }
 
     var prefillShortestFirst: Bool { Runtime.lanePrefillShortestFirst }
@@ -316,6 +325,9 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
     private static func merges(decoding: Bool) -> Bool { !decoding || Runtime.lanePrefillSliceMilliseconds != nil }
 
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int? {
+        let started = DispatchTime.now().uptimeNanoseconds
+        if lane.firstStepUptime == 0 { lane.firstStepUptime = started }
+        defer { lane.prefillNanoseconds += DispatchTime.now().uptimeNanoseconds - started; lane.prefillSteps += 1 }
         let decoding = [false, true].first { frame == nextFrame(lane, decoding: $0) }
         guard let decoding else { throw ProbeError("GLM lane prefill frame is not the lane's next") }
         let prompt = lane.request.promptTokenIDs
@@ -340,7 +352,19 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         try keepLogprobs(lane)
         lane.sampler?.commit(first)
         if lane.speculates { try lane.opened.speculation!.begin(carry: first, lastHidden: final.lastHidden) }
+        // The request's start on this rank: its open, its prefill (frames and
+        // slices, other lanes' units between them excluded) and the wall time
+        // from its first frame to its first token. No prompt content.
+        let now = DispatchTime.now().uptimeNanoseconds
+        log("darkbloom-tensor-parallel-prefill-v1 rank=\(rank) request=\(lane.request.requestID.uuidString.lowercased())"
+            + " prompt=\(prompt.count) reused=\(lane.opened.start) open_ms=\(Self.milliseconds(lane.openNanoseconds))"
+            + " prefill_ms=\(Self.milliseconds(lane.prefillNanoseconds + now - started))"
+            + " steps=\(lane.prefillSteps + 1) wall_ms=\(Self.milliseconds(now - lane.firstStepUptime))")
         return first
+    }
+
+    private static func milliseconds(_ nanoseconds: UInt64) -> String {
+        String(format: "%.1f", Double(nanoseconds) / 1e6)
     }
 
     func speculates(_ lane: Lane) -> Bool { lane.speculates }

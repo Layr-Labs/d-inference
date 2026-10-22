@@ -1559,9 +1559,12 @@ For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
 formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
 streaming options. Once a frame's function name resolves to a declared tool,
 the processor emits the name, then argument JSON fragments as they become
-certain: marker-quoted and XML string values stream as generated, other values
-once complete. When the frame closes, the complete parse must agree with
-everything already exposed
+certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
+generated, other Qwen XML parameters once they close, and framed-JSON and
+Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+because one later value outside the strict grammar makes the complete parse
+read bare scalars and composites as raw strings. When the frame closes, the
+complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
 fragment and validates name and schema at frame close; the service renders

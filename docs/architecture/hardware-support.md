@@ -315,6 +315,29 @@ flowchart TD
 standalone server runs the same sequence in
 `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`.)
 
+Coordinator requests reach the pre-accept check (`fastAdmissionReject`) in
+work-FIFO order. An accepted request whose model is not resident releases the
+FIFO while it waits for its load (`releaseWorkFIFO` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
+requests can reach the check while that load runs. The check sees a load's
+memory only once the load holds its pending-load claim, so a request for another
+model that is not resident first waits for released loads of other models
+(`awaitReleasedLoads`). A request for the model being loaded that the check
+rejects, because the load's claim already holds the memory the check sized for
+a second copy, waits for that load and is checked again. Requests for resident
+models overtake; one for an idle resident model can keep a slot the released
+load would have evicted, and that load then fails this gate after acceptance.
+The gate, pending-load claims and eviction still decide every load. Native MiMo
+keeps the serial FIFO, and `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores it for
+every model.
+
+The prompt token store (`PromptPieceTokenStore` in
+`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
+is ordinary process heap with no claim or reserve in this gate: at most
+`DARKBLOOM_TTFT_PROMPT_CACHE_MB` (default `32 << 20` bytes) per loaded
+tokenizer, plus one piece. Like other process heap, it reaches the gate only
+through the measured free memory.
+
 ### After the load
 
 - `KVHeadroomProbe.measuredLiveKVHeadroomBytes` (after trimming the cold-load

@@ -74,7 +74,8 @@ The [attestation lifecycle](../security/attestation.md#provider-connection-contr
 owns the connection and trust guarantees.
 
 An accepted request whose model is not resident releases the work consumer when
-it starts waiting for the load (`ProviderLoop+WorkFIFO.swift`), so later
+it starts waiting for the load (`releaseWorkFIFO` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
 inference requests, cancels and attestation challenges are not held behind
 weight loading. A coordinator cancel for the waiting request is applied when its
 admission returns, where the serial consumer applied it. Connection, drain and

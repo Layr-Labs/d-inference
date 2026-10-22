@@ -40,6 +40,20 @@ struct GLM5NextTensorParallelRequestCharge {
     let speculativeDepth: Int
     let maximumBufferBytes: Int
     let allocationBound: (Int) throws -> Int
+    /// Each envelope's evidence digests (`GLM5NextRequestStateBudget.EvidenceDigests`),
+    /// computed once: hashing the inventory for every reservation, on both
+    /// ranks in turn, added about 0.24 s to each request's first token.
+    let digests: [GLM5NextRequestStateBudget.EvidenceDigests]
+
+    init(descriptor: GLM5NextResidentDescriptor, envelopes: [GLM5NextResidentResourceEnvelope], fixedBytes: Int,
+         speculativeDepth: Int, maximumBufferBytes: Int, allocationBound: @escaping (Int) throws -> Int) throws {
+        self.descriptor = descriptor; self.envelopes = envelopes; self.fixedBytes = fixedBytes
+        self.speculativeDepth = speculativeDepth; self.maximumBufferBytes = maximumBufferBytes
+        self.allocationBound = allocationBound
+        digests = try envelopes.map {
+            try .init(inventory: $0.inventory, executionPolicy: descriptor.executionPolicy)
+        }
+    }
 
     /// History columns a request of `contextTokens` may hold: its prompt and
     /// outputs, and one verification window's proposals past its last output.
@@ -57,7 +71,7 @@ struct GLM5NextTensorParallelRequestCharge {
             maximumChunkTokens: min(p.maximumChunkTokens, prompt))
         let history = GLM5NextRequestStateBudget.HistoryBound.reserved(tokens: historyTokens(contextTokens: context))
         var terms = [fixedBytes]
-        for envelope in envelopes {
+        for (envelope, digests) in zip(envelopes, digests) {
             try envelope.requireExecutionEnvironment(envelope.executionEnvironmentSHA256)
             let layers = envelope.rank == 0 ? 0 ..< descriptor.cut : descriptor.cut ..< c.hiddenLayers
             terms.append(try GLM5NextRequestStateBudget.estimate(inventory: envelope.inventory, layers: layers,
@@ -65,7 +79,7 @@ struct GLM5NextTensorParallelRequestCharge {
                 executionEnvironmentSHA256: envelope.executionEnvironmentSHA256, workspace: envelope.workspace,
                 transport: GLM5NextResidentResourceEnvelope.transportTerms, maximumBufferBytes: maximumBufferBytes,
                 allocationBound: allocationBound, hostAllocationBound: envelope.hostAllocationBound,
-                history: history).reservedBytes)
+                history: history, digests: digests).reservedBytes)
         }
         terms.append(try GLM5NextTensorParallelResidentRuntime.speculationRequestBytes(configuration: c, profile: p,
             depth: speculativeDepth, executionPolicy: descriptor.executionPolicy, allocationBound: allocationBound,

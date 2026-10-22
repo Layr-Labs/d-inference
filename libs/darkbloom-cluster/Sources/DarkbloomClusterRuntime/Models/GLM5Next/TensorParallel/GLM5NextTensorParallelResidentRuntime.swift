@@ -282,7 +282,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 allocationBound: QwenResidentResourceEnvironment.allocationBound)
             envelopes.append(resources)
         }
-        let requestCharge = GLM5NextTensorParallelRequestCharge(descriptor: descriptor, envelopes: envelopes,
+        let requestCharge = try GLM5NextTensorParallelRequestCharge(descriptor: descriptor, envelopes: envelopes,
             fixedBytes: fixedRequestBytes, speculativeDepth: Self.mtpDepth, maximumBufferBytes: maximumBufferBytes,
             allocationBound: QwenResidentResourceEnvironment.allocationBound)
         let requestReserve = try requestCharge.bytes(contextTokens: descriptor.memoryProfile.maximumContextTokens)

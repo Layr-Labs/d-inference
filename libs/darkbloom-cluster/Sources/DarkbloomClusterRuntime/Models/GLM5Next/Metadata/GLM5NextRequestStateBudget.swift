@@ -108,6 +108,27 @@ struct GLM5NextRequestStateBudget: Equatable {
     let reservedBytes: Int
     let workspaceEvidenceSHA256: String
 
+    /// What `estimate` checks workspace evidence against: the digests of an
+    /// inventory, its text configuration and an execution policy. The
+    /// inventory's hashes every stored tensor's name, type and shape (the
+    /// registered GLM artifact's 114,160 tensors: about 60-120 ms), so a
+    /// caller that estimates one immutable inventory again and again (every
+    /// request's charge, `GLM5NextTensorParallelRequestCharge`) computes them
+    /// once and passes them; the checks are the same.
+    struct EvidenceDigests: Equatable {
+        let configurationSHA256: String
+        let inventorySHA256: String
+        let numericalPolicySHA256: String
+
+        init(inventory: GLM5NextWeightInventory, executionPolicy: GLM5NextExecutionPolicy) throws {
+            configurationSHA256 = sha256(try canonicalJSONData(inventory.configuration.textConfig))
+            inventorySHA256 = GLM5NextArtifactMetadata.fingerprint(inventory)
+            numericalPolicySHA256 = try GLM5NextStageContract.policySHA256(executionPolicy)
+        }
+    }
+
+    /// `digests`: those of exactly this `inventory` and `executionPolicy`
+    /// (`EvidenceDigests`); nil computes them here.
     static func estimate(inventory: GLM5NextWeightInventory, layers: Range<Int>, rank: Int,
                          scope: Scope, executionPolicy: GLM5NextExecutionPolicy,
                          executionEnvironmentSHA256: String,
@@ -115,7 +136,8 @@ struct GLM5NextRequestStateBudget: Equatable {
                          maximumBufferBytes: Int,
                          allocationBound: (Int) throws -> Int,
                          hostAllocationBound: (Int) throws -> Int,
-                         history: HistoryBound = .geometric) throws -> Self {
+                         history: HistoryBound = .geometric,
+                         digests: EvidenceDigests? = nil) throws -> Self {
         let c = inventory.configuration.textConfig
         try scope.validate(configuration: c)
         guard (0...1).contains(rank), !layers.isEmpty, layers.lowerBound >= 0,
@@ -130,9 +152,10 @@ struct GLM5NextRequestStateBudget: Equatable {
               qwenStageWireIsSHA256(workspace.evidenceSHA256),
               qwenStageWireIsSHA256(executionEnvironmentSHA256),
               workspace.executionEnvironmentSHA256 == executionEnvironmentSHA256,
-              workspace.configurationSHA256 == sha256(try canonicalJSONData(c)),
-              workspace.inventorySHA256 == GLM5NextArtifactMetadata.fingerprint(inventory),
-              workspace.numericalPolicySHA256 == (try GLM5NextStageContract.policySHA256(executionPolicy)) else {
+              workspace.configurationSHA256 == (try digests?.configurationSHA256 ?? sha256(canonicalJSONData(c))),
+              workspace.inventorySHA256 == (digests?.inventorySHA256 ?? GLM5NextArtifactMetadata.fingerprint(inventory)),
+              workspace.numericalPolicySHA256
+                == (try digests?.numericalPolicySHA256 ?? GLM5NextStageContract.policySHA256(executionPolicy)) else {
             throw ProbeError("GLM request budget lacks matching workspace/environment evidence or geometry")
         }
         try workspace.scope.validate(configuration: c)

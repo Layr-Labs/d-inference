@@ -154,7 +154,7 @@ struct GLM5NextNativeContextTests {
         let envelopes = try (0...1).map {
             try GLM5NextResidentRuntimeTests.Fixture.resources(descriptor: scoped, inventory: inventory, rank: $0)
         }
-        let charge = GLM5NextTensorParallelRequestCharge(descriptor: scoped, envelopes: envelopes, fixedBytes: 1000,
+        let charge = try GLM5NextTensorParallelRequestCharge(descriptor: scoped, envelopes: envelopes, fixedBytes: 1000,
             speculativeDepth: 0, maximumBufferBytes: Int.max, allocationBound: { $0 })
         let c = scoped.configuration.textConfig
         let dsa = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count

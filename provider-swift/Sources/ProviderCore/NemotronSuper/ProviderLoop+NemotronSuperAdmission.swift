@@ -1,6 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 
 import Foundation
+import MLXLMCommon
 
 /// ProviderLoop -- the managed Nemotron Super slot's load gate.
 ///
@@ -43,8 +44,9 @@ extension ProviderLoop {
     /// least recently used first, until the claim's room holds the widest
     /// configuration that evicting every idle model could make room for, so
     /// an idle model yields to the planned owner rather than to a narrower
-    /// one. Refuses without evicting when not even the narrowest can fit;
-    /// `allowEviction: false` only checks.
+    /// one. Like that gate, it first releases retained KV segments and the
+    /// buffer pool once. Refuses without evicting when not even the
+    /// narrowest can fit; `allowEviction: false` only checks.
     func evictUntilNemotronSuperFits(_ modelInfo: ModelInfo, allowEviction: Bool) async throws {
         let requirements = nemotronSuperLoadRequirements(modelInfo)
         guard let narrowest = requirements.last else {
@@ -54,6 +56,7 @@ extension ProviderLoop {
         let unavailable = InferenceError.modelLoadFailed(
             "Insufficient memory for '\(modelInfo.id)': the idle model chosen for eviction became unavailable")
         var declinedEvictions = 0
+        var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -76,14 +79,20 @@ extension ProviderLoop {
                         + "need \(Self.gb(narrowest)) GB) even after evicting every idle model "
                         + "(\(Self.gb(reclaimable)) GB reclaimable) — refusing without evicting")
                 }
-                // Nothing idle to evict: drop the reclaimable pool and resample.
-                clearCacheAfterConfirmedNativeOwnership()
+                // Nothing idle to evict: drop retained segments and the
+                // reclaimable pool, then resample.
+                await releaseReclaimableMemoryForLoad()
                 let retried = nemotronSuperClaimRoomBytes()
                 if retried >= narrowest { return }
                 throw InferenceError.modelLoadFailed("Insufficient memory (\(Self.gb(retried)) GB of LOAD room, "
                     + "need \(Self.gb(narrowest)) GB) " + (allowEviction
                         ? "and all loaded models are actively serving"
                         : "to load without evicting resident models"))
+            }
+            if !poolDropped {
+                poolDropped = true
+                await releaseReclaimableMemoryForLoad()
+                continue
             }
             // The room is short of what idle eviction reaches: an idle model exists.
             guard let victim = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })?.key
@@ -105,7 +114,9 @@ extension ProviderLoop {
     /// `fastAdmissionReject`'s verdict for the managed Super load, on the same
     /// room and requirements as `evictUntilNemotronSuperFits`: certain to fail
     /// only when not even evicting every idle model makes room for its
-    /// narrowest configuration, or every slot is busy.
+    /// narrowest configuration, or every slot is busy. Retained free KV
+    /// segments count as reachable without waiting here: the load releases
+    /// them before it evicts or refuses.
     func nemotronSuperLoadIsCertainToFail(_ modelInfo: ModelInfo) -> Bool {
         let evictable = evictableModelSlots()
         if modelSlots.count >= maxModelSlots, evictable.isEmpty { return true }
@@ -119,7 +130,9 @@ extension ProviderLoop {
         }
         // The same self-heal as the ordinary pre-accept.
         clearCacheAfterConfirmedNativeOwnership()
-        return nemotronSuperClaimRoomBytes() < narrowest && !mayStillReclaim
+        let (reachable, overflow) = nemotronSuperClaimRoomBytes().addingReportingOverflow(
+            UInt64(max(0, CBv2RetainedKVSegments.retainedBytes)))
+        return !overflow && reachable < narrowest && !mayStillReclaim
     }
 
     /// Super's startup preload requirement, in the units of the free figure

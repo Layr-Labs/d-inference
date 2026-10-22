@@ -33,16 +33,20 @@ extension NemotronSuperManagedSlotTests {
     /// scanner discovers it; its loader sizes and gates the load as the pinned
     /// checkpoint's on 128 GiB, and a fixture loads.
     static func coResidentFixture(weightsGiB: Double, availableGiB: Double,
-                                  configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
+                                  configReserveBytes: UInt64 = 0,
+                                  onShutdown: @escaping @Sendable () async -> Void = {}) async throws
+        -> CoResidentFixture {
         try await coResidentFixture(weightsGiB: [weightsGiB], availableGiB: availableGiB,
-                                    configReserveBytes: configReserveBytes)
+                                    configReserveBytes: configReserveBytes, onShutdown: onShutdown)
     }
 
     /// One co-resident model per entry of `weightsGiB`, each as above, the
-    /// first least recently used.
+    /// first least recently used. `onShutdown` runs as any of them shuts down.
     static func coResidentFixture(weightsGiB: [Double], availableGiB: Double,
-                                  configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
-        let stubs = weightsGiB.indices.map { makeInertStubBridge(modelId: coResidentID($0)) }
+                                  configReserveBytes: UInt64 = 0,
+                                  onShutdown: @escaping @Sendable () async -> Void = {}) async throws
+        -> CoResidentFixture {
+        let stubs = weightsGiB.indices.map { makeInertStubBridge(modelId: coResidentID($0), onShutdown: onShutdown) }
         let engines = stubs.map(\.engine)
         let weights = weightsGiB.map { UInt64($0 * 1_073_741_824) }, available = UInt64(availableGiB * 1_073_741_824)
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
@@ -258,6 +262,73 @@ extension NemotronSuperManagedSlotTests {
             #expect("\(try #require(refusal))".contains("refusing without evicting"))
             #expect(!(await Self.claimAdmits(requirements.last ?? 0, fixture.budget)))
         }
+    }
+
+    /// Like the ordinary gate, Super's releases retained free KV segments
+    /// (and the buffer pool) once before it evicts an idle model. The pinned
+    /// sample never changes, so the eviction still follows; the parked bytes
+    /// are read as the idle model shuts down.
+    @Test(.timeLimit(.minutes(1)))
+    func retainedSegmentsReleaseBeforeSuperEviction() async throws {
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let parkedAtEviction = ParkedBytesRecorder()
+        let fixture = try await Self.coResidentFixture(
+            weightsGiB: 30, availableGiB: 92, onShutdown: { parkedAtEviction.record(engine.parkedBytes) })
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        try await loop.evictUntilNemotronSuperFits(model, allowEviction: true)
+        #expect(fixture.idle.shutdownCalls == 1)
+        #expect(parkedAtEviction.bytes == 0)
+    }
+
+    /// With nothing idle to evict, the refusal follows the same release.
+    @Test(.timeLimit(.minutes(1)))
+    func superRefusalReleasesRetainedSegmentsFirst() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 30, availableGiB: 92)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        await loop.modelLoadingSetRequest("busy", model: Self.coResidentID)
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        var refusal: Error?
+        do { try await loop.evictUntilNemotronSuperFits(model, allowEviction: true) } catch { refusal = error }
+        #expect("\(try #require(refusal))".contains("all loaded models are actively serving"))
+        #expect(engine.parkedBytes == 0)
+        #expect(fixture.idle.shutdownCalls == 0)
+    }
+
+    /// Pre-accept counts retained free KV segments as reachable, as the
+    /// ordinary pre-accept does, rather than refusing a Super request that
+    /// their release makes room for: here the room is short of the narrowest
+    /// configuration by half the parked bytes, and the co-resident model is
+    /// serving.
+    @Test(.timeLimit(.minutes(1)))
+    func superPreAcceptCountsRetainedSegments() async throws {
+        let engine = try RetainingEngineStub()
+        let parked = UInt64(engine.parkedBytes)
+        #expect(parked > 1)
+        let shortBy = parked / 2
+        let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: 128 << 30, capFraction: 0.9)
+        let weights = cap - UnifiedMemoryCap.defaultActivationReserveBytes
+            - NemotronSuperLoadFit.narrowestRequirementBytes + shortBy
+        let fixture = try await Self.coResidentFixture(
+            weightsGiB: Double(weights) / 1_073_741_824, availableGiB: 120)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        #expect(await loop.nemotronSuperClaimRoomBytes() + shortBy == NemotronSuperLoadFit.narrowestRequirementBytes)
+        await loop.modelLoadingSetRequest("busy", model: Self.coResidentID)
+
+        #expect(await loop.fastAdmissionReject(modelId: Self.modelID) == false)
+        withExtendedLifetime(engine) {}
     }
 
     /// A `memory_reserve_gb` raised to 16 GiB stays free beside Super's claim,

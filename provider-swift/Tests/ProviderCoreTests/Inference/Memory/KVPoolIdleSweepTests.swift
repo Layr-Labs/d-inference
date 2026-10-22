@@ -271,6 +271,16 @@ final class RetainingEngineStub: @unchecked Sendable {
     }
 }
 
+/// Parked retained-segment bytes seen when an evicted model shut down.
+final class ParkedBytesRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: Int?
+
+    var bytes: Int? { lock.withLock { recorded } }
+
+    func record(_ bytes: Int) { lock.withLock { recorded = bytes } }
+}
+
 private final class SweepSpy: @unchecked Sendable {
     private let lock = NSLock()
     private var _reclaimable: UInt64

@@ -1545,8 +1545,7 @@ public actor StandaloneServer {
                 try await retirement.pauseForRecheck() { continue }
             if !poolDropped {
                 poolDropped = true
-                await GlobalKVCacheBudget.releaseRetainedKVSegments()
-                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
+                await releaseReclaimableMemoryForLoad()
                 continue
             }
             guard allowEviction, await evictLRUIdleSlot() else {
@@ -1555,6 +1554,14 @@ public actor StandaloneServer {
                 )
             }
         }
+    }
+
+    /// Drops what a load reclaims without evicting: retained free KV
+    /// segments (engines drop them at their next step; this waits briefly),
+    /// then MLX's buffer cache, which device-filled segments return to.
+    func releaseReclaimableMemoryForLoad() async {
+        await GlobalKVCacheBudget.releaseRetainedKVSegments()
+        if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
     }
 
     /// Free memory (GB) for loading a model, via the shared OOM-safe arithmetic:

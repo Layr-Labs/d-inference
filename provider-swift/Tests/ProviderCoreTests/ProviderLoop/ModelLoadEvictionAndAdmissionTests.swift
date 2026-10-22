@@ -356,13 +356,3 @@ struct ModelLoadEvictionAndAdmissionTests {
         #expect(ProviderLoop.modelIsVLM(at: noConfig) == false)
     }
 }
-
-/// Parked retained-segment bytes seen when the resident model shut down.
-private final class ParkedBytesRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var recorded: Int?
-
-    var bytes: Int? { lock.withLock { recorded } }
-
-    func record(_ bytes: Int) { lock.withLock { recorded = bytes } }
-}

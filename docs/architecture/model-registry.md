@@ -50,6 +50,12 @@ quotations, native transient allowances, memory safeguards and post-load
 serviceability checks. Do not replace registry discovery with a hardcoded model
 catalog. Exact supported layouts and parameters belong in the [manifest reference](../reference/model-registry-format.md).
 
+The [raw GLM discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
+uses bounded headers and non-weight file sizes, not a successful-download
+receipt. A malformed GLM inventory has no generic loadable discovery fallback;
+only the tokenizer shipped in the snapshot is supported. These checks do not
+replace catalog/source identity or native pre-allocation validation.
+
 ## Publication
 
 The local manifest builder and publication scripts may call approved external
@@ -73,6 +79,21 @@ and [revisions](../operations/model-revisions.md).
 Backend validation, database ownership and alias routing are documented in
 [platform model registry](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/model-registry.md).
 No local backend build or deployment is part of this procedure.
+
+## Flint shard-only local discovery
+
+Recursive's official Flint export has numbered safetensors shards without an
+index. `ModelScanner.isMLXModel` admits that layout only when a bounded,
+regular-file config identifies the exact `flint` architecture. The config must
+be nonempty and at most 1,048,576 bytes; a nonblocking descriptor and regular-file
+check keep special files out of this discovery path. Discovery does
+not verify tensor completeness: the native model loader and on-demand weight
+hasher retain those responsibilities. This exception does not add a catalog
+entry or accept arbitrary shard-only families.
+The native loader accepts the [Flint package contract](../reference/model-registry-format.md#flint-local-package-exception)
+without rewriting the artifact or synthesizing an index. HF/R2 publication and
+catalog activation remain separate operations after end-to-end qualification.
+Source: `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`.
 
 ## Related
 

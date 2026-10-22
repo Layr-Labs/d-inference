@@ -51,6 +51,12 @@ public actor EngineV2Bridge {
     // managed ownership cannot silently select legacy admission.
     weak var nativeTransaction: MiMoV26NativeLoadTransaction?
     var nativeTransactionID: UUID?
+    let glm5NextNativeOwner: GLM5NextNativeOperationOwner?
+    /// One GLM step's setup bytes. The engine charges step scratch from the
+    /// same ledger as requests, so request admission leaves this much free.
+    var glm5NextStepSetupBytes = 0
+    /// GLM requests between the capacity gate and `active`.
+    var glm5NextGateReservations: [String: Int] = [:]
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }
@@ -176,6 +182,8 @@ public actor EngineV2Bridge {
         ssdPrefixCache != nil || ssdHybridCheckpointStore != nil ? .ssd : .memory
     }
     nonisolated let prefixCacheBaseStatus: PrefixCacheModelStatus
+    /// Typed reason the slot's SSD store was refused; local `/metrics` only.
+    nonisolated let prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure?
     nonisolated let prefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
     nonisolated let residentPrefixCacheEvidence: ResidentPrefixCacheEvidence?
     nonisolated let residentPrefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
@@ -381,6 +389,7 @@ public actor EngineV2Bridge {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         kvQuantization: EngineV2KVQuantizationSelection = .native,
         kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
@@ -391,9 +400,11 @@ public actor EngineV2Bridge {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
         admissionFixes: Bool? = nil,
+        glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
+        self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
@@ -466,6 +477,7 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
+        self.prefixCacheConstructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }

@@ -14,6 +14,37 @@ downloads published artifacts and verifies them. Discovery is not full weight
 hashing: retain fast startup scans and on-demand verification. Broken templates
 must be reported rather than silently repaired.
 
+Media discovery uses `ModelMediaPolicy.advertisesMedia` in
+`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.
+`nemotron_h_omni` checkpoints do not advertise media support, even when
+`vision_config` is present. The architecture match ignores surrounding whitespace
+and case and applies independently of Hugging Face repository IDs or local aliases.
+
+### Nemotron Super discovery
+
+`EngineV2SupportedModels.isSupported(model:)` admits exactly one
+`nemotron_h_omni` artifact: the registry id `nvidia-nemotron-3.5-super` with the
+canonical declaration (`NemotronSuperServingPolicy.isServingIdentity`). The type
+alone stays unsupported, so providers without this policy, other ids (including
+the upstream Hugging Face id) and whitespace or case variants keep being dropped
+at scan, advertisement and prefetch publication. `ModelScanner.parseModelInfo`
+withholds that id unless `config.json` and `model.safetensors.index.json` are the
+pinned bytes (`NemotronSuperServingPolicy.hasPinnedMetadata`); the managed load
+verifies every shard. A discovered Super artifact reports `quantization`
+`nvfp4`, image input (`ModelMediaPolicy.advertisesMedia`, for that exact id
+only), the ordinary template render check, and its managed LOAD footprint
+(`NemotronSuperServingPolicy.discoveryFootprint`): `estimated_memory_gb` is the
+same on every Mac, what the narrowest configuration the managed load serves
+requires (`NemotronSuperLoadFit.narrowestRequirementBytes`: the installation
+and head claim, the 1,024-token prefill lane, one speculating request's
+admission KV at the whole context and the 3 GiB admission slack), never below
+the shard bytes plus `native_load_transient_bytes`, the LOAD bytes above the
+shard bytes. It holds no media: capacity quotes for its image and video
+probes charge the probe's whole media reservation
+(`CapacityQuoteEngine.nemotronSuperMediaCharge`). Registration identity and RAM floor are in the
+[registry reference](../reference/model-registry-format.md#nemotron-super).
+Discovery does not register or publish the model.
+
 Published metadata is not a loadability or quality certificate. Keep full LOAD
 quotations, native transient allowances, memory safeguards and post-load
 serviceability checks. Do not replace registry discovery with a hardcoded model

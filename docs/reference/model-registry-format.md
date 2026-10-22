@@ -145,6 +145,32 @@ Response `200`:
 default when the request set none); the `*_usd` strings are USD per 1M tokens
 (`registerModelResponse`, `types.ModelPriceQuote`).
 
+## Nemotron Super
+
+The provider serves one Nemotron Super registration natively; its discovery and
+slot are explained in the [registry](../architecture/model-registry.md#nemotron-super-discovery)
+and [inference](../architecture/inference.md#managed-nemotron-super-slot) architecture.
+
+| Field | Value | Code |
+|---|---|---|
+| `model_id` | `nvidia-nemotron-3.5-super` (exact; no alias or other id is served) | `NemotronSuperServingPolicy.modelID` (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`) |
+| `version` | `2026-10-20-nvfp4-r2` | registration input |
+| Artifact | The complete NVIDIA NVFP4 checkpoint (revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`): 88 shards, the embedded MTP head in shard 88, plus the integrity files `ModelScanner.collectWeightFiles` selects. Published to R2 with `scripts/publish-model.sh` and mirrored byte for byte as the `hugging_face_artifact` `EigenLabs/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at revision `0e854f634f26f0cc342a32857c38b81c57207cea`, downloaded first with per-file R2 fallback | `NemotronSuperCheckpointPin` (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperCheckpointPin.swift`) |
+| `config.json` SHA-256 | `35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea`, `model_type` `nemotron_h_omni` | `NemotronSuperServingPolicy.configSHA256` |
+| `model.safetensors.index.json` SHA-256 | `c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741` | `NemotronSuperCheckpointPin.index` |
+| `chat_template.jinja` SHA-256 | `1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816` | `NemotronSuperPromptContract.templateSHA256` |
+| `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
+| `max_context_length` | `262144`, the whole verified context the slot serves (see the [managed slot](../architecture/inference.md#managed-nemotron-super-slot)) | `NemotronSuperServingPolicy.contextTokens`, `NemotronSuperServingPolicy.maximumContextTokens` |
+| `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
+| `min_ram_gb` | `128`; Super's own load gate admits a 128 GB Mac from 85.6 GiB available, the narrowest configuration ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not yet measured on a physical 128 GB Mac; only 256 GB is measured | `NemotronSuperLoadFit.minimumAvailableBytes` |
+| `required_provider_capabilities` | `["apple_m5"]`; with `min_ram_gb` it limits the model to M5 Max (128 GB) and M5 Ultra; the coordinator honors `apple_m5` only for an attested M5 chip family | registration input; `ProviderRuntimeCapability.appleM5` (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
+| Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image), or one MP4 or QuickTime video as the request's only media (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; 2 frames per second, at most 256, coded frames of at most 8,847,360 pixels (`4096 * 2160`, in any shape), frame grids up to 1,088 patches); media requests refuse tools and `response_format` and are served target-only on the speculating owner | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody`, `NemotronSuperServingPolicy.maximumVideoFramePixels`, `NemotronSuperServingPolicy.maximumVideoGridPatches` |
+
+Providers without this policy drop the artifact at scan, advertisement and
+prefetch publication, but the downloader has no architecture gate: a provider
+of an earlier release that receives it as a desired build downloads the
+weights before refusing to advertise them.
+
 ## Hugging Face download artifact
 
 `registerModelRequest.hugging_face_artifact` is an optional object stored on

@@ -219,8 +219,11 @@ Retaining source or running a build does not authorize hosting or traffic change
 For changes to the trusted PR reviewer, no provider build is required. Run the
 offline Python suites in [threat-review verification](threat-model-review.md#verify)
 and validate changed workflow YAML. The review workflow uploads content-free
-failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
-workflow change to merge.
+failure diagnostics and last-request progress, including scanner and canonical
+context revisions. After merge, new runs use current default-branch scanner code
+and separately read the PR base threat model. Integration replays bounded exact
+source from each model's own reviewed scope. Native Bedrock response-format
+compatibility requires the bounded live smoke check in addition to offline tests.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.
@@ -252,9 +255,9 @@ Backend build and deployment configuration belongs in the platform repository.
 
 ## Flint native dependency build
 
-1. Use `libs/mlx-swift-lm` at `c0fc8dc4b109895f4d9c65c97c4c83c3413ad3ad`
-   ([SDK draft #322](https://github.com/Layr-Labs/mlx-swift-lm/pull/322)) and
-   `libs/mlx-swift` at `81f58d7922a89218e1d534b8fc986a373ea679b1`.
+1. Use `libs/mlx-swift-lm` at `65eaceb8b90bc65d01c2d2fb4a8801584f4ead7a`
+   ([SDK #322](https://github.com/Layr-Labs/mlx-swift-lm/pull/322)) and
+   `libs/mlx-swift` at `67dc752856ca3904e5de85b28e2f46ee3b182f62`.
 2. Run `make provider-build`. It builds the metallib from the nested MLX source
    actually compiled by Cmlx. Preserve binary and metallib hashes with physical
    evidence; rebuilding tests alone does not refresh a release benchmark binary.
@@ -272,6 +275,14 @@ Backend build and deployment configuration belongs in the platform repository.
 
 Verify with [Flint tests](test.md#flint-native-validation); see the
 [SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) for provenance.
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 

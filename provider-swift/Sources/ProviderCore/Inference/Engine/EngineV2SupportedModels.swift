@@ -23,6 +23,9 @@
 //   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
 //                       artifact/sidecar validity and per-request bounds remain
 //                       mandatory; this does not activate automatic MTP.
+//   * `nemotron_h_omni` — only the exact registry id
+//                       `NemotronSuperServingPolicy.modelID`, served by the
+//                       managed Super load; the type alone stays unsupported.
 //
 // Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
@@ -73,11 +76,15 @@ public enum EngineV2SupportedModels {
 
     /// Nano and Lightning share a model_type but have different checkpoint
     /// contracts. Only the selected Lightning artifact is onboarded here.
+    /// Super is the exact registry id with the canonical declaration; the
+    /// scanner withholds that id unless its config and index are pinned.
     public static func isSupported(model: ModelInfo) -> Bool {
-        if normalized(model.modelType) == "nemotron_h" {
-            return isNemotron35ListingModelID(model.id)
+        switch normalized(model.modelType) {
+        case "nemotron_h": return isNemotron35ListingModelID(model.id)
+        case NemotronSuperServingPolicy.modelType:
+            return NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
+        default: return isSupported(modelType: model.modelType)
         }
-        return isSupported(modelType: model.modelType)
     }
     /// Exact config namespaces registered by the official Gemma 4 target
     /// factories. Keep this closed: assistant checkpoints intentionally share

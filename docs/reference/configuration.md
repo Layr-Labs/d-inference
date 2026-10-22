@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 

@@ -54,7 +54,7 @@ struct StageLoadRealSamplerTests {
         #expect(decision.policy == QwenDenseStageLoadPolicy.identifier)
         #expect(decision.compressedSinceFirstSampleBytes == 0 && decision.swappedOutSinceFirstSampleBytes == 0)
         #expect(decision.countableFileCacheBytes <= decision.fileCacheAboveReserveBytes)
-        #expect(decision.countedReclaimableBytes <= QwenDenseStageLoadPolicy.maximumCountedReclaimableBytes)
+        #expect(decision.countedReclaimableBytes <= decision.fileBackedBytes)
         // Lifetime counters only go up: a second sample is judged against the first.
         let again = try QwenDenseStageLoadResources.observeOS()
         #expect(again.compressionPages >= os.compressionPages && again.swapoutPages >= os.swapoutPages)

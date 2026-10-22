@@ -10,6 +10,8 @@ enum ToolChoicePromptPolicy {
         let compiledTools: [CompiledToolSchema]?
         let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
+        /// Exact-Flint JSON content contract. When present, no call is allowed.
+        var responseFormat: FlintResponseFormat? = nil
 
         var requiresToolCall: Bool {
             switch mode {
@@ -23,6 +25,29 @@ enum ToolChoicePromptPolicy {
         _ request: OpenAIChatCompletionRequest,
         modelType: String? = nil,
         allowInternalSchemaMetadata: Bool = true
+    ) throws -> Prepared {
+        let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
+        let choice = try prepareToolChoice(
+            request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        guard let responseFormat else { return choice }
+        // Recursive's Flint contract: tools plus a response format get only the
+        // response format, whatever tool_choice asked for. The prompt renders
+        // exactly as it would without the format (Flint keeps the original
+        // messages and the declared tools), so the coordinator sidecar's mirror
+        // needs no format rule; only generation changes: no call is allowed.
+        var prepared = choice.tools?.isEmpty == false
+            ? Prepared(
+                messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
+                allowsParallelCalls: false, allowedToolNames: [])
+            : choice
+        prepared.responseFormat = responseFormat
+        return prepared
+    }
+
+    private static func prepareToolChoice(
+        _ request: OpenAIChatCompletionRequest,
+        modelType: String?,
+        allowInternalSchemaMetadata: Bool
     ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true

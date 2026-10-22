@@ -14,6 +14,8 @@ struct NativeToolStreamRouter {
     private let nativeMiMoRequiresConstraint: Bool
     private let rejectMiMoThought: Bool
     private var rejectedNativeGemmaReasoning = false
+    private let withholdReasoning: Bool
+    private var withheldReasoning = ""
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -22,8 +24,9 @@ struct NativeToolStreamRouter {
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
-         absorbStrayThinkClose: Bool = false) {
+         absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false) {
         self.handler = handler
+        self.withholdReasoning = withholdReasoning
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
         self.nativeMiMoChannels = nativeMiMoChannels
@@ -42,6 +45,14 @@ struct NativeToolStreamRouter {
     }
 
     var usesNativeChannels: Bool { parser != nil || gemmaParser != nil }
+
+    /// Reasoning classified since the last call but withheld from the events
+    /// at the caller's request. Its owner counts it as generated reasoning; it
+    /// is never emitted, logged or part of the response hash.
+    mutating func takeWithheldReasoning() -> String {
+        defer { withheldReasoning = "" }
+        return withheldReasoning
+    }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
         let pieces: [ParsedReasoning]
@@ -115,6 +126,10 @@ struct NativeToolStreamRouter {
                         rejectedNativeGemmaReasoning = true
                         throw disabledNativeReasoningFailure
                     }
+                } else if withholdReasoning {
+                    // Classified exactly like visible reasoning, so its
+                    // tool-like text stays inert; only emission differs.
+                    withheldReasoning += reasoning
                 } else {
                     events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
                 }

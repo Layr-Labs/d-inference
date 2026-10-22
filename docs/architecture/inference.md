@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1094,6 +1094,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | `maxBatchedTokensPerStep` / `prefillChunkSize` / `maxWaiting` | 2048 / 512 / 64 (`CBv2SchedulerConfig` init defaults) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
 | `soloPrefillStripeTokens` | 2048 (`defaultSoloPrefillStripeTokens`); 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
+| Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
 | `requestTimeout` | 120 s legacy total wall, used only when `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` is affirmative | `EngineLoopV2.swift`, `CBv2EngineLoopConfig`; `EngineV2Factory+Configuration.swift` |
 | `stepTimeout` | 30 s | `CBv2EngineLoopConfig` |
@@ -1661,7 +1662,7 @@ records tiny-model correctness and remaining release gates.
 
 | `model_type` | Family | Notes |
 |---|---|---|
-| `gpt_oss` | GPT-OSS | Harmony tool format; historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); native contiguous and paged paths require observed dtype/capability gates; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
+| `gpt_oss` | GPT-OSS | Harmony tool format; a bf16 checkpoint keeps bf16 activations and native K/V on every layer, because the expert SwiGLU clamps with scalar bounds that take the activation dtype (`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+Experts.swift`, `swiglu`); historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); native contiguous and paged paths require observed dtype/capability gates; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
 | `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires loaded capability and observed native types |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
@@ -2111,14 +2112,50 @@ allowlist and does not establish that a Flint slot used paged attention. Record
 the resolved backend in every performance receipt. Contiguous measurements are
 separate reference results, not evidence of paged throughput.
 
-Flint chooses reasoning automatically. `FlintRequestPolicy` rejects explicit
-reasoning effort/enabled controls, media and combined JSON response-format/tool
-requests. Output limits remain ordinary completion-token limits.
+Flint always decides for itself whether to reason; it has no trained switch,
+effort level or budget, and its pinned template reads none of these controls
+([Recursive's serving guide](https://github.com/RecursiveSI/flint/blob/2a247be0c0aec895ccb0ac7ca92229ec6df37288/sglang/README.md)).
+`FlintRequestPolicy` accepts `reasoning_effort` and `reasoning.effort` (none,
+minimal, low, medium, high or xhigh), `reasoning.enabled`, `enable_thinking`
+and `chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
+prompt. Malformed values, unknown efforts, `preserve_thinking`, other reasoning
+keys and media are refused. When a request sets `reasoning.exclude` true,
+`include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
+withholds the generated reasoning, so chat completions, the Responses API and
+the coordinator relay return only content and tool calls. The withheld tokens
+still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
+the response hash covers only emitted output, and withheld reasoning counts as
+first output for the first-content deadline. Relay logprobs cover every sampled
+token and attach to the next content frame; for withheld reasoning,
+`FlintReasoningLogprobsFilter` drops the entries of the initial
+`<think>…</think>` span, matched on bytes like the native boundary, so hidden
+reasoning never returns as entry tokens. Output limits remain ordinary
+completion-token limits.
+
 `ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
 exact `model_type: flint` request, including requests without tools. It verifies
-the rendered assistant boundary and pinned tokenizer markers. Custom stop
-strings are rejected because independent stop-string matching could terminate
-an unfinished reasoning span or call. Other model families retain their policies.
+the rendered assistant boundary and pinned tokenizer markers. Engine stop-string
+matching stays off for Flint because it could end an unfinished reasoning span
+or call. Instead, up to four client `stop` sequences of at most 256 bytes are
+matched by `FlintAnswerStops` against visible answer bytes only: reasoning,
+call frames and arguments never advance a match. `FlintAnswerStopConstraint`
+leaves only an answer EOS after the first match, so the request finishes with
+`stop`, and `FlintAnswerStopFilter` withholds the sequence and everything after
+it before the channel splitter or tool parser sees it. Other model families
+retain their policies.
+
+A JSON `response_format` (`json_object`, or `json_schema` within the shared
+fail-closed schema subset) constrains the content after optional reasoning, as
+in Recursive's guide. `FlintJSONContentAutomaton` replaces the boundary's
+content phase: reasoning is unconstrained, and visible content must be one JSON
+value of the compiled grammar; declared object properties are the only keys
+generated. A schema outside the subset is a 400 before generation.
+`FlintResponseFormat.validate` decodes and checks the completed content again;
+a failure, including an output budget that ends before the value completes, is
+a typed 422 rather than a successful completion. Tools plus a response format
+get only the response format, whatever `tool_choice` asked: the prompt renders
+as it would without the format, so the coordinator prompt sidecar needs no
+format rule, and no call may be generated or returned.
 
 | Prepared tool choice | Native output boundary |
 |---|---|
@@ -2197,6 +2234,12 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift` (`make`),
 `provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift` (`FlintNativeProtocolConstraint`),
 `provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift` (`FlintNativeProtocolBoundary`),
+`provider-swift/Sources/ProviderCore/Inference/FlintAnswerStops.swift`,
+`provider-swift/Sources/ProviderCore/Inference/FlintAnswerStopConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/FlintReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
 `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,

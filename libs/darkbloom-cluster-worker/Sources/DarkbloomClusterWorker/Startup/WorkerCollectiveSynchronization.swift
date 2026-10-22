@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Darwin
 import Foundation
 
@@ -46,5 +47,31 @@ enum WorkerCommandBufferBudget {
         }
         setenv(variable, String(tensorParallelMegaElements), 1)
         return "darkbloom-command-buffer-budget-v1 max_mb=\(tensorParallelMegaElements) source=worker"
+    }
+}
+
+/// How a GLM tensor-parallel rank's GPU meets each all-sum: the partial's
+/// coherent store and the fence update in one dispatch
+/// (`MLX_METAL_FUSED_FENCE_UPDATE`), and the hyper-connection site that reads
+/// the sum waits for it itself instead of a separate spinning dispatch
+/// (`MLX_METAL_FENCED_INPUTS`; GLM's site kernels declare the sum as a fenced
+/// input). Two dependent dispatches fewer on each of a step's 90 sums.
+/// Measured, GLM-5.3-Flash TP2 on two M5 Ultra: plain decode 12.58 -> 12.43 ms
+/// a step, tokens identical. Only when and where the GPU waits changes, never
+/// what it computes; a launcher value is kept.
+enum WorkerFenceFusion {
+    static let variables = ["MLX_METAL_FUSED_FENCE_UPDATE", "MLX_METAL_FENCED_INPUTS"]
+
+    static func apply(mode: ClusterGenerationMode, family: ClusterResidentModelCatalog.Family?,
+                      environment: [String: String]) -> String? {
+        guard mode == .tensorParallel, family == .glm5Next else { return nil }
+        let values = variables.map { name -> String in
+            if let explicit = environment[name] { return "\(name)=\(explicit)" }
+            setenv(name, "1", 1)
+            return "\(name)=1"
+        }
+        let source = variables.allSatisfy { environment[$0] == nil } ? "worker"
+            : variables.allSatisfy { environment[$0] != nil } ? "launcher" : "mixed"
+        return "darkbloom-fence-fusion-v1 " + values.joined(separator: " ") + " source=" + source
     }
 }

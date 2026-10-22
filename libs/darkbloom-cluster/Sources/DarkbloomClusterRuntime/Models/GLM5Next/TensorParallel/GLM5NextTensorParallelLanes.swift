@@ -243,6 +243,13 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
     /// same order.
     func decode(_ units: [GLM5NextTensorParallelDecodeUnit<Lane>], whileRunning: (Int) throws -> Void,
                 check: () throws -> Void) throws -> [[Int]] {
+        try GPU.withCommandBufferLimits(GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
+            try decodeUnits(units, whileRunning: whileRunning, check: check)
+        }
+    }
+
+    private func decodeUnits(_ units: [GLM5NextTensorParallelDecodeUnit<Lane>], whileRunning: (Int) throws -> Void,
+                             check: () throws -> Void) throws -> [[Int]] {
         var results = [[Int]?](repeating: nil, count: units.count)
         let speculating = units.indices.filter { units[$0].window != nil }
         if !speculating.isEmpty {

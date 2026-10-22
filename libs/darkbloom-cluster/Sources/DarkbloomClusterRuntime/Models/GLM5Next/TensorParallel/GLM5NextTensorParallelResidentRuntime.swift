@@ -1,3 +1,4 @@
+import Cmlx
 import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
@@ -559,6 +560,18 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
     /// Prefill chunks of a request whose own chunk is `requestChunk`: the
     /// largest multiple of it within `prefillChunkTokens`.
+    /// Command-buffer commit limits of decode steps, MTP rounds and lane
+    /// rounds on the thread that encodes them. The owner's rank guard caps a
+    /// buffer at 16 operations (`MLX_MAX_OPS_PER_BUFFER`), which on a decode
+    /// step of ~1,400 operations is ~85 buffers, each a GPU gap of about 10 us:
+    /// 13.24 ms a TP2 step at 16 against 12.56 at 100 (pair-measured, tokens
+    /// identical; 400 gains nothing more). The size bound stays lifted, as the
+    /// worker sets it for tensor parallel (`WorkerCommandBufferBudget`): every
+    /// MoE launch takes its whole expert bank as an input. Prefill keeps the
+    /// rank's limits. Synchronization only: results never depend on the
+    /// partitioning.
+    static let decodeCommandBuffers = GPU.CommandBufferLimits(operations: 100, megabytes: 1 << 20)
+
     static func prefillChunk(requestChunk: Int) -> Int {
         let requestChunk = max(1, requestChunk)
         return max(requestChunk, (prefillChunkTokens / requestChunk) * requestChunk)
@@ -737,6 +750,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
         func choose(_ row: MLXArray, stop: Float) -> MLXArray { self.choose(row, sampler: sampler, stop: stop) }
         func token(_ agreed: [Float]) throws -> Int { try Self.agreedToken(agreed, sampled: sampler != nil) }
+        // Decode encodes under `decodeCommandBuffers` (prefill keeps the rank's own limits).
+        var previousOperations: Int32 = 0, previousMegabytes: Int32 = 0
+        mlx_metal_set_thread_command_buffer_limits(Int32(Self.decodeCommandBuffers.operations),
+            Int32(Self.decodeCommandBuffers.megabytes), &previousOperations, &previousMegabytes)
+        defer { mlx_metal_set_thread_command_buffer_limits(previousOperations, previousMegabytes, nil, nil) }
         var tokens: [Int] = []
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false

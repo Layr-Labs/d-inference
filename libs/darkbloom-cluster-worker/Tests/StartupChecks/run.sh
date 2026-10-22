@@ -31,7 +31,7 @@ check() {
   out="$( /usr/bin/env -i PATH=/usr/bin:/bin DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 \
       JACCL_RANK=0 JACCL_COORDINATOR=127.0.0.1:1 JACCL_IBV_DEVICES="$work/devices.json" ${environment[@]+"${environment[@]}"} \
       "$worker" --model-dir "$missing" --rank 0 --stage-cut 8 \
-      --membership-epoch aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --model-id registered_qwen35_9b \
+      --membership-epoch aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --model-id "${CHECK_MODEL:-registered_qwen35_9b}" \
       --artifact-sha256 "$(sha 1)" --configuration-sha256 "$(sha 2)" \
       --peer0-id one --peer0-build-sha256 "$(sha 3)" --peer1-id two --peer1-build-sha256 "$(sha 4)" \
       --deadline-uptime-nanoseconds "$deadline" "$@" <"${CHECK_INPUT:-/dev/null}" 2>&1 >/dev/null )"
@@ -83,6 +83,12 @@ check pipeline-leaves-fast-synch-alone 1 "" "darkbloom-collective-sync-v1" --
 check tensor-parallel-lifts-the-command-buffer-size-bound 1 "darkbloom-command-buffer-budget-v1 max_mb=1000000 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-command-buffer-size 1 "darkbloom-command-buffer-budget-v1 max_mb=50 source=launcher" "" MLX_MAX_MB_PER_BUFFER=50 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-the-command-buffer-size-alone 1 "" "darkbloom-command-buffer-budget-v1" --
+# GLM tensor parallel fuses its sum fences (a launcher value is kept); Qwen
+# tensor parallel and GLM pipelines leave them alone.
+CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-fuses-its-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 source=worker" "" -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-explicit-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 -- --generation-mode tensor_parallel_v1
+check qwen-tensor-parallel-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_glm53_flash check glm-pipeline-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" --
 check tensor-shares-refused-without-tensor-parallel 1 "--tensor-shares takes two canonical weights" "" -- --tensor-shares 1:3
 check tensor-shares-refused-malformed 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:03
 check tensor-shares-refused-out-of-range 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 0:3

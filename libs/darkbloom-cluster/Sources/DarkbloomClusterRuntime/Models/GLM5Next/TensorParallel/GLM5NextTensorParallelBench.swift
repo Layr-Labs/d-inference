@@ -81,6 +81,11 @@ public enum GLM5NextTensorParallelBench {
         /// the product's). Must give the same bits as `product`; compare with
         /// `perplexity` to show it on the model.
         public var microBatchTokens = GLM5NextTensorParallelResidentRuntime.prefillMicroBatchTokens
+        /// `tp` only: residual streams divided by rows between the ranks in
+        /// prefill micro-batches (`GLM5NextTextStage.installTensorParallelSequenceParallel`,
+        /// sealed reduce-scatter and all-gather with `sealed`). Must give the
+        /// same bits as without.
+        public var sequenceParallel = GLM5NextTensorParallelResidentRuntime.prefillSequenceParallel
         /// After the run, the prompt's perplexity and every position's
         /// greedy next token from the prefill's hidden rows (the head at each
         /// row, in pieces), outside the timed prefill: the reordering gate
@@ -230,6 +235,11 @@ public enum GLM5NextTensorParallelBench {
         } else if shard != nil {
             // Shard-local: a sum with no peer is the rank's own partial.
             try stage.installTensorParallelReduction { $0 }
+        }
+        if options.sequenceParallel {
+            guard let group else { throw ProbeError("GLM bench sequence parallel needs a peer (--mode tp)") }
+            try stage.installTensorParallelSequenceParallel(share: group.rank, shares: group.size,
+                reduceScatter: { group.reduceScatter($0) }, allGather: { group.allGather($0) })
         }
         Memory.clearCache()
         if let limit = options.cacheLimitBytes { Memory.cacheLimit = limit }
@@ -676,6 +686,52 @@ extension GLM5NextTensorParallelBench {
 }
 
 extension GLM5NextTensorParallelBench {
+    /// The sealed reduce-scatter and all-gather against the sealed all-sum on
+    /// this pair of ranks, bit for bit, on the CPU: the scatter is this rank's
+    /// rows of the sum, the gather the rank-ordered rows (equal to a sum of
+    /// frames padded with -0). `ring` (two processes on one Mac, `MLX_RANK`,
+    /// `MLX_HOSTFILE`) runs the gathered frames; `jaccl` the streamed exchange.
+    /// Throws on the first difference.
+    ///
+    /// Tamper check (`DARKBLOOM_TP_SEALED_TAMPER_AT=N`, as tp-check's sealed
+    /// runs): the rank flips one byte of its sealed frame at counter N, and
+    /// the peer must refuse it (the codec then stays refused). Each round
+    /// runs, per shape, an all-sum, a reduce-scatter, a padded all-sum and an
+    /// all-gather: counters `20 r + 4 s + 0...3`, so N = 1 / 3 hit the first
+    /// reduce-scatter / all-gather and, with `DARKBLOOM_TP_SEALED_CHECK_ROUNDS=11`,
+    /// N = 201 / 203 hit round 10's.
+    public static func sealedCollectivesCheck(backend: QwenTensorParallelGroup.Backend, log: (String) -> Void) throws {
+        let group = try QwenTensorParallelGroup(backend: backend)
+        let codec = try QwenTensorParallelSealCodec.bench(group: group, scope: Data("glm-tp-sealed-collectives".utf8))
+        let environment = ProcessInfo.processInfo.environment
+        codec.tamperAtCounter = environment["DARKBLOOM_TP_SEALED_TAMPER_AT"].flatMap { UInt64($0) }
+        let rounds = max(1, environment["DARKBLOOM_TP_SEALED_CHECK_ROUNDS"].flatMap { Int($0) } ?? 1)
+        try codec.install(); group.sealed = codec
+        func bits(_ a: MLXArray) -> Data { a.asData(access: .copy).data }
+        let shapes: [(Int, Int, DType)] = [(2, 8, .float32), (4096, 4096, .bfloat16), (1000, 16, .float32),
+                                           (8192, 4096, .bfloat16), (6, 3, .float16)]
+        try Device.withDefaultDevice(.cpu) {
+            for (rows, width, dtype) in (0 ..< rounds).flatMap({ _ in shapes }) {
+                // Each rank its own partial, with a few signed zeros.
+                var partial = MLXRandom.normal([1, rows, width], key: MLXRandom.key(UInt64(11 + group.rank)))
+                partial = MLX.where(abs(partial) .< 0.01, MLXArray(Float(-0.0)), partial).asType(dtype)
+                let half = rows / 2
+                let own = partial[0..., (group.rank * half) ..< ((group.rank + 1) * half)]
+                let padding = MLX.full(own.shape, values: MLXArray(Float(-0.0)).asType(dtype))
+                let sum = group.allSum(partial)
+                let scattered = group.reduceScatter(partial)
+                let padded = group.allSum(concatenated(group.rank == 0 ? [own, padding] : [padding, own], axis: 1))
+                let gathered = group.allGather(own)
+                eval(sum, scattered, padded, gathered)
+                let expected = sum[0..., (group.rank * half) ..< ((group.rank + 1) * half)]
+                let scatterOK = scattered.shape == expected.shape && bits(scattered) == bits(expected)
+                let gatherOK = gathered.shape == [1, rows, width] && bits(gathered) == bits(padded)
+                log("sealed-collectives rank=\(group.rank) shape=1x\(rows)x\(width) \(dtype) reduce_scatter=\(scatterOK ? "bitwise" : "DIFFERS") all_gather=\(gatherOK ? "bitwise" : "DIFFERS")")
+                guard scatterOK, gatherOK else { throw ProbeError("sealed reduce-scatter or all-gather differs") }
+            }
+        }
+    }
+
     /// Local cost of the sealed reduction's crypto alone (no link): one rank's
     /// seal of a partial and the other's open of it, with paired test keys.
     public static func sealProbe(bytes sizes: [Int], repeats: Int, log: (String) -> Void) {

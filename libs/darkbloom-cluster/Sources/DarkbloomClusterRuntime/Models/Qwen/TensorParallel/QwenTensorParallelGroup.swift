@@ -106,6 +106,43 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
         return MLXArray(result)
     }
 
+    /// Unevaluated: this rank's half of the sum of both ranks' `[1, T, ...]`
+    /// floating partials, rows `rank * T / 2 ..< (rank + 1) * T / 2` (T even),
+    /// each element added in rank order as `allSum` adds it. Sealed, each rank
+    /// sends only the peer's half (`mlx_distributed_reduce_scatter_sealed`);
+    /// unsealed (a bench), the whole sum's rows.
+    public func reduceScatter(_ value: MLXArray) -> MLXArray {
+        precondition(size == 2 && value.ndim >= 2 && value.dim(0) == 1 && value.dim(1) % 2 == 0
+            && [.float16, .bfloat16, .float32].contains(value.dtype), "reduce-scatter takes [1, T, ...] floats, T even")
+        let half = value.dim(1) / 2
+        guard let handle, let _ = sealed else {
+            return allSum(value)[0..., (rank * half) ..< ((rank + 1) * half)]
+        }
+        floatingReductions += 1
+        var result = mlx_array_new()
+        let status = mlx_distributed_reduce_scatter_sealed(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
+        precondition(status == 0, "\(backend.rawValue) reduce-scatter graph construction failed")
+        return MLXArray(result)
+    }
+
+    /// Unevaluated: both ranks' `[1, T, ...]` rows as `[1, 2T, ...]`, rank 0's
+    /// first, every element's bits kept. Sealed, each rank sends only its own
+    /// (`mlx_distributed_all_gather_sealed`); unsealed (a bench), a sum of
+    /// frames padded with -0 (x + -0 is x).
+    public func allGather(_ value: MLXArray) -> MLXArray {
+        precondition(size == 2 && value.ndim >= 2 && value.dim(0) == 1
+            && [.float16, .bfloat16, .float32].contains(value.dtype), "all-gather takes [1, T, ...] floats")
+        guard let handle, let _ = sealed else {
+            let padding = MLX.full(value.shape, values: MLXArray(Float(-0.0)).asType(value.dtype))
+            return allSum(concatenated(rank == 0 ? [value, padding] : [padding, value], axis: 1))
+        }
+        floatingReductions += 1
+        var result = mlx_array_new()
+        let status = mlx_distributed_all_gather_sealed(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
+        precondition(status == 0, "\(backend.rawValue) all-gather graph construction failed")
+        return MLXArray(result)
+    }
+
     /// Evaluated now: the elementwise sum of every rank's integers (each rank
     /// fills its own slots, the others zero).
     public func exchangeIntegers(_ values: [Int32]) throws -> [Int32] {

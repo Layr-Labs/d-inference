@@ -145,6 +145,15 @@ public final class GLM5NextTensorParallelResidentRuntime {
         return try QwenLongPrefillCheckedBytes.product([mergedPrefillTokens,
             try QwenLongPrefillCheckedBytes.sum([(c.hcMult + 1) * c.hiddenSize * 2, (c.hcMult + c.hcMult * c.hcMult) * 4])])
     }
+    /// Prefill micro-batches of an even 4,096 rows or more keep each rank's
+    /// half of the rows' residual streams: the mHC sites and MoE routers run
+    /// on that half only, and each layer's sums become a sealed all-gather of
+    /// the sublayer inputs and a sealed reduce-scatter of the partials
+    /// (`GLM5NextTextStage.installTensorParallelSequenceParallel`): the same
+    /// link bytes, twice the collectives, half the replicated mHC and router
+    /// work per rank. Tokens unchanged (each of those computes a row the same
+    /// in a call of half the rows; the scatter adds as the sum does).
+    static let prefillSequenceParallel = false
     /// NextN (MTP) proposals each greedy decode round verifies
     /// (`GLM5NextTensorParallelSpeculation`, at most
     /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
@@ -454,6 +463,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     // rounding once (`partialsTransport`).
                     group.allSum(partial)
                 }
+                if Self.prefillSequenceParallel {
+                    try value.installTensorParallelSequenceParallel(
+                        share: collective.rank, shares: collective.size,
+                        reduceScatter: { group.reduceScatter($0) }, allGather: { group.allGather($0) })
+                }
                 loaded = value; retired = value
                 Memory.clearCache()
                 // Residency is a limit, clamped to the product's ceiling: it
@@ -475,7 +489,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
-                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
+                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) micro_batch_tokens=\(Self.prefillMicroBatchTokens ?? 0) merged_tokens=\(Self.mergedPrefillTokens) sequence_parallel=\(Self.prefillSequenceParallel ? 1 : 0) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
                     + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"

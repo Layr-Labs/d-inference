@@ -14,7 +14,7 @@ Long tool calls in the Gemma, GPT-OSS and framed-JSON formats no longer cost
 provider CPU time that grows with the square of their length: parsing a 64 KB
 Gemma file write took about 20 s of CPU and now takes about 0.1 s.
 
-Qwen-family prompts whose generation prompt carries no think marker (for
-example Qwen3-VL Instruct) now stream their answer instead of buffering it
-until the end. `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` and
-`DARKBLOOM_TTFT_THINK_CONTENT_SEED=0` restore the previous behaviors.
+Qwen3-VL Instruct, whose generation prompt carries no think marker, now
+streams its answer instead of buffering it until the end.
+`DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` and `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0`
+restore the previous behaviors.

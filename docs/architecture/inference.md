@@ -1493,18 +1493,20 @@ probe before forwarding model output. This matters for media because
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker.
 
-A Qwen-family (`qwen*` `model_type`) stream on the `qwen3` parser whose tail
-carries no think marker also receives the empty closed block. Qwen3-VL
-Instruct renders a bare `<|im_start|>assistant\n` generation prompt; without
-the seed its whole answer waited for a tag or the end of generation. A
-`<think>` the model emits itself still opens reasoning in content state.
-`DARKBLOOM_TTFT_THINK_CONTENT_SEED=0` restores undecided parsing for these
-tails. Explicit `.none`, other parser families (`deepseekR1` keeps close-only
-parsing), other unrecognized tails receive no
-prefix.
+A Qwen3-VL (`qwen3_vl_moe`) stream on the `qwen3` parser whose tail carries
+no think marker also receives the empty closed block
+(`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct
+renders a bare `<|im_start|>assistant\n` generation prompt and does not
+reason; without the seed its whole answer waited for a tag or the end of
+generation. A `<think>` the model emits itself still opens reasoning in
+content state. Other Qwen types get no seed: the Qwen 3.5, 3.6 and 3.8
+templates always end in a marker, and a close-only reasoner such as
+`qwen3_next` writes its reasoning before a bare `</think>`, which a content
+seed would expose as answer text. `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0`
+disables the seed.
 
-Explicit `.none`, other
-parser families and unrecognized prompt tails receive no prefix from the
+Explicit `.none`, other parser families (`deepseekR1` keeps close-only
+parsing) and other unrecognized prompt tails receive no prefix from the
 probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
 for a streamed think-format request with an unknown tail, `contentSeed` starts
 the parser in content mode. A generated `<think>` can still open reasoning.

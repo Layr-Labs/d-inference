@@ -119,8 +119,8 @@ Material uncertainty still requires human review; no model flag is overridden.
 | Pilot check | Expected behavior |
 |---|---|
 | First feedback | Progress, then Sonnet findings or clean first-pass feedback before deeper work. |
-| Risky or uncertain changes | Selected Opus review for auth, attestation, encryption, billing, workflows, findings or model uncertainty. |
-| Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings or disagreement with Opus, followed by integration of its selected source analyses. |
+| Risky or uncertain changes | Selected Opus review for risky production paths, findings or local model uncertainty. Clean tests/docs do not escalate solely because their filenames contain security terms. |
+| Critical or disputed changes | Independent Sol 6.1 review for cryptography, attestation, workflows or high-severity findings, without first repeating those batches with Opus. Disagreement or unresolved Opus advice can also add Sol. Sol integrates its selected source analyses. |
 | Repeat push | Identical analysis reused; changed inputs invalidate source and integration results. |
 | Failure or budget exhaustion | Completed findings retained; final comment explicitly requires human review. No manual paid rerun. One bounded analysis/acknowledgment repair within the original CI run is the only response-recovery exception. |
 | Head changes during a call | Original-head results saved; stale findings not posted as current. |
@@ -373,6 +373,21 @@ pending integration instead of claiming full coverage. Existing limits remain:
 80,000-character batches. Split patches carry continuation hunk headers so
 each fragment retains its original base/head citation lines. Binary, LFS and
 submodule changes need manual review.
+
+`depth_policy.py` selects one independent depth reviewer for normal source batches.
+Critical paths and high findings go directly to Sol; other risky production paths,
+findings and local uncertainty go to Opus. Production paths take precedence in a
+mixed batch, and renames retain the old path's risk. Workflows always receive Sol,
+including workflows named for tests or docs. Documentation, changelog and test
+paths retain full Sonnet coverage and cross-file integration; findings or uncertainty
+still escalate them. These path rules are routing heuristics, not proof of safety.
+Explicit local diagnostic deep scans retain the all-model contract.
+
+Sonnet integration findings select the source batches containing their validated
+citations, rather than rescanning every file with the deeper models. A remaining
+global uncertainty without a supported finding still requires a human; it does not
+trigger a blanket local rescan that cannot resolve that integration question.
+Selected independent security checks continue, and their findings remain saved.
 
 `change_context.py` supplies each source batch with changed-line coordinates and
 a bounded patch excerpt for its files, so a HEAD-only excerpt can distinguish

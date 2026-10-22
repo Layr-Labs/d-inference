@@ -2,7 +2,8 @@
 import copy
 import json
 from .client import APIError, ReviewUnavailable, ScanTimeout
-from .context import VERSION, SONNET, OPUS, SOL, RISK, CRITICAL, digest
+from .context import VERSION, SONNET, OPUS, SOL, digest
+from .depth_policy import source_depth
 from .review import SYSTEM, FindingCapacityReached, model_call, patch_lines, prepare, validate_findings
 from .scan import SCAN_SCHEMA, INSTRUCTION, units, batches, patch_context
 from .state import BudgetStopped
@@ -325,6 +326,16 @@ class Scanner:
             self.paid.last_request = {}
             planner(count)
 
+    def finding_batches(self, findings):
+        """Target retained finding citations instead of rescanning the PR."""
+        selected = []
+        for batch in self.source:
+            evidence = self.batch_evidence("source", batch)
+            if any(f["file"] in evidence and f["line"] in evidence[f["file"]]["lines"][f["side"]]
+                   for f in findings):
+                selected.append(batch)
+        return selected
+
     def run(self, force_deep=False):
         summaries, deepen, critical = [], [], []
         first_results = {}
@@ -336,21 +347,32 @@ class Scanner:
                 summaries.append({"id": str(len(summaries)), "analysis": result["analysis"],
                                   "findings": result["findings"],
                                   "needs_deeper_review": result["needs_deeper_review"]})
-                paths = " ".join(u["metadata"]["file"] for u in batch)
-                if force_deep or RISK.search(paths) or result["needs_deeper_review"] or result["findings"]:
+                depth = source_depth(batch, result)
+                if force_deep or depth == OPUS:
                     deepen.append(batch)
-                if force_deep or CRITICAL.search(paths) or any(f["severity"] == "high" for f in result["findings"]):
+                if force_deep or depth == SOL:
                     critical.append(batch)
             integrated = self.integrate(SONNET, summaries)
-            if integrated and (integrated["needs_deeper_review"] or integrated["findings"]):
-                deepen = list(self.source)
+            # Reduction and formatting repair cannot erase earlier validated
+            # advice. All retained findings here come from the Sonnet pass.
+            if self.findings:
+                for batch in self.finding_batches(self.findings):
+                    if batch not in deepen:
+                        deepen.append(batch)
+                high = [f for f in self.findings if f["severity"] == "high"]
+                for batch in self.finding_batches(high):
+                    if batch not in critical:
+                        critical.append(batch)
             if integrated and integrated["needs_deeper_review"]:
                 # Independent depth passes do not receive this global question;
                 # their clean local answers cannot establish its resolution.
                 self.manual_review_reasons.append(
                     "Cross-file reviewer requests further review; independent human review required")
-            if integrated and any(f["severity"] == "high" for f in integrated["findings"]):
-                critical = list(self.source)
+            # Sol supplies the independent second view for critical source;
+            # repeating the same batches with Opus adds a third local pass.
+            # Explicit diagnostic deep scans retain their all-model contract.
+            if not force_deep:
+                deepen = [batch for batch in deepen if batch not in critical]
             self.integration = True
             self.depth_pending = len(deepen) + len(critical)
             self.outcomes.append({"model": SONNET, "status": "first pass completed"})

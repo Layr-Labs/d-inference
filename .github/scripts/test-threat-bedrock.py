@@ -474,11 +474,11 @@ class WorkloadScanTests(unittest.TestCase):
         self.assertTrue(progress[-1]["finished"])
         self.assertEqual(result["covered_units"], 63)
         self.assertEqual(result["depth_batches_pending"], 0)
-        self.assertEqual(result["bedrock_planned_calls"], 99)
-        self.assertEqual(result["bedrock_requests"], 100)
-        self.assertEqual(result["bedrock_call_limit"], 100)
+        self.assertEqual(result["bedrock_planned_calls"], 68)
+        self.assertEqual(result["bedrock_requests"], 69)
+        self.assertEqual(result["bedrock_call_limit"], 69)
         self.assertEqual(result["response_repairs"][0]["status"], "completed")
-        for alias, source_count, integration_count in (("sonnet", 32, 3), ("opus", 31, 0), ("sol", 31, 3)):
+        for alias, source_count, integration_count in (("sonnet", 32, 3), ("opus", 0, 0), ("sol", 31, 3)):
             self.assertEqual(requests.count((alias, "source")), source_count)
             self.assertEqual(requests.count((alias, "integration")), integration_count)
 
@@ -489,11 +489,11 @@ class WorkloadScanTests(unittest.TestCase):
         self.assertTrue(progress[-1]["finished"])
         self.assertEqual(result["covered_units"], 124)
         self.assertEqual(result["depth_batches_pending"], 0)
-        self.assertEqual(result["bedrock_planned_calls"], 196)
-        self.assertEqual(result["bedrock_requests"], 197)
-        self.assertEqual(result["bedrock_call_limit"], 197)
+        self.assertEqual(result["bedrock_planned_calls"], 134)
+        self.assertEqual(result["bedrock_requests"], 135)
+        self.assertEqual(result["bedrock_call_limit"], 135)
         self.assertEqual(result["bedrock_call_ceiling"], 500)
-        for alias, source_count, integration_count in (("sonnet", 63, 5), ("opus", 62, 0), ("sol", 62, 5)):
+        for alias, source_count, integration_count in (("sonnet", 63, 5), ("opus", 0, 0), ("sol", 62, 5)):
             self.assertEqual(requests.count((alias, "source")), source_count)
             self.assertEqual(requests.count((alias, "integration")), integration_count)
 

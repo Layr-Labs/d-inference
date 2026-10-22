@@ -8,6 +8,11 @@ lower the call and output limits through Actions variables. A longer bounded
 scan deadline leaves time to save findings
 and publish a human-review handoff when the scan cannot complete.
 
+Normal reviews send critical source directly to Sol instead of repeating it with
+Opus first. All source still receives Sonnet review and cross-file integration;
+clean tests/docs avoid filename-only depth, and integration findings target their
+cited batches. Global uncertainty requires human review without a blanket rescan.
+
 Paid manual dispatches and GitHub job reruns are disabled. Incomplete reviews
 explicitly require a human and cannot grant merge clearance. Advisory mode and
 existing OpenRouter spending limits remain unchanged.

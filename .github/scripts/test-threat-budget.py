@@ -661,14 +661,14 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(integration["units"][0]["needs_deeper_review"])
         self.assertFalse(result["errors"])
 
-    def test_cross_file_uncertainty_is_not_cleared_by_independent_local_depth(self):
+    def test_cross_file_uncertainty_hands_off_without_a_redundant_local_rescan(self):
         self.files[0]["filename"] = "ordinary.py"
         def reply(body):
             stage = json.loads(body["messages"][1]["content"])["stage"]
             return self.service.completion(body, uncertain=body["model"] == SONNET and stage == "integration")
         self.service.reply = reply
         result, _ = self.scan()
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET])
         self.assertFalse(result["errors"])
         self.assertEqual(result["depth_batches_pending"], 0)
         self.assertTrue(result["manual_review_reasons"])

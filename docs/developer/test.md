@@ -727,8 +727,13 @@ from another run/attempt even for the same revisions. PR closure has a distinct
 lifecycle stop code and cannot grant merge clearance.
 Live smoke tests establish model compatibility separately.
 Workload tests segment large fixtures into 31 and 62 source batches, then complete
-all three selected models, hierarchical integrations and one repair, including
-a 197-request scan beyond the former emergency ceiling. Adapter tests stop after
+Sonnet and selected Sol review, hierarchical integrations and one repair. Removing
+duplicate Opus passes reduces those critical-code fixtures from 100 to 69 and
+197 to 135 requests without losing source coverage. Routing regressions retain
+full Sonnet review of clean support files, escalate their findings and uncertainty,
+preserve workflow and renamed-path risk, and target exact integration citations.
+Global uncertainty still denies clearance without triggering a blanket rescan;
+cached results preserve the same selected scope. Adapter tests stop after
 exactly 500 requests, apply the larger native output default and preserve fixed
 probe limits. Client configuration tests preserve single-attempt transport and
 allow more response time for workload mode. Lifecycle tests verify stage admission

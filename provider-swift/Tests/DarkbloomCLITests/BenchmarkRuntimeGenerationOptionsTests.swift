@@ -44,6 +44,12 @@ struct BenchmarkRuntimeGenerationOptionsTests {
         #expect(
             try Benchmark.parse(["--runtime-generation", "--runtime-stagger"])
                 .benchmarkModeConflict() != nil)
+        // A malformed list is refused before any model work, not filtered.
+        for sizes in ["1,typo,4", "1,,4", "0,2", "65"] {
+            #expect(
+                try Benchmark.parse(["--runtime-generation", "--runtime-concurrency", sizes])
+                    .benchmarkModeConflict() != nil, "\(sizes)")
+        }
         #expect(
             try Benchmark.parse(["--runtime-prompt-file", "/tmp/input"]).benchmarkModeConflict()
                 != nil)

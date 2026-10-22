@@ -320,6 +320,30 @@ the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
 
+## Prompt Preparation And Admission
+
+```bash
+swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
+```
+
+`PromptTokenCacheTests` loads synthetic tokenizers through the production
+`LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
+pre-tokenizer families, with no download, and requires piecewise, cached and
+cross-turn token IDs to equal the unchanged path. A marker template that only
+the served loop renders, or raises for, checks that a background comparison
+disables reuse. `ChatTemplateLoopRewritesTests`
+renders random agent histories through skeleton templates built from each loop
+rewrite's matched blocks and requires the rewritten render to equal the
+original. Set `PROMPT_TOKEN_CACHE_MODEL_DIRS` to colon-separated local model
+directories to repeat both comparisons on real chat templates. `InboundChatRequestDecodeTests`
+checks the merged admission body decode against the separate decoders, and
+`ServeLoopColdLoadTests` drives the serve loop with a request parked on a model
+load, including a request for a second cold model that fits only without the
+first, and a request for the loading model when a second copy would not fit.
+`darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
+and the body decode on the CPU with only the tokenizer loaded and the background
+comparisons off; it exits 2 if any token ID or decoded field differs.
+
 ## Startup Performance Recovery
 
 `StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and
@@ -369,6 +393,35 @@ early watchdog terminal, waiter cancellation, zero work and closed admission.
 startup bounds explicit. Run these together with `EngineV2PrefillSamplingTests`
 and `PrefillEvidenceRecoveryTests` using the provider test runner. Synthetic
 timings prove state transitions, not real GPU throughput or fleet recovery.
+
+## Deadline Admission Estimators
+
+`EngineMeasurementOrderingTests` drives the measurement owner with synthetic
+timestamps across the 120-second expiry boundary, and the real `EngineV2Bridge`
+event pump with two scripted requests whose terminals arrive in reverse
+observation order. `AdmissionRateEstimatorTests` covers the kill switch, the
+anchored isolated-prefill policy (floor, idle expiry, posture, stale-evidence
+expiry with or without an anchor), poisoned-sample and slow-calibration
+lockouts through the bridge and the real submission path, another model's
+lease or device activity on a shared whole-Mac service budget, a fresh
+long-prompt bucket below the floor, decode step-shape measurement and plumbing
+(including the first-token step's rows), rate and shape kept coupled across
+batch widths, the per-row charge kept for reviewed calibrations, and a late
+older cold sample. In the SDK, the unit suite
+`CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
+shape conversion, the mirrored MTP depth gates (batch gate and automatic
+envelope, with a driver check that the ceiling bounds every live plan depth)
+and the full-slot stretch; the integration suite
+`CBv2PerBatchDecodeConversionTests` pins the engine conversion.
+
+```bash
+swift test --skip-build --no-parallel --filter 'EngineMeasurementOrderingTests|AdmissionRateEstimatorTests'
+```
+
+Run both SDK suites from `libs/mlx-swift-lm/` with `--filter CBv2PerBatchDecode`;
+they need no Metal library. These use scripted engines and synthetic numeric
+usage: no model or GPU runs, and they do not qualify live refusal rates,
+hardware performance or routing.
 
 ## Native Inference Checkpoint Storage Qualification
 
@@ -491,7 +544,7 @@ MiMo specifications, which load through the native engine.
 Run focused policy and CLI checks from `provider-swift/`:
 
 ```bash
-swift test --skip-build --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark'
+swift test --skip-build --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark|RuntimeConcurrencyBenchmark'
 ```
 
 With an owned GPU and verified model, compare production-session live precision:

@@ -34,6 +34,9 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
                 return "F:" + call.function.name
                     + String(decoding: try encoder.encode(call.function.arguments), as: UTF8.self)
             case .info: return "I"
+            case .toolCallDelta:
+                XCTFail("the Super output holds calls until validation; it never streams fragments")
+                return "D"
             }
         }
     }

@@ -190,7 +190,8 @@ extension ProviderLoop {
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
-        send: SendHandle
+        send: SendHandle,
+        workFIFOGate: WorkFIFOGate? = nil
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
@@ -342,9 +343,12 @@ extension ProviderLoop {
         // tools, content-less messages, the `developer` role) before
         // retrying — surfacing the real decoder error on failure rather
         // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
-        let chatRequest: OpenAIChatCompletionRequest
+        // `decodeInboundChatRequest` runs that decode and also reads the
+        // body extensions below, in the same parse when the tool and
+        // function-call repairs leave the body unchanged.
+        let inbound: InboundChatRequest
         do {
-            chatRequest = try Self.decodeOpenAIRequest(decryptedData)
+            inbound = try Self.decodeInboundChatRequest(decryptedData)
         } catch {
             // Privacy: the provider logger renders the whole message `.public`, and
             // reports collect this subsystem — so never interpolate the raw decode
@@ -358,6 +362,7 @@ extension ProviderLoop {
             rejectInvalidRequest()
             return
         }
+        let chatRequest = inbound.request
         profile.mark(.parsed)
 
         // Reject unknown/non-native audio before acceptance or cold loading.
@@ -390,7 +395,7 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths.
-        let templateControls = Self.extractChatTemplateControls(from: decryptedData).resolvingPromptDate()
+        let templateControls = inbound.extensions.templateControls.resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -399,10 +404,10 @@ extension ProviderLoop {
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
-        let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
+        let logprobsSpec = inbound.extensions.logprobsSpec
         // OpenAI `logit_bias` / `seed` (also absent from the upstream request
         // shape). Overlaid onto the EngineV2 translation.
-        let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
+        let samplingOverrides = inbound.extensions.samplingOverrides
 
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -437,7 +442,15 @@ extension ProviderLoop {
         // load step: a cold sample includes model-load latency and must never
         // calibrate warm quotes.
         let modelWasResidentAtDispatch = modelSlots[modelId] != nil
-        let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        // A cold model is sized only after released loads of other models
+        // have taken their capacity, and a rejection while a released load of
+        // the same model runs is checked again after it
+        // (`ProviderLoop+WorkFIFO.swift`).
+        if !modelWasResidentAtDispatch { await awaitReleasedLoads(otherThan: modelId) }
+        var fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        if fastAdmissionRejected, await awaitReleasedLoads(of: modelId) {
+            fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        }
         profile.mark(.admission)
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -545,6 +558,11 @@ extension ProviderLoop {
             f.mark(.loadWaitStart, offsetUs: now)
             f.set(.loadCold, !loadWasWarm)
             f.set(.loadParked, loadParked)
+        }
+        // Accepted and registered: later events need not queue behind a cold
+        // load or another load's wait. Native MiMo keeps serial admission.
+        if !loadWasWarm, advertisedModels[modelId]?.modelType != "mimo_v2" {
+            releaseWorkFIFO(workFIFOGate, requestId: requestId, modelId: modelId)
         }
         do {
             try await ensureModelLoaded(modelId: modelId)
@@ -1061,6 +1079,11 @@ extension ProviderLoop {
             if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
+            // Visible output only (content, reasoning, tool names and argument
+            // text): the cancelled-stream billing floor. Streamed calls add one
+            // hash marker per fragment to `fullResponseText`, which would
+            // otherwise inflate that floor.
+            var deliveredText = ""
             var promptTokens = 0
             var completionTokens = 0
             // Profiler frame counters (locals; written to the profile once at
@@ -1159,6 +1182,7 @@ extension ProviderLoop {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
+                            deliveredText += content
                             // Count only NON-empty content toward the billing
                             // floor: parseStreamChunk returns a non-nil but empty
                             // contentDelta for SSE frames carrying "content":""
@@ -1170,11 +1194,18 @@ extension ProviderLoop {
                         }
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
+                            deliveredText += reasoning
                             frameHadContent = true
                             reasoningText += reasoning
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            for call in toolCalls {
+                                deliveredText += (call.function?.name ?? "") + (call.function?.arguments ?? "")
+                            }
+                            // A streamed call's first fragment is content: the
+                            // pre-content deadline no longer applies once a
+                            // call is visible, so it is never discarded late.
                             frameHadContent = true
                         }
                         if frameHadContent {
@@ -1347,7 +1378,7 @@ extension ProviderLoop {
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
                     deliveredCompletionTokenFloor: tokenizer.inner.encode(
-                        text: fullResponseText, addSpecialTokens: false
+                        text: deliveredText, addSpecialTokens: false
                     ).count,
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,

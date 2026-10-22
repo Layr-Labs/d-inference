@@ -33,6 +33,24 @@ struct GLM5NextTensorParallelLoadPathTests {
                 + " setup_ns=500 read_ns=2500 build_ns=0")
     }
 
+    @Test func phasesNoteWorkBesideThemAfterThePhases() {
+        var phases = GLM5NextTensorParallelLoadPhases(since: 0, startedUnixMilliseconds: 7)
+        phases.mark("setup", now: 10)
+        phases.note("metadata_thread", 25)
+        phases.mark("link", now: 30)
+        #expect(phases.line(rank: 0, path: .prepared)
+            == "darkbloom-tensor-parallel-load-phases-v1 rank=0 path=prepared started_unix_ms=7"
+                + " setup_ns=10 link_ns=20 metadata_thread_ns=25")
+    }
+
+    @Test func aBackgroundComputationIsJoinedWithItsValueOrItsError() throws {
+        let value = GLM5NextTensorParallelBackground { () throws -> Int in usleep(20_000); return 42 }
+        #expect(try value.join() == 42)
+        #expect(value.finishedUptimeNanoseconds >= value.startedUptimeNanoseconds + 20_000_000)
+        let failure = GLM5NextTensorParallelBackground { () throws -> Int in throw ProbeError("metadata") }
+        #expect(throws: ProbeError.self) { try failure.join() }
+    }
+
     @Test func digestsNameEveryArrayAndChangeWithAnyByte() throws {
         try Device.withDefaultDevice(.cpu) {
             let a = Linear(weight: MLXArray((0 ..< 12).map(Float.init), [3, 4]))

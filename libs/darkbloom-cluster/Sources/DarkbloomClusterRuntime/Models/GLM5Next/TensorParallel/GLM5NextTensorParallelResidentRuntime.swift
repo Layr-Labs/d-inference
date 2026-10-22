@@ -293,64 +293,30 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let planSHA256 = try GLM5NextServingResources.contract(specification: spec,
             configuration: descriptor.configuration, artifactIdentity: descriptor.artifactIdentity,
             cut: descriptor.cut).source.planFingerprint
-        let inventory = try descriptor.inspectInventory(directory: directory)
-        guard GLM5NextArtifactMetadata.fingerprint(inventory) == spec.inventorySHA256 else {
-            throw ProbeError("GLM shard headers are not the registered inventory")
-        }
-        // Every rank is charged the request state of both pipeline stages: the
-        // whole model's latent caches (replicated under TP) and all its KDA
-        // state (charged whole, although a rank holds half its heads), so the
-        // charge is never below the need. Beside it, one sealed sum's buffers
-        // at the largest chunk: the float32 partial, its sealed frame, both
-        // ranks' frames, the opened peer partial and the sum (six partials).
-        //
-        // A request is charged at its own context (`GLM5NextTensorParallelRequestCharge`):
-        // the profile is the model's native context, and LOAD admits the memory
-        // plan's request (`GLM5NextResidentDescriptor.memoryProfile`), as before.
         let profile = descriptor.profile
-        let largestChunk = max(profile.maximumChunkTokens, Self.bulkPrefillChunkTokens)
-        let fixedRequestBytes = try QwenLongPrefillCheckedBytes.sum([
-            try QwenLongPrefillCheckedBytes.product([6, largestChunk, descriptor.configuration.textConfig.hiddenSize, 4]),
-            try QwenLongPrefillCheckedBytes.product([largestChunk / max(1, profile.maximumChunkTokens) - 1,
-                GLM5NextServingResources.workspaceNativeBytes])])
-        let maximumBufferBytes = GPU.deviceInfo().maxBufferSize
-        var envelopes: [GLM5NextResidentResourceEnvelope] = []
-        for rank in 0 ..< 2 {
-            let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
-                rank: rank, buildSHA256: configuration.identity.peers[rank].buildSHA256)
-            // The stage quotation's own checks (load and peak within the device).
-            _ = try resources.quote(descriptor: descriptor, maximumBufferBytes: maximumBufferBytes,
-                allocationBound: QwenResidentResourceEnvironment.allocationBound)
-            envelopes.append(resources)
-        }
-        // Paged KV histories (`GLM5NextTensorParallelPagedKV.swift`), bound into the agreement.
-        let pagedKV = try Self.pagedKV(environment)
-        _ = try Self.pagedRetainBytes(environment)
-        var requestCharge = try GLM5NextTensorParallelRequestCharge(descriptor: descriptor, envelopes: envelopes,
-            fixedBytes: fixedRequestBytes, speculativeDepth: Self.mtpDepth, maximumBufferBytes: maximumBufferBytes,
-            allocationBound: QwenResidentResourceEnvironment.allocationBound)
-        // Pages are charged at FP32 rows until the pool, made with the stage, gives their own bytes.
-        if pagedKV {
-            requestCharge.pagedHistory = .init(configuration: descriptor.configuration.textConfig,
-                pageTokens: Self.dsaPageTokens)
-        }
-        let requestReserve = try requestCharge.bytes(contextTokens: descriptor.memoryProfile.maximumContextTokens)
-        let shardBytes = try Self.shardBytes(inventory)
-        // Every rank holds the NextN layer whole: its loader never shards, so
-        // its bytes are the stored ones (`GLM5NextTensorShard.splitAxis` has
-        // no layer bound and would wrongly halve some of them).
         let text = descriptor.configuration.textConfig
         guard Self.mtpDepth == 0 || (text.numNextNPredictLayers == 1
                 && Self.mtpDepth <= GLM5NextMTP.maximumProposalDepth
                 && (Self.mtpDepth == 1 || text.indexShareForMTPIteration)) else {
             throw ProbeError("GLM tensor-parallel speculative depth \(Self.mtpDepth) is unsupported by this model")
         }
-        let mtpBytes = Self.mtpDepth > 0 ? inventory.bytes(in: .mtp) : 0
-        // Rank 0 holds the vision tower; a media request adds at most
-        // `capacityBytes` to a rank's request charge (its readiness capacity).
-        let visionBytes = configuration.rank == 0 ? inventory.bytes(in: .vision) : 0
-        let mediaCapacity = try GLM5NextTensorParallelMedia.capacityBytes(rank: configuration.rank,
-            configuration: descriptor.configuration)
+        // Paged KV histories (`GLM5NextTensorParallelPagedKV.swift`), bound into the agreement.
+        let pagedKV = try Self.pagedKV(environment)
+        _ = try Self.pagedRetainBytes(environment)
+        // MLX's device record, read here first; the metadata thread's quotes read it too.
+        let maximumBufferBytes = GPU.deviceInfo().maxBufferSize
+        let roots = GLM5NextArtifactLoadRoots()
+        // The inventory, the request charge and the gate's bytes (and on the
+        // prepared path the owner whose single read loads the shard) come from
+        // the checkpoint's metadata alone: worked out on a thread of their own
+        // while this one brings the link up, and joined before the intent.
+        let metadataWork = GLM5NextTensorParallelBackground {
+            try GLM5NextTensorParallelLoadMetadata(spec: spec, descriptor: descriptor, directory: directory,
+                rank: configuration.rank, buildSHA256: configuration.identity.peers.map(\.buildSHA256), path: path,
+                roots: roots, pagedKV: pagedKV, maximumBufferBytes: maximumBufferBytes)
+        }
+        var phases = GLM5NextTensorParallelLoadPhases(since: entered, startedUnixMilliseconds: enteredUnixMilliseconds)
+        phases.mark("setup")
         // The prefix cache votes in a reduction of its own: both ranks must
         // have it on, or both off (`DARKBLOOM_CLUSTER_PREFIX_CACHE=off`).
         let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
@@ -388,12 +354,20 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let codec = try QwenTensorParallelSealCodec.product(collective: collective, scope: Data(loadAgreement.utf8))
             try codec.install()
             group.sealed = codec
+            phases.mark("link")
+            let metadata = try metadataWork.join()
+            let inventory = metadata.inventory
+            var requestCharge = metadata.requestCharge
+            let requestReserve = metadata.requestReserve, shardBytes = metadata.shardBytes
+            let mtpBytes = metadata.mtpBytes, visionBytes = metadata.visionBytes, mediaCapacity = metadata.mediaCapacity
+            phases.mark("metadata")
+            phases.note("metadata_thread", metadataWork.finishedUptimeNanoseconds - metadataWork.startedUptimeNanoseconds)
+            phases.note("metadata_inventory", metadata.inventoryNanoseconds)
+            phases.note("metadata_resources", metadata.resourcesNanoseconds)
             var probe: ClusterWorkerLinkProbe?
             var stageResidency: ClusterStageResidency?
             var prefixBudget = 0
             let started = DispatchTime.now().uptimeNanoseconds
-            var phases = GLM5NextTensorParallelLoadPhases(since: entered, startedUnixMilliseconds: enteredUnixMilliseconds)
-            phases.mark("setup", now: started)
             try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
@@ -416,13 +390,14 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
                     requestReserve, bufferCacheBytes]))
                 phases.mark("gate")
-                let roots = GLM5NextArtifactLoadRoots()
-                // `prepared` (the product): the owner parses the metadata here and
-                // checks every file's SHA-256 in `prepare`, in the one read that
-                // also fills this rank's buffers; nothing is built before it matched.
-                let loader = try GLM5NextArtifactLoader(directory: directory, expectedIdentity: descriptor.artifactIdentity,
-                    storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy,
-                    verification: path.verification)
+                // `prepared` (the product): the owner parsed the metadata on the
+                // metadata thread and checks every file's SHA-256 in `prepare`, in
+                // the one read that also fills this rank's buffers; nothing is
+                // built before it matched. `per-tensor`: the owner hashes every
+                // file here, after the gate, as before.
+                let loader = try metadata.loader ?? GLM5NextArtifactLoader(directory: directory,
+                    expectedIdentity: descriptor.artifactIdentity, storage: descriptor.storage, constructionRoots: roots,
+                    executionPolicy: descriptor.executionPolicy, verification: path.verification)
                 guard GLM5NextArtifactMetadata.fingerprint(loader.inventory) == spec.inventorySHA256 else {
                     throw ProbeError("GLM verified owner differs from the registered inventory")
                 }
@@ -542,7 +517,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// Bytes one rank holds of the text model: its half of every split tensor,
     /// all of every replicated one.
     static func shardBytes(_ inventory: GLM5NextWeightInventory) throws -> Int {
-        try inventory.entries(in: .text).reduce(0) { total, entry in
+        // A sum: the text entries in any order (no name sort).
+        try inventory.entries.values.reduce(0) { total, entry in
+            guard entry.part == .text else { return total }
             let bytes = GLM5NextTensorShard.splitAxis(entry.tensor.name) == nil ? entry.bytes : entry.bytes / 2
             return try QwenLongPrefillCheckedBytes.sum([total, bytes])
         }

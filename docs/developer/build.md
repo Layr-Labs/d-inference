@@ -255,6 +255,10 @@ The local lifecycle checks inject invalid analysis/acknowledgment, native usage
 failures, concurrent state writes and failed final-result delivery. They verify
 bounded recovery, retained findings and denial of incomplete/stale clearance;
 a successful normal response alone does not test recovery.
+CI admits source, selected depth and integration work from the actual batch plan,
+with an emergency ceiling and a bounded deadline that leaves time for reporting.
+Paid manual dispatches and job reruns are disabled; incomplete final reviews
+explicitly hand off to a human. See the verification guide for the exact limits.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.

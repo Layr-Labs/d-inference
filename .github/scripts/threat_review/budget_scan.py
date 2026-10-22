@@ -82,6 +82,7 @@ class Scanner:
         self.covered = set()
         self.reused = 0
         self.integration = False
+        self.finished = False
         self.depth_pending = 0
         self.use_cache = True
         self.manual_review_reasons = []
@@ -108,7 +109,7 @@ class Scanner:
                 "covered_units": len(self.covered), "total_units": sum(map(len, self.source)),
                 "changed_files": len(self.evidence), "limited_files": self.limits,
                 "depth_batches_pending": self.depth_pending,
-                "integration_completed": self.integration, "reused_batches": self.reused,
+                "integration_completed": self.integration, "finished": self.finished, "reused_batches": self.reused,
                 "manual_review_reasons": self.manual_review_reasons, "diagnostics": diagnostics,
                 "response_repairs": self.response_repairs,
                 "active_request": {**self.active_request, **getattr(self.paid, "last_request", {})},
@@ -299,7 +300,9 @@ class Scanner:
         pending = summaries
         while pending:
             reduced = []
-            for batch in batches(pending):
+            scheduled = list(batches(pending))
+            self.plan_calls(model, "integration", len(scheduled))
+            for batch in scheduled:
                 result = self.call(model, "integration", batch)
                 reduced.append({"id": str(len(reduced)), "analysis": result["analysis"],
                                 "findings": result["findings"],
@@ -311,10 +314,22 @@ class Scanner:
             pending = reduced
         return None
 
+    def plan_calls(self, model, stage, count):
+        # OpenRouter retains its independent durable dollar limits. Only the
+        # native adapter uses this workload plan; caches never authorize extra
+        # stages and integration rounds must still converge.
+        planner = getattr(self.paid, "plan_calls", None)
+        if planner:
+            self.active_request = {"model": model, "stage": stage, "phase": "planning",
+                                   "scheduled_batches": count}
+            self.paid.last_request = {}
+            planner(count)
+
     def run(self, force_deep=False):
         summaries, deepen, critical = [], [], []
         first_results = {}
         try:
+            self.plan_calls(SONNET, "source", len(self.source))
             for batch in self.source:
                 result = self.call(SONNET, "source", batch)
                 first_results[digest(batch)] = result["findings"]
@@ -349,6 +364,7 @@ class Scanner:
                 # reconciled its own local questions. A source flag is not final.
                 if model == SOL:
                     self.depth_pending += 1
+                self.plan_calls(model, "source", len(selected))
                 depth_summaries = []
                 for batch in selected:
                     # Independent source assessment, without the earlier verdict.
@@ -381,5 +397,6 @@ class Scanner:
             self.errors.append(failure(error))
             active = {**self.active_request, **getattr(self.paid, "last_request", {})}
             self.diagnostics.append(failure_record(error, active))
+        self.finished = True
         self.checkpoint(self.snapshot())
         return self.snapshot()

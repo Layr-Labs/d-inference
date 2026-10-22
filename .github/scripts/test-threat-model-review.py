@@ -740,7 +740,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("pull_request_target:", source)
         self.assertNotIn("pull_request:\n", source)
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", source)
-        self.assertIn("THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha || env.THREAT_REVIEW_BASE_SHA }}", source)
+        self.assertIn("THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha }}", source)
         scanner_checkout = source.split("name: Check out the current trusted scanner", 1)[1].split(
             "name: Record scanner revision", 1)[0]
         self.assertNotIn("base.sha", scanner_checkout)
@@ -749,7 +749,15 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("head.ref", source)
         self.assertIn("persist-credentials: false", source)
         self.assertIn("continue-on-error: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE != 'true' }}", source)
-        self.assertIn("timeout-minutes: 20", source)
+        self.assertIn("timeout-minutes: 60", source)
+        self.assertIn("THREAT_REVIEW_TIMEOUT_SECONDS: '3000'", source)
+        self.assertIn("BEDROCK_SCAN_CALL_POLICY: workload", source)
+        self.assertIn("BEDROCK_SCAN_MAX_WORKLOAD_CALLS: '100'", source)
+        self.assertNotIn("BEDROCK_SCAN_MAX_CALLS:", source)
+        review_job = source.split("\n  review:\n", 1)[1]
+        self.assertNotIn("workflow_dispatch", review_job)
+        self.assertNotIn("pr_number", source)
+        self.assertNotIn("review_depth", source)
         self.assertIn("pull-requests: write", source)
         self.assertNotIn("THREAT_REVIEW_ADVISORY_TOKEN", source)
         self.assertNotIn("checks: write", source)

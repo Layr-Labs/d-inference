@@ -7,7 +7,8 @@ Opus and Sol 6.1, and saves completed findings before continuing. Public comment
 show coverage, cost, reuse and failures. The default remains advisory. Optional
 conditional clearance allows a completed scan without medium/high findings from
 a verified active Layr-Labs organization member, or an independent formal manual
-override, to satisfy the security workflow requirement.
+override, to satisfy the security workflow requirement. Each automatic CI review
+either completes or requires human review instead of a manual paid rerun.
 See [Bedrock and merge-policy rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/threat-review-rollout.md).
 Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 
@@ -75,10 +76,10 @@ Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
    advisory mode. Conditional-clearance mode reevaluates edits so a skipped run
    cannot replace a failed required workflow.
 
-Maintainers can request depth through **Actions → Threat Model Review (advisory)
-→ Run workflow**, supplying a PR number targeting the default branch. Current
-GitHub write/maintain/admin permission is checked before spending, and all caps
-still apply. PR text and labels cannot request extra spend. Scanner code comes
+Manual dispatch supports only the unpaid activation preflight. Paid PR scans run
+on automatic PR events; GitHub job reruns do not start paid work. A new push starts
+a fresh automatic review for its new revision. There is no continuation schedule
+or manual depth request. PR text and labels cannot request extra spend. Scanner code comes
 from the current trusted default branch, so older PR base SHAs cannot roll back
 merged fixes. The canonical threat model is fetched separately as an immutable
 Git blob at the exact PR base SHA and read as data. PR head code is never checked
@@ -119,9 +120,9 @@ Material uncertainty still requires human review; no model flag is overridden.
 |---|---|
 | First feedback | Progress, then Sonnet findings or clean first-pass feedback before deeper work. |
 | Risky or uncertain changes | Selected Opus review for auth, attestation, encryption, billing, workflows, findings or model uncertainty. |
-| Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request, followed by integration of its selected source analyses. |
+| Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings or disagreement with Opus, followed by integration of its selected source analyses. |
 | Repeat push | Identical analysis reused; changed inputs invalidate source and integration results. |
-| Failure or budget exhaustion | Completed findings retained; unfinished coverage explicit. One bounded analysis/acknowledgment repair is the only response-recovery exception. |
+| Failure or budget exhaustion | Completed findings retained; final comment explicitly requires human review. No manual paid rerun. One bounded analysis/acknowledgment repair within the original CI run is the only response-recovery exception. |
 | Head changes during a call | Original-head results saved; stale findings not posted as current. |
 | Clean review | Explicit comment, never a security approval. |
 | Cost | Reported dollars separated from unknown-cost reservations, plus request count, reused batches and provider cache-hit tokens. |
@@ -136,12 +137,25 @@ green workflow is not evidence that scanning completed.
 (`BedrockCalls`). Configure exactly three application profile aliases in
 `BEDROCK_SCAN_PROFILES`: `sonnet`, `opus`, and `sol`. Model selection remains
 Sonnet 5.5 with selective Opus 5.5 and Sol 6.1; legacy model variables do not
-override that strategy. The default limit is 12 Bedrock calls per attempt and
-4,096 output tokens per call (bounded configuration: 1–100 calls, 256–16,384
-tokens). These workload bounds are not a repository-wide dollar cap. AWS charges
+override that strategy. CI sets `BEDROCK_SCAN_CALL_POLICY=workload`: `budget_scan.py`
+admits the actual Sonnet source batches, each selected Opus/Sol source pass and
+every integration round before running that stage. The allowance includes one
+shared response-repair slot. Integration can require more than one round; later
+rounds receive an allowance only while the summaries converge. Cache reuse avoids
+native calls but does not admit additional stages.
+
+The workflow uses a **100-call emergency ceiling**, separate from the calculated
+allowance. An oversized stage is refused before its first call, retains completed
+work and requires human review. Native requests remain bounded to 180,000 encoded
+bytes and 4,096 output tokens by default (output configuration: 256–16,384 tokens).
+CI no longer reads the old fixed `BEDROCK_SCAN_MAX_CALLS` repository variable.
+Standalone bounded probes retain `fixed` policy by default and use that variable
+(default 12, range 1–100). `BEDROCK_SCAN_MAX_WORKLOAD_CALLS` bounds the workload
+policy to at most 100; the reviewed workflow pins it to 100.
+These workload bounds are not a repository-wide dollar cap. AWS charges
 are reconciled through dedicated profile tags and the usage metadata artifact.
 Fork PRs keep the capped OpenRouter route unless a maintainer explicitly sets
-`BEDROCK_SCAN_ALLOW_FORKS=true` or manually dispatches their review; they do not
+`BEDROCK_SCAN_ALLOW_FORKS=true`; they do not
 receive AWS capacity by default.
 
 Bedrock requests include native `outputConfig.textFormat` JSON-schema constraints,
@@ -157,8 +171,9 @@ but its analysis string is blank/too long or its string-list acknowledgment does
 not match the primary IDs. It saves validated findings first, then requests the
 same model and source again with an explicit repair marker. The corrected response
 must pass every original check; coverage is never inferred or silently repaired.
-The ordinary call, time, request and dollar limits apply; the repair receives no
-extra allowance. Original findings and uncertainty are retained even if the
+The ordinary call, time, request and dollar limits apply; workload admission
+reserves the one shared repair slot within its emergency ceiling. Fixed probes
+receive no extra allowance. Original findings and uncertainty are retained even if the
 corrected response omits them. Both failure types share the one-request allowance.
 A second invalid response, invalid cached entry, unknown accounting or failed
 checkpoint cannot authorize another repair. Failed repairs leave the scan incomplete.
@@ -206,8 +221,8 @@ state-writer token retains its explicit repository Contents permission and does
 not receive membership permission. Neither token is exposed to models or PR code.
 Membership is fetched anew each time the gate runs; this is not a webhook that
 instantly revokes a completed check after a later organization membership change.
-After removing a member with a pending PR, rerun its security workflow before
-merging. Human overrides continue to verify the reviewer's current repository
+After removing a member with a pending PR, require independent human review
+before merging; do not rely on an earlier membership check. Human overrides continue to verify the reviewer's current repository
 permission and the exact current commit.
 
 Conditional clearance disables reuse of prior cached verdicts. It evaluates a
@@ -297,7 +312,9 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    refusal/truncation, invalid JSON and local validation. Missing metadata stays
    unavailable; it is never invented. The smoke test also writes safe failure
    metadata to its existing usage artifact.
-4. Fix the diagnosed cause before a maintainer reruns the existing workflow.
+4. Hand the current PR to an independent human reviewer; do not rerun its paid scan.
+   Fix diagnosed scanner defects with offline and isolated provider validation
+   before a reviewed update. Subsequent automatic PR events use the merged fixes.
    Except for the single analysis/acknowledgment repair described above, invalid responses
    do not trigger an automatic paid retry or provider switch. `response_repairs`
    records the original validation code, model, batch, request ID and
@@ -310,13 +327,17 @@ shown without raw error bodies or model responses. Cache/checkpoint failures hal
    not raw-response recordings; use the AWS request ID with authorized provider
    diagnostics when additional evidence is needed.
 
-`BEDROCK_CALL_LIMIT` is a workload limit, not a model-format failure. Count source,
-integration and selected depth calls together: a clean PR with eleven Sonnet
-source batches, one Sonnet integration, eight Opus batches and one Sol batch plus
-integration needs 22 calls. It cannot complete under the default 12-call limit.
-Changing `BEDROCK_SCAN_MAX_CALLS` is a maintainer spending decision and does not
-require another code PR; the 15-minute scan deadline and request/output limits
-still apply. More capacity does not prove a scan will finish or be clean.
+`BEDROCK_WORKLOAD_LIMIT` identifies a stage that cannot fit below the emergency
+ceiling. Diagnostics include the planned calls, ceiling and unadmitted stage;
+the preceding call is not blamed for a planning failure. `BEDROCK_CALL_LIMIT`
+identifies exhaustion of the admitted allowance, including fixed standalone
+probes. Neither is a model-format failure. CI allocates **50 minutes** to the
+scanner (`THREAT_REVIEW_TIMEOUT_SECONDS=3000`) inside a **60-minute** job, leaving
+time to save findings, publish the handoff and evaluate clearance before the
+job or one-hour credentials expire. Standalone entry points default to 900
+seconds; validated configuration is 60–3,000 seconds. `SCAN_TIMEOUT` requires
+human review, with no continuation job or manual paid retry. More capacity does
+not prove a scan will finish or be clean.
 
 The local artifact is atomically refreshed before provider calls and remote
 checkpoints. An interrupted run can retain the last model, stage, batch and
@@ -398,8 +419,9 @@ Implementation: `.github/workflows/threat-model-review.yml`,
 `.github/scripts/threat-model-review.py`, and `.github/scripts/threat_review/`:
 `budget_runner.py`, `budget_scan.py`, `context.py`, `paid.py`, `state.py`,
 `preflight.py`, `bedrock.py`, `merge_policy.py`, plus shared
-source, validation, transport and rendering helpers. The scan deadline is 15
-minutes inside a 20-minute workflow timeout.
+source, validation, transport and rendering helpers. Advisory mode remains
+nonblocking; human-review handoffs do not activate conditional clearance or
+author auto-merge. Those require the separate reviewed rollout.
 
 ## Related
 

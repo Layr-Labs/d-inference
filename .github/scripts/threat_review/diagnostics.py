@@ -79,7 +79,8 @@ def write_diagnostics(env, snapshot):
     if env.get("THREAT_REVIEW_DIAGNOSTICS_FILE"):
         value = {key: snapshot.get(key) for key in (
             "covered_units", "total_units", "integration_completed", "depth_batches_pending",
-            "active_request", "diagnostics", "response_repairs")}
+            "finished", "active_request", "diagnostics", "response_repairs",
+            "bedrock_call_policy", "bedrock_call_limit", "bedrock_call_ceiling", "bedrock_planned_calls")}
         # The scanner revision and canonical threat-model revision can differ.
         # Record only validated SHA identifiers, never arbitrary environment text.
         value["revisions"] = {key: env[name] for key, name in (

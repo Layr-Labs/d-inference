@@ -1,11 +1,11 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Seed the streaming think parser from the rendered generation prompt.
+// Seed the think parser from the rendered generation prompt.
 // Qwen/DeepSeek templates can leave a think block open, or close an empty
 // block when thinking is disabled (the default for media). Those markers
 // belong to the prompt, so the generated output need not repeat them.
-// Without a seed the parser stays undecided and buffers reasoning until a
-// close marker, or an ordinary answer until generation finishes.
+// Collected and streaming requests both need this prompt-side state; a
+// token limit may stop generation before the model closes the block.
 //
 // The engine sends the returned prefix before model output. The selected
 // think parser consumes it only as a state transition: no content, usage,
@@ -21,17 +21,19 @@ enum ReasoningPromptProbe {
     /// template tokens. Keep decode O(1) regardless of prompt length.
     static let tailTokenCount = 8
 
-    /// Only seed streaming think-format parsers. Explicit `.none`, other
-    /// families, and unknown prompt tails retain their existing behavior.
+    /// Seed think-format parsers for collected and streaming requests. Explicit
+    /// `.none`, other families, and unknown tails retain their existing behavior.
+    /// The engine produces an event stream even for collected HTTP requests;
+    /// HTTP delivery mode does not change the prompt-side parser state.
     /// ProviderLoop resolves an omitted parser before calling the engine.
     static func streamingPrefix(
         reasoningParser: ReasoningParserFormat?,
-        stream: Bool?,
+        stream _: Bool?,
         promptTokens: [Int],
         decodeTail: ([Int]) -> String
     ) -> String? {
         guard reasoningParser == .qwen3 || reasoningParser == .deepseekR1 else { return nil }
-        guard stream == true, !promptTokens.isEmpty else { return nil }
+        guard !promptTokens.isEmpty else { return nil }
         return streamingPrefix(forPromptTail: decodeTail(Array(promptTokens.suffix(tailTokenCount))))
     }
 

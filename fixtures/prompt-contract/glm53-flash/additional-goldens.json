@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "template_sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+  "reference_renderer": "Jinja2 3.1.6; official and shipped templates rendered identically; image marker only, no media execution.",
+  "cases": [
+    {
+      "id": "minimal",
+      "request": {
+        "model": "fixture-glm5-not-registered",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello."
+          }
+        ],
+        "reasoning_effort": "minimal"
+      },
+      "expected_context": {
+        "reasoning_effort": "low",
+        "clear_thinking": false
+      },
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>Hello.<|assistant|><think>",
+      "rendered_sha256": "3bfdb645c59dd3d3f1e2265a173c58369312cc92b7412a4f82670229094f8a5c"
+    },
+    {
+      "id": "medium",
+      "request": {
+        "model": "fixture-glm5-not-registered",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello."
+          }
+        ],
+        "reasoning_effort": "medium"
+      },
+      "expected_context": {
+        "reasoning_effort": "high",
+        "clear_thinking": false
+      },
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Hello.<|assistant|><think>",
+      "rendered_sha256": "5e6918e620917e328c80892e0e042ca8e1668b7119505811797cbccaf4976f80"
+    },
+    {
+      "id": "xhigh",
+      "request": {
+        "model": "fixture-glm5-not-registered",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello."
+          }
+        ],
+        "reasoning_effort": "xhigh"
+      },
+      "expected_context": {
+        "reasoning_effort": "max",
+        "clear_thinking": false
+      },
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Hello.<|assistant|><think>",
+      "rendered_sha256": "85d476f0c24fc0fcdac8c88956c61431328128c308d69bc831cbdf51ae69ceae"
+    },
+    {
+      "id": "image",
+      "request": {
+        "model": "fixture-glm5-not-registered",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Describe."
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "https://example.invalid/fixture.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_context": {
+        "reasoning_effort": "max",
+        "clear_thinking": false
+      },
+      "rendered": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Describe.<|begin_of_image|><|image|><|end_of_image|><|assistant|><think>",
+      "rendered_sha256": "1fd312aacbaf39566f0eea4cd5be683cc764ba1d287612fedb0288441b84e876"
+    }
+  ]
+}

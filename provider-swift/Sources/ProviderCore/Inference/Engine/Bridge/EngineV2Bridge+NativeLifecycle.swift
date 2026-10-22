@@ -50,6 +50,16 @@ extension EngineV2Bridge {
     func canSubmitWithNativeOwner() -> Bool {
         guard !nativeShutdownClosed else { return false }
         do {
+            if isGLM5NextManaged {
+                try GLM5NextLoadFaultState.requireHealthy()
+            }
+            if let owner = glm5NextNativeOwner {
+                try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
+                guard nativeTransaction == nil, nativeTransactionID == nil,
+                    let actual = ownedEngine as? EngineV2 else { return false }
+                try owner.validate(bridge: self, engine: actual, budget: kvBudget)
+                return true
+            }
             if tracksNativeShutdown || nativeTransactionID != nil || nativeShutdownIdentity != nil {
                 try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
                 guard let transaction = nativeTransaction,
@@ -59,6 +69,103 @@ extension EngineV2Bridge {
             return true
         } catch {
             return false
+        }
+    }
+
+    var hasGLM5NextNativeOwner: Bool { glm5NextNativeOwner != nil }
+
+    /// Content-free markers riding the existing capacity rejection: the
+    /// request exceeds the slot's admissible capacity, or held requests leave
+    /// it no room now.
+    static let glm5NextExceedsSlotCapacity = "request_exceeds_slot_capacity"
+    static let glm5NextSlotCommitted = "slot_capacity_committed"
+
+    enum GLM5NextSlotAdmission: Equatable {
+        case admit(Int), neverFits, committed
+    }
+
+    /// `admissibleBytes` already excludes one step's setup.
+    nonisolated static func glm5NextSlotAdmission(
+        requestBytes: Int?, committedBytes: Int, admissibleBytes: Int
+    ) -> GLM5NextSlotAdmission {
+        guard let requestBytes, requestBytes >= 0, requestBytes <= admissibleBytes else {
+            return .neverFits
+        }
+        let (total, overflow) = committedBytes.addingReportingOverflow(requestBytes)
+        return overflow || total > admissibleBytes ? .committed : .admit(requestBytes)
+    }
+
+    /// Thrown before the request's stream exists, so local HTTP answers 503
+    /// before headers and the coordinator receives a retryable pre-stream
+    /// capacity `inference_error`, never an in-band generation failure.
+    nonisolated static func glm5NextSlotRefusal(
+        neverFits: Bool, reservedTokens: Int
+    ) -> MultiModelBatchSchedulerEngineError {
+        .tokenBudgetExhausted(
+            "token_budget_exhausted: "
+                + (neverFits ? glm5NextExceedsSlotCapacity : glm5NextSlotCommitted)
+                + " (\(reservedTokens) reserved tokens)")
+    }
+
+    /// Held GLM reservations: admitted requests at their reserved tokens, plus
+    /// any still between the gate and admission.
+    func glm5NextCommittedBytes() -> Int {
+        var total = 0
+        for bytes in glm5NextGateReservations.values {
+            let (sum, overflow) = total.addingReportingOverflow(bytes)
+            if overflow { return Int.max }
+            total = sum
+        }
+        for state in active.values {
+            let (tokens, overflow) = state.promptTokens.addingReportingOverflow(state.maxTokens)
+            guard !overflow, let bytes = requestReservationBytes(tokenCount: tokens) else { return Int.max }
+            let (sum, sumOverflow) = total.addingReportingOverflow(bytes)
+            if sumOverflow { return Int.max }
+            total = sum
+        }
+        return total
+    }
+
+    func installGLM5NextStepSetup(bytes: Int) { glm5NextStepSetupBytes = max(0, bytes) }
+
+    /// The one GLM predicate for the process fault fence: an owned native
+    /// bridge, or any bridge serving an exact GLM identity
+    /// (which can then never fall back to ownerless admission or growth).
+    nonisolated var isGLM5NextManaged: Bool {
+        glm5NextNativeOwner != nil || GLM5NextCoordinatorServing.isManagedModelID(modelId)
+    }
+
+    #if DEBUG
+    func installGLM5NextRetirementRefusalForTesting(_ refusal: @escaping @Sendable () throws -> Void) throws {
+        guard let owner = glm5NextNativeOwner else { throw GLM5NextManagedLoadError.managedLoadRequired }
+        owner.installRetirementRefusalForTesting(refusal)
+    }
+    #endif
+
+    func shutdownGLM5NextReportingCompletion() async throws {
+        guard let owner = glm5NextNativeOwner else { throw GLM5NextManagedLoadError.managedLoadRequired }
+        do {
+            if case .quiescent(let receipt)? = nativeShutdownResult {
+                try await owner.complete(receipt)
+                releaseNativeConstructionOwnership()
+                return
+            }
+            guard let actual = ownedEngine as? EngineV2 else { throw GLM5NextManagedLoadError.identityMismatch }
+            try owner.beginClosing(bridge: self, engine: actual)
+            let outcome = try await GLM5NextRetirement.drainingHostConsumers {
+                try await shutdownNativeConstruction(
+                    expectedEngine: actual, executionContractID: owner.contractID)
+            }
+            switch outcome {
+            case .quiescent(let receipt):
+                try await owner.complete(receipt)
+                releaseNativeConstructionOwnership()
+            case .incomplete: throw GLM5NextManagedLoadError.retirementUnproven
+            }
+        } catch {
+            owner.retainFailure()
+            GLM5NextLoadFaultState.retain([self])
+            throw GLM5NextManagedLoadError.retirementUnproven
         }
     }
 
@@ -147,13 +254,20 @@ extension EngineV2Bridge {
         prefixCacheStatsTask = nil
         slotPostureTask = nil
         nativeShutdownTasks.removeAll()
+        // GLM retains its engine, capacity claim and activity guards until the
+        // owner also proves residency settlement. SDK quiescence alone cannot
+        // authorize a refund; a failed end keeps these roots until process exit.
+        if glm5NextNativeOwner == nil { releaseNativeConstructionOwnership() }
+        nativeShutdownResult = outcome
+        return outcome
+    }
+
+    private func releaseNativeConstructionOwnership() {
         ownedEngine = nil
         nativeShutdownActivity?.finish()
         nativeShutdownActivity = nil
         deadlinePostureMonitoring?.finish()
         deadlinePostureMonitoring = nil
-        nativeShutdownResult = outcome
-        return outcome
     }
 
     private var nativeHostConsumersHaveFinished: Bool {

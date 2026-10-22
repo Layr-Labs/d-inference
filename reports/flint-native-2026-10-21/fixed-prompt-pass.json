@@ -1,0 +1,327 @@
+{
+  "schemaVersion": 1,
+  "scope": "Production CBv2 raw engine benchmark. HTTP protocol constraints are not installed; not HTTP throughput. B1 decode only.",
+  "hardware": "Apple M5 Max, 128 GiB",
+  "binarySHA256": "aac2150ced0a51bb75d7285e48e7a7d5e02f21c5b1fd4ad606aaa1427f7c0de1",
+  "metallibSHA256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "artifact": "RecursiveSI/flint-int4@3b93f9053b530488405ae9fca51d4900d6ce21f0",
+  "quantization": "affine INT4 group64, INT8 embeddings, native BF16 KV, FP32 routing/reduction/head",
+  "prefillChunkTokens": 2048,
+  "prefillPromptMode": "fixed",
+  "TF32": false,
+  "MTP": false,
+  "candidateDisposition": "Removed: neither compiled activation nor expert combination showed a reliable performance gain. All nine greedy token comparisons passed.",
+  "arms": [
+    {
+      "arm": "prefill-baseline",
+      "activation": false,
+      "expertCombine": false,
+      "start": "2026-10-21T13:41:30.202943",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24692982896,
+      "medianPrefillTPS": {
+        "1024": 4804.002873643451,
+        "4096": 4668.525068505145
+      },
+      "minimumPrefillTPS": {
+        "1024": 4796.0094051291535,
+        "4096": 4529.895648660116
+      }
+    },
+    {
+      "arm": "prefill-activation",
+      "activation": true,
+      "expertCombine": false,
+      "start": "2026-10-21T13:41:45.327507",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24693458008,
+      "medianPrefillTPS": {
+        "1024": 4417.428932628447,
+        "4096": 4089.4074050341405
+      },
+      "minimumPrefillTPS": {
+        "1024": 3978.043641145264,
+        "4096": 3880.0321535753674
+      }
+    },
+    {
+      "arm": "prefill-expert-combine",
+      "activation": false,
+      "expertCombine": true,
+      "start": "2026-10-21T13:42:00.985251",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24697308200,
+      "medianPrefillTPS": {
+        "1024": 4158.629471733224,
+        "4096": 4110.860781032064
+      },
+      "minimumPrefillTPS": {
+        "1024": 3707.650718774302,
+        "4096": 3807.4807842720884
+      }
+    },
+    {
+      "arm": "prefill-both",
+      "activation": true,
+      "expertCombine": true,
+      "start": "2026-10-21T13:42:17.158203",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24698782928,
+      "medianPrefillTPS": {
+        "1024": 4095.8586658906265,
+        "4096": 4069.6412375565087
+      },
+      "minimumPrefillTPS": {
+        "1024": 3631.1345831405147,
+        "4096": 3743.4579472892324
+      }
+    },
+    {
+      "arm": "prefill-baseline-end",
+      "activation": false,
+      "expertCombine": false,
+      "start": "2026-10-21T13:42:33.292976",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24698373208,
+      "medianPrefillTPS": {
+        "1024": 3940.518787475573,
+        "4096": 3902.021203615338
+      },
+      "minimumPrefillTPS": {
+        "1024": 3457.9892135479913,
+        "4096": 3466.7907843801586
+      }
+    },
+    {
+      "arm": "decode-2-baseline",
+      "activation": false,
+      "expertCombine": false,
+      "start": "2026-10-21T13:42:50.117171",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 23128032248,
+      "medianDecodeTPS": 115.86401666211094,
+      "peakDecodeMemoryBytes": 22656096466
+    },
+    {
+      "arm": "decode-2-activation",
+      "activation": true,
+      "expertCombine": false,
+      "start": "2026-10-21T13:43:00.786541",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 23128441920,
+      "medianDecodeTPS": 113.80432792284458,
+      "peakDecodeMemoryBytes": 22656105701
+    },
+    {
+      "arm": "decode-2-expert-combine",
+      "activation": false,
+      "expertCombine": true,
+      "start": "2026-10-21T13:43:11.505153",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 23127589928,
+      "medianDecodeTPS": 113.14779184285418,
+      "peakDecodeMemoryBytes": 22655607101
+    },
+    {
+      "arm": "decode-2-both",
+      "activation": true,
+      "expertCombine": true,
+      "start": "2026-10-21T13:43:22.533892",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 23128196088,
+      "medianDecodeTPS": 113.34214934250001,
+      "peakDecodeMemoryBytes": 22655653837
+    },
+    {
+      "arm": "decode-1024-baseline",
+      "activation": false,
+      "expertCombine": false,
+      "start": "2026-10-21T13:43:33.464008",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24028251200,
+      "medianDecodeTPS": 103.89841428649171,
+      "peakDecodeMemoryBytes": 23338905717
+    },
+    {
+      "arm": "decode-1024-activation",
+      "activation": true,
+      "expertCombine": false,
+      "start": "2026-10-21T13:43:45.955767",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24028005464,
+      "medianDecodeTPS": 102.50243580922596,
+      "peakDecodeMemoryBytes": 23338905717
+    },
+    {
+      "arm": "decode-1024-expert-combine",
+      "activation": false,
+      "expertCombine": true,
+      "start": "2026-10-21T13:43:58.588338",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24027628632,
+      "medianDecodeTPS": 103.53611558735058,
+      "peakDecodeMemoryBytes": 23338922101
+    },
+    {
+      "arm": "decode-1024-both",
+      "activation": true,
+      "expertCombine": true,
+      "start": "2026-10-21T13:44:11.147461",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24036508784,
+      "medianDecodeTPS": 99.52162880369474,
+      "peakDecodeMemoryBytes": 23338905717
+    },
+    {
+      "arm": "decode-4096-baseline",
+      "activation": false,
+      "expertCombine": false,
+      "start": "2026-10-21T13:44:24.070910",
+      "thermalBefore": 0,
+      "thermalAfter": 0,
+      "peakProcessFootprintBytes": 24853152952,
+      "medianDecodeTPS": 94.30795757007627,
+      "peakDecodeMemoryBytes": 23950881805
+    },
+    {
+      "arm": "decode-4096-activation",
+      "activation": true,
+      "expertCombine": false,
+      "start": "2026-10-21T13:44:40.213636",
+      "thermalBefore": 0,
+      "thermalAfter": 1,
+      "peakProcessFootprintBytes": 24733533320,
+      "medianDecodeTPS": 93.6627642369863,
+      "peakDecodeMemoryBytes": 23950879757
+    },
+    {
+      "arm": "decode-4096-expert-combine",
+      "activation": false,
+      "expertCombine": true,
+      "start": "2026-10-21T13:44:56.584485",
+      "thermalBefore": 1,
+      "thermalAfter": 1,
+      "peakProcessFootprintBytes": 24859935880,
+      "medianDecodeTPS": 78.32701452071173,
+      "peakDecodeMemoryBytes": 23950874637
+    },
+    {
+      "arm": "decode-4096-both",
+      "activation": true,
+      "expertCombine": true,
+      "start": "2026-10-21T13:45:14.799713",
+      "thermalBefore": 1,
+      "thermalAfter": 1,
+      "peakProcessFootprintBytes": 24852186176,
+      "medianDecodeTPS": 77.13509025135644,
+      "peakDecodeMemoryBytes": 23950881805
+    }
+  ],
+  "tokenComparisons": [
+    {
+      "baseline": "decode-2-baseline",
+      "candidate": "decode-2-activation",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-2-baseline",
+      "candidate": "decode-2-expert-combine",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-2-baseline",
+      "candidate": "decode-2-both",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-1024-baseline",
+      "candidate": "decode-1024-activation",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-1024-baseline",
+      "candidate": "decode-1024-expert-combine",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-1024-baseline",
+      "candidate": "decode-1024-both",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-4096-baseline",
+      "candidate": "decode-4096-activation",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-4096-baseline",
+      "candidate": "decode-4096-expert-combine",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    },
+    {
+      "baseline": "decode-4096-baseline",
+      "candidate": "decode-4096-both",
+      "exactTokenIDs": true,
+      "emittedIDs": 771
+    }
+  ],
+  "limitations": [
+    "Separate processes, sequential arms on a working desktop; machine drift is not causally isolated.",
+    "Thermal state is pressure classification, not measured GPU frequency.",
+    "Initial 10-repeat medians do not establish sustained 5500 tok/s.",
+    "Raw production CBv2 engine, not full HTTP: native protocol constraints are not attached.",
+    "Single-stream decode remains well below 400 tok/s."
+  ],
+  "sustainedPrefill": {
+    "samples": 120,
+    "promptTokens": 4096,
+    "chunkTokens": 2048,
+    "promptMode": "fixed",
+    "medianTokensPerSecond": 2710.6486362503224,
+    "p10TokensPerSecond": 2516.459858208788,
+    "minimumTokensPerSecond": 2402.2001097899893,
+    "maximumTokensPerSecond": 3082.29047397189,
+    "first20Median": 2784.334097352902,
+    "last20Median": 2529.9165199555355,
+    "measuredSeconds": 181.853898829,
+    "peakProcessFootprintBytes": 24708875328,
+    "samplesAtOrAbove5500": 0,
+    "sourceSHA256": "a1096c63f707b1c5978fd738457823a660586250edf893c990140689dfeca3f5",
+    "binarySHA256": "aac2150ced0a51bb75d7285e48e7a7d5e02f21c5b1fd4ad606aaa1427f7c0de1",
+    "scope": "Native production CBv2 raw engine, protocol constraints not attached; not full HTTP throughput. Separate fresh engine per sample; same loaded model. User desktop remains active.",
+    "thermalObservation": "NSProcessInfo thermal state 1 during run; GPU clocks not measured. No causal throttling claim.",
+    "TF32": false,
+    "KV": "native BF16",
+    "candidateFlags": "both off",
+    "kvBackend": "contiguous"
+  },
+  "sourceReceipts": {
+    "compiled-fusions-ab-summary-01.json": "761f1b538c50ecbbdf8744e96bc87e863998f872d49a1bb0d8452191b1668fe1",
+    "provider-sustained-prefill-summary-01.json": "f554d74b8c05ed7a45d0dc1412ce7d118e8d8b4c9ca07490eb975b04b3e8c8a1",
+    "provider-release-provenance-07.json": "5731989856e027df71a6052348bcf2e51656e20a66d0110e54fd0872287540a4"
+  },
+  "sourceNote": "Measured release07 includes disabled candidate helpers; those experiments were removed before publication. This is preserved experiment evidence, not a claim that a later source revision has this exact binary hash.",
+  "kvBackend": "contiguous",
+  "qualificationNote": "Historical contiguous reference. User now requires explicit paged attention; these results do not qualify paged throughput."
+}

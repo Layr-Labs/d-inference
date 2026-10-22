@@ -46,6 +46,58 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
 
+### Raw GLM discovery quotation
+
+`GLM5NextDiscoveryLoadFootprint.estimate` in
+`provider-swift/Sources/ProviderCoreFoundation/GLM5NextDiscoveryLoadFootprint.swift`
+prices exact `glm5_next` affine-Q4 metadata without constructing native arrays
+or hashing payloads. `ModelScanner.glm5NextLoadEstimate` in
+`provider-swift/Sources/ProviderCore/Models/ModelScanner+GLM5Next.swift` supplies
+the existing bounded header reader and flat regular-file inventory.
+
+| Term | Bytes counted |
+|---|---|
+| `disk` | All integrity files in the raw snapshot, including every weight shard and non-weight file |
+| Native copies | `2 * largestTensor + largestExpertBank + 2 * visionBytes + (257 << 20)` |
+| Tokenizer allowance | `max(64 << 20, 8 * allNonWeightBytes)` |
+| Residual (`residualAllowanceBytes`) | `max(1 << 30, ceil(disk / 32))` |
+| Full LOAD | `disk + nativeCopies + tokenizerAllowance + residual` |
+| `native_load_transient_bytes` | Native copies, tokenizer allowance and residual, **above** raw `disk` (no disk × 1.2) |
+
+The managed loader copies one bounded tensor or expert bank at a time, so the
+generic disk × 1.2 padding over-counted GLM. On the staged 122-shard Q4
+artifact, MLX active memory after the target load equalled the text and vision
+payload, 177,510,375,672 bytes. The MLX peak through a 512-token prefill was
+180.89 GB, at most 3.38 GB above residency and below the native copies alone.
+For the retained 43-header profile the full LOAD is 192,045,833,503 bytes
+(178.86 GiB), not 222,714,752,471 bytes (207.42 GiB). With the default
+activation and minimum-KV headroom it fits a 256 GiB Mac's 90% cap.
+`GLM5NextLoadQuotation` (`GLM5NextLoadAdmission.swift`) prices the managed load
+with the same formula from the selected manifest.
+
+All MTP weights remain in `disk`; expert banks include every stored expert,
+not the active-expert count. Integer arithmetic is checked through the signed
+wire range. Missing, malformed, non-Q4, unknown-role, nested-integrity or incomplete
+inventories are omitted from GLM discovery, not given a loadable generic quote.
+This footprint is not the native loader's complete architecture validation or
+a model-support grant.
+
+Metadata-only directories such as `.cache/` and `_provenance/` are permitted
+without adding their receipts to model bytes. The descriptor-relative scan
+checks every entry, including hidden entries, and rejects symlinks, special
+files and any nested filename classified as integrity-relevant by
+`ModelScanner.isIntegrityFile`. It allows at most 4,096 total entries and eight
+directory levels; ignored metadata is bounded to 32 MiB per file and 64 MiB in
+aggregate. These directories are inspected read-only and are never deleted.
+
+Only the tokenizer shipped in the weight snapshot is priced. The provider has no
+separate-tokenizer composition path, and the local selection refuses a
+`tokenizer` field, so the raw declaration never covers another tokenizer. Actual source
+identity, complete native inventory, reservation and post-load guards remain
+the managed loader's responsibility. This changes neither manifest publication
+nor catalog activation. The [memory policy](../architecture/hardware-support.md#load-gate-modelloadadmission)
+retains separate OS, activation and KV reserves.
+
 ### Aggregate hash
 
 MiMo checkpoints (`config.json` declares `model_type: "mimo_v2"`) also include
@@ -100,7 +152,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax` or `glm5_next_v1`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list `apple_m5` and `mlx_nax`. The provider and platform also require `apple_m5`, `mlx_nax` and `glm5_next_v1` for `glm-5.3-flash` whatever the row lists (`ModelRuntimeRequirements.glm5NextRequiredCapabilities`); platform sign-off on the catalog row is pending |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
@@ -391,6 +443,16 @@ Revision-only mode rejects `promote=false` before HTTP because the existing
 use normal registration with `promote=false` for that operation. The optional
 HF source follows the [existing revision retry contract](#admin-actions): null
 means R2-only for a new version and preserves the stored source on retry.
+
+## Flint local package exception
+
+| Contract | Value | Source |
+|---|---|---|
+| Native architecture identity | Exact `flint` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`, `isSupported(modelType:)` |
+| Shard-only local discovery | `model-*.safetensors` plus nonempty regular config of at most 1,048,576 bytes; no synthetic index | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `isMLXModel`, `boundedModelConfiguration` |
+| Weight format | Official group-64 affine INT4 projections/experts, INT8 embeddings and BF16 sensitive tensors, or documented BF16; strict complete inventory; not NVFP4 | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintCheckpoint.swift`, `FlintModel.installFlintWeights` |
+| KV precision | Native live KV and native checkpoint storage; official export uses BF16 KV | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| Catalog publication | Separate manifest/review operation; local discovery does not publish to HF/R2 or activate a catalog | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `ModelScanner` |
 
 ## Related
 

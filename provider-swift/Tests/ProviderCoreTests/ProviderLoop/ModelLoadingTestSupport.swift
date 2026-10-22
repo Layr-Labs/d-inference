@@ -60,6 +60,13 @@ enum ModelLoadingFixtures {
             estimatedMemoryGb: memoryGb, weightHash: weightHash)
     }
 
+    static let defaultHardware = HardwareInfo(
+        machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
+        chipTier: .max,
+        memoryGb: 64, memoryAvailableGb: 60,
+        cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+        gpuCores: 40, memoryBandwidthGbs: 546)
+
     /// A loop on a scripted machine (no host memory reads for the budget),
     /// with MTP off, an isolated engine runtime and a temp daemon state file.
     static func makeLoop(
@@ -69,24 +76,22 @@ enum ModelLoadingFixtures {
         physicalBytes: UInt64 = 64 << 30,
         modelHashes: [String: String] = [:],
         modelHashFingerprints: [String: String] = [:],
-        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
+        hardware: HardwareInfo = ModelLoadingFixtures.defaultHardware,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+        mtpMode: MTPMode = .off
     ) async throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
-            hardware: HardwareInfo(
-                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
-                chipTier: .max,
-                memoryGb: 64, memoryAvailableGb: 60,
-                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
-                gpuCores: 40, memoryBandwidthGbs: 546
-            ),
+            hardware: hardware,
             models: models,
             config: ProviderConfig(
                 provider: ProviderSettings(name: "model-loading-test", memoryReserveGB: 0),
                 backend: BackendSettings(
-                    idleTimeoutMins: 0, maxModelSlots: maxModelSlots, mtpMode: .off),
+                    idleTimeoutMins: 0, maxModelSlots: maxModelSlots, mtpMode: mtpMode),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             ),
+            runtimeCapabilities: runtimeCapabilities,
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints
         )

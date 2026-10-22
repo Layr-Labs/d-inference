@@ -95,7 +95,8 @@ func makeLocalInferenceApplication(
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
-            modelTypeProvider: modelTypeProvider
+            modelTypeProvider: modelTypeProvider,
+            seedsContentForUnknownPromptTail: true
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
@@ -107,9 +108,21 @@ func makeLocalInferenceApplication(
     // pins the Hummingbird 2 MiB default, which 413s inline media — see
     // LocalChatUploadResponder); everything else falls through to the
     // upstream router unchanged.
+    var reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
+    if let modelTypeProvider {
+        // Every model's reasoning in its own field, as the coordinator path resolves it. A think-tag stream whose
+        // prompt opens no think block starts in content mode (the local engine's `seedsContentForUnknownPromptTail`),
+        // so the answer streams as it comes instead of waiting for a close marker.
+        reasoningParserFor = { (model: String) async -> ReasoningParserFormat? in
+            guard let type = await modelTypeProvider(model) else { return nil }
+            return ProviderLoop.inferReasoningParser(for: type)
+        }
+    }
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
         serviceForTemplateControls: serviceForTemplateControls,
+        reasoningParserFor: reasoningParserFor,
+        responseConversations: LocalResponseConversationStore(),
         serviceForRawChat: { body, request in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
                 responseStore: responseStore, metrics: metrics) { return service }

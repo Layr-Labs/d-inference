@@ -140,10 +140,21 @@ struct AdmissionRateEstimatorTests {
     @Test("a reviewed calibration keeps the per-row decode charge as its only fallback")
     func calibratedPolicyKeepsPerRowDecode() {
         let shape = CBv2DecodeRateShape(batchRows: 3, tokensPerStep: 2, stepWidth: 4)
-        #expect(DeadlineAdmissionFixes.decodeRateShape(shape, enabled: true, calibrated: false) == shape)
-        #expect(DeadlineAdmissionFixes.decodeRateShape(shape, enabled: true, calibrated: true) == nil)
-        #expect(DeadlineAdmissionFixes.decodeRateShape(shape, enabled: false, calibrated: false) == nil)
-        #expect(DeadlineAdmissionFixes.decodeRateShape(shape, enabled: false, calibrated: true) == nil)
+        var step = MeasuredDecodeStep()
+        step.observe(tokensPerSecond: 40, shape: shape, weight: 0.3, restart: true)
+        func charge(enabled: Bool, calibrated: Bool) -> (Double?, CBv2DecodeRateShape?) {
+            let result = DeadlineAdmissionFixes.decodeCharge(perRequestRate: 35, measuredStep: step,
+                enabled: enabled, calibrated: calibrated)
+            return (result.rate, result.shape)
+        }
+        #expect(charge(enabled: true, calibrated: false) == (40, shape))
+        #expect(charge(enabled: true, calibrated: true) == (35, nil))
+        #expect(charge(enabled: false, calibrated: false) == (35, nil))
+        #expect(charge(enabled: false, calibrated: true) == (35, nil))
+        // No decode evidence yet: no rate, whichever charge applies.
+        let unmeasured = DeadlineAdmissionFixes.decodeCharge(perRequestRate: nil,
+            measuredStep: MeasuredDecodeStep(), enabled: true, calibrated: false)
+        #expect(unmeasured.rate == nil && unmeasured.shape == .init(batchRows: 1))
     }
 
     @Test("off-nominal posture does not restore the nominal calibration anchor")
@@ -203,8 +214,44 @@ struct AdmissionRateEstimatorTests {
         // A malformed shape is smoothed as one plain row, never propagated.
         let (bridge, _) = bridge(fixes: true)
         await bridge.updateDecodeTpsEwma(30, shape: .init(batchRows: .nan, tokensPerStep: 0))
-        #expect(await bridge.observedDecodeShapeEwma == .init(batchRows: 1))
+        #expect(await bridge.observedDecodeStep.shape == .init(batchRows: 1))
         await bridge.shutdown()
+    }
+
+    @Test("decode rate and step shape stay coupled across batch widths")
+    func decodeRateAndShapeStayCoupled() async throws {
+        let alpha = 0.3
+        for fixes in [true, false] {
+            let (bridge, _) = bridge(fixes: fixes)
+            await bridge.updatePrefillTpsEwma(5_000, isolated: true)
+            // Eight rows at 10 tok/s each (0.1 s steps), then one solo request
+            // at 100 tok/s (0.01 s steps).
+            await bridge.updateDecodeTpsEwma(10, shape: .init(batchRows: 8))
+            await bridge.updateDecodeTpsEwma(100, shape: .init(batchRows: 1))
+            // The published per-request rate is unchanged either way.
+            #expect(await bridge.observedDecodeTpsEwma == alpha * 100 + (1 - alpha) * 10)
+            let policy = try #require(await bridge.firstTokenDeadlineAdmission(
+                deadline: .init(relativeBudgetMilliseconds: 12_000), isMultimodal: false))
+            let rate = try #require(policy.conservativeDecodeTokensPerSecond)
+            guard fixes else {
+                #expect(rate == 37)
+                #expect(policy.decodeRateShape == nil)
+                await bridge.shutdown()
+                continue
+            }
+            let shape = try #require(policy.decodeRateShape)
+            #expect(shape == .init(batchRows: alpha * 1 + (1 - alpha) * 8))
+            // One priced step is the smoothed measured step time.
+            let stepSeconds = alpha * 0.01 + (1 - alpha) * 0.1
+            #expect(abs(shape.tokensPerStep / rate - stepSeconds) < 1e-12)
+            // An eight-row step is priced near its measured 0.1 s. Smoothing the
+            // rate (37 tok/s) and rows separately priced it at about 0.037 s.
+            let eightRowStep = shape.tokensPerStep / rate * max(1, 8 / shape.batchRows)
+            #expect(eightRowStep > 0.098 && eightRowStep <= 0.1)
+            // A solo step costs no less than the measured solo step.
+            #expect(shape.tokensPerStep / rate >= 0.01)
+            await bridge.shutdown()
+        }
     }
 
     @Test("completed-request timing yields rows, confirmed tokens and width per decode step")
@@ -258,7 +305,7 @@ struct AdmissionRateEstimatorTests {
         continuation.yield(.finished(reason: .stop, usage: usage))
         continuation.finish()
         await consumer.value
-        #expect(await bridge.observedDecodeShapeEwma == .init(batchRows: 4, tokensPerStep: 3, stepWidth: 4))
+        #expect(await bridge.observedDecodeStep.shape == .init(batchRows: 4, tokensPerStep: 3, stepWidth: 4))
         await bridge.shutdown()
     }
 
@@ -273,7 +320,8 @@ struct AdmissionRateEstimatorTests {
         var solo = observation("decode", tps: 120, at: now)
         solo.decodeShape = .init(batchRows: 1)
         await bridge.applyRateObservation(solo, requestID: "solo", calibration: false)
-        #expect(await bridge.observedDecodeShapeEwma == .init(batchRows: 1))
+        #expect(await bridge.observedDecodeStep.shape == .init(batchRows: 1))
+        #expect(await bridge.observedDecodeStep.tokensPerSecond == 120)
         #expect(await bridge.observedDecodeTpsEwma == 120)
         await bridge.shutdown()
     }

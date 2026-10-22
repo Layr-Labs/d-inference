@@ -105,27 +105,26 @@ extension EngineV2Bridge {
         if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
             prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
         }
-        let decodeRate =
-            ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
-            ? observedDecodeTpsEwma
-            : nil
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
+        // The decode EWMA is a per-request rate: charge one measured step per
+        // projected batch step, not every row's tokens.
+        let decode = DeadlineAdmissionFixes.decodeCharge(
+            perRequestRate: ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+                ? observedDecodeTpsEwma : nil,
+            measuredStep: observedDecodeStep, enabled: admissionFixes, calibrated: calibration != nil)
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
-            conservativeDecodeTokensPerSecond: decodeRate,
+            conservativeDecodeTokensPerSecond: decode.rate,
             calibration: calibration,
             nativeTargetPrefill: nativeMedia
                 ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
                     evidence: nativeMediaEvidence) : nil,
-            // The decode EWMA is a per-request rate: charge one measured step
-            // per projected batch step, not every row's tokens.
-            decodeRateShape: DeadlineAdmissionFixes.decodeRateShape(observedDecodeShapeEwma,
-                enabled: admissionFixes, calibrated: calibration != nil))
+            decodeRateShape: decode.shape)
     }
 
     /// Nothing but `requestID` occupies this engine and, through the shared

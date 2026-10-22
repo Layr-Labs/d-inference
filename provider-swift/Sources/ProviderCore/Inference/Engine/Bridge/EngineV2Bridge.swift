@@ -313,10 +313,10 @@ public actor EngineV2Bridge {
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
-    /// Decode-step shape of the requests behind `observedDecodeTpsEwma`,
-    /// smoothed and reset with it. Deadline admission uses it to charge decode
-    /// per batch step instead of per row.
-    var observedDecodeShapeEwma = CBv2DecodeRateShape(batchRows: 1)
+    /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
+    /// and reset with it. Deadline admission uses it to charge decode per
+    /// batch step instead of per row.
+    var observedDecodeStep = MeasuredDecodeStep()
     /// `DeadlineAdmissionFixes`, resolved once per bridge.
     let admissionFixes: Bool
     /// Cold-prefill throughput from completed prompt computation, independent

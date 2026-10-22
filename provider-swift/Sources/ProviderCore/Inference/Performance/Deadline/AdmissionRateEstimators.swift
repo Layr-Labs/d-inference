@@ -15,15 +15,58 @@ enum DeadlineAdmissionFixes {
         return !["0", "false", "no", "off"].contains(raw)
     }
 
-    /// The measured decode-step shape that selects per-batch decode charging,
-    /// or nil for the per-row charge. A reviewed calibration's error envelope,
-    /// and the qualification evidence proving that envelope was used, assume
-    /// the per-row conversion is its only fallback, so calibrated policies
-    /// keep it.
-    static func decodeRateShape(
-        _ measured: CBv2DecodeRateShape, enabled: Bool, calibrated: Bool
-    ) -> CBv2DecodeRateShape? {
-        enabled && !calibrated ? measured : nil
+    /// The decode rate and step shape handed to the engine. Per-batch charging
+    /// prices one smoothed measured step; the per-row charge (nil shape) keeps
+    /// the per-request EWMA. A reviewed calibration's error envelope, and the
+    /// qualification evidence proving that envelope was used, assume the
+    /// per-row conversion is its only fallback, so calibrated policies keep it.
+    /// The step is smoothed and reset with the per-request EWMA, which alone
+    /// says whether decode evidence exists.
+    static func decodeCharge(
+        perRequestRate: Double?, measuredStep: MeasuredDecodeStep, enabled: Bool, calibrated: Bool
+    ) -> (rate: Double?, shape: CBv2DecodeRateShape?) {
+        guard enabled, !calibrated else { return (perRequestRate, nil) }
+        return (perRequestRate == nil ? nil : measuredStep.tokensPerSecond, measuredStep.shape)
+    }
+}
+
+/// The decode step behind per-batch charging. Each completed request
+/// contributes its mean step duration (`tokensPerStep / rate`) and the shape it
+/// was measured at, smoothed with one weight, so admission prices an average of
+/// measured steps: the step time and the time per row stay inside the measured
+/// range. Smoothing the per-request rate and the rows separately pairs one
+/// batch width's rate with another's rows: 10 tok/s at eight rows, then
+/// 100 tok/s solo, would price an eight-row step at 0.037 s, not 0.1 s.
+struct MeasuredDecodeStep: Equatable {
+    private(set) var shape = CBv2DecodeRateShape(batchRows: 1)
+    /// Mean measured step duration; zero before any observation.
+    private(set) var seconds: Double = 0
+
+    /// `restart` discards earlier steps, as the decode EWMA does after a reset.
+    /// An invalid shape counts as one plain row.
+    mutating func observe(tokensPerSecond tps: Double, shape: CBv2DecodeRateShape,
+        weight: Double, restart: Bool) {
+        guard tps.isFinite, tps > 0 else { return }
+        let shape = shape.isValid ? shape : CBv2DecodeRateShape(batchRows: 1)
+        let stepSeconds = shape.tokensPerStep / tps
+        guard !restart, seconds > 0 else {
+            self.shape = shape
+            seconds = stepSeconds
+            return
+        }
+        func blend(_ new: Double, _ old: Double) -> Double { weight * new + (1 - weight) * old }
+        seconds = blend(stepSeconds, seconds)
+        self.shape = CBv2DecodeRateShape(
+            batchRows: blend(shape.batchRows, self.shape.batchRows),
+            tokensPerStep: blend(shape.tokensPerStep, self.shape.tokensPerStep),
+            stepWidth: blend(shape.stepWidth, self.shape.stepWidth))
+    }
+
+    /// The per-request rate at which one measured step of `shape` takes
+    /// `seconds`; nil before any observation.
+    var tokensPerSecond: Double? {
+        let rate = shape.tokensPerStep / seconds
+        return seconds > 0 && rate.isFinite && rate > 0 ? rate : nil
     }
 }
 

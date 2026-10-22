@@ -156,22 +156,16 @@ extension EngineV2Bridge {
     }
 
     /// Smooth successful decode observations for the routing heartbeat.
-    /// The decode-step shape they were measured at is smoothed and reset with them.
+    /// The decode step they were measured at is smoothed and reset with them.
     func updateDecodeTpsEwma(_ tps: Double, shape: CBv2DecodeRateShape = .init(batchRows: 1)) {
         guard tps.isFinite, tps > 0 else { return }
         let alpha = 0.3
-        let shape = shape.isValid ? shape : CBv2DecodeRateShape(batchRows: 1)
+        observedDecodeStep.observe(tokensPerSecond: tps, shape: shape, weight: alpha,
+            restart: !ewmaInitialized)
         if ewmaInitialized {
-            func blend(_ new: Double, _ old: Double) -> Double { alpha * new + (1 - alpha) * old }
-            let old = observedDecodeShapeEwma
-            observedDecodeTpsEwma = blend(tps, observedDecodeTpsEwma)
-            observedDecodeShapeEwma = CBv2DecodeRateShape(
-                batchRows: blend(shape.batchRows, old.batchRows),
-                tokensPerStep: blend(shape.tokensPerStep, old.tokensPerStep),
-                stepWidth: blend(shape.stepWidth, old.stepWidth))
+            observedDecodeTpsEwma = alpha * tps + (1 - alpha) * observedDecodeTpsEwma
         } else {
             observedDecodeTpsEwma = tps
-            observedDecodeShapeEwma = shape
             ewmaInitialized = true
         }
     }

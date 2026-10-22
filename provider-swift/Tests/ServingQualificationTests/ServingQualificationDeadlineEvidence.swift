@@ -5,7 +5,7 @@ import Foundation
 /// Proof from the actual atomic verdict, not a pre-submit policy reconstruction.
 /// A request carrying a reviewed calibration has exactly two SDK service
 /// conversions: the provider passes it no per-batch decode shape
-/// (`DeadlineAdmissionFixes.decodeRateShape`). A bounded returned duration
+/// (`DeadlineAdmissionFixes.decodeCharge`). A bounded returned duration
 /// distinct from its recorded legacy inputs proves the calibrated conversion
 /// was selected. Indistinguishable durations deliberately remain unproven.
 struct ServingQualificationDeadlineEvidence: Codable, Sendable {

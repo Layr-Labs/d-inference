@@ -99,6 +99,10 @@ public enum GLM5NextTensorParallelBench {
         /// (`GLM5NextTensorParallelPrefillPlan.make(pinsSelections:)`); off,
         /// each micro-batch selects among its own call's candidates.
         public var pinsSelections = true
+        /// Prefill frames' command-buffer operation limit (this thread's MLX
+        /// override, `GLM5NextTensorParallelPrefillPlan.commandBuffers`); nil:
+        /// the process's own (`MLX_MAX_OPS_PER_BUFFER`, else MLX's per-chip).
+        public var prefillOperationsPerBuffer: Int?
         /// Re-cut segments only where their micro-batches' sums stay hidden
         /// (`GLM5NextTensorParallelPrefillPlan.hidingSums`); off, every re-cut.
         public var hidesSums = true
@@ -204,6 +208,9 @@ public enum GLM5NextTensorParallelBench {
     }
 
     public static func run(_ options: Options, log: (String) -> Void) throws -> Report {
+        GLM5NextTensorParallelPrefillPlan.commandBuffers = options.prefillOperationsPerBuffer.map {
+            GPU.CommandBufferLimits(operations: $0, megabytes: 1 << 20)
+        } ?? GLM5NextTensorParallelResidentRuntime.prefillCommandBuffers
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: GLM5NextRegisteredModel.glm53Flash.rawValue)
         let directory = options.modelDirectory
         let config = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"),

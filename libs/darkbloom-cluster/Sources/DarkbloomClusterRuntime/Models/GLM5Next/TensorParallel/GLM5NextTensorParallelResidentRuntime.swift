@@ -269,6 +269,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let enteredUnixMilliseconds = Int64(Date().timeIntervalSince1970 * 1000)
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        GLM5NextTensorParallelPrefillPlan.commandBuffers = prefillCommandBuffers
         let lanes = try QwenBatchSettings.fromEnvironment(environment)
         let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
@@ -866,6 +867,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// rank's limits. Synchronization only: results never depend on the
     /// partitioning.
     static let decodeCommandBuffers = GPU.CommandBufferLimits(operations: 100, megabytes: 1 << 20)
+    /// Prefill frames' command buffers (`GLM5NextTensorParallelPrefillPlan.commandBuffers`):
+    /// MLX's own Ultra limit of 50 operations instead of the worker's
+    /// 16-operation guard. Under 16, a 32K frame of 8,192-row micro-batches
+    /// split into about three times the buffers and stalled in MLX's eval
+    /// window (31.5K: 7.93 s at 16 against 7.49 s unset, pair-measured;
+    /// 16K frames unchanged). Synchronization only, as for decode.
+    static let prefillCommandBuffers: GPU.CommandBufferLimits? = .init(operations: 50, megabytes: 1 << 20)
 
     static func prefillChunk(requestChunk: Int) -> Int {
         let requestChunk = max(1, requestChunk)

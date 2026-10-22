@@ -11,7 +11,7 @@ import MLX
 //     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
 //     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no]]
 //     [--kv paged|contiguous]
-//     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]
+//     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--prefill-ops N] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -73,7 +73,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--mtp-vocab-split yes|no] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--mtp-vocab-split yes|no] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]] [--prefill-ops N]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -147,6 +147,11 @@ enum GLMBench {
         if let value = fields["--micro-batch-rule"] {
             guard ["half", "all"].contains(value) else { throw Failure("glm: --micro-batch-rule takes half or all") }
             options.hidesSums = value == "half"
+        }
+        // Prefill frames' command buffers commit after N operations (a thread override; default: the process's).
+        if let value = fields["--prefill-ops"] {
+            guard let count = Int(value), count > 0 else { throw Failure("glm: --prefill-ops takes a count") }
+            options.prefillOperationsPerBuffer = count
         }
         // Diagnostic: where a different micro-batch cut of the first N tokens first changes bits.
         if let value = fields["--divergence"] {

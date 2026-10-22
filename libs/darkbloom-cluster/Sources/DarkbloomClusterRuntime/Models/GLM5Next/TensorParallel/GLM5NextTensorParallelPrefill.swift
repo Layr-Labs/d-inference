@@ -298,6 +298,18 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         return .init(segments: segments, keptAfter: kept ? segments.firstIndex { $0.end == keepAt }.map { $0 + 1 } : nil)
     }
 
+    /// Command-buffer limits every frame's GPU work is encoded under (this
+    /// thread's MLX override), or nil for the process's own (a worker's
+    /// `MLX_MAX_OPS_PER_BUFFER` guard, 16 operations; tp-check's MLX default,
+    /// 50 on an Ultra). Only where MLX commits a buffer changes, never what
+    /// the GPU computes. Set before the first frame (runtime load, bench).
+    nonisolated(unsafe) static var commandBuffers: GPU.CommandBufferLimits?
+
+    static func encoding<R>(_ body: () throws -> R) rethrows -> R {
+        guard let limits = commandBuffers else { return try body() }
+        return try GPU.withCommandBufferLimits(limits, body)
+    }
+
     /// One frame (`chunk`) on `stage` from `cache` (at the frame's start):
     /// its segments in one graph, each segment's hidden rows priming
     /// `speculation`'s NextN history in that evaluation as one prefill per
@@ -369,18 +381,22 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         /// Builds the next `layers` layers; evaluates them unless they are the
         /// frame's last (`finish` evaluates those with the readout).
         func advance(layers: Int) throws {
-            try prefill.advance(layers: layers)
-            guard layersBuilt < layerCount else { return }
-            let frontier = prefill.frontier
-            try MLX.withError { error in
-                eval(frontier)
-                try error.check()
+            try GLM5NextTensorParallelPrefillPlan.encoding {
+                try prefill.advance(layers: layers)
+                guard layersBuilt < layerCount else { return }
+                let frontier = prefill.frontier
+                try MLX.withError { error in
+                    eval(frontier)
+                    try error.check()
+                }
             }
         }
 
         func finish(observe: ((Int, MLXArray) throws -> Void)? = nil) throws -> FrameResult {
-            try complete(try prefill.finish(), chunk: chunk, cache: cache, prompt: prompt, speculation: speculation,
-                inputs: inputs, observe: observe)
+            try GLM5NextTensorParallelPrefillPlan.encoding {
+                try complete(try prefill.finish(), chunk: chunk, cache: cache, prompt: prompt,
+                    speculation: speculation, inputs: inputs, observe: observe)
+            }
         }
     }
 

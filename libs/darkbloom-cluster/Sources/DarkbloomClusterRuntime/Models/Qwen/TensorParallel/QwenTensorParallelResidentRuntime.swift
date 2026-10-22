@@ -275,7 +275,8 @@ public final class QwenTensorParallelResidentRuntime {
             // a paged rank also needs what its page pool grows by.
             try prefix.yieldingMemory {
                 try charge.allowance.requireLive(additionalNativeBytes: try QwenLongPrefillCheckedBytes.sum([
-                    charge.extraNativeBytes, Self.pagedGrowthBytes(model: model, tokens: request.maximumTokens)]))
+                    charge.extraNativeBytes, Self.pagedGrowthBytes(model: model, tokens: Self.initialPageTokens(
+                        promptCount: request.promptCount, maximumTokens: request.maximumTokens))]))
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, allowance: charge.allowance, extraNativeBytes: charge.extraNativeBytes,
@@ -370,7 +371,9 @@ public final class QwenTensorParallelResidentRuntime {
         }
 
         // The request's attention pages (nil when contiguous), held until it ends.
-        let pages = try Self.reservePages(model: model, tokens: request.maximumTokens)
+        // Its prompt and one granule; decode grows them (`growPages`).
+        let pages = try Self.reservePages(model: model, tokens: Self.initialPageTokens(
+            promptCount: prompt.count, maximumTokens: request.maximumTokens))
         defer { withExtendedLifetime(pages) {} }
         // Prompt prefix: the longest chunk boundary both ranks hold.
         var cache = model.newCache(account: pages?.account)
@@ -429,21 +432,33 @@ public final class QwenTensorParallelResidentRuntime {
         // 0, or the number of tokens to keep: what this rank puts in its stop
         // slot of every step built from now on.
         var stopKeep: Float = 0
+        // The pages could not grow: the request ends at its length after the
+        // next step built (the margin covers the steps built before that).
+        var pagesRefused = false
+        /// Before a step that appends output `index` is built: its pages.
+        func growPages(forOutput index: Int) {
+            guard !pagesRefused else { return }
+            pagesRefused = !Self.growPages(pages, needed: prompt.count + index + 1, limit: request.maximumTokens,
+                caches: cache, admit: { bytes in try prefix.yieldingMemory { try Self.requireLiveMemory(bytes: bytes) } })
+        }
         var pending: (MLXArray, MLXArray)?
         steps: for step in 0 ..< request.outputCount {
             pending = nil
             if pipelined, step + 1 < request.outputCount {
+                growPages(forOutput: step)
                 let next = choose(model.step(current, cache: cache), stop: stopKeep)
                 asyncEval(next.0, next.1)
                 pending = next
             }
             let token = Int(current.item(Int32.self))
             let flags = currentFlags.asArray(Float.self).filter { $0 > 0 }
-            if let keep = flags.min() {
+            if let slot = flags.min() {
                 // A rank asked both to stop when this step was built: both keep
-                // the tokens it named and end here.
-                tokens = Array(tokens.prefix(Int(keep)))
-                finish = .clientStop; break
+                // the tokens it named and end here (at the request's length
+                // when its pages could not grow).
+                let stop = QwenTensorParallelStopRule.stop(slot: slot)
+                tokens = Array(tokens.prefix(stop.keep))
+                finish = stop.finish == .length ? .length : .clientStop; break
             }
             if stopKeep == 0 {
                 sampler?.commit(token)
@@ -460,9 +475,15 @@ public final class QwenTensorParallelResidentRuntime {
                 case .clientStop: clientStopped = true
                 case .proceed: break
                 }
-                if clientStopped || localStop() { stopKeep = Float(tokens.count) }
+                if clientStopped || localStop() {
+                    stopKeep = Float(tokens.count)
+                } else if pagesRefused {
+                    stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
+                }
             }
             if !pipelined, step + 1 < request.outputCount {
+                growPages(forOutput: step)
+                if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
                 let next = choose(model.step(current, cache: cache), stop: stopKeep)
                 asyncEval(next.0, next.1)
                 pending = next
@@ -474,7 +495,7 @@ public final class QwenTensorParallelResidentRuntime {
         // A step both ranks built and submitted is evaluated by both, so its
         // reductions meet; nothing of it is emitted.
         if let pending { eval(pending.0, pending.1) }
-        if stopKeep > 0 || clientStopped { finish = .clientStop }
+        if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         // Both ranks end on rank 0's outcome (one small sealed agreement, made
         // by both before either may throw below): a client stop rank 0 made
         // when no later step could carry its flag leaves rank 1 at the limit.
@@ -499,7 +520,8 @@ public final class QwenTensorParallelResidentRuntime {
         let reused = start
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
             + " prompt=\(prompt.count) reused=\(reused) output=\(tokens.count) finish=\(finish.rawValue)"
-            + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)")
+            + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
+            + " kv_tokens=\(pages?.tokens ?? 0) kv_grown=\(max(0, (pages?.accounts.count ?? 1) - 1)) kv_refused=\(pagesRefused ? 1 : 0)")
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,

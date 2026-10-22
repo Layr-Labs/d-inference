@@ -13,8 +13,16 @@ final class GLM5NextStageSession {
     let agreement: QwenLayerStageGenerationAgreement
     private let model: GLM5NextTextStage
     private var cache: GLM5NextTextStageCache?
-    /// This request's pages of the stage's pool, ended with the session.
-    private var pages: GLM5NextPageReservation?
+    /// This request's pages of the stage's pool (one reservation per growth;
+    /// new pages count against the latest), ended with the session.
+    private var pages: [GLM5NextPageReservation] = []
+    /// Tokens every local DSA history may hold under `pages`.
+    private var pageTokens = 0
+    private let dsaLayerCount: Int
+    /// Tokens a request's pages grow by (owner rule 2026-10-22: nothing is
+    /// reserved for the whole context; a request holds its prompt and one
+    /// granule and grows between frames).
+    static let pageGrowthTokens = 1024
     private var schedule: QwenLayerStageGenerationSchedule
     private var inOperation = false
     /// This request's prompt-prefix capture, when its plan keeps one.
@@ -62,14 +70,18 @@ final class GLM5NextStageSession {
         }
         _ = try qwenGenerationBoundaryGeometry(request: request, dtype: dtype, authenticatedChunking: true)
         self.model = model; self.identity = identity; self.agreement = agreement
-        // Every local DSA layer's history at the request's longest, in pages.
+        // Every local DSA layer's history for the prompt and one granule, in
+        // pages; `forward` grows them between frames.
+        let layers = model.plan.layers.filter { c.layerTypes[$0] == .deepseekSparseAttention }.count
+        dsaLayerCount = layers
+        let initialTokens = min(request.maximumTokens, request.promptCount + Self.pageGrowthTokens)
         pages = try model.dsaPagePool.map { pool in
             pool.recycle()
-            let layers = model.plan.layers.filter { c.layerTypes[$0] == .deepseekSparseAttention }.count
-            return GLM5NextPageReservation(pool: pool,
-                account: try pool.reserve(pages: layers * pool.pages(tokens: request.maximumTokens)))
-        }
-        let fresh = model.newCache(account: pages?.account)
+            return [GLM5NextPageReservation(pool: pool,
+                account: try pool.reserve(pages: layers * pool.pages(tokens: initialTokens)))]
+        } ?? []
+        pageTokens = model.dsaPagePool == nil ? 0 : initialTokens
+        let fresh = model.newCache(account: pages.last?.account)
         if let restoring {
             try MLX.withError { error in
                 try GLM5NextStagePrefixSnapshot.restore(restoring, into: fresh.layers, globalLayers: Array(model.plan.layers))
@@ -118,6 +130,8 @@ final class GLM5NextStageSession {
                 var nextSchedule = schedule
                 try nextSchedule.commit(frame)
                 try checked()
+                // This frame's pages, by granules (between frames: the last one was evaluated).
+                try growPages(holding: committedTokens + frame.tokenCount, cache: cache)
                 // The validated schedule admits readout only at the prompt end
                 // and decode. Earlier chunks still fence every hidden/cache root.
                 let needsLogits = frame.phase == .decode || frame.finalPromptChunk
@@ -202,6 +216,19 @@ final class GLM5NextStageSession {
         }
     }
 
+    /// Reserves pages for `tokens` per local DSA history (a granule more, at
+    /// most the request's length) when the reservation holds fewer; the
+    /// cache's new pages then count against the new reservation. The
+    /// request's admission charge already covers its whole length.
+    private func growPages(holding tokens: Int, cache: GLM5NextTextStageCache) throws {
+        guard let pool = model.dsaPagePool, tokens > pageTokens else { return }
+        let target = min(agreement.request.maximumTokens, max(tokens, pageTokens + Self.pageGrowthTokens))
+        let added = dsaLayerCount * (pool.pages(tokens: target) - pool.pages(tokens: pageTokens))
+        if added > 0 { pages.append(GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages: added))) }
+        pageTokens = target
+        cache.bindPages(to: pages.last?.account)
+    }
+
     /// Poison the request after a transport/control failure, including an ACK
     /// lost after local commit. Keep all native state until the owner's fence.
     func invalidate() { isFailed = true }
@@ -215,7 +242,7 @@ final class GLM5NextStageSession {
             Stream.gpu.synchronize()
             try error.check(); try check()
             Stream.cpu.synchronize(); try error.check(); try check()
-            cache = nil; imageFeatures = nil; pages = nil; isClosed = true
+            cache = nil; imageFeatures = nil; pages = []; isClosed = true
             model.dsaPagePool?.recycle()
         }
     }

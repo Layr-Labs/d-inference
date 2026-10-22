@@ -37,6 +37,57 @@ struct QwenTensorParallelPagedKVTests {
         #expect(Runtime.pagedGrowthBytes(model: nil, tokens: 32_768) == 0)
     }
 
+    /// Owner rule 2026-10-22 (no reservation for the whole context, no cap):
+    /// a request reserves its prompt and one granule, grows by granules
+    /// between steps when the gate admits the slabs' growth (its histories'
+    /// new pages then count against the new account), never past its length,
+    /// and a refused growth changes nothing (the request ends at its length).
+    @Test func pagesGrowByGranulesAndARefusalChangesNothing() throws {
+        try Device.withDefaultDevice(.cpu) {
+            #expect(Runtime.initialPageTokens(promptCount: 100, maximumTokens: 100_000) == 1_124)
+            #expect(Runtime.initialPageTokens(promptCount: 100, maximumTokens: 500) == 500)
+            let pool = try PagedAttentionKVPool(pageSize: 64, kvHeads: 1, keyHeadDim: 8, valueHeadDim: 8,
+                dtype: .float32, minimumGrowthPages: 64)
+            let pages = try QwenTensorParallelPageReservation(pool: pool, attentionLayers: 2, tokens: 1_124)
+            #expect(pages.tokens == 1_124 && pages.accounts.count == 1
+                && pool.book.reservedPages == 2 * pool.pages(tokens: 1_124))
+            let caches: [KVCache] = [PagedAttentionKVCache(pool: pool, account: pages.account), KVCacheSimple()]
+            var admitted: [Int] = []
+            // Short of the margin: nothing grows, the gate is not asked.
+            #expect(Runtime.growPages(pages, needed: 1_000, limit: 100_000, caches: caches, admit: { admitted.append($0) }))
+            #expect(pages.tokens == 1_124 && pages.accounts.count == 1 && admitted.isEmpty)
+            // Inside the margin: one granule more, past the slabs (the gate is asked for their growth).
+            #expect(Runtime.growPages(pages, needed: 1_070, limit: 100_000, caches: caches, admit: { admitted.append($0) }))
+            #expect(pages.tokens == 2_148 && pages.accounts.count == 2 && admitted.count == 1 && admitted[0] > 0)
+            #expect((caches[0] as? PagedAttentionKVCache)?.account === pages.account)
+            #expect(pool.book.reservedPages == 2 * pool.pages(tokens: 2_148))
+            // A growth the gate refuses changes nothing.
+            let before = (pages.tokens, pages.accounts.count, pool.capacityPages, pool.book.reservedPages)
+            #expect(!Runtime.growPages(pages, needed: 10_000, limit: 100_000, caches: caches,
+                admit: { _ in throw ProbeError("refused") }))
+            #expect(pages.tokens == before.0 && pages.accounts.count == before.1 && pool.capacityPages == before.2
+                && pool.book.reservedPages == before.3)
+            // Never past the request's length; at it, nothing more is asked.
+            #expect(Runtime.growPages(pages, needed: 2_150, limit: 2_200, caches: caches, admit: { _ in }))
+            #expect(pages.tokens == 2_200)
+            #expect(Runtime.growPages(pages, needed: 2_199, limit: 2_200, caches: caches,
+                admit: { _ in throw ProbeError("not asked") }))
+            #expect(pages.tokens == 2_200)
+        }
+    }
+
+    /// A rank whose pages could not grow stops both ranks at the request's
+    /// length (its slot crosses as `length`); a client stop's slot wins.
+    @Test func aLengthStopCrossesAsLengthAndAClientStopWins() {
+        typealias Rule = QwenTensorParallelStopRule
+        #expect(Rule.stop(slot: Rule.lengthStop(keep: 37)) == (37, .length))
+        #expect(Rule.stop(slot: 12) == (12, .clientStop))
+        #expect(Rule.stop(slot: [Rule.lengthStop(keep: 40), 12].min()!) == (12, .clientStop))
+        #expect(Rule.stop(slot: Rule.lengthStop(keep: 131_072)) == (131_072, .length))
+        #expect(Rule.reconcile(rank: 1, localFinish: .length, localCount: 37, localStopped: true,
+            rank0Finish: .length, rank0Count: 37) == (.length, 37))
+    }
+
     /// A synthetic 4-bit Qwen 3.5 dense checkpoint (random weights; the
     /// tensor names and cuts of the real rows, `TensorParallelPlanCheck`).
     static func checkpoint(hidden h: Int, layers: Int, heads hq: Int, kvHeads hkv: Int, vocabulary: Int)
@@ -103,8 +154,14 @@ struct QwenTensorParallelPagedKVTests {
                 let pool = try model.makeAttentionPagePool(pageSize: Runtime.attentionPageTokens)
                 #expect(pool.kvHeads == 1 && pool.keyHeadDim == 256 && pool.dtype == .bfloat16 && model.attentionLayerCount == 2)
                 model.attentionPagePool = pool
-                let prompt = (0..<1_300).map { ($0 * 7919 + 13) % 4096 }
-                let pages = try #require(try Runtime.reservePages(model: model, tokens: prompt.count + 40))
+                // The prompt fills the pool's first 64 pages exactly (2 layers x 32): the first decode
+                // step's growth then grows the slabs (a copy) while the request runs.
+                let growing = try PagedAttentionKVPool(pageSize: Runtime.attentionPageTokens, kvHeads: pool.kvHeads,
+                    keyHeadDim: pool.keyHeadDim, valueHeadDim: pool.valueHeadDim, dtype: pool.dtype, minimumGrowthPages: 1)
+                model.attentionPagePool = growing
+                let prompt = (0..<1_984).map { ($0 * 7919 + 13) % 4096 }
+                let pages = try #require(try Runtime.reservePages(model: model, tokens: prompt.count))
+                #expect(growing.capacityPages == 64)
                 let paged = model.newCache(account: pages.account), contiguous = model.newCache()
                 #expect(paged.filter { $0 is PagedAttentionKVCache }.count == 2)
                 #expect(contiguous.filter { $0 is KVCacheSimple }.count == 2)
@@ -130,7 +187,12 @@ struct QwenTensorParallelPagedKVTests {
                         prefix.store(scope: "c", prompt: prompt, length: end, cache: contiguous)
                     }
                 }
-                for step in 0..<8 { same(paged, contiguous, [(step * 31 + 5) % 4096], "step \(step)") }
+                for step in 0..<8 {
+                    #expect(Runtime.growPages(pages, needed: prompt.count + step + 1, limit: prompt.count + 40,
+                        caches: paged, admit: { _ in }))
+                    same(paged, contiguous, [(step * 31 + 5) % 4096], "step \(step)")
+                }
+                #expect(pages.accounts.count == 2 && pages.tokens == prompt.count + 40 && growing.capacityPages > 64)
                 // A restore from the shared pages continues as a contiguous restore does.
                 let restoredPaged = try #require(prefix.restore(scope: "s", prompt: prompt, length: 1_024))
                 let restoredContiguous = try #require(prefix.restore(scope: "c", prompt: prompt, length: 1_024))
@@ -138,7 +200,7 @@ struct QwenTensorParallelPagedKVTests {
                 same(restoredPaged, restoredContiguous, Array(prompt[1_024...]), "restored prefill")
                 for step in 0..<4 { same(restoredPaged, restoredContiguous, [(step * 17 + 3) % 4096], "restored step \(step)") }
                 #expect(prefix.bytesInUse >= 2 * 17 * pool.pageBytes)
-                #expect(pool.allocatedPages > 0)
+                #expect(growing.allocatedPages > 0 && pool.allocatedPages == 0)
             }
         }
     }

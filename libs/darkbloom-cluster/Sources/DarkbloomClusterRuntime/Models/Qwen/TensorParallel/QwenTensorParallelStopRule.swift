@@ -49,6 +49,18 @@ enum QwenTensorParallelStopRule {
         return wanted ? .proceed : .clientStop
     }
 
+    /// A rank's stop slot when its KV pages could not grow
+    /// (`QwenTensorParallelPagedKV`): keep `keep` tokens and end at the
+    /// request's length, not as a client stop. The offset tells the peer which
+    /// it is (exact in float32: counts stay far below 2^22); a client stop's
+    /// smaller slot wins when both ranks stop after the same step.
+    static let lengthStopBase: Float = 4_194_304
+    static func lengthStop(keep: Int) -> Float { Float(keep) + lengthStopBase }
+    /// The tokens to keep and the finish a step's smallest nonzero stop slot names.
+    static func stop(slot: Float) -> (keep: Int, finish: Finish) {
+        slot >= lengthStopBase ? (Int(slot - lengthStopBase), .length) : (Int(slot), .clientStop)
+    }
+
     /// The finish and token count this rank reports, given rank 0's.
     static func reconcile(rank: Int, localFinish: Finish, localCount: Int, localStopped: Bool,
                           rank0Finish: Finish, rank0Count: Int) -> (finish: Finish, count: Int) {

@@ -17,9 +17,9 @@ final class DistributedLocalServerGeneration: @unchecked Sendable {
     /// the pair's lanes); one before the bridge exists.
     var capacity: Int { max(1, entry?.engineV2Bridge?.maxConcurrentRequests ?? 1) }
 
-    init(session: any DistributedLocalServerSession) {
+    init(session: any DistributedLocalServerSession, responseLimit: Int = DistributedRequestQueue.Limits.standard.responseLimit) {
         let id = UUID(); self.id = id; self.session = session
-        responses = DistributedHTTPResponses(generationID: id)
+        responses = DistributedHTTPResponses(generationID: id, limit: responseLimit)
     }
 }
 

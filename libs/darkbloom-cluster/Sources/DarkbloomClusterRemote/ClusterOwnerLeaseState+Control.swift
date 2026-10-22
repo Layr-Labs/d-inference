@@ -29,6 +29,12 @@ extension ClusterOwnerLeaseState {
                         && requests[id]?.cancelled == false, "Start requires current admitted request")
             requests[id]?.phase = .running; action = .forwardStart(id)
         case .cancel(let id, let reason):
+            if lanes > 1, requests[id].map({ $0.phase == .retired }) ?? retiredRecently.contains(id) {
+                // A lane's cancel crossed its retirement here (the owner
+                // cancelled while the worker finished): the worker ignores it too.
+                action = .forwardCancel(id, reason)
+                break
+            }
             try require(requests[id]?.releaseRequested == false
                         && requests[id]?.phase != .retired, "Cancel requires current unretired request")
             requests[id]?.cancelled = true; action = .forwardCancel(id, reason)
@@ -69,18 +75,27 @@ extension ClusterOwnerLeaseState {
         try require(!recoveryOnly && childStarted && nativeTerminal == nil && requests[requestID] != nil
                     && requests[requestID]?.phase != .retired && requests[requestID]?.releaseRequested == false,
                     "Unexpected native retirement")
+        // With lanes, a started lane retires on its own: cleanly even when a
+        // cancel crossed its finish, or as cancelled when its worker dropped
+        // it at a step boundary while the other lanes ran on.
+        let laneRetired = lanes > 1 && requests[requestID]?.phase == .running
         if retirement == .clean {
-            try require(requests[requestID]?.phase == .running && requests[requestID]?.cancelled == false,
+            try require(requests[requestID]?.phase == .running
+                        && (requests[requestID]?.cancelled == false || laneRetired),
                         "Clean retirement requires an uncancelled started request")
         }
         // A reservation the leader cancelled before it started (the pair's
         // other rank refused the request) is given back by the native worker,
         // which stays available. Any other abnormal retirement poisons the
         // native session's epoch; resource release cannot make it ready again.
-        let givenBack = retirement == .cancelled && requests[requestID]?.phase == .admitted
-            && requests[requestID]?.cancelled == true
+        let givenBack = retirement == .cancelled && requests[requestID]?.cancelled == true
+            && (requests[requestID]?.phase == .admitted || laneRetired)
         if retirement != .clean && !givenBack { quarantine() }
         requests[requestID]?.phase = .retired
+        if lanes > 1 {
+            retiredRecently.append(requestID)
+            if retiredRecently.count > 64 { retiredRecently.removeFirst() }
+        }
     }
 
     /// Called after the real request owner's exactly-once releaseResources returns.

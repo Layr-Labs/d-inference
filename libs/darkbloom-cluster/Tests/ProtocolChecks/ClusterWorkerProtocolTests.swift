@@ -54,8 +54,9 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try fullLengthOutput(); try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try tensorParallelModes()
-        print("{\"passed\":true,\"groups\":13,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try laneCancellation()
+        try tensorParallelModes()
+        print("{\"passed\":true,\"groups\":14,\"modelExecution\":false,\"localPipeIO\":true}")
     }
 
     /// Both ranks must accept and retain the requested 32K output budget.
@@ -510,6 +511,60 @@ struct ClusterWorkerProtocolTests {
         try peer.accept(.init(membershipEpoch: epoch, sequence: 2, requestID: a, event: .finished(.eos)), now: 10)
         try peer.accept(.init(membershipEpoch: epoch, sequence: 3, requestID: a, event: .retired(.clean)), now: 10)
         try check(peer.activeRequestIDs.isEmpty, "Rank 1 lane retired")
+    }
+
+    /// A started lane cancelled while others run retires as cancelled; the
+    /// events it published before it read the cancel stay valid (they crossed
+    /// it, as the owner service's mirror sees them), and a cancel that
+    /// crosses a lane's own clean retirement changes nothing (no answer).
+    static func laneCancellation() throws {
+        let a = UUID(uuidString: "cccccccc-1111-2222-3333-dddddddddddd")!
+        let b = UUID(uuidString: "dddddddd-1111-2222-3333-eeeeeeeeeeee")!
+        let stranger = UUID(uuidString: "eeeeeeee-1111-2222-3333-ffffffffffff")!
+        var session = try ClusterWorkerLaneSession(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 2)
+        var commands: UInt64 = 0, events: UInt64 = 0
+        func command(_ value: ClusterWorkerCommand, _ id: UUID?, now: UInt64 = 10) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: id, command: value), now: now)
+            commands += 1
+        }
+        func event(_ value: ClusterWorkerEvent, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: events, requestID: id, event: value), now: 10)
+            events += 1
+        }
+        try event(.ready(ready), nil)
+        for id in [a, b] {
+            try command(.reserve(reservation(output: 3)), id); try event(.admitted(reservedBytes: 800), id)
+            try command(.start, id)
+        }
+        try event(.committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), a)
+        try check(session.accepts(a, now: 10) && !session.isCancelled(a), "A running lane publishes")
+        try check(!session.accepts(a, now: 1000), "A lane past its deadline publishes nothing more")
+        try command(.tokenDecision(ordinal: 0, decision: .proceed), a)
+        try command(.cancel(.callerCancelled), a)
+        try check(session.isCancelled(a) && !session.accepts(a, now: 10), "A cancelled lane publishes nothing more")
+        // A token the worker published before it read the cancel crossed it.
+        try event(.committedToken(ordinal: 1, tokenID: 8, committedTokens: 4), a)
+        var early = session
+        try refuses { try early.accept(.init(membershipEpoch: epoch, sequence: events, requestID: a,
+            event: .retired(.clean)), now: 10) }
+        try event(.retired(.cancelled), a)
+        // Lane b finishes; its owner's cancel crosses the finish, then its
+        // clean retirement, and a later cancel changes nothing.
+        try event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3), b)
+        try command(.tokenDecision(ordinal: 0, decision: .cleanStop), b)
+        try event(.finished(.clientStop), b)
+        try command(.cancel(.callerCancelled), b)
+        try event(.retired(.clean), b)
+        try command(.cancel(.callerCancelled), b)
+        try check(!session.holds(b) && session.activeRequestIDs.isEmpty && !session.protocolFailed,
+            "A cancel after its lane retired is a no-op")
+        // A cancel for a request this session never held is still refused.
+        var unknown = session
+        try refuses { try unknown.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: stranger,
+            command: .cancel(.callerCancelled)), now: 10) }
+        try command(.shutdown, nil); try event(.shutdownComplete, nil)
+        try check(session.isShutdown, "Lane session shut down after a lane cancel")
     }
 
     /// Tensor parallel (`tensor_parallel_v1`) and its hybrid

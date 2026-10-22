@@ -52,6 +52,10 @@ protocol WorkerRuntime: AnyObject, Sendable {
     func withdrawLane(_ id: UUID) -> Bool
     var hasStartedLanes: Bool { get }
     func serveBatch(host: QwenBatchServingHost) throws
+    /// True when the batch loop retires a started lane alone (cancelled, or
+    /// past its deadline) and the other lanes go on; false when cancelling a
+    /// started lane ends the batch.
+    var retiresCancelledLanes: Bool { get }
 }
 
 extension WorkerRuntime {
@@ -79,4 +83,5 @@ extension WorkerRuntime {
     func serveBatch(host: QwenBatchServingHost) throws {
         throw WorkerFailure.invalid("This runtime serves one request at a time")
     }
+    var retiresCancelledLanes: Bool { false }
 }

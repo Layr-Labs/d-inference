@@ -42,7 +42,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             throw ClusterWorkerOwnerError.deadline
         }
         let deadline = min(reservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max,
-                           now + owner.timing.admissionWaitNanoseconds)
+                           now + owner.admissionWaitNanoseconds)
         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
         var bytes = 0
         for (index, worker) in owner.workers.enumerated() {
@@ -81,7 +81,12 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ClusterWorkerOwnerError.deadline }
             byteReservation = bytes; admitted = true
         }
-        DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: reservation.deadlineUptimeNanoseconds)) { [weak self] in
+        // A lane is cancelled early enough to leave both ranks' loops and
+        // retire before its deadline, which each rank's owner holds it to.
+        let margin = owner.lanesRetireAlone ? Self.laneDeadlineMarginNanoseconds : 0
+        let cancelAt = max(DispatchTime.now().uptimeNanoseconds, reservation.deadlineUptimeNanoseconds - min(margin,
+            reservation.deadlineUptimeNanoseconds))
+        DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: cancelAt)) { [weak self] in
             if let self, !self.retired.isComplete { self.cancel(reason: .deadline) }
         }
     }
@@ -129,13 +134,24 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         }
         if action.run { queue.async { self.cleanup(acknowledged: [false, false]) } }
         guard action.first else { return }
+        // With lanes, a request its caller cancels or whose deadline passed
+        // leaves both ranks at their next step boundary, and each answers
+        // `retired(cancelled)`: the other lanes and the pair go on. `cleanup`
+        // (run by the request's own loop, or above) waits for both answers
+        // and fences a rank only when its answer does not come in time; the
+        // watchdog below, later than that wait, covers a loop that never got
+        // there (a consumer callback that does not return).
+        let alone = retiresAlone(reason)
         // Cancellation cannot rely on a responsive callback or native receive.
         // The watchdog is independent of the request queue and observes real exit.
         // Its fence closes each worker's command stream; a worker still inside
         // a collective ends itself at its own progress limit or deadline, and
         // the wait below lasts until that exit is actually observed.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+        let watchdog: DispatchTimeInterval = alone
+            ? .nanoseconds(Int(Self.laneRetirementWaitNanoseconds + 10_000_000_000)) : .seconds(2)
+        DispatchQueue.global().asyncAfter(deadline: .now() + watchdog) { [weak self] in
             guard let self, !self.retired.isComplete else { return }
+            if alone { self.owner.invalidate() }
             for worker in self.owner.workers { worker.requestNativeCleanup() }
             // Even a stuck consumer callback cannot prevent independently observed
             // process fences from satisfying native ownership retirement.
@@ -144,8 +160,31 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 self.retired.complete()
             }
         }
-        owner.invalidate()
+        if !alone { owner.invalidate() }
     }
+
+    /// A lane (the pair serves several requests at once and its workers
+    /// retire lanes alone) cancelled by its caller or its deadline retires
+    /// alone. Any other cause (a rank's failure, a protocol violation, a peer
+    /// that is gone) ends the pair.
+    private func retiresAlone(_ reason: ClusterWorkerCancellationReason) -> Bool {
+        owner.lanesRetireAlone && (reason == .callerCancelled || reason == .deadline)
+    }
+
+    /// The longest `cleanup` waits for a rank's retirement before fencing it:
+    /// a lane leaves at its loop's next step boundary, after the step that
+    /// runs (at most one bulk prefill frame and every lane's decode unit).
+    static let laneRetirementWaitNanoseconds: UInt64 = 30_000_000_000
+    /// The longest a lane's reservation (or its withdrawal) may take: each
+    /// rank answers at its loop's next step boundary, after at most one
+    /// prefill frame and every lane's decode unit, and the ranks are asked in
+    /// turn.
+    static let laneAdmissionWaitNanoseconds: UInt64 = 30_000_000_000
+
+    /// How long before its deadline a lane is cancelled: one loop step (a
+    /// bulk prefill frame and every lane's decode unit) and the cancel's way
+    /// to the other Mac fit well inside it.
+    static let laneDeadlineMarginNanoseconds: UInt64 = 20_000_000_000
 
     /// Ends the request the way a client stop does, without giving up the pair:
     /// the next committed token is answered with the protocol's clean stop, both
@@ -277,7 +316,12 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             // other Mac receives (S24): the owner side's own fixed text or a
             // rank's reason code, never prompt or token text.
             let cause = Self.failureText(error)
-            owner.noteRequestFailure(self, cause)
+            // The request's own loop stopped because it was cancelled alone;
+            // a rank's failure or a protocol violation still ends the pair.
+            let cancelledAlone = (error as? ClusterWorkerOwnerError) == .cancelled
+                && lock.withLock { cancellation.map(retiresAlone) ?? false }
+            if !cancelledAlone { owner.noteRequestFailure(self, cause) }
+            if !cancelledAlone && lock.withLock({ cancellation.map(retiresAlone) ?? false }) { owner.invalidate() }
             cancel(reason: .runtimeError) // Own the watchdog before any callback can block.
             let emit = lock.withLock { callback }
             _ = emit?(.failed("Worker request failed: \(cause); cleanup is still owned"))
@@ -305,7 +349,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         var acknowledged = original
         let reason = lock.withLock { cancellation ?? .runtimeError }
         let submitted = lock.withLock { submissions }
-        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        let alone = retiresAlone(reason)
+        let deadline = DispatchTime.now().uptimeNanoseconds + (alone ? Self.laneRetirementWaitNanoseconds : 2_000_000_000)
         for index in 0..<2 where !acknowledged[index] {
             // Never-submitted/refused ranks have no request to cancel. Pending
             // submission can race an unread refusal, so only confirmed admission
@@ -328,6 +373,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 } catch { break }
             }
             if !acknowledged[index] {
+                // A lane whose rank did not retire it in time ends the pair after all.
+                if alone { owner.invalidate() }
                 worker.requestNativeCleanup(reason: cause); worker.waitForNativeCleanup() // No timeout can manufacture this acknowledgment.
                 acknowledged[index] = true
             }

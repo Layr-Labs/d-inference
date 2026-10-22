@@ -369,7 +369,9 @@ public struct PairDriver: Sendable {
         do {
             pair = try ClusterWorkerPair(workers: endpoints,
                 startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
-                keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck, lanes: c.batchLanes)
+                keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck, lanes: c.batchLanes,
+                // GLM tensor parallel's lane loop retires a cancelled lane alone.
+                lanesRetireAlone: c.generationMode == PairConfiguration.tensorParallelMode)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         timing.servingContextAtReady = endpoints.map { $0.readiness?.servingContextTokens }
@@ -542,7 +544,10 @@ public struct PairDriver: Sendable {
                     for row in wave.requests.indices {
                         let request = wave.requests[row]
                         guard let solo = batch.solo.first(where: { $0.promptIndex == request.promptIndex }) else { continue }
-                        wave.requests[row].matchesSolo = request.selectedTokenIDs == solo.selectedTokenIDs
+                        // A request cancelled mid-run must match its solo run as far as it got.
+                        wave.requests[row].matchesSolo = request.cancelledAfterTokens == nil
+                            ? request.selectedTokenIDs == solo.selectedTokenIDs
+                            : Array(solo.selectedTokenIDs.prefix(request.selectedTokenIDs.count)) == request.selectedTokenIDs
                         wave.requests[row].firstDifferenceIndex = zip(request.selectedTokenIDs, solo.selectedTokenIDs)
                             .enumerated().first(where: { $0.element.0 != $0.element.1 })?.offset
                             ?? (request.selectedTokenIDs.count == solo.selectedTokenIDs.count ? nil
@@ -557,6 +562,16 @@ public struct PairDriver: Sendable {
                 if let failure = wave.requests.compactMap(\.failure).first {
                     timing.batch = batch
                     return finish("failed", "batch wave of \(size) failed: \(failure)")
+                }
+                // Tensor-parallel lanes keep each request's own arithmetic:
+                // a token that differs from the request alone fails the run.
+                if c.generationMode == PairConfiguration.tensorParallelMode, wave.allMatchSolo == false {
+                    timing.batch = batch
+                    return finish("failed", "batch wave of \(size): tokens differ from the requests run alone")
+                }
+                guard pair.readiness != nil else {
+                    timing.batch = batch
+                    return finish("failed", "the pair stopped being ready after the batch wave of \(size)")
                 }
             }
             timing.batch = batch
@@ -635,10 +650,14 @@ public struct PairDriver: Sendable {
         }
         let box = Box(), group = DispatchGroup()
         let waveStart = DispatchTime.now().uptimeNanoseconds
-        for index in indices {
+        let cancelled = indices.count > 1 ? c.batchCancelAfterTokens.map { (index: indices[indices.count - 1], after: $0) } : nil
+        for (position, index) in indices.enumerated() {
             group.enter()
             DispatchQueue.global().async {
                 defer { group.leave() }
+                if c.batchStaggerMilliseconds > 0 {
+                    Thread.sleep(forTimeInterval: Double(position * c.batchStaggerMilliseconds) / 1000)
+                }
                 let request = c.batchRequests[index]
                 let id = UUID()
                 let started = DispatchTime.now().uptimeNanoseconds
@@ -665,8 +684,27 @@ public struct PairDriver: Sendable {
                     var failed = row([], "none"); failed.failure = "reservation failed: \(error)"; box.add(failed); return
                 }
                 let collector = Collector(stopAfter: nil) {}
-                do { try lease.start { collector.record($0) } } catch {
+                let cancelAfter = cancelled?.index == index ? cancelled?.after : nil
+                do {
+                    try lease.start { event in
+                        let wanted = collector.record(event)
+                        // The cancel a caller makes: this lane alone retires.
+                        if let cancelAfter, case .token = event, collector.snapshot.tokens.count == cancelAfter {
+                            lease.cancel(reason: .callerCancelled)
+                        }
+                        return wanted
+                    }
+                } catch {
                     var failed = row([], "none"); failed.failure = "start failed: \(error)"; box.add(failed); return
+                }
+                if cancelAfter != nil {
+                    // Its end is its retirement, not a finish.
+                    let limit = deadline + 5_000_000_000
+                    while !lease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
+                    var value = row(collector.snapshot.tokens, "cancelled")
+                    value.cancelledAfterTokens = cancelAfter
+                    if lease.isRetired { lease.releaseResources() } else { value.failure = "the cancelled request did not retire" }
+                    box.add(value); return
                 }
                 let concluded = collector.wait(until: deadline + 5_000_000_000)
                 let result = collector.snapshot

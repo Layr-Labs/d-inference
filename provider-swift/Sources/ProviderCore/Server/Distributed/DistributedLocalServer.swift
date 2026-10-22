@@ -27,6 +27,8 @@ public actor DistributedLocalServer {
     var stopWaiters: [CheckedContinuation<DistributedLocalServerStatus, Never>] = []
     /// Requests waiting for the pipeline, oldest first (`DistributedRequestQueue`).
     var waiting: [UUID] = []
+    /// How many may wait, fixed when the server is made.
+    nonisolated let queue: DistributedRequestQueue.Limits
 
     // Existing test/read-only host views refer to the retained current generation.
     var session: any DistributedLocalServerSession { generation.session }
@@ -37,7 +39,10 @@ public actor DistributedLocalServer {
     public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
                 publishDiscovery: Bool = true, observability: ClusterObservability? = .current()) {
-        generation = .init(session: session); binding = .init(session)
+        // The waiting depth from the owner's environment (`DARKBLOOM_CLUSTER_QUEUE_WAITING`).
+        let queue = DistributedRequestQueue.Limits.fromEnvironment()
+        generation = .init(session: session, responseLimit: queue.responseLimit); binding = .init(session)
+        self.queue = queue
         self.config = config
         defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
@@ -49,8 +54,10 @@ public actor DistributedLocalServer {
     init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
          firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
-         discovery: DistributedLocalDiscovery? = nil, observability: ClusterObservability? = nil) {
-        generation = .init(session: session); binding = .init(session)
+         discovery: DistributedLocalDiscovery? = nil, observability: ClusterObservability? = nil,
+         queue: DistributedRequestQueue.Limits = .standard) {
+        generation = .init(session: session, responseLimit: queue.responseLimit); binding = .init(session)
+        self.queue = queue
         self.config = config
         defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy

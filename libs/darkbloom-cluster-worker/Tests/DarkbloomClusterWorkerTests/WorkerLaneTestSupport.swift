@@ -9,6 +9,13 @@ import Foundation
 final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     let ready: ClusterWorkerReady
     let batchLanes = 2
+    /// As GLM tensor parallel's lane loop: a started lane that is cancelled
+    /// (or that rank 0 drops, `leaveOnStart`) leaves alone and the others go
+    /// on; otherwise (the Qwen loop) cancelling a started lane ends the batch.
+    let retiresCancelledLanes: Bool
+    /// Lanes this rank leaves at once when they start, as rank 1 does when
+    /// rank 0 drops a lane whose cancel has not reached this rank yet.
+    var leaveOnStart = Set<UUID>()
     private let lock = NSLock()
     private var reservations: [UUID: ClusterWorkerReservation] = [:]
     private var pending: [UUID] = []
@@ -17,7 +24,8 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     private var withdrawals: [UUID] = []
     private var closed = false
 
-    init(rank: Int = 0) {
+    init(rank: Int = 0, retiresCancelledLanes: Bool = false) {
+        self.retiresCancelledLanes = retiresCancelledLanes
         ready = .init(identity: .init(membershipEpoch: UUID(), modelID: "registered_qwen35_9b",
             artifactSHA256: String(repeating: "a", count: 64), configurationSHA256: String(repeating: "b", count: 64),
             peers: [.init(id: "a", buildSHA256: String(repeating: "c", count: 64)),
@@ -65,6 +73,7 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     func cancel(_ id: UUID) { cancelLane(id) }
     func cancelLane(_ id: UUID) { lock.withLock { _ = cancelled.insert(id) } }
     func serveBatch(host: QwenBatchServingHost) throws {
+        if retiresCancelledLanes { return try serveRetiringBatch(host: host) }
         while true {
             try host.serviceControl()
             let next: (UUID, ClusterWorkerReservation)? = try lock.withLock {
@@ -80,6 +89,27 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
             }
             try host.publishFinished(requestID: id, reason: .length)
             lock.withLock { reservations[id] = nil; started.remove(id) }
+        }
+    }
+    /// One lane after another; each publishes one token (rank 0) and
+    /// finishes, unless it is cancelled or dropped, when it leaves alone.
+    private func serveRetiringBatch(host: QwenBatchServingHost) throws {
+        while true {
+            try host.serviceControl()
+            let next: (UUID, ClusterWorkerReservation)? = lock.withLock {
+                guard !pending.isEmpty else { return nil }
+                let id = pending.removeFirst()
+                return (id, reservations[id]!)
+            }
+            guard let (id, value) = next else { return }
+            var leaves = lock.withLock { leaveOnStart.contains(id) || cancelled.contains(id) }
+            if !leaves, ready.rank == 0 {
+                try host.publishToken(requestID: id, ordinal: 0, tokenID: 7, committedTokens: value.promptTokenIDs.count)
+                // False when the lane was cancelled meanwhile: no answer comes.
+                leaves = try !host.awaitDecision(id) && lock.withLock { cancelled.contains(id) }
+            }
+            if leaves { try host.publishLeft(requestID: id) } else { try host.publishFinished(requestID: id, reason: .length) }
+            lock.withLock { reservations[id] = nil; started.remove(id); cancelled.remove(id) }
         }
     }
     func shutdown() throws { lock.withLock { closed = true; reservations.removeAll(); pending.removeAll() } }
@@ -105,8 +135,8 @@ final class LanePipeHarness {
     private let output: Int32
     private var sequence: UInt64 = 0
 
-    init(rank: Int = 0) throws {
-        runtime = LaneTestRuntime(rank: rank)
+    init(rank: Int = 0, retiresCancelledLanes: Bool = false) throws {
+        runtime = LaneTestRuntime(rank: rank, retiresCancelledLanes: retiresCancelledLanes)
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
         guard pipe(&a) == 0 else { throw WorkerFailure.invalid("Test input pipe failed") }
         guard pipe(&b) == 0 else {

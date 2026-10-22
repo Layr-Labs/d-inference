@@ -7,6 +7,15 @@ import Foundation
 /// decision on rank 0, finished, retired); requests interleave freely.
 /// Keep-warm and shutdown need every lane free. With one lane use
 /// `ClusterWorkerSession`, which is unchanged.
+///
+/// A started request may be cancelled and retire as `cancelled` while the
+/// others run. A cancel crosses whatever the worker published before it read
+/// the cancel: a started request keeps its order after a cancel (its tokens,
+/// prompt cache report, finish and clean retirement that were on their way
+/// stay valid; a worker publishes none of its own once it read the cancel,
+/// `accepts`), and may retire as `cancelled` at any point. A cancel of a
+/// request retired here recently changes nothing and is not answered, since
+/// its retirement is already on its way.
 public struct ClusterWorkerLaneSession: Sendable {
     private enum Phase { case loading, idle, warming, shuttingDown, closed }
     private enum RequestPhase { case reserving, reserved, running, decision, retiring }
@@ -34,6 +43,10 @@ public struct ClusterWorkerLaneSession: Sendable {
     private var seenOrder: [UUID] = []
     private var keepWarmOrdinal: Int?
     private var requests: [UUID: Request] = [:]
+    /// Requests retired here recently, oldest first (a window, not a count).
+    private var retiredRecently = Set<UUID>()
+    private var retiredOrder: [UUID] = []
+    private static let retiredWindow = 64
     private var capacity = 0
     public private(set) var protocolFailed = false
     public private(set) var locallyAvailable = false
@@ -54,6 +67,14 @@ public struct ClusterWorkerLaneSession: Sendable {
     public func holds(_ id: UUID) -> Bool { requests[id] != nil }
     /// True when rank 0 owes the owner nothing for `id` but its decision.
     public func awaitsDecision(_ id: UUID) -> Bool { requests[id]?.phase == .decision }
+    /// True when the owner cancelled `id`, which is held here still.
+    public func isCancelled(_ id: UUID) -> Bool { requests[id]?.cancellation != nil }
+    /// True when `id` may still publish its own events at `now` (tokens, its
+    /// prompt cache, telemetry, its finish): held, not cancelled, before its deadline.
+    public func accepts(_ id: UUID, now: UInt64) -> Bool {
+        guard let request = requests[id] else { return false }
+        return request.cancellation == nil && now < request.reservation.deadlineUptimeNanoseconds
+    }
 
     public mutating func accept(_ frame: ClusterWorkerCommandFrame, now: UInt64) throws {
         do {
@@ -79,9 +100,14 @@ public struct ClusterWorkerLaneSession: Sendable {
                     "Wrong token decision credit")
                 requests[id]!.lastDecision = decision; requests[id]!.phase = .running
             case .cancel(let reason):
+                // Crossed the request's own retirement: nothing is left to cancel.
+                if let id = frame.requestID, requests[id] == nil, retiredRecently.contains(id) { break }
                 let id = try current(frame.requestID)
                 requests[id]!.cancellation = requests[id]!.cancellation ?? reason
-                requests[id]!.finishReason = nil; requests[id]!.phase = .retiring
+                // A started request's in-flight events stay valid (see above).
+                if [.reserving, .reserved].contains(requests[id]!.phase) {
+                    requests[id]!.finishReason = nil; requests[id]!.phase = .retiring
+                }
             case .shutdown:
                 try workerRequire(requests.isEmpty && (phase == .idle || phase == .loading), "Shutdown precedes local retirement")
                 locallyAvailable = false; phase = .shuttingDown
@@ -162,12 +188,15 @@ public struct ClusterWorkerLaneSession: Sendable {
             case .retired(let outcome):
                 let id = try current(frame.requestID)
                 let r = requests[id]!
-                try workerRequire(r.phase == .retiring, "Retirement lacks a terminal path")
-                let valid = outcome == .clean ? r.finishReason != nil && r.cancellation == nil && !r.nativeFailure
+                try workerRequire(r.phase == .retiring || r.cancellation != nil, "Retirement lacks a terminal path")
+                // A clean retirement may have crossed a cancel; it needs its finish.
+                let valid = outcome == .clean ? r.phase == .retiring && r.finishReason != nil && !r.nativeFailure
                     : outcome == .cancelled ? r.cancellation != nil && !r.nativeFailure : r.nativeFailure || r.cancellation != nil
                 try workerRequire(valid, "Retirement outcome differs from terminal path")
                 if outcome == .failed { locallyAvailable = false }
                 requests[id] = nil
+                retiredRecently.insert(id); retiredOrder.append(id)
+                if retiredOrder.count > Self.retiredWindow { retiredRecently.remove(retiredOrder.removeFirst()) }
             case .unavailable:
                 locallyAvailable = false
             case .shutdownComplete:

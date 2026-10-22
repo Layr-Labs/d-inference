@@ -56,6 +56,7 @@ extension ClusterMemberPreparation {
             observabilityFacts: plan.observabilityFacts(membershipEpoch: nil),
             makeOwner: ClusterPairServingContext.pairOwner(profile: profile, chunkTokens: plan.configuration.chunkTokens,
                 startupAllowanceNanoseconds: plan.budgets.startupAllowanceNanoseconds, timing: plan.budgets.pairTiming,
+                lanes: plan.batchLanes() ?? 1, lanesRetireAlone: plan.lanesRetireAlone(),
                 routing: {
                     ClusterRequestRoutingBasis.make(plan: plan, homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
                         deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)

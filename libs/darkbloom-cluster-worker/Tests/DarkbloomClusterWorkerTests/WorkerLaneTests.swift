@@ -110,6 +110,57 @@ final class WorkerLaneTests: XCTestCase {
         }
     }
 
+    /// A runtime that retires cancelled lanes alone (GLM tensor parallel):
+    /// cancelling a started lane retires it as cancelled, the other lane
+    /// finishes, and the worker stays up. (The Qwen loop's case below fails.)
+    func testRunningLaneCancellationRetiresAloneWhenTheRuntimeRetiresLanes() throws {
+        let h = try LanePipeHarness(retiresCancelledLanes: true), a = UUID(), b = UUID()
+        try expect(h, .ready(h.runtime.ready), id: nil)
+        for id in [a, b] {
+            try h.send(.reserve(h.reservation), id: id)
+            try expect(h, .admitted(reservedBytes: 1024), id: id)
+        }
+        try h.send([(.start, a), (.start, b)])
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: a)
+        try h.send(.cancel(.callerCancelled), id: a)
+        try expect(h, .retired(.cancelled), id: a)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: b)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: b)
+        try expect(h, .finished(.length), id: b)
+        try expect(h, .retired(.clean), id: b)
+        // A cancel that crosses a lane's clean retirement changes nothing.
+        try h.send(.cancel(.callerCancelled), id: b)
+        try h.send(.shutdown)
+        try expect(h, .shutdownComplete, id: nil)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.result.exitReasons, [])
+        XCTAssertEqual(h.runtime.withdrawalAttempts, [])
+    }
+
+    /// Rank 1 drops a lane rank 0 dropped before this rank's own cancel came:
+    /// its retirement waits for that cancel, then answers it.
+    func testALaneThatLeftBeforeItsCancelRetiresWhenTheCancelArrives() throws {
+        let h = try LanePipeHarness(rank: 1, retiresCancelledLanes: true), a = UUID(), b = UUID()
+        h.runtime.leaveOnStart = [a]
+        try expect(h, .ready(h.runtime.ready), id: nil)
+        for id in [a, b] {
+            try h.send(.reserve(h.reservation), id: id)
+            try expect(h, .admitted(reservedBytes: 1024), id: id)
+        }
+        try h.send(.start, id: a)
+        try h.send(.start, id: b)
+        try expect(h, .finished(.length), id: b)
+        try expect(h, .retired(.clean), id: b)
+        try h.send(.cancel(.deadline), id: a)
+        try expect(h, .retired(.cancelled), id: a)
+        try h.send(.shutdown)
+        try expect(h, .shutdownComplete, id: nil)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.result.exitReasons, [])
+    }
+
     func testRunningLaneCancellationStillFailsWithoutRetirement() throws {
         let h = try LanePipeHarness(), id = UUID()
         try expect(h, .ready(h.runtime.ready), id: nil)

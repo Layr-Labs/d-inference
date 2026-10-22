@@ -158,9 +158,10 @@ struct DistributedInstalledPlan: Sendable {
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
             prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
-        // Continuous batching (pipeline mode only): both owners must give their
-        // workers the same lane count (the workers' load agreement refuses a
-        // mismatch). A setup in a phase-split mode keeps one request at a time.
+        // Continuous batching (the pipeline's lane adapters, and GLM tensor
+        // parallel): both owners must give their workers the same lane count
+        // (the workers' load agreement refuses a mismatch). A setup in any
+        // other mode keeps one request at a time.
         if let lanes = batchLanes(ownerEnvironment), lanes > 1 {
             environment[Self.batchLanesSwitch] = String(lanes)
             if let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID), Self.contiguousLaneAdapters.contains(adapter) {
@@ -197,21 +198,50 @@ struct DistributedInstalledPlan: Sendable {
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
     static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
 
-    /// The pair's batch lanes in the pipeline mode: `defaultBatchLanes` for a
-    /// family whose workers serve lanes, unless the owner's environment names
-    /// 1...8 (1 serves one request at a time). Nil in a phase-split or
-    /// speculative mode, with media, or for a family whose workers serve one
-    /// request at a time, so no worker is asked for lanes it refuses. Both
-    /// owners derive it from the same saved setup; the installed owner runs
-    /// with a fixed environment, so the default is what a user's pair serves.
+    /// The pair's batch lanes: the adapter's default in the selected mode
+    /// (`defaultBatchLanes(adapter:mode:hasPrivateImages:)`), unless the owner's
+    /// environment names 1...8 (1 serves one request at a time). Nil where the
+    /// workers serve one request at a time (a phase-split or speculative
+    /// pipeline mode, pipeline media, or a family without lanes there), so no
+    /// worker is asked for lanes it refuses. Both owners derive it from the
+    /// same saved setup; the installed owner runs with a fixed environment, so
+    /// the default is what a user's pair serves.
     func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
-        guard !capability.hasPrivateImages, configuration.selectedGenerationMode == .pipeline,
-              let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID), Self.laneAdapters.contains(adapter) else {
+        guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
+              let lanes = Self.defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
+                  hasPrivateImages: capability.hasPrivateImages) else {
             return nil
         }
-        guard let raw = environment[Self.batchLanesSwitch] else { return Self.defaultBatchLanes }
+        guard let raw = environment[Self.batchLanesSwitch] else { return lanes }
         guard let value = Int(raw), (1...8).contains(value) else { return nil }
         return value
+    }
+
+    /// True when the pair's workers retire a cancelled started lane alone (a
+    /// cancel or a deadline ends that request, not the pair): GLM tensor
+    /// parallel's lane loop. Bound to the same plan both owners derive.
+    func lanesRetireAlone(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard let lanes = batchLanes(environment), lanes > 1,
+              let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
+        return configuration.selectedGenerationMode == .tensorParallel && Self.tensorParallelLaneAdapters.contains(adapter)
+    }
+
+    /// The lanes a pair of `adapter` serves by default in `mode`, or nil when
+    /// its workers serve one request at a time there.
+    /// - Pipeline: the lane adapters (`laneAdapters`), text only, at
+    ///   `defaultBatchLanes`.
+    /// - Tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
+    ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
+    ///   own arithmetic, so a request's tokens are those it gets alone. Image
+    ///   requests are not served in this mode (each is refused at reservation,
+    ///   alone), so the capability's image candidate does not change the lanes.
+    static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
+                                  hasPrivateImages: Bool) -> Int? {
+        switch mode {
+        case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
+        case .tensorParallel where tensorParallelLaneAdapters.contains(adapter): tensorParallelBatchLanes
+        default: nil
+        }
     }
 
     /// Concurrent requests a lane-serving pair batches by default. Both
@@ -223,6 +253,14 @@ struct DistributedInstalledPlan: Sendable {
     /// request that arrives while another decodes, or a third at once, ends
     /// the pair.
     static let defaultBatchLanes = 1
+    /// Concurrent requests GLM tensor parallel serves by default: the
+    /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).
+    /// Its lanes run one request's unit after another (each bitwise alone), so
+    /// more lanes cost no request its own tokens; the host's memory gate
+    /// admits each lane (a lane it cannot hold is refused alone, retryably).
+    static let tensorParallelBatchLanes = 8
+    /// The adapters whose tensor-parallel workers serve batch lanes.
+    static let tensorParallelLaneAdapters: Set<ClusterRuntimeAdapter> = [.glm5NextLayerStage]
 
     /// The adapters whose workers serve batch lanes (`CBv2StageKVHost.supports`).
     static let laneAdapters: Set<ClusterRuntimeAdapter> = [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,

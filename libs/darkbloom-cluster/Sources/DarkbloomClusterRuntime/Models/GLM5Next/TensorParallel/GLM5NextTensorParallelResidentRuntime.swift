@@ -14,7 +14,9 @@ import MLXLMCommon
 ///
 /// The same executor contract as `QwenTensorParallelResidentRuntime`: one
 /// request at a time, cancel from the control thread, an enclosing process
-/// deadline required. Each decode step carries one small sealed reduction in
+/// deadline required; or, loaded with batch lanes (`lanes`, from
+/// `DARKBLOOM_CLUSTER_BATCH_LANES`), several requests at once in the lane loop
+/// (`GLM5NextTensorParallelLanes.swift`), each with its own arithmetic. Each decode step carries one small sealed reduction in
 /// which both ranks put their token and stop flag: a greedy token both ranks
 /// chose differently ends the request (it would mean diverged state), a
 /// sampled token is rank 0's draw, and a stop on either rank ends both after
@@ -92,19 +94,27 @@ public final class GLM5NextTensorParallelResidentRuntime {
     let codec: QwenTensorParallelSealCodec?
     let lifecycle = QwenLayerStageResidentLifecycle()
     let loadAgreement: String
-    private let operation = NSLock()
+    let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
-    private var stage: GLM5NextTextStage?
+    var stage: GLM5NextTextStage?
     /// The NextN layer when `mtpDepth > 0`; it shares the stage's embedding and head.
-    private var mtp: GLM5NextMTP?
+    var mtp: GLM5NextMTP?
     private var residency: ClusterStageResidency?
-    private let requestReserveBytes: Int
+    let requestReserveBytes: Int
     private let baseReady: ClusterWorkerReady
     private var reservation: Reserved?
     private var processLeaseOwned = true
     public let linkProbe: ClusterWorkerLinkProbe?
     /// This rank's prompt prefixes (`GLM5NextTensorParallelPrefixCache`).
     let prefix: GLM5NextTensorParallelPrefixCache
+    /// Requests served at once (continuous batching); one serves one request
+    /// at a time exactly as before. Bound into the load agreement.
+    public let lanes: QwenBatchSettings
+    /// Batch lanes: every reserved, started and running lane on this rank.
+    let laneBook = ClusterBatchLaneBook<GLM5NextTensorParallelLaneReservation>()
+    /// True while the lane loop runs on the executor (lane control is applied
+    /// inside it, under its exclusive operation).
+    var batchServing = false
 
     struct Reserved {
         let request: QwenLayerStageGenerationRequest
@@ -118,6 +128,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                             dataPlane credential: ClusterDataPlaneCredential) throws -> GLM5NextTensorParallelResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        let lanes = try QwenBatchSettings.fromEnvironment(environment)
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
         guard spec.supportedGenerationModes.contains(.tensorParallel) else {
             throw ProbeError("Generation mode tensor_parallel_v1 is not in the GLM row")
@@ -210,6 +221,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
                 collective.transport.rawValue, configuration.allocatorPolicy.rawValue,
                 "glm5-next-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"]
+                + Self.laneAgreementFields(lanes)
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
                 + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
@@ -289,7 +301,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
                     + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
-                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget)")
+                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)")
             }
             guard let stage = loaded, (loadedMTP != nil) == (Self.mtpDepth > 0) else {
                 throw ProbeError("GLM tensor-parallel load returned no stage or NextN layer")
@@ -298,7 +310,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             return GLM5NextTensorParallelResidentRuntime(configuration: configuration, descriptor: descriptor,
                 control: control, collective: collective, group: group, codec: codec, stage: stage, mtp: loadedMTP,
                 residency: stageResidency, requestReserveBytes: requestReserve, loadAgreement: loadAgreement, linkProbe: probe,
-                planSHA256: planSHA256, prefix: GLM5NextTensorParallelPrefixCache(budgetBytes: prefixBudget))
+                planSHA256: planSHA256, lanes: lanes, prefix: GLM5NextTensorParallelPrefixCache(budgetBytes: prefixBudget))
         } catch {
             let primary = error; control.fail(); loaded = nil; loadedMTP = nil
             do {
@@ -390,8 +402,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                  codec: QwenTensorParallelSealCodec?, stage: GLM5NextTextStage, mtp: GLM5NextMTP?,
                  residency: ClusterStageResidency?,
                  requestReserveBytes: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
-                 planSHA256: String, prefix: GLM5NextTensorParallelPrefixCache) {
-        self.prefix = prefix
+                 planSHA256: String, lanes: QwenBatchSettings, prefix: GLM5NextTensorParallelPrefixCache) {
+        self.prefix = prefix; self.lanes = lanes
         self.configuration = configuration; self.descriptor = descriptor; self.control = control
         self.collective = collective; self.group = group; self.codec = codec; self.stage = stage; self.mtp = mtp
         self.residency = residency; self.requestReserveBytes = requestReserveBytes
@@ -419,11 +431,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// (`ClusterIdleMemory`): MLX's freed-buffer cache, and the prompt-prefix
     /// entries too while the host is `underPressure` (the vote then restores
     /// nothing until both ranks hold a boundary again). Nothing while a
-    /// request is reserved or running. Returns the bytes given back.
+    /// request or any batch lane is reserved, started or running. Returns the
+    /// bytes given back.
     public func releaseIdleMemory(underPressure: Bool) throws -> Int {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
-        guard control.available, reservation == nil, stage != nil else { return 0 }
+        guard control.available, reservation == nil, laneBook.isEmpty, stage != nil else { return 0 }
         let cached = Memory.cacheMemory, held = Memory.activeMemory + cached, entries = prefix.count
         let dropped = underPressure ? prefix.sweep() : 0
         ClusterIdleMemory.releaseFreedBuffers()
@@ -527,7 +540,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     weak var released: GLM5NextTextStage?
                     weak var releasedMTP: GLM5NextMTP?
-                    released = stage; releasedMTP = mtp; reservation = nil; stage = nil; mtp = nil
+                    released = stage; releasedMTP = mtp; reservation = nil; laneBook.clear(); stage = nil; mtp = nil
                     guard released == nil, releasedMTP == nil else {
                         throw ProbeError("GLM tensor-parallel stage remains retained")
                     }
@@ -542,29 +555,52 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
     deinit { if processLeaseOwned { control.fail() } }
 
-    // MARK: - One request
+    // MARK: - One request's arithmetic (the solo path and every lane)
 
-    private func generate(_ reserved: Reserved, channel: ClusterCommittedTokenChannel) throws
-        -> QwenResidentGenerationCompletion {
-        guard let stage else { throw ProbeError("Resident model already released") }
-        let request = reserved.request, rank = collective.rank
+    /// Prefill chunks of a request whose own chunk is `requestChunk`: the
+    /// largest multiple of it within `prefillChunkTokens`.
+    static func prefillChunk(requestChunk: Int) -> Int {
+        let requestChunk = max(1, requestChunk)
+        return max(requestChunk, (prefillChunkTokens / requestChunk) * requestChunk)
+    }
+
+    /// The prompt boundary kept for prefixes: the last whole chunk before the
+    /// final token (0 with the cache off).
+    static func prefixKeepAt(promptCount: Int, chunk: Int, prefixEnabled: Bool) -> Int {
+        prefixEnabled ? ((promptCount - 1) / chunk) * chunk : 0
+    }
+
+    /// Where the prefill frame that starts at `offset` ends: a bulk chunk
+    /// while it ends at or before the boundary kept for prefixes (or the
+    /// prompt's end), else the next chunk boundary. The one grid every request
+    /// prefills on, alone or in a lane, so its frames' arithmetic is the same.
+    static func prefillFrameEnd(offset: Int, promptCount: Int, chunk: Int, keepAt: Int) -> Int {
+        let bulk = (bulkPrefillChunkTokens / chunk) * chunk
+        let limit = keepAt > offset ? keepAt : promptCount
+        return offset % chunk == 0 && bulk > chunk && offset + bulk <= limit
+            ? offset + bulk : min(promptCount, (offset / chunk + 1) * chunk)
+    }
+
+    /// A request as it begins on this rank, after both ranks checked they hold
+    /// it, voted for its prompt prefix and restored it (or start cold).
+    struct OpenedRequest {
+        let cache: GLM5NextTextStageCache
+        /// Prompt tokens restored from the prefix cache.
+        let start: Int
+        let speculation: GLM5NextTensorParallelSpeculation?
+        let chunk: Int
+        let keepAt: Int
+    }
+
+    /// Opens `request` (collective: a digest agreement and, with the prefix
+    /// cache on and a prompt longer than a chunk, one prefix vote).
+    func openRequest(_ request: QwenLayerStageGenerationRequest, stage: GLM5NextTextStage) throws -> OpenedRequest {
+        let rank = collective.rank
         guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement)) else {
             throw ProbeError("GLM tensor-parallel ranks were given different requests")
         }
-        let sampler = request.sampler
-        let requestChunk = max(1, request.chunkSize)
-        let chunk = max(requestChunk, (Self.prefillChunkTokens / requestChunk) * requestChunk)
+        let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
         let prompt = request.promptTokenIDs
-        var lastCheck: UInt64 = 0
-        func localStop() -> Bool {
-            if (try? control.check(deadline: reserved.deadline)) == nil { return true }
-            let now = DispatchTime.now().uptimeNanoseconds
-            if now - lastCheck >= 250_000_000 {
-                lastCheck = now
-                if (try? prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil { return true }
-            }
-            return false
-        }
         // Greedy requests decode speculatively, and so do sampled ones whose
         // transforms do not depend on their history (as in the product; bias
         // and penalties decode one token per step). Every request primes the NextN
@@ -588,64 +624,119 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 try speculation?.restore(restored.mtp)
             }
         }
+        return OpenedRequest(cache: cache, start: start, speculation: speculation, chunk: chunk,
+            keepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk, prefixEnabled: prefix.enabled))
+    }
+
+    /// One prefill frame `offset ..< end` of `prompt` (`prefillFrameEnd`): the
+    /// stage forward, the NextN priming in its evaluation, and the prompt
+    /// prefix kept when it ends at `keepAt`. The final frame returns the last
+    /// row's logits and hidden row.
+    func runPrefillFrame(_ prompt: [Int], offset: Int, end: Int, opened: OpenedRequest, stage: GLM5NextTextStage)
+        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Bool) {
+        let last = end == prompt.count, speculation = opened.speculation
+        let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
+        let candidate = try stage.prepareForward(tokens: tokens, cache: opened.cache, readout: last ? .lastToken : .none)
+        // The chunk's hidden rows prime the NextN history, in the chunk's evaluation.
+        if let speculation {
+            switch candidate.output {
+            case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
+            case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
+            case .streams: throw ProbeError("GLM tensor-parallel prefill produced no hidden rows")
+            }
+        }
+        try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
+        var final: (logits: MLXArray, lastHidden: MLXArray)?
+        if last, case .final(let output) = candidate.output {
+            final = (output.logits[0..., -1, 0...], output.hidden[0..., (-1)..., 0...])
+        }
+        if !last, end == opened.keepAt, opened.keepAt > opened.start {
+            prefix.store(scope: loadAgreement, prompt: prompt, length: end, cache: opened.cache,
+                mtp: try speculation?.checkpoint())
+            return (final, true)
+        }
+        return (final, false)
+    }
+
+    /// One small sealed reduction per step: [token rank 0, token rank 1,
+    /// stop rank 0, stop rank 1]. Greedy: both ranks put their own choice
+    /// and must agree. Sampled: rank 0 draws, rank 1 puts 0 and adopts it.
+    func choose(_ row: MLXArray, sampler: QwenStageTokenSampler?, stop: Float) -> MLXArray {
+        let rank = collective.rank
+        let local: MLXArray
+        if let sampler {
+            let drawn = rank == 0 ? sampler.sample(row) : MLXArray(Int32(0))
+            local = drawn.asType(.float32).reshaped(1)
+        } else {
+            local = argMax(row.asType(.float32), axis: -1).asType(.float32).reshaped(1)
+        }
+        let zero = MLXArray.zeros([1], dtype: .float32)
+        let tokens = rank == 0 ? [local, zero] : [zero, local]
+        let stops = rank == 0 ? [MLXArray([stop]), zero] : [zero, MLXArray([stop])]
+        return group.allSum(concatenated(tokens + stops, axis: 0))
+    }
+
+    /// The agreed token of an evaluated `choose`.
+    static func agreedToken(_ agreed: [Float], sampled: Bool) throws -> Int {
+        guard agreed.count == 4 else { throw ProbeError("GLM tensor-parallel selection has a wrong shape") }
+        if !sampled, agreed[0] != agreed[1] {
+            throw ProbeError("GLM tensor-parallel ranks chose different greedy tokens")
+        }
+        return Int(agreed[0])
+    }
+
+    /// Sampled MTP rounds: rank 0 draws the keyed target sample at every
+    /// window column, at output indexes from the sampler's committed count.
+    /// Rank 1 puts the window's argmax, which the agreement ignores: its slot
+    /// must depend on the window's logits, or the round's one evaluation may
+    /// run the agreement sum before the layer sums on rank 1 only, and the
+    /// ranks' sums no longer pair up. Nil for greedy requests (the argmax).
+    func verificationDraw(_ sampler: QwenStageTokenSampler?) -> ((MLXArray) -> MLXArray)? {
+        let rank = collective.rank
+        return sampler.map { sampler in
+            { logits in
+                (rank == 0 ? sampler.verify(logits) ?? argMax(logits, axis: -1) : argMax(logits, axis: -1))
+                    .asType(.float32)
+            }
+        }
+    }
+
+    // MARK: - One request
+
+    private func generate(_ reserved: Reserved, channel: ClusterCommittedTokenChannel) throws
+        -> QwenResidentGenerationCompletion {
+        guard let stage else { throw ProbeError("Resident model already released") }
+        let request = reserved.request, rank = collective.rank
+        let opened = try openRequest(request, stage: stage)
+        let sampler = request.sampler
+        let prompt = request.promptTokenIDs
+        var lastCheck: UInt64 = 0
+        func localStop() -> Bool {
+            if (try? control.check(deadline: reserved.deadline)) == nil { return true }
+            let now = DispatchTime.now().uptimeNanoseconds
+            if now - lastCheck >= 250_000_000 {
+                lastCheck = now
+                if (try? prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil { return true }
+            }
+            return false
+        }
+        let speculation = opened.speculation, cache = opened.cache, start = opened.start
         // Prefill from `start` in chunks aligned to the boundaries; keep the
         // last whole boundary before the final token.
         var logits: MLXArray?, lastHidden: MLXArray?
         var offset = start, stored: [Int] = []
-        let keepAt = prefix.enabled ? ((prompt.count - 1) / chunk) * chunk : 0
         while offset < prompt.count {
-            // Bulk chunks while they end at or before the boundary kept for
-            // prefixes (or the prompt's end), then chunk-aligned ones.
-            let bulk = (Self.bulkPrefillChunkTokens / chunk) * chunk
-            let limit = keepAt > offset ? keepAt : prompt.count
-            let end = offset % chunk == 0 && bulk > chunk && offset + bulk <= limit
-                ? offset + bulk : min(prompt.count, (offset / chunk + 1) * chunk)
-            let last = end == prompt.count
-            let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
-            let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
-            // The chunk's hidden rows prime the NextN history, in the chunk's evaluation.
-            if let speculation {
-                switch candidate.output {
-                case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
-                case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
-                case .streams: throw ProbeError("GLM tensor-parallel prefill produced no hidden rows")
-                }
-            }
-            try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
-            if last, case .final(let output) = candidate.output {
-                logits = output.logits[0..., -1, 0...]; lastHidden = output.hidden[0..., (-1)..., 0...]
-            }
-            if !last, end == keepAt, keepAt > start {
-                prefix.store(scope: scope, prompt: prompt, length: end, cache: cache, mtp: try speculation?.checkpoint())
-                stored.append(end)
-            }
+            let end = Self.prefillFrameEnd(offset: offset, promptCount: prompt.count, chunk: opened.chunk,
+                keepAt: opened.keepAt)
+            let frame = try runPrefillFrame(prompt, offset: offset, end: end, opened: opened, stage: stage)
+            if let final = frame.final { logits = final.logits; lastHidden = final.lastHidden }
+            if frame.stored { stored.append(end) }
             offset = end
         }
         guard let firstLogits = logits else { throw ProbeError("GLM tensor-parallel prefill produced no logits") }
 
-        // One small sealed reduction per step: [token rank 0, token rank 1,
-        // stop rank 0, stop rank 1]. Greedy: both ranks put their own choice
-        // and must agree. Sampled: rank 0 draws, rank 1 puts 0 and adopts it.
-        func choose(_ row: MLXArray, stop: Float) -> MLXArray {
-            let local: MLXArray
-            if let sampler {
-                let drawn = rank == 0 ? sampler.sample(row) : MLXArray(Int32(0))
-                local = drawn.asType(.float32).reshaped(1)
-            } else {
-                local = argMax(row.asType(.float32), axis: -1).asType(.float32).reshaped(1)
-            }
-            let zero = MLXArray.zeros([1], dtype: .float32)
-            let tokens = rank == 0 ? [local, zero] : [zero, local]
-            let stops = rank == 0 ? [MLXArray([stop]), zero] : [zero, MLXArray([stop])]
-            return group.allSum(concatenated(tokens + stops, axis: 0))
-        }
-        func token(_ agreed: [Float]) throws -> Int {
-            guard agreed.count == 4 else { throw ProbeError("GLM tensor-parallel selection has a wrong shape") }
-            if sampler == nil, agreed[0] != agreed[1] {
-                throw ProbeError("GLM tensor-parallel ranks chose different greedy tokens")
-            }
-            return Int(agreed[0])
-        }
+        func choose(_ row: MLXArray, stop: Float) -> MLXArray { self.choose(row, sampler: sampler, stop: stop) }
+        func token(_ agreed: [Float]) throws -> Int { try Self.agreedToken(agreed, sampled: sampler != nil) }
         var tokens: [Int] = []
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false
@@ -686,17 +777,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
             sampler?.commit(first)
             // Sampled: rank 0 draws the keyed target sample at every window
-            // column, at output indexes from the sampler's committed count.
-            // Rank 1 puts the window's argmax, which the agreement ignores:
-            // its slot must depend on the window's logits, or the round's
-            // one evaluation may run the agreement sum before the layer sums
-            // on rank 1 only, and the ranks' sums no longer pair up.
-            let draw: ((MLXArray) -> MLXArray)? = sampler.map { sampler in
-                { logits in
-                    (rank == 0 ? sampler.verify(logits) ?? argMax(logits, axis: -1) : argMax(logits, axis: -1))
-                        .asType(.float32)
-                }
-            }
+            // column, at output indexes from the sampler's committed count
+            // (rank 1's slot depends on the logits: `verificationDraw`).
+            let draw = verificationDraw(sampler)
             try speculation.begin(carry: first, lastHidden: lastHidden)
             var agreedCount = 1, last = first, fresh: [Int] = []
             /// Takes one agreed token; true when the request ends at it.

@@ -108,6 +108,9 @@ final class ClusterPairSlotOwner: DistributedDeadlineExecutionOwner, @unchecked 
     func readiness() -> DistributedResidentReadiness? {
         hasLostReadiness ? nil : inner.readiness()
     }
+    /// The pair's batch lanes: the slot's engine admits as many requests at
+    /// once as the pair it wraps serves (the protocol default would be one).
+    var concurrentRequests: Int { inner.concurrentRequests }
     func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         let lost = lock.withLock { engineHandler = handler; return invalidated }
         if lost { handler() }

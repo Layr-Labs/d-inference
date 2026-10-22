@@ -100,14 +100,14 @@ extension DistributedLocalServer {
         if waiting.isEmpty, await hasRoom(target), waiting.isEmpty, free(), servable(target) {
             return (take(), false)
         }
-        guard waiting.count < DistributedRequestQueue.maximumWaiting else {
+        guard waiting.count < queue.maximumWaiting else {
             throw MultiModelBatchSchedulerEngineError.queueFull(DistributedRequestQueue.fullMessage)
         }
         let ticket = UUID()
         waiting.append(ticket)
         defer { waiting.removeAll { $0 == ticket } }
-        let ceiling = ContinuousClock.now.advanced(by: DistributedRequestQueue.waitCeiling(
-            requestTimeout: target.session.profile.requestTimeout))
+        let ceiling = ContinuousClock.now.advanced(by: queue.waitCeiling(
+            requestTimeout: target.session.profile.requestTimeout, lanes: target.capacity))
         while true {
             // A client that went away leaves the queue.
             if Task.isCancelled || DistributedHTTPResponseScope.current?.isComplete == true { throw CancellationError() }

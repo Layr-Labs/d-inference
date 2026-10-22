@@ -83,12 +83,13 @@ public actor GlobalKVCacheBudget {
     /// (idle engines honor it within a recheck, busy ones at their next step)
     /// so a load-time resample sees that memory. Host-zeroed backing returns
     /// to the OS when dropped; device-filled backing reaches the MLX cache.
+    /// A cancelled caller stops waiting; the request itself still stands.
     static func releaseRetainedKVSegments(timeout: Duration = .milliseconds(250)) async {
         guard CBv2RetainedKVSegments.retainedBytes > 0 else { return }
         CBv2RetainedKVSegments.requestRelease()
         let deadline = ContinuousClock.now + timeout
         while CBv2RetainedKVSegments.retainedBytes > 0, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(2))
+            do { try await taskSleep(.milliseconds(2)) } catch { return }
         }
     }
 

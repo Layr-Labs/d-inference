@@ -196,6 +196,19 @@ struct KVPoolIdleSweepTests {
         await GlobalKVCacheBudget.releaseRetainedKVSegments(timeout: .seconds(2))
         #expect(engine.parkedBytes == 0)
     }
+
+    @Test("a cancelled load stops waiting for engines to drop retained KV segments")
+    func cancelledLoadReleaseStopsWaiting() async throws {
+        // No engine steps, so the parked backing outlives any wait.
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let started = ContinuousClock.now
+        let wait = Task { await GlobalKVCacheBudget.releaseRetainedKVSegments(timeout: .seconds(10)) }
+        wait.cancel()
+        await wait.value
+        #expect(ContinuousClock.now - started < .seconds(5))
+        #expect(engine.parkedBytes > 0)
+    }
 }
 
 /// One paged pool holding parked free segments, plus an engine-queue stand-in

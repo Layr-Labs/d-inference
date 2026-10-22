@@ -178,8 +178,33 @@ struct ProductionModelCalibrationTests {
         await other.shutdown()
     }
 
+    @Test("the shape warmup's wall budget includes prompt rendering")
+    func shapeWarmupBudgetIncludesPromptRender() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        // Sizing the first cell's prompt takes five renders, about 1 s here.
+        let bridge = try await makeQwenSlot(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
+            budget: budget, tokenizer: SlowTemplateTokenizer(renderDelay: 0.2)).bundle.bridge
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        await bridge.setShapeWarmupModeTest(.always)
+        let steps = engine.capacity().stepsExecuted
+        // Under the 1 s step minimum after rendering, though not before it.
+        await bridge.runShapeWarmupIfNeeded(requireNominalPosture: false, grace: false, budgetSeconds: 1.5)
+        #expect(await bridge.shapeWarmupCompletedTest(), "a spent budget completes the attempt")
+        #expect(await bridge.shapeWarmupCellsCompletedTest() == 0)
+        #expect(engine.capacity().stepsExecuted == steps, "no cell was submitted")
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        await bridge.shutdown()
+    }
+
     private func makeQwenBridge(modelID: String, backend: String,
         budget: GlobalKVCacheBudget) async throws -> EngineV2Bridge {
+        try await makeQwenSlot(modelID: modelID, backend: backend, budget: budget).bundle.bridge
+    }
+
+    private func makeQwenSlot(modelID: String, backend: String, budget: GlobalKVCacheBudget,
+        tokenizer: any Tokenizer = ModelCalibrationTokenizer()) async throws -> QwenCalibrationSlot {
         let experts = modelID.contains("27B") ? 0 : 4
         // Keep tensors small but enough real layers for measured prefill to
         // stay inside the existing 20k TPS plausibility bound. A two-layer toy
@@ -194,14 +219,14 @@ struct ProductionModelCalibrationTests {
          "shared_expert_intermediate_size":64,"mtp_num_hidden_layers":0}
         """.utf8))
         let model: any LanguageModel = experts > 0 ? Qwen35MoEModel(config) : Qwen35Model(config)
-        let tokenizer = ModelCalibrationTokenizer()
         let container = ModelContainer(context: .init(configuration: .init(id: modelID),
             model: model, processor: CalibrationFixtureProcessor(), tokenizer: tokenizer))
+        let sizing = SlotSizingSnapshot(weightsBytes: 1, fp16KVBytesPerToken: 256,
+            maxContextLength: 2_048, defaultMaxTokens: 32)
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(
             modelId: modelID, modelType: experts > 0 ? "qwen3_5_moe" : "qwen3_5", isVLM: false,
             modelDirectory: nil, container: container, tokenizer: TokenizerHandle(tokenizer),
-            sizing: .init(weightsBytes: 1, fp16KVBytesPerToken: 256,
-                maxContextLength: 2_048, defaultMaxTokens: 32),
+            sizing: sizing,
             kvBytesCapacity: 4 << 30, maxConcurrentRequests: 2, kvBudget: budget,
             kvBackendConfig: backend, weightHash: nil,
             specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)),
@@ -211,7 +236,36 @@ struct ProductionModelCalibrationTests {
             environment: [PrefixCachePolicy.environmentFlag: "0", KVBackendGuardStore.pathEnvKey: "/dev/null",
                 EngineV2KVQuantizationPolicy.environmentKey: "native"],
             startServingTelemetry: false, emitTelemetry: { _ in })
-        return bundle.bridge
+        return QwenCalibrationSlot(bundle: bundle, container: container, tokenizer: TokenizerHandle(tokenizer),
+            modelType: experts > 0 ? "qwen3_5_moe" : "qwen3_5", sizing: sizing)
+    }
+}
+
+private struct QwenCalibrationSlot: Sendable {
+    let bundle: ProviderEngineBundle
+    let container: ModelContainer
+    let tokenizer: TokenizerHandle
+    let modelType: String
+    let sizing: SlotSizingSnapshot
+}
+
+/// The calibration fixture's tokens, with each chat-template render taking `renderDelay` seconds.
+private struct SlowTemplateTokenizer: Tokenizer {
+    let renderDelay: Double
+    private let tokens = ModelCalibrationTokenizer()
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { tokens.encode(text: text, addSpecialTokens: addSpecialTokens) }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokens.decode(tokenIds: tokenIds, skipSpecialTokens: skipSpecialTokens)
+    }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?) throws -> [Int] {
+        Thread.sleep(forTimeInterval: renderDelay)
+        return try tokens.applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
     }
 }
 
@@ -224,6 +278,7 @@ private extension EngineV2Bridge {
     func awaitProductionCalibration() async { await modelCalibration.task?.value }
     func shapeWarmupCompletedTest() -> Bool { modelCalibration.shapeWarmupCompleted }
     func setShapeWarmupCellsCompletedTest(_ cells: Int) { modelCalibration.shapeWarmupCellsCompleted = cells }
+    func shapeWarmupCellsCompletedTest() -> Int { modelCalibration.shapeWarmupCellsCompleted }
     func setShapeWarmupModeTest(_ mode: ModelCalibrationPolicy.ShapeWarmupMode) {
         modelCalibration.shapeWarmupModeOverride = mode
     }

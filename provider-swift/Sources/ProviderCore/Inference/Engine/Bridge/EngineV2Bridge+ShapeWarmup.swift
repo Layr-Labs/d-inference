@@ -68,7 +68,8 @@ extension EngineV2Bridge {
     /// after the probes and cells it finished. A timeout or refusal completes
     /// the attempt so a slow Mac never repeats it. Every cell is `warmup`, so
     /// no rate, bucket or counter moves.
-    func runShapeWarmupIfNeeded(requireNominalPosture: Bool, grace: Bool = true) async {
+    func runShapeWarmupIfNeeded(requireNominalPosture: Bool, grace: Bool = true,
+        budgetSeconds: Double = ModelCalibrationPolicy.shapeWarmupBudgetSeconds) async {
         guard shapeWarmupDue else { return }
         modelCalibration.shapeWarmupAttempts += 1
         if grace { try? await Task.sleep(for: ModelCalibrationPolicy.shapeWarmupGrace) }
@@ -80,6 +81,7 @@ extension EngineV2Bridge {
         if shapeWarmupMode == .always { modelCalibration.shaderCacheCold = true }
         let clock = ContinuousClock()
         let started = clock.now
+        let remainingSeconds = { budgetSeconds - WedgeMonitor.seconds(clock.now - started) }
         var outcome = "complete"
         var preemption: String?
         // Each pass runs the next due step: probes until the cache is judged, then cells.
@@ -93,15 +95,16 @@ extension EngineV2Bridge {
             let cell = probing ? ModelCalibrationPolicy.shaderCacheProbe : cells[index]
             preemption = shapeWarmupPreemption(requireNominalPosture: requireNominalPosture)
             if preemption != nil { break }
-            let remaining = ModelCalibrationPolicy.shapeWarmupBudgetSeconds
-                - WedgeMonitor.seconds(clock.now - started)
-            guard remaining >= 1 else { outcome = "budget"; break }
+            guard remainingSeconds() >= 1 else { outcome = "budget"; break }
             // Both probes render one prompt, so the repeat has the first run's shapes.
             guard let tokens = try? modelCalibrationPrompt(targetTokens: cell.promptTokens,
                 variant: probing ? cells.count : index) else { outcome = "refused"; break }
+            // Sizing a long prompt takes several template renders; the cell gets what is left.
+            let cellSeconds = remainingSeconds()
+            guard cellSeconds >= 1 else { outcome = "budget"; break }
             let stepStarted = clock.now
             if await runModelCalibrationCell(cell, tokens: tokens,
-                requireNominalPosture: requireNominalPosture, timeoutSeconds: remaining) {
+                requireNominalPosture: requireNominalPosture, timeoutSeconds: cellSeconds) {
                 if probing { recordShaderCacheProbe(clock.now - stepStarted) }
                 else { modelCalibration.shapeWarmupCellsCompleted = index + 1 }
                 continue

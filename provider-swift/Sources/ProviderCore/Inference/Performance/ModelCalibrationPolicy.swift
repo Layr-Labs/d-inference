@@ -20,7 +20,8 @@ enum ModelCalibrationPolicy {
     /// `0` / `false` / `no` / `off` restores the plain startup cells; `always`
     /// runs the shape cells without the shader-cache probe.
     static let shapeWarmupEnvironmentKey = "DARKBLOOM_TTFT_SHAPE_WARMUP"
-    /// Wall bound for the probe and shape cells together; each cell's timer gets the remainder.
+    /// Wall bound for the probe and shape cells together, prompt rendering
+    /// included; each cell's timer gets the remainder.
     static let shapeWarmupBudgetSeconds = 20.0
     /// A request that triggered the load submits during this pause and
     /// preempts the session before any stripe-sized step is in flight.

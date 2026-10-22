@@ -42,7 +42,8 @@ extension StandaloneServer {
             shapeWarmup: { id in await owner.startupShapeWarmup(id) },
             log: { line in standaloneLogger.info("\(line)") },
             currentRequiredGb: { id in await owner.startupPreloadRequiredGb(for: id) },
-            canLoadMore: { await owner.startupPreloadHasFreeSlot() }
+            canLoadMore: { await owner.startupPreloadHasFreeSlot() },
+            reclaimBeforeSkip: { await owner.releaseReclaimableMemoryForLoad() }
         ))
         return await preloader.run(candidates: plan)
     }

@@ -1538,16 +1538,33 @@ public actor StandaloneServer {
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
+        // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
+        // retained free KV segments, so drop both once before evicting a
+        // cached model for room.
+        var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while await availableMemoryGb() < requiredGb {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
+            if !poolDropped {
+                poolDropped = true
+                await releaseReclaimableMemoryForLoad()
+                continue
+            }
             guard allowEviction, await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
                 )
             }
         }
+    }
+
+    /// Drops what a load reclaims without evicting: retained free KV
+    /// segments (engines drop them at their next step; this waits briefly),
+    /// then MLX's buffer cache, which device-filled segments return to.
+    func releaseReclaimableMemoryForLoad() async {
+        await GlobalKVCacheBudget.releaseRetainedKVSegments()
+        if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
     }
 
     /// Free memory (GB) for loading a model, via the shared OOM-safe arithmetic:

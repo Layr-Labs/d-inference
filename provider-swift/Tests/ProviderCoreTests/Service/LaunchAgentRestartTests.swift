@@ -203,6 +203,34 @@ struct LaunchAgentEnvironmentTests {
         #expect(!DeadlineAdmissionFixes.resolve(environment: vars ?? [:]))
     }
 
+    @Test func forwardsServingStallRollbacksToProviderJob() {
+        // The idle-gated sweep and retained KV segments are on by default; a
+        // rollback only takes effect in the launchd provider job if the plist
+        // carries it. The watchdog never runs inference.
+        let keys = [
+            GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
+            EngineV2Factory.segmentRetentionEnvironmentKey,
+            EngineV2Factory.segmentHostZerosEnvironmentKey,
+        ]
+        #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
+        #expect(keys.allSatisfy { !WatchdogAgent.passthroughEnvKeys.contains($0) })
+        let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
+        let out = LaunchAgent.passthroughEnvironment(
+            from: rollback.merging(["UNRELATED_SECRET": "excluded"]) { a, _ in a })
+        #expect(out == rollback)
+        #expect(!GlobalKVCacheBudget.idleCacheSweepEnabled(environment: out))
+        #expect(!EngineV2Factory.segmentRetentionEnabled(environment: out))
+        let defaults = LaunchAgent.passthroughEnvironment(from: [:])
+        #expect(GlobalKVCacheBudget.idleCacheSweepEnabled(environment: defaults))
+        #expect(EngineV2Factory.segmentRetentionEnabled(environment: defaults))
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: out)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == rollback)
+    }
+
     @Test func forwardsMiMoResidencyRollbackToProviderJob() {
         // Standing MiMo residency is the default; the operator's rollback is
         // only effective if it reaches the launchd-managed provider process.

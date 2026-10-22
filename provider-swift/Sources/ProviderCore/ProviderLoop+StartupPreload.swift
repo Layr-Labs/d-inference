@@ -242,7 +242,8 @@ extension ProviderLoop {
             currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
             canLoadMore: { await me.startupPreloadHasFreeSlot() },
             onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) },
-            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) }
+            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) },
+            reclaimBeforeSkip: { await me.releaseReclaimableMemoryForLoad() }
         )
 
         let preloader = StartupPreloader(deps: deps)

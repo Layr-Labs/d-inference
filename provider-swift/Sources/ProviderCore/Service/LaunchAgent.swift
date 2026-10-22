@@ -267,6 +267,10 @@ public enum LaunchAgent: Sendable {
     /// launchd restarts (including watchdog recovery) reuse this plist.
     /// `DARKBLOOM_TTFT_ADMISSION_FIXES`: the deadline-admission estimator
     /// corrections are on by default; their rollback must reach the job too.
+    /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP`, `DARKBLOOM_TTFT_SEGMENT_RETENTION`
+    /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
+    /// retained, host-zeroed paged KV segments are on by default; each
+    /// rollback must reach the provider job too.
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
@@ -302,6 +306,9 @@ public enum LaunchAgent: Sendable {
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
         DeadlineAdmissionFixes.environmentKey,
+        GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
+        EngineV2Factory.segmentRetentionEnvironmentKey,
+        EngineV2Factory.segmentHostZerosEnvironmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
         GLM5NextWiredResidency.environmentFlag,

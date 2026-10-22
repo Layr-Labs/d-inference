@@ -401,10 +401,16 @@ configuration such eviction can reach, so an idle model yields to the
 planned owner rather than to a narrower one, and refuses without evicting
 when not even the narrowest is reachable. A victim that takes work while its
 unload suspends declines it, and eviction plans again from the models still
-idle; the third decline refuses the load. Startup preload, which never
-evicts, admits Super by the same room and orders it by its planned
-requirement. The discovery footprint (`estimated_memory_gb`) is the
-narrowest configuration's requirement itself,
+idle; the third decline refuses the load. Like the ordinary gate, eviction
+first releases retained free KV segments and drops MLX's buffer cache once
+(`releaseReclaimableMemoryForLoad`), before its first eviction or a refusal
+with nothing idle, and counts those segments as reachable only until then:
+segments still parked after the release never justify an eviction.
+Pre-accept performs the same release and judges the room it leaves when
+nothing is idle or only those segments could close the gap.
+Startup preload, which never evicts, admits Super by the same room and
+orders it by its planned requirement. The discovery footprint
+(`estimated_memory_gb`) is the narrowest configuration's requirement itself,
 89,750,767,136 bytes (83.6 GiB) on every Mac. Cold capacity quotes and the
 coordinator's cold-load routing compare it and the load headroom with free
 memory less the provider's load reserve (`free_for_load_gb`), so they stay
@@ -1134,6 +1140,27 @@ or fences them, so staging does not wait for that chunk
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
+
+Segmented paged admission no longer waits for queued GPU work. A released row's
+free 64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`,
+outside the grant, floor and ledger charge, and the next admission of the same
+size class reinstalls them. New segments wrap zero-fill-on-demand host pages
+when their size is a whole number of VM pages, so growth neither zero-fills on
+the device nor waits on a stream synchronize under the process-wide MLX eval
+lock
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`
+(`makeSegmentedPagedBackend`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
+(`cbv2ZeroFilledPages`)). Parked backing is dropped on a refused admission, on
+a process-wide release request (memory pressure, a refused charge, a load gate
+or startup-preload check short of memory) and after 30 s of engine idleness.
+The proactive allocator-cache sweep flushes between busy engines' steps only
+when the pool crowds out admission headroom
+(`KVPoolReclaimer.proactiveWindow`); otherwise it waits for 5 s of whole-Mac
+idleness and clears while request admission waits
+(`WholeMacServiceBudget.performIfIdle`).
+`DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
+restore the previous behavior ([configuration](../reference/configuration.md)).
 
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge

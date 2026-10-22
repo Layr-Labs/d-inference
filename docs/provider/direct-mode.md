@@ -127,11 +127,11 @@ the upstream `MLXLMServer` router
 |---|---|---|
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
-| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) |
+| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
-| POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
+| POST | `/v1/responses`, `/responses` | Responses API; provider continuation history and SDK response-object storage, with distinct retention below |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
 | POST | `/tokenize`, `/detokenize`, `/apply-template` | Tokenizer utilities |
 | POST | `/v1/embeddings`, `/embeddings`, `/embedding` | Registered upstream; the provider configures no embedding model, so they return an OpenAI error envelope with code `embeddings_not_configured` |
@@ -153,6 +153,32 @@ The provider chat-upload interceptor selects the SDK service's HTTP framing
 policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
 A failed required tool call is still a failure; no argument repair or fabricated
 call is performed.
+
+## Responses continuation and retention
+
+Send a stored response's string `id` as `previous_response_id` on the next
+Responses POST. Send only the new input; the provider prepends the stored input
+and assistant output. Supply the new request's instructions and tool settings
+again: previous top-level instructions and settings are not inherited. Keep
+your own history if a conversation must survive eviction or an application
+restart (`provider-swift/Sources/ProviderCore/Server/LocalResponseConversation.swift`,
+`prepare`, `conversation`).
+
+| Behavior | Local contract | Source |
+|---|---|---|
+| Input limit | Responses POST bodies use `min(maxUploadBytes, 2 * 1024 * 1024)`; the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`respond`) |
+| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs and evicted IDs return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
+| Saved history | Input plus one assistant turn containing answer, reasoning and tool calls; tool-result `call_id` is preserved. A streamed completed/incomplete response is recorded before its terminal frame is forwarded; a failed frame is not recorded. | `LocalResponseConversation.conversation`, `finalResponse`; `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift` (`record`, `recording`) |
+| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256` and `maxBytes = 64 * 1024 * 1024`, measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted, and a history larger than the byte cap is not saved. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
+| Retrieval lifetime | GET reads a separate application-shared SDK object store. It has no matching count/byte eviction or TTL; objects remain in memory for that store's lifetime. A successful GET does not imply the ID is still available for continuation, and GET does not refresh history recency. Neither store is persistent. | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/InMemoryResponseStore.swift` (`save`, `get`); `makeLocalInferenceApplication` |
+| Storage opt-out | `store: false` suppresses both new saves. It can still read an available previous history; it does not delete an older response. | `LocalChatUploadResponder.respond`; `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`createResponse`, `streamResponseFrames`) |
+
+If continuation returns `previous_response_not_found`, resend the conversation
+you retained as explicit input without the expired ID. GET may still retrieve
+the old response object. See [reasoning state](../architecture/inference.md#collected-and-streaming-reasoning-state)
+for parser selection and incomplete thinking, and the
+[regression recipe](../developer/test.md#local-responses-and-reasoning-regressions)
+for isolated helper/router checks.
 
 ## Verify
 

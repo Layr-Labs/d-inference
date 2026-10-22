@@ -23,6 +23,29 @@ enum ToolConstraintFactory {
         stopTokenIDs: Set<Int>,
         nativePromptTokens: [Int]? = nil
     ) throws -> (any CBv2TokenConstraint)? {
+        // Flint's automatic reasoning protocol needs framing even for no-tool
+        // and auto requests. Do not broaden another family's admission policy.
+        if modelContext.modelType == "flint" {
+            guard request.stop?.isEmpty != false else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "Flint native protocol cannot be combined with custom stop strings")
+            }
+            guard let nativePromptTokens, !nativePromptTokens.isEmpty,
+                  tokenizer.inner.decode(tokenIds: Array(nativePromptTokens.suffix(32)),
+                    skipSpecialTokens: false).hasSuffix("<|assistant|>") else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "Flint native protocol requires the rendered assistant boundary")
+            }
+            do {
+                return try FlintNativeProtocolConstraint(mode: prepared.mode,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens,
+                    vocabulary: FlintNativeVocabulary.cached(for: tokenizer, stopTokenIDs: stopTokenIDs),
+                    allowsParallel: prepared.allowsParallelCalls, allowedToolNames: prepared.allowedToolNames,
+                    tools: prepared.tools?.map { $0.toolSpec() })
+            } catch let error as ToolConstraintSchemaError {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(error.localizedDescription)
+            }
+        }
         guard prepared.mode.requiresInferenceConstraint else { return nil }
         // `.none` keeps Gemma's sampler guard when its prompt contract is
         // pinned, while every other family retains the existing prompt-only

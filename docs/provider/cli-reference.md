@@ -524,6 +524,7 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
 | Arrival invariance | `--arrival-invariance`, `--arrival-width` (`4`, range `1...16`), `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly one integer ≥2 per row, overrides uniform length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`); requested width alone is not measured forward-width evidence |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
+| Prompt preparation | `--prompt-prep`, `--prompt-prep-lengths` (`"2048,8192,32768"`), `--iterations`; CPU only, loads only the tokenizer, times uncached, first-sighting, next-turn and repeated prompt preparation and the body decode for chat, agent and tool-loop conversations, prints JSON and exits 2 on any token-ID or decoded-field difference (`provider-swift/Sources/ProviderBenchmark/PromptPreparationBenchmark.swift`) |
 
 Ordinary DiffusionGemma generation uses its production native block engine and
 honors `--kv-quantization`. Its `NATIVE_BLOCK_BENCHMARK` records include resolved

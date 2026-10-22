@@ -12,7 +12,7 @@ extension EngineV2Bridge {
     /// Ordinary engines only; MiMo-native and block engines keep their own
     /// bootstraps. Compiled kernels persist, so after a pass only a wider
     /// served width (posture recovered, or the KV grant grew) is due again,
-    /// and only when the shape cells run at all.
+    /// and only on a cache the probe judged cold (or `always`).
     var shapeWarmupDue: Bool {
         guard ownedEngine is EngineV2, nativeTransactionID == nil, shapeWarmupMode != .off else { return false }
         guard let warmedWidth = modelCalibration.shapeWarmupWidth else { return true }
@@ -109,7 +109,8 @@ extension EngineV2Bridge {
             if preemption != nil { break }
             guard remainingSeconds() >= 1 else { outcome = "budget"; break }
             // Both probes render one prompt, so the repeat has the first run's
-            // shapes. Each retry of a cell renders a different example.
+            // shapes. Each retry of a cell renders an example that neither the
+            // probe nor another cell of this pass uses.
             let variant = probing ? cells.count : index + earlyStops * (cells.count + 1)
             guard let tokens = try? modelCalibrationPrompt(targetTokens: cell.promptTokens,
                 variant: variant) else { outcome = "refused"; break }

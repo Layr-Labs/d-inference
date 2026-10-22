@@ -146,8 +146,8 @@ struct ModelCalibrationState {
     var requests: [String: ModelCalibrationPolicy.Cell] = [:]
     var pendingObservations: [String: [EngineRateObservation]] = [:]
     var bootstrapCompleted = false
-    /// Served width covered by the last pass nothing preempted; nil until a
-    /// pass finishes. A timeout or refusal finishes a pass too.
+    /// Widest served width a finished pass covered; nil until one finishes.
+    /// Only preemption leaves a pass unfinished; a timeout or refusal finishes it.
     var shapeWarmupWidth: Int?
     /// Cells of the current pass already run; a preempted attempt resumes after them.
     var shapeWarmupCellsCompleted = 0

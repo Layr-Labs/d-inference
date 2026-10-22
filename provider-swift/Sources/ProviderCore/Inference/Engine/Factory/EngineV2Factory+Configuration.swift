@@ -84,6 +84,14 @@ extension EngineV2Factory {
             requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
+        if let limit = calibratedPrefillTokenLimit(model: model) {
+            // Calibrated W4A4/FP8 workspace is a hard execution bound, not a
+            // throughput preference. Environment/profile overrides cannot widen it.
+            let limit = max(1, limit)
+            config.prefillChunkSize = min(config.prefillChunkSize, limit)
+            config.soloPrefillStripeTokens = nil
+            config.mixedStepPrefillTokenCap = min(config.mixedStepPrefillTokenCap ?? limit, limit)
+        }
         return config
     }
 
@@ -146,6 +154,13 @@ extension EngineV2Factory {
             + " prefill_chunk_tokens=\(scheduler.prefillChunkSize)]"
     }
 
+    /// Calibrated ModelOpt workspace bound of a Nemotron target, if it has one.
+    static func calibratedPrefillTokenLimit(model: (any LanguageModel)?) -> Int? {
+        (model as? NemotronHModel)?.calibratedPrefillTokenLimit
+            ?? (model as? NemotronSuperRecurrentAdapter)?.calibratedPrefillTokenLimit
+            ?? (model as? NemotronSuperMTPTextTarget)?.calibratedPrefillTokenLimit
+    }
+
     static let qwen4BatchedQSAEnvKey = "DARKBLOOM_QWEN4_BATCHED_QSA"
 
     /// Install the serving policy on the exact target before backend probes
@@ -154,6 +169,9 @@ extension EngineV2Factory {
     static func configureNativeQwen4Batching(
         model: any LanguageModel, environment: [String: String]
     ) throws {
+        if let limit = calibratedPrefillTokenLimit(model: model), limit <= 0 {
+            throw CBv2KVError.backendIneligible(reason: "calibrated Nemotron workspace cannot fit one token")
+        }
         guard let target = model as? any CBv2Qwen4BatchCapabilityConfiguring else { return }
         let enabled = environment[qwen4BatchedQSAEnvKey] == "1"
         do {
@@ -239,7 +257,9 @@ extension EngineV2Factory {
         return min(max(0, kvBytesCapacity), physicalCap)
     }
 
-    /// GPT-OSS contiguous owning-full rows use fp32: add their fp16 byte rate once.
+    /// Fallback for callers without observed native types; production slots
+    /// always supply them. GPT-OSS contiguous owning-full rows are charged as
+    /// fp32 by adding their fp16 byte rate once, which over-reserves bf16 rows.
     /// Other contiguous rows retain the nominal rate; overflow saturates safely.
     static func nativeKVBytesPerToken(
         nominalFP16BytesPerToken: Int,

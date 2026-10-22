@@ -122,13 +122,28 @@ extension ModelScanner {
             ? parseConfigJSON(at: configPath)
             : (nil, nil)
 
-        let quantization = detectQuantization(modelName: modelName, snapshotDir: snapshotDir)
+        var quantization = detectQuantization(modelName: modelName, snapshotDir: snapshotDir)
         let glmLoad = modelType == "glm5_next" ? glm5NextLoadEstimate(snapshotDir: snapshotDir) : nil
         // An unknown/malformed GLM layout is not a loadable disk×1.2 fallback.
         if modelType == "glm5_next", glmLoad == nil { return nil }
         // GLM already counted its closed inventory with checked arithmetic.
         let sizeBytes = glmLoad?.storedBytes ?? collectWeightFiles(in: snapshotDir).sizeBytes
+
         guard sizeBytes > 0 else { return nil }
+
+        // Nemotron Super: the registry id is discovered only with its pinned
+        // config and index; the managed load verifies every shard. Other ids
+        // of the architecture keep the ordinary scan and stay unsupported.
+        var superFootprint: NemotronSuperServingPolicy.DiscoveryFootprint?
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: modelName, modelType: modelType) {
+            guard NemotronSuperServingPolicy.hasPinnedMetadata(snapshotDir: snapshotDir) else {
+                discoveryLogger.warning(
+                    "Skipping \(modelName): config.json or the index is not the pinned Nemotron Super artifact")
+                return nil
+            }
+            superFootprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: sizeBytes)
+            quantization = "nvfp4"
+        }
 
         // Only payloads actually filtered from the native load are excluded.
         // Keep load-transient padding on compute weights, and keep runtime
@@ -144,7 +159,9 @@ extension ModelScanner {
         // revalidates and claims its real bound before allocation.
         let mimoLoad = MiMoV26DiscoveryLoadFootprint.estimate(
             snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes)
-        let estimatedMemoryGb = glmLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+        let managedEstimateGb: Double? =
+            glmLoad.map { Double($0.totalBytes) / 1_073_741_824 } ?? superFootprint?.estimatedMemoryGb
+        let estimatedMemoryGb = managedEstimateGb
             ?? mimoLoad.map { Double($0.totalBytes) / 1_073_741_824 }
             ?? nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
             ?? (Double(residentBytes) / 1_073_741_824) * memoryOverheadFactor
@@ -179,7 +196,8 @@ extension ModelScanner {
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash,
             ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
-            nativeLoadTransientBytes: glmLoad?.supplementBytes ?? mimoLoad?.transientBytes ?? nativeLoad?.transientBytes
+            nativeLoadTransientBytes: glmLoad?.supplementBytes ?? superFootprint?.nativeLoadTransientBytes
+                ?? mimoLoad?.transientBytes ?? nativeLoad?.transientBytes
         )
         if ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info) {
             info.nativeMediaTools = true

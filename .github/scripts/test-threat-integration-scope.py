@@ -6,6 +6,7 @@ import unittest
 
 from threat_review.budget_scan import Scanner
 from threat_review.context import SOL, SONNET, ThreatContext
+from threat_review.integration_context import MAX_REPLAY_BYTES, replay_source
 
 
 THREAT = "threats:\n  - id: T-SCOPE\n    description: Preserve source citation boundaries.\n"
@@ -92,6 +93,70 @@ class IntegrationScopeTests(unittest.TestCase):
         self.assertEqual(result["depth_batches_pending"], 0)
         self.assertEqual(result["findings"][0]["file"], "crypto.py")
         self.assertEqual(result["findings"][0]["models"], [SOL])
+
+    def test_small_integration_receives_exact_source_not_only_summaries(self):
+        self.files = [{"filename": "smoke.py", "status": "modified", "source_complete": True,
+                       "base_text": "answer = 40 + 2\n", "head_text": "answer = 42\n",
+                       "patch": "@@ -1 +1 @@\n-answer = 40 + 2\n+answer = 42"}]
+        calls = Responses()
+        scanner = self.scanner(calls)
+        scanner.call(SOL, "source", scanner.source[0])
+        scanner.integrate(SOL, [{"id": "0", "analysis": "Value preserved.",
+                                 "findings": [], "needs_deeper_review": False}])
+        message = calls.requests[-1][1]
+        replay = message["integration_source"]
+        self.assertTrue(replay["complete"])
+        self.assertEqual(replay["omitted_units"], 0)
+        self.assertEqual(scanner.active_request["integration_source_units"], 4)
+        self.assertEqual(scanner.active_request["integration_source_omitted"], 0)
+        restored = [dict(id=u["source_id"], **{k: v for k, v in u.items() if k != "source_id"})
+                    for u in replay["units"]]
+        self.assertCountEqual(restored, scanner.source[0])
+        self.assertTrue(all("id" not in u for u in replay["units"]))
+        self.assertEqual(message["expected_covered_units"], ["0"])
+        self.assertEqual([u["id"] for u in message["units"]], ["0"])
+        self.assertTrue(any(u.get("text") == "1 | answer = 42\n" for u in replay["units"]))
+
+    def test_replay_is_bounded_and_explicit_without_clipping_source(self):
+        scanner = self.scanner(Responses())
+        original = {u["id"]: u for batch in scanner.source for u in batch}
+        replay = replay_source(scanner.source, set(original))
+        self.assertLessEqual(len(json.dumps(replay).encode()), MAX_REPLAY_BYTES)
+        self.assertFalse(replay["complete"])
+        self.assertGreater(replay["omitted_units"], 0)
+        self.assertEqual(len(replay["units"]) + replay["omitted_units"], len(original))
+        self.assertTrue(any(u.get("kind") == "patch" for u in replay["units"]))
+        for unit in replay["units"]:
+            self.assertEqual(dict(id=unit["source_id"], **{k: v for k, v in unit.items() if k != "source_id"}),
+                             original[unit["source_id"]])
+
+    def test_replay_cannot_expand_selective_scope_or_follow_summary_paths(self):
+        calls = Responses()
+        scanner = self.scanner(calls)
+        scanner.call(SONNET, "source", scanner.source[0])
+        selected = scanner.source[-1]
+        scanner.call(SOL, "source", selected)
+        scanner.integrate(SOL, [{"id": "0", "analysis": "Inspect ordinary.py line 1.",
+                                 "findings": [], "needs_deeper_review": True}])
+        replay = calls.requests[-1][1]["integration_source"]
+        allowed = {u["id"] for u in selected}
+        self.assertEqual(replay["reviewed_units"], len(allowed))
+        self.assertTrue(all(u["source_id"] in allowed for u in replay["units"]))
+        self.assertFalse(any(u["source_id"] in {s["id"] for s in scanner.source[0]}
+                             for u in replay["units"]))
+
+    def test_cached_source_reconstructs_the_same_integration_replay(self):
+        state = MemoryState()
+        first = self.scanner(Responses(), state)
+        first.call(SOL, "source", first.source[-1])
+        expected = replay_source(first.source, first.reviewed_source_ids[SOL])
+        calls = Responses()
+        second = self.scanner(calls, state)
+        second.call(SOL, "source", second.source[-1])
+        self.assertFalse(calls.requests)
+        second.integrate(SOL, [{"id": "0", "analysis": "Same source.",
+                                "findings": [], "needs_deeper_review": False}])
+        self.assertEqual(calls.requests[-1][1]["integration_source"], expected)
 
     def test_cached_integration_cannot_expand_cached_source_scope(self):
         state = MemoryState()

@@ -10,6 +10,7 @@ enum ProviderPromptContractPipeline {
     }
     static func validateNativeControls(_ controls: ChatTemplateControls, modelType: String?) throws {
         try controls.rawMiMoControls.validate(modelType: modelType)
+        try FlintRequestPolicy.validateControls(controls, modelType: modelType)
         if GLM5NextPromptPolicy.applies(modelType: modelType) {
             try controls.rawGLM5Controls.validate()
         }
@@ -61,6 +62,7 @@ enum ProviderPromptContractPipeline {
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
         try validateNativeControls(templateControls, modelType: modelType)
+        try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
         if GLM5NextPromptPolicy.applies(modelType: modelType) {
             guard !preserveMiMoMediaParts else {
                 throw MultiModelBatchSchedulerEngineError.multimodalRejected("native media owner required")

@@ -79,7 +79,12 @@ def write_diagnostics(env, snapshot):
     if env.get("THREAT_REVIEW_DIAGNOSTICS_FILE"):
         value = {key: snapshot.get(key) for key in (
             "covered_units", "total_units", "integration_completed", "depth_batches_pending",
-            "active_request", "diagnostics")}
+            "active_request", "diagnostics", "response_repairs")}
+        # The scanner revision and canonical threat-model revision can differ.
+        # Record only validated SHA identifiers, never arbitrary environment text.
+        value["revisions"] = {key: env[name] for key, name in (
+            ("scanner", "THREAT_REVIEW_SCANNER_SHA"), ("threat_model", "THREAT_REVIEW_BASE_SHA"))
+            if re.fullmatch(r"[0-9a-f]{40}", env.get(name, ""))}
         path = Path(env["THREAT_REVIEW_DIAGNOSTICS_FILE"])
         temporary = path.with_name(path.name + ".tmp")
         try:

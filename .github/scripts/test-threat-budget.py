@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import runpy
@@ -28,7 +29,7 @@ from threat_review.merge_policy import clean
 from threat_review.preflight import check as preflight
 from threat_review.report import COMMENT_LIMIT, plain
 from threat_review.source import complete_files
-from threat_review.state import State, BudgetStopped, fresh
+from threat_review.state import State, BudgetStopped, fresh, WRITE_ATTEMPTS
 
 spec = importlib.util.spec_from_file_location("fixtures", Path(__file__).with_name("test-threat-model-review.py"))
 fixtures = importlib.util.module_from_spec(spec)
@@ -42,6 +43,12 @@ class LocalService:
         self.fail_write = False
         self.conflicts = 0
         self.verified = True
+        self.branch_version = 0
+        self.write_barrier = None
+        self.barrier_writers = 0
+        self.branch_conflicts = 0
+        self.conflict_path = None
+        self.write_attempts = []
         service = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -65,15 +72,29 @@ class LocalService:
                 path = self.path.split("/contents/", 1)[-1]
                 self.assert_branch(body)
                 with service.lock:
+                    branch_version = service.branch_version
+                    barrier = service.write_barrier if service.barrier_writers else None
+                    if barrier:
+                        service.barrier_writers -= 1
+                if barrier:
+                    barrier.wait(timeout=5)
+                with service.lock:
+                    service.write_attempts.append(path)
                     old = service.files.get(path)
                     if service.fail_write:
                         return self.send(403, {"message": "secret provider payload"})
+                    if branch_version != service.branch_version or (service.branch_conflicts and
+                            (service.conflict_path is None or path == service.conflict_path)):
+                        service.branch_conflicts = max(0, service.branch_conflicts - 1)
+                        service.conflicts += 1
+                        return self.send(409, {})
                     if (old and body.get("sha") != old["sha"]) or (not old and "sha" in body):
                         service.conflicts += 1
                         return self.send(409, {})
                     raw = base64.b64decode(body["content"])
                     sha = hashlib.sha1(raw).hexdigest()
                     service.files[path] = {"sha": sha, "encoding": "base64", "size": len(raw), "content": body["content"]}
+                    service.branch_version += 1
                 return self.send(200, {"commit": {"sha": sha}})
 
             def assert_branch(self, body):
@@ -87,7 +108,12 @@ class LocalService:
                 if isinstance(result, int):
                     return self.send(result, {"secret": "never print this"})
                 return self.send(200, result)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class ConcurrentHTTPServer(ThreadingHTTPServer):
+            # Admit the whole contention fixture before any handler waits at
+            # the barrier; the default five-connection backlog can starve it.
+            request_queue_size = 32
+
+        self.server = ConcurrentHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -120,6 +146,75 @@ class BudgetTests(unittest.TestCase):
         self.service = LocalService()
         self.addCleanup(self.service.close)
         self.state = self.service.state
+
+    def test_different_report_files_recover_shared_branch_conflict(self):
+        self.service.write_barrier = threading.Barrier(2)
+        self.service.barrier_writers = 2
+        with ThreadPoolExecutor(2) as pool:
+            urls = list(pool.map(lambda n: self.state.checkpoint(f"{n}-1", {"progress": n}), (1, 2)))
+        self.assertEqual(self.service.conflicts, 1)
+        self.assertEqual(len(urls), 2)
+        for n in (1, 2):
+            self.assertEqual(self.state.read(f"reports/{n}-1.json")[0], {"progress": n})
+
+    def test_cache_creation_retries_branch_conflict_without_overwriting_existing_cache(self):
+        key = "a" * 64
+        self.service.branch_conflicts = 1
+        self.state.save_cache(key, {"analysis": "original"})
+        self.assertEqual(self.service.conflicts, 1)
+        self.state.save_cache(key, {"analysis": "replacement"})
+        self.assertEqual(self.state.cached(key), {"analysis": "original"})
+
+    def test_report_conflict_exhaustion_has_bounded_attempts_and_safe_diagnostics(self):
+        self.service.branch_conflicts = 100
+        with patch("threat_review.state.conflict_backoff"), self.assertRaises(APIError) as caught:
+            self.state.checkpoint("1-1", {"private": "source"})
+        self.assertEqual(self.service.write_attempts.count("reports/1-1.json"), WRITE_ATTEMPTS)
+        self.assertEqual(caught.exception.diagnostic, {
+            "code": "STATE_WRITE_FAILED", "service": "github", "operation": "report", "http_status": 409,
+            "write_attempts": WRITE_ATTEMPTS, "write_limit": WRITE_ATTEMPTS})
+
+    def test_report_recovers_a_conflict_burst_longer_than_the_old_window(self):
+        self.service.branch_conflicts = 9
+        with patch("threat_review.state.conflict_backoff"):
+            self.state.checkpoint("1-1", {"coverage": "preserved"})
+        self.assertEqual(self.service.conflicts, 9)
+        self.assertEqual(self.state.read("reports/1-1.json")[0], {"coverage": "preserved"})
+        self.assertFalse(self.service.calls)
+
+    def test_twelve_simultaneous_report_writers_preserve_each_others_data(self):
+        self.service.write_barrier = threading.Barrier(12)
+        self.service.barrier_writers = 12
+        with ThreadPoolExecutor(12) as pool:
+            reports = list(pool.map(lambda n: self.state.checkpoint(f"{n}-1", {"writer": n}), range(1, 13)))
+        self.assertEqual(len(reports), 12)
+        self.assertGreaterEqual(self.service.conflicts, 11)
+        for n in range(1, 13):
+            self.assertEqual(self.state.read(f"reports/{n}-1.json")[0], {"writer": n})
+        self.assertFalse(self.service.calls)
+
+    def test_unknown_checkpoint_failure_is_never_retried(self):
+        transport = self.service.github.transport
+        attempts = []
+        def timed_out(url, token, body=None, method=None):
+            if method == "PUT":
+                attempts.append(url)
+                raise TimeoutError("private error")
+            return transport(url, token, body, method)
+        self.service.github.transport = timed_out
+        with self.assertRaises(TimeoutError):
+            self.state.checkpoint("1-1", {})
+        self.assertEqual(len(attempts), 1)
+
+    def test_exhausted_ledger_conflicts_preserve_operation_and_never_admit_spending(self):
+        before = self.state.read_ledger()
+        self.service.branch_conflicts = 100
+        with patch("threat_review.state.conflict_backoff"), self.assertRaises(BudgetStopped) as caught:
+            self.state.reserve(12, "1-1", "normal", 100_000)
+        self.assertEqual(self.state.read_ledger(), before)
+        self.assertEqual(caught.exception.diagnostic, {
+            "code": "STATE_WRITE_FAILED", "service": "github", "operation": "ledger",
+            "http_status": 409, "write_attempts": WRITE_ATTEMPTS})
 
     def test_atomic_reservations_for_same_run_over_real_http(self):
         # Both clients read the SAME ledger version before either writes it.
@@ -393,6 +488,152 @@ class ScanTests(unittest.TestCase):
         result, _ = self.scan()
         self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET])
         self.assertFalse(result["findings"])
+
+    @staticmethod
+    def change_response(response, **changes):
+        result = json.loads(response["choices"][0]["message"]["content"])
+        result.update(changes)
+        response["choices"][0]["message"]["content"] = json.dumps(result)
+        return response
+
+    def test_empty_analysis_gets_one_explicit_repair_with_identical_source(self):
+        self.files[0]["filename"] = "docs/guide.md"
+        def reply(body):
+            response = self.service.completion(body)
+            return self.change_response(response, analysis="") if len(self.service.calls) == 1 else response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertTrue(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                              fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(len(self.service.calls), 3)
+        first, repair = [json.loads(b["messages"][1]["content"]) for b in self.service.calls[:2]]
+        self.assertEqual(repair.pop("response_repair")["code"], "BATCH_ANALYSIS_INVALID")
+        self.assertEqual(first, repair)
+        self.assertEqual(result["response_repairs"][0]["status"], "completed")
+        self.assertEqual(result["response_repairs"][0]["analysis_characters"], 0)
+        self.assertTrue(any(s.get("response_repairs") for s in self.checkpoints))
+
+    def test_repair_retains_original_findings_and_uncertainty(self):
+        def reply(body):
+            response = self.service.completion(body)
+            if len(self.service.calls) == 1:
+                return self.change_response(response, analysis=" ", findings=[fixtures.FINDING],
+                                            needs_deeper_review=True)
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["findings"][0]["title"], fixtures.FINDING["title"])
+        self.assertTrue(any(s["findings"] and s["covered_units"] == 0 for s in self.checkpoints))
+        integration = next(json.loads(b["messages"][1]["content"]) for b in self.service.calls
+                           if json.loads(b["messages"][1]["content"])["stage"] == "integration")
+        self.assertTrue(integration["units"][0]["needs_deeper_review"])
+        self.assertEqual(integration["units"][0]["findings"], [fixtures.FINDING])
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
+    def test_second_invalid_analysis_stops_without_another_repair(self):
+        def reply(body):
+            return self.change_response(self.service.completion(body, [fixtures.FINDING]), analysis="")
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(len(self.service.calls), 2)
+        self.assertEqual(result["covered_units"], 0)
+        self.assertTrue(result["findings"])
+        self.assertEqual(result["diagnostics"][0]["code"], "BATCH_ANALYSIS_INVALID")
+        self.assertEqual(result["response_repairs"][0]["status"], "failed")
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
+    def test_repair_allowance_is_for_the_whole_scan(self):
+        def reply(body):
+            response = self.service.completion(body)
+            return response if len(self.service.calls) == 2 else self.change_response(response, analysis="")
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(len(result["response_repairs"]), 1)
+        self.assertTrue(result["errors"])
+        self.assertFalse(result["integration_completed"])
+
+    def test_invalid_citations_coverage_shape_and_decision_never_authorize_repair(self):
+        for changes in ({"findings": [dict(fixtures.FINDING, line=999)]},
+                        {"covered_units": None}, {"needs_deeper_review": "false"}):
+            with self.subTest(changes=changes):
+                self.service.calls.clear()
+                self.service.reply = lambda body: self.change_response(
+                    self.service.completion(body), analysis="", **changes)
+                result, _ = self.scan()
+                self.assertEqual(len(self.service.calls), 1)
+                self.assertEqual(result["response_repairs"], [])
+                self.assertTrue(result["errors"])
+
+    def test_integration_cannot_confuse_replayed_source_ids_with_primary_ids(self):
+        self.files[0]["filename"] = "docs/guide.md"
+        wrong = False
+        def reply(body):
+            nonlocal wrong
+            sent = json.loads(body["messages"][1]["content"])
+            response = self.service.completion(body)
+            if sent["stage"] == "integration":
+                self.assertEqual(body["response_format"]["json_schema"]["schema"]["properties"]
+                                 ["covered_units"]["items"]["enum"], [u["id"] for u in sent["units"]])
+                self.assertTrue(all("id" not in u for u in sent["integration_source"]["units"]))
+                if not wrong:
+                    wrong = True
+                    return self.change_response(response, covered_units=[u["source_id"] for u in
+                                                                          sent["integration_source"]["units"]])
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertTrue(result["integration_completed"])
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(result["response_repairs"][0]["code"], "BATCH_ACKNOWLEDGMENT_INVALID")
+        self.assertEqual(result["response_repairs"][0]["status"], "completed")
+
+    def test_repeated_wrong_integration_ids_remain_incomplete(self):
+        def reply(body):
+            sent = json.loads(body["messages"][1]["content"])
+            response = self.service.completion(body)
+            return (self.change_response(response, covered_units=["source-only-id"])
+                    if sent["stage"] == "integration" else response)
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(result["covered_units"], result["total_units"])
+        self.assertFalse(result["integration_completed"])
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(result["response_repairs"][0]["status"], "failed")
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
+    def test_analysis_and_acknowledgment_share_one_repair_allowance(self):
+        def reply(body):
+            sent = json.loads(body["messages"][1]["content"])
+            response = self.service.completion(body)
+            if len(self.service.calls) == 1:
+                return self.change_response(response, analysis="")
+            return (self.change_response(response, covered_units=[])
+                    if sent["stage"] == "integration" else response)
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(len(result["response_repairs"]), 1)
+        self.assertTrue(result["errors"])
+
+    def test_wrong_source_ack_repair_preserves_citation_valid_findings(self):
+        def reply(body):
+            response = self.service.completion(body)
+            if len(self.service.calls) == 1:
+                return self.change_response(response, covered_units=[], findings=[fixtures.FINDING])
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertTrue(result["findings"])
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
 
     def test_identical_inputs_reuse_every_batch_without_spend(self):
         self.scan()
@@ -686,19 +927,76 @@ class LifecycleTests(unittest.TestCase):
         self.env = {"GH_TOKEN": "synthetic", "OPENROUTER_API_KEY": "synthetic",
                     "GITHUB_RUN_ID": "123", "THREAT_REVIEW_ENABLED": "true"}
         self.github = fixtures.FakeGitHub()
+        original_call = self.github.call
+        def canonical_call(path, *args):
+            if path == "/git/trees/" + "e" * 40:
+                return {"tree": [{"path": "threat-model.yaml", "type": "blob", "mode": "100644", "sha": "f" * 40}]}
+            if path == "/git/blobs/" + "f" * 40:
+                raw = fixtures.THREAT.encode()
+                return {"encoding": "base64", "size": len(raw), "content": base64.b64encode(raw).decode()}
+            result = original_call(path, *args)
+            if path == "/git/trees/" + "1" * 40:
+                result = copy.deepcopy(result)
+                result["tree"].append({"path": "docs", "type": "tree", "sha": "e" * 40})
+            return result
+        self.github.call = canonical_call
         def factory(*args, **kwargs):
             return PaidCalls(*args, **kwargs, transport=self.service.transport)
         self.factory = factory
 
     def run_review(self, event=fixtures.EVENT):
-        return run(event, self.root, self.env, self.github, self.service.state, self.factory)
+        return run(event, self.env, self.github, self.service.state, self.factory)
+
+    def test_scan_continues_after_initial_checkpoint_conflict_without_repeating_provider_calls(self):
+        self.service.branch_conflicts = 1
+        self.service.conflict_path = "reports/123-1.json"
+        body = self.run_review()
+        self.assertIn("cross-file integration complete", body)
+        self.assertEqual(self.service.conflicts, 1)
+        identities = [(body["model"], json.loads(body["messages"][1]["content"])["stage"])
+                      for body in self.service.calls]
+        self.assertEqual(identities, [(SONNET, "source"), (SONNET, "integration"), (OPUS, "source")])
+
+    def test_current_scanner_reads_canonical_context_from_pinned_base_blob(self):
+        (self.root / "docs/threat-model.yaml").unlink()
+        self.assertIn("cross-file integration complete", self.run_review())
+
+    def test_missing_canonical_context_retains_comment_and_diagnostics_before_spend(self):
+        original_call = self.github.call
+        def missing_context(path, *args):
+            if path == "/git/trees/" + "e" * 40:
+                raise APIError(404)
+            return original_call(path, *args)
+        self.github.call = missing_context
+        diagnostics = self.root / "diagnostics.json"
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(diagnostics)
+        body = self.run_review()
+        self.assertIn("HTTP 404", body)
+        self.assertIn("HTTP 404", self.github.posts[-1][1])
+        self.assertEqual(self.service.calls, [])
+        failure = json.loads(diagnostics.read_text())["diagnostics"][0]
+        self.assertEqual(failure["phase"], "canonical_context")
+        self.assertEqual(failure["http_status"], 404)
+
+    def test_initial_conflict_exhaustion_is_diagnosed_before_any_provider_request(self):
+        diagnostics = self.root / "diagnostics.json"
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(diagnostics)
+        self.service.branch_conflicts = 100
+        self.service.conflict_path = "reports/123-1.json"
+        with patch("threat_review.state.conflict_backoff"):
+            self.run_review()
+        self.assertEqual(self.service.calls, [])
+        failure = json.loads(diagnostics.read_text())["diagnostics"][0]
+        self.assertEqual(failure["phase"], "initial_checkpoint")
+        self.assertEqual(failure["operation"], "report")
+        self.assertEqual(failure["http_status"], 409)
 
     def test_runner_uses_trusted_daily_policy_for_funded_review_after_pilot(self):
         for pr in range(100, 110):
             self.service.state.admit(pr)
         self.env.update(THREAT_REVIEW_BUDGET_MODE="daily", THREAT_REVIEW_STATE_TOKEN="synthetic")
         with patch("threat_review.budget_runner.GitHub", return_value=self.service.github):
-            result = run(fixtures.EVENT, self.root, self.env, self.github, paid_factory=self.factory)
+            result = run(fixtures.EVENT, self.env, self.github, paid_factory=self.factory)
         self.assertIn("cross-file integration complete", result)
         self.assertTrue(self.service.calls)
         self.assertGreater(len(self.service.state.read("ledger.json")[0]["prs"]), 10)
@@ -733,6 +1031,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(report["review"]["diagnostics"][0]["http_status"], 503)
         self.assertIn("DIAGNOSTICS_WRITE_FAILED", errors.getvalue())
         self.assertNotIn(str(self.root), errors.getvalue())
+
+    def test_cli_result_write_failure_preserves_original_error_and_findings(self):
+        blocked = self.root / "blocked-result"
+        blocked.mkdir()
+        event = self.root / "event.json"
+        event.write_text(json.dumps(fixtures.EVENT))
+        diagnostic_path = self.root / "diagnostics.json"
+        self.env.update(GITHUB_EVENT_PATH=str(event), THREAT_REVIEW_RESULT_FILE=str(blocked),
+                        THREAT_REVIEW_DIAGNOSTICS_FILE=str(diagnostic_path))
+        self.service.reply = lambda body: (self.service.completion(body, [fixtures.FINDING])
+                                          if len(self.service.calls) == 1 else 503)
+        actual_run = lambda event, env: run(event, env, self.github, self.service.state, self.factory)
+        output = io.StringIO()
+        with patch.dict(os.environ, self.env), patch("threat_review.budget_runner.run", side_effect=actual_run), \
+                patch("signal.signal"), patch("signal.alarm"), redirect_stdout(output), \
+                self.assertRaises(SystemExit) as caught:
+            runpy.run_path(str(Path(__file__).with_name("threat-model-review.py")), run_name="__main__")
+        self.assertEqual(caught.exception.code, 1)
+        diagnostic = json.loads(diagnostic_path.read_text())
+        codes = [item["code"] for item in diagnostic["diagnostics"]]
+        self.assertIn("OPENROUTER_API_ERROR", codes)
+        self.assertIn("RESULT_WRITE_FAILED", codes)
+        self.assertGreater(diagnostic["covered_units"], 0)
+        self.assertIn("HTTP 503", output.getvalue())
+        self.assertNotIn("setup or GitHub API failed", output.getvalue())
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertTrue(saved["review"]["findings"])
+        self.assertFalse(clean(saved, fixtures.HEAD, fixtures.BASE))
     def test_progress_comment_precedes_source_collection(self):
         files = self.github.files
         def collect(count):
@@ -847,6 +1173,171 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(saved["review"], report["review"])
         self.assertNotIn("Review not completed", body)
         self.assertFalse(self.service.calls)
+
+    def test_bedrock_analysis_repair_across_all_selected_models_and_stages(self):
+        self.env["THREAT_REVIEW_REQUIRE_CLEARANCE"] = "true"  # fresh evidence for each case
+        for alias, stage in (("sonnet", "source"), ("sonnet", "integration"), ("opus", "source"),
+                             ("sol", "source"), ("sol", "integration")):
+            with self.subTest(model=alias, stage=stage):
+                damaged = False
+                def reply(request):
+                    nonlocal damaged
+                    sent = json.loads(request["messages"][0]["content"][0]["text"])
+                    response = self.bedrock_response(request)
+                    if request["modelId"].endswith("/" + alias) and sent["stage"] == stage and not damaged:
+                        damaged = True
+                        result = json.loads(response["output"]["message"]["content"][0]["text"])
+                        result["analysis"] = ""
+                        response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+                    return response
+                body, report, diagnostic, requests = self.bedrock_run(reply)
+                self.assertTrue(damaged)
+                self.assertEqual(len(requests), 6)
+                self.assertTrue(clean(report, fixtures.HEAD, fixtures.BASE))
+                self.assertEqual(diagnostic["response_repairs"][0]["status"], "completed")
+                self.assertEqual(diagnostic["response_repairs"][0]["request_id"],
+                                 "12345678-1234-1234-1234-123456789abc")
+                self.assertIn("Response repair: 1/1 completed", body)
+                self.assertFalse(self.service.calls)
+
+    def test_bedrock_analysis_repair_cannot_exceed_call_cap(self):
+        def reply(request):
+            response = self.bedrock_response(request)
+            result = json.loads(response["output"]["message"]["content"][0]["text"])
+            result.update(analysis="", findings=[fixtures.FINDING])
+            response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+            return response
+        body, report, diagnostic, requests = self.bedrock_run(reply, BEDROCK_SCAN_MAX_CALLS="1")
+        self.assertEqual(len(requests), 1)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "BEDROCK_CALL_LIMIT")
+        self.assertTrue(report["review"]["findings"])
+        self.assertEqual(diagnostic["response_repairs"][0]["status"], "failed")
+        self.assertFalse(self.service.calls)
+
+    def test_native_accounting_failures_retain_valid_findings_and_block_clearance(self):
+        self.env["THREAT_REVIEW_REQUIRE_CLEARANCE"] = "true"
+        original_record = BedrockCalls.record
+        for cause, code in (("missing", "BEDROCK_USAGE_MISSING"), ("write", "BEDROCK_USAGE_RECORD_FAILED")):
+            with self.subTest(cause=cause):
+                def record(adapter, **fields):
+                    if cause == "write" and fields.get("event") == "response":
+                        raise OSError("PRIVATE_ACCOUNTING_ERROR")
+                    return original_record(adapter, **fields)
+                def reply(request):
+                    response = self.bedrock_response(request)
+                    result = json.loads(response["output"]["message"]["content"][0]["text"])
+                    result["findings"] = [fixtures.FINDING]
+                    response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+                    if cause == "missing":
+                        response["usage"] = {}
+                    return response
+                with patch.object(BedrockCalls, "record", record):
+                    body, report, diagnostic, requests = self.bedrock_run(reply)
+                self.assertEqual(len(requests), 1)
+                self.assertTrue(report["review"]["findings"])
+                self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+                self.assertTrue(any(d["code"] == code and d["stage"] == "source"
+                                    for d in diagnostic["diagnostics"]))
+                self.assertEqual(report["review"]["bedrock_unknown_usage"], 1)
+                self.assertNotIn("PRIVATE_ACCOUNTING_ERROR", json.dumps(diagnostic))
+                self.assertFalse(self.service.calls)
+
+    def test_analysis_repair_stops_before_transport_after_failed_checkpoint(self):
+        def reply(request):
+            response = self.bedrock_response(request)
+            result = json.loads(response["output"]["message"]["content"][0]["text"])
+            result.update(analysis="", findings=[fixtures.FINDING])
+            response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+            self.service.fail_write = True
+            return response
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(report["review"]["findings"])
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "STATE_WRITE_FAILED")
+        self.assertFalse(self.service.calls)
+
+    def test_interrupted_repair_does_not_reuse_original_request_metadata(self):
+        count = 0
+        def reply(request):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise KeyboardInterrupt("PRIVATE_INTERRUPTED_REPAIR")
+            response = self.bedrock_response(request)
+            result = json.loads(response["output"]["message"]["content"][0]["text"])
+            result["analysis"] = ""
+            response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+            return response
+        with self.assertRaises(KeyboardInterrupt):
+            self.bedrock_run(reply)
+        diagnostic = json.loads((self.root / "diagnostics.json").read_text())
+        active = diagnostic["active_request"]
+        self.assertEqual(active["phase"], "provider_call")
+        self.assertEqual(active["response_attempt"], 2)
+        self.assertNotIn("request_id", active)
+        self.assertNotIn("stop_reason", active)
+        self.assertNotIn("call", active)
+        self.assertEqual(diagnostic["response_repairs"][0]["request_id"],
+                         "12345678-1234-1234-1234-123456789abc")
+        self.assertNotIn("PRIVATE_INTERRUPTED_REPAIR", json.dumps(diagnostic))
+
+    def test_closed_pr_has_a_distinct_stop_reason_before_any_model_call(self):
+        collect = self.github.files
+        pull = self.github.pull
+        def files(count):
+            result = collect(count)
+            self.github.pull = lambda: dict(pull(), state="closed", merged=True)
+            return result
+        self.github.files = files
+        self.env["THREAT_REVIEW_DIAGNOSTICS_FILE"] = str(self.root / "diagnostics.json")
+        body = self.run_review()
+        self.assertIn("PR closed or merged", body)
+        self.assertFalse(self.service.calls)
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertEqual(saved["review"]["diagnostics"][0]["code"], "PR_CLOSED")
+        self.assertFalse(clean(saved, fixtures.HEAD, fixtures.BASE))
+
+    def assert_fallback_accounting_halts_recovered_primary(self, mode):
+        def fallback(body):
+            response = self.service.completion(body, [fixtures.FINDING], cost=2 if mode == "overrun" else 0.01)
+            if mode == "missing":
+                response["usage"].pop("cost")
+            return response
+        self.service.reply = fallback
+        if mode == "reconciliation":
+            def failed_settlement(*args):
+                raise APIError(403)
+            self.service.state.settle = failed_settlement
+        native_calls = 0
+        def reply(request):
+            nonlocal native_calls
+            native_calls += 1
+            if native_calls == 1:
+                error = RuntimeError("synthetic unavailability")
+                error.response = {"Error": {"Code": "ServiceUnavailableException"}}
+                raise error
+            return self.bedrock_response(request)  # recovery must not bypass stop
+        body, report, diagnostic, requests = self.bedrock_run(reply)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(self.service.calls), 1)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertFalse(report["review"]["integration_completed"])
+        self.assertEqual(report["review"]["findings"][0]["title"], fixtures.FINDING["title"])
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertEqual(saved["review"]["findings"], report["review"]["findings"])
+        self.assertIn(fixtures.FINDING["title"], body)
+        self.assertEqual(diagnostic["diagnostics"][0]["code"], "REVIEW_BUDGET_STOPPED")
+
+    def test_missing_fallback_cost_stops_recovered_bedrock_and_retains_findings(self):
+        self.assert_fallback_accounting_halts_recovered_primary("missing")
+
+    def test_failed_fallback_settlement_stops_recovered_bedrock_and_retains_findings(self):
+        self.assert_fallback_accounting_halts_recovered_primary("reconciliation")
+
+    def test_fallback_overrun_stops_recovered_bedrock_and_retains_findings(self):
+        self.assert_fallback_accounting_halts_recovered_primary("overrun")
 
     def test_bedrock_truncation_preserves_code_request_identity_and_no_clearance(self):
         def reply(request):

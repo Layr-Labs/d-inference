@@ -144,6 +144,7 @@ extension EngineV2Bridge {
                     _testBeforeNativeTerminal = nil
                     await gate(usage)
                 }
+                if let gate = _testPersistentBeforeNativeTerminal { await gate(usage) }
                 #endif
                 sawTerminal = true
                 // The distributed engine emits a clean .finished only after

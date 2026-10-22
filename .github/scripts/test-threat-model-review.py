@@ -101,10 +101,16 @@ class ReviewTests(unittest.TestCase):
         _, evidence, _ = prepare(THREAT, FILES)
         mutations = [{"line": 99}, {"file": "unseen.go"}, {"line": True}, {"side": "other"},
                      {"severity": "critical"}, {"threat_ids": ["T-999"]}, {"title": ""},
-                     {"detail": "x" * 1601}]
+                     {"detail": "x" * 1601}, {"title": " " * 160 + "x"},
+                     {"detail": "x" + "\n" * 1600}]
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(ReviewUnavailable):
                 validate_findings({"findings": [dict(FINDING, **mutation)]}, evidence, THREAT)
+
+    def test_finding_text_bounds_count_raw_characters(self):
+        _, evidence, _ = prepare(THREAT, FILES)
+        finding = dict(FINDING, title=" " * 159 + "x", detail="x" + "\n" * 1599)
+        self.assertEqual(validate_findings({"findings": [finding]}, evidence, THREAT), [finding])
 
     def test_all_canonical_id_families_survive_full_scan(self):
         threat_model = """adversaries:
@@ -729,11 +735,16 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("\nconcurrency:", source)
         self.assertIn("\n    concurrency:\n", source)
 
-    def test_secret_bearing_workflow_uses_only_trusted_base_code(self):
+    def test_secret_bearing_workflow_separates_current_scanner_from_pinned_base_context(self):
         source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
         self.assertIn("pull_request_target:", source)
         self.assertNotIn("pull_request:\n", source)
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}", source)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", source)
+        self.assertIn("THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha || env.THREAT_REVIEW_BASE_SHA }}", source)
+        scanner_checkout = source.split("name: Check out the current trusted scanner", 1)[1].split(
+            "name: Record scanner revision", 1)[0]
+        self.assertNotIn("base.sha", scanner_checkout)
+        self.assertNotIn("ref: ${{ env.THREAT_REVIEW_BASE_SHA }}", source)
         self.assertNotIn("head.sha", source)
         self.assertNotIn("head.ref", source)
         self.assertIn("persist-credentials: false", source)
@@ -748,7 +759,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("run: python3 .github/scripts/threat-model-review.py", source)
         install = "python3 -m pip install --require-hashes -r .github/scripts/requirements-bedrock.txt"
         self.assertEqual([line.strip() for line in source.splitlines() if "pip install" in line], ["run: " + install])
-        self.assertLess(source.index("Pin manual review to its exact trusted base"), source.index(install))
+        self.assertLess(source.index("Check out the current trusted scanner"), source.index(install))
         self.assertLess(source.index(install), source.index("Obtain short-lived Bedrock credentials"))
         dependencies = Path(__file__).with_name("requirements-bedrock.txt").read_text().splitlines()
         self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9_]+==[0-9A-Za-z.]+ --hash=sha256:[a-f0-9]{64}", line)

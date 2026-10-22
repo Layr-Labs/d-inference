@@ -437,9 +437,9 @@ private final class CollectedResponseBody: ResponseBodyWriter, @unchecked Sendab
             JSONSerialization.jsonObject(with: Data(String(buffer: body.bytes).utf8)) as? [String: Any])
         return (response.status, try #require(envelope["error"] as? [String: Any]))
     }
-    let (status, refusal) = try await render(.reasoningCannotBeDisabled)
+    let (status, refusal) = try await render(.reasoningExclusionUnsupported)
     #expect(status == .badRequest)
-    #expect(refusal["message"] as? String == GLM5NextPromptPolicy.reasoningCannotBeDisabledMessage)
+    #expect(refusal["message"] as? String == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
     #expect(refusal["code"] as? String == "unsupported_value")
     #expect(refusal["type"] as? String == "invalid_request_error")
     // Other GLM policy refusals keep the closed, content-free message.

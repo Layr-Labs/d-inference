@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -35,7 +35,8 @@ Stop the isolated local process to disable it. There is no target-only GLM
 serving engine; target-only construction is limited to benchmarks.
 
 Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
-(absorbed sparse attention, parallel-threshold selection, native KDA
+(absorbed sparse attention with native decode selection and sparse prefill kernels,
+parallel-threshold selection, native KDA
 recurrence, fused hyper-connections and routed-expert combine), recorded in the
 encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
@@ -600,9 +601,27 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 | Checkpoint KV precision | `--kv-checkpoint-quantization balanced\|k8v4\|k8v8\|native`; independently overrides checkpoint config/environment; default requests balanced. Applies only to eligible complete stores and never forces the live backend. Cache-disabled modes do not measure checkpoint writes or restores. |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
-| Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
+| Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`), `--prefill-fixed-prompt` (`false`; scheduler-prefill only) (`BenchmarkCommand.swift`, `BenchmarkCommand+Sweep.swift`) |
 | Arrival invariance | `--arrival-invariance`, `--arrival-width` (`4`, range `1...16`), `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly one integer ≥2 per row, overrides uniform length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`); requested width alone is not measured forward-width evidence |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
+
+Scheduler prefill defaults to rotating the seed tokens by `iteration * 17` for
+measured iterations; both bootstrap and full-context warmups use offset `0`.
+`--prefill-fixed-prompt` keeps offset `0` for every request, repeating identical
+input tokens at each prompt length for sustained repeated-input measurements.
+It preserves fresh engines, disabled prefix caching, chunk policy and timing.
+The JSON report records `promptMode` (`"rotating"` or `"fixed"`),
+`warmupPromptOffset`, and each sample's `promptOffset` before wrapping by the
+seed length. These optional fields extend schema `4`; absent metadata in older
+reports remains unspecified. The flag is rejected outside `--scheduler-prefill`
+before runtime loading (`provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift`,
+`run`, `makePrompt`, `SchedulerPrefillBenchmarkReport`).
+
+Scheduler prefill installs `MLXMemoryGuard.configureOnce` before loading weights,
+matching serving and the throughput sweep. Stderr records the selected allocator
+limits and effective cache limit. Earlier scheduler-prefill runs omitted this
+setup; account for that difference when comparing saved results. This does not
+change memory reserves or establish wired weight residency.
 
 Ordinary DiffusionGemma generation uses its production native block engine and
 honors `--kv-quantization`. Its `NATIVE_BLOCK_BENCHMARK` records include resolved
@@ -1083,7 +1102,11 @@ For a guarded automatic AR paged retry, use
 Diffusion assembly does not consult this crash-loop guard. For explicit contiguous recovery, resolve
 `native` precision before selecting `contiguous` or disabling paged storage
 with `DARKBLOOM_CBV2_PAGED_KV=0`; see the
-[precision settings](#providertoml-keys-read-by-the-cli). A posture pass alone
+[precision settings](#providertoml-keys-read-by-the-cli).
+`DARKBLOOM_CBV2_PAGED_KV=0` also fails the Nemotron Super load, which serves
+paged KV only and ignores `engine_v2_kv_backend`
+([configuration reference](../reference/configuration.md#engine-and-scheduler)).
+A posture pass alone
 does not qualify precision or the runtime. Explicit `paged` construction
 failures refuse the load; a native policy veto that serves contiguous still
 fails the explicit-request check (`KVBackendPosture.backendCheck`,

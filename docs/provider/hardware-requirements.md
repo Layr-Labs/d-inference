@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,17 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+Nemotron 3.5 Super (`nvidia-nemotron-3.5-super`) is registered for Apple M5 Max
+(128 GB) and M5 Ultra (`apple_m5`, at least 128 GB of unified memory). Its
+default eight-request speculating owner, serving the full 262,144-token
+context, leaves 13.9 GiB of a 128 GB Mac's cap beside its activation reserve,
+but a 16-image request beside it does not fit; with less memory available it
+loads a narrower owner, down to one request from 85.6 GiB available. Only
+256 GB (M3 Ultra) is measured on hardware. Plan about 75 GB of disk for its weights. The derivation
+is in
+[hardware support](../architecture/hardware-support.md#context); the slot is
+described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
 
 Native live inference is the default. Independent checkpoint compression can
 reduce encoded older-row storage, not the native serving allocation or measured
@@ -340,6 +351,25 @@ default).
 | The daemon prevents system sleep while serving | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` (`preventSystemSleep`) |
 | Thermal state (`nominal`, `fair`, `serious`, `critical`) is sampled from `ProcessInfo.thermalState`, sent to the coordinator as `thermal_state`, and written to the daemon state file read by `darkbloom status` | `provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift`, `provider-swift/Sources/ProviderCore/Protocol/Types.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
 | Optional experimental fan control (Macs with a fan and a validated GPU sensor) | [`fan-control.md`](./fan-control.md) |
+
+## Flint validation scope
+
+The [native Flint implementation](../architecture/inference.md#native-flint)
+accepts the official text-only artifact; physical verification currently targets
+one Apple M5 Max with 128 GiB RAM.
+
+| Contract or evidence | Scope | Source |
+|---|---|---|
+| Memory admission | No new minimum RAM tier or concurrency guarantee; full/sliding accounting remains in force | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`, `ProductionModelAdapter`; [memory model](../architecture/hardware-support.md#flint-memory-admission) |
+| Context | Artifact context bound is retained; full 262,144-token qualification remains outstanding | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintConfiguration.swift`, `FlintConfiguration` |
+| Precision | Official package uses native BF16 KV; live and checkpoint selections must be native | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| NAX dispatch | Captured official INT4 layers 0–2 and head execute dense `affine_qmm_t_nax` and routed `affine_gather_qmm_rhs_nax_nt`; FP32 head uses a portable fallback. This establishes those operators' execution, not a whole-model speedup | SDK `FlintCaptureTests`; [validation procedure](../developer/test.md#flint-native-validation) |
+| NAX comparison | `MLX_METAL_NO_NAX` is a build-time definition; `MLX_ENABLE_TF32` is a process-start precision control. Initial numerical checks use `MLX_ENABLE_TF32=0` without changing fleet defaults | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp` |
+| Performance | New measurements of the prefill output optimization are pending. The 2× M3 Ultra prefill and 400 decode tok/s targets are not met | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`, `cbv2Prefill`; [measurement requirements](../developer/test.md#flint-native-validation) |
+
+Existing system swap is distinct from swap growth during a measured run.
+Earlier throughput samples precede the current optimization and were taken with
+another inference service present; they do not qualify this revision.
 
 ## Related
 

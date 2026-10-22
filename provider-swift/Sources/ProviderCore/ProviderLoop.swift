@@ -248,6 +248,16 @@ public actor ProviderLoop {
     internal var nativeMiMoConsumerLeases: [String: [UUID: NativeLocalConsumerLease]] = [:]
     internal var nativeMiMoJoinedLeaseRevisions: [UUID: [UUID: UInt64]] = [:]
     internal var nativeMiMoClosedConsumerLeaseIDs: Set<UUID> = []
+    /// Builds the managed Nemotron Super owner; tests inject fixtures that
+    /// run the same load transaction (`ProviderLoop+NemotronSuper`).
+    internal var nemotronSuperSlotLoader = NemotronSuperSlotLoader.pinnedCheckpoint
+    /// Runtime-policy environment of the Super load; nil reads the process.
+    internal var nemotronSuperEnvironment: [String: String]?
+    /// Weights, reservations and banks of Super owners whose native work did
+    /// not retire. They stay in the fleet budget and refuse every later Super
+    /// load until restart, except that a wedged retirement completing after
+    /// its bound releases its owner's share.
+    internal var nemotronSuperRetainedWeightBytes: UInt64 = 0
     /// Refusal/hold-only fixture boundary; never supplies a successful native
     /// result, memory estimate, retirement receipt, or replacement model.
     internal var nativeMiMoBoundaryForTesting: (@Sendable (String) async throws -> Void)?
@@ -489,6 +499,10 @@ public actor ProviderLoop {
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
+    /// Set when a Nemotron Super slot retires: macOS returns its ~80 GB of
+    /// physical pages up to about a second after Metal drops them, so any
+    /// load inside the window re-samples instead of refusing.
+    internal var nemotronSuperMemoryRetirement: NativeMemoryRetirementWindow?
 
     /// Serializes KV-GRANT mutations: the load-side re-slice
     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →

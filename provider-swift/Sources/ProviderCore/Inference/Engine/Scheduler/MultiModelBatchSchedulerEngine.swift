@@ -459,6 +459,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
+            try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
             request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
             if modelType == "mimo_v2" {
@@ -788,7 +789,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if let failure = error as? PreContentDeadlineFailure { throw failure }
                     if error is CancellationError { throw CancellationError() }
                     if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
-                    if case .tokenBudgetExhausted? = error as? MultiModelBatchSchedulerEngineError { throw error }
+                    if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
                     if let visionError = error as? EngineV2VisionPrefillError {
                         switch visionError {
                         case .noProcessedMedia:
@@ -1281,6 +1282,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var failedTerminal: MultiModelBatchSchedulerEngineError?
                 var router = NativeToolStreamRouter(handler: toolHandler,
                     requiresToolCall: prepared.requiresToolCall, nativePrefix: nativeReasoningPrefix,
+                    tools: prepared.tools?.map { $0.toolSpec() },
                     preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                     nativeGemmaChannels: nativeGemmaChannels,
                     nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,

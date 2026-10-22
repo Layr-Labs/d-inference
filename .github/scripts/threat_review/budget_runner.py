@@ -5,13 +5,20 @@ from pathlib import Path
 from urllib.parse import quote
 from .client import GitHub, ReviewUnavailable
 from .budget_scan import Scanner, failure
-from .context import ThreatContext
+from .context import ThreatContext, canonical_at
 from .paid import PaidCalls
 from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render
 from .runner import same_revision, verify_diff
 from .source import complete_files
 from .state import State
-from .diagnostics import failure_record, write_diagnostics
+from .diagnostics import ReviewFailure, failure_record, write_diagnostics
+
+
+class ResultWriteFailure(ReviewUnavailable):
+    """Carry saved scan evidence to the CLI when local result delivery fails."""
+    def __init__(self, snapshot, summary):
+        super().__init__("Final result could not be written; automatic clearance unavailable")
+        self.snapshot, self.summary = snapshot, summary
 
 
 def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False, clearance=False):
@@ -36,6 +43,12 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
     if snapshot.get("diagnostics"):
         body += "\n\nFailure diagnostics: " + "; ".join(
             f"`{item['code']}`" for item in snapshot["diagnostics"])
+    if snapshot.get("response_repairs"):
+        repairs = snapshot["response_repairs"]
+        completed = sum(item["status"] == "completed" for item in repairs)
+        body += (f"\n\nResponse repair: {completed}/{len(repairs)} completed; "
+                 "one extra request maximum per scan, charged within the existing provider limits. "
+                 "Earlier findings and uncertainty are retained.")
     # The legacy renderer's full-text-model claim does not describe this engine.
     body = re.sub(r"(?m)^Coverage: .*", "", body)
     if clearance:
@@ -59,15 +72,23 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
         body += (f"\n\nSaved report contains {len(snapshot.get('findings', []))} finding(s) and "
                  f"{len(snapshot.get('limited_files', []))} file(s) requiring manual review.")
     if "bedrock_requests" in snapshot:
+        # Older saved snapshots have no cache breakdown: keep that explicitly
+        # unavailable instead of presenting unrecorded input as zero.
+        cache_input = (f"{snapshot['bedrock_cache_read_input_tokens']} cache-read + "
+                       f"{snapshot['bedrock_cache_write_input_tokens']} cache-write"
+                       if all(key in snapshot for key in ("bedrock_cache_read_input_tokens",
+                                                          "bedrock_cache_write_input_tokens"))
+                       else "unavailable cache")
         body += (f"\n\nBedrock: {snapshot['bedrock_requests']} request(s), "
-                 f"{snapshot['bedrock_input_tokens']} input / {snapshot['bedrock_output_tokens']} output tokens; "
+                 f"{snapshot['bedrock_input_tokens']} uncached + {cache_input} input / "
+                 f"{snapshot['bedrock_output_tokens']} output tokens; "
                  f"{snapshot['bedrock_unknown_usage']} request(s) with unknown usage. "
                  f"OpenRouter backup used {snapshot['openrouter_fallbacks']} time(s). "
                  "Dollar amounts above cover OpenRouter only; AWS billing is reconciled separately.")
     return body
 
 
-def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
+def run(event, env, github=None, state=None, paid_factory=PaidCalls):
     repository = event["repository"]["full_name"]
     pr = event["pull_request"]
     head, base, number = pr["head"]["sha"], pr["base"]["sha"], pr["number"]
@@ -92,11 +113,14 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     snapshot = {"errors": [], "findings": []}
     scanner = None
     publication_uncertain = False
+    lifecycle_phase = "setup"
 
     def alive():
         current = github.pull()
+        if current.get("state") != "open":
+            raise ReviewFailure("PR closed or merged; review stopped without merge clearance", "PR_CLOSED")
         if not same_revision(current, head, base_ref):
-            raise ReviewUnavailable("PR revision changed")
+            raise ReviewFailure("PR revision changed; outdated review stopped", "PR_REVISION_CHANGED")
         if diff_base:
             verify_diff(github, current, base, head, diff_base)
 
@@ -131,7 +155,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         # Preserve local progress before a remote checkpoint/publication can fail.
         write_diagnostics(env, snapshot)
         # Save even when the PR head moved. Publication alone needs a live head.
-        history = state.checkpoint(run_id, {"repository": repository, "head": head, "base": base,
+        history = state.checkpoint(run_id, {"repository": repository, "run": run_id, "head": head, "base": base,
                                            "diff_base": diff_base, "previous_comment": previous,
                                            "review": snapshot})
         publish()
@@ -159,11 +183,14 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             raise ReviewUnavailable("Review key missing")
         # A large PR can take time to collect. Acknowledge it and archive prior
         # advice before those reads, rather than leaving the author waiting.
+        lifecycle_phase = "initial_checkpoint"
         checkpoint(snapshot)
+        lifecycle_phase = "collect_source"
         files = github.files(current["changed_files"])
         alive()
         files = complete_files(github, files, diff_base, head)
-        context = ThreatContext((root / "docs/threat-model.yaml").read_text())
+        lifecycle_phase = "canonical_context"
+        context = ThreatContext(canonical_at(github, base))
         if bedrock:
             from .bedrock import BedrockCalls
             paid = BedrockCalls(state, number, run_id, key, context.prefix(), env, alive=alive)
@@ -175,12 +202,14 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         # advice remains useful for advisory mode but cannot grant auto-merge.
         scanner.use_cache = env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") != "true"
         evidence = scanner.evidence
+        lifecycle_phase = "scan"
         checkpoint(scanner.snapshot())
         snapshot = scanner.run(force_deep)
     except Exception as error:
         snapshot = scanner.snapshot() if scanner else snapshot
         snapshot.setdefault("errors", []).append(failure(error))
-        snapshot.setdefault("diagnostics", []).append(failure_record(error, {"stage": "lifecycle"}))
+        snapshot.setdefault("diagnostics", []).append(failure_record(
+            error, {"stage": "lifecycle", "phase": lifecycle_phase}))
         try:
             checkpoint(snapshot)
         except Exception:
@@ -194,8 +223,23 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
                 pass
     write_diagnostics(env, snapshot)
     if env.get("THREAT_REVIEW_RESULT_FILE"):
-        Path(env["THREAT_REVIEW_RESULT_FILE"]).write_text(json.dumps({
-            "repository": repository, "head": head, "base": base, "diff_base": diff_base,
-            "review": snapshot}))
+        path = Path(env["THREAT_REVIEW_RESULT_FILE"])
+        try:
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(json.dumps({
+                "repository": repository, "run": run_id, "head": head, "base": base, "diff_base": diff_base,
+                "review": snapshot}))
+            temporary.replace(path)
+        except OSError:
+            snapshot.setdefault("errors", []).append("Final result unavailable; automatic clearance blocked")
+            snapshot.setdefault("diagnostics", []).append({"code": "RESULT_WRITE_FAILED", "phase": "result"})
+            write_diagnostics(env, snapshot)
+            try:
+                checkpoint(snapshot)
+            except Exception:
+                pass  # Saved scan diagnostics remain authoritative; never restart paid work.
+            raise ResultWriteFailure(snapshot, status_body(
+                repository, head, base, diff_base, snapshot, evidence, history,
+                clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")) from None
     return status_body(repository, head, base, diff_base, snapshot, evidence, history,
                        clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")

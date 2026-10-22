@@ -29,16 +29,17 @@ GLM-5.3-Flash serving, and updates the MLX pins, so its metallib changes. See
 the [`v0.10.0` changelog entry](../../CHANGELOG.md) for the full scope and its
 qualification limits.
 
-Tag `v0.10.0` only after production runs a darkbloom-platform coordinator that
-normalizes requests with v9, enforces the Nemotron 3.5 Super provider-version
-floor at `0.10.0`, gates GLM-5.3-Flash on the `glm5_next_v1` capability and
-serves a provider contract snapshot pinned to the merged preparation commit.
-Then tag promptly: until providers update, a v9 coordinator serves 0.9.22
-providers without cache scopes. A v8 coordinator accepts the `0.10.0`
-registration and serves its providers, but without cache scopes and without the
-new models' gates. The platform owns that deployment and its cache-routing
-allowlist; model registration and promotion are separate approvals. This
-preparation does not tag, register, upload or deploy anything.
+Tag `v0.10.0` only after production runs a `darkbloom-platform` coordinator
+that normalizes requests with v9, enforces the Nemotron 3.5 Super
+provider-version floor at `0.10.0`, gates GLM-5.3-Flash on the `glm5_next_v1`
+capability and serves a provider-contract snapshot pinned to the merged
+preparation commit. A v8 coordinator accepts the `0.10.0` registration and
+serves its providers, but without cache scopes and without the new models'
+gates. Then tag promptly: until providers update, a v9 coordinator serves
+0.9.22 providers without cache scopes. The platform owns the coordinator
+deployment and its cache-routing allowlist; model registration and promotion
+are separate approvals. This preparation does not tag, register, upload or
+deploy anything.
 
 `v0.9.22` was [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
 from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, `v0.9.21` was

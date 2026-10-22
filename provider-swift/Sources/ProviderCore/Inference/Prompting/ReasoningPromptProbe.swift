@@ -23,23 +23,30 @@ enum ReasoningPromptProbe {
     static let tailTokenCount = 8
 
     /// `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0` restores the undecided parser
-    /// for Qwen prompts whose tail carries no think marker.
+    /// for prompts whose tail carries no think marker.
     static let plainTailContentSeedEnvironmentKey = "DARKBLOOM_TTFT_THINK_CONTENT_SEED"
     static let seedsPlainTailContentByDefault =
         ProcessInfo.processInfo.environment[plainTailContentSeedEnvironmentKey] != "0"
 
+    /// Model types whose plain generation prompt means the answer starts in
+    /// content. Qwen3-VL Instruct renders a bare `<|im_start|>assistant\n`
+    /// and never reasons; Qwen3-VL Thinking opens `<think>` in the prompt,
+    /// which the tail check handles first. Other Qwen types stay undecided:
+    /// Qwen 3.5, 3.6 and 3.8 templates always end in a marker, and a
+    /// close-only reasoner such as `qwen3_next` writes its reasoning before
+    /// a bare `</think>`, so a content seed would expose it as answer text.
+    static let plainTailContentModelTypes: Set<String> = ["qwen3_vl_moe"]
+
     /// Seed think-format parsers for collected and streaming requests. Explicit
-    /// `.none`, other families, and unrecognized prompt tails outside the Qwen
-    /// case below retain their existing behavior. The engine produces an event
-    /// stream even for collected HTTP requests; HTTP delivery mode does not
-    /// change the prompt-side parser state. ProviderLoop resolves an omitted
-    /// parser before calling the engine.
+    /// `.none`, other families, and unrecognized prompt tails outside the
+    /// plain-tail case below retain their existing behavior. The engine
+    /// produces an event stream even for collected HTTP requests; HTTP
+    /// delivery mode does not change the prompt-side parser state.
+    /// ProviderLoop resolves an omitted parser before calling the engine.
     ///
-    /// A Qwen generation prompt with no think marker (Qwen3-VL Instruct,
-    /// Qwen3 hybrid templates in thinking mode) starts in content: such a
-    /// template does not open a block for the model, and a model that
-    /// reasons emits its own `<think>`, which content mode still honors.
-    /// Undecided parsing would hold the whole answer until EOS.
+    /// A `plainTailContentModelTypes` prompt with no think marker starts in
+    /// content on the `qwen3` parser; undecided parsing would hold the whole
+    /// answer until EOS. A `<think>` the model emits still opens reasoning.
     static func streamingPrefix(
         reasoningParser: ReasoningParserFormat?,
         stream _: Bool?,
@@ -54,7 +61,8 @@ enum ReasoningPromptProbe {
             return prefix
         }
         guard seedsPlainTailContent, reasoningParser == .qwen3,
-            modelType?.lowercased().hasPrefix("qwen") == true
+            let modelType = modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            plainTailContentModelTypes.contains(modelType)
         else { return nil }
         return thinkOpen + thinkClose
     }

@@ -333,25 +333,7 @@ struct StreamedToolCallTests {
 
     // MARK: - Think parser seed
 
-    @Test func plainQwenPromptTailStartsInContent() {
-        func prefix(_ tail: String, parser: ReasoningParserFormat = .qwen3, modelType: String?,
-                    seeds: Bool = true) -> String? {
-            ReasoningPromptProbe.streamingPrefix(reasoningParser: parser, stream: true, promptTokens: [1],
-                modelType: modelType, seedsPlainTailContent: seeds, decodeTail: { _ in tail })
-        }
-        let plain = "<|im_start|>assistant\n"
-        #expect(prefix(plain, modelType: "qwen3_vl_moe") == "<think></think>")
-        #expect(prefix(plain, modelType: "qwen3_5") == "<think></think>")
-        // Marker-bearing tails are unchanged.
-        #expect(prefix(plain + "<think>\n", modelType: "qwen3_5") == "<think>")
-        #expect(prefix(plain + "<think>\n\n</think>\n\n", modelType: "qwen3_5") == "<think></think>")
-        // Close-only DeepSeek parsing, other families and the kill switch keep undecided parsing.
-        #expect(prefix(plain, parser: .deepseekR1, modelType: "qwen3_5") == nil)
-        #expect(prefix(plain, modelType: "llama") == nil)
-        #expect(prefix(plain, modelType: nil) == nil)
-        #expect(prefix(plain, modelType: "qwen3_vl_moe", seeds: false) == nil)
-    }
-
+    // Seed scope: ReasoningPromptProbeTests.
     @Test func plainTailSeedStreamsAnswersAndStillHonorsModelReasoning() async throws {
         let seed = try #require(ReasoningPromptProbe.streamingPrefix(reasoningParser: .qwen3, stream: true,
             promptTokens: [1], modelType: "qwen3_vl_moe", seedsPlainTailContent: true,

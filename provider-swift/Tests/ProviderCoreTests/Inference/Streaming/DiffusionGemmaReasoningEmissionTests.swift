@@ -98,7 +98,10 @@ struct DiffusionGemmaReasoningEmissionTests {
                             headers: [.contentType: "application/json", .authorization: "Bearer \(token)"], body: body)
                         let text = String(buffer: response.body)
                         #expect(native.submissionCount == 1)
-                        #expect(!text.contains("Paris") && !text.contains("get_weather") && !text.contains("<|channel>"))
+                        // Responses objects echo the caller's own `tools` and `tool_choice`
+                        // (OpenAI spec). Generated thought, calls and arguments stay forbidden.
+                        #expect(!text.contains("Paris") && !text.contains("<|channel>"))
+                        #expect(!(try withoutEchoedRequestTools(text)).contains("get_weather"))
                         #expect(!text.contains("reasoning_summary_text.delta") && !text.contains("reasoning_content"))
                         if streaming {
                             #expect(response.status == .ok)
@@ -161,6 +164,19 @@ struct DiffusionGemmaReasoningEmissionTests {
         }
         await bridge.shutdown()
         return (failed, thought, content, calls)
+    }
+
+    /// Drops only the request declarations a Responses object echoes back.
+    private func withoutEchoedRequestTools(_ text: String) throws -> String {
+        try text.components(separatedBy: "\n").map { line in
+            guard line.hasPrefix("data: "), line != "data: [DONE]",
+                  var object = try JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8)) as? [String: Any],
+                  var response = object["response"] as? [String: Any] else { return line }
+            response["tools"] = nil
+            response["tool_choice"] = nil
+            object["response"] = response
+            return "data: " + String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        }.joined(separator: "\n")
     }
 
     private func requestData(id: String, responses: Bool, reasoning: Bool, stream: Bool = true) throws -> Data {

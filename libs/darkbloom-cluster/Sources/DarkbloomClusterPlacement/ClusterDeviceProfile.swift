@@ -227,7 +227,9 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
               anonymousBytes <= physicalMemoryBytes, wiredBytes <= physicalMemoryBytes,
               compressorBytes <= physicalMemoryBytes,
               admissibleNowBytes == actualFreeBytes + countedFileCacheBytes,
-              fileCacheAboveReserveBytes <= fileBackedBytes, countedFileCacheBytes <= fileCacheAboveReserveBytes,
+              // The load gate counts all file cache (58d7371a), so the counted part is
+              // bounded by the file-backed total, not by the part above the kernel's reserve.
+              fileCacheAboveReserveBytes <= fileBackedBytes, countedFileCacheBytes <= fileBackedBytes,
               judged == (unjudgedReason == nil) else {
             throw ClusterPlacementError("Device memory record contradicts itself")
         }

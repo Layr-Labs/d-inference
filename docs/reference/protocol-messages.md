@@ -579,7 +579,9 @@ define the mirror.
 | `workload_buckets` | Bounded numeric buckets with `phase` (`prefill`, `decode`, `native_media_prefill`), `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation`, and optional `concurrent_requests` (peak observed request overlap; 1–64; omitted by legacy providers) |
 
 The Swift producer applies the same age rule independently to each workload
-bucket and current-posture series (`EnginePerformanceMeasurements.swift`).
+bucket and current-posture series
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift`,
+`EnginePerformanceMeasurements.observe`).
 Completed samples retain the existing receipt-order EWMA and sample counts;
 snapshot time does not replace observation time. Wire fields are unchanged.
 

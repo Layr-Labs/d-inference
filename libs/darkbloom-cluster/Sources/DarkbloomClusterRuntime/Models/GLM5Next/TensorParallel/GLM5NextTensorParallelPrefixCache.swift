@@ -51,9 +51,9 @@ final class GLM5NextTensorParallelPrefixCache {
     /// The chunk boundaries before the final token that this rank holds for `prompt`.
     func heldBoundaries(scope: String, prompt: [Int], chunk: Int) -> [Bool] {
         let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
-        return lock.withLock {
-            candidates.map { entries[QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: $0)] != nil }
-        }
+        // The prompt joined once for every candidate's key (outside the lock).
+        let keys = QwenTensorParallelPrefixCache.keys(scope: scope, prompt: prompt, lengths: candidates)
+        return lock.withLock { keys.map { entries[$0] != nil } }
     }
 
     /// A copy of the entry at `length` (the request writes its own copy) and

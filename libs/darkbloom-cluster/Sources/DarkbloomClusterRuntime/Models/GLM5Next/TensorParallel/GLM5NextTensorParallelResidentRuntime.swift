@@ -688,14 +688,15 @@ public final class GLM5NextTensorParallelResidentRuntime {
         // (`yieldingIdleMemory`).
         var slabs = ""
         if let pool = stage?.dsaPagePool {
-            let capacity = pool.capacityBytes
+            // Pages the finished requests released count as free.
+            pool.recycle()
+            let capacity = pool.capacityBytes, free = pool.unallocatedBytes
             let cap = (try? Self.pagedRetainBytes(ProcessInfo.processInfo.environment)) ?? Self.defaultPagedRetainBytes
-            if Self.trimsIdleSlabs(capacityBytes: capacity, retainBytes: cap, underPressure: underPressure) {
+            if Self.trimsIdleSlabs(capacityBytes: capacity, freeBytes: free, retainBytes: cap, underPressure: underPressure) {
                 let trimmed = (try? pool.trim()) ?? 0
                 slabs = " slabs=trimmed trimmed_bytes=\(trimmed) retained_bytes=\(pool.capacityBytes)"
             } else {
-                pool.recycle()
-                slabs = " slabs=retained retained_bytes=\(capacity)"
+                slabs = " slabs=retained retained_bytes=\(capacity) free_bytes=\(free)"
             }
             slabs += " retain_cap_bytes=\(cap)"
         }

@@ -49,9 +49,14 @@ extension GLM5NextTensorParallelResidentRuntime {
     }
 
     /// Whether idle release trims the slabs: under host pressure always,
-    /// otherwise only when they hold more than `retainBytes`.
-    static func trimsIdleSlabs(capacityBytes: Int, retainBytes: Int, underPressure: Bool) -> Bool {
-        capacityBytes > 0 && (underPressure || capacityBytes > retainBytes)
+    /// otherwise only when their free capacity (`freeBytes`, the pages no
+    /// prefix entry or request holds) exceeds `retainBytes`. Pages that
+    /// prefix entries hold stay either way, so they do not count against the
+    /// cap: with a few 31.5K prefixes held (about 2 GB) a cap on the whole
+    /// capacity trimmed every idle release, and the next long request copied
+    /// the slabs back (40-160 ms of its open).
+    static func trimsIdleSlabs(capacityBytes: Int, freeBytes: Int, retainBytes: Int, underPressure: Bool) -> Bool {
+        capacityBytes > 0 && (underPressure || freeBytes > retainBytes)
     }
 
     static func pagedKVAgreementFields(_ paged: Bool) -> [String] {

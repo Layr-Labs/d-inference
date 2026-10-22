@@ -208,19 +208,22 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
             draw: speculates ? runtime.verificationDraw(sampler) : nil)
     }
 
-    func nextFrame(_ lane: Lane) -> GLM5NextTensorParallelLaneWire.Frame? {
+    func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
         let count = lane.request.promptTokenIDs.count
         guard lane.offset < count else { return nil }
         let end = Runtime.prefillFrameEnd(offset: lane.offset, promptCount: count, chunk: lane.opened.chunk,
-            keepAt: lane.opened.keepAt)
+            keepAt: lane.opened.keepAt, merging: merging)
         return .init(offset: lane.offset, end: end, final: end == count)
     }
 
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int? {
-        guard frame == nextFrame(lane) else { throw ProbeError("GLM lane prefill frame is not the lane's next") }
+        guard frame == nextFrame(lane, merging: false) || frame == nextFrame(lane, merging: true) else {
+            throw ProbeError("GLM lane prefill frame is not the lane's next")
+        }
+        // Equal merging and single-chunk frames run the same micro-batches.
         let result = try runtime.runPrefillFrame(lane.request.promptTokenIDs, offset: frame.offset, end: frame.end,
-            opened: lane.opened, stage: stage)
-        if result.stored { lane.stored.append(frame.end) }
+            opened: lane.opened, stage: stage, merging: frame == nextFrame(lane, merging: true))
+        if let at = result.stored { lane.stored.append(at) }
         lane.offset = frame.end
         try check()
         guard frame.final else { return nil }

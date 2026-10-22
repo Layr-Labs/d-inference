@@ -37,8 +37,9 @@ protocol GLM5NextTensorParallelLaneNative: AnyObject {
     /// for its prompt prefix and restore it or start cold (collective).
     func open(_ request: QwenLayerStageGenerationRequest, check: () throws -> Void) throws -> Lane
     /// The lane's next prefill frame on its own (solo) grid; nil once its
-    /// prompt is in.
-    func nextFrame(_ lane: Lane) -> GLM5NextTensorParallelLaneWire.Frame?
+    /// prompt is in. `merging` (no lane decodes this step) may run several of
+    /// its chunks as one frame, with the same arithmetic.
+    func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame?
     /// Runs that frame (collective); the final one returns the agreed first token.
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int?
     /// True when the lane decodes in MTP rounds, false for one token a step.
@@ -211,7 +212,8 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
                 && lane.tokens.count - lane.answered <= backlog
         }
         let prefilling = slots.values.filter { $0.native != nil && !$0.prefilled }.min { $0.order < $1.order }
-        let frame = prefilling.flatMap { native.nextFrame($0.native!) }
+        // With no lane decoding, the frame may merge chunks: nobody waits on it.
+        let frame = prefilling.flatMap { native.nextFrame($0.native!, merging: decoding.isEmpty) }
         var plan = Wire.Plan(step: step, stop: slots.isEmpty && leaving.isEmpty, lanes: lanes, depth: native.depth,
             prefixEnabled: native.prefixEnabled, slots: Array(repeating: .init(), count: lanes))
         for (slot, value) in leaving {
@@ -386,7 +388,8 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
         if let slot = plan.slots.indices.first(where: { plan.slots[$0].role == .prefill }) {
             let value = plan.slots[slot]
             guard let lane = slots[slot], let state = lane.native, !lane.prefilled,
-                  let frame = native.nextFrame(state), frame == value.frame else {
+                  let frame = native.nextFrame(state, merging: !plan.slots.contains { $0.role == .decode }),
+                  frame == value.frame else {
                 throw ProbeError("GLM lane prefill frame differs from this rank's lane")
             }
             let first = try native.prefill(state, frame, check: check)

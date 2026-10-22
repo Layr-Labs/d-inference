@@ -7,7 +7,8 @@ import MLX
 //     [--prompt-tokens N | --prompt-file TOKENS.json] [--output-count N] [--chunk N] [--repeats N]
 //     [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no]
 //     [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3]
-//     [--mtp-check none|keep-first|one-token]
+//     [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged]
+//     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -61,7 +62,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -95,6 +96,22 @@ enum GLMBench {
             throw Failure("glm: --mtp-check takes none, keep-first or one-token, with --mtp-depth 1...3")
         }
         options.mtpCheck = check
+        // The product's prefill chunks (`product`), run together as the runtime does (`merged`).
+        guard let schedule = GLM5NextTensorParallelBench.Options.PrefillSchedule(
+                rawValue: fields["--prefill-schedule"] ?? "chunked"),
+              let merged = Int(fields["--merged-tokens"] ?? String(options.mergedTokens)), merged >= 0 else {
+            throw Failure("glm: --prefill-schedule takes chunked, product or merged; --merged-tokens a count")
+        }
+        options.prefillSchedule = schedule
+        options.mergedTokens = merged
+        options.keepsPrefix = (fields["--keep-prefix"] ?? "yes") == "yes"
+        // Other micro-batch sizes than the product's (a different arithmetic; measure with --perplexity).
+        if let tokens = fields["--micro-batch-tokens"] {
+            guard let value = Int(tokens), value > 0 else { throw Failure("glm: --micro-batch-tokens takes a count") }
+            options.microBatchTokens = value
+        }
+        // The prompt's perplexity and greedy next tokens, after the run (the reordering gate).
+        options.perplexity = (fields["--perplexity"] ?? "no") == "yes"
         let result = try GLM5NextTensorParallelBench.run(options, log: { note($0) })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

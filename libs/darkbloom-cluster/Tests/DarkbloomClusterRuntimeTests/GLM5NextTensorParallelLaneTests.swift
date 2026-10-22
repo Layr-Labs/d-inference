@@ -247,7 +247,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
         return Lane(request: request)
     }
 
-    func nextFrame(_ lane: Lane) -> GLM5NextTensorParallelLaneWire.Frame? {
+    func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
         let count = lane.request.promptTokenIDs.count
         guard lane.offset < count else { return nil }
         let end = min(count, lane.offset + Self.chunk)
@@ -255,7 +255,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     }
 
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int? {
-        guard frame == nextFrame(lane) else { throw ProbeError("fake frame is not the lane's next") }
+        guard frame == nextFrame(lane, merging: false) else { throw ProbeError("fake frame is not the lane's next") }
         _ = try link.exchange(rank: rank, kind: "prefill", [Float(frame.end - frame.offset)])
         lane.offset = frame.end
         guard frame.final else { return nil }

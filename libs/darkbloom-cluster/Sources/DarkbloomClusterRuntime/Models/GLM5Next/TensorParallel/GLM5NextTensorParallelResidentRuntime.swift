@@ -75,6 +75,27 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// partials, 15,724-token prompt): 4,096-token chunks 3,311 tok/s,
     /// 8,192: 3,614. Charged as four request workspaces in all.
     static let bulkPrefillChunkTokens = 8192
+    /// A request with no other lane decoding prefills consecutive chunks
+    /// together in one graph (frame), up to this many tokens
+    /// (`GLM5NextTensorParallelPrefillPlan`; 0: each chunk alone). Every
+    /// chunk keeps its micro-batches, so tokens are unchanged; a graph's edges
+    /// leave its last sums waiting for the link and its first micro-batches
+    /// with nothing to overlap, and a longer graph overlaps each sum with more
+    /// micro-batches (bulk chunks as 4 x 4,096 instead of 2 x 4,096 on the
+    /// 15.7K prompt: 3,819 -> 4,086 tok/s). The prompt-prefix boundary may fall
+    /// inside a graph (the stage keeps its cache there). No further charge:
+    /// MLX keeps at most `MLX_MAX_ACTIVE_TASKS` command buffers in flight
+    /// whatever the graph's length, so a longer graph holds only each
+    /// micro-batch's residual streams and the graph's hidden rows longer
+    /// (about 1 GiB more at 16,384 tokens), far inside the bulk chunk's
+    /// workspaces.
+    static let mergedPrefillTokens = 16384
+    /// Chunks whose micro-batches are all large enough to compute the same
+    /// bits at any size (`GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`)
+    /// run as micro-batches of at most this many rows instead (nil: two per
+    /// chunk). Bigger micro-batches read each layer's expert weights once per
+    /// more rows; tokens are unchanged.
+    static let prefillMicroBatchTokens: Int? = nil
     /// NextN (MTP) proposals each greedy decode round verifies
     /// (`GLM5NextTensorParallelSpeculation`, at most
     /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
@@ -583,15 +604,19 @@ public final class GLM5NextTensorParallelResidentRuntime {
         prefixEnabled ? ((promptCount - 1) / chunk) * chunk : 0
     }
 
-    /// Where the prefill frame that starts at `offset` ends: a bulk chunk
-    /// while it ends at or before the boundary kept for prefixes (or the
-    /// prompt's end), else the next chunk boundary. The one grid every request
-    /// prefills on, alone or in a lane, so its frames' arithmetic is the same.
-    static func prefillFrameEnd(offset: Int, promptCount: Int, chunk: Int, keepAt: Int) -> Int {
-        let bulk = (bulkPrefillChunkTokens / chunk) * chunk
-        let limit = keepAt > offset ? keepAt : promptCount
-        return offset % chunk == 0 && bulk > chunk && offset + bulk <= limit
-            ? offset + bulk : min(promptCount, (offset / chunk + 1) * chunk)
+    /// Where the prefill frame that starts at `offset` ends. The chunks are
+    /// the one grid every request prefills on, alone or in a lane: a bulk
+    /// chunk while it ends at or before the boundary kept for prefixes (or the
+    /// prompt's end), else the next chunk boundary, each as
+    /// `prefillMicroBatches` micro-batches. A frame is one chunk, or with
+    /// `merging` the first graph of `GLM5NextTensorParallelPrefillPlan` from
+    /// `offset` (consecutive chunks up to `mergedPrefillTokens`); either way
+    /// every micro-batch and so the frames' arithmetic is the same.
+    static func prefillFrameEnd(offset: Int, promptCount: Int, chunk: Int, keepAt: Int, merging: Bool = false) -> Int {
+        GLM5NextTensorParallelPrefillPlan.make(promptCount: promptCount, start: offset, chunkTokens: chunk,
+            keepAt: keepAt, bulkTokens: bulkPrefillChunkTokens, microBatches: prefillMicroBatches,
+            mergedTokens: merging ? mergedPrefillTokens : 0, microBatchTokens: prefillMicroBatchTokens,
+            coalescing: merging).chunks[0].end
     }
 
     /// A request as it begins on this rank, after both ranks checked they hold
@@ -641,34 +666,26 @@ public final class GLM5NextTensorParallelResidentRuntime {
             keepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk, prefixEnabled: prefix.enabled))
     }
 
-    /// One prefill frame `offset ..< end` of `prompt` (`prefillFrameEnd`): the
-    /// stage forward, the NextN priming in its evaluation, and the prompt
-    /// prefix kept when it ends at `keepAt`. The final frame returns the last
-    /// row's logits and hidden row.
-    func runPrefillFrame(_ prompt: [Int], offset: Int, end: Int, opened: OpenedRequest, stage: GLM5NextTextStage)
-        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Bool) {
-        let last = end == prompt.count, speculation = opened.speculation
-        let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
-        let candidate = try stage.prepareForward(tokens: tokens, cache: opened.cache, readout: last ? .lastToken : .none)
-        // The chunk's hidden rows prime the NextN history, in the chunk's evaluation.
-        if let speculation {
-            switch candidate.output {
-            case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
-            case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
-            case .streams: throw ProbeError("GLM tensor-parallel prefill produced no hidden rows")
-            }
+    /// One prefill frame `offset ..< end` of `prompt` (`prefillFrameEnd`): its
+    /// chunks' micro-batches in one stage forward, the NextN priming in its
+    /// evaluation, and the prompt prefix kept when a chunk ends at `keepAt`
+    /// (inside the frame or at its end). `merging`: the frame is a merging
+    /// one (`prefillFrameEnd(merging: true)`), whose chunks may share
+    /// micro-batches. The final frame returns the last row's logits and
+    /// hidden row; `stored` is the kept boundary.
+    func runPrefillFrame(_ prompt: [Int], offset: Int, end: Int, opened: OpenedRequest, stage: GLM5NextTextStage,
+                         merging: Bool = true)
+        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
+        let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
+            chunkTokens: opened.chunk, keepAt: opened.keepAt,
+            bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
+            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging)
+        let result = try GLM5NextTensorParallelPrefillPlan.run(frame, stage: stage, cache: opened.cache, prompt: prompt,
+            speculation: opened.speculation)
+        if let kept = result.kept {
+            prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
         }
-        try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
-        var final: (logits: MLXArray, lastHidden: MLXArray)?
-        if last, case .final(let output) = candidate.output {
-            final = (output.logits[0..., -1, 0...], output.hidden[0..., (-1)..., 0...])
-        }
-        if !last, end == opened.keepAt, opened.keepAt > opened.start {
-            prefix.store(scope: loadAgreement, prompt: prompt, length: end, cache: opened.cache,
-                mtp: try speculation?.checkpoint())
-            return (final, true)
-        }
-        return (final, false)
+        return (result.final, result.kept?.end)
     }
 
     /// One small sealed reduction per step: [token rank 0, token rank 1,
@@ -740,10 +757,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
         var offset = start, stored: [Int] = []
         while offset < prompt.count {
             let end = Self.prefillFrameEnd(offset: offset, promptCount: prompt.count, chunk: opened.chunk,
-                keepAt: opened.keepAt)
+                keepAt: opened.keepAt, merging: true)
             let frame = try runPrefillFrame(prompt, offset: offset, end: end, opened: opened, stage: stage)
             if let final = frame.final { logits = final.logits; lastHidden = final.lastHidden }
-            if frame.stored { stored.append(end) }
+            if let at = frame.stored { stored.append(at) }
             offset = end
         }
         guard let firstLogits = logits else { throw ProbeError("GLM tensor-parallel prefill produced no logits") }

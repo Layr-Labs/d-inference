@@ -57,6 +57,35 @@ public enum GLM5NextTensorParallelBench {
             case oneToken = "one-token"
         }
         public var mtpCheck = MTPCheck.none
+        /// How the prompt is prefilled.
+        public enum PrefillSchedule: String, Sendable {
+            /// Chunks of `chunkSize`, each as `microBatches` micro-batches.
+            case chunked
+            /// The product's chunks (`GLM5NextTensorParallelPrefillPlan`, with
+            /// the runtime's chunk and bulk sizes and `microBatches`), each
+            /// run alone, keeping a prompt prefix at the product's boundary.
+            case product
+            /// The same chunks, run together up to `mergedTokens` a graph,
+            /// as the runtime does: the same tokens and bits as `product`.
+            case merged
+        }
+        public var prefillSchedule = PrefillSchedule.chunked
+        /// `merged`: tokens per graph (the runtime's `mergedPrefillTokens` by default).
+        public var mergedTokens = GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens
+        /// `product` and `merged`: keep the product's prompt prefix (copied
+        /// into a prefix cache, as the runtime stores it).
+        public var keepsPrefix = true
+        /// `product` and `merged`: chunks whose micro-batches all have at
+        /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
+        /// rows run as micro-batches of at most this many rows instead (nil:
+        /// the product's). Must give the same bits as `product`; compare with
+        /// `perplexity` to show it on the model.
+        public var microBatchTokens = GLM5NextTensorParallelResidentRuntime.prefillMicroBatchTokens
+        /// After the run, the prompt's perplexity and every position's
+        /// greedy next token from the prefill's hidden rows (the head at each
+        /// row, in pieces), outside the timed prefill: the reordering gate
+        /// (perplexity and top-1 agreement between two runs).
+        public var perplexity = false
         public init(modelDirectory: URL, mode: Mode, shardRank: Int = 0, promptTokenIDs: [Int],
                     chunkSize: Int = 2048, outputCount: Int = 64, repeats: Int = 2, float32Partials: Bool = true) {
             self.modelDirectory = modelDirectory; self.mode = mode; self.shardRank = shardRank
@@ -84,6 +113,15 @@ public enum GLM5NextTensorParallelBench {
         public var mtpBuildP50Milliseconds: Double?
         public var mtpEncodeP50Milliseconds: Double?
         public var mtpWaitP50Milliseconds: Double?
+        /// The prefill's graphs (tokens each), and MLX's peak active bytes
+        /// during the prefill less the bytes active before it.
+        public var prefillGraphs: [Int]?
+        public var prefillPeakTransientBytes: Int?
+        /// `perplexity`: mean negative log-likelihood of prompt tokens 1 ... n-1
+        /// and its exponent, and the greedy next token at every prompt position.
+        public var promptNLL: Double?
+        public var promptPerplexity: Double?
+        public var promptGreedyTokenIDs: [Int]?
     }
 
     public struct Report: Codable, Sendable {
@@ -101,6 +139,7 @@ public enum GLM5NextTensorParallelBench {
         public var repeatsIdentical: Bool
         public var mtpDepth: Int?
         public var mtpCheck: String?
+        public var prefillSchedule: String?
     }
 
     public static func run(_ options: Options, log: (String) -> Void) throws -> Report {
@@ -184,7 +223,12 @@ public enum GLM5NextTensorParallelBench {
                         rounds, r.mtpAcceptedTokens ?? 0, r.mtpProposedTokens ?? 0,
                         Double(r.tokenIDs.count - 1) / Double(max(1, rounds)), r.mtpBuildP50Milliseconds ?? 0,
                         r.mtpEncodeP50Milliseconds ?? 0, r.mtpWaitP50Milliseconds ?? 0)
-                } ?? ""))
+                } ?? "")
+                + (r.prefillGraphs.map { graphs in
+                    String(format: " prefill graphs %@ peak transient %.0f MiB",
+                        graphs.map(String.init).joined(separator: ","), Double(r.prefillPeakTransientBytes ?? 0) / 1048576)
+                } ?? "")
+                + (r.promptPerplexity.map { String(format: " prompt ppl %.6f nll %.8f", $0, r.promptNLL ?? 0) } ?? ""))
         }
         try residency.end()
         return Report(mode: options.mode.rawValue, rank: group?.rank ?? options.shardRank, size: group?.size ?? 1,
@@ -192,7 +236,7 @@ public enum GLM5NextTensorParallelBench {
             loadSeconds: loadSeconds, loadedActiveBytes: loaded, wiredLimitBytes: residency.receipt.appliedBytes,
             floatingReductions: group?.floatingReductions ?? 0, runs: runs,
             repeatsIdentical: Set(runs.map(\.tokenIDs)).count == 1, mtpDepth: mtp == nil ? nil : options.mtpDepth,
-            mtpCheck: mtp == nil ? nil : options.mtpCheck.rawValue)
+            mtpCheck: mtp == nil ? nil : options.mtpCheck.rawValue, prefillSchedule: options.prefillSchedule.rawValue)
     }
 
     private static func generate(stage: GLM5NextTextStage, mtp: GLM5NextMTP?, group: QwenTensorParallelGroup?,
@@ -211,26 +255,55 @@ public enum GLM5NextTensorParallelBench {
             return value
         }
         var logits: MLXArray?, lastHidden: MLXArray?
+        var graphs: [Int] = []
+        var rows: [(start: Int, hidden: MLXArray)] = []
+        Memory.peakMemory = 0
+        let activeBefore = Memory.activeMemory
         let prefillStart = DispatchTime.now().uptimeNanoseconds
-        var offset = 0
-        while offset < prompt.count {
-            let end = min(prompt.count, offset + chunk)
-            let last = end == prompt.count
-            let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
-            let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
-            if let speculation {
-                switch candidate.output {
-                case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
-                case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
-                case .streams: throw ProbeError("GLM bench prefill produced no hidden rows")
+        if options.prefillSchedule == .chunked {
+            var offset = 0
+            while offset < prompt.count {
+                let end = min(prompt.count, offset + chunk)
+                let last = end == prompt.count
+                let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
+                let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
+                if let speculation {
+                    switch candidate.output {
+                    case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
+                    case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
+                    case .streams: throw ProbeError("GLM bench prefill produced no hidden rows")
+                    }
                 }
+                try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
+                switch candidate.output {
+                case .final(let output):
+                    if options.perplexity { rows.append((offset, output.hidden)) }
+                    if last { logits = output.logits[0..., -1, 0...]; lastHidden = output.hidden[0..., (-1)..., 0...] }
+                case .hidden(let hidden): if options.perplexity { rows.append((offset, hidden)) }
+                case .streams: break
+                }
+                graphs.append(end - offset)
+                offset = end
             }
-            try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
-            if last, case .final(let output) = candidate.output {
-                logits = output.logits[0..., -1, 0...]; lastHidden = output.hidden[0..., (-1)..., 0...]
+        } else {
+            // The runtime's schedule and prefix store, from an empty cache.
+            let runtime = GLM5NextTensorParallelResidentRuntime.self
+            let chunkTokens = max(chunk, (runtime.prefillChunkTokens / chunk) * chunk)
+            let plan = GLM5NextTensorParallelPrefillPlan.make(promptCount: prompt.count, start: 0,
+                chunkTokens: chunkTokens,
+                keepAt: options.keepsPrefix ? ((prompt.count - 1) / chunkTokens) * chunkTokens : 0,
+                bulkTokens: runtime.bulkPrefillChunkTokens, microBatches: max(1, options.microBatches),
+                mergedTokens: options.prefillSchedule == .merged ? options.mergedTokens : 0,
+                microBatchTokens: options.microBatchTokens, coalescing: options.prefillSchedule == .merged)
+            let prefix = GLM5NextTensorParallelPrefixCache(budgetBytes: 8 << 30)
+            let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation,
+                observe: options.perplexity ? { rows.append(($0, $1)) } : nil) { end, kept, history in
+                prefix.store(scope: "glm-tp-bench", prompt: prompt, length: end, cache: kept, mtp: history)
             }
-            offset = end
+            logits = result.logits; lastHidden = result.lastHidden
+            graphs = plan.chunks.map(\.tokens)
         }
+        let peakTransient = max(0, Memory.peakMemory - activeBefore)
         guard var row = logits else { throw ProbeError("GLM bench prefill produced no logits") }
         var top: [[[Double]]] = []
         func record(_ row: MLXArray) {
@@ -295,6 +368,7 @@ public enum GLM5NextTensorParallelBench {
         }
         }
         let decodeSeconds = seconds(since: decodeStart)
+        let scored = options.perplexity ? try score(stage: stage, prompt: prompt, rows: rows) : nil
         let sorted = steps.sorted()
         func percentile(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] * 1000 }
         // Decoded tokens after the prefill's (one per step; one or more per speculative round).
@@ -307,7 +381,39 @@ public enum GLM5NextTensorParallelBench {
             mtpAcceptedTokens: speculation?.acceptedTokens,
             mtpBuildP50Milliseconds: speculation.map { median($0.phases.map(\.build)) },
             mtpEncodeP50Milliseconds: speculation.map { median($0.phases.map(\.encode)) },
-            mtpWaitP50Milliseconds: speculation.map { median($0.phases.map(\.wait)) })
+            mtpWaitP50Milliseconds: speculation.map { median($0.phases.map(\.wait)) },
+            prefillGraphs: graphs, prefillPeakTransientBytes: peakTransient, promptNLL: scored?.nll,
+            promptPerplexity: scored.map { exp($0.nll) }, promptGreedyTokenIDs: scored?.greedy)
+    }
+
+    /// Mean negative log-likelihood of prompt tokens 1 ... n-1 from the
+    /// prefill's hidden rows (FP32 log-softmax of the head's logits), and the
+    /// greedy next token at every prompt position.
+    static func score(stage: GLM5NextTextStage, prompt: [Int], rows: [(start: Int, hidden: MLXArray)])
+        throws -> (nll: Double, greedy: [Int]) {
+        guard let head = stage.head else { throw ProbeError("GLM bench perplexity needs the head") }
+        var total = 0.0, count = 0, greedy: [Int] = []
+        for (start, hidden) in rows.sorted(by: { $0.start < $1.start }) {
+            guard start == greedy.count else { throw ProbeError("GLM bench perplexity rows are not contiguous") }
+            var first = 0
+            while first < hidden.dim(1) {
+                let end = min(hidden.dim(1), first + 1024)
+                let logits = head(hidden[0..., first ..< end, 0...]).asType(.float32)
+                let targets = (start + first ..< start + end).map { Int32($0 + 1 < prompt.count ? prompt[$0 + 1] : 0) }
+                let picked = takeAlong(logits, MLXArray(targets, [1, end - first, 1]), axis: -1).squeezed(axis: -1)
+                let nll = logSumExp(logits, axis: -1) - picked
+                let best = argMax(logits, axis: -1)
+                eval(nll, best)
+                let values = nll.asArray(Float.self)
+                for (index, position) in (start + first ..< start + end).enumerated() where position + 1 < prompt.count {
+                    total += Double(values[index]); count += 1
+                }
+                greedy += best.asArray(Int32.self).map(Int.init)
+                first = end
+            }
+        }
+        guard greedy.count == prompt.count, count > 0 else { throw ProbeError("GLM bench perplexity covered no prompt") }
+        return (total / Double(count), greedy)
     }
 
     /// One decode step's graph (logits and cache updates) by primitive name.

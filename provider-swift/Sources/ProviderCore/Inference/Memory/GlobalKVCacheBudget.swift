@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLMCommon
 
 /// Process-wide KV-cache reservation budget shared by all loaded model
 /// schedulers. MLX active/cache counters are global, so per-scheduler token
@@ -148,7 +149,8 @@ public actor GlobalKVCacheBudget {
                 guard serviceBudget.isIdle else { return }
                 MLX.Stream().synchronize()
                 MLX.Memory.clearCache()
-            })
+            },
+            releaseRetained: { CBv2RetainedKVSegments.requestRelease() })
     }
 
     init(

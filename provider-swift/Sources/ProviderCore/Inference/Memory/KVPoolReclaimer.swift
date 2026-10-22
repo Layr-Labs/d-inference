@@ -101,6 +101,9 @@ actor KVPoolReclaimer {
     private let sweepWindow: @Sendable (_ reclaimableBytes: UInt64) -> SweepWindow
     /// Flush for an idle sweep; nil reuses `clearCache`.
     private let idleClearCache: (@Sendable () -> Void)?
+    /// Non-blocking request that engines drop retained free KV segments: live
+    /// allocator memory no cache flush reaches. Sent on shortfall and pressure.
+    private let releaseRetained: @Sendable () -> Void
     private var lastReclaimAt: ContinuousClock.Instant?
 
     /// A flush while engines serve holds the MLX eval lock between their
@@ -146,7 +149,8 @@ actor KVPoolReclaimer {
         proactiveThresholdBytes: UInt64 = KVPoolReclaimer.defaultProactiveThresholdBytes,
         isReclaimAllowed: @escaping @Sendable () -> Bool = { true },
         sweepWindow: @escaping @Sendable (UInt64) -> SweepWindow = { _ in .pressure },
-        idleClearCache: (@Sendable () -> Void)? = nil
+        idleClearCache: (@Sendable () -> Void)? = nil,
+        releaseRetained: @escaping @Sendable () -> Void = {}
     ) {
         self.clearCache = clearCache
         self.reclaimableBytes = reclaimableBytes
@@ -155,6 +159,7 @@ actor KVPoolReclaimer {
         self.isReclaimAllowed = isReclaimAllowed
         self.sweepWindow = sweepWindow
         self.idleClearCache = idleClearCache
+        self.releaseRetained = releaseRetained
     }
 
     // MARK: - Fire-and-forget signals (called from the budget actor)
@@ -179,10 +184,13 @@ actor KVPoolReclaimer {
     /// shortfall the request is short by (a flush that still leaves it rejected —
     /// e.g. active memory, not the pool, is what's full — is skipped) and we are
     /// outside the rate-limit window. Returns true iff it flushed. The GPU sync
-    /// runs on this actor's executor.
+    /// runs on this actor's executor. Every shortfall also asks engines to
+    /// drop retained free KV segments, which the pool size does not include.
     @discardableResult
     func reclaimIfNeeded(shortfall: UInt64) -> Bool {
-        guard isReclaimAllowed(), shortfall > 0, reclaimableBytes() >= shortfall else { return false }
+        guard isReclaimAllowed(), shortfall > 0 else { return false }
+        releaseRetained()
+        guard reclaimableBytes() >= shortfall else { return false }
         return flushIfDue(clearCache)
     }
 
@@ -199,7 +207,9 @@ actor KVPoolReclaimer {
         switch sweepWindow(pool) {
         case .closed: return false
         case .idle: return flushIfDue(idleClearCache ?? clearCache)
-        case .pressure: return flushIfDue(clearCache)
+        case .pressure:
+            releaseRetained()
+            return flushIfDue(clearCache)
         }
     }
 

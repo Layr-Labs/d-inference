@@ -491,7 +491,7 @@ MiMo specifications, which load through the native engine.
 Run focused policy and CLI checks from `provider-swift/`:
 
 ```bash
-swift test --skip-build --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark'
+swift test --skip-build --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark|RuntimeConcurrencyBenchmark'
 ```
 
 With an owned GPU and verified model, compare production-session live precision:

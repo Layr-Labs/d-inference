@@ -126,6 +126,12 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Runtime generation: read the public/synthetic prompt from a UTF-8 file (at most 4 MiB).")
     var runtimePromptFile: String?
 
+    @Option(name: .long, help: "Runtime generation: comma-separated concurrent batch sizes from 1 to 64 (e.g. 1,2,4,8). One production slot per size, warmed by one identical batch; greedy rows with distinct prompts; per-token arrival timing as JSON.")
+    var runtimeConcurrency: String?
+
+    @Flag(name: .long, help: "Runtime concurrency: row i of a B-row batch stops after max-tokens*(B-i)/B tokens (max-tokens must be at least 3*B), so the decode cohort shrinks to one row.")
+    var runtimeStagger = false
+
     @Option(name: .long, help: "Runtime generation: fixed UTC template date YYYY-MM-DD for paired runs.")
     var runtimePromptDate = PromptRenderDate.capture().value
 
@@ -303,6 +309,20 @@ struct Benchmark: AsyncParsableCommand {
                 else { throw RuntimeGenerationBenchmark.Failure.invalidArguments }
                 input = text
             } else { input = prompt }
+            if let runtimeConcurrency {
+                let result = try await RuntimeConcurrencyBenchmark.run(
+                    modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
+                    batchSizes: try RuntimeConcurrencyBenchmark.batchSizes(
+                        parsing: runtimeConcurrency),
+                    maxTokens: maxTokens, staggered: runtimeStagger, backend: kvBackend,
+                    mtpEnabled: runtimeMtp,
+                    assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
+                    renderDate: runtimePromptDate,
+                    checkpointQuantizationConfig: checkpointPrecision.rawValue)
+                print(result.json)
+                if !result.succeeded { throw ExitCode(2) }
+                return
+            }
             let result = try await RuntimeGenerationBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
                 maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
@@ -396,8 +416,19 @@ struct Benchmark: AsyncParsableCommand {
     }
 
     func benchmarkModeConflict() -> String? {
-        if !runtimeGeneration && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil) {
+        if !runtimeGeneration
+            && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil
+                || runtimeConcurrency != nil)
+        {
             return "Runtime options require --runtime-generation"
+        }
+        if runtimeStagger && runtimeConcurrency == nil {
+            return "--runtime-stagger requires --runtime-concurrency"
+        }
+        if let runtimeConcurrency,
+            (try? RuntimeConcurrencyBenchmark.batchSizes(parsing: runtimeConcurrency)) == nil
+        {
+            return "--runtime-concurrency takes comma-separated batch sizes from 1 to 64"
         }
         if let runtimeAssistantDirectory,
             !runtimeMtp || runtimeAssistantDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

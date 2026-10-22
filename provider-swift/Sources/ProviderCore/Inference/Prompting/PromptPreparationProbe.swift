@@ -58,6 +58,12 @@ public struct PromptPreparationProbe {
         (tokenizer as? any PromptTokenCaching)?.promptTokenCache?.isActive == true
     }
 
+    /// Whether the prompt token cache re-tokenizes sampled prompts on the
+    /// unchanged path in the background, concurrently with later requests.
+    public static func promptCacheVerifiesInBackground(_ tokenizer: any MLXLMCommon.Tokenizer) -> Bool {
+        (tokenizer as? any PromptTokenCaching)?.promptTokenCache?.verifiesInBackground == true
+    }
+
     /// The chat-template loop rewrites the prompt token cache renders with.
     public static func templateLoopRewrites(_ tokenizer: any MLXLMCommon.Tokenizer) -> [String] {
         (tokenizer as? any PromptTokenCaching)?.promptTokenCache?.templateLoopRewrites ?? []

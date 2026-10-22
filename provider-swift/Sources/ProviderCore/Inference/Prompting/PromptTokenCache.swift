@@ -28,10 +28,10 @@ import Hub
 import Jinja
 import Tokenizers
 
-enum PromptTokenCachePolicy {
+public enum PromptTokenCachePolicy {
     static let environmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE"
     static let capacityEnvironmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE_MB"
-    static let verifyEnvironmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE_VERIFY"
+    public static let verifyEnvironmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE_VERIFY"
 
     /// The global prefix-cache kill switch also turns token reuse off.
     static func isEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {

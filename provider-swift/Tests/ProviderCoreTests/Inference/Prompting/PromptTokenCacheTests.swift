@@ -183,6 +183,18 @@ struct PromptTokenCacheTests {
         }
     }
 
+    @Test("the prompt-preparation benchmark runs no background comparisons beside its timings")
+    func benchmarkTimesWithoutBackgroundComparisons() async throws {
+        let fixture = try SyntheticTokenizer(family: .qwen)
+        defer { fixture.remove() }
+        let result = try await PromptPreparationBenchmark.run(
+            modelID: "synthetic", modelDirectory: fixture.directory, modelType: nil,
+            lengths: [2048], iterations: 1)
+        #expect(result.identical, "\(result.json)")
+        #expect(result.json.contains("\"prompt_cache_active\" : true"))
+        #expect(result.json.contains("\"prompt_cache_background_verification\" : false"))
+    }
+
     /// Runs over real local artifacts: set `PROMPT_TOKEN_CACHE_MODEL_DIRS` to
     /// colon-separated model directories (tokenizer files and chat template).
     @Test("real chat templates tokenize identically through the cache")

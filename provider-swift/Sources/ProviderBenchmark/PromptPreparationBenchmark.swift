@@ -17,7 +17,12 @@ public enum PromptPreparationBenchmark {
         modelID: String, modelDirectory: URL, modelType: String?,
         lengths: [Int], iterations: Int
     ) async throws -> (json: String, identical: Bool) {
-        let tokenizer = try await LocalTokenizerLoader().load(from: modelDirectory)
+        // Serving re-tokenizes sampled prompts on the unchanged path in the
+        // background; here that work would run beside the timed samples, and
+        // every variant is compared with the unchanged path anyway.
+        var environment = ProcessInfo.processInfo.environment
+        environment[PromptTokenCachePolicy.verifyEnvironmentKey] = "0"
+        let tokenizer = try await LocalTokenizerLoader(environment: environment).load(from: modelDirectory)
         var rows: [[String: Any]] = []
         var allIdentical = true
         for shape in [SyntheticConversation.Shape.chat, .agent, .loop] {
@@ -78,6 +83,7 @@ public enum PromptPreparationBenchmark {
         let report: [String: Any] = [
             "model": modelID,
             "prompt_cache_active": PromptPreparationProbe.promptCacheIsActive(tokenizer),
+            "prompt_cache_background_verification": PromptPreparationProbe.promptCacheVerifiesInBackground(tokenizer),
             "template_loop_rewrites": PromptPreparationProbe.templateLoopRewrites(tokenizer),
             "iterations": max(1, iterations),
             "active_processors": ProcessInfo.processInfo.activeProcessorCount,

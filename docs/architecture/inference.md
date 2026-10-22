@@ -1119,9 +1119,13 @@ returns its hidden rows, and finalize appends them to the assistant history in
 step order and stores the carry once no successor is in flight, with no policy
 top-two or extra readback. The final prompt row's hidden is the first carry, so
 a round can follow the first token without a seed step. Opt-in is per drafter
-(`supportsOrdinaryDecodeHistory`; native completion tracking keeps MTP steps).
-Rollbacks: `DARKBLOOM_TTFT_QWEN_MTP_CHAINED=0` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY=0`
-(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPOrdinaryHistory.swift`).
+(`supportsOrdinaryDecodeHistory`); drafters that need the committed-observation
+fence and native completion tracking keep MTP steps
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPOrdinaryHistory.swift`,
+`finalizeMTPOrdinaryHistory`). The rollback switches are
+`DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
+(`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
+[`../reference/configuration.md`](../reference/configuration.md)).
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation

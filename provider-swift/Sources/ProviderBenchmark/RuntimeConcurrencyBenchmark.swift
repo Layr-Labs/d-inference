@@ -33,7 +33,9 @@ public enum RuntimeConcurrencyBenchmark {
         let allRowsDecodeTokensPerSecond: Double?
         let allRowsWindowMs: Double?
         let medianRowDecodeTokensPerSecond: Double?
+        /// Cumulative for this cell's engine: the warmup and measured batches.
         let mtpMetrics: MTPBenchmarkMetrics
+        /// Measured batch only.
         let chainedSteps: Int
     }
 

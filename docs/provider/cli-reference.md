@@ -1142,8 +1142,8 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
 | `--runtime-generation` | Generate through the production CBv2 slot and emit tokens/text, resolved precision/backend, model/runtime identity, timings and memory as JSON |
 | `--runtime-assistant-directory <path>` | Offline local Gemma assistant for `--runtime-generation --runtime-mtp`; normal artifact and target checks apply, with assistant hashes in the report |
-| `--runtime-concurrency <sizes>` | Comma-separated batch sizes (for example `1,2,4,8`) for `--runtime-generation`: one production slot per size, warmed by one identical batch, then distinct greedy rows; per-row tokens, first/third-token times, decode rates, chained steps and MTP metrics as JSON |
-| `--runtime-stagger` | With `--runtime-concurrency`: row i of a B-row batch stops after `max-tokens*(B-i)/B` tokens, so the decode cohort shrinks to one row (speculation resuming as concurrency drops) |
+| `--runtime-concurrency <sizes>` | Comma-separated batch sizes (for example `1,2,4,8`) for `--runtime-generation`: one production slot per size, warmed by one identical batch, then distinct greedy rows; per-row tokens, arrival times of the first, third and first eight tokens, decode rates, chained steps (measured batch) and MTP metrics (warmup included) as JSON |
+| `--runtime-stagger` | With `--runtime-concurrency`: row i of a B-row batch stops after `max-tokens*(B-i)/B` tokens (at least 3), so the decode cohort shrinks to one row (speculation resuming as concurrency drops) |
 | `--kv-quantization <precision>` | Live `balanced`, `k8v4`, `k8v8` or `native`; overrides config/environment, otherwise the provider default is native |
 | `--kv-checkpoint-quantization <precision>` | Independent complete-checkpoint request with the same values; overrides config/environment, otherwise defaults to balanced; does not enable a cache or change the live backend |
 

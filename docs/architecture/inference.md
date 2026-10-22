@@ -1493,7 +1493,7 @@ probe before forwarding model output. This matters for media because
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker.
 
-A Qwen3-VL (`qwen3_vl_moe`) stream on the `qwen3` parser whose tail carries
+A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
 no think marker also receives the empty closed block
 (`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct
 renders a bare `<|im_start|>assistant\n` generation prompt and does not
@@ -1580,7 +1580,7 @@ terminal, which also ends the frame loop's pre-content deadline check.
 |---|---|
 | Undeclared or unresolvable name | Never exposed: completes in one piece with the existing validation or text fallback |
 | Parse failure, divergence or schema violation after exposure | Typed `tool_choice` violation on the stream |
-| Call cut off by `max_tokens` | Fragments stop; `finish_reason` is `length` |
+| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
 | Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a

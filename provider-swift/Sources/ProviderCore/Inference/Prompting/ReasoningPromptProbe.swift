@@ -23,7 +23,8 @@ enum ReasoningPromptProbe {
     static let tailTokenCount = 8
 
     /// `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0` restores the undecided parser
-    /// for prompts whose tail carries no think marker.
+    /// for `plainTailContentModelTypes` prompts whose tail carries no think
+    /// marker.
     static let plainTailContentSeedEnvironmentKey = "DARKBLOOM_TTFT_THINK_CONTENT_SEED"
     static let seedsPlainTailContentByDefault =
         ProcessInfo.processInfo.environment[plainTailContentSeedEnvironmentKey] != "0"

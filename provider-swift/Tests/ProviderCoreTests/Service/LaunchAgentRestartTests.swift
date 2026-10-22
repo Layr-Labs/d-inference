@@ -1,4 +1,5 @@
 import Foundation
+@testable import MLXLLM
 import MLXLMCommon
 @testable import ProviderAppAttest
 import Testing
@@ -178,6 +179,30 @@ struct LaunchAgentEnvironmentTests {
         #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
+    @Test func forwardsDeadlineAdmissionRollbackToProviderJob() {
+        // The estimator corrections are on by default; the rollback only takes
+        // effect in the launchd-managed provider process if the plist carries it.
+        let key = DeadlineAdmissionFixes.environmentKey
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        let out = LaunchAgent.passthroughEnvironment(from: [key: "0", "UNRELATED_SECRET": "excluded"])
+        #expect(out == [key: "0"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: out))
+        // The job receives the raw value; a trailing line ending still disables.
+        let templated = LaunchAgent.passthroughEnvironment(from: [key: "off\n"])
+        #expect(templated == [key: "off\n"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: templated))
+        #expect(DeadlineAdmissionFixes.resolve(environment: LaunchAgent.passthroughEnvironment(from: [:])))
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [key: "off", "UNRELATED_SECRET": "excluded"])
+        let vars = plist["EnvironmentVariables"] as? [String: String]
+        #expect(vars == [key: "off"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: vars ?? [:]))
+    }
+
     @Test func forwardsMiMoResidencyRollbackToProviderJob() {
         // Standing MiMo residency is the default; the operator's rollback is
         // only effective if it reaches the launchd-managed provider process.
@@ -230,6 +255,30 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == rollback)
         #expect(EngineV2SlotFactory.nativeMiMoVerificationMode(wantsMTP: true, environment: out)
             == .serialTarget)
+    }
+
+    @Test func forwardsGDNPromptKernelRollbackToProviderJob() {
+        // The SDK's GDN prompt-kernel probe checks bits, not speed, so the
+        // stock-kernel rollback is how an operator recovers from a slower
+        // bit-exact kernel. launchd does not inherit the shell: the provider
+        // job resolves the foreground's mode only if its plist carries the key.
+        let key = GatedDeltaPrefill.envFlag
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "0", " OFF ", "packed", "rows", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(GatedDeltaPrefill.Mode(environmentValue: launchd[key])
+                == GatedDeltaPrefill.Mode(environmentValue: foreground[key]))
+        }
+        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "0"])
+        #expect(rollback == [key: "0"])
+        #expect(GatedDeltaPrefill.Mode(environmentValue: rollback[key]) == .stock)
     }
 
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {

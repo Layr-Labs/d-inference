@@ -295,6 +295,9 @@ extension ProviderLoop {
         let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
         let workTask = Task {
             for await event in workEvents {
+                // Only order-free events overtake a request waiting for its
+                // model load (`ProviderLoop+WorkFIFO.swift`).
+                if !event.overtakesReleasedAdmissions { await awaitReleasedAdmissions() }
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
@@ -323,26 +326,31 @@ extension ProviderLoop {
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork
                 ):
-                    await handleInferenceRequest(
-                        requestId: requestId,
-                        ciphertext: ciphertext,
-                        senderPublicKey: senderPublicKey,
-                        cacheReceiptNonce: cacheReceiptNonce,
-                        authenticatedCacheScope: cacheScope,
-                        prefixCacheProtocol: prefixCacheProtocol,
-                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
-                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
-                        toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
-                        firstContentDeadline: firstContentDeadline,
-                        receivedAt: receivedAt,
-                        profile: profile,
-                        serviceReservationID: serviceReservationID,
-                        promptWork: promptWork,
-                        send: send
-                    )
+                    await admitInWorkFIFO(requestId: requestId) { gate in
+                        await self.handleInferenceRequest(
+                            requestId: requestId,
+                            ciphertext: ciphertext,
+                            senderPublicKey: senderPublicKey,
+                            cacheReceiptNonce: cacheReceiptNonce,
+                            authenticatedCacheScope: cacheScope,
+                            prefixCacheProtocol: prefixCacheProtocol,
+                            cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                            cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                            toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                            firstContentDeadline: firstContentDeadline,
+                            receivedAt: receivedAt,
+                            profile: profile,
+                            serviceReservationID: serviceReservationID,
+                            promptWork: promptWork,
+                            send: send,
+                            workFIFOGate: gate
+                        )
+                    }
 
                 case .cancel(let requestId):
-                    await handleCancellation(requestId: requestId)
+                    if !deferCancelForReleasedAdmission(requestId) {
+                        await handleCancellation(requestId: requestId)
+                    }
 
                 case .attestationChallenge(let nonce, let timestamp):
                     await handleAttestationChallenge(
@@ -385,6 +393,8 @@ extension ProviderLoop {
 
                 }
             }
+            // The consumer ends only after every admission it started.
+            await awaitReleasedAdmissions()
         }
         let eventTask = Task {
             // Model admission, hashing and cancellation may suspend for longer

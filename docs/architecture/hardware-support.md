@@ -315,6 +315,29 @@ flowchart TD
 standalone server runs the same sequence in
 `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`.)
 
+Coordinator requests reach the pre-accept check (`fastAdmissionReject`) in
+work-FIFO order. An accepted request whose model is not resident releases the
+FIFO while it waits for its load (`releaseWorkFIFO` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
+requests can reach the check while that load runs. The check sees a load's
+memory only once the load holds its pending-load claim, so a request for another
+model that is not resident first waits for released loads of other models
+(`awaitReleasedLoads`). A request for the model being loaded that the check
+rejects, because the load's claim already holds the memory the check sized for
+a second copy, waits for that load and is checked again. Requests for resident
+models overtake; one for an idle resident model can keep a slot the released
+load would have evicted, and that load then fails this gate after acceptance.
+The gate, pending-load claims and eviction still decide every load. Native MiMo
+keeps the serial FIFO, and `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores it for
+every model.
+
+The prompt token store (`PromptPieceTokenStore` in
+`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
+is ordinary process heap with no claim or reserve in this gate: at most
+`DARKBLOOM_TTFT_PROMPT_CACHE_MB` (default `32 << 20` bytes) per loaded
+tokenizer, plus one piece. Like other process heap, it reaches the gate only
+through the measured free memory.
+
 ### After the load
 
 - `KVHeadroomProbe.measuredLiveKVHeadroomBytes` (after trimming the cold-load
@@ -546,9 +569,70 @@ Mode or a non-nominal thermal state the bridge serves and reports the configured
 width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
+### Deadline admission rates
+
+First-token deadline admission is a time check, not a memory grant. Its
+estimator corrections ([deadlines](inference.md#deadlines),
+`DARKBLOOM_TTFT_ADMISSION_FIXES`) change no KV grant, load quotation,
+activation floor, serving width or memory concurrency; a request they admit
+still passes slot and process byte admission. Their inputs are measured on the
+serving Mac, so the same request can project differently on other hardware:
+
+- Decode is charged per batch step from the step shape the engine measured. On
+  an MTP engine the charged depth follows the chip's automatic verification
+  envelope
+  (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`,
+  `MTPAutomaticVerificationPolicy.maxRectangularTokens`;
+  [chip families](../provider/hardware-requirements.md#chip-families)): a
+  smaller envelope reaches the one-token-per-row charge at fewer decode rows,
+  as the live planner does.
+- An ordinary engine's isolated-prefill anchor is its own startup calibration
+  cell, measured idle at nominal posture. Expired evidence returns to the
+  anchor only while the whole Mac is idle at nominal posture
+  (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift`,
+  `EngineV2Bridge.calibrationPosturePermitsWork`: no Low Power Mode, nominal
+  thermal state). While another resident model or device activity holds the
+  Mac, or under Low Power Mode or a non-nominal thermal state, the anchor only
+  floors the aggregate rate
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
+  their recovery probe instead.
+
+The anchor and floor shape admission only. The published isolated rate,
+capacity wire fields and the external platform's memory contract are unchanged.
+
 ### Cross-repository agreement
 
 Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.
+
+### GDN prompt kernels by GPU
+
+Gated DeltaNet prompt windows of the Qwen model types named in
+[inference](inference.md#context) take a four-row kernel only on a GPU where it
+reproduces the stock `gated_delta_step` bit for bit, so on every chip outputs
+and recurrent checkpoints keep the stock kernel's bits. No chip list decides
+this: in each process, the first eligible window of each kernel instantiation
+runs the candidates and the stock kernel on a fixed 32-position window on that
+GPU and keeps the first exact candidate, or else the stock kernel
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`,
+`GatedDeltaPrefill.probe`). The probe does not compare speed; where a kept
+kernel is slower, `DARKBLOOM_TTFT_GDN_BLOCKED`
+([configuration](../reference/configuration.md#engine-and-scheduler)) restores
+the stock kernel.
+
+| GPU | Speed qualification |
+|---|---|
+| M5 Ultra (80-core) | Per-layer recurrence 1.45-1.70x faster (bf16 inputs, fp32 state, 512 and 4,096 positions); the probe keeps `packed` at the Qwen3.5-9B, Qwen3.8-27B and Qwen3.5-35B-A3B head geometries |
+| M3 Ultra | Qwen3.5-9B cold prefill takes 1.1-1.3% less time at 2,048, 8,192 and 32,768 prompt tokens (`darkbloom benchmark --scheduler-prefill`, probe against the stock kernel, A/B/A on one binary) |
+| Every other GPU | Unmeasured: bit-exact through the probe, speed unknown. `GatedDeltaPrefillTests` prints per-layer timings with `DARKBLOOM_GDN_PREFILL_BENCH=1` |
+
+The selected kernel has the stock kernel's inputs, outputs and fp32 state, so
+steady-state memory is unchanged. The probe allocates transiently, once per
+kernel instantiation and process: a 32-position window and up to four fp32
+recurrent states, at most about 16 MiB at Qwen3.8-27B's 48 value heads of 128.
+Capacity compatibility: no full-load quotation, measured activation floor, KV
+grant or reported capacity field changes, so
+[platform admission](#cross-repository-agreement) needs no change.
 
 ## Invariants
 
@@ -599,6 +683,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
 | Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
+| Deadline admission rate inputs | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `IsolatedPrefillAdmissionRate`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`targetFirstTokenDeadlineAdmission`) |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |

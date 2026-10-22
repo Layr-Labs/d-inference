@@ -21,6 +21,8 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     /// staging. If the page claim later races with allocator reuse, classify
     /// the cold fallback as memory rather than inventing an SSD miss.
     private var _residentCandidateSeen = false
+    private var _withheldReasoning = ""
+    private var _firstWithheldReasoningAt: ContinuousClock.Instant?
     private var didEmitLookup = false
     /// Armed before the pump task can run; only the pump may resolve it.
     /// Waiters exist only on canceled settlement, never on ordinary decode.
@@ -226,6 +228,29 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
     public var matchedStopSequence: String? {
         lock.withLock { _matchedStopSequence }
+    }
+
+    /// Reasoning generated for a request that asked not to receive it. It is
+    /// still generated work: the provider frames loop counts it toward
+    /// `reasoning_tokens`, and its arrival ends the pre-content interval.
+    /// Request-local plaintext; never telemetry, logs or the response hash.
+    /// Recorded before any later event is yielded, so a frame produced after
+    /// it always observes the write.
+    func recordWithheldReasoning(_ text: String) {
+        guard !text.isEmpty else { return }
+        lock.withLock {
+            if _firstWithheldReasoningAt == nil { _firstWithheldReasoningAt = .now }
+            _withheldReasoning += text
+        }
+    }
+
+    var withheldReasoning: String {
+        lock.withLock { _withheldReasoning }
+    }
+
+    /// When the first withheld reasoning was generated; nil while none was.
+    var firstWithheldReasoningAt: ContinuousClock.Instant? {
+        lock.withLock { _firstWithheldReasoningAt }
     }
 
     /// Engine-reported prompt tokens whose KV was adopted from the prefix

@@ -15,6 +15,8 @@ struct NativeToolStreamRouter {
     private let nativeMiMoRequiresConstraint: Bool
     private let rejectMiMoThought: Bool
     private var rejectedNativeGemmaReasoning = false
+    private let withholdReasoning: Bool
+    private var withheldReasoning = ""
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
@@ -30,8 +32,10 @@ struct NativeToolStreamRouter {
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
-         absorbStrayThinkClose: Bool = false, streamedCalls: ToolChoicePromptPolicy.Prepared? = nil) {
+         absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
+         streamedCalls: ToolChoicePromptPolicy.Prepared? = nil) {
         self.handler = handler
+        self.withholdReasoning = withholdReasoning
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
         self.nativeMiMoChannels = nativeMiMoChannels
@@ -54,6 +58,14 @@ struct NativeToolStreamRouter {
 
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
+
+    /// Reasoning classified since the last call but withheld from the events
+    /// at the caller's request. Its owner counts it as generated reasoning; it
+    /// is never emitted, logged or part of the response hash.
+    mutating func takeWithheldReasoning() -> String {
+        defer { withheldReasoning = "" }
+        return withheldReasoning
+    }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
         let pieces: [ParsedReasoning]
@@ -144,6 +156,10 @@ struct NativeToolStreamRouter {
                         rejectedNativeGemmaReasoning = true
                         throw disabledNativeReasoningFailure
                     }
+                } else if withholdReasoning {
+                    // Classified exactly like visible reasoning, so its
+                    // tool-like text stays inert; only emission differs.
+                    withheldReasoning += reasoning
                 } else {
                     events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
                 }

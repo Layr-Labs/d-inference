@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,17 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+Nemotron 3.5 Super (`nvidia-nemotron-3.5-super`) is registered for Apple M5 Max
+(128 GB) and M5 Ultra (`apple_m5`, at least 128 GB of unified memory). Its
+default eight-request speculating owner, serving the full 262,144-token
+context, leaves 13.9 GiB of a 128 GB Mac's cap beside its activation reserve,
+but a 16-image request beside it does not fit; with less memory available it
+loads a narrower owner, down to one request from 85.6 GiB available. Only
+256 GB (M3 Ultra) is measured on hardware. Plan about 75 GB of disk for its weights. The derivation
+is in
+[hardware support](../architecture/hardware-support.md#context); the slot is
+described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
 
 Native live inference is the default. Independent checkpoint compression can
 reduce encoded older-row storage, not the native serving allocation or measured

@@ -73,6 +73,70 @@ struct SSDShorterCheckpointRestoreTests {
         }
     }
 
+    /// The refusal above, with the budget actor parked inside a concurrent
+    /// reservation: the attempt's host IO refund queues behind it, so the
+    /// cold result cannot return; once released, it returns with nothing
+    /// staged. Returning before the refund left 20 MiB staged.
+    @Test("AR allocation refusal returns only after its host IO refund")
+    func autoregressiveRefusalReturnsAfterItsRefund() async throws {
+        try await SSDShorterRestoreFixture.withStore(shared: true) { fixture, donor in
+            await donor.closeAndWait()
+            let barrier = SSDReservationBarrier()
+            let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
+                                             memorySnapshot: barrier.sample)
+            let store = SSDHybridCheckpointStore(config: donor.config, kekKey: fixture.key, kvBudget: budget,
+                diskBudget: SSDDiskBudget(), maxWriteBytesPerDay: 1 << 30)
+            store.scanOnDisk()
+            let probe = SSDShorterRestoreProbe()
+            let gate = SSDShorterRestoreGate()
+            let stage = Task {
+                let result = await store.stage(requestID: .init(902), request: fixture.request(),
+                    reserveReadScratch: { try probe.scratch(fixture) }) { manifest in
+                        probe.record(manifest.position)
+                        let plan = try probe.cpuPlan(manifest, fixture: fixture)
+                        let required = plan.nativeDestinationBytes + plan.scratchBytes
+                        let pressureBytes = fixture.codec.admission.bytesCapacity
+                            - fixture.codec.admission.bytesReserved - required + 1
+                        try #require(pressureBytes > 0)
+                        let pressure = try fixture.codec.admission.reserveTransient(bytes: pressureBytes)
+                        plan.evaluateDestinations = { arrays in
+                            withExtendedLifetime(pressure) {
+                                Issue.record("destination reached allocation despite typed admission refusal")
+                                Device.withDefaultDevice(.cpu) { eval(arrays) }
+                            }
+                        }
+                        gate.block()
+                        return plan
+                    }
+                probe.didCompleteStage()
+                return result
+            }
+            #expect(await gate.waitUntilEntered())
+            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+            barrier.arm()
+            let competitor = Task { await budget.reserveBytes(requestID: "parked-competitor", bytes: 1) }
+            let parked = await SSDShorterRestoreGate.waitUntil { barrier.didEnter() }
+            #expect(parked)
+            gate.open()
+            // Nothing between parking and release may throw: the barrier must open.
+            let deadline = ContinuousClock.now.advanced(by: .milliseconds(500))
+            while !probe.stageCompleted, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            #expect(!probe.stageCompleted, "a cold result returned before its host IO refund")
+            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+            barrier.release.signal()
+            #expect(await competitor.value)
+            let result = await stage.value
+            #expect(result.disposition == .skippedCapacity)
+            #expect(store.stats().stagedBytesInUse == 0)
+            #expect(probe.positions == [512])
+            await budget.release(requestID: "parked-competitor")
+            await store.closeAndWait()
+            #expect(await budget.outstandingReservedBytes() == 0)
+        }
+    }
+
     @Test("provider destination budget admits the shorter peak without overlapping charges")
     func destinationBudgetFallsBack() async throws {
         try await SSDShorterRestoreFixture.withStore { fixture, donor in

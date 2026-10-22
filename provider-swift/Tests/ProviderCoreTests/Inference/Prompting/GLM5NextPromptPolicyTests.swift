@@ -165,7 +165,9 @@ struct GLM5NextPromptPolicyTests {
             for controls in Self.noOpReasoningControls {
                 let body = try adding(controls, to: fixture.request)
                 let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
-                #expect(!evidence.invalid && !evidence.disablesReasoning, "\(fixture.id) \(controls)")
+                #expect(
+                    !evidence.invalid && !evidence.disablesThinking && !evidence.excludesReasoning,
+                    "\(fixture.id) \(controls)")
                 for input in try remoteAndLocalInputs(body) {
                     let context = MLXLMCommon.JSONValue.object(
                         (input.additionalContext ?? [:]).mapValues { .from($0) })
@@ -196,38 +198,83 @@ struct GLM5NextPromptPolicyTests {
         #expect(try effort(["reasoning": ["max_tokens": 2048, "enabled": true, "exclude": false]]) == "high")
     }
 
-    /// Every thinking-off or reasoning-exclusion spelling, alone or shadowed by
-    /// a valid effort. The template cannot disable reasoning and the provider
-    /// cannot withhold it, so each is refused with the fixed explanation.
-    private static var disablingReasoningControls: [[String: Any]] { [
+    /// Every thinking-off spelling. Each adds `enable_thinking: false`, which
+    /// `GLM5NextThinkingTokenizer` turns into a closed `<think></think>`.
+    private static var thinkingOffControls: [[String: Any]] { [
         ["reasoning": ["enabled": false]],
-        ["reasoning": ["exclude": true]],
         ["reasoning": ["effort": "none"]],
-        ["reasoning": ["effort": "off", "max_tokens": 1024]],
         ["reasoning_effort": "none"],
         ["reasoning_effort": "off"],
-        ["include_reasoning": false],
         ["enable_thinking": false],
         ["chat_template_kwargs": ["enable_thinking": false]],
         ["chat_template_kwargs": ["thinking": false]],
         ["chat_template_kwargs": ["reasoning_effort": "none"]],
+        ["reasoning": ["enabled": false, "exclude": false], "enable_thinking": false,
+         "include_reasoning": true, "chat_template_kwargs": ["thinking": false]],
+    ] }
+
+    /// Hidden reasoning: the provider cannot withhold reasoning it generates.
+    private static var reasoningExclusionControls: [[String: Any]] { [
+        ["reasoning": ["exclude": true]],
+        ["include_reasoning": false],
+        ["reasoning": ["enabled": false, "exclude": true]],
+    ] }
+
+    /// Thinking-off beside a thinking-on switch, effort level or budget.
+    private static var contradictoryThinkingControls: [[String: Any]] { [
+        ["reasoning": ["effort": "off", "max_tokens": 1024]],
         ["reasoning": ["effort": "high"], "enable_thinking": false],
         ["reasoning": ["effort": "none"], "reasoning_effort": "high"],
         ["reasoning": ["enabled": true], "chat_template_kwargs": ["thinking": false]],
+        ["enable_thinking": true, "chat_template_kwargs": ["enable_thinking": false]],
     ] }
 
-    @Test func thinkingOffAndReasoningExclusionGetTheFixedDiagnosableRefusalOnBothPaths() throws {
-        for controls in Self.disablingReasoningControls {
-            var object: [String: Any] = ["model": "m", "messages": [["role": "user", "content": "Hi"]]]
-            object.merge(controls) { _, added in added }
-            let body = try JSONSerialization.data(withJSONObject: object)
+    private func body(_ controls: [String: Any]) throws -> Data {
+        var object: [String: Any] = ["model": "m", "messages": [["role": "user", "content": "Hi"]]]
+        object.merge(controls) { _, added in added }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    @Test func everyThinkingOffSpellingClosesThinkingOnBothPaths() throws {
+        for controls in Self.thinkingOffControls {
+            let body = try body(controls)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
-            #expect(!evidence.invalid && evidence.disablesReasoning, "\(controls)")
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled) {
+            #expect(!evidence.invalid && evidence.disablesThinking && !evidence.requestsThinking, "\(controls)")
+            _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
+            for input in try remoteAndLocalInputs(body) {
+                #expect(input.additionalContext?["enable_thinking"] as? Bool == false, "\(controls)")
+                #expect(input.additionalContext?["reasoning_effort"] as? String == "max", "\(controls)")
+                #expect(input.additionalContext?["clear_thinking"] as? Bool == false, "\(controls)")
+            }
+        }
+        // Typed controls without raw evidence (the Responses translation and
+        // direct callers) reach the same context.
+        let request = OpenAIChatCompletionRequest(model: "m", messages: [])
+        let typed: [(OpenAIChatCompletionRequest, ChatTemplateControls)] = [
+            (request, .init(enableThinking: false)), (request, .init(reasoningEffort: "none")),
+            (request, .init(reasoningEffort: "off")),
+            (.init(model: "m", messages: [], reasoning: .init(enabled: false)), .init()),
+            (.init(model: "m", messages: [], reasoning: .init(effort: "none")), .init()),
+        ]
+        for (request, controls) in typed {
+            let context = try GLM5NextPromptPolicy.additionalContext(request: request, controls: controls)
+            #expect(context["enable_thinking"] as? Bool == false)
+        }
+        // Thinking on, the default, renders exactly as before.
+        let context = try GLM5NextPromptPolicy.additionalContext(request: request, controls: .init())
+        #expect(context["enable_thinking"] == nil)
+    }
+
+    @Test func reasoningExclusionAndContradictionsAreRefusedOnBothPaths() throws {
+        for controls in Self.reasoningExclusionControls {
+            let body = try body(controls)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            #expect(!evidence.invalid && evidence.excludesReasoning, "\(controls)")
+            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
                 try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
             }
             let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled) {
+            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
                 try ProviderPromptContractPipeline.normalizedInput(
                     prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "glm5_next"),
                     request: local.request, modelType: "glm5_next", templateControls: local.templateControls)
@@ -235,28 +282,68 @@ struct GLM5NextPromptPolicyTests {
             // Other families keep their own handling of the same bodies.
             try ProviderPromptContractPipeline.validateNativeControls(local.templateControls, modelType: "llama")
         }
-        // Typed controls without raw evidence (the Responses translation and
-        // direct callers) reach the same refusal.
-        let request = OpenAIChatCompletionRequest(model: "m", messages: [])
-        let refusals: [(OpenAIChatCompletionRequest, ChatTemplateControls)] = [
-            (request, .init(enableThinking: false)), (request, .init(reasoningEffort: "none")),
-            (request, .init(reasoningEffort: "off")),
-            (.init(model: "m", messages: [], reasoning: .init(enabled: false)), .init()),
-            (.init(model: "m", messages: [], reasoning: .init(effort: "none")), .init()),
-        ]
-        for (request, controls) in refusals {
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled) {
-                try GLM5NextPromptPolicy.additionalContext(request: request, controls: controls)
+        for controls in Self.contradictoryThinkingControls {
+            let body = try body(controls)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            #expect(evidence.disablesThinking && evidence.requestsThinking, "\(controls)")
+            #expect(throws: (any Error).self) { try evidence.validate() }
+            let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.normalizedInput(
+                    prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "glm5_next"),
+                    request: local.request, modelType: "glm5_next", templateControls: local.templateControls)
             }
+        }
+        let request = OpenAIChatCompletionRequest(model: "m", messages: [], reasoning: .init(effort: "high"))
+        #expect(throws: (any Error).self) {
+            try GLM5NextPromptPolicy.additionalContext(request: request, controls: .init(enableThinking: false))
         }
         // A malformed sibling remains the generic refusal.
         let malformed = Data(#"{"model":"m","messages":[],"reasoning":{"enabled":false,"summary":"auto"}}"#.utf8)
         #expect(try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: malformed).invalid)
     }
 
+    @Test func thinkingTokenizerClosesOnlyAnOpenGenerationPromptWhenThinkingIsOff() throws {
+        let tokenizer = try GLM5NextThinkingTokenizer(base: ThinkFixtureTokenizer())
+        let messages: [[String: any Sendable]] = [["role": "user", "content": "Hi"]]
+        let open = ThinkFixtureTokenizer.prompt
+        #expect(try tokenizer.applyChatTemplate(messages: messages, tools: nil, additionalContext: nil) == open)
+        #expect(try tokenizer.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: ["reasoning_effort": "max"]) == open)
+        #expect(try tokenizer.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: ["enable_thinking": false])
+            == open + [ThinkFixtureTokenizer.close])
+        #expect(try tokenizer.applyChatTemplate(
+            messages: messages, chatTemplate: "t", tools: nil, additionalContext: ["enable_thinking": false])
+            == open + [ThinkFixtureTokenizer.close])
+        var unopened = ThinkFixtureTokenizer()
+        unopened.rendered = [1, 2]
+        #expect(throws: GLM5NextThinkingTokenizer.Failure.generationPromptNotOpen) {
+            try GLM5NextThinkingTokenizer(base: unopened).applyChatTemplate(
+                messages: messages, tools: nil, additionalContext: ["enable_thinking": false])
+        }
+        var missing = ThinkFixtureTokenizer()
+        missing.hasThinkTokens = false
+        #expect(throws: GLM5NextThinkingTokenizer.Failure.missingThinkTokens) {
+            try GLM5NextThinkingTokenizer(base: missing)
+        }
+        #expect(tokenizer.decode(tokenIds: [ThinkFixtureTokenizer.open, ThinkFixtureTokenizer.close],
+            skipSpecialTokens: false) == "<think></think>")
+    }
+
+    /// The shipped template's generation prompt ends with the open block that
+    /// thinking-off closes.
+    @Test func shippedTemplateGenerationPromptEndsWithAnOpenThinkBlock() throws {
+        let template = try shippedTemplate()
+        let input = try remoteAndLocalInputs(try body(["enable_thinking": false]))[0]
+        let rendered = try render(input, with: template)
+        #expect(rendered.hasSuffix("<|assistant|><think>"))
+        #expect(ReasoningPromptProbe.streamingPrefix(forPromptTail: rendered + "</think>") == "<think></think>")
+    }
+
     @Test func reasoningRefusalIsAClient400WithAFixedMessageThatNeverCrossesToTheCoordinator() throws {
-        let error = MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled
-        #expect(error.errorDescription == GLM5NextPromptPolicy.reasoningCannotBeDisabledMessage)
+        let error = MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
+        #expect(error.errorDescription == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
         let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
         #expect(failure.statusCode == 400)
@@ -362,7 +449,8 @@ struct GLM5NextPromptPolicyTests {
             reasoning: .init(effort: "medium"))
         #expect(try GLM5NextPromptPolicy.additionalContext(request: nested, controls: .init())[
             "reasoning_effort"] as? String == "high")
-        for effort in ["none", "off", "0", "MEDIUM", "LOW", " low", ""] {
+        // `none`/`off` turn thinking off (`everyThinkingOffSpellingClosesThinkingOnBothPaths`).
+        for effort in ["0", "MEDIUM", "LOW", " low", ""] {
             #expect(throws: (any Error).self) {
                 try GLM5NextPromptPolicy.additionalContext(request: request,
                     controls: .init(reasoningEffort: effort))
@@ -535,9 +623,11 @@ struct GLM5NextPromptPolicyTests {
         try ProviderPromptContractPipeline.validateNativeControls(invalid.templateControls, modelType: "llama")
         let disabled = try JSONDecoder().decode(LocalResponseRequest.self,
             from: Data(#"{"model":"m","input":"Hi","reasoning":{"effort":"none"}}"#.utf8))
-        #expect(throws: MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled) {
-            try ProviderPromptContractPipeline.validateNativeControls(disabled.templateControls, modelType: "glm5_next")
-        }
+        let disabledChat = disabled.request.chatCompletionRequest
+        let thinkingOff = try ProviderPromptContractPipeline.normalizedInput(
+            prepared: ToolChoicePromptPolicy.prepare(disabledChat, modelType: "glm5_next"),
+            request: disabledChat, modelType: "glm5_next", templateControls: disabled.templateControls)
+        #expect(thinkingOff.additionalContext?["enable_thinking"] as? Bool == false)
     }
 
     @Test func exactLargeSchemaNumbersArePreservedOrRejectedBeforeRounding() throws {
@@ -550,4 +640,36 @@ struct GLM5NextPromptPolicyTests {
         let inexact = Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[18446744073709551615]}}}}}]}"#.utf8)
         #expect(throws: (any Error).self) { try normalized(inexact) }
     }
+}
+
+/// A tokenizer whose rendered generation prompt ends with an open `<think>`.
+private struct ThinkFixtureTokenizer: MLXLMCommon.Tokenizer {
+    static let open = 154_841
+    static let close = 154_842
+    static let prompt = [7, 8, open]
+    var rendered = prompt
+    var hasThinkTokens = true
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.compactMap(convertIdToToken).joined()
+    }
+    func convertTokenToId(_ token: String) -> Int? {
+        guard hasThinkTokens else { return nil }
+        return token == "<think>" ? Self.open : token == "</think>" ? Self.close : nil
+    }
+    func convertIdToToken(_ id: Int) -> String? {
+        id == Self.open ? "<think>" : id == Self.close ? "</think>" : nil
+    }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { rendered }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], chatTemplate: String,
+        tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { rendered }
 }

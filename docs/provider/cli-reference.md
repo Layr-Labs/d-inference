@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -35,7 +35,8 @@ Stop the isolated local process to disable it. There is no target-only GLM
 serving engine; target-only construction is limited to benchmarks.
 
 Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
-(absorbed sparse attention, parallel-threshold selection, native KDA
+(absorbed sparse attention with native decode selection and sparse prefill kernels,
+parallel-threshold selection, native KDA
 recurrence, fused hyper-connections and routed-expert combine), recorded in the
 encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
@@ -1078,7 +1079,11 @@ For a guarded automatic AR paged retry, use
 Diffusion assembly does not consult this crash-loop guard. For explicit contiguous recovery, resolve
 `native` precision before selecting `contiguous` or disabling paged storage
 with `DARKBLOOM_CBV2_PAGED_KV=0`; see the
-[precision settings](#providertoml-keys-read-by-the-cli). A posture pass alone
+[precision settings](#providertoml-keys-read-by-the-cli).
+`DARKBLOOM_CBV2_PAGED_KV=0` also fails the Nemotron Super load, which serves
+paged KV only and ignores `engine_v2_kv_backend`
+([configuration reference](../reference/configuration.md#engine-and-scheduler)).
+A posture pass alone
 does not qualify precision or the runtime. Explicit `paged` construction
 failures refuse the load; a native policy veto that serves contiguous still
 fails the explicit-request check (`KVBackendPosture.backendCheck`,

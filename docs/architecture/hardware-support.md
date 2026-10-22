@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-21
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -9,6 +9,73 @@ understand why a box refuses a load that "should fit"; for the operator view
 [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md).
 
 ## Context
+
+The unregistered Super builder requires a live pending LOAD lease and preserves
+the ordinary fixed-workspace concurrency floor. Synthetic bridge tests must
+provide a grant above the minimum KV floor plus recurrent workspace; a small
+checkpoint does not waive that policy. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`.
+
+The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
+claims, before allocation, the pinned checkpoint's resident installation and
+head payloads (73,217,162,760 and 1,769,654,296 bytes), the owner's serving
+room and only the part of its load transient beyond that room
+(`NemotronSuperLoadClaim`). The serving room is the 8.5 GiB owner-wide prefill
+lane, any prefix bank and `NemotronSuperServingPolicy.admissionKVBytes` of KV
+headroom: 15.7 GiB for eight speculative requests at the served 262,144-token
+context (576 MiB of fixed bytes per request, the speculating owner's 9.87 GB of
+round work once, and 2 GiB; 11.2 GiB at 65,536 tokens). The transient is the larger of the installation's
+staging with its 2 GiB backend allowance (8,903,163,904 bytes) and the head's
+construction allowance (7,078,617,184 bytes), never both, because each phase
+returns its freed buffers from MLX's cache before the next phase or serving
+uses that room; for the default configuration the room is larger, so the
+transient adds nothing. Super's LOAD claims keep no OS reserve beyond 3 GiB of
+admission slack and its measured 2 GiB activation floor (below), in place of
+the provider's 10% load reserve, unless the operator raised `memory_reserve_gb`
+above its 4 GiB default (`NemotronSuperLoadFit.systemReserveBytes`). Available
+memory (what macOS reports) a 128 GB Mac needs: about 104 GiB for the default
+owner (eight requests and a prefix bank, about 99 GiB claimed); with less the
+load drops the bank (eight requests, 99.0 GiB), then serves four (95.3), two
+(90.8) or one (89.3) concurrent request, then one with 1,024-token prompt
+chunks (85.6 GiB, `NemotronSuperLoadFit.minimumAvailableBytes`), so a 128 GB
+Mac running other work loads a narrower owner instead of refusing. Super's
+pre-accept, eviction and startup preload decide on the claim's own ledger room
+(`ProviderLoop.nemotronSuperLoadRequirements`, `loadClaimRemainingBytes`), not
+on `freeForLoadGb`: they admit from 85.6 GiB available and evict idle models
+toward the widest configuration that evicting them can reach. The discovery
+footprint (`estimated_memory_gb`) is the narrowest configuration's
+requirement, 83.6 GiB on every Mac; cold capacity quotes and the coordinator's
+cold-load routing, which compare it and the 3 GiB load headroom with
+`free_for_load_gb` (net of the 10% load reserve), admit only from about 99.4
+GiB available on 128 GB until the platform adopts a Super-specific rule. The
+footprint holds no media, and an image request is
+charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
+3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
+copies, a 13,312-patch image's tokens and its tower and projector bound; a
+video's largest, `videoMediaChargeBytes`, is 3.49 GiB). On 128 GB the default
+owner's claim and activation reserve leave 13.9 GiB of the cap, so a 16-image
+request (24.5 GiB of media) does not fit beside it. A resident slot's media
+probe is quoted against the ledger room its reservation is admitted by.
+At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
+machine at the earlier 65,536-token context (cap, OS-available memory and MLX
+limits of the smaller Mac, before the speculating admission split); prompts
+beyond about 64K tokens on 128 GB are unmeasured. Eight default requests (two 58K-token prompts,
+five short ones and an image) all completed, with a process footprint peak of
+91.4 GB against a 123.7 GB cap, and unload and reload passed. Only a 256 GB M3
+Ultra is measured on hardware: while the LOAD charge was held MLX active peaked
+at 76.7 GB and the process footprint at 79.3 GB, MLX active was 75.0 GB after
+load, and at the 65,536-token context claims of 129.6 to 130.7 GB (36 to 37 GiB
+of KV headroom, under the earlier claim that also counted the installed
+weights until the owner was built) were admitted at some times and refused at
+others. The registration gates the model to attested M5 providers with at least
+128 GB (M5 Max 128 GB, M5 Ultra) through
+`required_provider_capabilities: ["apple_m5"]` and `min_ram_gb` 128; a physical
+128 GB measurement is still pending. It is in the
+[registry reference](../reference/model-registry-format.md#nemotron-super).
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
+`provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
+`scripts/nemotron-qualification/validation-2026-10-15.json`.
 
 The provider is Apple-Silicon-only: the SwiftPM platform floor is declared by
 the packages described in
@@ -51,7 +118,7 @@ owns the limits and their source mappings.
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
@@ -381,7 +448,14 @@ view never creates another materialization credit.
 
 The bound covers one buffer. Complete checkpoint capture/import separately
 prices zero-fill intermediates, retained recurrent backing, MTP state and
-metadata. Shared SSD reads and writes claim bounded host buffers before I/O or
+metadata. A provider-staged import builds each destination, paged segment and
+recent row from a zeroed host buffer of that array's size, one at a time; the
+buffer is resident outside the MLX allocator while it is copied, so the import
+plan charges the largest one as stage scratch
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHostZeros.swift`
+(`MLXArray.cbv2HostZeros`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointImportPlan.swift`
+(`CBv2CompleteCheckpointImportPlan.scratchBytes`)). Shared SSD reads and writes claim bounded host buffers before I/O or
 encoding; native destinations remain under Admission. Host buffers drain before
 their permit returns. Native owners retain completion and retirement barriers;
 allocator-active aliases remain visible in U after their coverage retires. Physical
@@ -464,7 +538,10 @@ Provider full-load quotations, measured activation floors and reported capacity 
 5. A load passes only if `weights × memoryOverheadFactor + activations +
    minimumLoadKVBytes ≤ freeForLoadGb` and, after loading, measured live KV
    headroom is ≥ `minimumLoadKVBytes` — `canLoad`, `loadIsServeable`,
-   `KVHeadroomProbe.hasServeableKVHeadroom`.
+   `KVHeadroomProbe.hasServeableKVHeadroom`. The managed Nemotron Super load
+   replaces the first term with its own claim's ledger room, which keeps no
+   load reserve — `ProviderLoop.evictUntilNemotronSuperFits`,
+   `nemotronSuperLoadIsCertainToFail`.
 6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
    below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
    `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
@@ -481,6 +558,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
+| Nemotron Super refused: "Insufficient memory (… GB of LOAD room, need … GB) …" | The claim's ledger room cannot hold its narrowest configuration, even after evicting every idle model | `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |
 | Raising `DARKBLOOM_ACTIVATION_RESERVE_GB` shrinks KV, lowering it does nothing | Raise-only semantics | `UnifiedMemoryCap.swift` (`resolvedActivationReserveBytes`) |
 | `darkbloom doctor` warns about macOS | Below `recommendedMacOSMajorVersion` ([Constants](#constants)); warning only | `BootSecurity.swift` |
@@ -490,7 +568,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Concern | File / symbol |
 |---|---|
 | Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |

@@ -28,6 +28,12 @@
 ///                 (legacy `livenessRestartCooldown` semantic: never
 ///                 thrash rebuilds; requests 503 / deroute instead)
 ///
+/// Native MiMo slots retire instead of rebuilding. A Nemotron Super slot
+/// leaves serving at once and retires in a task of its own: bridge
+/// shutdown first (no wedged row would ever drain), bounded by
+/// `nemotronSuperWedgeRetirementBound` (past it, a retained fault), and
+/// its reload is refused for the same 120s cooldown.
+///
 /// Serialization: the drain→rebuild→swap stretch holds the RE-SLICE GATE
 /// (grants are read + re-granted across suspension points — a concurrent
 /// load's shrink or an unload's regrow must never interleave, or the
@@ -103,6 +109,16 @@ extension ProviderLoop {
             recordModelLoadError(model: modelId,
                                  message: "Native MiMo slot failed; confirmed retirement or process restart required")
             _ = await retireNativeMiMoOwner(modelID: modelId)
+            return
+        }
+        // The Super owner is never rebuilt warm: a confirmed wedge retires it,
+        // joined off this tick and bounded (`retireWedgedNemotronSuperSlot`).
+        if isNemotronSuperSlot(modelId) {
+            guard !modelsLoading.contains(modelId), !modelsUnloading.contains(modelId),
+                let bridge = modelSlots[modelId]?.engineV2,
+                await bridge.confirmedWedgeForRecovery(now: now),
+                modelSlots[modelId]?.engineV2 === bridge, autopilotCommand == nil else { return }
+            await retireWedgedNemotronSuperSlot(modelId, now: now)
             return
         }
         guard nativeMiMoAllowsReclamation() else { return }

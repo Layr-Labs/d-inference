@@ -150,6 +150,8 @@ extension EngineV2Factory {
 
     /// Prepare backend resources, then assemble the engine. Slot loading may call
     /// these phases separately to construct a prefix cache for the resolved backend.
+    /// `schedulerPolicy` lets a dedicated owner adjust the resolved scheduler
+    /// configuration before the backend is sized; nil keeps the production policy.
     public static func makeProductionBuild(
         model: any LanguageModel,
         modelID: String? = nil,
@@ -169,7 +171,8 @@ extension EngineV2Factory {
         checkpointQuantization: EngineV2KVQuantizationSelection? = nil,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil,
+        schedulerPolicy: ((inout CBv2SchedulerConfig) -> Void)? = nil
     ) throws -> ProductionBuild {
         let preparedBackend = try prepareProductionBackend(
             model: model,
@@ -187,7 +190,8 @@ extension EngineV2Factory {
             nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                 layerKinds: (model as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
                 gemmaAssistantActive: mtpDrafter != nil && mtpConfig.effectiveEnabled),
-            pagedPreflightOverride: pagedPreflightOverride)
+            pagedPreflightOverride: pagedPreflightOverride,
+            schedulerPolicy: schedulerPolicy)
         let storageQuantization: PagedKVQuantizationConfig?
         if completePrefixCache != nil {
             let requested = try checkpointQuantization ?? EngineV2KVQuantizationPolicy.resolve(

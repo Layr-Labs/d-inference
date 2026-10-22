@@ -40,6 +40,10 @@ enum ModelContainerLoading {
         if GLM5NextPromptPolicy.applies(modelType: base.modelType) {
             throw GLM5NextManagedLoadError.managedLoadRequired
         }
+        // No generic factory builds the ModelOpt NVFP4/FP8 Super owner.
+        if base.modelType == NemotronSuperServingPolicy.modelType {
+            throw NemotronSuperSlotError.managedLoadRequired
+        }
         if base.modelType == "diffusion_gemma" {
             return .diffusion(try await DiffusionGemmaModelFactory.shared.loadContainer(
                 from: directory, using: LocalTokenizerLoader()))

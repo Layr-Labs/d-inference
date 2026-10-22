@@ -300,6 +300,10 @@ extension ProviderLoop {
             }
         } else { (glmServing, glmPreparation) = (nil, nil) }
         let glmPlan = glmServing?.plan
+        // Super builds its own owner and speculates with its embedded head;
+        // neither the generic loaders nor the assistant funnel apply.
+        let managedSuper = NemotronSuperServingPolicy.isServingIdentity(
+            modelID: modelId, modelType: modelInfo.modelType)
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -310,6 +314,8 @@ extension ProviderLoop {
         var mtpPreparation: SpecDecPreparation
         if let glmPreparation {
             mtpPreparation = glmPreparation
+        } else if managedSuper {
+            mtpPreparation = SpecDecPreparation(artifact: nil, status: .disabled(.configDisabled, configured: false))
         } else if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: loopConfig.config.backend.mtpMode,
                 externalPath: loopConfig.config.backend.mtpDrafterPath,
@@ -391,6 +397,8 @@ extension ProviderLoop {
             throw InferenceError.modelLoadFailed(message)
         }
         defer { glmOwnership?.release() }
+        // Super's own slot state refuses its load before either eviction below.
+        if managedSuper { try refuseNemotronSuperReload(modelId) }
         isLoadingAny = true
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         var retainGLMActivity = false
@@ -465,9 +473,15 @@ extension ProviderLoop {
                     ?? GLM5NextLoadFunnel.estimatedWeightsGb(scanned: modelInfo.estimatedMemoryGb, plan: glmPlan),
                 extraWeightBytes: 0)
             do {
-                try await evictUntilAvailable(
-                    weightsGb: targetWeightsGb, allowEviction: allowEviction,
-                    waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                // Super's LOAD claim keeps its own system reserve; its gate
+                // evaluates that claim's ledger room instead.
+                if managedSuper {
+                    try await evictUntilNemotronSuperFits(modelInfo, allowEviction: allowEviction)
+                } else {
+                    try await evictUntilAvailable(
+                        weightsGb: targetWeightsGb, allowEviction: allowEviction,
+                        waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                }
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -488,6 +502,11 @@ extension ProviderLoop {
 
             // The accepted lease is the allocation permit. Advisory eviction and
             // assistant checks above cannot reserve process memory across awaits.
+            if managedSuper {
+                try await loadNemotronSuperSlot(modelID: modelId, directory: modelPath,
+                                                modelInfo: modelInfo, deviceActivity: deviceActivity)
+                return
+            }
             if let nativeLoad {
                 try await loadNativeMiMoSlot(modelID: modelId, directory: modelPath,
                                              load: nativeLoad, preparation: mtpPreparation)
@@ -1096,6 +1115,7 @@ extension ProviderLoop {
             || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
             return await retireNativeMiMoOwner(modelID: modelId)
         }
+        if isNemotronSuperSlot(modelId) { return await retireNemotronSuperSlot(modelId) }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
         // without extending it through a local. Explicit retirement can leave
@@ -1289,9 +1309,16 @@ extension ProviderLoop {
     }
 
     private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
-        slots.reduce(0.0) {
-            $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-        } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+        Double(reclaimableMemoryBytes(from: slots)) / 1_073_741_824.0
+    }
+
+    /// What unloading `slots` and clearing MLX's buffer cache hands back:
+    /// their resident weights and the cache.
+    func reclaimableMemoryBytes(from slots: [String: ModelSlot]) -> UInt64 {
+        slots.values.reduce(UInt64(max(0, MLX.Memory.cacheMemory))) { total, slot in
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+            return overflow ? .max : sum
+        }
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1324,9 +1351,12 @@ extension ProviderLoop {
             if available >= requiredGb { return }
             // Metal can drop all allocation ownership before macOS returns
             // the physical pages (observed at full-model scale). Only a recent
-            // owned Qwen4 retirement enables this bounded retry. Never add
+            // owned Qwen4 retirement (for a Qwen4 load) or Nemotron Super
+            // retirement (for any load) enables this bounded retry. Never add
             // guessed reclaimable bytes to the OS sample or relax the gate.
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
+                try await retirement.pauseForRecheck() { continue }
+            if let retirement = nemotronSuperMemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
             let evictable = evictableModelSlots()
             // Feasibility BEFORE the first eviction: if even evicting every
@@ -1405,6 +1435,9 @@ extension ProviderLoop {
 
     internal func fastAdmissionReject(modelId: String) async -> Bool {
         if nativeMiMoRefusesRequest(modelId) { return true }
+        // Super's slot state refuses its load: a retained fault, and a wedge
+        // (resident while the slot retires) until its cooldown ends.
+        if nemotronSuperRefusesRequest(modelId) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the
@@ -1424,6 +1457,9 @@ extension ProviderLoop {
         // post-accept path surface the proper 404 rather than guessing.
         guard let modelInfo = advertisedModels[modelId] else {
             return false
+        }
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: modelId, modelType: modelInfo.modelType) {
+            return nemotronSuperLoadIsCertainToFail(modelInfo)
         }
         // The optional assistant deliberately plays NO role here: it cannot
         // cause a fast rejection (a target that fits must remain loadable and
@@ -1462,8 +1498,9 @@ extension ProviderLoop {
         // can be eviction credit; check the resulting headroom before rejecting.
         let evictable = evictableModelSlots()
         let hasEvictable = !evictable.isEmpty
-        let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-            && qwen4MemoryRetirement?.nextDelay() != nil
+        let mayStillReclaim = (Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+            && qwen4MemoryRetirement?.nextDelay() != nil)
+            || nemotronSuperMemoryRetirement?.nextDelay() != nil
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
         // the load path refuses without evicting (see evictUntilAvailable),
@@ -1495,8 +1532,7 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-                && qwen4MemoryRetirement?.nextDelay() != nil) {
+            if retried < requiredGb && !mayStillReclaim {
                 return true
             }
         }

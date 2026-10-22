@@ -18,9 +18,9 @@ catalog activation or production deployment approval.
 | Hugging Face check | every manifest file present at `8841c52a` with matching LFS SHA-256; the catalog's earlier pin `8603f7fe` differs only in `README.md` |
 | Selection | local qualification selection, `maximumContextLength` 65,536 |
 | Policy | `GLM5NextExecutionPolicy.serving` (enforced by the managed load), paged KV, embedded MTP with adaptive rectangular verification up to depth 3 |
-| SDK | mlx-swift-lm `77a0d1d9` (#314; merged with main's Nemotron 3.5 Super stack) on mlx-swift `c2cbef34`, core `ad596687`, mlx-c `fa6565d4` (production footprint policy, merged with each main). The final executable compiled mlx-swift-lm `a630039b`; later commits change tests and one line break. Earlier checks ran on `97b2ca6d`/`48f1e000` and earlier native heads |
+| SDK | mlx-swift-lm `main` `0351444e` (#314 squash-merged as `19634dd8`: `ffb71842` plus #318; then #325, which pins mlx-swift `main`, and #323; #318 and #323 change only Nemotron Super and ModelOpt files, which no GLM path reaches) on mlx-swift `main` `67dc7528` (#58), core `main` `ad4745a2` (#37) and mlx-c `main` `5e9be4da` (#16). Those native merges have exactly the trees of the qualified `d80124e`, `ad596687` and `fa6565d4`; `d80124e` differs from the earlier `c2cbef34` only in its two submodule pins. The final executable compiled mlx-swift-lm `ffb71842` (see "Paged-attention speedups"). `ffb71842` takes the split-K paged decode attention of `12d00808`/`13fba500` out again; `46e4d0ba` is swift-format layout only. The previous final executable compiled `a630039b`; `77a0d1d9` changes only tests and one line break. Earlier checks ran on `97b2ca6d`/`48f1e000` and earlier native heads |
 | Metallib | `156f2624f9f1b1413dfabd8b6e16423121b0e5b18e2573c23c4e023b606a462d` (unchanged by this work) |
-| Executables | final: `darkbloom` `d9780e867576bf14208d15ff6e80037dd9a54438a6f9b15264eed7b901e74945` (#1516 with SDK `a630039b`; see "Final recheck after merging main"), DEBUG variant `d0974768…` (SSD restart only). Before that: `94a83e27…` (production footprint policy recheck), `593cd3d0…` (refusal probes and confirmation soak), `8eee2c99…` (admission checks and the 40-minute soak), `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (performance table, long context, video proof), DEBUG `3256e2c7…`/`4f7fd9df…` (SSD restart checks) |
+| Executables | final: `darkbloom` `6b95747e49d50d32b16018a53bc5fb22a77bd7db2478933e3495b1e15a22db02` (#1516 with SDK `ffb71842`; see "Paged-attention speedups"). Before that: `344b39e3…` (SDK `13fba500`, evaluated with split-K paged decode, not shipped), `e31b5ba9…` (A/B build, SDK `12d00808`), `d9780e867576bf14208d15ff6e80037dd9a54438a6f9b15264eed7b901e74945` (#1516 with SDK `a630039b`; see "Final recheck after merging main"), DEBUG variant `d0974768…` (SSD restart only), `94a83e27…` (production footprint policy recheck), `593cd3d0…` (refusal probes and confirmation soak), `8eee2c99…` (admission checks and the 40-minute soak), `798b5562…` (port gate, endpoint, media, prefix checks), `529e6ab8…` (performance table, long context, video proof), DEBUG `3256e2c7…`/`4f7fd9df…` (SSD restart checks) |
 
 The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitted by
 `GLM5NextHardwareRequirement` but was not measured.
@@ -40,7 +40,7 @@ The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitt
 | SSD tier across restart | pass (persistent key) | 20,022-token prompt: cold TTFT 10.70 s, after a server restart 18,432 cached and TTFT 2.15 s |
 | Images | pass | 48/51 kit cases: exact media token counts at every size (16–8,000 tokens, 4000×3000 → 7,931), OCR, counting, five formats, 16 images, aggregate cap, all refusals (400/413/503). Three misses are a large slashed-zero bitmap glyph read as 9 |
 | Video | pass | 15/15 clips: direction left/right with reversed controls, frame counter, colour sequences (MP4, QuickTime, NTSC timescales), 720p30 at 12,056 tokens (TTFT 7.5 s), 1080p near the cap at 21,612 tokens (TTFT 13.6 s), two videos, image plus video; over-cap, too-short and variable-frame-rate clips refused 400 |
-| Long context | pass to 128K (listed) | Needle at 10/50/90 % depth: 6/6 at 32K and 60K tokens; 128K pass (1,661 tok/s prefill); 190K pass (1,539 tok/s, 2.7 GB free); 250K refused at ~220K on one 256 GB Mac. The catalog lists 131,072 |
+| Long context | pass to 128K (listed) | Needle at 10/50/90 % depth: 6/6 at 32K and 60K tokens; 128K pass (1,661 tok/s prefill); 190K pass (1,539 tok/s, 2.7 GB free); 250K refused at ~220K on one 256 GB Mac. The catalog listed 131,072 during these checks; it now lists the model's full 262,144 and admission refuses what one Mac cannot fit |
 | Continuous batching | pass with limit | c1/c2/c4 all complete; aggregate decode does not scale (see performance) |
 | Admission when full | pass (after two fixes) | See "Memory admission" below |
 | Retained faults | pass | `darkbloom_glm5_next_retained_*` 0 after every run |
@@ -48,7 +48,7 @@ The hardware is one Apple M5 Ultra with 256 GB on macOS 27.0.1. M5 Max is admitt
 
 ## Performance (one M5 Ultra 256 GB)
 
-Final executable, 131,072-token selection (the listed context), SSD prefix tier on, default
+Final executable, 131,072-token selection (the context listed at the time), SSD prefix tier on, default
 adaptive MTP, 5 repetitions (medians):
 
 | Measure | Baseline (pre-port, 2026-10-20) | Final | Change |
@@ -67,6 +67,49 @@ adaptive MTP, 5 repetitions (medians):
 MTP speculates for one row at a time (`maxSpeculativeBatch` 1), so from two
 concurrent requests on, rows decode without speculation and aggregate decode
 grows slowly (c4 is 1.55× c1).
+
+## Paged-attention speedups (SDK ffb71842)
+
+GLM serves only through the paged CBv2 path; the contiguous forward is
+deprecated. SDK `ffb71842` brings three speedups that previously reached only the
+contiguous forward to paged serving, each bit-identical:
+
+| Change | Steps | Bits |
+|---|---|---|
+| Shared all-true validity constant and one-launch packed-embedding streams (`GLM5NextPackedEmbedding`) | decode and verification (at most 8 tokens) | identical |
+| `.serving` runs `PrefillProjections.nativeGEMM`: `GLM5NextPrefillGEMMKernel` for the KDA and DSA attention projections | Neural-Accelerator prefill | identical (MLX's NAX qmm) |
+| `GLM5NextDSAPayloadKernel` stages a DSA layer's FP32 CBv2 rows in one launch instead of a validity cast, a concatenation and two FP32 casts | CBv2 DSA appends | identical |
+
+The fourth, split-K `GLM5NextSparseDecodeKernel.attend` for paged decode and
+MTP verification (SDK `12d00808`/`13fba500`), was evaluated and left off
+(`ffb71842`): paged decode keeps the absorbed per-query attention of the
+qualified build. Split-K gives a contiguous row's arithmetic but not the
+qualified paged output: at 8-token steps perplexity is 0.0049 % higher and
+top-1 agreement 97.60 %, below the 99.4 % lossless bar (rows below). Its gain
+is given up: in a same-state endpoint A/B (default adaptive MTP, sessions
+A-B-B-A, medians of 6) the build with it (`e31b5ba9…`) decoded 256 tokens after
+10.5K- and 31.5K-token prompts 5.5 and 3.8 % faster than `d9780e86…` (43.3 /
+31.3 vs 41.1 / 30.2 tok/s). Prefill in that A/B was 0–1 % faster.
+
+| Check | Result |
+|---|---|
+| Perplexity panel (4 documents, 15,901 scored positions, `.serving`, 2,048-token chunks) against the previous SDK | bit-identical NLL and argmax at every position (`PrefillProjections.nativeGEMM`) |
+| Same panel at 8-token steps (decode-sized; sparse past 2,048 tokens): split-K decode attention (`.serving` at SDK `13fba500`) against absorbed decode attention with the reference selection graph (`sparseDecode: .reference`) | perplexity 7.310244 vs 7.309884 (+0.0049 %); top-1 97.60 % |
+| Each 8-token variant against `.serving` at 2,048-token chunks | split-K −0.051 % perplexity, 94.03 % top-1; absorbed −0.056 %, 93.98 % top-1. Both are equally close; the qualified policy agrees 94.0 % with itself across step sizes |
+
+Final executable `darkbloom` `6b95747e49d50d32b16018a53bc5fb22a77bd7db2478933e3495b1e15a22db02` (#1516 with SDK `ffb71842`), metallib
+`156f2624…` (unchanged):
+
+| Check | Result |
+|---|---|
+| SDK real-model MTP tokens vs SDK `77a0d1d9` (6 prompts × 5 modes × 256) | **30/30 identical** token sequences, with identical MTP proposed/accepted counts in every mode |
+| Endpoint serial-target mode vs `d9780e86…` (14 cases) | **14/14 identical** (391, 2.7K / 10.5K / 31.6K prompts, 256 / 1,024 decodes, 3-turn chat, image, concurrent pair, repeats). In the first run the concurrent pair's requests arrived 0.28 s apart and one differed; three reruns of the pair with simultaneous arrival are identical, both requests |
+
+The earlier qualification of `d9780e86…` therefore applies unchanged. The
+evaluated build with the split-K path (`344b39e3…`, 128K selection) passed the
+endpoint checks as `d9780e86…` did, the OpenRouter templates, needles at 64K
+and 125K tokens (6/6), images 45/51 (the same misses as `d9780e86…`) and video
+15/15.
 
 ## Final recheck after merging main
 
@@ -119,7 +162,7 @@ Final executable `94a83e27…`, metallib `156f2624…`:
 |---|---|---|
 | 8 concurrent requests of ~30K prompt + 30K output tokens | 5 refusals rendered as 200 + `server_error` frames; the 2 running and 1 waiting request all failed together when the second finished prefill | 5 clean 503 "Provider capacity is temporarily unavailable." before headers; the 3 that fit are served (first tokens 17.6 / 32.5 / 63.4 s); idle again 0.26 s after |
 | 3 concurrent requests of ~30K + 30K | all 3 failed at 32 s | requests 1 and 2 keep decoding, request 3 waits for capacity |
-| One request at ~250K tokens | refused at ~220K (no OOM) | unchanged; the catalog advertises 131,072 |
+| One request at ~250K tokens | refused at ~220K (no OOM) | unchanged; the catalog then advertised 131,072 (now 262,144) |
 
 The first fix throws the GLM slot refusal before the stream starts. The second
 defers a step whose scratch reservation is refused instead of failing every
@@ -139,8 +182,11 @@ OOM, a GPU hang or a retained GLM fault, and memory pressure stayed normal.
 - The SSD tier needs the keychain-wrapped persistent key of a signed app; an
   ad hoc build serves without a prefix cache and reports
   `prefix_cache_status{state="error",reason="cache_init_failed",detail="key_unavailable"}`.
-- `reasoning.exclude: true` and thinking-off controls are refused: GLM-5.3-Flash
-  always reasons.
+- `reasoning.exclude: true` and `include_reasoning: false` are refused: the
+  provider returns the reasoning it generates. Thinking-off controls were
+  refused during these checks; they are now served with a closed
+  `<think></think>` block (`GLM5NextThinkingTokenizer`), checked by unit tests
+  and the platform sidecar render tests, not by this hardware record.
 - Video: inline MP4/QuickTime only at the provider (the coordinator inlines
   URLs); variable-frame-rate clips and clips past the shared 28,532-token
   visual cap are refused.

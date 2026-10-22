@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -451,6 +451,48 @@ TTFT, TPS or memory. The existing `ModelPrefixBenchmarkLiveTests` exact replay
 suite requires native live and native checkpoint precision and rejects nonnative
 specifications before loading; keep those output-hash assertions unchanged.
 
+`ModelCheckpointRestoreContentionLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointRestoreContentionLiveTests.swift`)
+is the opt-in real-model regression for complete-checkpoint SSD restore TTFT on
+a shared engine. It reads the first case of the same standalone
+`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache, and
+requires native live and checkpoint precision: a lossy checkpoint can restore
+slower than recompute, which belongs in `ModelCheckpointStorageLiveTests`. For each
+pair it serves the fork prompt restored and cold under three conditions: idle,
+while another tenant's long prefill is running, and right after another
+tenant's donor completes. Each condition gets its own donor and cache scope,
+so a deeper checkpoint donated by one measured fork never serves another. It
+fails when a restore does not reach `demandedTokens`, restores a different
+depth than the idle restore of its pair, produces its first token later than
+the cold run under the same condition, or stages more than 1 s slower than the
+idle restore, the signature of waiting on another prefill's `evalLock`. A
+contended run also fails if the foreign prefill finished before its stage did.
+Other timings are observations. The timing gates need exclusive GPU use. Run
+it from `provider-swift/` after building tests and staging the metallib, with
+only the listed variables:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_RESTORE_CONTENTION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_RESTORE_CONTENTION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointRestoreContentionLiveTests
+```
+
+Pick `demandedTokens` at or below the deepest checkpoint that fits
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`; a deeper demand fails the boundary
+check rather than measuring restore latency. The contended fork is submitted
+two seconds after the foreign prefill starts, so pick a `donorTokens` long
+enough to still be prefilling then. The report records the session's runtime
+identity (`runtime`, from `makeReport`) and keeps every sample, including the
+foreign requests that create each condition. It is rewritten atomically after
+each measured run, so an interrupted run keeps every completed run's samples,
+and its `failure` records contract violations, thrown errors and teardown
+errors alike. The test qualifies provider-staged imports only, so it refuses
+MiMo specifications, which load through the native engine.
+
 ## Runtime Generation Comparisons
 
 Run focused policy and CLI checks from `provider-swift/`:
@@ -694,7 +736,17 @@ HTTP tests need permission to bind a local port; none of these suites call paid
 models. Bedrock-shaped lifecycle fixtures exercise transport, scanner, saved
 reports and merge decisions together, including truncation, call limits,
 interruption and failed report/diagnostic writes. Selective integration tests
-enforce each model's source citation scope across fresh and cached results.
+enforce each model's source citation scope across fresh and cached results,
+bounded exact-source replay, explicit omissions and unchanged acknowledgments.
+State tests reproduce shared-branch conflicts between different report files,
+cache immutability, bounded recovery and refusal to retry ambiguous writes.
+Request tests verify native schema projection preserves local bounds; workflow
+tests keep current trusted scanner code separate from pinned threat-model data.
+Bedrock usage tests preserve Sol cache-write input and reject malformed cache
+counts; finding-text and both scan paths' analysis tests enforce raw character
+limits including padding.
+Lifecycle tests ensure failed backup accounting also stops a recovered primary
+while preserving already validated findings.
 Live smoke tests establish model compatibility separately.
 
 From the repository root:
@@ -805,6 +857,60 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
+Prompt parity uses a committed golden corpus from
+`scripts/nemotron-qualification/prompt_golden.py`; token-ID checks run only when
+`NEMOTRON_SUPER_REFERENCE_DIR` names the pinned tokenizer and template, and
+otherwise skip with that instruction.
+
+Nemotron Super image fixtures and their goldens are generated by
+`scripts/nemotron-qualification/image-goldens` (see its
+[README](../../scripts/nemotron-qualification/README.md)). PNG must match Pillow
+byte for byte and the final tensors bitwise; JPEG uses the bounds in the
+[image format reference](../reference/nemotron-super-image-formats.md).
+Regenerated fixtures must be byte-identical unless a pinned reference changes.
+
+The three Nemotron Super reference clips in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/NemotronSuperVideos` and their
+`nemotron-super-video-golden.json` come from NVIDIA's serving path (vLLM's
+OpenCV loader at 2 fps and 256 frames, the HF processor and the pinned
+tokenizer). `NemotronSuperVideoGoldenTests` checks the frame plan, labels,
+grid, decoded frame layout, the red first frame of the colors clip, EVS
+retained counts, the `<video>` replacement ids
+and the template text without the tokenizer; with
+`NEMOTRON_SUPER_REFERENCE_DIR` it also checks the label and full prompt token
+ids. `NemotronSuperVideoBindingTests` covers video admission, the tubelet
+layout, the media charge and its quote, and serves a synthesized MP4 end to
+end on the tiny installed fixture, checking its prompt length and one span per
+tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
+selects over the whole video, that cancelling or draining a decoding video
+returns its charge and that a malformed pruning rate fails the load
+before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
+refusals on synthesized clips (decoded-pixel budget, codec, second track,
+zero-duration frame), per-frame validation, the decode allowance, reader
+cancellation and the container type hint.
+
+The managed slot is covered by `NemotronSuperServingPolicyTests` and
+`NemotronSuperMediaChargeTests` (identity, discovery, image advertisement, load
+plan, footprint, media charge and capacity quotes; CPU only) and
+`NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
+coordinator and local-endpoint text and image requests on the speculating
+owner, an image beside speculating text, media refusal before allocation,
+cancellation, admission refusal and retirement). Three gated cases need the
+pinned checkpoint: `NEMOTRON_SUPER_CHECKPOINT_DIR` alone checks its discovery
+and that the recorded LOAD constants equal the SDK quotes over every verified
+shard (hashes about 75 GB, loads no weights); adding
+`DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full checkpoint (about 80 GB) through
+the production loader, once to serve an encrypted text request and once for PNG
+and JPEG questions and an image beside a text request. Run them only with
+exclusive GPU access.
 
 ## Related
 

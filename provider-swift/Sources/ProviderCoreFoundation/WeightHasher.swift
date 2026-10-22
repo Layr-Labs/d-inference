@@ -175,6 +175,14 @@ public struct WeightHasher: Sendable {
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
+        #if canImport(Darwin)
+        // Read around the file cache first: hashing touches every weight byte,
+        // and cached pages would keep a second copy of the model resident
+        // beside the loaded one until memory pressure compresses the weights.
+        if let digest = hashSingleFileUncached(at: url) {
+            return digest
+        }
+        #endif
         // Reuse InputStream's fixed 64 KiB buffer by default
         // before trying FileHandle's per-read Data allocation. Preserve the
         // full digest and every existing fallback; never skip integrity work.
@@ -229,6 +237,31 @@ public struct WeightHasher: Sendable {
         return body()
         #endif
     }
+
+    #if canImport(Darwin)
+    /// One reusable page-aligned 1 MiB buffer and `F_NOCACHE`; nil on any
+    /// failure so the caller's existing readers run.
+    private static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
+        let capacity = 1 << 20
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: Int(getpagesize()))
+        defer { buffer.deallocate() }
+        var hasher = SHA256()
+        while true {
+            let count = read(descriptor, buffer, capacity)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
+        }
+        return hasher.finalize()
+    }
+    #endif
 
     private static func hashSingleFileViaHandle(at url: URL) -> SHA256Digest? {
         guard let handle = try? FileHandle(forReadingFrom: url) else {

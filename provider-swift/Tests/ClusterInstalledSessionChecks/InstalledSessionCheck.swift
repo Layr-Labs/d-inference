@@ -427,6 +427,10 @@ final class EndpointBox: @unchecked Sendable {
             "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
         try require(tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="4" && tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]==nil,
             "prefix SSD budget switches not passed through or not bounded")
+        let load=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_LOAD_PATH":"per-tensor",
+            "DARKBLOOM_CLUSTER_LOAD_DIGESTS":"everything"])
+        try require(load["DARKBLOOM_CLUSTER_LOAD_PATH"]=="per-tensor" && load["DARKBLOOM_CLUSTER_LOAD_DIGESTS"]==nil,
+            "load diagnosis switches not passed through or not bounded")
         // ALIGN with the product's caching system: the owner installs the product's resolved settings (the saved cache
         // directory, gate, budget rule, daily write cap and TTL the single-Mac tier reads); the rank's root and
         // switches follow them, and the cluster-only switches remain diagnosis overrides.

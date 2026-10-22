@@ -585,13 +585,9 @@ final class OnboardingLive: @unchecked Sendable {
         // The models single-Mac Darkbloom installed on this Mac are cluster models too (cloned in: no new blocks), when a
         // pair may serve them with this build (as for models copied from the other Mac or downloaded).
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
-        // Every model's own pages out of the file cache first: the plan judges each Mac by what its load gate counts,
-        // and a model's pages left active by a download or a copy are not counted (nor needed: a load reads them back).
-        for name in (try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? [] where !name.hasPrefix(".") {
-            ClusterModelStore.dropCachedPages(folder: store.appendingPathComponent(name))
-        }
+        // Models' pages stay in the file cache: the plan judges each Mac by what its load gate counts, which is all
+        // of the cache (58d7371a, de782ff1), and the start that follows reads the cached part at memory speed.
         for installed in ClusterProductModelStore.installed() where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
-            ClusterModelStore.dropCachedPages(folder: installed.directory)
             _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                                     accepts: context.workerAcceptsManifest)
         }
@@ -1144,13 +1140,16 @@ final class OnboardingLive: @unchecked Sendable {
                 return .failure(.init(["A part keeps ending the same way: \(once.line)."] + lastErrors(fallback: nil)))
             }
             if seen[once.line] == 1, once.line != said { progress(once.line); said = once.line }
-            sleep(2)
+            usleep(Self.readinessPollMicroseconds)
         }
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
     }
 
     /// The same part end seen this many times stops the wait on screen (the service keeps restarting it).
     static let sameEndsBeforeSaying = 3
+    /// Between readiness polls: a ready pair is reported within this (plus one poll, ~0.7 s over the cable), not up
+    /// to 2 s later, in a start that now takes about 10 s.
+    static let readinessPollMicroseconds: useconds_t = 500_000
 
     /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
     /// start that did not finish, instead of a log path).

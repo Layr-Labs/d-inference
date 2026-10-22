@@ -214,9 +214,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             qualification: QwenResidentQualificationSwitches = .refused,
                             dataPlane credential: ClusterDataPlaneCredential) throws -> GLM5NextTensorParallelResidentRuntime {
+        let entered = DispatchTime.now().uptimeNanoseconds
+        let enteredUnixMilliseconds = Int64(Date().timeIntervalSince1970 * 1000)
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         let lanes = try QwenBatchSettings.fromEnvironment(environment)
+        let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
         guard spec.supportedGenerationModes.contains(.tensorParallel) else {
             throw ProbeError("Generation mode tensor_parallel_v1 is not in the GLM row")
@@ -340,6 +343,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
             var stageResidency: ClusterStageResidency?
             var prefixBudget = 0
             let started = DispatchTime.now().uptimeNanoseconds
+            var phases = GLM5NextTensorParallelLoadPhases(since: entered, startedUnixMilliseconds: enteredUnixMilliseconds)
+            phases.mark("setup", now: started)
             try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
@@ -349,6 +354,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
                     disagreementMessage: "GLM tensor-parallel load membership/source/plan differ",
                     scope: .session(.loadAgreement, "glm-tensor-parallel-load-intent"), check: checked)
+                phases.mark("intent")
                 // The link as this mode uses it, before any weight is read: the
                 // planner's measured reduction costs for this pair.
                 let measured = try QwenTensorParallelLinkProbe.measure(collective: collective, group: group,
@@ -356,18 +362,32 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     chunkTokens: descriptor.profile.maximumChunkTokens, check: checked)
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
+                phases.mark("probe")
                 // The live gate admits this rank's shard and the whole request charge before any read.
                 try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
                     requestReserve, bufferCacheBytes]))
+                phases.mark("gate")
                 let roots = GLM5NextArtifactLoadRoots()
+                // `prepared` (the product): the owner parses the metadata here and
+                // checks every file's SHA-256 in `prepare`, in the one read that
+                // also fills this rank's buffers; nothing is built before it matched.
                 let loader = try GLM5NextArtifactLoader(directory: directory, expectedIdentity: descriptor.artifactIdentity,
-                    storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy)
+                    storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy,
+                    verification: path.verification)
                 guard GLM5NextArtifactMetadata.fingerprint(loader.inventory) == spec.inventorySHA256 else {
                     throw ProbeError("GLM verified owner differs from the registered inventory")
                 }
                 let text = loader.configuration.textConfig
                 let plan = try GLM5NextTextStagePlan(configuration: text, layers: 0 ..< text.hiddenLayers,
                     shard: try GLM5NextTensorShard(rank: collective.rank, size: collective.size))
+                phases.mark("open")
+                if path != .perTensor {
+                    try autoreleasepool {
+                        try loader.prepare(plan: plan, includeMTP: Self.mtpDepth > 0, keepFileCache: path == .prepared)
+                    }
+                    try checked()
+                    phases.mark("read")
+                }
                 let value = try autoreleasepool { try loader.loadTextStage(plan: plan) }
                 value.tensorParallelMicroBatches = Self.prefillMicroBatches
                 value.freeze()
@@ -381,11 +401,18 @@ public final class GLM5NextTensorParallelResidentRuntime {
                         beforeRead: { _, _ in try checked() }, check: checked)
                     loadedVision = tower; retiredVision = tower
                 }
+                phases.mark("build")
                 try roots.evaluate(value.parameters().flattened().map(\.1)
                     + (head?.parameters().flattened().map(\.1) ?? []))
                 Stream.gpu.synchronize(); try checked()
                 roots.releaseAfterConfirmedFence()
                 try loader.verifyUnchanged()
+                phases.mark("evaluate")
+                for line in GLM5NextTensorParallelLoadDigest.lines([value] + (head.map { [$0] } ?? []),
+                        rank: collective.rank, path: path, environment: environment) {
+                    log(line)
+                }
+                phases.mark("digest")
                 try value.installTensorParallelReduction { partial in
                     // GLM's partials are its projections' bfloat16 outputs: they
                     // cross as they are and the sealed sum adds them in float32,
@@ -403,6 +430,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 // Never 0 while on: a rank with no budget would skip the vote its peer takes.
                 prefixBudget = prefixEnabled
                     ? max(1, QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)) : 0
+                phases.mark("residency")
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, descriptor.artifactAggregateSHA256,
                     String(shardBytes), String(mtpBytes)]))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
@@ -415,6 +443,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
                     + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)")
+                phases.mark("loaded")
+                log(phases.line(rank: collective.rank, path: path))
             }
             guard let stage = loaded, (loadedMTP != nil) == (Self.mtpDepth > 0),
                   (loadedVision != nil) == (configuration.rank == 0) else {

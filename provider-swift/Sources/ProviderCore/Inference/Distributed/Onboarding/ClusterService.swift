@@ -1075,10 +1075,11 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
-        // The model's own pages in the file cache (a download, a copy, an earlier load) are not counted by the load
-        // gate while they are active: dropped first, the part's load reads them back into its own memory.
+        // The model's own pages stay in, and are read into, the file cache while the part starts: the load gate
+        // counts all of it as available (58d7371a), and the rank's load reads cached pages at memory speed instead of
+        // from the SSD (GLM tensor parallel: 101 GB/s against 14 GB/s on an M5 Ultra), most of a restart's time.
         if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
-            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+            ClusterModelStore.prefetchPagesInBackground(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
         }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable

@@ -170,12 +170,18 @@ public enum GLM5NextTensorParallelBench {
             log("tp rank=\(value.rank) size=\(value.size)")
         }
         let started = DispatchTime.now().uptimeNanoseconds
+        let environment = ProcessInfo.processInfo.environment
+        let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
         let roots = GLM5NextArtifactLoadRoots()
         let loader = try GLM5NextArtifactLoader(directory: directory, expectedIdentity: descriptor.artifactIdentity,
-            storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy)
-        log("verified artifact in \(seconds(since: started)) s")
+            storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy,
+            verification: path.verification)
         let text = loader.configuration.textConfig
         let plan = try GLM5NextTextStagePlan(configuration: text, layers: 0 ..< text.hiddenLayers, shard: shard)
+        if path != .perTensor {
+            try loader.prepare(plan: plan, includeMTP: options.mtpDepth > 0, keepFileCache: path == .prepared)
+        }
+        log("verified artifact in \(seconds(since: started)) s (load path \(path.rawValue))")
         let stage = try loader.loadTextStage(plan: plan)
         stage.tensorParallelMicroBatches = options.microBatches
         stage.freeze()
@@ -186,6 +192,10 @@ public enum GLM5NextTensorParallelBench {
             Stream.gpu.synchronize(); try error.check()
         }
         roots.releaseAfterConfirmedFence()
+        for line in GLM5NextTensorParallelLoadDigest.lines([stage] + (mtp.map { [$0] } ?? []),
+                rank: shard?.rank ?? 0, path: path, environment: environment) {
+            log(line)
+        }
         if let group {
             let float32 = options.float32Partials
             try stage.installTensorParallelReduction { partial in

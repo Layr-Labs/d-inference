@@ -172,6 +172,11 @@ struct DistributedInstalledPlan: Sendable {
         if let value = ownerEnvironment[Self.kvBackendSwitch]?.lowercased(), ["paged", "contiguous"].contains(value) {
             environment[Self.kvBackendSwitch] = value
         }
+        // Diagnosis only: how a tensor-parallel rank reads its weights, and its per-array digests (to compare load
+        // paths and builds on the real model; `GLM5NextTensorParallelLoadPath`).
+        for (name, values) in Self.loadDiagnosisSwitches {
+            if let value = ownerEnvironment[name], values.contains(value) { environment[name] = value }
+        }
         // The owner's rank-environment guards (Metal command-buffer bounds),
         // each yielding to a value the operator pinned in this owner's own
         // environment.
@@ -197,6 +202,10 @@ struct DistributedInstalledPlan: Sendable {
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
     static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
+    static let loadDiagnosisSwitches: [String: Set<String>] = [
+        "DARKBLOOM_CLUSTER_LOAD_PATH": ["prepared", "prepared-uncached", "per-tensor"],
+        "DARKBLOOM_CLUSTER_LOAD_DIGESTS": ["1", "tensors"],
+    ]
 
     /// The pair's batch lanes: the adapter's default in the selected mode
     /// (`defaultBatchLanes(adapter:mode:hasPrivateImages:)`), unless the owner's

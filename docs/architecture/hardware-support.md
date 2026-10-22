@@ -359,15 +359,17 @@ standalone server runs the same sequence in
   buffer cache once (`releaseReclaimableMemoryForLoad`, which waits up to
   250 ms) before they evict or refuse, and `StartupPreloader` does the same
   before it skips a candidate (`reclaimBeforeSkip`). Eviction feasibility
-  counts them only to decide whether that release could make room; after
-  it, only the memory sample shows what returned, and segments still parked
-  (a step that outlasted the wait, or segments parked since) are no eviction
-  credit (`ProviderLoop.reclaimableMemoryBytes`). Pre-accept
+  counts them only to decide whether that release could make room (when not
+  even they and every idle model could, the gate refuses without releasing);
+  after it, only the memory sample shows what returned, and segments still
+  parked (a step that outlasted the wait, or segments parked since) are no
+  eviction credit (`ProviderLoop.reclaimableMemoryBytes`). Pre-accept
   (`ProviderLoop.fastAdmissionReject`,
   `ProviderLoop.nemotronSuperLoadIsCertainToFail`) releases and resamples
-  the same way when only they could close the gap. The post-load headroom
-  guard above re-measures after its cache flush without releasing them: that
-  backing was already counted as used when the gate admitted the load.
+  the same way when nothing is idle or only they could close the gap. The
+  post-load headroom guard above re-measures after its cache flush without
+  releasing them: that backing was already counted as used when the gate
+  admitted the load.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what

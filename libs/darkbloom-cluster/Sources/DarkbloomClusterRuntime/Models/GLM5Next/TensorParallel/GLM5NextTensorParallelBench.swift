@@ -96,6 +96,9 @@ public enum GLM5NextTensorParallelBench {
         /// (`GLM5NextTensorParallelPrefillPlan.make(pinsSelections:)`); off,
         /// each micro-batch selects among its own call's candidates.
         public var pinsSelections = true
+        /// Re-cut segments only where their micro-batches' sums stay hidden
+        /// (`GLM5NextTensorParallelPrefillPlan.hidingSums`); off, every re-cut.
+        public var hidesSums = true
         /// `product` and `merged`: chunks whose micro-batches all have at
         /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
         /// rows run as micro-batches of at most this many rows instead (nil:
@@ -400,7 +403,7 @@ public enum GLM5NextTensorParallelBench {
                 microBatchTokens: options.microBatchTokens, coalescing: options.prefillSchedule == .merged,
                 tailTokens: options.prefixOnBulkGrid ? runtime.bulkPrefillChunkTokens : nil,
                 selectionKeepAt: options.keepsPrefix ? ((prompt.count - 1) / chunkTokens) * chunkTokens : 0,
-                pinsSelections: options.pinsSelections)
+                pinsSelections: options.pinsSelections, hidesSums: options.hidesSums)
             let prefix = GLM5NextTensorParallelPrefixCache(budgetBytes: 8 << 30)
             let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation,
                 observe: options.perplexity ? { rows.append(($0, $1)) } : nil) { end, kept, history in

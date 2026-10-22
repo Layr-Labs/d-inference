@@ -11,7 +11,7 @@ import MLX
 //     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
 //     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no]]
 //     [--kv paged|contiguous]
-//     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]
+//     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -73,13 +73,20 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
         if let file = fields["--prompt-file"] {
-            // A JSON array of token IDs (e.g. real text through the artifact's tokenizer).
+            // A JSON array of token IDs (e.g. real text through the artifact's tokenizer);
+            // with --prompt-tokens, its first N (a prompt-length sweep from one real text).
             prompt = try JSONDecoder().decode([Int].self, from: Data(contentsOf: URL(fileURLWithPath: file)))
+            if let value = fields["--prompt-tokens"] {
+                guard let count = Int(value), (1 ... prompt.count).contains(count) else {
+                    throw Failure("glm: --prompt-tokens with --prompt-file takes 1 through the file's \(prompt.count)")
+                }
+                prompt = Array(prompt.prefix(count))
+            }
         } else {
             var state: UInt64 = 0x2545_F491_4F6C_DD1D
             prompt = (0 ..< promptCount).map { _ -> Int in
@@ -117,10 +124,11 @@ enum GLMBench {
         options.prefillSchedule = schedule
         options.mergedTokens = merged
         options.keepsPrefix = (fields["--keep-prefix"] ?? "yes") == "yes"
-        // Other micro-batch sizes than the product's (a different arithmetic; measure with --perplexity).
+        // Micro-batches of at most N rows where the plan's rules allow (rows keep their product
+        // selections, so the same tokens); 0: the product's two per chunk.
         if let tokens = fields["--micro-batch-tokens"] {
-            guard let value = Int(tokens), value > 0 else { throw Failure("glm: --micro-batch-tokens takes a count") }
-            options.microBatchTokens = value
+            guard let value = Int(tokens), value >= 0 else { throw Failure("glm: --micro-batch-tokens takes a count") }
+            options.microBatchTokens = value == 0 ? nil : value
         }
         // The prompt's perplexity and greedy next tokens, after the run (the reordering gate).
         options.perplexity = (fields["--perplexity"] ?? "no") == "yes"
@@ -133,6 +141,11 @@ enum GLMBench {
         if let value = fields["--pin-selections"] {
             guard ["yes", "no"].contains(value) else { throw Failure("glm: --pin-selections takes yes or no") }
             options.pinsSelections = value == "yes"
+        }
+        // Re-cut micro-batches only where each holds at most half its graph's rows (default), or everywhere.
+        if let value = fields["--micro-batch-rule"] {
+            guard ["half", "all"].contains(value) else { throw Failure("glm: --micro-batch-rule takes half or all") }
+            options.hidesSums = value == "half"
         }
         // Diagnostic: where a different micro-batch cut of the first N tokens first changes bits.
         if let value = fields["--divergence"] {

@@ -118,10 +118,15 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// `start` without either option, kept at `selectionKeepAt`, the
     /// product's boundary, when the bulk grid moves it), so its rows keep the
     /// product's selections and so its bits. Without, a re-cut changes bits.
+    ///
+    /// `hidesSums`: in each graph a re-cut segment keeps its micro-batches
+    /// only where none holds more than half the graph's rows (`hidingSums`),
+    /// else it runs as the product's segments; so a frame alone keeps the
+    /// product's cut.
     static func make(promptCount: Int, start: Int, chunkTokens: Int, keepAt: Int, bulkTokens: Int,
                      microBatches: Int, mergedTokens: Int, microBatchTokens: Int? = nil,
                      coalescing: Bool = false, tailTokens: Int? = nil, selectionKeepAt: Int? = nil,
-                     pinsSelections: Bool = true) -> Self {
+                     pinsSelections: Bool = true, hidesSums: Bool = true) -> Self {
         precondition(promptCount > 0 && (0 ..< promptCount).contains(start) && chunkTokens > 0 && microBatches > 0
             && keepAt >= 0 && mergedTokens >= 0 && (microBatchTokens ?? 1) > 0, "GLM tensor-parallel prefill plan bounds")
         func invariant(_ tokens: Int) -> Bool {
@@ -168,9 +173,12 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
             }
             offset = end
         }
-        if pinsSelections, microBatchTokens != nil || tailTokens != nil {
-            segments = pinned(segments, to: make(promptCount: promptCount, start: start, chunkTokens: chunkTokens,
-                keepAt: selectionKeepAt ?? keepAt, bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0))
+        let recut = microBatchTokens != nil || tailTokens != nil
+        let product = recut ? make(promptCount: promptCount, start: start, chunkTokens: chunkTokens,
+            keepAt: selectionKeepAt ?? keepAt, bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0)
+            .chunks.flatMap(\.segments) : []
+        if pinsSelections, recut {
+            segments = pinned(segments, to: product)
         }
         // Kept after the segment that ends there, unless it is the last one.
         let kept = keepAt > start ? segments.dropLast().firstIndex { $0.end == keepAt } : nil
@@ -180,19 +188,46 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         var first = 0
         for count in groups {
             let range = first ..< first + count
-            chunks.append(.init(segments: Array(segments[range]),
-                keptAfter: kept.flatMap { range.contains($0) ? $0 - first + 1 : nil }))
+            var graph = Array(segments[range])
+            var keptAfter = kept.flatMap { range.contains($0) ? $0 - first + 1 : nil }
+            if hidesSums, recut {
+                graph = hidingSums(graph, product: product)
+                keptAfter = keptAfter.flatMap { _ in graph.firstIndex { $0.end == keepAt }.map { $0 + 1 } }
+            }
+            chunks.append(.init(segments: graph, keptAfter: keptAfter))
             first += count
         }
         return .init(chunks: chunks)
+    }
+
+    /// One graph's segments, each re-cut one (unlike the product's
+    /// `product` segments) kept only where every micro-batch of it holds at
+    /// most half the graph's rows, else replaced by the product's segments
+    /// over its rows. A micro-batch's two sealed sums a layer overlap the
+    /// graph's other micro-batches; one bigger than the rest of its graph
+    /// leaves its sums exposed. Pair: 10.5K as [8,192 | 1,154, 1,154] ran
+    /// 16.6 % slower than the product's [4,096, 4,096 | 1,154, 1,154] (the
+    /// 8,192-row sums behind 2,308 rows); 31.5K as [8,192 x 3, 4,096, 1,414 x 2]
+    /// ran 4.2 % faster. A frame alone (no merging) keeps the product's.
+    static func hidingSums(_ graph: [Segment], product: [Segment]) -> [Segment] {
+        let rows = graph.reduce(0) { $0 + $1.end - $1.start }
+        return graph.flatMap { segment -> [Segment] in
+            let own = product.contains { $0.start == segment.start && $0.end == segment.end
+                && $0.microBatchRows == segment.microBatchRows }
+            guard !own, segment.microBatchRows.contains(where: { 2 * $0 > rows }) else { return [segment] }
+            let members = product.filter { $0.start >= segment.start && $0.end <= segment.end }
+            guard members.first?.start == segment.start, members.last?.end == segment.end,
+                  zip(members.dropFirst(), members).allSatisfy({ $0.start == $1.end }) else { return [segment] }
+            return members
+        }
     }
 
     /// `segments` each with the micro-batches `product` cuts its rows into
     /// (`Segment.selectionRows`). Both plans start at the same position, and
     /// every segment starts and ends where a product micro-batch does (a
     /// segment that did not would keep its own selections).
-    static func pinned(_ segments: [Segment], to product: Self) -> [Segment] {
-        let rows = product.chunks.flatMap(\.segments).flatMap(\.microBatchRows)
+    static func pinned(_ segments: [Segment], to product: [Segment]) -> [Segment] {
+        let rows = product.flatMap(\.microBatchRows)
         let ends = rows.reduce(into: [segments.first?.start ?? 0]) { $0.append($0[$0.count - 1] + $1) }
         return segments.map { segment in
             let inside = ends.filter { $0 >= segment.start && $0 <= segment.end }
@@ -240,20 +275,27 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// frame's segments from its bounds alone.
     static func frame(start: Int, end: Int, promptCount: Int, chunkTokens: Int, keepAt: Int, bulkTokens: Int,
                       microBatches: Int, microBatchTokens: Int? = nil, coalescing: Bool = false,
-                      tailTokens: Int? = nil, selectionKeepAt: Int? = nil, pinsSelections: Bool = true) throws -> Chunk {
+                      tailTokens: Int? = nil, selectionKeepAt: Int? = nil, pinsSelections: Bool = true,
+                      hidesSums: Bool = true) throws -> Chunk {
         guard (start + 1 ... promptCount).contains(end) else {
             throw ProbeError("GLM tensor-parallel prefill frame \(start)..<\(end) is outside the prompt")
         }
         let plan = make(promptCount: promptCount, start: start, chunkTokens: chunkTokens, keepAt: keepAt,
             bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0, microBatchTokens: microBatchTokens,
             coalescing: coalescing, tailTokens: tailTokens, selectionKeepAt: selectionKeepAt,
-            pinsSelections: pinsSelections)
-        let segments = plan.chunks.map { $0.segments[0] }.prefix { $0.end <= end }
+            pinsSelections: pinsSelections, hidesSums: false)
+        var segments = Array(plan.chunks.map { $0.segments[0] }.prefix { $0.end <= end })
         guard segments.last?.end == end else {
             throw ProbeError("GLM tensor-parallel prefill frame \(start)..<\(end) is off the chunk grid")
         }
-        let kept = plan.chunks.prefix(segments.count).firstIndex { $0.keptAfter != nil }.map { $0 + 1 }
-        return .init(segments: Array(segments), keptAfter: kept)
+        let kept = plan.chunks.prefix(segments.count).contains { $0.keptAfter != nil }
+        if hidesSums, microBatchTokens != nil || tailTokens != nil {
+            // The frame is one graph: the plan's rule over the same segments.
+            segments = hidingSums(segments, product: make(promptCount: promptCount, start: start,
+                chunkTokens: chunkTokens, keepAt: selectionKeepAt ?? keepAt, bulkTokens: bulkTokens,
+                microBatches: microBatches, mergedTokens: 0).chunks.flatMap(\.segments))
+        }
+        return .init(segments: segments, keptAfter: kept ? segments.firstIndex { $0.end == keepAt }.map { $0 + 1 } : nil)
     }
 
     /// One frame (`chunk`) on `stage` from `cache` (at the frame's start):

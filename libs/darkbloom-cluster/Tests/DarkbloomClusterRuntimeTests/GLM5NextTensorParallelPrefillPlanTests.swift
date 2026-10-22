@@ -135,8 +135,9 @@ struct GLM5NextTensorParallelPrefillPlanTests {
             Plan.make(promptCount: count, start: start, chunkTokens: chunk, keepAt: ((count - 1) / chunk) * chunk,
                 bulkTokens: bulk, microBatches: 2, mergedTokens: merged, microBatchTokens: limit, coalescing: true)
         }
+        // 16,384 rows hold more than half the graph's 31,500: the product's segments there.
         #expect(plan(31_500, limit: 16_384, merged: 32_768).chunks.map { $0.segments.map(\.microBatchRows) }
-            == [[[16_384], [12_288], [1_414, 1_414]]])
+            == [[[4_096, 4_096], [4_096, 4_096], [12_288], [1_414, 1_414]]])
         #expect(plan(31_500, limit: 8_192, merged: 32_768).chunks.map { $0.segments.map(\.microBatchRows) }
             == [[[8_192], [8_192], [8_192], [4_096], [1_414, 1_414]]])
         // The kept boundary (28,672) stays a segment end.
@@ -216,9 +217,12 @@ struct GLM5NextTensorParallelPrefillPlanTests {
                 tailTokens: bulkGrid ? bulk : nil, selectionKeepAt: ((count - 1) / chunk) * chunk, pinsSelections: pins)
         }
         func selections(_ plan: Plan) -> [[Int]?] { plan.chunks.flatMap(\.segments).map(\.selectionRows) }
-        // 31.5K: 8K micro-batches keep the bulk chunks' 4K halves and the boundary chunk's 2K ones.
-        #expect(selections(make(31_500, start: 0, bulkGrid: false, limit: 8_192, coalescing: false, merged: 16_384))
+        // 31.5K: 8K micro-batches keep the bulk chunks' 4K halves and the boundary chunk's 2K ones
+        // (in 16K graphs the third bulk chunk would hold more than half of its graph: the product's).
+        #expect(selections(make(31_500, start: 0, bulkGrid: false, limit: 8_192, coalescing: false, merged: 32_768))
             == [[4_096, 4_096], [4_096, 4_096], [4_096, 4_096], [2_048, 2_048], nil])
+        #expect(selections(make(31_500, start: 0, bulkGrid: false, limit: 8_192, coalescing: false, merged: 16_384))
+            == [[4_096, 4_096], [4_096, 4_096], nil, [2_048, 2_048], nil])
         // The bulk grid's tail (2 x 3,462) keeps the product's 2 x 2,048 + 2 x 1,414.
         #expect(selections(make(31_500, start: 0, bulkGrid: true, limit: nil, coalescing: false, merged: 0))
             == [nil, nil, nil, [2_048, 2_048, 1_414, 1_414]])
@@ -229,16 +233,21 @@ struct GLM5NextTensorParallelPrefillPlanTests {
             .chunks.map(\.tokens) == [8_192, 5_808])
         for count in stride(from: 1_500, through: 70_000, by: 1_733) {
             let keepAt = ((count - 1) / chunk) * chunk
-            for start in Set([0, ((count - 1) / bulk) * bulk]).sorted() {
-                let product = Plan.make(promptCount: count, start: start, chunkTokens: chunk, keepAt: keepAt,
-                    bulkTokens: bulk, microBatches: 2, mergedTokens: 0).chunks.flatMap(\.segments)
+            // Cold, and restored on the 8K and the 4K grid.
+            for start in Set([0, ((count - 1) / bulk) * bulk, ((count - 1) / chunk) * chunk, min(chunk, keepAt)]).sorted() {
+                let productPlan = Plan.make(promptCount: count, start: start, chunkTokens: chunk, keepAt: keepAt,
+                    bulkTokens: bulk, microBatches: 2, mergedTokens: 0)
+                let product = productPlan.chunks.flatMap(\.segments)
                 let productEnds = Set(product.flatMap { segment in
                     segment.microBatchRows.reduce(into: [segment.start]) { $0.append($0[$0.count - 1] + $1) } })
                 for (bulkGrid, limit, coalescing, merged) in [(false, 8_192, false, 16_384), (false, 16_384, true, 32_768),
-                        (true, nil, false, 16_384), (true, 8_192, true, 16_384)] as [(Bool, Int?, Bool, Int)] {
+                        (true, nil, false, 16_384), (true, 8_192, true, 16_384)] as [(Bool, Int?, Bool, Int)]
+                        where !bulkGrid || start % bulk == 0 {   // the bulk grid restores only on its grid
                     let label = "prompt \(count) start \(start) grid \(bulkGrid) limit \(limit ?? 0) merged \(merged)"
                     let plan = make(count, start: start, bulkGrid: bulkGrid, limit: limit, coalescing: coalescing,
                         merged: merged)
+                    // On the chunk grid the prompt prefix is kept where the product keeps it (a micro-batch edge).
+                    if !bulkGrid { #expect(plan.keptBoundary == productPlan.keptBoundary, "\(label)") }
                     for segment in plan.chunks.flatMap(\.segments) {
                         if segment.selectionRows != nil, bulkGrid, limit == nil {
                             #expect((segment.microBatchRows + segment.selectionRows!).allSatisfy {
@@ -266,18 +275,77 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         }
     }
 
+    /// The runtime's merging plan (its micro-batch size, coalescing).
+    static func servingPlan(promptCount: Int, start: Int = 0) -> Plan {
+        let runtime = GLM5NextTensorParallelResidentRuntime.self
+        let chunk = runtime.prefillChunkTokens
+        return Plan.make(promptCount: promptCount, start: start, chunkTokens: chunk,
+            keepAt: ((promptCount - 1) / chunk) * chunk, bulkTokens: runtime.bulkPrefillChunkTokens,
+            microBatches: runtime.prefillMicroBatches, mergedTokens: runtime.mergedPrefillTokens,
+            microBatchTokens: runtime.prefillMicroBatchTokens, coalescing: true,
+            selectionKeepAt: ((promptCount - 1) / chunk) * chunk)
+    }
+
+    /// Bigger micro-batches only where their sums stay hidden: none may hold
+    /// more than half its graph's rows (`Plan.hidingSums`); a frame alone,
+    /// and frames rebuilt from their bounds, follow the same rule.
+    @Test func reCutMicroBatchesKeepTheirSumsHidden() throws {
+        let chunk = 4096, bulk = 8192
+        func shape(_ count: Int, merged: Int = 32_768, all: Bool = false) -> [[Int]] {
+            let keepAt = ((count - 1) / chunk) * chunk
+            return Plan.make(promptCount: count, start: 0, chunkTokens: chunk, keepAt: keepAt, bulkTokens: bulk,
+                microBatches: 2, mergedTokens: merged, microBatchTokens: 8_192, coalescing: merged > 0,
+                selectionKeepAt: keepAt, hidesSums: !all).chunks.map { $0.segments.flatMap(\.microBatchRows) }
+        }
+        // The pair's two points: 10.5K lost 16.6 % as [8,192 | 1,154 x 2], 31.5K gained 4.2 %.
+        #expect(shape(10_500, all: true) == [[8_192, 1_154, 1_154]])
+        #expect(shape(10_500) == [[4_096, 4_096, 1_154, 1_154]])
+        #expect(shape(31_500) == [[8_192, 8_192, 8_192, 4_096, 1_414, 1_414]])
+        #expect(shape(6_000) == [[2_048, 2_048, 952, 952]])
+        #expect(shape(16_384) == [[8_192, 4_096, 4_096]])
+        #expect(shape(24_000) == [[8_192, 8_192, 4_096, 1_760, 1_760]])
+        #expect(shape(2_700) == [[1_350, 1_350]])
+        // Frames alone keep the product's cut.
+        #expect(shape(31_500, merged: 0) == [[4_096, 4_096], [4_096, 4_096], [4_096, 4_096], [2_048, 2_048],
+            [1_414, 1_414]])
+        for count in stride(from: 1_500, through: 70_000, by: 977) {
+            let keepAt = ((count - 1) / chunk) * chunk
+            for merged in [0, 16_384, 32_768] {
+                let plan = Plan.make(promptCount: count, start: 0, chunkTokens: chunk, keepAt: keepAt,
+                    bulkTokens: bulk, microBatches: 2, mergedTokens: merged, microBatchTokens: 8_192,
+                    coalescing: merged > 0, selectionKeepAt: keepAt)
+                var offset = 0
+                for graph in plan.chunks {
+                    let rows = graph.tokens
+                    for segment in graph.segments where segment.selectionRows != nil {
+                        #expect(segment.microBatchRows.allSatisfy { 2 * $0 <= rows }, "prompt \(count) merged \(merged)")
+                    }
+                    let frame = try Plan.frame(start: offset, end: graph.end, promptCount: count, chunkTokens: chunk,
+                        keepAt: keepAt, bulkTokens: bulk, microBatches: 2, microBatchTokens: 8_192,
+                        coalescing: merged > 0, selectionKeepAt: keepAt)
+                    #expect(frame == graph, "prompt \(count) merged \(merged) frame \(offset)")
+                    offset = graph.end
+                }
+                #expect(plan.keptBoundary == (keepAt > 0 ? keepAt : nil), "prompt \(count) merged \(merged)")
+            }
+        }
+    }
+
     @Test func endpointPromptsRunInFewGraphs() {
         func shape(_ count: Int) -> [[Int]] {
-            Self.runtimePlan(promptCount: count, merged: GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens)
-                .chunks.map { $0.segments.flatMap(\.microBatchRows) }
+            Self.servingPlan(promptCount: count).chunks.map { $0.segments.flatMap(\.microBatchRows) }
         }
         #expect(shape(2_700) == [[1_350, 1_350]])
-        // 10.5K: 8,192 as two 4,096s and the tail, the prefix kept at 8,192 inside the graph.
+        // 10.5K: an 8,192-row micro-batch would hold more than half the graph: the product's cut,
+        // the prefix kept at 8,192 inside the graph.
         #expect(shape(10_500) == [[4_096, 4_096, 1_154, 1_154]])
-        let plan = Self.runtimePlan(promptCount: 10_500, merged: GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens)
+        let plan = Self.servingPlan(promptCount: 10_500)
         #expect(plan.chunks[0].snapshotAfter == 1 && plan.keptBoundary == 8_192)
-        // 31.5K: two graphs instead of five.
-        #expect(shape(31_500) == [[4_096, 4_096, 4_096, 4_096], [4_096, 4_096, 2_048, 2_048, 1_414, 1_414]])
+        // 31.5K: one graph of 8,192-row micro-batches, each row keeping its product selection.
+        #expect(shape(31_500) == [[8_192, 8_192, 8_192, 4_096, 1_414, 1_414]])
+        #expect(Self.servingPlan(promptCount: 31_500).chunks[0].segments.map(\.selectionRows)
+            == [[4_096, 4_096], [4_096, 4_096], [4_096, 4_096], [2_048, 2_048], nil])
+        #expect(Self.servingPlan(promptCount: 31_500).keptBoundary == 28_672)
         #expect(Self.runtimePlan(promptCount: 31_500, merged: 0).chunks.count == 5)
         // Larger micro-batches re-cut only chunks whose rows are all in the
         // row-count invariant range; the tail's small halves stay.
@@ -288,11 +356,11 @@ struct GLM5NextTensorParallelPrefillPlanTests {
                 mergedTokens: 16_384, microBatchTokens: tokens).chunks.map { $0.segments.map(\.microBatchRows) }.flatMap { $0 }
         }
         #expect(cut(31_500, 4_096) == [[4_096, 4_096], [4_096, 4_096], [4_096, 4_096], [4_096], [1_414, 1_414]])
-        #expect(cut(31_500, 8_192) == [[8_192], [8_192], [8_192], [4_096], [1_414, 1_414]])
+        // In 16K graphs the third bulk chunk's 8,192 rows would hold more than half its graph.
+        #expect(cut(31_500, 8_192) == [[8_192], [8_192], [4_096, 4_096], [4_096], [1_414, 1_414]])
         #expect(cut(10_500, 3_000) == [[2_730, 2_731, 2_731], [1_154, 1_154]])
         // A restored prefix starts on the chunk grid.
-        #expect(Self.runtimePlan(promptCount: 31_500, start: 28_672,
-            merged: GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens).chunks.map(\.tokens) == [2_828])
+        #expect(Self.servingPlan(promptCount: 31_500, start: 28_672).chunks.map(\.tokens) == [2_828])
     }
 
     /// A frame rebuilt from its bounds (as `runPrefillFrame` and a lane's
@@ -306,16 +374,19 @@ struct GLM5NextTensorParallelPrefillPlanTests {
             let keepAt = runtime.prefixKeepAt(promptCount: count, chunk: chunk, prefixEnabled: true)
             for start in stride(from: 0, to: count, by: chunk).prefix(3) {
                 for merging in [false, true] {
-                    let plan = Self.runtimePlan(promptCount: count, start: start,
-                        merged: merging ? runtime.mergedPrefillTokens : 0)
+                    let plan = Plan.make(promptCount: count, start: start, chunkTokens: chunk, keepAt: keepAt,
+                        bulkTokens: runtime.bulkPrefillChunkTokens, microBatches: runtime.prefillMicroBatches,
+                        mergedTokens: merging ? runtime.mergedPrefillTokens : 0,
+                        microBatchTokens: runtime.prefillMicroBatchTokens, coalescing: merging, selectionKeepAt: keepAt)
                     var offset = start
                     for graph in plan.chunks {
                         let end = runtime.prefillFrameEnd(offset: offset, promptCount: count, chunk: chunk,
-                            keepAt: keepAt, merging: merging)
+                            keepAt: keepAt, merging: merging, selectionKeepAt: keepAt)
                         #expect(end == graph.end, "prompt \(count) from \(start)")
                         let frame = try Plan.frame(start: offset, end: end, promptCount: count, chunkTokens: chunk,
                             keepAt: keepAt, bulkTokens: runtime.bulkPrefillChunkTokens,
-                            microBatches: runtime.prefillMicroBatches)
+                            microBatches: runtime.prefillMicroBatches, microBatchTokens: runtime.prefillMicroBatchTokens,
+                            coalescing: merging, selectionKeepAt: keepAt)
                         #expect(frame == graph, "prompt \(count) from \(start)")
                         offset = end
                     }

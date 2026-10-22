@@ -98,13 +98,14 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// micro-batch's residual streams and the graph's hidden rows longer
     /// (about 1 GiB more at 16,384 tokens), far inside the bulk chunk's
     /// workspaces.
-    static let mergedPrefillTokens = 16384
+    static let mergedPrefillTokens = 32768
     /// Chunks whose micro-batches are all large enough to compute the same
     /// bits at any size (`GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`)
     /// run as micro-batches of at most this many rows instead (nil: two per
     /// chunk). Bigger micro-batches read each layer's expert weights once per
-    /// more rows; tokens are unchanged.
-    static let prefillMicroBatchTokens: Int? = nil
+    /// more rows; tokens are unchanged: each row keeps its product
+    /// micro-batch's DSA selection (`GLM5NextTensorParallelPrefillPlan.make(pinsSelections:)`).
+    static let prefillMicroBatchTokens: Int? = 8192
     /// While other lanes decode, a lane's prefill frame runs in layer slices
     /// of about this long, one a step, each followed by every decoding lane's
     /// unit (`GLM5NextTensorParallelPrefillPlan.Slices`), so no decoding lane

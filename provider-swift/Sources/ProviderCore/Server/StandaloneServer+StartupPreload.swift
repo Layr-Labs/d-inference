@@ -57,20 +57,17 @@ extension StandaloneServer {
     /// Excluded first-use shapes for each resident engine, one Mac-wide
     /// session at a time; any request preempts it. The sweep tick retries
     /// sessions a request, device work or posture deferred, and warms a lazy
-    /// load or an MTP replacement engine once the server is idle.
-    private func scheduleShapeWarmups() async {
+    /// load or an MTP replacement engine once the server is idle. A retired
+    /// session starts its successor through here too, so a draining or
+    /// stopping server starts no session.
+    func retryShapeWarmups() async {
+        guard lifecycleState == .running, !lifecycleDraining else { return }
         for key in slots.keys.sorted() {
             guard let bridge = slots[key]?.bridge else { continue }
             if await bridge.startShapeWarmupIfNeeded(onRetired: { [weak self] in
-                await self?.scheduleShapeWarmups()
+                await self?.retryShapeWarmups()
             }) { return }
         }
-    }
-
-    /// Sweep-tick entry: a draining or stopping server starts no session.
-    func retryShapeWarmups() async {
-        guard lifecycleState == .running, !lifecycleDraining else { return }
-        await scheduleShapeWarmups()
     }
 
     private func startupPreloadHasFreeSlot() -> Bool {

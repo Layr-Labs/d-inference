@@ -198,6 +198,37 @@ struct ProductionModelCalibrationTests {
         await bridge.shutdown()
     }
 
+    @Test("a retired standalone warmup session starts no successor once the server drains")
+    func standaloneSuccessorWarmupRespectsDrain() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let server = StandaloneServer(config: .init(), models: [], kvBudgetForTesting: budget)
+        let first = try await makeQwenSlot(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
+            budget: budget)
+        let second = try await makeQwenSlot(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget)
+        for slot in [first, second] { await slot.bundle.bridge.setShapeWarmupModeTest(.always) }
+        await server.installShapeWarmupSlots(["a": first, "b": second])
+        await server.retryShapeWarmups()
+        // Server sessions keep the nominal-posture gate; a hot or low-power Mac starts none.
+        if await first.bundle.bridge.scheduledShapeWarmupTest() {
+            await server.setDrainingForShapeWarmupTest()
+            await first.bundle.bridge.awaitProductionCalibration()
+            #expect(await first.bundle.bridge.shapeWarmupCompletedTest())
+            // The retired session's successor runs on its own background task.
+            let deadline = ContinuousClock.now + .seconds(2)
+            var successorStarted = false
+            while !successorStarted, ContinuousClock.now < deadline {
+                successorStarted = await second.bundle.bridge.scheduledShapeWarmupTest()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!successorStarted, "a draining server must not start the next warmup session")
+            #expect(!(await second.bundle.bridge.shapeWarmupCompletedTest()))
+        }
+        await server.removeShapeWarmupSlots()
+        #expect(budget.serviceBudget.count == 0 && !budget.serviceBudget.idleCalibration.hasSession)
+    }
+
     private func makeQwenBridge(modelID: String, backend: String,
         budget: GlobalKVCacheBudget) async throws -> EngineV2Bridge {
         try await makeQwenSlot(modelID: modelID, backend: backend, budget: budget).bundle.bridge
@@ -289,5 +320,23 @@ private extension EngineV2Bridge {
     func waitForPumpRetirement(requestId: String) async { await pumpTasks[requestId]?.value }
     func productionCalibrationWorkCounters() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
+    }
+}
+
+private extension StandaloneServer {
+    func installShapeWarmupSlots(_ installed: [String: QwenCalibrationSlot]) {
+        lifecycleState = .running
+        for (key, slot) in installed {
+            slots[key] = CachedSlot(bundle: slot.bundle, container: slot.container, tokenizer: slot.tokenizer,
+                modelType: slot.modelType, isVLM: false, sizing: slot.sizing, lastUsedAt: .now)
+        }
+    }
+    func setDrainingForShapeWarmupTest() { lifecycleDraining = true }
+    func removeShapeWarmupSlots() async {
+        lifecycleState = .stopping
+        for slot in slots.values { await slot.bridge.shutdown() }
+        slots.removeAll()
+        lifecycleDraining = false
+        lifecycleState = .stopped
     }
 }

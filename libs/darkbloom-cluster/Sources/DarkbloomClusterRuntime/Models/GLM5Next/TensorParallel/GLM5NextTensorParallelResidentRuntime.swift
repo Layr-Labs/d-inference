@@ -39,6 +39,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// (3,931-token prompt, 2,048-token chunks): cache 0 prefill 1,062 tok/s,
     /// decode 25.7; 1 GiB 1,624 / 50.4; 4 GiB 1,766 / 50.8. Charged to the
     /// load's memory gate and the stage residency beside the request reserve.
+    /// Given back once the rank is idle (`releaseIdleMemory`), and before a
+    /// reservation or a running request is refused (`yieldingMemory`).
     static let freedBufferCacheBytes = 4 << 30
     /// Each prefill chunk runs as this many micro-batches, so one computes
     /// while another's sealed sum crosses the link
@@ -185,6 +187,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
         requestReserve = try QwenLongPrefillCheckedBytes.sum([requestReserve,
             try Self.speculationRequestBytes(configuration: text, profile: profile, depth: Self.mtpDepth,
                 executionPolicy: descriptor.executionPolicy)])
+        // The prefix cache votes in a reduction of its own: both ranks must
+        // have it on, or both off (`DARKBLOOM_CLUSTER_PREFIX_CACHE=off`).
+        let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: GLM5NextTextStage?
@@ -203,7 +208,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let loadAgreement = sha256(try canonicalJSONData(["glm5-next-tensor-parallel-load-v1", planName, partialsTransport,
                 GLM5NextTensorParallelSpeculation.agreementName, String(mtpDepth),
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
-                collective.transport.rawValue, configuration.allocatorPolicy.rawValue]
+                collective.transport.rawValue, configuration.allocatorPolicy.rawValue,
+                "glm5-next-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"]
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
                 + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
@@ -217,6 +223,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             group.sealed = codec
             var probe: ClusterWorkerLinkProbe?
             var stageResidency: ClusterStageResidency?
+            var prefixBudget = 0
             let started = DispatchTime.now().uptimeNanoseconds
             try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
@@ -269,6 +276,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 stageResidency = try ClusterStageResidency(bytes: try QwenLongPrefillCheckedBytes.sum([
                     Memory.activeMemory, requestReserve, bufferCacheBytes]))
                 if bufferCacheBytes > 0 { Memory.cacheLimit = bufferCacheBytes; try checked() }
+                // Never 0 while on: a rank with no budget would skip the vote its peer takes.
+                prefixBudget = prefixEnabled
+                    ? max(1, QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)) : 0
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, descriptor.artifactAggregateSHA256,
                     String(shardBytes), String(mtpBytes)]))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
@@ -279,7 +289,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
                     + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
-                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes)")
+                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget)")
             }
             guard let stage = loaded, (loadedMTP != nil) == (Self.mtpDepth > 0) else {
                 throw ProbeError("GLM tensor-parallel load returned no stage or NextN layer")
@@ -288,8 +298,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             return GLM5NextTensorParallelResidentRuntime(configuration: configuration, descriptor: descriptor,
                 control: control, collective: collective, group: group, codec: codec, stage: stage, mtp: loadedMTP,
                 residency: stageResidency, requestReserveBytes: requestReserve, loadAgreement: loadAgreement, linkProbe: probe,
-                planSHA256: planSHA256, prefix: GLM5NextTensorParallelPrefixCache(
-                    budgetBytes: QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)))
+                planSHA256: planSHA256, prefix: GLM5NextTensorParallelPrefixCache(budgetBytes: prefixBudget))
         } catch {
             let primary = error; control.fail(); loaded = nil; loadedMTP = nil
             do {
@@ -406,6 +415,29 @@ public final class GLM5NextTensorParallelResidentRuntime {
         return keepWarm.pulse()
     }
 
+    /// Gives back what this idle rank holds beyond its weights
+    /// (`ClusterIdleMemory`): MLX's freed-buffer cache, and the prompt-prefix
+    /// entries too while the host is `underPressure` (the vote then restores
+    /// nothing until both ranks hold a boundary again). Nothing while a
+    /// request is reserved or running. Returns the bytes given back.
+    public func releaseIdleMemory(underPressure: Bool) throws -> Int {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard control.available, reservation == nil, stage != nil else { return 0 }
+        let cached = Memory.cacheMemory, held = Memory.activeMemory + cached, entries = prefix.count
+        let dropped = underPressure ? prefix.sweep() : 0
+        ClusterIdleMemory.releaseFreedBuffers()
+        let released = max(0, held - Memory.activeMemory - Memory.cacheMemory)
+        // Keep-warm pulses leave a few bytes in the cache between ticks.
+        if released >= 1 << 20 {
+            log("darkbloom-idle-release-v1 rank=\(collective.rank) released_bytes=\(released) freed_buffer_bytes=\(cached)"
+                + " prefix_entries_dropped=\(underPressure ? entries : 0) prefix_bytes_dropped=\(dropped)"
+                + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) pressure=\(underPressure ? 1 : 0)"
+                + " active_bytes=\(Memory.activeMemory)")
+        }
+        return released
+    }
+
     public func dataPlanePing() throws -> UInt64 {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
@@ -432,7 +464,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
             guard requestReserveBytes <= value.capacityLimitBytes else {
                 throw ProbeError("GLM tensor-parallel reservation exceeds its owner or readiness capacity")
             }
-            try Self.requireLiveMemory(bytes: requestReserveBytes)
+            // What an idle rank keeps for the next request gives way first.
+            try prefix.yieldingMemory { try Self.requireLiveMemory(bytes: requestReserveBytes) }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds)
             return requestReserveBytes
@@ -769,7 +802,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
             + " prompt=\(prompt.count) reused=\(start) stored=\(stored.map(String.init).joined(separator: "_"))"
-            + " prefix_entries=\(prefix.count) output=\(tokens.count) finish=\(finish.rawValue)"
+            + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) output=\(tokens.count) finish=\(finish.rawValue)"
             + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
             + " mtp_proposed=\(speculation?.proposedTokens ?? 0)")

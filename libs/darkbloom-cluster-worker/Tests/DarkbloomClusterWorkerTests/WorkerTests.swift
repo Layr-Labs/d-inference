@@ -36,16 +36,17 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
             refusals -= 1
             throw ClusterResidentRequestRefusal(reason: .capacity, message: "Resident request needs 11.90 GiB and has 11.39 GiB")
         }
-        request = value; reservedID = id; return 1024
+        request = value; reservedID = id; held = true; return 1024
     }
     func releaseReservation(_ id: UUID) throws {
         lock.lock(); defer { lock.unlock() }
         guard reservedID == id else { throw WorkerFailure.invalid("Fake release has no reservation") }
-        released.append(id); reservedID = nil; request = nil; cancelled = false
+        released.append(id); reservedID = nil; request = nil; cancelled = false; held = false
     }
     func refreshServingContext() -> Int? { 6000 }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
         lock.lock(); starts += 1; let value = request!; lock.unlock()
+        defer { lock.lock(); held = false; lock.unlock() }
         if ready.rank == 1 { return .length }
         for ordinal in 0..<value.outputCount {
             lock.lock(); let stopped = cancelled; lock.unlock()
@@ -61,6 +62,26 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     func keepWarmPulse() throws -> UInt64 { lock.lock(); pulses += 1; lock.unlock(); return 1 }
     func dataPlanePing() throws -> UInt64 { lock.lock(); pings += 1; lock.unlock(); return 1 }
     var pulses = 0, pings = 0
+    /// Each idle release's `underPressure`, and whether a request was reserved
+    /// or running then (`held`).
+    private var releases: [(pressure: Bool, reserved: Bool)] = []
+    private var held = false
+    var idleReleases: [Bool] { lock.lock(); defer { lock.unlock() }; return releases.map(\.pressure) }
+    var releasedWhileReserved: Bool { lock.lock(); defer { lock.unlock() }; return releases.contains(where: \.reserved) }
+    func releaseIdleMemory(underPressure: Bool) -> Int? {
+        lock.lock(); releases.append((underPressure, held)); lock.unlock(); return 4096
+    }
+}
+
+/// Host pressure a test sets, for `WorkerIdleRelease`.
+private final class PressureSwitch: @unchecked Sendable {
+    private let lock = NSLock(); private var value = false
+    var on: Bool { get { lock.lock(); defer { lock.unlock() }; return value } set { lock.lock(); value = newValue; lock.unlock() } }
+}
+
+extension WorkerIdleRelease {
+    /// Never due and never under pressure: the release stays out of other tests.
+    static let never = WorkerIdleRelease(delayNanoseconds: UInt64.max / 2, hostUnderPressure: { false })
 }
 
 private final class ResultBox: @unchecked Sendable {
@@ -94,7 +115,7 @@ private final class Harness {
     private(set) var output: Int32
     private var sequence: UInt64 = 0
     private var renewals: UInt64 = 0
-    init(rank: Int = 0, leaseNanoseconds: UInt64 = 5_000_000_000) throws {
+    init(rank: Int = 0, leaseNanoseconds: UInt64 = 5_000_000_000, idleRelease: WorkerIdleRelease = .never) throws {
         runtime = FakeRuntime(rank: rank)
         exits.runtime = runtime
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
@@ -107,7 +128,8 @@ private final class Harness {
             do {
                 let io = try WorkerPipes(input: childInput, output: childOutput,
                     deadline: DispatchTime.now().uptimeNanoseconds + leaseNanoseconds)
-                let coordinator = try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks)
+                let coordinator = try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks,
+                    idleRelease: idleRelease)
                 box.set(coordinator)
                 try coordinator.run()
             } catch { result.save(error) }
@@ -459,6 +481,68 @@ final class WorkerTests: XCTestCase {
         try h.send(.shutdown)
         XCTAssertEqual(h.done.wait(timeout: .now() + 5), .success)
         XCTAssertTrue(h.exits.reasons.isEmpty, "\(h.exits.reasons)")
+    }
+
+    /// Idle memory (`WorkerIdleRelease`): nothing is given back before the
+    /// first request, once a request has been retired for the delay it is,
+    /// exactly once, and again after the next request.
+    func testIdleMemoryIsGivenBackOnceAfterEachRetiredRequest() throws {
+        // The rank lease outlasts the test's waits (no renewals here).
+        let h = try Harness(leaseNanoseconds: 30_000_000_000,
+            idleRelease: .init(delayNanoseconds: 0, hostUnderPressure: { false }))
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        Thread.sleep(forTimeInterval: 1.3) // at least one idle tick (one a second without keep-warm)
+        XCTAssertEqual(h.runtime.idleReleases, [])
+        for (index, id) in [UUID(), UUID()].enumerated() {
+            try h.send(.reserve(h.reservation()), id: id)
+            XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+            try h.send(.start, id: id)
+            for ordinal in 0..<2 {
+                XCTAssertEqual(try h.event().event, .committedToken(ordinal: ordinal, tokenID: 7 + ordinal, committedTokens: 3 + ordinal))
+                try h.send(.tokenDecision(ordinal: ordinal, decision: .proceed), id: id)
+            }
+            XCTAssertEqual(try h.event().event, .finished(.length))
+            XCTAssertEqual(try h.event().event, .retired(.clean))
+            Thread.sleep(forTimeInterval: 2.5)
+            XCTAssertEqual(h.runtime.idleReleases, Array(repeating: false, count: index + 1))
+        }
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertFalse(h.runtime.releasedWhileReserved)
+    }
+
+    /// The delay holds the release back, and host memory pressure brings it
+    /// on every idle tick, never while a request is reserved.
+    func testIdleReleaseWaitsForTheDelayAndFollowsHostPressure() throws {
+        let pressure = PressureSwitch()
+        let h = try Harness(rank: 1, leaseNanoseconds: 30_000_000_000,
+            idleRelease: .init(delayNanoseconds: 3_600_000_000_000, hostUnderPressure: { pressure.on }))
+        let id = UUID()
+        try h.start(id)
+        XCTAssertEqual(try h.event().event, .finished(.length))
+        XCTAssertEqual(try h.event().event, .retired(.clean))
+        Thread.sleep(forTimeInterval: 2.3)
+        XCTAssertEqual(h.runtime.idleReleases, [], "an hour's delay has not passed")
+        let reserved = UUID()
+        try h.send(.reserve(h.reservation()), id: reserved)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        pressure.on = true
+        Thread.sleep(forTimeInterval: 2.3)
+        XCTAssertEqual(h.runtime.idleReleases, [], "a reserved request is never idle")
+        try h.send(.cancel(.callerCancelled), id: reserved)
+        XCTAssertEqual(try h.event().event, .retired(.cancelled))
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertFalse(h.runtime.releasedWhileReserved)
+
+        let idle = try Harness(leaseNanoseconds: 30_000_000_000,
+            idleRelease: .init(delayNanoseconds: 3_600_000_000_000, hostUnderPressure: { pressure.on }))
+        guard case .ready = try idle.event().event else { return XCTFail("Missing fake ready") }
+        Thread.sleep(forTimeInterval: 3.2)
+        XCTAssertGreaterThanOrEqual(idle.runtime.idleReleases.count, 2)
+        XCTAssertTrue(idle.runtime.idleReleases.allSatisfy { $0 })
+        try idle.send(.shutdown); XCTAssertEqual(try idle.event().event, .shutdownComplete)
+        XCTAssertEqual(idle.done.wait(timeout: .now() + 2), .success); XCTAssertNil(idle.result.error)
     }
 
     /// Without renewals the lease lapses: the reader ends the worker through

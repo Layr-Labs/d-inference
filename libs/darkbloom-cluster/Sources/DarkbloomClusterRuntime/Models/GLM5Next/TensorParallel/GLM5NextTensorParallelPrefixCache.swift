@@ -13,8 +13,16 @@ import MLXLLM
 /// As `QwenTensorParallelPrefixCache`: an entry is found only under the scope
 /// it was stored with (the load agreement) and the exact prompt tokens up to
 /// its length; restore is both-or-neither (`QwenTensorParallelPrefixCache.agree`,
-/// one sealed vote), and entries give way first (`yieldingMemory`) before a
-/// running request is refused. No SSD tier yet.
+/// one sealed vote), and entries give way (`yieldingMemory`) before a
+/// reservation or a running request is refused, and while idle under host
+/// memory pressure (`sweep`). No SSD tier yet.
+///
+/// Bytes: an entry counts the buffers it keeps alive, not its logical
+/// arrays. The DSA histories grow with geometric spare columns and a copy
+/// shares that storage, so each entry keeps an exact copy of them instead
+/// (`contiguous` copies a view whose buffer is larger than it by more than
+/// 16 KiB); the NextN history is the checkpoint's own and is counted with its
+/// spare columns. `budgetBytes` bounds what the entries hold.
 final class GLM5NextTensorParallelPrefixCache {
     private struct Entry {
         let key: String
@@ -55,16 +63,17 @@ final class GLM5NextTensorParallelPrefixCache {
         }
     }
 
-    /// Keeps a copy of `cache` (evaluated) and the NextN history `mtp` at
-    /// `length`, evicting the oldest entries beyond the budget; nothing when
-    /// it alone exceeds the budget.
+    /// Keeps a copy of `cache` (evaluated, its DSA histories exact) and the
+    /// NextN history `mtp` at `length`, evicting the oldest entries beyond the
+    /// budget; nothing when it alone exceeds the budget.
     func store(scope: String, prompt: [Int], length: Int, cache: GLM5NextTextStageCache,
                mtp: GLM5NextMTPCheckpoint? = nil) {
         guard enabled else { return }
         let kept = cache.copy()
+        for case let history as GLM5NextDSACache in kept.layers { Self.compact(history) }
         let arrays = kept.layers.flatMap { $0.innerState() } + (mtp?.arrays ?? [])
         eval(arrays)
-        let bytes = arrays.reduce(0) { $0 + $1.nbytes }
+        let bytes = Self.bufferBytes(arrays)
         guard bytes <= budgetBytes else { return }
         lock.withLock {
             let key = QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: length)
@@ -78,14 +87,41 @@ final class GLM5NextTensorParallelPrefixCache {
         }
     }
 
-    /// Runs `body`; on a refusal, drops every entry and runs it once more.
+    /// Points `history` (a copy's own object) at exact copies of its logical
+    /// columns where its storage carries spare ones; lazy until evaluated.
+    static func compact(_ history: GLM5NextDSACache) {
+        history.state = history.state.map { $0.contiguous() }
+    }
+
+    /// Bytes of the buffers behind evaluated `arrays` (a view counts its whole
+    /// buffer; one shared by two arrays counts twice, never less).
+    static func bufferBytes(_ arrays: [MLXArray]) -> Int {
+        arrays.reduce(0) { total, array in
+            total + max(array.nbytes, (try? array.evaluatedBufferInfo())?.allocatedBytes ?? 0)
+        }
+    }
+
+    /// Runs `body`; on a refusal, gives MLX's freed-buffer cache back and runs
+    /// it again, then drops every entry and runs it once more.
     func yieldingMemory<T>(_ body: () throws -> T) throws -> T {
         do { return try body() } catch {
-            guard lock.withLock({ !entries.isEmpty }) else { throw error }
+            var refusal = error
+            if ClusterIdleMemory.releaseFreedBuffers() > 0 {
+                do { return try body() } catch let again { refusal = again }
+            }
+            guard lock.withLock({ !entries.isEmpty }) else { throw refusal }
             sweep(); Memory.clearCache()
             return try body()
         }
     }
 
-    func sweep() { lock.withLock { entries.removeAll(); bytesInUse = 0 } }
+    /// Drops every entry; returns the bytes they held.
+    @discardableResult
+    func sweep() -> Int {
+        lock.withLock {
+            let held = bytesInUse
+            entries.removeAll(); bytesInUse = 0
+            return held
+        }
+    }
 }

@@ -112,6 +112,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5Next(let runtime): try runtime.releaseReservation(requestID: id)
         }
     }
+    /// GLM tensor parallel also drops its prompt-prefix entries under host
+    /// pressure; every other family gives back its freed-buffer cache only.
+    func releaseIdleMemory(underPressure: Bool) -> Int? {
+        switch owner {
+        case .glm5NextTensorParallel(let runtime): return try? runtime.releaseIdleMemory(underPressure: underPressure)
+        case .qwenDense, .qwenTensorParallel, .mimoV26, .glm5Next: return ClusterIdleMemory.releaseFreedBuffers()
+        }
+    }
     func refreshServingContext() -> Int? {
         switch owner {
         case .qwenDense(let runtime): runtime.refreshServingContext()

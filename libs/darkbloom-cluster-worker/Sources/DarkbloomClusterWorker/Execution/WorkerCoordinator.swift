@@ -24,6 +24,17 @@ struct WorkerKeepWarmTiming: Sendable {
                                                backoffNanoseconds: 60_000_000_000)
 }
 
+/// When an idle worker gives back what its runtime holds beyond the model
+/// (`WorkerRuntime.releaseIdleMemory`, `ClusterIdleMemory`): once, `delay`
+/// after a request retired with nothing queued or active since, and on every
+/// idle tick on which the host reports memory pressure.
+struct WorkerIdleRelease: Sendable {
+    let delayNanoseconds: UInt64
+    let hostUnderPressure: @Sendable () -> Bool
+    static let standard = WorkerIdleRelease(delayNanoseconds: ClusterIdleMemory.releaseDelayNanoseconds,
+                                            hostUnderPressure: { ClusterIdleMemory.hostUnderPressure() })
+}
+
 /// The main process thread is the dedicated synchronous native executor. The
 /// reader only validates control, queues one next action, and signals cancel.
 /// All protocol state and event publication share the condition lock; a failed
@@ -34,7 +45,8 @@ struct WorkerKeepWarmTiming: Sendable {
 /// loads; a renewal moves the process deadline on. Any other input before
 /// readiness ends the worker, as before. While idle the executor also runs the
 /// two keep-warm tiers: its own GPU pulse every half second (tier 1), and the
-/// data-plane exchange its owner sequences (tier 2, `keepWarm`).
+/// data-plane exchange its owner sequences (tier 2, `keepWarm`); and it gives
+/// back idle memory (`WorkerIdleRelease`).
 final class WorkerCoordinator: @unchecked Sendable {
     private var runtime: (any WorkerRuntime)?
     private let pipes: WorkerPipes
@@ -43,6 +55,7 @@ final class WorkerCoordinator: @unchecked Sendable {
     private let renewal: @Sendable (UInt64) -> Void
     private let keepWarmEnabled: Bool
     private let keepWarmTiming: WorkerKeepWarmTiming
+    private let idleRelease: WorkerIdleRelease
     private var ready: ClusterWorkerReady?
     private let condition = NSCondition()
     private let readerDone = DispatchGroup()
@@ -71,6 +84,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var keepWarmArmed = false
     private var lastActivity: UInt64 = DispatchTime.now().uptimeNanoseconds
     private var keepWarmBackoffUntil: UInt64 = 0
+    /// When the last request retired, until its idle release ran.
+    private var retiredAt: UInt64?
     /// The request this executor admitted and has not started; executor only.
     private var admittedNotStarted: UUID?
 
@@ -78,15 +93,19 @@ final class WorkerCoordinator: @unchecked Sendable {
     /// renewal must carry; `renewal` is told each renewal's time to live, for
     /// the process's alarm. Keep-warm tier 1 runs only when `keepWarm`.
     init(pipes: WorkerPipes, membershipEpoch: UUID?, keepWarm: Bool, exitHooks: WorkerExitHooks = .none,
-         keepWarmTiming: WorkerKeepWarmTiming = .standard, renewal: @escaping @Sendable (UInt64) -> Void = { _ in }) {
+         keepWarmTiming: WorkerKeepWarmTiming = .standard, idleRelease: WorkerIdleRelease = .standard,
+         renewal: @escaping @Sendable (UInt64) -> Void = { _ in }) {
         self.pipes = pipes; self.membershipEpoch = membershipEpoch; self.keepWarmEnabled = keepWarm
-        self.exitHooks = exitHooks; self.keepWarmTiming = keepWarmTiming; self.renewal = renewal
+        self.exitHooks = exitHooks; self.keepWarmTiming = keepWarmTiming; self.idleRelease = idleRelease
+        self.renewal = renewal
     }
 
     /// After load, for a caller that has its runtime already (tests).
-    convenience init(runtime: any WorkerRuntime, pipes: WorkerPipes, exitHooks: WorkerExitHooks = .none) throws {
+    convenience init(runtime: any WorkerRuntime, pipes: WorkerPipes, exitHooks: WorkerExitHooks = .none,
+                     idleRelease: WorkerIdleRelease = .standard) throws {
         guard let ready = runtime.readiness else { throw WorkerFailure.invalid("Native owner did not establish bilateral readiness") }
-        self.init(pipes: pipes, membershipEpoch: ready.identity.membershipEpoch, keepWarm: false, exitHooks: exitHooks)
+        self.init(pipes: pipes, membershipEpoch: ready.identity.membershipEpoch, keepWarm: false, exitHooks: exitHooks,
+            idleRelease: idleRelease)
         self.runtime = runtime
     }
 
@@ -160,6 +179,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                 while true {
                     guard let command = try nextAction() else {
                         keepWarmPulseIfIdle(runtime)
+                        releaseIdleMemoryIfDue(runtime)
                         continue
                     }
                     if try applyLaneCommand(command, runtime: runtime) {
@@ -168,7 +188,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                     while runtime.hasStartedLanes {
                         try runtime.serveBatch(host: LaneHost(coordinator: self, runtime: runtime))
-                        condition.lock(); keepWarmArmed = true; condition.unlock()
+                        condition.lock(); keepWarmArmed = true; retiredAt = DispatchTime.now().uptimeNanoseconds
+                        condition.unlock()
                         if runtime.readiness == nil { try publish(.unavailable(.runtimeError), requestID: nil) }
                     }
                     condition.lock(); lastActivity = DispatchTime.now().uptimeNanoseconds; condition.unlock()
@@ -177,6 +198,7 @@ final class WorkerCoordinator: @unchecked Sendable {
             while true {
                 guard let command = try nextAction() else {
                     keepWarmPulseIfIdle(runtime)
+                    releaseIdleMemoryIfDue(runtime)
                     continue
                 }
                 switch command.command {
@@ -218,7 +240,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                     try publish(.finished(reason), requestID: id)
                     try publish(.retired(.clean), requestID: id)
-                    condition.lock(); keepWarmArmed = true; condition.unlock()
+                    condition.lock(); keepWarmArmed = true; retiredAt = DispatchTime.now().uptimeNanoseconds
+                    condition.unlock()
                     if runtime.readiness == nil { try publish(.unavailable(.runtimeError), requestID: nil) }
                 case .keepWarm(let ordinal):
                     // Tier 2. A failure of the data plane is a failed worker:
@@ -228,6 +251,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                     let serving = runtime.refreshServingContext().map { min($0, ready?.profile.maximumContextTokens ?? $0) }
                     try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max))),
                         servingContextTokens: serving), requestID: nil)
+                    // The owner's pings may keep every wait above from timing out.
+                    releaseIdleMemoryIfDue(runtime)
                 case .shutdown:
                     condition.lock(); keepWarmArmed = false; condition.unlock()
                     try runtime.shutdown()
@@ -284,6 +309,24 @@ final class WorkerCoordinator: @unchecked Sendable {
         lastActivity = DispatchTime.now().uptimeNanoseconds
         if elapsed > keepWarmTiming.slowNanoseconds { keepWarmBackoffUntil = lastActivity + keepWarmTiming.backoffNanoseconds }
         condition.unlock()
+    }
+
+    /// On the executor while idle (nothing queued, reserved or running): the
+    /// runtime gives back what it holds beyond its model, once the last
+    /// retired request is `idleRelease.delayNanoseconds` old, and on any tick
+    /// under host memory pressure.
+    private func releaseIdleMemoryIfDue(_ runtime: any WorkerRuntime) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        condition.lock()
+        let idle = actions.isEmpty && failure == nil && !stopped
+            && session?.activeRequestID == nil && (laneSession?.activeRequestIDs.isEmpty ?? true)
+        let due = idle && retiredAt.map { now >= $0 &+ idleRelease.delayNanoseconds } == true
+        condition.unlock()
+        guard idle else { return }
+        let pressure = idleRelease.hostUnderPressure()
+        guard due || pressure else { return }
+        _ = runtime.releaseIdleMemory(underPressure: pressure)
+        if due { condition.lock(); retiredAt = nil; condition.unlock() }
     }
 
     /// The reason a reader failure gives the forced exit, for the log.

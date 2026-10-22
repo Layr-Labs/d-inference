@@ -1302,15 +1302,39 @@ extension ProviderLoop {
         }
     }
 
-    private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
-        Double(reclaimableMemoryBytes(from: slots)) / 1_073_741_824.0
+    private func reclaimableMemoryGb(
+        from slots: [String: ModelSlot], countingRetainedKVSegments: Bool
+    ) -> Double {
+        Double(reclaimableMemoryBytes(from: slots, countingRetainedKVSegments: countingRetainedKVSegments))
+            / 1_073_741_824.0
+    }
+
+    /// `evictUntilAvailable`'s feasibility check: whether evicting every
+    /// model in `evictable` could raise `availableGb` to `requiredGb`.
+    private func evictionCanReach(
+        _ requiredGb: Double, from availableGb: Double, evicting evictable: [String: ModelSlot],
+        countingRetainedKVSegments: Bool
+    ) -> Bool {
+        ModelLoadAdmission.evictionCanReach(
+            availableGb: availableGb,
+            reclaimableGb: reclaimableMemoryGb(
+                from: evictable, countingRetainedKVSegments: countingRetainedKVSegments),
+            requiredGb: requiredGb)
     }
 
     /// What unloading `slots` and `releaseReclaimableMemoryForLoad` hand
-    /// back: their resident weights, MLX's buffer cache and retained free KV
-    /// segments, which every load gate releases before it evicts or refuses.
-    func reclaimableMemoryBytes(from slots: [String: ModelSlot]) -> UInt64 {
-        let pools = [MLX.Memory.cacheMemory, CBv2RetainedKVSegments.retainedBytes]
+    /// back: their resident weights, MLX's buffer cache and, when counted,
+    /// retained free KV segments. Count those only to decide whether that
+    /// release could make room, never once it has run: engines drop them at
+    /// their next step, which can outlast the release's wait, and can park
+    /// more meanwhile, so only the memory sample taken after the release
+    /// shows what it returned. Credit for segments still parked could evict
+    /// an idle model for room the load never gets.
+    func reclaimableMemoryBytes(
+        from slots: [String: ModelSlot], countingRetainedKVSegments: Bool
+    ) -> UInt64 {
+        let retained = countingRetainedKVSegments ? CBv2RetainedKVSegments.retainedBytes : 0
+        let pools = [MLX.Memory.cacheMemory, retained]
         return (pools + slots.values.map(\.sizing.weightsBytes)).reduce(UInt64(0)) { total, bytes in
             let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, bytes)))
             return overflow ? .max : sum
@@ -1345,7 +1369,8 @@ extension ProviderLoop {
     ) async throws {
         // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
         // retained free KV segments, so drop both once before unloading a
-        // resident model for room.
+        // resident model for room. Retained segments are eviction credit
+        // only until then (`reclaimableMemoryBytes`).
         var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while true {
             try Task.checkCancellation()
@@ -1373,7 +1398,8 @@ extension ProviderLoop {
             // serve for one it cannot — the #653 32 GB report's "a request
             // for a model I can't serve killed the one I could".
             if allowEviction, !evictable.isEmpty {
-                let reclaimableGb = reclaimableMemoryGb(from: evictable)
+                let reclaimableGb = reclaimableMemoryGb(
+                    from: evictable, countingRetainedKVSegments: !poolDropped)
                 if !ModelLoadAdmission.evictionCanReach(
                     availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
                 {
@@ -1472,7 +1498,14 @@ extension ProviderLoop {
             return false
         }
         if NemotronSuperServingPolicy.isServingIdentity(modelID: modelId, modelType: modelInfo.modelType) {
-            return nemotronSuperLoadIsCertainToFail(modelInfo)
+            let certainToFail = await nemotronSuperLoadIsCertainToFail(modelInfo)
+            // Its release can suspend: re-check the verdicts above.
+            if nativeMiMoRefusesRequest(modelId) || nemotronSuperRefusesRequest(modelId)
+                || isRefusedByRetirement(modelId)
+            {
+                return true
+            }
+            return modelSlots[modelId] == nil && certainToFail
         }
         // The optional assistant deliberately plays NO role here: it cannot
         // cause a fast rejection (a target that fits must remain loadable and
@@ -1519,18 +1552,21 @@ extension ProviderLoop {
         // the load path refuses without evicting (see evictUntilAvailable),
         // so reject fast here and let the coordinator reroute instead of
         // accepting a request that would only fail after the same check.
-        if available < requiredGb, hasEvictable {
-            let reclaimableGb = reclaimableMemoryGb(from: evictable)
-            if !ModelLoadAdmission.evictionCanReach(
-                availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
-            {
-                if !mayStillReclaim { return true }
-            }
+        // As there, retained free KV segments count only until released:
+        // when only they could close the gap, release them and resample.
+        var resampleAfterRelease = !hasEvictable
+        if available < requiredGb, hasEvictable,
+            !evictionCanReach(requiredGb, from: available, evicting: evictable, countingRetainedKVSegments: false)
+        {
+            resampleAfterRelease = evictionCanReach(
+                requiredGb, from: available, evicting: evictable, countingRetainedKVSegments: true)
+            if !resampleAfterRelease, !mayStillReclaim { return true }
         }
 
-        // Not enough free memory and nothing idle to evict. Drop the reclaimable
-        // pool and resample once before rejecting (the wedge self-heal).
-        if available < requiredGb && !hasEvictable {
+        // Not enough free memory and nothing idle to evict, or only retained
+        // segments could make room. Release them, drop the reclaimable pool
+        // and resample once before rejecting (the wedge self-heal).
+        if available < requiredGb && resampleAfterRelease {
             await releaseReclaimableMemoryForLoad()
             let retried = await availableMemoryGb()
             // The retry sample is another suspension: re-resolve the
@@ -1545,7 +1581,12 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb && !mayStillReclaim {
+            // What is still parked after the release is no credit.
+            let reachable = hasEvictable
+                ? evictionCanReach(
+                    requiredGb, from: retried, evicting: evictableModelSlots(), countingRetainedKVSegments: false)
+                : retried >= requiredGb
+            if !reachable && !mayStillReclaim {
                 return true
             }
         }

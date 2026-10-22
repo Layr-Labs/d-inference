@@ -404,7 +404,10 @@ unload suspends declines it, and eviction plans again from the models still
 idle; the third decline refuses the load. Like the ordinary gate, eviction
 first releases retained free KV segments and drops MLX's buffer cache once
 (`releaseReclaimableMemoryForLoad`), before its first eviction or a refusal
-with nothing idle, and pre-accept counts retained segments as reachable.
+with nothing idle, and counts those segments as reachable only until then:
+segments still parked after the release never justify an eviction.
+Pre-accept performs the same release and judges the room it leaves when
+nothing is idle or only those segments could close the gap.
 Startup preload, which never evicts, admits Super by the same room and
 orders it by its planned requirement. The discovery footprint
 (`estimated_memory_gb`) is the narrowest configuration's requirement itself,

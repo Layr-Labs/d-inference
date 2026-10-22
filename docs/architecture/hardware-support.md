@@ -295,7 +295,7 @@ flowchart TD
     B --> C{available ≥ requiredGb?}
     C -- no, idle slots exist --> D{evictionCanReach?}
     D -- no --> R1[refuse: modelLoadFailed]
-    D -- yes --> E[first pass: release retained KV segments, drop reclaimable cache, re-check; then evict idle slot, re-check]
+    D -- yes --> E[first pass: release retained KV segments, drop reclaimable cache, re-check without retained credit; then evict idle slot, re-check]
     C -- no, nothing evictable --> F[release retained KV segments, drop reclaimable cache, re-measure once]
     F --> C
     C -- yes --> P{claimPendingLoad: atomic target + assistant + setup allowance}
@@ -350,17 +350,24 @@ standalone server runs the same sequence in
   commitment debt and usage already inside the reserve; MiMo's extra OS
   reserve narrows only the system side, not the cap
   (`provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryLedger.swift`,
-  `ProcessMemoryLedger.capacityShortfall`). Retained segments are
-  allocator-active memory, so load admission counts them as reclaimable
-  (`CBv2RetainedKVSegments.retainedBytes`). The load gates
+  `ProcessMemoryLedger.capacityShortfall`). Retained segments
+  (`CBv2RetainedKVSegments.retainedBytes`) are allocator-active memory that
+  only a release request returns, at each engine's next step. The load gates
   (`ProviderLoop.evictUntilAvailable`,
   `ProviderLoop.evictUntilNemotronSuperFits`,
   `StandaloneServer.ensureMemoryHeadroomForLoad`) release them and drop the
-  buffer cache once (`releaseReclaimableMemoryForLoad`) before they evict or
-  refuse, and `StartupPreloader` does the same before it skips a candidate
-  (`reclaimBeforeSkip`). The post-load headroom guard above re-measures after
-  its cache flush without releasing them: that backing was already counted as
-  used when the gate admitted the load.
+  buffer cache once (`releaseReclaimableMemoryForLoad`, which waits up to
+  250 ms) before they evict or refuse, and `StartupPreloader` does the same
+  before it skips a candidate (`reclaimBeforeSkip`). Eviction feasibility
+  counts them only to decide whether that release could make room; after
+  it, only the memory sample shows what returned, and segments still parked
+  (a step that outlasted the wait, or segments parked since) are no eviction
+  credit (`ProviderLoop.reclaimableMemoryBytes`). Pre-accept
+  (`ProviderLoop.fastAdmissionReject`,
+  `ProviderLoop.nemotronSuperLoadIsCertainToFail`) releases and resamples
+  the same way when only they could close the gap. The post-load headroom
+  guard above re-measures after its cache flush without releasing them: that
+  backing was already counted as used when the gate admitted the load.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what

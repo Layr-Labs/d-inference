@@ -1,7 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 
 import Foundation
-import MLXLMCommon
 
 /// ProviderLoop -- the managed Nemotron Super slot's load gate.
 ///
@@ -45,8 +44,9 @@ extension ProviderLoop {
     /// configuration that evicting every idle model could make room for, so
     /// an idle model yields to the planned owner rather than to a narrower
     /// one. Like that gate, it first releases retained KV segments and the
-    /// buffer pool once. Refuses without evicting when not even the
-    /// narrowest can fit; `allowEviction: false` only checks.
+    /// buffer pool once, and counts those segments toward eviction only
+    /// until then (`reclaimableMemoryBytes`). Refuses without evicting when
+    /// not even the narrowest can fit; `allowEviction: false` only checks.
     func evictUntilNemotronSuperFits(_ modelInfo: ModelInfo, allowEviction: Bool) async throws {
         let requirements = nemotronSuperLoadRequirements(modelInfo)
         guard let narrowest = requirements.last else {
@@ -62,7 +62,8 @@ extension ProviderLoop {
             if isShuttingDown { throw CancellationError() }
             let room = nemotronSuperClaimRoomBytes()
             let evictable = allowEviction ? evictableModelSlots() : [:]
-            let reclaimable = evictable.isEmpty ? 0 : reclaimableMemoryBytes(from: evictable)
+            let reclaimable = evictable.isEmpty ? 0
+                : reclaimableMemoryBytes(from: evictable, countingRetainedKVSegments: !poolDropped)
             let (reachable, overflow) = room.addingReportingOverflow(reclaimable)
             let target = requirements.first { $0 <= (overflow ? .max : reachable) }
             if let target, room >= target { return }
@@ -115,24 +116,39 @@ extension ProviderLoop {
     /// room and requirements as `evictUntilNemotronSuperFits`: certain to fail
     /// only when not even evicting every idle model makes room for its
     /// narrowest configuration, or every slot is busy. Retained free KV
-    /// segments count as reachable without waiting here: the load releases
-    /// them before it evicts or refuses.
-    func nemotronSuperLoadIsCertainToFail(_ modelInfo: ModelInfo) -> Bool {
+    /// segments count as that gate counts them: when nothing is idle, or
+    /// only they could close the gap, it releases them and the buffer pool
+    /// and judges the room left. That release suspends, so the caller
+    /// re-checks the request's own verdicts afterwards.
+    func nemotronSuperLoadIsCertainToFail(_ modelInfo: ModelInfo) async -> Bool {
         let evictable = evictableModelSlots()
         if modelSlots.count >= maxModelSlots, evictable.isEmpty { return true }
         guard let narrowest = nemotronSuperLoadRequirements(modelInfo).last else { return true }
-        let room = nemotronSuperClaimRoomBytes()
-        if room >= narrowest { return false }
-        let mayStillReclaim = nemotronSuperMemoryRetirement?.nextDelay() != nil
-        if !evictable.isEmpty {
-            let (reachable, overflow) = room.addingReportingOverflow(reclaimableMemoryBytes(from: evictable))
-            return !overflow && reachable < narrowest && !mayStillReclaim
+        if nemotronSuperRoomReaches(narrowest, evicting: evictable, countingRetainedKVSegments: false) {
+            return false
         }
+        let mayStillReclaim = nemotronSuperMemoryRetirement?.nextDelay() != nil
         // The same self-heal as the ordinary pre-accept.
-        clearCacheAfterConfirmedNativeOwnership()
-        let (reachable, overflow) = nemotronSuperClaimRoomBytes().addingReportingOverflow(
-            UInt64(max(0, CBv2RetainedKVSegments.retainedBytes)))
-        return !overflow && reachable < narrowest && !mayStillReclaim
+        if evictable.isEmpty
+            || nemotronSuperRoomReaches(narrowest, evicting: evictable, countingRetainedKVSegments: true)
+        {
+            await releaseReclaimableMemoryForLoad()
+            if nemotronSuperRoomReaches(narrowest, evicting: evictableModelSlots(),
+                                        countingRetainedKVSegments: false) { return false }
+        }
+        return !mayStillReclaim
+    }
+
+    /// Whether the claim's room holds `requirement` now or once every model
+    /// in `evictable` is evicted.
+    private func nemotronSuperRoomReaches(
+        _ requirement: UInt64, evicting evictable: [String: ModelSlot], countingRetainedKVSegments: Bool
+    ) -> Bool {
+        let room = nemotronSuperClaimRoomBytes()
+        guard !evictable.isEmpty else { return room >= requirement }
+        let (reachable, overflow) = room.addingReportingOverflow(
+            reclaimableMemoryBytes(from: evictable, countingRetainedKVSegments: countingRetainedKVSegments))
+        return overflow || reachable >= requirement
     }
 
     /// Super's startup preload requirement, in the units of the free figure

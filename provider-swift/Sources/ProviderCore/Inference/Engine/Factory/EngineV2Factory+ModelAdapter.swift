@@ -57,6 +57,10 @@ extension EngineV2Factory {
                 return
             }
             switch model {
+            case let flint as FlintModel:
+                layerKinds = flint.cbv2LayerKinds
+                modelCapabilities = .attentionOnly
+                newCaches = { make in try flint.newCacheV2(makeLayerCache: make) }
             case let gemma as Gemma4TextModel:
                 layerKinds = gemma.cbv2LayerKinds
                 modelCapabilities = .attentionOnly

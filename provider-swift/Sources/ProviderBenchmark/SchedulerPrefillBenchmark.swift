@@ -14,6 +14,8 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
     /// 4 adds per-cell memory evidence and full-context warmup.
+    /// 4 adds optional prompt metadata: absent fields in older reports mean
+    /// unspecified provenance, not a verified fixed-prompt run.
     /// 5 adds `prefillChunkTokens` and `maxBatchedTokensPerStep`: the plain
     /// chunk is no longer always 512, so a nil stripe alone is ambiguous.
     public static let currentSchemaVersion = 5
@@ -32,6 +34,8 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
         /// L=28k, and a TTFT curve averaged across that describes neither
         /// backend.
         public let resolvedKVBackend: String
+        /// Seed-token offset passed to tiling, before wrapping by seed length.
+        public var promptOffset: Int? = nil
     }
 
     public let schemaVersion: Int
@@ -53,6 +57,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     public let prefillChunkTokens: Int?
     public let maxBatchedTokensPerStep: Int?
     public let samples: [Sample]
+    public var promptMode: SchedulerPrefillBenchmark.PromptMode? = nil
+    /// Both the bootstrap and full-context warmups use this offset.
+    public var warmupPromptOffset: Int? = nil
 
     public func jsonString() throws -> String {
         let encoder = JSONEncoder()
@@ -76,6 +83,20 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
 public enum SchedulerPrefillBenchmark {
     public static let strategyLabel = "cbv2"
 
+    public enum PromptMode: String, Codable, Sendable {
+        case rotating
+        case fixed
+    }
+
+    /// Shared by warmup and measured requests. Fixed mode changes only the
+    /// seed offset; engine construction, cache posture and timing stay intact.
+    static func makePrompt(
+        baseTokens: [Int], length: Int, iteration: Int, mode: PromptMode = .rotating
+    ) -> (tokens: [Int], offset: Int) {
+        let offset = mode == .fixed ? 0 : iteration * 17
+        return (ThroughputSweep.tile(baseTokens, to: length, offset: offset), offset)
+    }
+
     /// Qwen3.6 35B solo prefill measured in the release trust+stripe posture.
     public static let qwenReleaseModeledPromptTPS =
         SchedulerPrefillDecisionScenarios.qwenModeledPromptTokensPerSecond
@@ -92,14 +113,22 @@ public enum SchedulerPrefillBenchmark {
         iterations: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
         gemmaOptimizations: GemmaOptimizationSettings,
-        checkpointQuantizationConfig: String = "balanced"
+        checkpointQuantizationConfig: String = "balanced",
+        fixedPrompt: Bool = false
     ) async throws -> SchedulerPrefillBenchmarkReport {
         let lengths = promptLengths.filter { $0 > 1 }.sorted()
         let iterations = max(1, iterations)
+        let promptMode: PromptMode = fixedPrompt ? .fixed : .rotating
         let checkpointQuantization = try EngineV2KVQuantizationPolicy.resolve(
             modelType: ModelBenchmark.decodedModelType(
                 from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))),
             global: checkpointQuantizationConfig, modelID: modelID, purpose: .checkpoint)
+        // Direct factory loading bypasses the serving scheduler's allocator
+        // setup. Install the same limits before allocating model weights.
+        MLXMemoryGuard.configureOnce(log: { limits in
+            log("allocator limits: memory_bytes=\(limits.memoryLimitBytes) cache_bytes=\(limits.cacheLimitBytes)")
+        })
+        log("allocator applied: cache_limit_bytes=\(Memory.cacheLimit)")
         Memory.peakMemory = 0
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
@@ -142,6 +171,7 @@ public enum SchedulerPrefillBenchmark {
         }
 
         log("kv backend selection \(kvBackend.rawValue)")
+        log("prompt mode: \(promptMode.rawValue); warmup offset=0")
 
         // Warm-up (kernel compiles, Metal pipelines) — not recorded. It is
         // also the FIRST engine an explicit, unservable `--kv-backend paged`
@@ -153,6 +183,7 @@ public enum SchedulerPrefillBenchmark {
             baseTokens: baseTokens,
             promptTokens: min(lengths.first ?? 128, 128),
             iteration: 0,
+            promptMode: promptMode,
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
@@ -168,7 +199,8 @@ public enum SchedulerPrefillBenchmark {
             log("warming prefill shape: prompt=\(length), maxTokens=1 (unmeasured)")
             _ = try await measureOne(
                 container: container, modelID: modelID, baseTokens: baseTokens,
-                promptTokens: length, iteration: 0, weightBytes: facts.weightBytes,
+                promptTokens: length, iteration: 0, promptMode: promptMode,
+                weightBytes: facts.weightBytes,
                 isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend,
                 checkpointQuantization: checkpointQuantization)
         }
@@ -180,6 +212,7 @@ public enum SchedulerPrefillBenchmark {
                     baseTokens: baseTokens,
                     promptTokens: length,
                     iteration: iteration,
+                    promptMode: promptMode,
                     weightBytes: facts.weightBytes,
                     isVLM: isVLM,
                     modelDirectory: modelDirectory,
@@ -209,7 +242,9 @@ public enum SchedulerPrefillBenchmark {
             soloPrefillStripeTokens: geometry.soloPrefillStripeTokens,
             prefillChunkTokens: geometry.prefillChunkTokens,
             maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
-            samples: samples
+            samples: samples,
+            promptMode: promptMode,
+            warmupPromptOffset: 0
         )
     }
 
@@ -219,6 +254,7 @@ public enum SchedulerPrefillBenchmark {
         baseTokens: [Int],
         promptTokens: Int,
         iteration: Int,
+        promptMode: PromptMode,
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
@@ -261,12 +297,13 @@ public enum SchedulerPrefillBenchmark {
         }
         let engine = parts.engine
 
-        let prompt = ThroughputSweep.tile(baseTokens, to: promptTokens, offset: iteration * 17)
+        let prompt = makePrompt(
+            baseTokens: baseTokens, length: promptTokens, iteration: iteration, mode: promptMode)
         Memory.peakMemory = 0
         let started = ContinuousClock.now
         let stream = try engine.submit(CBv2Request(
             id: CBv2RequestID(1),
-            promptTokens: prompt,
+            promptTokens: prompt.tokens,
             sampling: CBv2SamplingParams(temperature: 0.0),
             maxTokens: 1
         ))
@@ -309,7 +346,8 @@ public enum SchedulerPrefillBenchmark {
             peakMemoryBytes: peakMemoryBytes,
             activeMemoryBytes: activeMemoryBytes,
             msPerPrefillToken: ttftMs / Double(prefillTokens),
-            resolvedKVBackend: parts.resolvedBackend
+            resolvedKVBackend: parts.resolvedBackend,
+            promptOffset: prompt.offset
         )
     }
 

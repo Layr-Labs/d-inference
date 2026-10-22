@@ -825,6 +825,114 @@ compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
 
+## Flint native validation
+
+Run `make provider-test` for repository checks. Focused provider suites are
+`FlintPolicyTests`, `FlintDiscoveryTests`, `FlintTemplateReplayTests`,
+`FlintToolChoicePromptPolicyTests`, `FlintContextAdmissionTests`,
+`FlintNativeProtocolTests` and `FlintNativeProtocolFactoryTests`; SDK suites
+are `FlintTests`, `FlintToolTests`, `FlintPrefixTests` and
+`ToolCallParserIntegrationTests`. `FlintToolChoicePromptPolicyTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/FlintToolChoicePromptPolicyTests.swift`)
+pins exact-type native framing, original messages, named filtering and invalid
+tool requests against the pinned template. The SDK fixture is generated independently by
+`libs/mlx-swift-lm/scripts/generate-flint-oracle.py` with NumPy and credits the pinned mlx-vlm
+oracle. Numeric assertions retain their declared tolerances and run with
+`MLX_ENABLE_TF32=0`.
+
+Verify the prefill output seam against full-logit forward, including identical
+KV and continuation results, sliding-window wrap and both contiguous/paged
+prefix restore. Tool coverage must include schema-aware values, null-preserving
+history, Unicode/chunk boundaries and rejection of unsupported controls and raw
+`</arg_value>` history. These checks do not establish full-model quality or
+throughput. Sources: `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Flint/`,
+`provider-swift/Tests/ProviderCoreTests/Inference/FlintPolicyTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/FlintTemplateReplayTests.swift`.
+
+Run the CPU-only native protocol suites to check dedicated and split markers,
+all prepared tool choices, parallel-call cardinality, quoted tool examples in
+reasoning, raw strings beginning with braces/brackets, JSON delimiter protection,
+custom-stop rejection and bounded state exhaustion. Check mask/transition
+agreement and retain independent complete-frame/schema rejection tests: a
+protocol-valid frame can still contain invalid JSON or arguments. Factory
+fixtures must supply the verified native tokenizer and rendered assistant
+boundary; a generic fake tokenizer cannot establish that contract. Source:
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/FlintNativeProtocolTests.swift`
+(`FlintNativeProtocolTests`, `FlintNativeProtocolFactoryTests`). These suites
+do not load model weights or establish full-model answer quality.
+
+Set `DARKBLOOM_FLINT_BACKEND=paged` for the paged HTTP qualification pass and
+select `--kv-backend paged` in the matching performance runs. Retain the resolved
+backend; contiguous reference results do not qualify paged serving.
+
+`FlintHTTPBenchmarkTests` is the opt-in authenticated HTTP baseline. It lives in
+`ServingQualificationTests`, which builds in release; `ProviderCoreTests` uses
+debug-only test hooks. Build that target in release with `-Xswiftc
+-enable-testing`, stage the source-matched metallib, then run only that suite with
+`DARKBLOOM_FLINT_HTTP_BENCHMARK=1`, `MLX_ENABLE_TF32=0`,
+`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE=2048`, `DARKBLOOM_FLINT_BACKEND=paged` and
+task-owned `_ROOT`, `_CONFIG`, `_RECEIPT`, cache, port and a fresh, nonexistent
+`DARKBLOOM_PREFIX_CACHE_TEST_ROOT` with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`.
+`DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` must not be `1`, both prefix-cache
+policies must be off, and the owned config must select paged/native/native
+without an external MTP drafter.
+It verifies 401 before any load, binds the staged metallib, and after every
+request requires the production slot to resolve paged/native/native with the
+2048-token stripe and zero cached prompt tokens. `decode_short` and
+`prefill_4k` (about 4.1K tokens) each run one warmup and
+`DARKBLOOM_FLINT_HTTP_BENCHMARK_MEASURED` requests (default 3). The receipt
+holds counts, timings and hashes only. Its prefill rate is prompt tokens per
+TTFT second, a lower bound on engine prefill; its decode figure is an estimate
+that includes reasoning tokens. Both are single-stream results from a release
+test build, not server capacity or a signed release. Source:
+`provider-swift/Tests/ServingQualificationTests/FlintHTTPBenchmarkTests.swift`.
+
+`FlintR2InstallTests` checks delivery of a published model: with
+`DARKBLOOM_FLINT_R2_INSTALL=1`, a fresh nonexistent absolute
+`DARKBLOOM_FLINT_R2_INSTALL_CACHE`, and the published `_R2_PREFIX`,
+`_R2_AGGREGATE` and `_R2_VERSION`, the production `ModelDownloader` installs
+the manifest into that cache and the test checks the installed aggregate and
+template. Optional `DARKBLOOM_FLINT_HF_REPO` and `_HF_REVISION` pin a public
+Hugging Face source that the downloader tries first, falling back to R2. Then
+run `FlintLiveTests` with `DARKBLOOM_FLINT_CACHE` set to the same root to load
+and serve that copy. It downloads the full model and needs no coordinator.
+Source: `provider-swift/Tests/ProviderCoreTests/Server/FlintR2InstallTests.swift`.
+
+`FlintLiveTests` is opt-in physical-machine qualification, not an ordinary CI
+weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and
+`DARKBLOOM_FLINT_CACHE` to an owned HF-layout cache containing the verified
+`RecursiveSI/flint-int4` snapshot. It starts an authenticated loopback service,
+uses a task-local encrypted-cache directory, executes real production slots,
+and stops/drains them. `DARKBLOOM_FLINT_PORT` selects an unused port;
+`DARKBLOOM_FLINT_BACKEND` selects `contiguous` or `paged`.
+`DARKBLOOM_FLINT_RECEIPTS` optionally writes synthetic response evidence to an
+owned file. Keep these model-dependent checks separate from tiny-fixture,
+public-CI and signed-release evidence.
+
+Keep adversarial history assertions on visible answer content and unintended
+calls. Do not replace a failed answer with a reasoning-only assertion. An
+unconstrained raw-token diagnostic can help identify which terminal was sampled,
+but it bypasses the [production protocol constraint](../architecture/inference.md#native-flint)
+and cannot qualify production reasoning, tool safety or throughput. The engine
+suppresses EOS token text, so decoded content plus `finish_reason: stop` alone
+does not identify the sampled EOS. Keep synthetic token-level diagnostics in
+explicitly owned local evidence; never send tokens, prompts or completions to
+telemetry or heartbeats. Source:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`.
+
+For performance claims, rebuild the exact SDK/provider pins and source-matched
+metallib, record hashes and precision settings, and use an exclusive inference
+process. Separate scalar SDK prefill, production CBv2 decode and HTTP timings.
+Record whether the native constraint is active and whether its vocabulary cache
+is cold or warm. Include tool-less requests, which still pay constraint costs,
+and measure complete request time as well as decode throughput. Compare matched
+constraint policies: masking and decode-chaining eligibility differ from an
+unconstrained diagnostic. See [constraint overhead](../architecture/hardware-support.md#flint-memory-admission).
+A captured dense/expert NAX dispatch establishes execution only; a speedup needs
+a matched portable-path comparison. Track the full provider suite independently
+from successful test compilation and focused SDK tests. See
+[hardware evidence limits](../provider/hardware-requirements.md#flint-validation-scope).
+
 ## Nemotron Super component qualification
 
 The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)

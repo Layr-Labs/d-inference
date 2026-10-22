@@ -596,6 +596,50 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Coordinator mirror | [coordinator/registry/servability.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/servability.go), [coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go) |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
 
+### Flint memory admission
+
+The native Flint adapter uses the existing attention-only geometry and memory
+admission path. Its sliding/full map comes from the loaded configuration, so
+full-layer KV growth and bounded sliding windows retain distinct accounting.
+Neither the official INT4 package size nor one short-generation peak establishes
+a supported RAM tier or full-context concurrency. No Flint-specific activation
+floor, OS reserve reduction or hardware cap is introduced.
+The [prefill output optimization](inference.md#native-flint) retains all trunk
+work and KV writes, so it does not reduce the admitted context or KV allowance.
+
+The native protocol constraint also runs for tool-less requests. Its cached
+vocabulary projection and per-request framing/mask caches add host work and
+memory. `FlintNativeVocabulary` retains at most four cached vocabulary entries
+with weak tokenizer ownership. `FlintNativeProtocolConstraint.maximumStates`
+is `8192`; its state-mask and broad-mask caches each retain at most four entries.
+`FlintNativeProtocolBoundary.maxKeyBytes` is `1024`, `maxJSONDepth` is `128`,
+and retained raw-string key metadata is limited to 65,536 UTF-8 bytes per
+constraint. These bounds do not replace weight, activation or KV admission.
+State-pool exhaustion produces a constraint failure rather than unconstrained
+generation; key/depth bounds restrict continuations or reject declarations.
+
+Vocabulary projection is cached, and ordinary opaque text reuses canonical
+framing states. The existing `CBv2TokenConstraintSampler.mask` still scans broad
+allowed-token sets. Constrained requests also disable ordinary decode chaining
+and are ineligible for MTP. An unconstrained diagnostic run therefore does not
+measure the production serving path, even when it uses the same checkpoint.
+No throughput improvement or higher concurrency follows from these changes.
+Sources: `provider-swift/Sources/ProviderCore/Inference/FlintNativeVocabulary.swift`
+(`FlintNativeVocabulary`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift`
+(`FlintNativeProtocolConstraint`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift`
+(`FlintNativeProtocolBoundary`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/TokenConstraintSamplerV2.swift`
+(`CBv2TokenConstraintSampler.mask`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`
+(`mtpBasicEligible`).
+
+See [Flint validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+and `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`
+(`EngineV2Factory.ProductionModelAdapter`).
+
 ## Related
 
 - [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md) — RAM tiers and catalog models, for operators

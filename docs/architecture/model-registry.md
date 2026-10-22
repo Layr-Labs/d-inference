@@ -80,6 +80,21 @@ Backend validation, database ownership and alias routing are documented in
 [platform model registry](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/model-registry.md).
 No local backend build or deployment is part of this procedure.
 
+## Flint shard-only local discovery
+
+Recursive's official Flint export has numbered safetensors shards without an
+index. `ModelScanner.isMLXModel` admits that layout only when a bounded,
+regular-file config identifies the exact `flint` architecture. The config must
+be nonempty and at most 1,048,576 bytes; a nonblocking descriptor and regular-file
+check keep special files out of this discovery path. Discovery does
+not verify tensor completeness: the native model loader and on-demand weight
+hasher retain those responsibilities. This exception does not add a catalog
+entry or accept arbitrary shard-only families.
+The native loader accepts the [Flint package contract](../reference/model-registry-format.md#flint-local-package-exception)
+without rewriting the artifact or synthesizing an index. HF/R2 publication and
+catalog activation remain separate operations after end-to-end qualification.
+Source: `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`.
+
 ## Related
 
 - [Hardware and memory](hardware-support.md)

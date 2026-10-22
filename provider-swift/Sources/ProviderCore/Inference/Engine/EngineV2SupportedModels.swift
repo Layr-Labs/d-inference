@@ -110,6 +110,7 @@ public enum EngineV2SupportedModels {
         // MiMo has an explicit strict native loader, not generic registry
         // fallback. Its dispatch requires the exact canonical declaration.
         if raw == "mimo_v2" { return modelType == "mimo_v2" }
+        if raw == "flint" { return modelType == "flint" }
         if raw == "gpt_oss" { return true }
         if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }

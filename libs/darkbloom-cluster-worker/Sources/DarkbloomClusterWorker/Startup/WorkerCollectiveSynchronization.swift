@@ -50,35 +50,37 @@ enum WorkerCommandBufferBudget {
     }
 }
 
-/// How a GLM tensor-parallel rank's GPU meets each all-sum: the partial's
-/// coherent store and the fence update in one dispatch
-/// (`MLX_METAL_FUSED_FENCE_UPDATE`), and the hyper-connection site that reads
-/// the sum waits for it itself instead of a separate spinning dispatch
-/// (`MLX_METAL_FENCED_INPUTS`; GLM's site kernels declare the sum as a fenced
-/// input). Two dependent dispatches fewer on each of a step's 90 sums.
-/// Measured, GLM-5.3-Flash TP2 on two M5 Ultra: plain decode 12.58 -> 12.43 ms
-/// a step, tokens identical. Only when and where the GPU waits changes, never
-/// what it computes.
+/// How a GLM tensor-parallel rank's GPU meets each all-sum. The
+/// hyper-connection site that reads a sum waits for it itself instead of a
+/// separate spinning dispatch (`MLX_METAL_FENCED_INPUTS`; GLM's site kernels
+/// declare the sum as a fenced input): a worker turns that on unless its
+/// launcher chose. Only when and where the GPU waits changes, never what it
+/// computes.
 ///
-/// A launcher's opt-in only: with batched lanes the verification rows run
-/// each site as 32 threadgroups a row, every one spinning on its fence, and
-/// two lanes' rows (192 threadgroups) stalled each round about 0.7 s on the
-/// pair (2 concurrent requests at 0.7-1.5 tok/s). No rank sets them itself;
-/// a launcher value is kept and logged.
+/// The fused fence update (`MLX_METAL_FUSED_FENCE_UPDATE`) stays a
+/// launcher's choice: for a partial above 32 KB it splits the update over
+/// several threadgroups and that path never signals the CPU, so a batched
+/// round of two lanes (six rows) stalled about 0.7 s each on the pair, and a
+/// synthetic chain of sites hung at five rows and more.
 enum WorkerFenceFusion {
     static let variables = ["MLX_METAL_FUSED_FENCE_UPDATE", "MLX_METAL_FENCED_INPUTS"]
+    /// What a worker sets where its launcher set nothing.
+    static let defaults = ["MLX_METAL_FENCED_INPUTS": "1"]
 
     static func apply(mode: ClusterGenerationMode, family: ClusterResidentModelCatalog.Family?,
                       environment: [String: String]) -> String? {
-        guard mode == .tensorParallel, family == .glm5Next,
-              variables.contains(where: { environment[$0] != nil }) else { return nil }
-        let values = variables.map { name -> String in
-            if let explicit = environment[name] { return "\(name)=\(explicit)" }
-            setenv(name, "1", 1)
-            return "\(name)=1"
+        guard mode == .tensorParallel, family == .glm5Next else { return nil }
+        var values: [String] = []
+        for name in variables {
+            if let explicit = environment[name] {
+                values.append("\(name)=\(explicit)")
+            } else if let value = defaults[name] {
+                setenv(name, value, 1)
+                values.append("\(name)=\(value)")
+            }
         }
-        let source = variables.allSatisfy { environment[$0] == nil } ? "worker"
-            : variables.allSatisfy { environment[$0] != nil } ? "launcher" : "mixed"
+        let chosen = variables.filter { environment[$0] != nil }
+        let source = chosen.isEmpty ? "worker" : chosen.count == variables.count ? "launcher" : "mixed"
         return "darkbloom-fence-fusion-v1 " + values.joined(separator: " ") + " source=" + source
     }
 }

@@ -367,6 +367,29 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         a.count == b.count && zip(a, b).allSatisfy { $0.shape == $1.shape && bytes($0) == bytes($1) }
     }
 
+    /// The bench's divergence probe on the tiny stage: one line per layer and
+    /// a verdict; the same cut never differs.
+    @Test func theDivergenceProbeComparesEveryLayer() throws {
+        defer {
+            do { try MLX.withError { error in Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check() } }
+            catch { Issue.record(error, "GLM prefill plan fixture cleanup fence failed") }
+        }
+        let artifact = try GLM5NextStageSessionTests.Artifact()
+        let loader = try artifact.loader()
+        let c = loader.configuration.textConfig
+        let stage = try loader.loadTextStage(plan: .init(configuration: c, layers: 0 ..< c.hiddenLayers))
+        let prompt = (0 ..< 37).map { 4 + ($0 * 7) % 23 }
+        for rows in [37, 20] {
+            var lines: [String] = []
+            try GLM5NextTensorParallelBench.divergenceProbe(stage: stage, prompt: prompt, microBatchTokens: rows,
+                microBatches: 2, log: { lines.append($0) })
+            #expect(lines.count == c.hiddenLayers + 2)
+            #expect(lines.dropFirst().dropLast().allSatisfy { $0.hasPrefix("divergence layer=") })
+            if rows == 37 { #expect(lines.last == "divergence first_layer=none") }
+            #expect(lines.last?.hasPrefix("divergence first_layer=") == true)
+        }
+    }
+
     @Test func mergedPrefillIsTheChunkByChunkPrefillBitForBit() throws {
         defer {
             do { try MLX.withError { error in Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check() } }

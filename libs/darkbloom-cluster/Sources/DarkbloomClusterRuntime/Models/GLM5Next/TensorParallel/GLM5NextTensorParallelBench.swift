@@ -82,6 +82,12 @@ public enum GLM5NextTensorParallelBench {
         /// `product` and `merged`: prefixes on the bulk grid and the rest as
         /// one chunk (`GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid`).
         public var prefixOnBulkGrid = GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid
+        /// Diagnostic (`divergenceProbe`): the prompt's first `divergenceTokens`
+        /// tokens prefilled as the product's two micro-batches and as
+        /// micro-batches of at most `divergenceMicroBatchTokens` rows, every
+        /// layer compared bit for bit; the bench then stops (no runs).
+        public var divergenceTokens: Int?
+        public var divergenceMicroBatchTokens = 8192
         /// `product` and `merged`: chunks whose micro-batches all have at
         /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
         /// rows run as micro-batches of at most this many rows instead (nil:
@@ -272,7 +278,11 @@ public enum GLM5NextTensorParallelBench {
             _ = try group.exchangeIntegers([1])
         }
         var runs: [Run] = []
-        for repeatIndex in 0 ..< max(1, options.repeats) {
+        if let tokens = options.divergenceTokens {
+            try divergenceProbe(stage: stage, prompt: Array(options.promptTokenIDs.prefix(tokens)),
+                microBatchTokens: options.divergenceMicroBatchTokens, microBatches: options.microBatches, log: log)
+        }
+        for repeatIndex in 0 ..< (options.divergenceTokens == nil ? max(1, options.repeats) : 0) {
             if let group { _ = try group.exchangeIntegers([Int32(repeatIndex)]) }
             runs.append(try generate(stage: stage, mtp: mtp, group: group, options: options))
             let r = runs.last!
@@ -753,6 +763,84 @@ extension GLM5NextTensorParallelBench {
 
     /// Local cost of the sealed reduction's crypto alone (no link): one rank's
     /// seal of a partial and the other's open of it, with paired test keys.
+    /// Where two cuts of one chunk into micro-batches first compute different
+    /// bits: `prompt` (one chunk, from an empty cache) as the product's
+    /// micro-batches and as micro-batches of at most `microBatchTokens` rows,
+    /// built layer by layer (`GLM5NextTextStage.beginForward`, one-layer
+    /// slices). After every layer each cut's boundary (the pending mHC expand:
+    /// the FFN output, the residual streams after the attention, post, comb;
+    /// rows concatenated in order) and the layer's cache state are compared
+    /// bit for bit. At the first differing layer every earlier layer is
+    /// identical, so its inputs are: `residual` differs means the attention
+    /// sublayer (with its sum), `output` alone the feed-forward one. Every
+    /// line is logged; both ranks run the same collectives.
+    static func divergenceProbe(stage: GLM5NextTextStage, prompt: [Int], microBatchTokens: Int, microBatches: Int,
+                                log: (String) -> Void) throws {
+        let count = prompt.count
+        let product = GLM5NextPrefillSegment.chunk(tokens: count, microBatches: max(1, microBatches)).microBatchRows
+        let parts = max(1, (count + microBatchTokens - 1) / microBatchTokens)
+        let other = (0 ..< parts).map { (($0 + 1) * count / parts) - ($0 * count / parts) }
+        let tokens = MLXArray(prompt.map(Int32.init), [1, count])
+        let c = stage.plan.configuration
+        func pages() throws -> GLM5NextPageReservation? {
+            try stage.dsaPagePool.map { pool in
+                GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
+                    GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: c,
+                        contextTokens: count + 1, speculative: false)))
+            }
+        }
+        let (pagesA, pagesB) = (try pages(), try pages())
+        let cacheA = stage.newCache(account: pagesA?.account), cacheB = stage.newCache(account: pagesB?.account)
+        let a = try stage.beginForward(tokens: tokens, cache: cacheA, segments: [.init(microBatchRows: product)],
+            readout: .lastToken)
+        let b = try stage.beginForward(tokens: tokens, cache: cacheB, segments: [.init(microBatchRows: other)],
+            readout: .lastToken)
+        log("divergence tokens=\(count) cut_a=\(product.map(String.init).joined(separator: "+"))"
+            + " cut_b=\(other.map(String.init).joined(separator: "+")) layers=\(stage.layers.count)")
+        /// Rows (axis 1) whose bits differ, the first of them, and the largest absolute difference.
+        func difference(_ x: MLXArray, _ y: MLXArray) -> String {
+            guard x.shape == y.shape, x.dtype == y.dtype else { return "shape \(x.shape) vs \(y.shape)" }
+            let raw: DType = x.dtype.size == 2 ? .uint16 : (x.dtype.size == 4 ? .uint32 : .uint8)
+            let unequal = x.view(dtype: raw) .!= y.view(dtype: raw)
+            guard x.ndim >= 2 else { return unequal.any().item(Bool.self) ? "differs" : "=" }
+            let rows = unequal.any(axes: Array(0 ..< x.ndim).filter { $0 != 1 }).asArray(Bool.self)
+            let differing = rows.indices.filter { rows[$0] }
+            guard let first = differing.first else { return "=" }
+            let delta = abs(x.asType(.float32) - y.asType(.float32)).max().item(Float.self)
+            return "rows=\(differing.count)/\(rows.count) first=\(first) max_abs=\(delta)"
+        }
+        let names = ["output", "residual", "post", "comb"]
+        var first: Int?
+        for layer in 0 ..< stage.layers.count {
+            try a.advance(layers: 1); try b.advance(layers: 1)
+            try MLX.withError { error in
+                eval(a.frontier + b.frontier)
+                try error.check()
+            }
+            let (x, y) = (a.boundaryArrays, b.boundaryArrays)
+            var fields: [String] = []
+            var same = true
+            for index in 0 ..< min(x.first?.count ?? 0, y.first?.count ?? 0) {
+                let left = concatenated(x.map { $0[index] }, axis: 1), right = concatenated(y.map { $0[index] }, axis: 1)
+                let result = difference(left, right)
+                if result != "=" { same = false }
+                fields.append("\(index < names.count && x[0].count == 4 ? names[index] : "streams\(index)")=\(result)")
+            }
+            let (stateA, stateB) = (a.workingState(layer: layer), b.workingState(layer: layer))
+            try MLX.withError { error in
+                eval(stateA + stateB)
+                try error.check()
+            }
+            let states = zip(stateA, stateB).map { difference($0, $1) }
+            if states.contains(where: { $0 != "=" }) { same = false }
+            let kind = c.layerTypes[stage.plan.layers.lowerBound + layer] == .linearAttention ? "kda" : "dsa"
+            log("divergence layer=\(layer) attention=\(kind) \(fields.joined(separator: " ")) state=[\(states.joined(separator: ","))]")
+            if !same, first == nil { first = layer }
+        }
+        log("divergence first_layer=\(first.map(String.init) ?? "none")")
+        _ = try a.finish(); _ = try b.finish()
+    }
+
     public static func sealProbe(bytes sizes: [Int], repeats: Int, log: (String) -> Void) {
         let (zero, one) = QwenTensorParallelSealCodec.pair(scope: Data("glm-tp-seal-probe".utf8))
         var next: UInt64 = 0

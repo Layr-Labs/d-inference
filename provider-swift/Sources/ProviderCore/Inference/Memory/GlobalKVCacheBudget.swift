@@ -19,6 +19,8 @@ public actor GlobalKVCacheBudget {
     nonisolated let processLedger: ProcessMemoryLedger
     nonisolated let physicalMemoryBytes: UInt64
     nonisolated let loadReserveBytes: UInt64
+    /// The operator's `memory_reserve_gb` this budget honors, in bytes.
+    nonisolated let configReserveBytes: UInt64
     private var policyEpoch: UInt64 = 1
     /// Owner push epochs reject stale serving-set reserve changes.
     private var lastActivationReserveEpoch: UInt64 = 0
@@ -59,6 +61,8 @@ public actor GlobalKVCacheBudget {
     /// guarantee.
     private let reclaimer: KVPoolReclaimer
     static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
+    /// The reclaimer's fenced flush of MLX's buffer cache.
+    private nonisolated let flushCache: @Sendable () -> Void
 
     /// Swift initializes this once, on first use. Keep constructors free of MLX
     /// access so callers can bind the immutable runtime metallib before serving.
@@ -100,12 +104,14 @@ public actor GlobalKVCacheBudget {
         }
         let total = ProcessInfo.processInfo.physicalMemory
         self.physicalMemoryBytes = total
+        self.configReserveBytes = configReserveBytes
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: configReserveBytes, capFraction: capFraction)
         self.processLedger = Self.makeLedger(
             total: total, capFraction: capFraction, activationReserveBytes: activationReserveBytes,
             configReserveBytes: configReserveBytes,
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
+        self.flushCache = clearCache
         self.reclaimer = KVPoolReclaimer(
             clearCache: clearCache,
             reclaimableBytes: { snapshot().cache },
@@ -134,6 +140,7 @@ public actor GlobalKVCacheBudget {
         self.serviceBudget = serviceBudget
         let total = memorySnapshot().total
         self.physicalMemoryBytes = total
+        self.configReserveBytes = configReserveBytes
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: configReserveBytes, capFraction: capFraction)
         self.processLedger = Self.makeLedger(
@@ -144,12 +151,14 @@ public actor GlobalKVCacheBudget {
         self.clockNow = clockNow
         self.auditMinInterval = auditMinInterval
         self.emitAuditEvent = emitAuditEvent
+        let fencedClearCache: @Sendable () -> Void = {
+            let deviceActivity = serviceBudget.beginUnboundedActivity()
+            defer { deviceActivity.finish() }
+            clearCache()
+        }
+        self.flushCache = fencedClearCache
         self.reclaimer = reclaimer ?? KVPoolReclaimer(
-            clearCache: {
-                let deviceActivity = serviceBudget.beginUnboundedActivity()
-                defer { deviceActivity.finish() }
-                clearCache()
-            },
+            clearCache: fencedClearCache,
             reclaimableBytes: { memorySnapshot().cache },
             minInterval: selfHealMinInterval,
             // Tests that don't pin a threshold should never trip the proactive
@@ -292,6 +301,12 @@ public actor GlobalKVCacheBudget {
         reservations[requestID] != nil || pendingLoadIDs[requestID] != nil
     }
 
+    /// Read-only charged bytes of each request reservation, by request ID, for
+    /// local diagnostics. Pending LOAD claims live in `pendingLoads`.
+    func reservationBytesSnapshot() -> [String: UInt64] {
+        reservations.mapValues(\.bytes)
+    }
+
     func reservationClockNow() -> ContinuousClock.Instant { clockNow() }
 
     func recordReservationRefusal(bytes: UInt64) {
@@ -348,6 +363,10 @@ public actor GlobalKVCacheBudget {
                 "reservations": .string(table),
             ])
     }
+
+    /// Returns MLX's cached buffers to the system now, under the reclaimer's
+    /// fence. The caller decides that reclamation is safe.
+    nonisolated func returnCachedBuffers() { flushCache() }
 
     /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
     /// reclaimable MLX pool so admission headroom stays healthy under sustained

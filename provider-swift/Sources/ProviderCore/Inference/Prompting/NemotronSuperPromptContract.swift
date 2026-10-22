@@ -167,15 +167,17 @@ enum NemotronSuperPromptContract {
     /// Reference prompt tokens. `messages` must already carry the provider's
     /// tool-choice and response-format instructions; tool declarations are
     /// taken from the raw body in request order and filtered to `declared`.
+    /// `videoSlot` renders a video part in an image part's slot; only
+    /// ``videoPrompt(messages:body:templateBytes:tokenizer:labels:)`` sets it.
     static func render(messages: [OpenAIChatMessage], body: Data, declared: [OpenAITool]?,
         controls: Controls, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
-        addGenerationPrompt: Bool = true) throws -> [Int] {
+        addGenerationPrompt: Bool = true, videoSlot: Bool = false) throws -> [Int] {
         let template = try verifiedTemplate(templateBytes)
         var context = additionalContext(controls)
         if let tools = try toolValues(body: body, declared: declared) { context["tools"] = tools }
         // swift-transformers applies additional context after its own default.
         context["add_generation_prompt"] = addGenerationPrompt
-        let tokens = try tokenizer.applyChatTemplate(messages: self.messages(messages),
+        let tokens = try tokenizer.applyChatTemplate(messages: self.messages(messages, videoSlot: videoSlot),
             chatTemplate: template, tools: nil, additionalContext: context)
         guard !tokens.isEmpty, tokens.allSatisfy({ (0..<vocabularySize).contains($0) }) else {
             throw Failure.invalidTokens
@@ -185,10 +187,12 @@ enum NemotronSuperPromptContract {
 
     /// Template messages with request-order tool-call arguments. Image slots
     /// keep their positions; URLs stay opaque and are never fetched here.
-    static func messages(_ messages: [OpenAIChatMessage]) throws -> [[String: any Sendable]] {
+    /// Video parts are refused unless `videoSlot` renders each as an image part.
+    static func messages(_ messages: [OpenAIChatMessage],
+                         videoSlot: Bool = false) throws -> [[String: any Sendable]] {
         try messages.map { message in
             var value: [String: any Sendable] = ["role": message.role.rawValue,
-                                                 "content": try content(message.content)]
+                                                 "content": try content(message.content, videoSlot: videoSlot)]
             if let name = message.name { value["name"] = name }
             if let id = message.toolCallID { value["tool_call_id"] = id }
             if let calls = message.toolCalls, !calls.isEmpty {
@@ -199,24 +203,44 @@ enum NemotronSuperPromptContract {
         }
     }
 
-    private static func content(_ content: OpenAIMessageContent) throws -> Value {
+    /// Each run of adjacent text parts becomes one part. `render_content`
+    /// copies its accumulated text for every part, so its cost grows with
+    /// parts × length; it only concatenates text parts and marks text after
+    /// any non-empty one, so a merged run renders the same bytes.
+    private static func content(_ content: OpenAIMessageContent, videoSlot: Bool) throws -> Value {
         switch content {
         case .null: return .null
         case .text(let text): return .string(text)
         case .parts(let parts):
-            return .array(try parts.map { part -> Value in
+            var values: [Value] = []
+            var run: [String] = []
+            func endRun() {
+                guard !run.isEmpty else { return }
+                values.append(.object(["type": "text", "text": .string(run.joined())]))
+                run.removeAll()
+            }
+            for part in parts {
                 switch part {
-                case .text(let text): return .object(["type": "text", "text": .string(text)])
+                case .text(let text):
+                    run.append(text)
                 case .imageURL(let uri):
-                    return .object(["type": "image_url", "image_url": .object(["url": .string(uri)])])
+                    endRun()
+                    values.append(.object(["type": "image_url", "image_url": .object(["url": .string(uri)])]))
+                case .videoURL(let uri) where videoSlot:
+                    endRun()
+                    values.append(.object(["type": "image_url", "image_url": .object(["url": .string(uri)])]))
                 case .videoURL, .inputAudio, .unsupported: throw Failure.unsupportedMedia
                 }
-            })
+            }
+            endRun()
+            return .array(values)
         }
     }
 
     /// vLLM decodes OpenAI's JSON-string arguments before rendering; empty
-    /// arguments become an empty mapping.
+    /// arguments become an empty mapping. The template iterates them with
+    /// `items`, which jinja2 refuses for anything but a mapping (swift-jinja
+    /// would render an empty call), so other JSON values are refused.
     private static func toolCall(_ call: OpenAIToolCall) throws -> Value {
         let arguments: Value
         if call.function.arguments.isEmpty {
@@ -224,15 +248,18 @@ enum NemotronSuperPromptContract {
         } else {
             do { arguments = try NemotronSuperOrderedJSON.parse(call.function.arguments) }
             catch { throw Failure.invalidToolArguments }
+            guard case .object = arguments else { throw Failure.invalidToolArguments }
         }
         return .object(["id": .string(call.id), "type": .string(call.type),
             "function": .object(["name": .string(call.function.name), "arguments": arguments])])
     }
 
+    /// Only `tools` is parsed from the raw body, so other members (a `seed`
+    /// beyond Int64, say) are not held to the ordered parser's limits.
     private static func toolValues(body: Data, declared: [OpenAITool]?) throws -> Value? {
         guard let declared, !declared.isEmpty else { return nil }
-        guard case .object(let root) = try NemotronSuperOrderedJSON.parse(body),
-            case .array(let raw)? = root["tools"] else { throw Failure.toolDeclarationMismatch }
+        guard case .array(let raw)? = try NemotronSuperOrderedJSON.member("tools", of: body)
+        else { throw Failure.toolDeclarationMismatch }
         let names = Set(declared.map(\.function.name))
         let selected = raw.filter { tool in
             guard case .object(let object) = tool else { return false }
@@ -278,6 +305,100 @@ enum NemotronSuperPromptContract {
             }
         }
         return expanded
+    }
+
+    /// The pinned template rendered around a request's one video, and the
+    /// video's tubelet labels tokenized as vLLM's `get_video_repl` does: each
+    /// label alone, every label after the first behind its "\n" separator.
+    struct VideoPrompt: Equatable, Sendable {
+        let prefix: [Int]
+        let labels: [[Int]]
+        let suffix: [Int]
+
+        /// The `<video>` replacement of processing_nemotron_h_omni.py: per
+        /// tubelet its label, `<img>`, one `<image>` per kept feature and
+        /// `</img>`. A tubelet whose features are all pruned keeps its label
+        /// and both wrappers.
+        func tokens(keptCounts: [Int], contextLength: Int) throws -> [Int] {
+            guard keptCounts.count == labels.count, keptCounts.allSatisfy({ $0 >= 0 }) else {
+                throw Failure.unsupportedMedia
+            }
+            var length = prefix.count + suffix.count
+            for (label, kept) in zip(labels, keptCounts) {
+                guard length <= contextLength, kept <= contextLength else { throw Failure.contextExceeded }
+                length += label.count + kept + 2
+            }
+            guard length <= contextLength else { throw Failure.contextExceeded }
+            var tokens = prefix
+            tokens.reserveCapacity(length)
+            for (label, kept) in zip(labels, keptCounts) {
+                tokens.append(contentsOf: label)
+                tokens.append(NemotronSuperPromptContract.imageStartTokenID)
+                tokens.append(contentsOf: repeatElement(NemotronSuperPromptContract.imageTokenID, count: kept))
+                tokens.append(NemotronSuperPromptContract.imageEndTokenID)
+            }
+            tokens.append(contentsOf: suffix)
+            return tokens
+        }
+    }
+
+    /// Reference prompt around one video, the only media of its request.
+    /// The template renders a lone video exactly as a lone image (the same
+    /// separator rule), but as the plain text `<video>`, which the processor
+    /// replaces before tokenizing. Rendering the video in an image's slot
+    /// gives the single special `<image>` token there instead, so the
+    /// surrounding text tokenizes as in the reference: the slot follows a
+    /// newline or a special token and `<img>`/`</img>` bound the replacement.
+    /// Text naming either placeholder is refused: the template would drop the
+    /// video's slot, and the processor replaces the first literal `<video>`
+    /// of the whole prompt.
+    static func videoPrompt(messages: [OpenAIChatMessage], body: Data, templateBytes: Data,
+        tokenizer: any MLXLMCommon.Tokenizer, labels: [String]) throws -> VideoPrompt {
+        var videos = 0, images = 0
+        for message in messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .videoURL = part { videos += 1 }
+                if case .imageURL = part { images += 1 }
+            }
+        }
+        guard videos == 1, images == 0, !labels.isEmpty, !namesPlaceholder(messages) else {
+            throw Failure.unsupportedMedia
+        }
+        let tokens = try render(messages: messages, body: body, declared: nil, controls: controls(body: body),
+            templateBytes: templateBytes, tokenizer: tokenizer, videoSlot: true)
+        guard let slot = tokens.firstIndex(of: imageTokenID), tokens.lastIndex(of: imageTokenID) == slot else {
+            throw Failure.unsupportedMedia
+        }
+        let reserved = [imageTokenID, imageStartTokenID, imageEndTokenID]
+        let encoded = labels.enumerated().map { index, label in
+            tokenizer.encode(text: index == 0 ? label : "\n" + label, addSpecialTokens: false)
+        }
+        guard encoded.allSatisfy({ label in
+            !label.isEmpty && label.allSatisfy { (0..<vocabularySize).contains($0) && !reserved.contains($0) }
+        }) else { throw Failure.invalidTokens }
+        return VideoPrompt(prefix: Array(tokens[..<slot]), labels: encoded, suffix: Array(tokens[(slot + 1)...]))
+    }
+
+    private static func namesPlaceholder(_ messages: [OpenAIChatMessage]) -> Bool {
+        func names(_ text: String?) -> Bool {
+            guard let text else { return false }
+            return text.contains("<video>") || text.contains("<image>")
+        }
+        return messages.contains { message in
+            let content: Bool
+            switch message.content {
+            case .null: content = false
+            case .text(let text): content = names(text)
+            case .parts(let parts):
+                content = parts.contains { part in
+                    if case .text(let text) = part { return names(text) }
+                    return false
+                }
+            }
+            return content || names(message.reasoningContent)
+                || (message.toolCalls ?? []).contains { names($0.function.name) || names($0.function.arguments) }
+        }
     }
 }
 

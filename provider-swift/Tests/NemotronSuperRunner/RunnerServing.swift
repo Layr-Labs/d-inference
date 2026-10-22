@@ -20,8 +20,8 @@ struct RunnerLoadSettings: Sendable {
 
     /// The managed slot's LOAD KV headroom under this grant
     /// (`NemotronSuperServingPolicy.loadPlan`): every configured request's
-    /// fixed bytes, a speculating owner's round work at `contextTokens`, 2 GiB
-    /// and the owner's prefix bank, never above the grant.
+    /// fixed bytes, 2 GiB and the owner's prefix bank within the grant, and a
+    /// speculating owner's round work at `contextTokens` beside it.
     static func managedAdmissionKVBytes(grantBytes: Int, environment: [String: String],
                                         contextTokens: Int) -> Int {
         let speculates = environment[NemotronSuperLocalMTP.enabledKey]?.trimmingCharacters(in: .whitespaces) == "1"
@@ -29,9 +29,8 @@ struct RunnerLoadSettings: Sendable {
             environment: environment, speculates: speculates)) ?? 1
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment, kvBytesCapacity: grantBytes,
             requests: requests, speculates: speculates)?.maximumBytes ?? 0
-        return min(grantBytes,
-            NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: speculates,
-                environment: environment, contextTokens: contextTokens) + bank)
+        return NemotronSuperServingPolicy.admissionKVBytes(requests: requests, speculates: speculates,
+            environment: environment, contextTokens: contextTokens, kvBytesCapacity: grantBytes, bankBytes: bank)
     }
 
     /// The opt-in speculation the engine environment selects; the load
@@ -86,8 +85,8 @@ enum RunnerKVGrant {
             "fixed_request_bytes": (await bridge.maximumRequestOverheadBytes()).map { .bytes($0) } ?? .null,
             "requests": .count(requests),
             "serving_concurrency": .count(await bridge.effectiveServingConcurrency),
-            // Each request's shared reservation adds these per token of its
-            // prompt plus max_tokens (auxiliary: the assistant's history).
+            // The bridge's per-token rates for its token budget (auxiliary:
+            // the assistant's history); the paged bridge reserves no request bytes.
             "kv_bytes_per_token": .bytes(await bridge.kvBytesPerToken),
             "auxiliary_bytes_per_token": .bytes(await bridge.auxiliaryBytesPerToken),
         ]

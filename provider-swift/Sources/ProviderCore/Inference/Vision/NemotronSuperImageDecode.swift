@@ -34,12 +34,20 @@ enum NemotronSuperImageDecode {
         let grid: NemotronSuperImagePreprocessing.Grid
         let normalizedCHW: [Float]
     }
+    /// An image past every check that can refuse it before its raster is
+    /// decoded. Only `plan` creates one; `prepare` decodes from this parse.
+    struct Plan {
+        let grid: NemotronSuperImagePreprocessing.Grid
+        var quote: Quote { parsed.quote }
+        fileprivate let data: Data
+        fileprivate let parsed: Parsed
+    }
 
-    private enum Container {
+    fileprivate enum Container {
         case png(NemotronSuperPNGContainer)
         case jpeg(NemotronSuperJPEGContainer)
     }
-    private struct Parsed {
+    fileprivate struct Parsed {
         let container: Container
         let quote: Quote
     }
@@ -60,15 +68,29 @@ enum NemotronSuperImageDecode {
         try rasterize(data, parse(data, orientation: orientation, maxPixels: maxPixels))
     }
 
-    /// Call inspect first and obtain existing provider media admission for its
-    /// quote. This helper does not reserve memory or bypass the media gate.
-    static func prepare(_ data: Data, orientation: Orientation, imageCount: Int = 1) throws -> Prepared {
+    /// `inspect`, then the image's resize grid and the SDK's resize workspace
+    /// for the oriented size `normalizeRGB` receives: an image above that
+    /// workspace is refused here, before any admission or decode.
+    static func plan(_ data: Data, orientation: Orientation, imageCount: Int) throws -> Plan {
         let parsed = try parse(data, orientation: orientation)
         let grid = try NemotronSuperImagePreprocessing.grid(
             width: parsed.quote.width, height: parsed.quote.height, imageCount: imageCount)
-        let raster = try rasterize(data, parsed)
-        return Prepared(grid: grid, normalizedCHW: try NemotronSuperImagePreprocessing.normalizeRGB(
-            raster.rgb, width: raster.width, height: raster.height, targetWidth: grid.width, targetHeight: grid.height))
+        try NemotronSuperImagePreprocessing.validateWorkspace(
+            width: parsed.quote.width, height: parsed.quote.height, targetWidth: grid.width, targetHeight: grid.height)
+        return Plan(grid: grid, data: data, parsed: parsed)
+    }
+
+    /// Obtain existing provider media admission for the plan's quote first.
+    /// This helper does not reserve memory or bypass the media gate.
+    static func prepare(_ plan: Plan) throws -> Prepared {
+        let raster = try rasterize(plan.data, plan.parsed)
+        return Prepared(grid: plan.grid, normalizedCHW: try NemotronSuperImagePreprocessing.normalizeRGB(
+            raster.rgb, width: raster.width, height: raster.height,
+            targetWidth: plan.grid.width, targetHeight: plan.grid.height))
+    }
+
+    static func prepare(_ data: Data, orientation: Orientation, imageCount: Int = 1) throws -> Prepared {
+        try prepare(plan(data, orientation: orientation, imageCount: imageCount))
     }
 
     private static func parse(_ data: Data, orientation policy: Orientation,

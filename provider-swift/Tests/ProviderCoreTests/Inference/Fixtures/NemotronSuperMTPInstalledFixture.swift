@@ -25,8 +25,9 @@ struct SuperMTPInstalledFixture {
         channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
     static let hidden = 32
     static let vocabulary = 64
-    /// Attention head width; the paged KV kernels take 64, 128, 256 or 512.
-    @TaskLocal static var attentionHeadDim = 16
+    /// Attention head width: 64, the narrowest the paged KV kernels take (64,
+    /// 128, 256 or 512); the Super owner serves paged KV only.
+    static let attentionHeadDim = 64
     private struct Tensor { let dtype: String; let shape: [Int]; let data: Data }
 
     static func configuration() -> NemotronHConfiguration {

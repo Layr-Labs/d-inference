@@ -46,9 +46,6 @@ struct RunnerMemoryEmulation {
                 "cache_limit_bytes": .bytes(limits.cacheLimitBytes)]
     }
 
-    /// The managed slot's load gate on the emulated Mac, before any load:
-    /// the scan-time footprint plus the load headroom (activation reserve and
-    /// minimum KV) against the budget's available-for-load memory.
     /// The owner's default prefix bank is sized for the emulated Mac: an
     /// explicit size when it fits there, else no bank, as `loadPlan` decides
     /// (an operator's explicit size is kept).
@@ -75,18 +72,20 @@ struct RunnerMemoryEmulation {
                 modelIDs: [NemotronSuperServingPolicy.modelID]))
     }
 
+    /// The managed slot's load gate on the emulated Mac, before any load:
+    /// the ledger room a Super LOAD claim could take
+    /// (`loadClaimRemainingBytes`) against the narrowest configuration's
+    /// requirement, as the provider's pre-accept and eviction decide.
     func loadGate(budget: GlobalKVCacheBudget) -> (admits: Bool, json: RunnerJSON) {
-        // The footprint's GiB do not depend on the checkpoint size argument.
-        let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: 0)
-        let headroom = UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [NemotronSuperServingPolicy.modelID])
-        let required = footprint.estimatedMemoryGb + Double(headroom) / 1_073_741_824
-        let available = budget.availableForLoadGb()
-        return (available >= required, ["physical_bytes": .bytes(physicalBytes),
-                "cap_bytes": .bytes(UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes)),
-                "activation_reserve_bytes": .bytes(UnifiedMemoryCap.resolvedActivationReserveBytes(
-                    modelIDs: [NemotronSuperServingPolicy.modelID])),
-                "footprint_gib": .double(footprint.estimatedMemoryGb),
-                "load_headroom_bytes": .bytes(headroom), "required_gib": .double(required),
-                "available_for_load_gib": .double(available), "admits": .bool(available >= required)])
+        let headroom = budget.memoryHeadroomSnapshot()
+        let reserve = NemotronSuperLoadFit.systemReserveBytes(configReserveBytes: budget.configReserveBytes)
+        let room = headroom.loadClaimRemainingBytes(systemReserveBytes: reserve)
+        let required = NemotronSuperLoadFit.narrowestRequirementBytes
+        return (room >= required, ["physical_bytes": .bytes(physicalBytes),
+                "cap_bytes": .bytes(headroom.capBytes),
+                "activation_reserve_bytes": .bytes(headroom.activationReserveBytes),
+                "system_reserve_bytes": .bytes(reserve),
+                "required_bytes": .bytes(required), "load_claim_room_bytes": .bytes(room),
+                "admits": .bool(room >= required)])
     }
 }

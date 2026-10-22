@@ -33,9 +33,9 @@ drain/restart.
 | Receipt key | What it does | Compared |
 |---|---|---|
 | `load` | reads `load.begin`, `load.quote`, `load.end` events | pending LOAD claim (quote + minimum KV) vs kernel max footprint growth and MLX peak during load |
-| `geometry[]` | each context and image size at concurrency 1, peaks reset first | max over samples of `media_ingress`+`media`+`kv` held at the same time vs MLX peak growth and footprint growth; margins with and without the global activation reserve; return to the idle ledger |
-| `near_limit` | ballast leaves the remainder `margin` below, then above, the reference request's observed charge | refused below, admitted above; status, error, MLX peak growth on refusal |
-| `cancellation[]` | client RST when the phase is observed: `ingress`, `media`, `prefill` (KV charge, no token yet), `decode` (after the first delta) | charges retire only after the bridge reports the request inactive; ledger returns to idle |
+| `geometry[]` | each context and image size at concurrency 1, peaks reset first | max over samples of the request's `media_ingress`+`media` rows (`incremental_request_reserved_bytes`) and of the whole ledger charge, engine-owned KV pages included (`incremental_ledger_charged_bytes`), above the idle owner vs MLX peak growth and footprint growth; margins with and without the global activation reserve; return to the idle ledger |
+| `near_limit` | ballast leaves the remainder `margin` below, then above, the reference request's reservation rows (an image's media; text holds none) | refused below, admitted above; status, error, MLX peak growth on refusal |
+| `cancellation[]` | client RST when the phase is observed: `ingress`, `media`, `prefill` (the bridge holds the request, no token yet), `decode` (after the first delta) | reservation rows retire only after the bridge reports the request inactive; ledger returns to idle |
 | `concurrency[]` | 2/4/8 simultaneous text requests with 20 ms ledger polling | polled max charge within the cap; statuses; return to idle |
 | `drain_restart` | SIGTERM during decode, then a fresh runner and one request | exit 0 and clean retirement, both times |
 
@@ -58,17 +58,29 @@ Charges are sampled, so a reservation shorter than the interval can be missed;
 the kernel interval footprint and MLX peak are tracked continuously. The
 ledger's remainder subtracts live MLX active and cache memory and is clamped by
 system-available memory, so other processes change near-limit outcomes. Request
-rows are classified by reservation-ID suffix; KV means a bridge request
-reservation in this single-owner runner.
+rows are classified by reservation-ID suffix; the runner counts any other
+request ID as `kv`.
 
-Managed owners retain their prefill lane, MTP round workspace and prefix bank
-after requests finish. The idle snapshot records those reservation IDs; request
-settlement excludes only those existing IDs, while new or unknown reservations
-remain visible as leaks. Geometry reports both incremental request capacity and
-the total owner-plus-request capacity that covers transient allocations and
-newly retained cache entries. The near-limit probe subtracts the already-held
-idle lane before choosing ballast; otherwise it would leave an extra lane's
-worth of headroom and fail to probe the actual request boundary.
+Super serves paged attention KV only, and its bridge reserves no request
+bytes: the engine's process-memory owner charges a request's KV pages and
+recurrent rows to the ledger as they materialize, outside the rows
+(`unattributed_bytes`). A text request therefore holds no reservation row,
+and an image request only its `media_ingress` and `media` rows. The script
+detects `prefill` from the bridge's active requests, times refunds only for
+reservation rows (`early_refund` is `null` when the request held none), and
+judges the engine's charge at settlement against the idle ledger (`review`
+when only it differs). The near-limit probe needs a reservation row, so
+without an image workload it is `not_exercised`.
+
+Managed owners retain their prefill lane, decode rows, MTP round workspace and
+prefix bank after requests finish. The idle snapshot records those reservation
+IDs; request settlement excludes only those existing IDs, while new or unknown
+reservations remain visible as leaks. Geometry reports both incremental request
+capacity and the total owner-plus-request capacity that covers transient
+allocations and newly retained cache entries. Geometry and the near-limit
+probe subtract the already-held lane, decode rows and round work; otherwise a
+text request would appear to reserve them, and the probe would leave their
+worth of extra headroom and miss the actual request boundary.
 
 Report, per phase and geometry: reservation, observed peak, margin, limits and
 concurrency, next to the throughput receipt from `bench_super.py`. Keep the

@@ -4,17 +4,24 @@ import Foundation
 /// Pillow 12.2 `chunk_tEXt`, `chunk_zTXt`, `chunk_iTXt` and `chunk_iCCP`,
 /// reduced to what can refuse a file or change orientation. Pillow refuses a
 /// compressed chunk that inflates to `MAX_TEXT_CHUNK` (1 MiB) with input left
-/// over, and text totalling more than `MAX_TEXT_MEMORY` (64 MiB, counted in
-/// decoded characters). Both are applied to every chunk here, including chunks
-/// after a later APNG frame that Pillow would not read for frame 0. Only the
-/// EXIF/XMP keys can change pixels; values stored under them with a different
-/// type are refused.
+/// over, and text it stores totalling more than `MAX_TEXT_MEMORY` (64 MiB,
+/// counted in decoded characters); unkeyed, corrupt and non-UTF-8 chunks count
+/// nothing. Both limits also apply to chunks after a later APNG frame, which
+/// Pillow would not read for frame 0. Beyond Pillow, one image inflates at most
+/// `maximumCompressedChunks` streams and `maximumInflatedBytes` in all,
+/// whatever their keyword, corruption or encoding. Only the EXIF/XMP keys can
+/// change pixels; values stored under them with a different type are refused.
 struct NemotronSuperPNGText {
     enum Entry { case ignored, rawProfile, xmp(Data) }
 
     static let maximumChunkBytes = 1024 * 1024
     static let maximumTotalCharacters = 64 * maximumChunkBytes
+    static let maximumCompressedChunks = 64
+    static let maximumInflatedBytes = 16 * maximumChunkBytes
     private var characters = 0
+    private var compressedChunks = 0
+    /// Created at the first compressed chunk and reused for the rest.
+    private var inflater: NemotronSuperChunkInflater?
 
     private typealias Failure = NemotronSuperImageDecode.Failure
     private static let xmpKeyword = "XML:com.adobe.xmp"
@@ -39,7 +46,7 @@ struct NemotronSuperPNGText {
             var text = Data()
             // An empty stream is empty text in Pillow, not a zlib error.
             if !stream.isEmpty {
-                switch NemotronSuperInflater.pillowDecompress(stream, limit: Self.maximumChunkBytes) {
+                switch try inflate(stream) {
                 case .tooLarge: throw Failure.sizeLimit
                 case .corrupt:
                     // Pillow stores empty text; an orientation source must decode.
@@ -75,7 +82,7 @@ struct NemotronSuperPNGText {
         var text = Data(stream)
         if compressed {
             guard bytes[value + 1] == 0 else { return try ignored() }
-            switch NemotronSuperInflater.pillowDecompress(stream, limit: Self.maximumChunkBytes) {
+            switch try inflate(stream) {
             case .tooLarge: throw Failure.sizeLimit
             case .corrupt: return try ignored()
             case .output(let output, let complete):
@@ -102,13 +109,21 @@ struct NemotronSuperPNGText {
 
     /// iCCP: Pillow requires a zlib method and refuses a profile that
     /// inflates past `MAX_TEXT_CHUNK`; a corrupt stream is ignored.
-    static func checkProfile(_ bytes: UnsafeRawBufferPointer) throws {
+    mutating func checkProfile(_ bytes: UnsafeRawBufferPointer) throws {
         guard let name = bytes.prefix(81).firstIndex(of: 0), name > 0, name + 1 < bytes.count,
               bytes[name + 1] == 0 else { throw Failure.invalidHeader }
-        if case .tooLarge = NemotronSuperInflater.pillowDecompress(slice(bytes, from: name + 2),
-                                                                    limit: maximumChunkBytes) {
-            throw Failure.sizeLimit
-        }
+        if case .tooLarge = try inflate(Self.slice(bytes, from: name + 2)) { throw Failure.sizeLimit }
+    }
+
+    /// Every compressed stream passes here, so the image's chunk and output
+    /// bounds hold whatever Pillow does with the result.
+    private mutating func inflate(_ stream: UnsafeRawBufferPointer) throws -> NemotronSuperChunkInflater.Result {
+        guard !stream.isEmpty else { return .output(Data(), complete: false) }
+        compressedChunks += 1
+        guard compressedChunks <= Self.maximumCompressedChunks else { throw Failure.sizeLimit }
+        let inflater = try self.inflater ?? NemotronSuperChunkInflater(budget: Self.maximumInflatedBytes)
+        self.inflater = inflater
+        return inflater.decompress(stream, limit: Self.maximumChunkBytes)
     }
 
     private mutating func count(_ value: Int) throws {

@@ -4,8 +4,8 @@ import Foundation
 import MLXLMCommon
 
 /// Exact prefix reuse of either Super owner: the engine's process-local
-/// recurrent checkpoint bank, on contiguous or paged KV (paged adoption writes
-/// the bank's own copy of the prefix into fresh pages). The shared
+/// recurrent checkpoint bank on the owner's paged KV (adoption writes the
+/// bank's own copy of the prefix into fresh pages). The shared
 /// resident-cache switch (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) enables it.
 /// For the pinned checkpoint `NemotronSuperServingPolicy.defaultPrefixBankBytes`
 /// sizes it from the KV grant; an operator's `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`

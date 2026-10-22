@@ -1,6 +1,6 @@
 # Nemotron Super image formats
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Reference for the inline image encodings that the unregistered Nemotron Super
 image owner decodes, how each becomes RGB8, and how that compares with the
@@ -19,7 +19,7 @@ at model revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`.
 | Orientation | `ImageOps.exif_transpose`: IFD0 Orientation; only when that tag is absent, the first XMP `tiff:Orientation` match. Values 2–8 transpose; other values are ignored | Same rules for `.applyEXIF`, which the image owner uses; `.preserveRaster` ignores both | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageOrientation.swift` (`NemotronSuperImageOrientation`) |
 | Mode conversion | `Image.convert("RGB")` | The PNG and JPEG tables below | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGRaster.swift` (`NemotronSuperPNGRaster`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`NemotronSuperJPEGRaster`) |
 | Colour management | None: ICC profiles, `gAMA`, `cHRM` and `sRGB` do not change samples | None. ImageIO samples are read without drawing | as above |
-| Frames | Frame 0 | APNG: the IDAT image. MPO: the primary JPEG. Bytes after the primary JPEG's EOI are ignored | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGContainer.swift` (`NemotronSuperPNGContainer`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`NemotronSuperJPEGContainer`) |
+| Frames | Frame 0 | APNG: the IDAT image. MPO: the primary JPEG. Bytes after the primary JPEG's EOI are ignored and never reach ImageIO | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGContainer.swift` (`NemotronSuperPNGContainer`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`NemotronSuperJPEGContainer`) |
 | Resize and normalization | Float32 `interpolate(bicubic, align_corners=False, antialias=True)`, then `(t / 255 - mean) / std` | SDK `normalizeRGB`, which reproduces CPU PyTorch 2.12.0 rounding and is bitwise equal on the golden fixtures | `libs/mlx-swift-lm/Libraries/MLXVLM/NemotronSuperImagePreprocessing.swift` (`NemotronSuperImagePreprocessing`) |
 
 ## PNG
@@ -40,13 +40,17 @@ each sample:
 
 Every chunk CRC is checked. Ancillary chunks other than `eXIf`, XMP text and
 the APNG frame chunks do not affect pixels, as in Pillow; compressed text and
-ICC chunks are inflated only to apply Pillow's size limits. Text and ICC rules
-are in `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGText.swift`
+ICC chunks are inflated only to apply Pillow's size limits. As hardening, one
+image inflates at most 64 such chunks and 16 MiB from them in all
+(`maximumCompressedChunks`, `maximumInflatedBytes`), whatever their keyword or
+validity; Pillow counts only text it stores. Text and ICC rules are in
+`provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGText.swift`
 (`NemotronSuperPNGText`).
 
 ## JPEG
 
-ImageIO decodes the primary frame after the container check. Its IDCT and
+ImageIO decodes the primary frame after the container check, given only the
+bytes through its EOI; its metadata properties are not requested. Its IDCT and
 chroma upsampling are not libjpeg-turbo's, so samples differ from Pillow.
 
 | Property | Admitted | Source |
@@ -56,6 +60,7 @@ chroma upsampling are not libjpeg-turbo's, so samples differ from Pillow.
 | 3 components | YCbCr (JFIF, Adobe transform 1, or no marker without `R`,`G`,`B` component IDs) or RGB (Adobe transform 0 without JFIF). Luma sampling 1x1, 2x1 or 2x2 with 1x1 chroma | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`colorModel`) |
 | 4 components | CMYK (Adobe transform 0 or no Adobe marker, 1x1 sampling), read as Adobe-inverted (`CMYK;I`) and converted with Pillow's `cmyk2rgb` | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`decode`) |
 | Metadata | EXIF and XMP before the first SOS. Later `Exif` APP1 payloads are appended to the first, as in Pillow 12 | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`parse`) |
+| Scans | At most 500. Sequential: every component in exactly one scan with Ss = 0, Se = 63, Ah = Al = 0. Progressive: DC scans have Ss = Se = 0, AC scans one component and 1 ≤ Ss ≤ Se ≤ 63; a coefficient's first scan has Ah = 0 and Al ≤ 13, and each later one Ah = the previous Al and Al = Ah − 1, so no coefficient is decoded more than 14 times | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`ScanProgression`, `maximumScans`) |
 
 The test-enforced bounds on |ImageIO − Pillow| per RGB8 sample are:
 
@@ -78,8 +83,9 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 | PNG with a CRC mismatch, invalid IHDR, misplaced PLTE/tRNS, non-consecutive IDAT, data after IEND, an APNG sequence error, a non-zlib `zTXt`/`iCCP` method, or a second `iCCP` (hardening: Pillow reads every copy) | `invalidHeader` |
 | PNG whose zlib stream is truncated, longer than the raster or has an Adler-32 mismatch, or with an invalid filter type or palette index | `invalidRaster` |
 | JPEG with 12-bit precision, a lossless, hierarchical or arithmetic process, DNL, 2 components, YCCK, JFIF combined with Adobe transform 0, `R`,`G`,`B` component IDs without Adobe transform 0, other sampling, or more than 500 scans (hardening beyond the reference: ImageIO's decode cannot be cancelled) | `unsupportedEncoding` |
-| JPEG without a frame or EOI, or with a reserved marker | `invalidHeader` |
-| Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`) | `sizeLimit` |
+| JPEG without a frame or EOI, with a reserved marker, or with scans outside the scan rules above (hardening: libjpeg-turbo decodes some of them with a warning) | `invalidHeader` |
+| Any `zTXt`, compressed `iTXt` or `iCCP` chunk that inflates past 1 MiB (Pillow's `MAX_TEXT_CHUNK`), or text totalling more than 64 MiB in decoded characters (`MAX_TEXT_MEMORY`); more than 64 compressed chunks, or more than 16 MiB inflated from them, in one image, unkeyed, corrupt and non-UTF-8 chunks included (hardening: Pillow accepts these) | `sizeLimit` |
+| An image whose resize workspace exceeds the SDK's limit (below) | `NemotronSuperImagePreprocessing.Failure.workspaceLimit` |
 
 ## Limits and admission
 
@@ -87,9 +93,9 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 |---|---|---|
 | Encoded bytes | `min(MediaIngest.maxMediaDecodedBytes, 64 MiB)`; the owner's whole request body is at most 8 MiB | `NemotronSuperImageDecode.swift` (`parse`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`encodedHeaderQuote`) |
 | Declared pixels | `min(MediaIngest.maxImagePixels, 64 Mi)`, each axis at most 131072, JPEG axes at most 65500. Checked from the container before any raster buffer exists | `NemotronSuperImageDecode.swift` (`parse`) |
-| Resize workspace | SDK limit of 256 MiB. The largest admitted square is 5751x5751; 8064x6048 is refused | `NemotronSuperImagePreprocessing.validateWorkspace` |
+| Resize workspace | SDK limit of 256 MiB for the oriented source and its grid, checked as each image is planned: before the media reservation and before any raster buffer exists. The largest admitted square is 5751x5751; 5752x5752, 8064x6048 and 8192x8192 are refused | `NemotronSuperImageDecode.swift` (`plan`); `NemotronSuperImagePreprocessing.validateWorkspace` |
 | Largest grid | 13312 patches (3328 tokens) per image, for example a 2048x1664 target; a 5751x5751 source resizes to 1856x1824 | `NemotronSuperImagePreprocessing.grid` |
-| Decoder quote | `data.count * 2 + pixels * 14` (PNG) or `* 16` (JPEG) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB | `NemotronSuperImageDecode.swift` (`Quote`) |
+| Decoder quote | `data.count * 2 + pixels * 14` (PNG) or `* 16` (JPEG) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB. Images decode one at a time, so the media reservation charges the largest image's `normalizationWorkspaceBytes` once, beside every image's two normalized Float32 copies (24 bytes per grid pixel) and features | `NemotronSuperImageDecode.swift` (`Quote`); `NemotronSuperLocalImageBinding.swift` (`encodedPlan`) |
 | Tower working memory | The media reservation adds the pinned composition's derived bound for the request's largest image, 2,095,272,960 bytes at 13312 patches. The global activation reserve is unchanged | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`towerActivationBytes`); `libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperImageActivation.swift` (`pinnedActivationBytes`) |
 | Route | The binding admits only `data:image/png;base64,` and `data:image/jpeg;base64,` URIs (`admittedDataURIPrefixes`); the decoder sniffs their content | `NemotronSuperLocalImageBinding.swift` (`parseEncodedBody`) |
 

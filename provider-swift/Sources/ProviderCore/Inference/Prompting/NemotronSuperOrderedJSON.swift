@@ -26,6 +26,19 @@ enum NemotronSuperOrderedJSON {
         return value
     }
 
+    /// One member of a top-level object, parsed as by ``parse(_:)``; nil when
+    /// absent, and a repeated key keeps its last value. Other members are only
+    /// scanned for their extent, so their numbers and nesting are not held to
+    /// this parser's limits: callers have already decoded the document.
+    static func member(_ key: String, of data: Data) throws -> Value? {
+        var parser = Parser(bytes: [UInt8](data))
+        parser.skipWhitespace()
+        let value = try parser.member(key)
+        parser.skipWhitespace()
+        guard parser.index == parser.bytes.count else { throw Failure.invalid }
+        return value
+    }
+
     private struct Parser {
         let bytes: [UInt8]
         var index = 0
@@ -50,7 +63,15 @@ enum NemotronSuperOrderedJSON {
             }
         }
 
-        private mutating func object(depth: Int) throws -> Value {
+        mutating func member(_ key: String) throws -> Value? {
+            guard index < bytes.count, bytes[index] == UInt8(ascii: "{"),
+                case .object(let members) = try object(depth: 0, parsing: { $0 == key })
+            else { throw Failure.invalid }
+            return members[key]
+        }
+
+        /// `parsing` selects the members to decode; the others are skipped.
+        private mutating func object(depth: Int, parsing: (String) -> Bool = { _ in true }) throws -> Value {
             index += 1
             var members = OrderedDictionary<String, Value>()
             skipWhitespace()
@@ -62,11 +83,60 @@ enum NemotronSuperOrderedJSON {
                 skipWhitespace()
                 guard consume(UInt8(ascii: ":")) else { throw Failure.invalid }
                 skipWhitespace()
-                members[key] = try value(depth: depth + 1)
+                if parsing(key) { members[key] = try value(depth: depth + 1) } else { try skipValue() }
                 skipWhitespace()
                 if consume(UInt8(ascii: ",")) { continue }
                 guard consume(UInt8(ascii: "}")) else { throw Failure.invalid }
                 return .object(members)
+            }
+        }
+
+        /// Advances past one value without decoding it. Brackets are matched
+        /// on an explicit stack, so no nesting can exhaust the call stack.
+        private mutating func skipValue() throws {
+            var closers: [UInt8] = []
+            repeat {
+                skipWhitespace()
+                guard index < bytes.count else { throw Failure.invalid }
+                let byte = bytes[index]
+                switch byte {
+                case UInt8(ascii: "{"): closers.append(UInt8(ascii: "}")); index += 1
+                case UInt8(ascii: "["): closers.append(UInt8(ascii: "]")); index += 1
+                case UInt8(ascii: "}"), UInt8(ascii: "]"):
+                    guard closers.popLast() == byte else { throw Failure.invalid }
+                    index += 1
+                case UInt8(ascii: ","), UInt8(ascii: ":"):
+                    guard !closers.isEmpty else { throw Failure.invalid }
+                    index += 1
+                case UInt8(ascii: "\""):
+                    try skipString()
+                default:
+                    // A number or literal runs to the next delimiter.
+                    repeat { index += 1 } while index < bytes.count && !Self.isDelimiter(bytes[index])
+                }
+            } while !closers.isEmpty
+        }
+
+        private mutating func skipString() throws {
+            index += 1
+            while index < bytes.count {
+                switch bytes[index] {
+                case UInt8(ascii: "\""): index += 1; return
+                case UInt8(ascii: "\\"): index += 2
+                case ..<0x20: throw Failure.invalid
+                default: index += 1
+                }
+            }
+            throw Failure.invalid
+        }
+
+        private static func isDelimiter(_ byte: UInt8) -> Bool {
+            switch byte {
+            case 0x20, 0x09, 0x0A, 0x0D, UInt8(ascii: ","), UInt8(ascii: ":"), UInt8(ascii: "\""),
+                UInt8(ascii: "{"), UInt8(ascii: "}"), UInt8(ascii: "["), UInt8(ascii: "]"):
+                return true
+            default:
+                return false
             }
         }
 
@@ -91,9 +161,11 @@ enum NemotronSuperOrderedJSON {
             var start = index
             func flush(_ end: Int) throws {
                 guard start < end else { return }
-                guard let text = String(bytes: bytes[start..<end], encoding: .utf8) else {
-                    throw Failure.invalid
-                }
+                // `String(bytes:encoding:)` would drop a leading U+FEFF. Decode
+                // exactly and refuse bytes the decoder had to replace.
+                let segment = bytes[start..<end]
+                let text = String(decoding: segment, as: UTF8.self)
+                guard text.utf8.elementsEqual(segment) else { throw Failure.invalid }
                 scalars.append(contentsOf: text.unicodeScalars)
             }
             while index < bytes.count {

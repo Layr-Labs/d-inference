@@ -14,7 +14,6 @@ final class RunnerServer: @unchecked Sendable {
     private let sampler: RunnerMemorySampler
     private let budget: GlobalKVCacheBudget
     private let tracker = LocalResponseTracker()
-    private let admission = RunnerTextAdmission()
     private let ballast = RunnerBallast()
     private let lock = NSLock()
     private var tasks: [Task<Void, Never>] = []
@@ -33,19 +32,20 @@ final class RunnerServer: @unchecked Sendable {
                status: @escaping @Sendable () async -> RunnerJSON,
                onFailure: @escaping @Sendable (String) async -> Void) async throws -> (Int, Int) {
         let modelID = NemotronSuperLocalBinding.modelID
-        let tokenizer = serving.tokenizer, bridge = serving.bridge, admission = admission
+        let tokenizer = serving.tokenizer
         let inferenceBind = RunnerBind(), diagnosticsBind = RunnerBind()
         let inference = makeLocalInferenceApplication(
             config: .init(host: "127.0.0.1", port: UInt16(port), authToken: token),
             defaultMaxTokens: defaultMaxTokens,
+            // Chat completions reach the Super hook. As in the provider, the
+            // generic engine (responses, batch) never serves the Super bridge:
+            // it would bypass the owner's prompt and output contract.
             acquire: { requested in
                 guard requested == modelID else {
                     throw MultiModelBatchSchedulerEngineError.modelNotLoaded(requested)
                 }
-                try await admission.acquire()
-                return .init(tokenizer: tokenizer,
-                    releaseToken: OneShotRelease(release: { _ in await admission.release() }, modelId: modelID),
-                    modelType: "nemotron_h_omni", engineV2Bridge: bridge)
+                throw MultiModelBatchSchedulerEngineError.requestRejected(
+                    "\(requested) is served only through chat completions")
             },
             tokenizerProvider: { _ in .init(tokenizer: tokenizer, modelType: "nemotron_h_omni") },
             availableModels: { [modelID] }, mtpSlots: { [] }, responseTracker: tracker,
@@ -81,7 +81,6 @@ final class RunnerServer: @unchecked Sendable {
         get async {
             [
                 "http_active_responses": .count(tracker.activeCount),
-                "text_acquired": .count(await admission.active),
                 "bridge_active_requests": .count(await serving.bridge.activeRequestCount()),
                 "ballast_bytes": .bytes(await ballast.bytes),
                 "prefix_cache": await RunnerPrefixCache.json(serving.bridge),
@@ -93,12 +92,10 @@ final class RunnerServer: @unchecked Sendable {
     /// listeners. Native retirement is the caller's next step.
     func drain(timeout: Duration) async -> RunnerJSON {
         tracker.setAccepting(false)
-        await admission.close()
         let start = ContinuousClock.now
         var timedOut = false
         while true {
-            if tracker.activeCount == 0, await admission.active == 0,
-               await serving.bridge.activeRequestCount() == 0 { break }
+            if tracker.activeCount == 0, await serving.bridge.activeRequestCount() == 0 { break }
             if ContinuousClock.now - start >= timeout { timedOut = true; break }
             try? await Task.sleep(for: .milliseconds(50))
         }
@@ -135,21 +132,6 @@ final class RunnerServer: @unchecked Sendable {
         }
         return router
     }
-}
-
-/// Text requests acquire the loaded bridge through this gate, closed at drain.
-actor RunnerTextAdmission {
-    private var accepting = true
-    private(set) var active = 0
-
-    func acquire() throws {
-        guard accepting else {
-            throw MultiModelBatchSchedulerEngineError.modelNotLoaded("runner draining")
-        }
-        active += 1
-    }
-    func release() { active -= 1 }
-    func close() { accepting = false }
 }
 
 actor RunnerBallast {

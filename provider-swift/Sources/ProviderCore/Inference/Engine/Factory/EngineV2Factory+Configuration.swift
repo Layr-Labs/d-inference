@@ -69,6 +69,10 @@ extension EngineV2Factory {
     /// family whose busy-engine serving and activation measurements back it
     /// (`usesWidePrefillChunk`).
     public static let widePrefillChunkTokens = 2048
+    /// Largest bidirectional block a Gemma 4 request can carry: one image at
+    /// the vision family's largest soft-token budget (catalog artifacts use
+    /// 280; video frames about 70).
+    static let gemma4MaximumMediaBlockTokens = 1120
 
     /// Prompt geometry resolved once per engine; the paged pool is sized from it.
     public struct PrefillGeometry: Equatable, Sendable {
@@ -84,13 +88,21 @@ extension EngineV2Factory {
         model: (any LanguageModel)?,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> PrefillGeometry {
-        let chunk = prefillChunkTokens(model: model, environment: environment)
+        var chunk = prefillChunkTokens(model: model, environment: environment)
+        var stripe = soloPrefillStripeTokens(abovePlainChunk: chunk, model: model, environment: environment)
+        // A chunk that starts at a bidirectional block covers the whole block,
+        // and the paged window rings hold only max(chunk, stripe) tokens
+        // (`PagedSequenceKV` preconditions it). Only overrides reach this; the
+        // stripe was below the block, so it cannot arm above the raised chunk.
+        if isGemma4(model), max(chunk, stripe ?? 0) < gemma4MaximumMediaBlockTokens {
+            chunk = gemma4MaximumMediaBlockTokens
+            stripe = nil
+        }
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         return PrefillGeometry(
             prefillChunkTokens: chunk,
             maxBatchedTokensPerStep: stepTokenBudget(abovePlainChunk: chunk, environment: environment),
-            soloPrefillStripeTokens: soloPrefillStripeTokens(
-                abovePlainChunk: chunk, model: model, environment: environment),
+            soloPrefillStripeTokens: stripe,
             bidirectionalMediaPrefillChunkCeiling: chunk > sdkChunk ? sdkChunk : nil)
     }
 
@@ -111,7 +123,8 @@ extension EngineV2Factory {
     }
 
     /// Absent selects the family default. A positive explicit value applies to
-    /// every model; zero, negative, or malformed values restore the SDK chunk.
+    /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
+    /// zero, negative, or malformed values restore the SDK chunk.
     static func prefillChunkTokens(
         model: (any LanguageModel)?, environment: [String: String]
     ) -> Int {

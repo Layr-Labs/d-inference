@@ -184,6 +184,26 @@ struct EngineV2PrefillGeometryTests {
         #expect(saturated.maxBatchedTokensPerStep == Int.max)
     }
 
+    @Test("a Gemma 4 chunk override never leaves the rings below a whole media block")
+    func gemmaChunkOverrideCoversMediaBlock() throws {
+        let gemma = try geometryGemma4Text()
+        let block = EngineV2Factory.gemma4MaximumMediaBlockTokens
+        func override(chunk: String, stripe: String) -> [String: String] {
+            [EngineV2Factory.prefillChunkKey: chunk, EngineV2Factory.soloPrefillStripeKey: stripe]
+        }
+        let raised = Geometry(
+            prefillChunkTokens: block, maxBatchedTokensPerStep: 2 * block,
+            soloPrefillStripeTokens: nil, bidirectionalMediaPrefillChunkCeiling: sdk.prefillChunkSize)
+        for (chunk, stripe) in [("256", "0"), ("512", "0"), (String(block - 1), "0"), ("256", "600")] {
+            #expect(geometry(gemma, override(chunk: chunk, stripe: stripe)) == raised, "\(chunk), \(stripe)")
+        }
+        // A stripe above the block, or a chunk covering it, needs no change.
+        #expect(geometry(gemma, override(chunk: "256", stripe: String(block + 1))).prefillChunkTokens == 256)
+        #expect(geometry(gemma, override(chunk: String(block), stripe: "0")).prefillChunkTokens == block)
+        // Families without bidirectional blocks keep the requested chunk.
+        #expect(geometry(try geometryGPTOSS(), override(chunk: "256", stripe: "0")).prefillChunkTokens == 256)
+    }
+
     @Test("malformed or nonpositive chunks restore the SDK chunk for every family")
     func malformedChunkFailsTowardSDK() throws {
         let gemma = try geometryGemma4Text()
@@ -312,5 +332,26 @@ struct EngineV2PrefillGeometryEngineTests {
         #expect(media.prefillChunkTokensMax == 512)
         #expect(media.prefillChunks == UInt32((prompt + 511) / 512))
         #expect(media.visionChunks == 1)
+    }
+
+    @Test("an undersized Gemma 4 chunk override still holds a whole media block")
+    func gemmaUndersizedChunkHoldsMediaBlock() async throws {
+        // Without a stripe a 256-token chunk would size the window rings at
+        // 256 tokens, and the 300-token block chunk would trip the
+        // `PagedSequenceKV` ring precondition.
+        let span = CBv2ImageSpan(tokenOffset: 1_100, length: 300)
+        let embedding = MLXArray.zeros([1, span.length, 64], dtype: .float32)
+        eval(embedding)
+        let media = try await prefillBesideDecode(
+            model: try geometryGemma4Text(),
+            request: { id in
+                var request = Self.textRequest(id, tokens: 1_800)
+                request.multimodal = CBv2MultimodalInput(spans: [span]) { [embedding] }
+                return request
+            },
+            overrides: [EngineV2Factory.prefillChunkKey: "256", EngineV2Factory.soloPrefillStripeKey: "0"],
+            maxContextLength: 2_048)
+        #expect(media.visionChunks == 1)
+        #expect(media.prefillChunkTokensMax == 512)
     }
 }

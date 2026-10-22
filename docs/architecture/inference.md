@@ -2032,14 +2032,19 @@ or change consumer/OpenRouter routing.
    stripe, and block-bearing requests keep the SDK chunk — `EngineV2Factory+Configuration.swift`
    (`usesWidePrefillChunk`, `prefillGeometry`), `SchedulerV2.swift`
    (`prefillChunkCap`).
-9. A Gemma 4 block chunk never exceeds the 2,048-token `maxPrefillChunk` its
-   windowed rings hold, although a chunk that starts at a block covers the
-   whole block and submit validation bounds blocks only by the 4,096-token
-   step: `Gemma4Processor` gives every image and video frame its own
+9. A Gemma 4 block chunk never exceeds the `maxPrefillChunk` its windowed
+   rings hold, although a chunk that starts at a block covers the whole block
+   and submit validation bounds blocks only by the step budget:
+   `Gemma4Processor` gives every image and video frame its own
    `boi`/`eoi`-delimited block of `image_seq_length` or
-   `video_processor.max_soft_tokens` soft tokens (280 and 70 by default) —
+   `video_processor.max_soft_tokens` soft tokens (280 and 70 by default; the
+   vision family's largest image budget is 1,120). The default 2,048-token
+   chunk covers that, and a chunk override that leaves `max(chunk, stripe)`
+   below 1,120 tokens is raised to 1,120 —
    `libs/mlx-swift-lm/Libraries/MLXVLM/Models/Gemma4.swift` (`Gemma4Processor`),
-   `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`).
+   `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
+   `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
+   `prefillGeometry`).
 
 ## Failure modes
 

@@ -1,0 +1,231 @@
+import Foundation
+import MLX
+import MLXLLM
+import MLXLMCommon
+
+/// A private, serialized final-rank request owner for committed prompt history
+/// and exactly one unaccepted proposal. No serving path constructs this object.
+/// The outer distributed owner retains the full reservation until this object
+/// retires AND the peer is actually retired/fenced. Local cleanup is not that ACK.
+final class QwenResidentMTPRequest {
+    let resources: QwenResidentMTPRequestResources
+    let control: QwenResidentMTPProposalControl
+    private let assets: QwenResidentStageWithMTPAssets
+    private let session: QwenLayerStageSession
+    private let deadlineUptimeNanoseconds: UInt64
+    private var assistantState: (any CBv2MTPRequestState)?
+    private var pending: QwenLayerStageMTPCommittedFrame?
+    private var carry: MLXArray?
+    private(set) var isRetired = false
+    var committedTargetInputs: Int { session.committedTokens }
+
+    init(assets: QwenResidentStageWithMTPAssets, plan: QwenLayerStagePlan,
+         agreement: QwenLayerStageGenerationAgreement, capacityLimitBytes: Int,
+         deadlineUptimeNanoseconds: UInt64,
+         check: () throws -> Void) throws {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadlineUptimeNanoseconds > now, deadlineUptimeNanoseconds - now <= 300_000_000_000 else {
+            throw ProbeError("MTP proposal requires an explicit at-most300s same-Mac deadline")
+        }
+        func checkDeadline() throws {
+            guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
+                throw ProbeError("MTP proposal preparation exceeded owner deadline")
+            }
+        }
+        let control = try QwenResidentMTPProposalControl(agreement: agreement)
+        let prepared = try MLX.withError { nativeError in
+            do {
+                try nativeError.check(); try checkDeadline(); try check(); try nativeError.check()
+                let resources = try QwenResidentMTPRequestResources(assets: assets, plan: plan,
+                    agreement: agreement, capacityLimitBytes: capacityLimitBytes)
+                try nativeError.check(); try check(); try checkDeadline(); try nativeError.check()
+                return resources
+            } catch { try nativeError.check(); throw error }
+        }
+        // The combined reservation/live resource gate precedes both target
+        // request-state construction and assistant request-state construction.
+        let owned: (QwenLayerStageSession, any CBv2MTPRequestState) = try MLX.withError { nativeError in
+            var session: QwenLayerStageSession?
+            var state: (any CBv2MTPRequestState)?
+            do {
+                try checkDeadline(); try prepared.requireLive(); try check(); try checkDeadline(); try nativeError.check()
+                let nextSession = try QwenLayerStageSession(stage: assets.target.loaded, plan: plan,
+                    generationRequest: agreement.request)
+                session = nextSession
+                let nextState = assets.assistant.makeRequestState(); state = nextState
+                try assets.assistant.configureRequestState(nextState, maximumSequenceLength: agreement.request.maximumTokens)
+                guard nextState.committedInputCount == 0, nextState.stagedInputCount == 0, nextState.materializedBytes == 0,
+                      assets.assistant.evaluationTargets(for: nextState).isEmpty else {
+                    throw ProbeError("MTP request did not start with empty exclusive assistant state")
+                }
+                try nativeError.check(); try check(); try checkDeadline(); try nativeError.check()
+                return (nextSession, nextState)
+            } catch {
+                var primary: Error = error
+                do { try nativeError.check() } catch { primary = error }
+                Stream.gpu.synchronize(); Stream.cpu.synchronize()
+                if let state { assets.assistant.releaseRequestState(state) }
+                do { try session?.cancel() }
+                catch { throw ProbeError("MTP state preparation failed (\(primary)); target cleanup also failed (\(error))") }
+                throw primary
+            }
+        }
+        self.assets = assets; self.session = owned.0; self.resources = prepared
+        self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+        self.control = control; assistantState = owned.1
+    }
+
+    /// Called from the consumer's existing boundary callback. This returns the
+    /// same target output shape; it does not advance assistant history yet.
+    func prefill(tokens: [Int], frame: QwenLayerStageFrame, incoming: QwenLayerStageBoundary,
+                 check: () throws -> Void) throws -> QwenLayerStageOutput {
+        try operation(check: check) { checked in
+            guard pending == nil, control.phase == .observing, frame.phase == .prefill,
+                  frame.sequence == control.observedFrames, frame.tokenOffset == control.observedInputs,
+                  frame == (try control.agreement.request.frame(sequence: control.observedFrames)),
+                  tokens == Array(control.agreement.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)]) else {
+                throw ProbeError("MTP target prefill is duplicated, unacknowledged or out of order")
+            }
+            let value = try session.prefillChunkCapturingMTP(tokens, offset: frame.tokenOffset,
+                final: frame.finalPromptChunk, incoming: incoming, check: checked)
+            pending = value.committed
+            return value.output
+        }
+    }
+
+    /// Deliver only after the normal generation control has acknowledged both
+    /// ranks for this frame. The selected output token is not a consumed target
+    /// input and is never appended here.
+    func observeCommitted(generation: QwenLayerStageGenerationControl,
+                          check: () throws -> Void) throws {
+        try operation(check: check) { checked in
+            guard let frame = pending, frame.identity == session.identity, let state = assistantState else {
+                throw ProbeError("MTP observation lacks this request's committed final hidden")
+            }
+            pending = nil
+            defer { frame.discard() }
+            try control.observe(frame: frame.frame, tokenIDs: frame.tokenIDs, generation: generation)
+            let hidden = try frame.takeHidden()
+            let tokens = MLXArray(frame.tokenIDs.map(Int32.init)).reshaped([1, frame.tokenIDs.count])
+            assets.assistant.observeCommittedTarget(.init(tokens: tokens, hidden: hidden), requestState: state)
+            // The assistant normalizes raw target hidden itself exactly once.
+            // Fence the normalized backlog now, so it cannot retain a lazy graph
+            // across a failed target frame or a later state generation.
+            eval(assets.assistant.evaluationTargets(for: state))
+            try checked()
+            guard state.committedInputCount == control.observedInputs - 1, state.stagedInputCount == 0 else {
+                throw ProbeError("MTP cross-chunk trusted history frontier differs")
+            }
+            carry = hidden[0..., (frame.tokenIDs.count - 1)..<frame.tokenIDs.count, 0...]
+            eval(carry!)
+            try checked()
+        }
+    }
+
+    /// The normal target first token and continue decision must already be
+    /// acknowledged by both ranks. This performs one real assistant forward,
+    /// fences every assistant cache/root, and returns only an unaccepted scalar.
+    func propose(generation: QwenLayerStageGenerationControl, roundID: UUID,
+                 check: () throws -> Void) throws -> QwenResidentMTPProposal {
+        try operation(check: check) { checked in
+            guard pending == nil, let carry, let state = assistantState,
+                  session.committedTokens == control.agreement.request.promptCount else {
+                throw ProbeError("MTP proposal requires complete committed target prompt history")
+            }
+            try control.begin(generation: generation, roundID: roundID)
+            guard let seed = control.seedTokenID else { throw ProbeError("MTP proposal seed missing") }
+            let result = assets.assistant.draftStep(tokens: MLXArray([Int32(seed)]).reshaped([1, 1]),
+                hidden: carry, shortlist: nil, requestState: state)
+            eval([result.tokens, result.hidden] + assets.assistant.evaluationTargets(for: state))
+            try checked()
+            guard result.tokens.shape == [1], result.tokens.dtype == .int32,
+                  result.hidden.shape == [1, 1, control.agreement.request.profile.hiddenSize],
+                  result.hidden.dtype == assets.target.loaded.activationDType,
+                  state.committedInputCount == control.observedInputs, state.stagedInputCount == 0 else {
+                throw ProbeError("MTP proposal output or trusted assistant KV frontier differs")
+            }
+            let tokens = result.tokens.asArray(Int32.self)
+            try checked()
+            guard tokens.count == 1 else { throw ProbeError("MTP returned more than one proposal") }
+            return try control.proposed(Int(tokens[0]))
+        }
+    }
+
+    /// No target verification transaction exists in this increment. Discarding
+    /// the head's round therefore cannot authorize target rollback or reuse.
+    func discardProposal(check: () throws -> Void) throws {
+        try operation(check: check) { checked in
+            guard control.phase == .proposed, let state = assistantState else {
+                throw ProbeError("No outstanding MTP proposal to discard")
+            }
+            assets.assistant.discardRound(requestState: state)
+            eval(assets.assistant.evaluationTargets(for: state))
+            try checked()
+            try control.discarded()
+        }
+    }
+
+    /// Cleanup deliberately has no expired deadline/resource callback. The
+    /// incomplete generation session is cancelled, never labeled a clean finish.
+    func retire(failed: Bool = false) throws {
+        guard !isRetired else { return }
+        var primary: Error?
+        func attempt(_ body: () throws -> Void) {
+            do { try body() } catch { if primary == nil { primary = error } }
+        }
+        attempt {
+            try MLX.withError { nativeError in
+                Stream.gpu.synchronize(); Stream.cpu.synchronize()
+                do { try nativeError.check() } catch { primary = error }
+                if let state = assistantState {
+                    assets.assistant.discardRound(requestState: state)
+                    assets.assistant.releaseRequestState(state)
+                    guard state.materializedBytes == 0, state.committedInputCount == 0,
+                          state.stagedInputCount == 0, assets.assistant.evaluationTargets(for: state).isEmpty else {
+                        throw ProbeError("MTP assistant retained request arrays after release")
+                    }
+                }
+                pending?.discard(); pending = nil; carry = nil; assistantState = nil
+                Stream.gpu.synchronize(); Stream.cpu.synchronize()
+                try nativeError.check()
+            }
+        }
+        attempt { try session.cancel() }
+        guard primary == nil, session.isClosed, assistantState == nil, pending == nil, carry == nil else {
+            control.fail()
+            throw primary ?? ProbeError("MTP request local retirement remains incomplete")
+        }
+        isRetired = true; control.retired(failed: failed || control.failed || session.isFailed)
+    }
+
+    private func operation<T>(check: () throws -> Void,
+        _ body: (_ checked: () throws -> Void) throws -> T) throws -> T {
+        try withoutActuallyEscaping(check) { borrowedCheck in
+            try MLX.withError { nativeError in
+                func checked() throws {
+                    try nativeError.check()
+                    guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
+                        throw ProbeError("MTP proposal owner deadline expired")
+                    }
+                    try borrowedCheck(); try resources.requireLive(); try nativeError.check()
+                    guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
+                        throw ProbeError("MTP proposal observation exceeded owner deadline")
+                    }
+                }
+                do {
+                    guard !isRetired, !control.failed else { throw ProbeError("MTP request is retired or failed") }
+                    try checked()
+                    return try body(checked)
+                } catch {
+                    var primary: Error = error
+                    do { try nativeError.check() } catch { primary = error }
+                    control.fail()
+                    do { try retire(failed: true) }
+                    catch { throw ProbeError("MTP request failed (\(primary)); local retirement also failed (\(error))") }
+                    throw primary
+                }
+            }
+        }
+    }
+    deinit { try? retire(failed: true) }
+}

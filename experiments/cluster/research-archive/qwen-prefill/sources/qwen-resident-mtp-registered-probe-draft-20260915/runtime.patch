@@ -1,0 +1,769 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -51,9 +51,9 @@
+     return try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank])
+ }
+ 
+-private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
++func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
+     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+-    collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
++    collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?, probe: QwenLayerStageMTPProbe? = nil,
+     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationResult {
+     try MLX.withError { nativeError in
+@@ -63,17 +63,23 @@
+             try nativeError.check()
+         }
+         do {
++            if probe != nil {
++                guard diagnostics == nil, agreement.prefillPolicy == .serial else {
++                    throw ProbeError("MTP proposal probe cannot overlap recording or lookahead")
++                }
++            }
+             try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+             try checked()
+             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+-                material: { .generation(agreementFingerprint: agreement.fingerprint) },
++                material: { .generation(agreementFingerprint: probe?.readinessFingerprint ?? agreement.fingerprint) },
+                 disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
+             let control = QwenLayerStageGenerationControl(agreement: agreement)
+             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
+             var session: QwenLayerStageSession?
+             var producer: QwenGenerationLookaheadProducer?
+             do {
+-                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
++                let owned = try probe?.makeSession(loaded: loaded, plan: plan, check: checked)
++                    ?? QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
+                 session = owned
+                 if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
+                     producer = try .init(request: agreement.request)
+@@ -95,8 +101,9 @@
+                                 throw ProbeError("Generation decode precedes lookahead prompt drain")
+                             }
+                             (packet, row) = try runGenerationFrame(session: owned, control: control,
+-                                transport: transport, expected: expected, check: checked)
++                                transport: transport, expected: expected, probe: probe, check: checked)
+                         }
++                        try probe?.observedFrame(expected.frame, generation: control, check: checked)
+                         guard control.phase == .token else { return }
+                         let token = try agreeGenerationToken(row: row, boundary: packet, control: control,
+                             transport: transport, check: checked)
+@@ -123,6 +130,7 @@
+                             try control.acknowledgeDecision(rank: 1, packet: decision)
+                             try transport.acknowledgeDecision(decision, check: checked)
+                         }
++                        try probe?.afterDecision(generation: control, check: checked)
+                         if control.phase == .retiring {
+                             finalDecision = decision
+                             // Both decision ACKs are complete, and rank1 still owns
+@@ -147,7 +155,12 @@
+                 try diagnostics?.captureState(session: owned, stage: plan.stages[collective.rank],
+                     selectedTokenIDs: selectedTokens, completedFrames: control.completedFrames,
+                     committedTokens: control.committedTokens, reason: reason, check: checked)
+-                try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
++                if let probe {
++                    try probe.finish(session: owned, reason: reason, count: control.selectedTokenCount,
++                        lastToken: lastToken, check: checked)
++                } else {
++                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
++                }
+                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
+                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
+                 try transport.exchangeRetirement(decision: finalDecision, check: checked)
+@@ -172,8 +185,12 @@
+                 producer?.cancel()
+                 diagnostics?.discard()
+                 control.cancel(); transport.retire()
+-                do { try session?.cancel() }
+-                catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
++                if let probe {
++                    try probe.cancel(session: session, primary: primary)
++                } else {
++                    do { try session?.cancel() }
++                    catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
++                }
+                 throw primary
+             }
+         } catch {
+@@ -210,7 +227,7 @@
+ 
+ private func runGenerationFrame(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+     transport: QwenLayerStageGenerationTransport, expected: QwenLayerStageGenerationBoundaryExpectation,
+-    check: () throws -> Void
++    probe: QwenLayerStageMTPProbe? = nil, check: () throws -> Void
+ ) throws -> (QwenLayerStageGenerationBoundaryPacket, MLXArray?) {
+     let request = control.agreement.request, frame = expected.frame
+     let tokens: [Int]
+@@ -221,6 +238,10 @@
+         tokens = [token]
+     }
+     func forward(_ incoming: QwenLayerStageBoundary?) throws -> QwenLayerStageOutput {
++        if transport.rank == 1, let probe {
++            guard let incoming else { throw ProbeError("MTP probe requires the actual producer residual") }
++            return try probe.forward(tokens: tokens, frame: frame, incoming: incoming, check: check)
++        }
+         if frame.phase == .prefill {
+             return try session.prefillChunk(tokens, offset: frame.tokenOffset, final: frame.finalPromptChunk,
+                 incoming: incoming, check: check)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageMTPProbe.swift
+@@ -0,0 +1,140 @@
++import Foundation
++import MLX
++
++struct QwenLayerStageMTPProbeResult: Encodable {
++    let schema = "qwen_stage_single_unaccepted_mtp_proposal_v1"
++    let rank: Int
++    let probeReadinessFingerprint: String
++    let execution: QwenLayerStageGenerationResult
++    let proposal: QwenResidentMTPProposal?
++    let assistantInputsBeforeProposal: Int?
++    let assistantInputsAfterProposal: Int?
++    let assistantRequestReleased: Bool?
++    let targetSecondToken: Int
++    let proposalMatchesTarget: Bool?
++    let proposalWasConsumedAsTargetInput = false
++    let speculativeAcceptanceImplemented = false
++}
++
++/// Private hook over the existing serial driver/transport. It owns no second
++/// collective, token channel, supervisor or model copy.
++final class QwenLayerStageMTPProbe {
++    let readinessFingerprint: String
++    private let rank: Int
++    private let assets: QwenResidentStageWithMTPAssets?
++    private let capacity: Int
++    private let deadline: UInt64
++    private let agreement: QwenLayerStageGenerationAgreement
++    private var owner: QwenResidentMTPRequest?
++    private var proposal: QwenResidentMTPProposal?
++    private var inputsBeforeProposal: Int?
++    private var inputsAfterProposal: Int?
++
++    init(rank: Int, assets: QwenResidentStageWithMTPAssets?, agreement: QwenLayerStageGenerationAgreement,
++         capacityLimitBytes: Int, deadlineUptimeNanoseconds: UInt64) throws {
++        let request = agreement.request
++        guard (0...1).contains(rank), (assets != nil) == (rank == 1), capacityLimitBytes > 0,
++              agreement.prefillPolicy == .serial, (1...32).contains(request.promptCount),
++              request.chunkSize <= 16, request.outputCount == 2, request.stopTokenIDs.isEmpty else {
++            throw ProbeError("Registered MTP probe requires P1...32/C<=16/O2/empty stops and final-rank assets")
++        }
++        self.rank = rank; self.assets = assets; capacity = capacityLimitBytes
++        deadline = deadlineUptimeNanoseconds; self.agreement = agreement
++        // Both ranks must explicitly select this probe. An ordinary generation
++        // driver presents the unwrapped agreement fingerprint and must disagree.
++        readinessFingerprint = sha256(try canonicalJSONData([
++            "registered-qwen35-9b-single-unaccepted-proposal-v1", agreement.fingerprint,
++            "head-rank1", "replicated-input-embedding", "depth1", "ordinary-target-seed-decode"
++        ]))
++    }
++
++    func makeSession(loaded: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
++                     check: () throws -> Void) throws -> QwenLayerStageSession {
++        guard owner == nil else { throw ProbeError("MTP probe was started twice") }
++        if rank == 0 { return try .init(stage: loaded, plan: plan, generationRequest: agreement.request) }
++        guard let assets, assets.target.loaded.stageIndex == loaded.stageIndex,
++              assets.target.loaded.model === loaded.model else { throw ProbeError("MTP probe selected another target owner") }
++        let value = try QwenResidentMTPRequest(assets: assets, plan: plan, agreement: agreement,
++            capacityLimitBytes: capacity, deadlineUptimeNanoseconds: deadline, check: check)
++        owner = value
++        return value.probeSession
++    }
++
++    func forward(tokens: [Int], frame: QwenLayerStageFrame,
++                 incoming: QwenLayerStageBoundary, check: () throws -> Void) throws -> QwenLayerStageOutput {
++        guard rank == 1, let owner else { throw ProbeError("MTP probe consumer was not constructed") }
++        if frame.phase == .prefill { return try owner.prefill(tokens: tokens, frame: frame, incoming: incoming, check: check) }
++        guard tokens.count == 1, proposal != nil else { throw ProbeError("MTP target seed decode precedes proposal") }
++        return try owner.decodeSeedForProbe(tokens[0], frame: frame, incoming: incoming, check: check)
++    }
++
++    func observedFrame(_ frame: QwenLayerStageFrame, generation: QwenLayerStageGenerationControl,
++                       check: () throws -> Void) throws {
++        if rank == 1, frame.phase == .prefill {
++            guard let owner else { throw ProbeError("MTP history lacks its request owner") }
++            try owner.observeCommitted(generation: generation, check: check)
++        }
++    }
++
++    func afterDecision(generation: QwenLayerStageGenerationControl, check: () throws -> Void) throws {
++        if generation.selectedTokenCount == 1 {
++            guard generation.phase == .frame else { throw ProbeError("MTP probe stopped before ordinary seed decode") }
++            if rank == 1 {
++                guard proposal == nil, let owner else { throw ProbeError("MTP probe proposal is duplicated or unowned") }
++                guard owner.probeAssistantInputCount == agreement.request.promptCount - 1 else {
++                    throw ProbeError("MTP probe history lacks its actual pre-proposal assistant frontier")
++                }
++                inputsBeforeProposal = owner.probeAssistantInputCount
++                proposal = try owner.propose(generation: generation, roundID: UUID(), check: check)
++                guard owner.probeAssistantInputCount == agreement.request.promptCount else {
++                    throw ProbeError("MTP probe assistant frontier did not consume exactly the seed")
++                }
++                inputsAfterProposal = owner.probeAssistantInputCount
++            }
++        }
++    }
++
++    func finish(session: QwenLayerStageSession, reason: QwenLayerStageGenerationFinishReason,
++                count: Int, lastToken: Int, check: () throws -> Void) throws {
++        if let owner { try owner.finishProbe(reason: reason, selectedTokenCount: count, lastTokenID: lastToken, check: check) }
++        else { try session.finishGeneration(reason, selectedTokenCount: count, lastTokenID: lastToken) }
++    }
++    func cancel(session: QwenLayerStageSession?, primary: Error) throws {
++        var failures = [String]()
++        do { try owner?.retire(failed: true) }
++        catch { failures.append("assistant owner: \(error)") }
++        // The request owner normally cancels its target too, but its failure
++        // must not skip this independently owned driver cleanup obligation.
++        do { try session?.cancel() }
++        catch { failures.append("target session: \(error)") }
++        guard failures.isEmpty else {
++            throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(failures.joined(separator: "; ")))")
++        }
++    }
++
++    func result(_ execution: QwenLayerStageGenerationResult) throws -> QwenLayerStageMTPProbeResult {
++        guard execution.bothRequestStatesRetired, execution.selectedTokenIDs.count == 2,
++              execution.finishReason == .length, execution.committedTokens == agreement.request.promptCount + 1,
++              (rank == 0 && proposal == nil) || (rank == 1 && proposal != nil && owner?.probeAssistantRequestReleased == true) else {
++            throw ProbeError("MTP probe result precedes clean ordinary target and assistant retirement")
++        }
++        let second = execution.selectedTokenIDs[1]
++        return .init(rank: rank, probeReadinessFingerprint: readinessFingerprint,
++            execution: execution, proposal: proposal,
++            assistantInputsBeforeProposal: inputsBeforeProposal, assistantInputsAfterProposal: inputsAfterProposal,
++            assistantRequestReleased: owner?.probeAssistantRequestReleased, targetSecondToken: second,
++            proposalMatchesTarget: proposal.map { $0.proposedTokenID == second })
++    }
++}
++
++func probeQwenLayerStageMTPRequest(loaded: LoadedQwenLayerStage, assets: QwenResidentStageWithMTPAssets?,
++    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement, collective: Collective,
++    capacityLimitBytes: Int, deadlineUptimeNanoseconds: UInt64,
++    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
++) throws -> QwenLayerStageMTPProbeResult {
++    let probe = try QwenLayerStageMTPProbe(rank: collective.rank, assets: assets, agreement: agreement,
++        capacityLimitBytes: capacityLimitBytes, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
++    let result = try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
++        collective: collective, diagnostics: nil, probe: probe, onCommittedToken: onCommittedToken, check: check)
++    return try probe.result(result)
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPProbeRuntime.swift
+@@ -0,0 +1,132 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++@_spi(Benchmark) public struct QwenResidentMTPProbeCompletion: Sendable {
++    public let completion: QwenResidentGenerationCompletion
++    public let encodedEvidence: Data
++}
++
++/// Private probe component of the existing resident owner. The owner supplies
++/// its operation lock, control, lifecycle and already-owned collective.
++final class QwenResidentMTPProbeRuntime {
++    private let admission: QwenResidentAdmission
++    private let control: QwenResidentControl
++    private let collective: Collective
++    private let lifecycle: QwenLayerStageResidentLifecycle
++    private var loaded: QwenResidentLoadedStage?
++    private var assets: QwenResidentStageWithMTPAssets?
++    private let capacity: Int
++    private struct Reservation {
++        let request: QwenLayerStageGenerationRequest
++        let agreement: QwenLayerStageGenerationAgreement
++        let base: QwenResidentRequestAllowance
++        let mtp: QwenResidentMTPRequestResources?
++        let charged: Int
++        let deadline: UInt64
++    }
++    private var reservation: Reservation?
++    private var used = false
++    var admitsAnotherRequest: Bool { !used && loaded != nil }
++
++    init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
++         lifecycle: QwenLayerStageResidentLifecycle, loaded: QwenResidentLoadedStage,
++         assets: QwenResidentStageWithMTPAssets?, capacity: Int) {
++        self.admission = admission; self.control = control; self.collective = collective
++        self.lifecycle = lifecycle; self.loaded = loaded; self.assets = assets; self.capacity = capacity
++    }
++
++    static func agreement(admission: QwenResidentAdmission, loaded: QwenResidentLoadedStage,
++                          request: QwenLayerStageGenerationRequest) throws -> QwenLayerStageGenerationAgreement {
++        let receipt = loaded.loaded.receipt
++        let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
++            artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
++            storageCommitmentSHA256: receipt.storageCommitmentSHA256,
++            planFingerprint: admission.plan.fingerprint, producerStageFingerprint: admission.plan.stages[0].fingerprint)
++        return try .init(request: request, membershipEpoch: admission.configuration.identity.membershipEpoch,
++            source: source, consumerStageFingerprint: admission.plan.stages[1].fingerprint,
++            rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
++            numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: .serial)
++    }
++
++    /// Readiness quotes the full existing profile envelope; only the probe's
++    /// smaller P32/C16/O2 request is admitted by reserve. No state is allocated.
++    static func maximumCapacity(admission: QwenResidentAdmission, loaded: QwenResidentLoadedStage,
++                                assets: QwenResidentStageWithMTPAssets?, base: QwenResidentRequestAllowance) throws -> Int {
++        if admission.configuration.rank == 0 { return base.reservedBytes }
++        guard let assets else { throw ProbeError("MTP probe final rank has no loaded assistant") }
++        let profile = admission.profile
++        let envelope = try QwenLayerStageGenerationRequest(profile: profile,
++            requestID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
++            promptTokenIDs: Array(repeating: 0, count: profile.maximumPromptTokens),
++            chunkSize: profile.maximumChunkTokens, outputCount: profile.maximumOutputTokens, stopTokenIDs: [])
++        let agreement = try agreement(admission: admission, loaded: loaded, request: envelope)
++        return try QwenResidentMTPRequestResources(assets: assets, plan: admission.plan, agreement: agreement,
++            capacityLimitBytes: Int.max).requiredReservationBytes
++    }
++
++    func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
++        guard !used, reservation == nil, let loaded else { throw ProbeError("MTP probe owner permits one request") }
++        let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
++        guard request.promptCount <= 32, request.chunkSize <= 16, request.outputCount == 2,
++              request.stopTokenIDs.isEmpty else { throw ProbeError("MTP probe requires P<=32/C<=16/O2/empty stops") }
++        try control.check(); try control.reserve(requestID)
++        do {
++            let agreement = try Self.agreement(admission: admission, loaded: loaded, request: request)
++            let base = try QwenResidentRequestAllowance.derive(profile: loaded.profile, plan: admission.plan,
++                rank: collective.rank, maximumTokens: request.maximumTokens,
++                chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
++            let mtp = try assets.map { try QwenResidentMTPRequestResources(assets: $0, plan: admission.plan,
++                agreement: agreement, capacityLimitBytes: value.capacityLimitBytes) }
++            let charged = mtp?.requiredReservationBytes ?? base.reservedBytes
++            guard charged <= value.capacityLimitBytes, charged <= capacity else {
++                throw ProbeError("MTP probe exceeds retained caller or Ready capacity")
++            }
++            try mtp?.requireLive(); try base.requireLive(); try control.check(deadline: value.deadlineUptimeNanoseconds)
++            reservation = .init(request: request, agreement: agreement, base: base, mtp: mtp,
++                charged: charged, deadline: value.deadlineUptimeNanoseconds)
++            return charged
++        } catch { control.fail(); throw error }
++    }
++
++    func start(requestID: UUID, onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentMTPProbeCompletion {
++        guard let reserved = reservation, reserved.request.requestID == requestID, let loaded else {
++            throw ProbeError("MTP probe start lacks its retained reservation")
++        }
++        used = true
++        let result = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: .init(requestID: requestID, epoch: requestID, recordedRequestFingerprint: reserved.request.fingerprint),
++            deadline: reserved.deadline, body: {
++                try autoreleasepool {
++                    var ordinal = 0
++                    func check() throws {
++                        try control.check(deadline: reserved.deadline)
++                        try reserved.mtp?.requireLive(); try reserved.base.requireLive()
++                        try control.check(deadline: reserved.deadline)
++                    }
++                    return try probeQwenLayerStageMTPRequest(loaded: loaded.loaded, assets: assets,
++                        plan: admission.plan, agreement: reserved.agreement, collective: collective,
++                        capacityLimitBytes: reserved.charged, deadlineUptimeNanoseconds: reserved.deadline,
++                        onCommittedToken: { token in
++                            let current = ordinal; ordinal += 1
++                            return try onCommittedToken(current, token, reserved.request.promptCount + current)
++                        }, check: check)
++                }
++            }, prepare: { evidence in
++                let value = evidence.execution
++                guard value.bothRequestStatesRetired, let reason = ClusterWorkerFinishReason(rawValue: value.finishReason.rawValue) else {
++                    throw ProbeError("MTP probe lacks bilateral retirement")
++                }
++                let encoded = try canonicalJSONData(evidence)
++                guard encoded.count <= 1_048_576 else { throw ProbeError("MTP probe CPU evidence exceeded 1MiB") }
++                let completion = QwenResidentGenerationCompletion(requestID: requestID, finishReason: reason,
++                    selectedTokenIDs: value.selectedTokenIDs, completedFrames: value.completedFrames,
++                    committedTokens: value.committedTokens, tokenChainSHA256: value.tokenChainSHA256,
++                    bothRequestStatesRetired: true)
++                return QwenResidentMTPProbeCompletion(completion: completion, encodedEvidence: encoded)
++            })
++        reservation = nil
++        return result
++    }
++
++    func release() { reservation = nil; assets = nil; loaded = nil }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
+@@ -19,6 +19,14 @@
+     private(set) var isRetired = false
+     var committedTargetInputs: Int { session.committedTokens }
+ 
++    /// Borrowed only by the shared private generation driver. The probe routes
++    /// every forward and retirement through this owner while it is active.
++    var probeSession: QwenLayerStageSession { session }
++    var probeAssistantInputCount: Int? { assistantState?.committedInputCount }
++    var probeAssistantRequestReleased: Bool {
++        isRetired && assistantState == nil && pending == nil && carry == nil
++    }
++
+     init(assets: QwenResidentStageWithMTPAssets, plan: QwenLayerStagePlan,
+          agreement: QwenLayerStageGenerationAgreement, capacityLimitBytes: Int,
+          deadlineUptimeNanoseconds: UInt64,
+@@ -165,6 +173,47 @@
+         }
+     }
+ 
++    /// Ordinary target execution of the agreed seed. The draft is never an
++    /// input in this probe, so this is not a speculative verification transaction.
++    func decodeSeedForProbe(_ token: Int, frame: QwenLayerStageFrame,
++                            incoming: QwenLayerStageBoundary, check: () throws -> Void) throws -> QwenLayerStageOutput {
++        try operation(check: check) { checked in
++            guard control.phase == .proposed, pending == nil, token == control.seedTokenID,
++                  frame.phase == .decode, frame.tokenCount == 1,
++                  frame.tokenOffset == control.agreement.request.promptCount,
++                  frame == (try control.agreement.request.frame(sequence: control.observedFrames)),
++                  session.committedTokens == frame.tokenOffset else {
++                throw ProbeError("MTP probe only admits the ordinary first seed decode")
++            }
++            return try session.decode(token, offset: frame.tokenOffset, incoming: incoming, check: checked)
++        }
++    }
++
++    /// Release the unaccepted round before the shared driver sends its local
++    /// retirement ACK. No assistant finalize/acceptance or draft-input commit.
++    func finishProbe(reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int,
++                     lastTokenID: Int, check: () throws -> Void) throws {
++        try operation(check: check) { checked in
++            guard control.phase == .proposed, reason == .length, selectedTokenCount == 2,
++                  session.committedTokens == control.agreement.request.promptCount + 1,
++                  let state = assistantState else {
++                throw ProbeError("MTP probe cannot finish before two ordinary target tokens")
++            }
++            assets.assistant.discardRound(requestState: state)
++            assets.assistant.releaseRequestState(state)
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++            guard state.materializedBytes == 0, state.committedInputCount == 0, state.stagedInputCount == 0,
++                  assets.assistant.evaluationTargets(for: state).isEmpty else {
++                throw ProbeError("MTP probe assistant state did not retire")
++            }
++            assistantState = nil; carry = nil
++            try session.finishGeneration(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
++            try checked()
++            guard session.isClosed, !session.isFailed else { throw ProbeError("MTP probe target failed clean retirement") }
++            isRetired = true; control.retired(failed: false)
++        }
++    }
++
+     /// Cleanup deliberately has no expired deadline/resource callback. The
+     /// incomplete generation session is cancelled, never labeled a clean finish.
+     func retire(failed: Bool = false) throws {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -6,6 +6,21 @@
+ extension QwenResidentRuntime {
+     public static func load(_ configuration: QwenResidentLoadConfiguration,
+                             bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        try loadImpl(configuration, bootstrap: bootstrap, mtpProbeMode: false)
++    }
++
++    @_spi(Benchmark) public static func loadForMTPProposalProbe(_ configuration: QwenResidentLoadConfiguration,
++        bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        guard configuration.identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
++              configuration.stageCut == 4, configuration.prefillSchedule == .serial,
++              configuration.allocatorPolicy == .disableFreedBufferCache else {
++            throw ProbeError("Private MTP probe load requires registered9B cut4, serial prefill and dedicated cache0 policy")
++        }
++        return try loadImpl(configuration, bootstrap: bootstrap, mtpProbeMode: true)
++    }
++
++    private static func loadImpl(_ configuration: QwenResidentLoadConfiguration,
++        bootstrap: QwenResidentBootstrap?, mtpProbeMode: Bool) throws -> QwenResidentRuntime {
+         // nil preserves the legacy experimental native TCP bootstrap.
+         let nativeBootstrap = try bootstrap?.make(configuration: configuration)
+         let directory = configuration.modelDirectory
+@@ -17,6 +32,7 @@
+         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
+         try QwenResidentProcessLease.shared.acquire()
+         var stage: QwenResidentLoadedStage?
++        var mtpAssets: QwenResidentStageWithMTPAssets?
+         weak var retired: Module?
+         do {
+             try control.check(); try QwenResidentResourceEnvironment.require()
+@@ -36,7 +52,11 @@
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
+-            let common = try admission.loadAgreementFingerprint()
++            var common = try admission.loadAgreementFingerprint()
++            if mtpProbeMode {
++                common = sha256(try canonicalJSONData([common, "registered-qwen35-9b-single-unaccepted-proposal-v1",
++                    "head-rank1", "replicated-input-embedding", "one-request"]))
++            }
+             let capacity = try MLX.withError { nativeError in
+                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
+                 do {
+@@ -44,8 +64,13 @@
+                         material: { .residentLoadIntent(agreementFingerprint: common) },
+                         disagreementMessage: "Resident load membership/source/Plan differs", check: checked)
+                     try autoreleasepool {
+-                        let value = try loadQwenResidentStage(admission, check: checked)
+-                        retired = value.loaded.model; stage = value
++                        if mtpProbeMode, collective.rank == 1 {
++                            let value = try loadQwenResidentStageWithMTPAssets(admission, check: checked)
++                            mtpAssets = value; retired = value.target.loaded.model; stage = value.target
++                        } else {
++                            let value = try loadQwenResidentStage(admission, check: checked)
++                            retired = value.loaded.model; stage = value
++                        }
+                     }
+                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
+                     let maximum = try QwenResidentRequestAllowance.derive(profile: loaded.profile, plan: admission.plan,
+@@ -67,13 +92,16 @@
+                     try maximum.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
+                         additionalHostBytes: prefill?.extraHostBytes ?? 0)
+                     try checked()
++                    let mtpCapacity: Int? = mtpProbeMode
++                        ? try QwenResidentMTPProbeRuntime.maximumCapacity(admission: admission,
++                            loaded: loaded, assets: mtpAssets, base: maximum) : nil
+                     let loadedIdentity = sha256(try canonicalJSONData([common,
+                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
+                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
+                         disagreementMessage: "Resident peers did not load matching verified stage commitments", check: checked)
+                     try checked()
+-                    return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
++                    return try mtpCapacity ?? QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
+                 } catch {
+                     // Prefer a recorded native fault over a secondary Swift
+                     // validation/shape error before leaving this error scope.
+@@ -84,9 +112,9 @@
+             let lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: QwenResidentAdmission.maximumRequests)
+             try control.loaded()
+             return .init(admission: admission, control: control, collective: collective,
+-                stage: stage!, capacity: capacity, lifecycle: lifecycle)
++                stage: stage!, capacity: capacity, lifecycle: lifecycle, mtpProbeMode: mtpProbeMode, mtpAssets: mtpAssets)
+         } catch {
+-            let primary = error; control.fail(); stage = nil
++            let primary = error; control.fail(); mtpAssets = nil; stage = nil
+             do {
+                 try MLX.withError { nativeError in
+                     Stream.gpu.synchronize(); Stream.cpu.synchronize()
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -45,11 +45,17 @@
+     }
+     private var reservation: Reservation?
+     private var processLeaseOwned = true
++    private var mtpProbe: QwenResidentMTPProbeRuntime?
++    private let mtpProbeMode: Bool
+ 
+     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
+-         stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle) {
++         stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
++         mtpProbeMode: Bool = false, mtpAssets: QwenResidentStageWithMTPAssets? = nil) {
+         self.admission = admission; self.control = control; self.collective = collective
+         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
++        self.mtpProbeMode = mtpProbeMode
++        mtpProbe = mtpProbeMode ? .init(admission: admission, control: control, collective: collective,
++            lifecycle: lifecycle, loaded: stage, assets: mtpAssets, capacity: capacity) : nil
+         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
+             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
+             requestCapacityBytes: capacity)
+@@ -57,6 +63,11 @@
+ 
+     public var readiness: ClusterWorkerReady? {
+         guard control.available, (try? control.check()) != nil else { return nil }
++        if mtpProbeMode {
++            guard operation.try() else { return nil }
++            defer { operation.unlock() }
++            guard mtpProbe?.admitsAnotherRequest == true else { return nil }
++        }
+         return baseReady
+     }
+ 
+@@ -66,6 +77,7 @@
+     @_spi(Benchmark) public func recordingReadiness(prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> ClusterWorkerReady? {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
++        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner has no recording mode") }
+         guard control.available, (try? control.check()) != nil else { return nil }
+         let capacity = try recordingCapacity(prefillPolicy)
+         try control.check()
+@@ -103,7 +115,8 @@
+     /// Metadata/native resource reservation only; no request state or forward.
+     /// Returned bytes are this rank's named allowance, not combined peer RAM.
+     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
+-        try reserve(requestID: requestID, request: value, mode: .serving,
++        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner rejects serving reservations") }
++        return try reserve(requestID: requestID, request: value, mode: .serving,
+             prefillPolicy: QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule))
+     }
+ 
+@@ -112,7 +125,24 @@
+     /// reservation cannot be upgraded at start or by a live resource check.
+     @_spi(Benchmark) public func reserveRecording(requestID: UUID, request value: ClusterWorkerReservation,
+         prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> Int {
+-        try reserve(requestID: requestID, request: value, mode: .recording, prefillPolicy: prefillPolicy)
++        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner rejects recording reservations") }
++        return try reserve(requestID: requestID, request: value, mode: .recording, prefillPolicy: prefillPolicy)
++    }
++
++    @_spi(Benchmark) public func reserveMTPProposalProbe(requestID: UUID,
++        request: ClusterWorkerReservation) throws -> Int {
++        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
++        defer { operation.unlock() }
++        guard let mtpProbe else { throw ProbeError("Resident owner was not loaded for the private MTP probe") }
++        return try mtpProbe.reserve(requestID: requestID, request: request)
++    }
++
++    @_spi(Benchmark) public func startMTPProposalProbe(requestID: UUID,
++        onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentMTPProbeCompletion {
++        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
++        defer { operation.unlock() }
++        guard let mtpProbe else { throw ProbeError("Resident owner was not loaded for the private MTP probe") }
++        return try mtpProbe.start(requestID: requestID, onCommittedToken: onCommittedToken)
+     }
+ 
+     private func reserve(requestID: UUID, request value: ClusterWorkerReservation,
+@@ -175,7 +205,8 @@
+     /// False requests agreed clean stop; a thrown callback is abnormal failure.
+     public func start(requestID: UUID,
+                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+-        try execute(requestID: requestID, mode: .serving, onCommittedToken: onCommittedToken) { completion, _ in completion }
++        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner has no serving mode") }
++        return try execute(requestID: requestID, mode: .serving, onCommittedToken: onCommittedToken) { completion, _ in completion }
+     }
+ 
+     /// Returns bounded CPU evidence only after bilateral retirement, local
+@@ -183,7 +214,8 @@
+     @_spi(Benchmark) public func startRecording(requestID: UUID,
+         onCommittedToken: (Int, Int, Int) throws -> Bool
+     ) throws -> QwenResidentRecordingCompletion {
+-        try execute(requestID: requestID, mode: .recording, onCommittedToken: onCommittedToken) { completion, evidence in
++        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner has no recording mode") }
++        return try execute(requestID: requestID, mode: .recording, onCommittedToken: onCommittedToken) { completion, evidence in
+             guard let evidence else { throw ProbeError("Recording request returned no diagnostic evidence") }
+             return .init(completion: completion, encodedEvidence: try evidence.encoded())
+         }
+@@ -290,6 +322,7 @@
+             try lifecycle.withModelRelease {
+                 try MLX.withError { error in
+                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
++                    mtpProbe?.release(); mtpProbe = nil
+                     reservation = nil; stage = nil
+                     guard model == nil else { throw ProbeError("Resident model remains retained") }
+                     Memory.clearCache(); try error.check()
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -1,24 +1,51 @@
+ import DarkbloomClusterProtocol
+-import DarkbloomClusterRuntime
++@_spi(Benchmark) import DarkbloomClusterRuntime
+ import Foundation
+ 
+-/// Exactly one native executor uses this wrapper; cancel is the facade's
+-/// explicitly thread-safe operation. No model or tensor crosses the pipe.
++/// Private evidence-producing wrapper around the private shared MTP proposal SPI.
++/// The public serving worker retains its normal non-recording wrapper.
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
+     private let owner: QwenResidentRuntime
++    private let sink: ResidentEvidenceSink
++    private var active: (id: UUID, deadline: UInt64)?
++
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
+-        let attachment = try bootstrap?.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
+-        owner = try .load(configuration, bootstrap: attachment.map { QwenResidentBootstrap(connection: $0) })
++        guard let bootstrap,
++              let path = ProcessInfo.processInfo.environment["DARKBLOOM_BENCHMARK_EVIDENCE_DIR"] else {
++            throw WorkerFailure.invalid("Private benchmark requires owner bootstrap and an evidence directory")
++        }
++        sink = try ResidentEvidenceSink(path: path)
++        let attachment = try bootstrap.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
++        owner = try .loadForMTPProposalProbe(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
+     }
++
+     var readiness: ClusterWorkerReady? { owner.readiness }
++
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+-        try owner.reserve(requestID: id, request: value)
++        guard active == nil else { throw WorkerFailure.invalid("Benchmark request already active") }
++        let bytes = try owner.reserveMTPProposalProbe(requestID: id, request: value)
++        active = (id, value.deadlineUptimeNanoseconds)
++        return bytes
+     }
++
+     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
+-        let result = try owner.start(requestID: id, onCommittedToken: token)
+-        guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
+-        return result.finishReason
++        guard let reservation = active, reservation.id == id else {
++            throw WorkerFailure.invalid("Benchmark start has no matching reservation")
++        }
++        let result = try owner.startMTPProposalProbe(requestID: id, onCommittedToken: token)
++        guard result.completion.requestID == id, result.completion.bothRequestStatesRetired else {
++            throw WorkerFailure.invalid("Benchmark generation returned without matching retirement")
++        }
++        guard owner.readiness == nil else {
++            throw WorkerFailure.invalid("Single-request MTP probe unexpectedly retained another admission")
++        }
++        // Coordinator cannot emit finished/retired until this returns. A write
++        // failure makes this worker fail; no successful sidecar is fabricated.
++        try sink.publish(result.encodedEvidence, requestID: id, deadline: reservation.deadline)
++        active = nil
++        return result.completion.finishReason
+     }
++
+     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
+-    func shutdown() throws { try owner.shutdown() }
++    func shutdown() throws { try owner.shutdown(); active = nil }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
+@@ -0,0 +1,55 @@
++import Darwin
++import Foundation
++
++/// Private benchmark sidecars. This is not part of the serving wire protocol.
++/// A failed/partial file remains evidence of the failed attempt and is never
++/// replaced by a later request. The external owner still fences failed workers.
++final class ResidentEvidenceSink {
++    enum Failure: Error { case invalidDirectory, invalidRecord, create, write, sync, expired }
++    private let directory: Int32
++    private var requests = Set<UUID>()
++    static let maximumBytes = 16 * 1024 * 1024
++
++    init(path: String) throws {
++        guard path.hasPrefix("/"), path.utf8.count <= 1024, !path.contains("\0") else {
++            throw Failure.invalidDirectory
++        }
++        let descriptor = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++        guard descriptor >= 0 else { throw Failure.invalidDirectory }
++        var info = stat()
++        guard fstat(descriptor, &info) == 0, info.st_uid == geteuid(),
++              info.st_mode & S_IFMT == S_IFDIR, info.st_mode & 0o077 == 0 else {
++            Darwin.close(descriptor); throw Failure.invalidDirectory
++        }
++        directory = descriptor
++    }
++
++    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64) throws {
++        guard !evidence.isEmpty, evidence.count <= Self.maximumBytes,
++              requests.count < 16, !requests.contains(requestID) else { throw Failure.invalidRecord }
++        func check() throws {
++            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.expired }
++        }
++        try check()
++        let name = requestID.uuidString.lowercased() + ".json"
++        let descriptor = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++        guard descriptor >= 0 else { throw Failure.create }
++        defer { Darwin.close(descriptor) }
++        requests.insert(requestID)
++        var offset = 0
++        while offset < evidence.count {
++            try check()
++            let count = evidence.withUnsafeBytes {
++                Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), min(65_536, evidence.count - offset))
++            }
++            if count < 0 && errno == EINTR { continue }
++            guard count > 0 else { throw Failure.write }
++            offset += count
++        }
++        try check()
++        guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw Failure.sync }
++        try check()
++    }
++
++    deinit { Darwin.close(directory) }
++}

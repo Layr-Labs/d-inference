@@ -1,0 +1,562 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenDiagnosticLoading.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenDiagnosticLoading.swift
+@@ -41,63 +41,75 @@
+         _ = try validatedQwenFeedForwardScaleTypes(model, layers: layers,
+             isMoE: false, requireTwoWaySplit: false)
+         try error.check()
+-        var loadedBytes = 0, largestHostBytes = 0
+-        for name in prepared.canonical.keys.sorted() {
+-            let tensor = prepared.canonical[name]!
+-            try autoreleasepool {
+-                let read = try tensor.read(.all)
+-                let sanitized = model.sanitize(weights: [name: read.array])
+-                guard sanitized.count == 1, var array = sanitized[name],
+-                      array.shape == prepared.expectedShapes[name], array.dtype == tensor.dtype else {
+-                    throw ProbeError("Verified diagnostic loader produced the wrong shape, dtype or key: \(name)")
+-                }
+-                if convertBF16 && array.dtype == .float16 { array = array.asType(.bfloat16) }
+-                eval(array)
+-                try error.check()
+-                guard array.nbytes == read.copiedBytes else {
+-                    throw ProbeError("Verified diagnostic conversion changed the stored byte width")
+-                }
+-                try model.update(parameters: ModuleParameters.unflattened([name: array]),
+-                                 verify: [.noUnusedKeys, .shapeMismatch])
+-                try error.check()
+-                loadedBytes += read.copiedBytes
+-                largestHostBytes = max(largestHostBytes, read.largestHostTensorBytes)
+-            }
+-        }
+-        try prepared.checkpoint.checkUnchanged()
+-        model.freeze()
+-        eval(model)
+-        try error.check()
+-        try prepared.checkpoint.checkUnchanged()
+-        let layout = modelParameterLayout(model)
+-        guard loadedBytes == budget.sourceBytes, largestHostBytes == budget.largestSourceBytes,
+-              layout == budget.expectedLayout else {
+-            throw ProbeError("Verified diagnostic loader byte accounting or loaded layout differs")
+-        }
+-        return VerifiedQwenDiagnosticReceipt(schemaVersion: 1,
+-            verifiedAggregateSHA256: prepared.checkpoint.aggregate,
+-            configurationSHA256: sha256(originalConfiguration),
+-            sourceModelTensorBytes: budget.sourceBytes, loadedTensorBytes: loadedBytes,
+-            largestHostTensorBytes: largestHostBytes, tensorCount: prepared.canonical.count,
+-            sourceTensorCount: prepared.sourceTensorCount, parameterLayoutSHA256: layout,
+-            bf16ConversionEnabled: convertBF16)
++        return try materializeVerifiedQwenDiagnostic(model: model, prepared: prepared,
++            originalConfiguration: originalConfiguration, storage: budget.validated,
++            convertBF16: convertBF16, check: { try error.check() })
+     }
+ }
+ 
++/// Shared full-width tensor materialization after legacy or exact registered
++/// source validation. No gate is minted here; the caller owns the model and
++/// discards it on failure. The optional hook runs immediately before each read.
++func materializeVerifiedQwenDiagnostic(
++    model: any LanguageModel, prepared: PreparedQwenCheckpoint,
++    originalConfiguration: Data, storage: QwenDenseSourceReadPlan,
++    convertBF16: Bool, check: () throws -> Void,
++    beforeTensor: ((String, QwenCheckpointTensor) throws -> Void)? = nil
++) throws -> VerifiedQwenDiagnosticReceipt {
++    var loadedBytes = 0, largestHostBytes = 0
++    for name in prepared.canonical.keys.sorted() {
++        let tensor = prepared.canonical[name]!
++        try autoreleasepool {
++            if let beforeTensor { try beforeTensor(name, tensor) }
++            let read = try tensor.read(.all)
++            let sanitized = model.sanitize(weights: [name: read.array])
++            guard sanitized.count == 1, var array = sanitized[name],
++                  array.shape == prepared.expectedShapes[name], array.dtype == tensor.dtype else {
++                throw ProbeError("Verified diagnostic loader produced the wrong shape, dtype or key: \(name)")
++            }
++            if convertBF16 && array.dtype == .float16 { array = array.asType(.bfloat16) }
++            eval(array)
++            try check()
++            guard array.nbytes == read.copiedBytes else {
++                throw ProbeError("Verified diagnostic conversion changed the stored byte width")
++            }
++            try model.update(parameters: ModuleParameters.unflattened([name: array]),
++                             verify: [.noUnusedKeys, .shapeMismatch])
++            try check()
++            loadedBytes += read.copiedBytes
++            largestHostBytes = max(largestHostBytes, read.largestHostTensorBytes)
++        }
++    }
++    try prepared.checkpoint.checkUnchanged()
++    model.freeze()
++    eval(model)
++    try check()
++    try prepared.checkpoint.checkUnchanged()
++    let layout = modelParameterLayout(model)
++    guard loadedBytes == storage.sourceBytes, largestHostBytes == storage.largestSourceBytes,
++          layout == storage.expectedLayoutSHA256 else {
++        throw ProbeError("Verified diagnostic loader byte accounting or loaded layout differs")
++    }
++    return VerifiedQwenDiagnosticReceipt(schemaVersion: 1,
++        verifiedAggregateSHA256: prepared.checkpoint.aggregate,
++        configurationSHA256: sha256(originalConfiguration),
++        sourceModelTensorBytes: storage.sourceBytes, loadedTensorBytes: loadedBytes,
++        largestHostTensorBytes: largestHostBytes, tensorCount: prepared.canonical.count,
++        sourceTensorCount: prepared.sourceTensorCount, parameterLayoutSHA256: layout,
++        bf16ConversionEnabled: convertBF16)
++}
++
+ private struct DiagnosticQwenStorage {
+-    let sourceBytes: Int
+-    let largestSourceBytes: Int
+-    let expectedLayout: String
++    let validated: QwenDenseSourceReadPlan
+ 
+     init(prepared: PreparedQwenCheckpoint, model: Module, convertBF16: Bool) throws {
+         let validated = try QwenDenseObservedSourceValidation.validateLegacy(
+             observedQwenDenseSource(prepared, model: model), convertBF16: convertBF16, purpose: .diagnostic)
+-        sourceBytes = validated.sourceBytes; largestSourceBytes = validated.largestSourceBytes
+-        expectedLayout = validated.expectedLayoutSHA256
++        self.validated = validated
+     }
+ }
+ 
+-private func validateDiagnosticQwen(model: any LanguageModel, configuration: Data,
++func validateDiagnosticQwen(model: any LanguageModel, configuration: Data,
+                                     policy: BaseConfiguration.PerLayerQuantization) throws -> Int {
+     guard let object = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
+           let modelType = object["model_type"] as? String,
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceAdmission.swift
+@@ -0,0 +1,63 @@
++import Foundation
++
++/// Exact CPU request/metadata identity for the new full-reference loading scope.
++/// This does not authorize payload reads, model arithmetic or allocation.
++struct QwenDenseShortReferenceAdmission {
++    let metadata: QwenDenseConstructorAdmission
++    let request: QwenLayerStageRecordedRequest
++    let promptData: Data, teacherData: Data
++    let promptSHA256: String, teacherSHA256: String, fingerprint: String
++    let maximumTokens = 5
++    let scope = "registered_dense_short_reference_3_2_2_v1"
++    let resourceAdmissionPerformed = false, forwardExecutionAuthorized = false
++
++    private init(metadata: QwenDenseConstructorAdmission, request: QwenLayerStageRecordedRequest,
++        prompt: Data, teacher: Data, promptSHA256: String, teacherSHA256: String
++    ) {
++        self.metadata = metadata; self.request = request
++        promptData = prompt; teacherData = teacher
++        self.promptSHA256 = promptSHA256; self.teacherSHA256 = teacherSHA256
++        fingerprint = QwenDenseProfileIdentity.fingerprint([
++            "registered-dense-short-reference-admission-v1", metadata.specification.model.rawValue,
++            metadata.specification.configurationSHA256, metadata.specification.manifestSHA256,
++            metadata.specification.artifactSHA256, metadata.plan.fingerprint,
++            request.fingerprint, promptSHA256, teacherSHA256,
++            "prompt=3|chunk=2|teacher=1|output=2|capacity=5",
++        ])
++    }
++
++    static func admit(metadata: QwenDenseConstructorAdmission, requestID: UUID,
++        promptData: Data, promptSHA256: String, teacherData: Data, teacherSHA256: String
++    ) throws -> Self {
++        guard (1...4096).contains(promptData.count), (1...4096).contains(teacherData.count),
++              QwenDenseProfileIdentity.isSHA256(promptSHA256), QwenDenseProfileIdentity.isSHA256(teacherSHA256),
++              QwenDenseProfileIdentity.sha256(promptData) == promptSHA256,
++              QwenDenseProfileIdentity.sha256(teacherData) == teacherSHA256,
++              metadata.plan.stages.count == 2,
++              metadata.plan.stages[0].sourceRange == 0..<(metadata.specification.layers / 2),
++              metadata.plan.stages[1].sourceRange == (metadata.specification.layers / 2)..<metadata.specification.layers else {
++            throw ProbeError("Short reference requires exact bounded raw inputs and the default registered Plan")
++        }
++        try validateWorkerJSON(promptData); try validateWorkerJSON(teacherData)
++        let prompt = try JSONDecoder().decode([Int].self, from: promptData)
++        let teacher = try JSONDecoder().decode([Int].self, from: teacherData)
++        guard prompt.count == 3, teacher.count == 1,
++              let root = try JSONSerialization.jsonObject(with: metadata.configuration) as? [String: Any] else {
++            throw ProbeError("Short reference requires three prompt IDs and one teacher ID")
++        }
++        let text = root["text_config"] as? [String: Any] ?? root
++        let vocabulary = try QwenStageMetadata.integer(text, "vocab_size", limit: 262144)
++        let context = try QwenStageMetadata.integer(text, "max_position_embeddings", limit: 1048576)
++        guard context >= 5 else { throw ProbeError("Short reference requires capacity for five tokens") }
++        let request = try QwenLayerStageRecordedRequest(request: .init(requestID: requestID,
++            promptCount: 3, chunkSize: 2, outputCount: 2), vocabularySize: vocabulary, prompt: prompt, teacher: teacher)
++        guard request.steps.count == 3, request.steps.map(\.committedTokens) == [2, 3, 4],
++              request.steps.map({ $0.frame.phase }) == [.prefill, .prefill, .decode],
++              request.steps.map({ $0.frame.tokenCount }) == [2, 1, 1],
++              request.steps.map({ $0.frame.finalPromptChunk }) == [false, true, false] else {
++            throw ProbeError("Short reference recorded schedule differs from its closed geometry")
++        }
++        return .init(metadata: metadata, request: request, prompt: promptData, teacher: teacherData,
++            promptSHA256: promptSHA256, teacherSHA256: teacherSHA256)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoadBudget.swift
+@@ -0,0 +1,82 @@
++import Foundation
++
++/// Exact full-source metadata plus caller-provided allocation bounds. Only a
++/// private owner that samples live resources can permit the ensuing reads.
++struct QwenDenseShortReferenceLoadBudget: Encodable {
++    let model: QwenRegisteredDenseModel
++    let profileFingerprint: String, planFingerprint: String, fullRequirementFingerprint: String
++    let admissionFingerprint: String, recordedRequestFingerprint: String
++    let promptSHA256: String, teacherSHA256: String, shortLedgerFingerprint: String
++    let tensors: [QwenDenseCanonicalTensor], allocationBounds: [Int]
++    let expectedLoadedLayoutSHA256: String
++    let roundedResidentBytes: Int, largestHostTensorBytes: Int, forwardReserveBytes: Int
++    let role = "fullReference", promptCount = 3, chunkSize = 2, outputCount = 2, teacherCount = 1
++    let maximumTokens = 5, forwardExecuted = false, resourceAdmissionPerformed = false
++
++    private init(profile: QwenRegisteredDenseModelProfile, requirement: QwenDenseStorageRequirement,
++        source: QwenDenseSourceReadPlan, admission: QwenDenseShortReferenceAdmission,
++        ledger: QwenDenseShortRequestLedger, allocationBounds: [Int], rounded: Int
++    ) {
++        model = profile.model; profileFingerprint = profile.fingerprint
++        planFingerprint = requirement.planFingerprint; fullRequirementFingerprint = requirement.fingerprint
++        admissionFingerprint = admission.fingerprint; recordedRequestFingerprint = admission.request.fingerprint
++        promptSHA256 = admission.promptSHA256; teacherSHA256 = admission.teacherSHA256
++        shortLedgerFingerprint = ledger.fingerprint; tensors = source.tensors.map(\.canonical)
++        self.allocationBounds = allocationBounds; expectedLoadedLayoutSHA256 = source.expectedLayoutSHA256
++        roundedResidentBytes = rounded; largestHostTensorBytes = source.largestSourceBytes
++        forwardReserveBytes = ledger.forwardReserveBytes
++    }
++
++    static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
++        requirement: QwenDenseStorageRequirement, source: QwenDenseSourceReadPlan,
++        admission: QwenDenseShortReferenceAdmission, ledger: QwenDenseShortRequestLedger,
++        allocationBounds: [Int]
++    ) throws -> Self {
++        let rebuilt = try QwenDenseStorageRequirement.derive(profile: profile, plan: plan, role: .fullReference)
++        guard requirement.role == .fullReference, requirement.fingerprint == rebuilt.fingerprint,
++              requirement.selectedInertBytes == 0, requirement.selectedActiveBytes == profile.sourceTensorBytes,
++              source.registeredProfileFingerprint == profile.fingerprint,
++              source.registeredRequirementFingerprint == requirement.fingerprint,
++              source.tensors.map(\.canonical) == profile.canonicalTensors,
++              source.sourceBytes == profile.sourceTensorBytes,
++              source.largestSourceBytes == profile.largestSourceTensorBytes,
++              admission.metadata.specification.model == profile.model,
++              admission.metadata.configuration == profile.configuration,
++              admission.metadata.manifest == profile.manifest,
++              admission.metadata.plan.fingerprint == plan.fingerprint,
++              plan.stages[0].sourceRange.upperBound == profile.geometry.layers / 2,
++              ledger.scope == .fullReference, ledger.model == profile.model,
++              ledger.modelProfileFingerprint == profile.fingerprint, ledger.planFingerprint == plan.fingerprint,
++              ledger.recordedRequestFingerprint == admission.request.fingerprint,
++              ledger.promptCount == 3, ledger.chunkSize == 2, ledger.outputCount == 2,
++              ledger.teacherCount == 1, ledger.maximumTokens == 5,
++              ledger.committedFrontiers == [2, 3, 4], ledger.forwardReserveBytes > 0 else {
++            throw ProbeError("Short full-reference budget differs in source, role, Plan or recorded request")
++        }
++        guard source.tensors.count == allocationBounds.count,
++              zip(source.tensors, allocationBounds).allSatisfy({ $0.1 >= $0.0.canonical.byteCount }),
++              source.tensors.allSatisfy({ $0.loadedDType ==
++                  ["U32": "uint32", "BF16": "bfloat16", "F32": "float32"][$0.canonical.sourceDType] }) else {
++            throw ProbeError("Short full-reference allocator bounds or loaded types differ")
++        }
++        let rounded = try QwenLongPrefillCheckedBytes.sum(allocationBounds)
++        return .init(profile: profile, requirement: requirement, source: source, admission: admission,
++            ledger: ledger, allocationBounds: allocationBounds, rounded: rounded)
++    }
++
++    func remainingAllocationBytes(after ordinal: Int) throws -> Int {
++        guard (0...tensors.count).contains(ordinal) else {
++            throw ProbeError("Short full-reference load progress is outside its source inventory")
++        }
++        return try QwenLongPrefillCheckedBytes.sum(Array(allocationBounds.dropFirst(ordinal)))
++    }
++
++    func requireEntry(name: String, shape: [Int], sourceDType: String, byteCount: Int, ordinal: Int) throws {
++        guard tensors.indices.contains(ordinal) else { throw ProbeError("Short full-reference reads were consumed") }
++        let expected = tensors[ordinal]
++        guard name == expected.name, shape == expected.shape,
++              sourceDType == expected.sourceDType, byteCount == expected.byteCount else {
++            throw ProbeError("Short full-reference attempted a different or unordered tensor")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoadTypes.swift
+@@ -0,0 +1,27 @@
++import Foundation
++
++struct QwenDenseShortReferenceLoadResult {
++    let receipt: VerifiedQwenDiagnosticReceipt
++    let budget: QwenDenseShortReferenceLoadBudget
++    let resources: [QwenDenseShortReferenceResourceDecision]
++    let memory: [QwenStageMemoryObservation]
++}
++
++struct QwenDenseShortReferenceLoadReport: Encodable {
++    let kind = "qwen_dense_short_reference_load_report", schemaVersion = 1, completed = true
++    let model: QwenRegisteredDenseModel
++    let admissionFingerprint: String, recordedRequestFingerprint: String
++    let load: VerifiedQwenDiagnosticReceipt, budget: QwenDenseShortReferenceLoadBudget
++    let initialResources: QwenDenseStageLoadOSObservation, releasedResources: QwenDenseStageLoadOSObservation
++    let loadingResources: [QwenDenseShortReferenceResourceDecision]
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    let fullReferencePayloadMaterialized = true, fullModelParametersEvaluated = true
++    let fullModelsLoaded = 1, fullCheckpointVerificationPasses = 1
++    let modelReleased = true, verifiedFileOwnerReleased = true, cacheClearCompleted = true
++    let actualResourceAdmissionPerformed = true, parentProcessFencingIndependentlyRequired = true
++    let forwardExecuted = false, requestStateCreated = false, embeddingArithmeticExecuted = false
++    let numericalParityEstablished = false, tensorValuesIndependentlyCompared = false
++    let providerEligibilityEstablished = false, throughputMeasurementValid = false
++    let wholeProcessMemorySafetyEstablished = false
++}
++
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoading.swift
+@@ -0,0 +1,213 @@
++import Foundation
++import MLX
++import MLXNN
++import MLXLLM
++import MLXLMCommon
++
++/// File-private implementation detail inside the one full-model owner.
++/// Construction performs live IO and cannot be replaced by a pure decision.
++private final class QwenDenseShortReferenceLoadGate {
++    let budget: QwenDenseShortReferenceLoadBudget
++    private var next = 0, failed = false, finished = false
++    private var observations: [QwenDenseShortReferenceResourceDecision] = []
++
++    init(budget: QwenDenseShortReferenceLoadBudget) throws {
++        self.budget = budget
++        let maximumBuffer = GPU.deviceInfo().maxBufferSize
++        guard maximumBuffer > 0, budget.allocationBounds.allSatisfy({ $0 <= maximumBuffer }) else {
++            throw ProbeError("Short full-reference allocation exceeds the device maximum buffer")
++        }
++        try observe()
++    }
++
++    func observe() throws {
++        do {
++            // At most 1847 tensors: pre-read plus two settled checks each,
++            // followed by bounded setup/finalization checks, fits this bound.
++            guard !failed, !finished, observations.count < 8192 else {
++                throw ProbeError("Short full-reference gate is failed, consumed or exceeds its observation limit")
++            }
++            let os = try QwenDenseStageLoadResources.observeOS()
++            let native = QwenDenseStageLoadResources.observeNative()
++            observations.append(try QwenDenseShortReferenceResourcePolicy.evaluate(budget: budget,
++                ordinal: next, os: os, native: native, now: DispatchTime.now().uptimeNanoseconds))
++        } catch { failed = true; throw error }
++    }
++
++    func beforeRead(name: String, tensor: QwenCheckpointTensor) throws {
++        do {
++            guard !failed, !finished else { throw ProbeError("Short full-reference gate was consumed or failed") }
++            let dtype: String
++            switch tensor.dtype {
++            case .uint32: dtype = "U32"
++            case .bfloat16: dtype = "BF16"
++            case .float16: dtype = "F16"
++            case .float32: dtype = "F32"
++            default: dtype = "unsupported"
++            }
++            try budget.requireEntry(name: name, shape: tensor.shape, sourceDType: dtype,
++                byteCount: tensor.byteCount, ordinal: next)
++            try observe()
++            next += 1
++        } catch { failed = true; throw error }
++    }
++
++    func finish() throws -> [QwenDenseShortReferenceResourceDecision] {
++        do {
++            guard !failed, !finished, next == budget.tensors.count else {
++                throw ProbeError("Short full-reference did not consume its complete source inventory")
++            }
++            try observe(); finished = true
++            return observations
++        } catch { failed = true; throw error }
++    }
++
++    func fail() { failed = true }
++}
++
++/// Future recording stays within this private scope. Current callers receive
++/// only CPU loading evidence, after the sole model has left the autorelease pool.
++private func materializeShortReference(checkpoint: VerifiedCheckpoint,
++    admission: QwenDenseShortReferenceAdmission, check: () throws -> Void
++) throws -> QwenDenseShortReferenceLoadResult {
++    let metadata = admission.metadata, plan = metadata.plan
++    guard checkpoint.aggregate == metadata.specification.artifactSHA256,
++          checkpoint.verifiedManifestSHA256 == metadata.specification.manifestSHA256,
++          !_qwen35MTPEnabled else {
++        throw ProbeError("Short full-reference requires exact verified source and MTP disabled")
++    }
++    try checkpoint.requireConfiguration(metadata.configuration)
++    let base = try JSONDecoder().decode(BaseConfiguration.self, from: metadata.configuration)
++    guard let policy = base.perLayerQuantization else {
++        throw ProbeError("Short full-reference requires the retained quantization policy")
++    }
++    weak var retiredModel: Module?
++    let result: QwenDenseShortReferenceLoadResult
++    do {
++        result = try autoreleasepool {
++            try withRandomState(MLXRandom.RandomState(seed: 7)) {
++                let model = try constructQwenModel(metadata.configuration)
++                retiredModel = model; try check()
++                let layers = try validateDiagnosticQwen(model: model, configuration: metadata.configuration, policy: policy)
++                guard layers == plan.layers else { throw ProbeError("Short full-reference constructor layer count differs") }
++                let prepared = try PreparedQwenCheckpoint(model: model, checkpoint: checkpoint,
++                    originalConfiguration: metadata.configuration, policy: policy)
++                try check()
++                let observed = observedQwenDenseSource(prepared, model: model)
++                let profile = try QwenRegisteredDenseModelProfile.admit(configuration: metadata.configuration,
++                    manifest: metadata.manifest, expectedArtifactAggregateSHA256: checkpoint.aggregate,
++                    canonicalTensors: observed.map(\.canonical))
++                let requirement = try QwenDenseStorageRequirement.derive(profile: profile, plan: plan, role: .fullReference)
++                let identity = QwenDenseObservedSourceIdentity(aggregateSHA256: checkpoint.aggregate,
++                    configurationSHA256: checkpoint.configurationSHA256,
++                    verifiedManifestSHA256: checkpoint.verifiedManifestSHA256,
++                    retainedSourceCount: prepared.sourceTensorCount, bf16ConversionEnabled: true)
++                let source = try QwenDenseObservedSourceValidation.validateRegistered(observed,
++                    identity: identity, profile: profile, requirement: requirement, plan: plan)
++                _ = try validatedQwenFeedForwardScaleTypes(model, layers: layers,
++                    isMoE: false, requireTwoWaySplit: false)
++                let maximumBuffer = GPU.deviceInfo().maxBufferSize
++                guard maximumBuffer > 0 else { throw ProbeError("Short full-reference device has no valid maximum buffer") }
++                func allocationBound(_ bytes: Int) throws -> Int {
++                    let bound = try Memory.allocationFootprintUpperBound(byteCount: bytes)
++                    guard bound <= maximumBuffer else {
++                        throw ProbeError("Short full-reference named allocation exceeds the device maximum buffer")
++                    }
++                    return bound
++                }
++                let ledger = try QwenDenseShortRequestLedger.derive(profile: profile, plan: plan,
++                    request: admission.request, scope: .fullReference, allocationFootprintUpperBound: allocationBound)
++                let bounds = try source.tensors.map { try allocationBound($0.canonical.byteCount) }
++                let budget = try QwenDenseShortReferenceLoadBudget.derive(profile: profile, plan: plan,
++                    requirement: requirement, source: source, admission: admission, ledger: ledger, allocationBounds: bounds)
++                try check()
++                let gate = try QwenDenseShortReferenceLoadGate(budget: budget)
++                do {
++                    func checked() throws { try check(); try gate.observe(); try check() }
++                    let before = QwenStageMemoryObservation("before_short_full_reference_payload_load")
++                    let receipt = try withoutActuallyEscaping(check) { borrowedCheck in
++                        try materializeVerifiedQwenDiagnostic(model: model, prepared: prepared,
++                            originalConfiguration: metadata.configuration, storage: source,
++                            convertBF16: true, check: checked, beforeTensor: { name, tensor in
++                                try borrowedCheck(); try gate.beforeRead(name: name, tensor: tensor); try borrowedCheck()
++                            })
++                    }
++                    try check(); try checkpoint.checkUnchanged()
++                    let observations = try gate.finish()
++                    return QwenDenseShortReferenceLoadResult(receipt: receipt, budget: budget,
++                        resources: observations, memory: [before, QwenStageMemoryObservation("short_full_reference_payload_loaded")])
++                } catch { gate.fail(); throw error }
++            }
++        }
++    } catch {
++        let primary = error
++        guard retiredModel == nil else { throw ProbeError("Short full-reference failed (\(primary)); model remained retained") }
++        throw primary
++    }
++    guard retiredModel == nil else { throw ProbeError("Short full-reference model remained retained") }
++    try check()
++    return result
++}
++
++/// Loading-only support, not a new CLI or forward path. Exactly one descriptor
++/// owner and model are retired before the CPU report returns. No output is emitted.
++func runQwenDenseShortReferenceLoadSupport(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    check: () throws -> Void
++) throws -> QwenDenseShortReferenceLoadReport {
++    let initial = try QwenDenseStageLoadResources.requireInitial()
++    let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
++    guard try canonicalJSONData(arithmetic) == canonicalJSONData(admission.metadata.arithmetic) else {
++        throw ProbeError("Short full-reference arithmetic environment changed after admission")
++    }
++    try check()
++    weak var retiredFiles: VerifiedCheckpoint?
++    do {
++        return try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
++            do {
++                try checked()
++                guard !_qwen35MTPEnabled else { throw ProbeError("Short full-reference requires MTP disabled") }
++                let runtime = QwenDenseStageLoadRuntimeObservation()
++                try checked()
++                let result = try autoreleasepool {
++                    let metadata = admission.metadata
++                    let checkpoint = try VerifiedCheckpoint(directory: directory,
++                        configurationData: metadata.configuration,
++                        expectedAggregateSHA256: metadata.specification.artifactSHA256,
++                        maximumPayloadBytes: metadata.specification.manifestBytes,
++                        expectedManifestSHA256: metadata.specification.manifestSHA256)
++                    retiredFiles = checkpoint; try checked()
++                    let result = try materializeShortReference(checkpoint: checkpoint, admission: admission, check: checked)
++                    try checkpoint.checkUnchanged(); try checked()
++                    return result
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++                guard retiredFiles == nil else { throw ProbeError("Short full-reference retained its verified file owner") }
++                Memory.clearCache(); try checked()
++                let released = try QwenDenseStageLoadResources.requireInitial(); try checked()
++                return QwenDenseShortReferenceLoadReport(model: admission.metadata.specification.model,
++                    admissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
++                    load: result.receipt, budget: result.budget, initialResources: initial, releasedResources: released,
++                    loadingResources: result.resources, memory: result.memory
++                        + [QwenStageMemoryObservation("short_full_reference_released_cache_cleared")], runtime: runtime)
++            } catch {
++                let primary = error
++                do { try nativeError.check() }
++                catch { throw ProbeError("Native short full-reference failure (\(error)); accompanying Swift failure: \(primary)") }
++                throw primary
++            }
++        }
++    } catch {
++        let primary = error
++        var cleanup: [String] = []
++        do {
++            try MLX.withError { error in
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
++                Memory.clearCache(); try error.check()
++            }
++        } catch { cleanup.append(String(describing: error)) }
++        if retiredFiles != nil { cleanup.append("verified file owner remained retained") }
++        if !cleanup.isEmpty { throw ProbeError("Short full-reference load failed (\(primary)); cleanup: \(cleanup.joined(separator: "; "))") }
++        throw primary
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceResourcePolicy.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++struct QwenDenseShortReferenceResourceDecision: Encodable {
++    let policy = "registered_dense_short_full_reference_resources_v1", role = "fullReference"
++    let ordinal: Int, remainingAllocationBytes: Int, forwardReserveBytes: Int
++    let requiredActualFreeBytes: Int, requiredAllocatorBytes: Int
++    let os: QwenDenseStageLoadOSObservation, native: QwenDenseStageLoadNativeObservation
++    let reclaimableUsedForAdmission = false, wholeProcessMemorySafetyEstablished = false
++    let forwardExecuted = false, reserveTermsAreOperationalPolicy = true
++}
++
++/// Pure predicates, never a load grant. The private full owner supplies live
++/// observations and its exact actual-descriptor/short-request bound budget.
++enum QwenDenseShortReferenceResourcePolicy {
++    static func evaluate(budget: QwenDenseShortReferenceLoadBudget, ordinal: Int,
++        os: QwenDenseStageLoadOSObservation, native: QwenDenseStageLoadNativeObservation, now: UInt64
++    ) throws -> QwenDenseShortReferenceResourceDecision {
++        try QwenDenseStageLoadPolicy.requireInitial(os, now: now)
++        guard [native.activeBytes, native.cacheBytes, native.peakBytes].allSatisfy({ $0 >= 0 }),
++              native.allocatorLimitBytes > 0, native.peakBytes >= native.activeBytes else {
++            throw ProbeError("Invalid short full-reference native allocator observation")
++        }
++        let remaining = try budget.remainingAllocationBytes(after: ordinal)
++        let host = ordinal == budget.tensors.count ? 0 : budget.largestHostTensorBytes
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let freeRequired = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++            try sum([remaining, host, host, budget.forwardReserveBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++        let allocatorRequired = try sum([native.activeBytes, native.cacheBytes,
++            remaining, host, budget.forwardReserveBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
++        guard os.actualFreeBytes >= freeRequired, os.physicalMemoryBytes >= freeRequired,
++              native.allocatorLimitBytes >= allocatorRequired else {
++            throw ProbeError("Short full-reference exceeds current actual-free or allocator limits")
++        }
++        return .init(ordinal: ordinal, remainingAllocationBytes: remaining,
++            forwardReserveBytes: budget.forwardReserveBytes, requiredActualFreeBytes: freeRequired,
++            requiredAllocatorBytes: allocatorRequired, os: os, native: native)
++    }
++}

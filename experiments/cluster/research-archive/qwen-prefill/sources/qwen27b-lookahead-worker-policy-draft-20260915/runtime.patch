@@ -1,0 +1,12 @@
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -13,9 +13,6 @@
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
+         let environment = ProcessInfo.processInfo.environment
+         let selected = try BenchmarkPrefillPolicy.parse(environment[BenchmarkPrefillPolicy.environmentName])
+-        guard selected == .serial else {
+-            throw WorkerFailure.invalid("27B native validation requires serial recording")
+-        }
+         switch selected {
+         case .serial: prefillPolicy = .serial
+         case .oneChunkLookahead: prefillPolicy = .oneChunkLookahead

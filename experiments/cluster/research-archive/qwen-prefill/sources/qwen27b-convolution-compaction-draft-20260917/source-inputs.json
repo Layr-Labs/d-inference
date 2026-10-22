@@ -1,0 +1,119 @@
+{
+  "schema": "qwen27b_compaction_source_inputs_v1",
+  "workspace": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace",
+  "authorities": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/manifest.json",
+      "bytes": 15617,
+      "sha256": "31eb155a8cc15dd2e0ffa22e50dfd7a05c382b24172e02c767b990901f467fd5"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Build/source-snapshot-1.json",
+      "bytes": 615947,
+      "sha256": "e062d94872fdac0f3fbb483896586be8d11954543d66cf7e04e084a493c4d3ca"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Build/dependency-snapshot-1.json",
+      "bytes": 1764919,
+      "sha256": "7ea139cc8956703eda9b5baefe9ca072dd461bf51fb14f265fa834861aeb71ee"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-convolution-backing-source-audit-20260917/manifest.json",
+      "bytes": 380,
+      "sha256": "70bab9da257950532dab834df38dc817817684e91b30f4084faa147fc431761f"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-convolution-backing-source-audit-20260917/source-review.json",
+      "bytes": 30880,
+      "sha256": "db79e6ecf737e9565f5a54c467e55b7323853272ab96a781552540815b4c73c2"
+    }
+  ],
+  "preimages": [
+    {
+      "relativePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift",
+      "bytes": 8981,
+      "sha256": "516cfd9112a15864d14098d9fbba30d607bcb41c24f73e0cd5793754ef5c2523"
+    },
+    {
+      "relativePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "bytes": 22518,
+      "sha256": "38fefbb31a8ff1738ef0d269321643b0864d5aeea32727ebe93db5945de42f94"
+    },
+    {
+      "relativePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift",
+      "bytes": 13997,
+      "sha256": "477f6a70584b32401c486903f68a9c12dc3c93c52785ff46dedf5051c4bf9eb8"
+    },
+    {
+      "relativePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "bytes": 8655,
+      "sha256": "b80a93702070eb9cc5a18c99e07c03452d524517aea4cfb2b265676412753e04"
+    },
+    {
+      "relativePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "bytes": 25621,
+      "sha256": "9b323b785b188491f2ae21c15f208090b19aea3daef10a21b852a0d1f35129d1"
+    }
+  ],
+  "newSourcePaths": [
+    "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenConvolutionCompaction.swift",
+    "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenConvolutionCompactionRows.swift"
+  ],
+  "unchangedRuntimeDependencies": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry.swift",
+      "bytes": 5740,
+      "sha256": "612fac0a2e4bfb47b61d34631cdd6c4acdd763addb940a0003551da34af71c04"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "bytes": 7210,
+      "sha256": "a32d94cf3c60b83da49ba099a32f3904e7af688ba9ebe2d5736ee46eae18b4ee"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillTensorBudget.swift",
+      "bytes": 5916,
+      "sha256": "671b0d788eb3950c12f928c61fb12eb6e99d97c386a97a928bec6c8a96e81c09"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredSpecification.swift",
+      "bytes": 3326,
+      "sha256": "964df43a6caa8affb2b6c085e2a1d02e5ab9f54d605ed4bba21f4912c0a09a26"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRegisteredDenseModelProfile.swift",
+      "bytes": 8419,
+      "sha256": "c726db0a05fdfadecba3b102485e4ee66217f93f7dd19f5bdf1a65455f67f197"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStagePlan.swift",
+      "bytes": 10746,
+      "sha256": "d3ccab7ac3531ea34c5bb64ec70c07d03d2a273306a38f9e8f7ff85dccbda97e"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseResources.swift",
+      "bytes": 6735,
+      "sha256": "10148d3d95626cddbd32e1e25bc5251a746c514f6891a8523d583e3c2d466c56"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseScope.swift",
+      "bytes": 1725,
+      "sha256": "b13200f76b6889248997a736f4c850313cbf84e15c70836551f5ff1b76234d37"
+    }
+  ],
+  "testMethods": [
+    "testNamedAllowanceUsesOnlyExistingConvolutionTerm",
+    "testInvalidOrInsufficientAllocatorProofRefuses",
+    "testActualLargeTailBitsAndCopyAliasControl",
+    "testTwoActualPlainCommitsPreserveOldStateAndUseOneEval",
+    "testCommittedAliasRefusesBeforeAnyMutation",
+    "testCrossLayerPendingAliasRefusesBeforeAnyMutation",
+    "testWrongShapeDTypeAndRootOrderRefuseBeforeMutation",
+    "testOtherRankStateGeometryRefusesWithoutMutation",
+    "testCapturedWindowAndUncommittedSuccessorRefuse",
+    "testCheckFailureAfterCopyConstructionDoesNotMutate",
+    "testPostMutationFailureOnlyChangesPendingAndRollsBack"
+  ],
+  "testsExecuted": false,
+  "nativeBuildOrBindingExists": false
+}

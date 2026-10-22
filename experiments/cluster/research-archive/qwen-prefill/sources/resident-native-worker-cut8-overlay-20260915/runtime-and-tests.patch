@@ -1,0 +1,129 @@
+--- a/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
++++ b/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+@@ -35,7 +35,7 @@
+          environment: [String: String], now: UInt64,
+          read: (URL, Int) throws -> Data) throws {
+         let identity = configuration.identity
+-        guard (0...1).contains(configuration.rank), [12, 16].contains(configuration.stageCut),
++        guard (0...1).contains(configuration.rank), [8, 12, 16].contains(configuration.stageCut),
+               configuration.modelDirectory.isFileURL,
+               identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
+               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
+@@ -50,7 +50,7 @@
+               identity.artifactSHA256 == spec.artifactSHA256,
+               sha256(configBytes) == spec.configurationSHA256,
+               sha256(manifestBytes) == spec.manifestSHA256 else {
+-            throw ProbeError("Resident load requires the closed 9B identity, cut12|16 and bounded local lifetime")
++            throw ProbeError("Resident load requires the closed 9B identity, cut8|12|16 and bounded local lifetime")
+         }
+         // Before any model construction or native environment cache is used.
+         arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+--- a/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
++++ b/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
+@@ -9,7 +9,7 @@
+     let selectedRequirement: QwenDenseStorageRequirement
+ }
+ 
+-/// A private ordered-load gate for this separately admitted resident cut12|16
++/// A private ordered-load gate for this separately admitted resident cut8|12|16
+ /// scope. The existing default-half-only StageLoadBudget policy is untouched.
+ private final class QwenResidentLoadGate {
+     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
+--- a/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
++++ b/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+@@ -31,14 +31,14 @@
+             return value
+         }
+         let rank = try integer("--rank"), cut = try integer("--stage-cut")
+-        guard (0...1).contains(rank), [12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
++        guard (0...1).contains(rank), [8, 12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
+               fields["--model-id"] == "registered_qwen35_9b",
+               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
+               epoch.uuidString.lowercased() == fields["--membership-epoch"],
+               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
+               String(deadline) == fields["--deadline-uptime-nanoseconds"],
+               deadline > now, deadline - now <= 300_000_000_000 else {
+-            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut12|16 and a <=300-second local lifetime")
++            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut8|12|16 and a <=300-second local lifetime")
+         }
+         let peers = try (0...1).map { index -> ClusterWorkerPeer in
+             let label = fields["--peer\(index)-id"]!
+--- a/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
++++ b/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
+@@ -45,7 +45,7 @@
+     }
+ 
+     func testExactCutsAndBothLocalRanks() throws {
+-        for cut in [12, 16] { for rank in [0, 1] {
++        for cut in [8, 12, 16] { for rank in [0, 1] {
+             let value = try admission(cut: cut, rank: rank)
+             XCTAssertEqual(value.plan.stages[0].sourceRange.upperBound, cut)
+             XCTAssertEqual(value.jaccl.rank, rank)
+@@ -56,9 +56,45 @@
+         } }
+     }
+ 
++    func testCut8UsesCompleteRegisteredPartitionAndIntervalPhase() throws {
++        let (config, _, tensors) = try fixture()
++        let value = try admission(cut: 8)
++        let plan = value.plan
++        XCTAssertEqual(plan.fingerprint, "0f287a057042275470eeab37596b621d1134061db0c1fd9ef9b09022ea81da92")
++        XCTAssertEqual(plan.stages.map(\.sourceRange), [0..<8, 8..<32])
++        XCTAssertEqual(plan.stages.flatMap { $0.layers.map(\.globalIndex) }, Array(0..<32))
++        for stage in plan.stages {
++            XCTAssertEqual(stage.layers.map(\.localIndex), Array(0..<stage.sourceRange.count))
++            for layer in stage.layers {
++                XCTAssertEqual(layer.globalIndex, stage.sourceRange.lowerBound + layer.localIndex)
++                XCTAssertEqual(layer.kind, (layer.localIndex + 1) % 4 == 0 ? "full_attention" : "linear_attention")
++            }
++        }
++        let mapping = try plan.parameters(canonicalSourceNames: tensors.map(\.name))
++        let byName = Dictionary(uniqueKeysWithValues: tensors.map { ($0.name, $0) })
++        XCTAssertEqual(mapping.count, 927)
++        XCTAssertEqual(Set(mapping.map(\.sourceName)), Set(tensors.map(\.name)))
++        XCTAssertEqual(Set(mapping.map { "\($0.stage):\($0.localName)" }).count, 927)
++        XCTAssertEqual([0, 1].map { rank in mapping.filter { $0.stage == rank }.count }, [233, 694])
++        for rank in [0, 1] {
++            let selected = try mapping.filter { $0.stage == rank }.map { try XCTUnwrap(byName[$0.sourceName]) }
++            XCTAssertEqual(selected.reduce(0) { $0 + $1.byteCount }, [1_545_572_992, 3_492_468_608][rank])
++            XCTAssertEqual(selected.filter { $0.sourceDType == "F32" }.count, [6, 18][rank])
++        }
++        XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.model.embed_tokens.weight")?.stage, 0)
++        XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.model.norm.weight")?.stage, 1)
++        XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.lm_head.weight")?.stage, 1)
++        for ranges in [[0..<7, 7..<32], [0..<9, 9..<32], [0..<8, 9..<32], [0..<8, 7..<32]] {
++            XCTAssertThrowsError(try QwenLayerStagePlan(configuration: config, ranges: ranges, activeMTP: false))
++        }
++    }
++
+     func testWrongClosedMetadataRefusesBeforeDeviceFileRead() throws {
+         let (config, manifest, _) = try fixture()
+-        for value in [configuration(cut: 8), configuration(rank: 2), configuration(model: "registered_qwen38_27b"),
++        for value in [configuration(cut: 7), configuration(cut: 9), configuration(cut: 10),
++                      configuration(cut: 11), configuration(cut: 13), configuration(cut: 15),
++                      configuration(cut: 17), configuration(cut: 4), configuration(cut: 20),
++                      configuration(cut: 0), configuration(cut: 32), configuration(rank: 2), configuration(model: "registered_qwen38_27b"),
+                       configuration(deadline: 100), configuration(deadline: 300_000_000_101)] {
+             var reads = 0
+             XCTAssertThrowsError(try QwenResidentAdmission(configuration: value, configBytes: config,
+--- a/Tests/DarkbloomClusterWorkerTests/WorkerTests.swift
++++ b/Tests/DarkbloomClusterWorkerTests/WorkerTests.swift
+@@ -131,8 +131,16 @@
+             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+             "--deadline-uptime-nanoseconds", "300000000100"]
+-        XCTAssertEqual(try WorkerConfiguration(arguments: args, now: 100).load.rank, 0)
+-        for (index, value) in [(3, "00"), (5, "8"), (7, epoch.uppercased()), (9, "other"), (23, "300000000101")] {
++        for cut in [8, 12, 16] { for rank in [0, 1] {
++            var selected = args; selected[3] = String(rank); selected[5] = String(cut)
++            let value = try WorkerConfiguration(arguments: selected, now: 100)
++            XCTAssertEqual(value.load.rank, rank); XCTAssertEqual(value.load.stageCut, cut)
++        } }
++        for cut in ["7", "9", "10", "11", "13", "15", "17", "4", "20", "0", "32", "08", "+8", "8.0"] {
++            var selected = args; selected[5] = cut
++            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100))
++        }
++        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "300000000101")] {
+             var changed = args; changed[index] = value
+             XCTAssertThrowsError(try WorkerConfiguration(arguments: changed, now: 100))
+         }

@@ -1,0 +1,59 @@
+--- a/prepare_remote.py
++++ b/prepare_remote.py
+@@ -15,7 +15,7 @@
+ def main():
+     metadata=json.loads((BASE/'deployment.json').read_bytes())
+     target=Path(metadata['remoteRoot'])
+-    assert str(target)=='/Users/developer/DarkbloomDev/qwen27b-resident-solo-short-generation-20260916'
++    assert str(target)=='/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916'
+     output=BASE/'deployment-1';output.mkdir(mode=0o700)
+     stage=output/'stage';stage.mkdir(mode=0o700)
+     # Whitelist the20-file supervisor tree (including its inputs and manifest)
+--- a/remote_preflight.py
++++ b/remote_preflight.py
+@@ -1,7 +1,7 @@
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+ root=Path(value['remoteRoot'])
+-assert root==Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-short-generation-20260916') and root.resolve()==root
++assert root==Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916') and root.resolve()==root
+ sys.path.insert(0,str(root/'supervisor'));from reference_resources import sample_local,validate_local
+ observed={}
+ for item in value['files']:
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -4,7 +4,7 @@
+ out=base/'run-1';out.mkdir(mode=0o700)
+ script='''from pathlib import Path
+ import json,os,subprocess,sys
+-root=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-short-generation-20260916')
++root=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916')
+ sys.path.insert(0,str(root/'supervisor'));sys.dont_write_bytecode=True
+ from reference_resources import sample_local,validate_local
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True)
+@@ -15,12 +15,12 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(root/'supervisor')
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','8500b7992db44ea9312679d73a315498addd924c89f82d148876ff5bb2ea0f96','--launcher-sha256','9ba9fc268bc3439add530dcefa6e1d096ff1562518996e48aa413e2ef86a70a9'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','__BOUND_JOB_SHA256__','--launcher-sha256','__BOUND_LAUNCHER_SHA256__'])
+ '''
+ (out/'remote-launch.py').write_text(script)
+ from parent_settings import SSH
+ argv=SSH+['-S','none','darkbloom-48','/usr/bin/python3 -B -']
+-start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-short-generation-20260916/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
++start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
+ with (out/'ssh.stdout').open('xb') as stdout,(out/'ssh.stderr').open('xb') as stderr:
+  child=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=stdout,stderr=stderr,start_new_session=True)
+  receipt.update(sshPID=child.pid,sshPGID=child.pid)
+--- a/collect_run.py
++++ b/collect_run.py
+@@ -11,7 +11,7 @@
+ 
+ REMOTE = r'''from pathlib import Path
+ import base64,hashlib,json,subprocess,sys
+-p=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-short-generation-20260916/runs')/sys.argv[1]
++p=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916/runs')/sys.argv[1]
+ items=[]
+ for f in sorted(p.rglob('*')):
+  if f.is_file():

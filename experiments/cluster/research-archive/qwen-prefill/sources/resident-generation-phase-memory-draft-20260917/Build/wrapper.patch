@@ -1,0 +1,264 @@
+--- ancestor/build_inputs.py
++++ observer/build_inputs.py
+@@ -5,16 +5,16 @@
+ import os
+ 
+ BASE = Path(__file__).resolve().parent
+-OLD = BASE.parent.parent / 'qwen27b-lookahead-native-build-20260915'
++OLD = BASE.parent.parent / 'resident-generation-phase-native-draft-20260916' / 'Build'
+ DRAFT = BASE.parent
+-WORK = BASE / 'workspace'
++WORK = OLD / 'workspace'
+ PACKAGE = WORK / 'libs/darkbloom-cluster-worker'
+ CACHE = PACKAGE / '.build-native-worker'
+ METALLIB_SHA = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+ PINS = {
+-    OLD / 'source-snapshot-1.json': 'cb87b47034d647429b53a95acaa45f169ff35796290bdcc7f3ebb59eaf233e18',
+-    OLD / 'dependency-snapshot-1.json': '42aa7c5edffe7d6e151fa153353de8e3e36ef31538f229df093647d43268213a',
+-    OLD / 'runtime-bundle-1/bundle.json': 'c536b96ff4da7c1e4a6de1a8c945f263ddf91e72142a0f19f29ce398b2488f9c',
++    OLD / 'source-snapshot-1.json': '73e8aa6a1181ba088fa29ca3a41ebbd099ecffb0b6436ba1e52846e298b6eaf0',
++    OLD / 'dependency-snapshot-1.json': '7ea139cc8956703eda9b5baefe9ca072dd461bf51fb14f265fa834861aeb71ee',
++    OLD / 'runtime-bundle-1/bundle.json': '276e493502a0cfe94aa7264ffdf7a4d0d0d035187ed0526dbd57965c6b51da54',
+ }
+ 
+ 
+@@ -54,22 +54,20 @@
+ def authority():
+     for path, expected in PINS.items():
+         if sha(path) != expected:
+-            raise RuntimeError('Inherited c35c authority changed: ' + str(path))
++            raise RuntimeError('Inherited phase6495 authority changed: ' + str(path))
+     for row in json.loads((DRAFT / 'manifest.json').read_bytes())['members']:
+         path = DRAFT / relative(row['path'])
+         if path.stat().st_size != row['bytes'] or sha(path) != row['sha256']:
+-            raise RuntimeError('Frozen phase source changed: ' + row['path'])
++            raise RuntimeError('Frozen phase-memory source changed: ' + row['path'])
+     sources = json.loads((OLD / 'source-snapshot-1.json').read_bytes())['members']
+     dependencies = json.loads((OLD / 'dependency-snapshot-1.json').read_bytes())['members']
+-    if len(sources) != 3040 or len(dependencies) != 8755:
+-        raise RuntimeError('Unexpected c35c source closure')
++    if len(sources) != 3050 or len(dependencies) != 8755:
++        raise RuntimeError('Unexpected phase6495 source closure')
+     return sources, dependencies
+ 
+ 
+ def verify():
+     sources, dependencies = authority()
+-    if snapshot(OLD / 'workspace') != sources:
+-        raise RuntimeError('Qualified c35c ancestor source changed')
+     old_cache = OLD / 'workspace/libs/darkbloom-cluster-worker/.build-native-worker'
+     if snapshot(old_cache / 'checkouts') != dependencies:
+         raise RuntimeError('Qualified dependency sources changed')
+@@ -81,6 +79,6 @@
+         changed.append(rel)
+     expected = sorted(expected.values(), key=lambda row: row['path'])
+     if snapshot(WORK) != expected or snapshot(CACHE / 'checkouts') != dependencies:
+-        raise RuntimeError('Prepared phase source/dependency closure differs')
++        raise RuntimeError('Prepared phase-memory source/dependency closure differs')
+     return dict(sourceMembers=len(expected), dependencyMembers=len(dependencies),
+-        changedSourcePaths=changed, originalSourceAndDependenciesUnchanged=True)
++        changedSourcePaths=changed, exactOverlayAndDependenciesVerified=True)
+--- ancestor/prepare.py
++++ observer/prepare.py
+@@ -1,78 +1,19 @@
+-"""Create a fresh source tree and private APFS compiler-cache clone, without compiling."""
+-import json
+-import os
+-from pathlib import Path
+-import stat
+-import time
+-from build_inputs import BASE, OLD, DRAFT, WORK, CACHE, authority, relative, sha, snapshot, verify
++"""Root-granted same-cache source overlay, with one owned bounded preparation child."""
++import json, os, sys
++from build_inputs import BASE, sha
+ from owned_process import invoke_controller
+ 
+-
+ def main():
+-    started = time.monotonic()
+-    sources, dependencies = authority()
+-    if snapshot(OLD / 'workspace') != sources:
+-        raise RuntimeError('Original source differs before copy')
+-    original_cache = OLD / 'workspace/libs/darkbloom-cluster-worker/.build-native-worker'
+-    if snapshot(original_cache / 'checkouts') != dependencies:
+-        raise RuntimeError('Original dependencies differ before clone')
+-    WORK.mkdir(mode=0o700)
+-    for row in sources:
+-        source, destination = OLD / 'workspace' / relative(row['path']), WORK / relative(row['path'])
+-        destination.parent.mkdir(parents=True, exist_ok=True)
+-        if 'symlink' in row:
+-            destination.symlink_to(row['symlink'])
+-        else:
+-            with destination.open('xb') as stream:
+-                stream.write(source.read_bytes())
+-            destination.chmod(stat.S_IMODE(source.stat().st_mode))
+-    if snapshot(WORK) != sources:
+-        raise RuntimeError('Copied source preimage differs')
+-    for overlay in sorted((DRAFT / 'proposed').rglob('*.swift')):
+-        rel = overlay.relative_to(DRAFT / 'proposed')
+-        destination = WORK / rel
+-        destination.parent.mkdir(parents=True, exist_ok=True)
+-        destination.write_bytes(overlay.read_bytes())
+-    clone = dict(argv=['/bin/cp', '-cR', str(original_cache), str(CACHE)])
++    out=BASE/'prepare-1';out.mkdir(mode=0o700)
++    result=dict(steps=[],passed=False,compilerOrModelOrRemoteExecuted=False)
+     try:
+-        with (BASE / 'clone.stdout').open('xb') as stdout, (BASE / 'clone.stderr').open('xb') as stderr:
+-            invoke_controller(clone['argv'], stdout, stderr, clone, timeout=60)
+-    finally:
+-        (BASE / 'clone.json').write_text(json.dumps(clone, indent=2) + '\n')
+-    if clone['exitCode'] != 0 or not clone.get('reaped') or not clone.get('groupAbsent'):
+-        raise RuntimeError('Owned APFS clone failed or group remains')
+-    rewrites = []
+-    for current, directories, names in os.walk(CACHE):
+-        directories[:] = [x for x in directories if x not in {'checkouts', 'repositories', 'prebuilts', 'artifacts', 'ModuleCache'}]
+-        for name in names:
+-            path = Path(current) / name
+-            if path.is_symlink() or path.suffix not in {'.json', '.yaml', '.yml'}:
+-                continue
+-            before = path.read_bytes()
+-            after = before.replace(str(OLD).encode(), str(BASE).encode())
+-            if before != after:
+-                old_sha = sha(path)
+-                path.write_bytes(after)
+-                rewrites.append(dict(path=str(path.relative_to(CACHE)), beforeSHA256=old_sha, afterSHA256=sha(path)))
+-    moved = []
+-    for path in list(CACHE.rglob('ModuleCache')):
+-        if path.is_dir() and not path.is_symlink() and 'checkouts' not in path.relative_to(CACHE).parts:
+-            destination = BASE / ('retained-prior-' + '-'.join(path.relative_to(CACHE).parts))
+-            path.rename(destination)
+-            moved.append(str(destination.relative_to(BASE)))
+-    checked = verify()
+-    for name, root in [('source-snapshot-1.json', WORK), ('dependency-snapshot-1.json', CACHE / 'checkouts')]:
+-        rows = snapshot(root)
+-        with (BASE / name).open('x') as stream:
+-            json.dump(dict(root=str(root), memberCount=len(rows), members=rows), stream, indent=2)
+-            stream.write('\n')
+-    result = dict(**checked, cacheCloneSource=str(original_cache), cacheCloneDestination=str(CACHE),
+-        generatedCachePathRewrites=rewrites, retainedModuleCaches=moved,
+-        elapsedSeconds=time.monotonic() - started, compilerInvoked=False, modelOrRemoteExecuted=False)
+-    (BASE / 'preparation.json').write_text(json.dumps(result, indent=2) + '\n')
+-    print(json.dumps(dict(prepared=True, **checked, elapsedSeconds=result['elapsedSeconds'])))
+-
+-
+-if __name__ == '__main__':
+-    os.umask(0o077)
+-    main()
++        step=dict(name='guarded-source-overlay',argv=[sys.executable,'-B',str(BASE/'prepare_sources.py')])
++        result['steps'].append(step)
++        with (out/'stdout').open('xb') as stdout,(out/'stderr').open('xb') as stderr:
++            invoke_controller(step['argv'],stdout,stderr,step,timeout=120)
++        if step.get('exitCode')!=0 or not step.get('reaped') or not step.get('groupAbsent'):
++            raise RuntimeError('Preparation failed or owned group remains')
++        result.update(passed=True,preparationSHA256=sha(BASE/'preparation.json'))
++    finally:(out/'receipt.json').write_text(json.dumps(result,indent=2)+'\n')
++    print(json.dumps(result))
++if __name__=='__main__':os.umask(0o077);main()
+--- ancestor/check_cpu.py
++++ observer/check_cpu.py
+@@ -1,57 +1,60 @@
+-"""Root-granted Foundation/temporary-file checks only; no model/native worker."""
+-import json
+-import os
+-import sys
++"""Root-granted Foundation/temporary-file checks only; never launch a model worker."""
++import json, os, sys
+ from build_inputs import BASE, DRAFT, authority, sha
+ from owned_process import invoke_controller
+-
+ 
+ def main():
+     attempt, = sys.argv[1:]
+     if not attempt.isdecimal() or not 1 <= int(attempt) <= 99:
+         raise ValueError('Expected fresh numeric CPU attempt')
+     authority()
+-    out = BASE / ('cpu-' + attempt)
+-    out.mkdir(mode=0o700)
+-    runtime = DRAFT / 'proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime'
+-    worker = DRAFT / 'proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker'
+-    tests = DRAFT / 'Tests'
+-    common = [runtime / ('QwenGenerationPhase' + name + '.swift') for name in ['Observation', 'Budget', 'Recorder', 'Hook']]
+-    common += [tests / name for name in ['FixtureSupport.swift', 'ExactFrame.swift']]
+-    encoding = common + [runtime / ('QwenGenerationPhase' + name + '.swift') for name in ['HostAllocation', 'JSON', 'Encoding']]
+-    encoding += [tests / name for name in ['ExactSessionIdentity.swift', 'ExactFinishReason.swift', 'ExactGenerationResult.swift', 'ExactPrefillSummary.swift', 'EncodingCheck.swift']]
+-    encoding += [worker / 'ResidentEvidenceSink.swift']
++    out = BASE / ('cpu-' + attempt); out.mkdir(mode=0o700)
++    rt = DRAFT / 'proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime'
++    tests = DRAFT / 'Tests'; fixed = tests / 'unchanged'
++    common = [fixed / ('QwenGenerationPhase' + n + '.swift') for n in ['Observation', 'Recorder', 'Hook']]
++    common += [rt / ('QwenGenerationPhase' + n + '.swift') for n in ['Budget', 'HostAllocation']]
++    common += [rt / 'QwenResidentMemoryObservation.swift', fixed / 'ClusterRuntimeError.swift']
++    common += [tests / n for n in ['FixtureSupport.swift', 'ExactFrame.swift']]
++    enc = common + [fixed / 'QwenGenerationPhaseJSON.swift', rt / 'QwenGenerationPhaseEncoding.swift',
++        rt / 'QwenResidentMemoryEncoding.swift', fixed / 'ResidentEvidenceSink.swift']
++    enc += [tests / n for n in ['ExactSessionIdentity.swift','ExactFinishReason.swift',
++        'ExactGenerationResult.swift','ExactPrefillSummary.swift','MemoryFixture.swift','EncodingCheck.swift']]
+     commands = []
+-    for name, sources, groups in [('phases', common + [tests / 'PhaseCheck.swift'], 11), ('encoding', encoding, 5)]:
+-        binary = out / name
+-        commands.append((name + '-compile', ['/usr/bin/xcrun', 'swiftc', '-swift-version', '6', '-j', '2',
+-            '-parse-as-library', '-D', 'QWEN_GENERATION_PHASE_FIXTURE', *map(str, sources), '-o', str(binary)], 90, None))
+-        commands.append((name + '-run', [str(binary)], 30, groups))
+-    commands.append(('phase-schema', ['/usr/bin/python3', '-B', str(tests / 'test_phase_schema.py')], 30, None))
+-    result = dict(steps=[], compilerJobsMaximum=2, modelOrRemoteExecuted=False, passed=False,
+-        frozenSourceManifestSHA256=sha(DRAFT / 'manifest.json'))
++    for name, sources, groups in [('phases', common+[tests/'PhaseCheck.swift'],11),
++        ('memory',common+[tests/'MemoryFixture.swift',tests/'MemoryCheck.swift'],8),('encoding',enc,5)]:
++        binary = out/name
++        commands += [(name+'-compile',['/usr/bin/xcrun','swiftc','-swift-version','6','-j','2',
++            '-parse-as-library','-D','QWEN_GENERATION_PHASE_FIXTURE',*map(str,sources),'-o',str(binary)],90,None),
++            (name+'-run',[str(binary)],30,groups)]
++    # Host metadata is actual malloc_good_size/MemoryLayout, never supplied by a caller.
++    budget_sources = [fixed/'QwenGenerationPhaseObservation.swift',rt/'QwenGenerationPhaseBudget.swift',
++        rt/'QwenGenerationPhaseHostAllocation.swift',rt/'QwenResidentMemoryObservation.swift',
++        fixed/'ClusterRuntimeError.swift',BASE/'PhaseBudgetMetadata.swift']
++    commands += [('budget-compile',['/usr/bin/xcrun','swiftc','-swift-version','6','-j','2','-parse-as-library',
++        *map(str,budget_sources),'-o',str(out/'budget')],90,None),('budget-run',[str(out/'budget')],10,None),
++        ('memory-schema',['/usr/bin/python3','-B',str(tests/'test_memory_schema.py')],30,None),
++        ('experiment-schema',['/usr/bin/python3','-B',str(tests/'test_experiment.py')],30,None)]
++    result = dict(steps=[],compilerJobsMaximum=2,modelOrRemoteExecuted=False,passed=False,
++        frozenSourceManifestSHA256=sha(DRAFT/'manifest.json'))
+     try:
+-        for name, argv, timeout, groups in commands:
+-            step = dict(name=name, argv=argv); result['steps'].append(step)
+-            with (out / (name + '.stdout')).open('xb') as stdout, (out / (name + '.stderr')).open('xb') as stderr:
+-                invoke_controller(argv, stdout, stderr, step, timeout=timeout)
+-            if step.get('exitCode') != 0 or not step.get('reaped') or not step.get('groupAbsent'):
+-                raise RuntimeError('CPU check failed or owned child remains: ' + name)
+-            if groups is not None and json.loads((out / (name + '.stdout')).read_bytes())['count'] != groups:
+-                raise RuntimeError('CPU group completion differs')
+-            (out / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
++        for name,argv,timeout,groups in commands:
++            step=dict(name=name,argv=argv);result['steps'].append(step)
++            with (out/(name+'.stdout')).open('xb') as stdout,(out/(name+'.stderr')).open('xb') as stderr:
++                invoke_controller(argv,stdout,stderr,step,timeout=timeout)
++            if step.get('exitCode')!=0 or not step.get('reaped') or not step.get('groupAbsent'):
++                raise RuntimeError('CPU check failed or owned child remains: '+name)
++            if groups is not None and json.loads((out/(name+'.stdout')).read_bytes())['count']!=groups:
++                raise RuntimeError('Incomplete CPU groups')
++            step.update(stdoutSHA256=sha(out/(name+'.stdout')),stderrSHA256=sha(out/(name+'.stderr')))
++        budget=json.loads((out/'budget-run.stdout').read_bytes())
++        if budget['maximumEvents']!=544 or budget['memoryLogicalBytes']<=0:
++            raise RuntimeError('Actual host budget differs')
+         authority()
+-        if sha(DRAFT / 'manifest.json') != result['frozenSourceManifestSHA256']:
+-            raise RuntimeError('Frozen source changed during CPU checks')
+-        result['passed'] = True
++        if sha(DRAFT/'manifest.json')!=result['frozenSourceManifestSHA256']:
++            raise RuntimeError('Frozen source changed')
++        result.update(passed=True,hostBudgetSHA256=sha(out/'budget-run.stdout'))
+     except BaseException as error:
+-        result['failure'] = type(error).__name__ + ': ' + str(error)
+-        raise
+-    finally:
+-        (out / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
+-    print(json.dumps(dict(passed=True, foundationGroups=16, pythonMethods=4)))
+-
+-
+-if __name__ == '__main__':
+-    os.umask(0o077)
+-    main()
++        result['failure']=type(error).__name__+': '+str(error);raise
++    finally:(out/'receipt.json').write_text(json.dumps(result,indent=2)+'\n')
++    print(json.dumps(dict(passed=True,foundationGroups=24,pythonMethods=12,hostBudgetSHA256=result['hostBudgetSHA256'])))
++if __name__=='__main__':os.umask(0o077);main()

@@ -1,0 +1,86 @@
+--- serial/audit_common.py
++++ lookahead/audit_common.py
+@@ -128,7 +128,7 @@
+ 
+ AGREEMENT_KEYS = ('schema rankCount membershipEpoch requestID requestFingerprint profileFingerprint '
+     'sourceConfigurationSHA256 artifactAggregateSHA256 storageCommitmentSHA256 planFingerprint '
+-    'stageFingerprints rankBuildSHA256 numericalPolicySHA256 mtpEnabled')
++    'stageFingerprints rankBuildSHA256 numericalPolicySHA256 mtpEnabled prefillSchedulingPolicy')
+ 
+ 
+ def agreement(value, context):
+@@ -145,6 +145,7 @@
+         sourceConfigurationSHA256=scope.model['configuration'], artifactAggregateSHA256=scope.model['artifact'],
+         storageCommitmentSHA256=value['storageCommitmentSHA256'], planFingerprint=scope.plan['fingerprint'],
+         stageFingerprints=scope.plan['stages'], rankBuildSHA256=value['rankBuildSHA256'],
+-        numericalPolicySHA256=value['numericalPolicySHA256'], mtpEnabled=False)
++        numericalPolicySHA256=value['numericalPolicySHA256'], mtpEnabled=False,
++        prefillSchedulingPolicy='oneChunkLookahead')
+     exact(value, expected, 'expected agreement')
+     return digest(b'qwen-stage-generation-v1|agreement|' + canonical(value))
+--- serial/audit_candidate.py
++++ lookahead/audit_candidate.py
+@@ -1,4 +1,4 @@
+-"""Prospective serial two-rank comparison; never infers missing intermediate values."""
++"""Prospective lookahead two-rank comparison; never infers missing intermediate values."""
+ from audit_common import (ARTIFACT, CONFIG, CONSTRUCTIONS, STAGES, PLAN, RANGES,
+     VOCAB, OUTPUT, FRONTIER, FRAMES, fields, exact, integer, sha, profile,
+     agreement, token_hash, token_ids, selected_frame)
+@@ -13,7 +13,7 @@
+     'intermediateLogitRowsCompared independentNumericalComparisonPerformed physicalTransferQualified')
+ EXECUTION_KEYS = ('schema agreementFingerprint membershipEpoch identity selectedTokenIDs tokenChainSHA256 '
+     'completedFrames committedTokens finishReason bothRequestStatesRetired modelRemainsResident mtpEnabled '
+-    'physicalTransferQualified independentNumericalComparisonPerformed externalTTFTMeasured')
++    'physicalTransferQualified independentNumericalComparisonPerformed externalTTFTMeasured prefillSchedule')
+ 
+ 
+ def compare(reference, candidates, expected_agreement, context):
+@@ -46,7 +46,11 @@
+             selectedTokenIDs=reference['selected'], completedFrames=FRAMES, committedTokens=FRONTIER,
+             finishReason='length', bothRequestStatesRetired=True, modelRemainsResident=True,
+             mtpEnabled=False, physicalTransferQualified=False,
+-            independentNumericalComparisonPerformed=False, externalTTFTMeasured=False).items():
++            independentNumericalComparisonPerformed=False, externalTTFTMeasured=False,
++            prefillSchedule=dict(policy='oneChunkLookahead', rank=rank,
++                preparedAheadFrames=scope.prefill_frames - 1 if rank == 0 else 0,
++                maximumPreparedBoundaries=1 if rank == 0 and scope.prefill_frames > 1 else 0,
++                pendingConsumedAtCompletion=0, decodePrefetchCount=0)).items():
+             exact(execution[key], value, 'candidate execution.' + key)
+         sha(execution['tokenChainSHA256'])
+         initial_chain = digest(('qwen-generation-history-v1|' + expected_hash + '|'
+--- serial/prepare_expected.py
++++ lookahead/prepare_expected.py
+@@ -21,7 +21,8 @@
+         sourceConfigurationSHA256=scope.model['configuration'], artifactAggregateSHA256=scope.model['artifact'],
+         storageCommitmentSHA256=sha(storage), planFingerprint=scope.plan['fingerprint'],
+         stageFingerprints=scope.plan['stages'], rankBuildSHA256=[sha(plan['nativeBinarySHA256'])] * 2,
+-        numericalPolicySHA256=sha(numerical_policy), mtpEnabled=False)
++        numericalPolicySHA256=sha(numerical_policy), mtpEnabled=False,
++        prefillSchedulingPolicy='oneChunkLookahead')
+     agreement(result, context)
+     return result
+ 
+--- serial/fabricated.py
++++ lookahead/fabricated.py
+@@ -75,7 +75,7 @@
+         requestFingerprint=context['fingerprint'], profileFingerprint=profile(chosen)['fingerprint'],
+         sourceConfigurationSHA256=CONFIG, artifactAggregateSHA256=ARTIFACT,
+         storageCommitmentSHA256='a' * 64, planFingerprint=PLAN, stageFingerprints=list(STAGES),
+-        rankBuildSHA256=['b' * 64, 'c' * 64], numericalPolicySHA256='d' * 64, mtpEnabled=False)
++        rankBuildSHA256=['b' * 64, 'c' * 64], numericalPolicySHA256='d' * 64, mtpEnabled=False, prefillSchedulingPolicy='oneChunkLookahead')
+     candidates = []
+     for rank, (start, end) in enumerate(chosen.ranges):
+         local_entries = copy.deepcopy([e for e in entries if start <= e['globalLayerIndex'] < end])
+@@ -88,7 +88,11 @@
+                 membershipEpoch=expected['membershipEpoch'], identity=identity,
+                 selectedTokenIDs=list(selected), tokenChainSHA256='e' * 64, completedFrames=FRAMES, committedTokens=FRONTIER,
+                 finishReason='length', bothRequestStatesRetired=True, modelRemainsResident=True, mtpEnabled=False,
+-                physicalTransferQualified=False, independentNumericalComparisonPerformed=False, externalTTFTMeasured=False),
++                physicalTransferQualified=False, independentNumericalComparisonPerformed=False, externalTTFTMeasured=False,
++                prefillSchedule=dict(policy='oneChunkLookahead', rank=rank,
++                    preparedAheadFrames=chosen.prefill_frames - 1 if rank == 0 else 0,
++                    maximumPreparedBoundaries=1 if rank == 0 and chosen.prefill_frames > 1 else 0,
++                    pendingConsumedAtCompletion=0, decodePrefetchCount=0)),
+             agreement=copy.deepcopy(expected), requestFingerprint=context['fingerprint'],
+             profileFingerprint=profile(chosen)['fingerprint'], rank=rank, sourceLayerStart=start, sourceLayerEnd=end,
+             finalFrame=copy.deepcopy(tokens[-1]['frame']), stateEntries=local_entries,

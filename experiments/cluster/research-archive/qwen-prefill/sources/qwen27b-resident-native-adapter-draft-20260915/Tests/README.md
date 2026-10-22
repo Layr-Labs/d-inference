@@ -1,0 +1,5 @@
+These fixtures are staged, not executed. `run.sh` compiles only Foundation/CryptoKit metadata code and the previous retained profile/resource suites; `NativeModelProfileCheck` adds scope/partition/parity cases. The source-only preparation reads no weights.
+
+`NativeValidationAdmissionTests.swift` belongs in the existing DarkbloomClusterRuntimeTests target. `NativeValidationWorkerTests.swift` belongs in DarkbloomClusterWorkerTests and requires the private validation-aware WorkerConfiguration replacement. `native-tests.patch` supplies those destinations. Both use the real module interfaces; no MLX value stand-ins are provided here. The admission fixture reads the same SHA-pinned retained-inputs.json through DARKBLOOM_RETAINED_PROFILE_FIXTURE, as the existing ResidentFacadeTests does. Its allocator callback is logical identity solely for checking named terms, never a live allocation permit.
+
+Root must separately compile/run these fixtures and the normal9B regressions. No source-only check establishes successful model loading, forward math, final-state equality, M4 support, provider eligibility or performance.

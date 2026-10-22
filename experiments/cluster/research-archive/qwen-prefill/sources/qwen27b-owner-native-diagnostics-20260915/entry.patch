@@ -1,0 +1,23 @@
+--- before/main.swift
++++ after/main.swift
+@@ -58,6 +58,8 @@
+     throw ClusterOwnerStateError.invalid("Expected native ready template with zero placeholder epoch")
+ }
+ try Qwen27BQualificationScope.validate(ready)
++let nativeDiagnostics = OwnerNativeDiagnostics()
++defer { nativeDiagnostics.publish() }
+ try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
+     clusterID: config.clusterID, leaseDirectory: URL(fileURLWithPath: config.leaseDirectory),
+     maximumLifetimeNanoseconds: UInt64(config.maximumLifetimeSeconds) * 1_000_000_000,
+@@ -77,8 +79,10 @@
+             "--peer1-id", identity.peers[1].id, "--peer1-build-sha256", identity.peers[1].buildSHA256,
+             "--deadline-uptime-nanoseconds", String(deadline)]
+         arguments += attachment.workerArguments
+-        return try .init(launch: .init(executable: URL(fileURLWithPath: config.workerExecutable), arguments: arguments,
++        let child = try ClusterWorkerProcess(launch: .init(executable: URL(fileURLWithPath: config.workerExecutable), arguments: arguments,
+             environment: config.workerEnvironment), expectedIdentity: identity, rank: binding.rank, profile: binding.profile,
+             executionPlanSHA256: binding.executionPlanSHA256,
+             startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 90_000_000_000), lifetimeDeadline: deadline)
++        nativeDiagnostics.remember(child)
++        return child
+     })

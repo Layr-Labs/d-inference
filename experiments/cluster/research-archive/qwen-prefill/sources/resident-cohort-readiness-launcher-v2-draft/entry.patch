@@ -1,0 +1,103 @@
+--- a/launch_readiness.py
++++ b/launch_readiness.py
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env python3
+ """Private root-run model-free readiness qualification; one fresh local cohort."""
+ import argparse
++import importlib.util
+ from pathlib import Path
+ import signal
+ import sys
+@@ -15,8 +16,31 @@
+ from readiness_supervision import supervise
+ from readiness_stream import LIMIT
+ 
++REFERENCE_HELPER = Path(__file__).with_name('owned_bundle_reference.py')
++REFERENCE_HELPER_SHA = 'c4832e457307f683f5aff55cafefe6feeeaf6a69ad1be2dc220325f96f5da8a4'
++
++
++def load_reference_helper():
++    require(digest(REFERENCE_HELPER) == REFERENCE_HELPER_SHA, 'Bundle reference helper changed')
++    spec = importlib.util.spec_from_file_location('_readiness_bundle_reference', REFERENCE_HELPER)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def check_reference_binding(helper, output, record, modules):
++    require(digest(REFERENCE_HELPER) == REFERENCE_HELPER_SHA, 'Bundle reference helper changed')
++    helper.check_reference(output / 'bundle', record,
++        output / 'source/experiments/cluster/runtime', modules['artifacts'])
++
+ 
+ def run(arguments):
++    reuse_bundle = getattr(arguments, 'reuse_bundle', None)
++    reuse_pin = getattr(arguments, 'expected_bundle_manifest_sha256', None)
++    require((reuse_bundle is None) == (reuse_pin is None),
++            'Bundle reuse requires both path and expected manifest pin')
++    if reuse_bundle is not None:
++        pin(reuse_pin)
+     pin(arguments.expected_native_sha256)
+     parent_seconds(arguments.scenario)
+     runtime = arguments.runtime.expanduser().resolve(strict=True)
+@@ -40,12 +64,22 @@
+     observations = Observations(output)
+     modules = sources = bundle_hash = launcher = None
+     configs = []; previous_handlers = {}
++    reference_helper = bundle_reference = None
+     try:
+         observations.observe(initial_free=True, refuse_existing=True)
+         launcher = archive_launcher(output)
+         sources = archive_sources(runtime, output)
+         modules = load_archived_runtime(output, epoch)
+-        bundle_hash = modules['bundle'].snapshot(release, output / 'bundle')
++        if reuse_bundle is not None:
++            reference_helper = load_reference_helper()
++            bundle_reference = reference_helper.create_reference(reuse_bundle, output / 'bundle',
++                reuse_pin, arguments.expected_native_sha256,
++                output / 'source/experiments/cluster/runtime', modules['artifacts'])
++            bundle_hash = bundle_reference['manifestSHA256']
++            receipt.update(bundle_acquisition='reused_external_reference', bundle_reference=bundle_reference,
++                           bundle_copied_for_this_run=False, bundle_reference_helper_sha256=REFERENCE_HELPER_SHA)
++        else:
++            bundle_hash = modules['bundle'].snapshot(release, output / 'bundle')
+         require(digest(output / 'bundle/cluster-inference') == arguments.expected_native_sha256,
+                 'Archived native differs from the explicit release pin')
+         verify_archive(modules, output, sources, bundle_hash, launcher)
+@@ -64,6 +98,8 @@
+             ranks.append(dict(rank=rank, host=None, directory=str(directory),
+                               local=str(directory), bundle=str(output / 'bundle')))
+         receipt.update(hostfile=hosts, planned_ranks=ranks, configuration_files=configs)
++        if bundle_reference is not None:
++            check_reference_binding(reference_helper, output, bundle_reference, modules)
+         observations.observe(initial_free=True)
+         def interrupted(signum, _frame):
+             raise KeyboardInterrupt('Readiness driver interrupted by signal ' + str(signum))
+@@ -85,6 +121,9 @@
+         if modules and sources and bundle_hash and launcher is not None:
+             actions.append(('source_bundle_launcher_recheck',
+                 lambda: verify_archive(modules, output, sources, bundle_hash, launcher)))
++        if bundle_reference is not None:
++            actions.append(('reused_bundle_reference_recheck',
++                lambda: check_reference_binding(reference_helper, output, bundle_reference, modules)))
+         for name, action in actions:
+             try:
+                 result = action()
+@@ -93,6 +132,8 @@
+                     require(not result['observed_remaining'], 'Owned process remains after cohort cleanup')
+                 if name == 'source_bundle_launcher_recheck':
+                     receipt['source_bundle_launcher_unchanged_after_run'] = True
++                if name == 'reused_bundle_reference_recheck':
++                    receipt['bundle_reference_unchanged_after_run'] = True
+             except BaseException as error:
+                 receipt['post_run_errors'].append(dict(operation=name, error=repr(error)))
+         for entry in configs:
+@@ -130,6 +171,8 @@
+         parser.add_argument('--' + name, type=Path, required=True)
+     parser.add_argument('--expected-native-sha256', required=True)
+     parser.add_argument('--scenario', choices=SCENARIOS, required=True)
++    parser.add_argument('--reuse-bundle', type=Path)
++    parser.add_argument('--expected-bundle-manifest-sha256')
+     arguments = parser.parse_args()
+     receipt = run(arguments)
+     print(str(arguments.output.expanduser().resolve() / 'receipt.json'))

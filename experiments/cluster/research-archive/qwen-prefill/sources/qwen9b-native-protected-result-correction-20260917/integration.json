@@ -1,0 +1,10 @@
+{
+  "files": [
+    {
+      "afterSHA256": "8b1efc292c2e15f07eff4091e62564fe41559a0bf756eace3ffa86f3effe2422",
+      "beforeSHA256": "9cc795afbbc86875199fad72b86cce6defc9c7bd763b909df353b9e28adbccb6",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-result-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift"
+    }
+  ]
+}

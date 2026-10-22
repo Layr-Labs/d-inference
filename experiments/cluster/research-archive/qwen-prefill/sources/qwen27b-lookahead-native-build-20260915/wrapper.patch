@@ -1,0 +1,84 @@
+--- upstream/build_inputs.py
++++ build_inputs.py
+@@ -5,18 +5,18 @@
+ import os
+ 
+ BASE = Path(__file__).resolve().parent
+-OLD = BASE.parent / 'qwen27b-owner-validation-build-20260915'
+-DRAFT = BASE.parent / 'qwen-resident-load-gate-diagnostics-draft-20260915'
++OLD = BASE.parent / 'qwen27b-resident-load-diagnostics-build-20260915'
++DRAFT = BASE.parent / 'qwen27b-lookahead-worker-policy-draft-20260915'
+ WORK = BASE / 'workspace'
+ PACKAGE = WORK / 'libs/darkbloom-cluster-worker'
+ CACHE = PACKAGE / '.build-native-worker'
+-RELATIVE = 'libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift'
++RELATIVE = 'libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift'
+ METALLIB_SHA = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+ PINS = {
+-    OLD / 'source-snapshot.json': '7a454fd5f44cbc292f0c64ae8e1dcf8c0b840803d346eb05ff06210bdf52522c',
+-    OLD / 'dependency-source-snapshot.json': 'fef0e26b91fe535f1ab2726499c7417c94c1b4e134daf49ef29bc240e2f9c103',
+-    OLD / 'handoff/manifest.json': 'd7d651af553e10d0d1fcb733d2c3ccf6a8597bcb89421c268f02424e7ad68cc1',
+-    DRAFT / 'manifest.json': '7e9da61684fa179cca8e23868225d5e25c12e9c88a5ac78f59e2f9d7b70ab0c4',
++    OLD / 'source-snapshot-1.json': '5be25fe2c77f77c223c4277adc0a91a5e671c0f3dec63971992b1a858b138670',
++    OLD / 'dependency-snapshot-1.json': '1f406bb65dd909a99a09e826c27c9d8fcb2ede66ae332358f0cf80f325cab903',
++    OLD / 'runtime-bundle-1/bundle.json': '44ca36d0366501b78fe1e150bd9b5849988335cb0980bfc8cc9989d4b56b2536',
++    DRAFT / 'manifest.json': 'f435cb249e71a19f3732dfa9d574e233ea149af60bd5ff1db8e562c17c50a740',
+ }
+ 
+ 
+@@ -56,12 +56,12 @@
+     for path, expected in PINS.items():
+         if sha(path) != expected:
+             raise RuntimeError('Authority changed: ' + str(path))
+-    for row in json.loads((DRAFT / 'manifest.json').read_bytes())['members']:
++    for row in json.loads((DRAFT / 'manifest.json').read_bytes())['files']:
+         path = DRAFT / relative(row['path'])
+         if path.stat().st_size != row['bytes'] or sha(path) != row['sha256']:
+             raise RuntimeError('Frozen diagnostic member changed: ' + str(path))
+-    sources = json.loads((OLD / 'source-snapshot.json').read_bytes())['members']
+-    dependencies = json.loads((OLD / 'dependency-source-snapshot.json').read_bytes())['members']
++    sources = json.loads((OLD / 'source-snapshot-1.json').read_bytes())['members']
++    dependencies = json.loads((OLD / 'dependency-snapshot-1.json').read_bytes())['members']
+     if len(sources) != 3040 or len(dependencies) != 8755:
+         raise RuntimeError('Unexpected inherited source closure')
+     return sources, dependencies
+@@ -70,7 +70,7 @@
+ def verify():
+     sources, dependencies = authority()
+     if snapshot(OLD / 'workspace') != sources:
+-        raise RuntimeError('Original a7c35 source snapshot changed')
++        raise RuntimeError('Original 989f source snapshot changed')
+     old_cache = OLD / 'workspace/libs/darkbloom-cluster-worker/.build-native-worker'
+     if snapshot(old_cache / 'checkouts') != dependencies:
+         raise RuntimeError('Original dependency sources changed')
+--- upstream/build_native.py
++++ build_native.py
+@@ -30,7 +30,7 @@
+     try:
+         commands = [
+             ('build', ['/bin/bash', str(PACKAGE / 'build-native-worker.sh'), str(PACKAGE),
+-                       str(OLD / 'bundle/mlx.metallib'), METALLIB_SHA], 900),
++                       str(OLD / 'runtime-bundle-1/mlx.metallib'), METALLIB_SHA], 900),
+             ('vtool', ['/usr/bin/xcrun', 'vtool', '-show-build', str(CACHE / 'arm64-apple-macosx/release/darkbloom-cluster-worker')], 10),
+             ('otool', ['/usr/bin/otool', '-L', str(CACHE / 'arm64-apple-macosx/release/darkbloom-cluster-worker')], 10),
+         ]
+--- upstream/package_native.py
++++ package_native.py
+@@ -20,7 +20,7 @@
+     if sha(binary) != receipt['binarySHA256'] or binary.stat().st_size != receipt['binaryBytes']:
+         raise RuntimeError('Built executable changed')
+     names = ['darkbloom-cluster-worker', 'mlx.metallib', 'mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal']
+-    old_resources = {x['path']: x for x in json.loads((OLD / 'bundle/bundle.json').read_bytes())['files']}
++    old_resources = {x['path']: x for x in json.loads((OLD / 'runtime-bundle-1/bundle.json').read_bytes())['files']}
+     bundle = BASE / ('runtime-bundle-' + attempt)
+     bundle.mkdir(mode=0o700)
+     rows = []
+@@ -40,7 +40,7 @@
+         if sha(destination) != sha(source):
+             raise RuntimeError('Native bundle copy changed')
+         rows.append(dict(path=name, bytes=destination.stat().st_size, sha256=sha(destination)))
+-    manifest = dict(schema='qwen27b_resident_load_diagnostics_native_bundle_v1', files=rows,
++    manifest = dict(schema='qwen27b_lookahead_native_bundle_v1', files=rows,
+         sourceSnapshotSHA256=sha(BASE / 'source-snapshot-1.json'),
+         dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-1.json'),
+         buildReceiptSHA256=sha(run / 'receipt.json'), nativeExecuted=False, remoteExecuted=False)

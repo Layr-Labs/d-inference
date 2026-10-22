@@ -1,0 +1,43 @@
+--- a/ConfiguredOwner.swift
++++ b/ConfiguredOwner.swift
+@@ -44,7 +44,7 @@
+              "maximumLifetimeSeconds", "workerEnvironment", "readyTemplateBase64"]) else { throw ClusterOwnerStateError.invalid("Owner settings fields differ") }
+     let value = try JSONDecoder().decode(OwnerSettings.self, from: data)
+     guard value.schema == "darkbloom_configured_worker_owner_v1", (1...300).contains(value.maximumLifetimeSeconds),
+-          [4, 8, 12, 16].contains(value.stageCut), value.workerExecutable.hasPrefix("/"), value.modelDirectory.hasPrefix("/"),
++          value.stageCut == Qwen27BQualificationScope.stageCut, value.workerExecutable.hasPrefix("/"), value.modelDirectory.hasPrefix("/"),
+           value.leaseDirectory.hasPrefix("/") else { throw ClusterOwnerStateError.invalid("Owner configuration outside current worker scope") }
+     return value
+ }
+@@ -57,6 +57,7 @@
+       ready.identity.membershipEpoch == UUID(uuidString: "00000000-0000-0000-0000-000000000000") else {
+     throw ClusterOwnerStateError.invalid("Expected native ready template with zero placeholder epoch")
+ }
++try Qwen27BQualificationScope.validate(ready)
+ try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
+     clusterID: config.clusterID, leaseDirectory: URL(fileURLWithPath: config.leaseDirectory),
+     maximumLifetimeNanoseconds: UInt64(config.maximumLifetimeSeconds) * 1_000_000_000,
+--- /dev/null
++++ b/Qwen27BQualificationScope.swift
+@@ -0,0 +1,21 @@
++import DarkbloomClusterProtocol
++
++/// Private qualification entry, never an installed-product model allowlist.
++enum Qwen27BQualificationScope {
++    static let stageCut = 32
++    static let modelID = "registered_qwen38_27b"
++    static let profileID = "registered_qwen38_27b_greedy_generation_v1"
++    static let artifactSHA256 = "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463"
++    static let configurationSHA256 = "4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff"
++
++    static func validate(_ ready: ClusterWorkerReady) throws {
++        guard ready.identity.modelID == modelID,
++              ready.identity.artifactSHA256 == artifactSHA256,
++              ready.identity.configurationSHA256 == configurationSHA256,
++              ready.profile == ClusterWorkerProfile(id: profileID, vocabularySize: 248_320,
++                maximumPromptTokens: 8192, maximumOutputTokens: 128,
++                maximumChunkTokens: 512, maximumContextTokens: 8320) else {
++            throw ClusterWorkerProtocolError.invalid("Wrong private 27B qualification identity/profile")
++        }
++    }
++}

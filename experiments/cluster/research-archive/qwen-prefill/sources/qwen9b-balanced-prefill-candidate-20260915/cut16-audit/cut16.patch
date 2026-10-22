@@ -1,0 +1,114 @@
+--- a/audit_candidate.py
++++ b/audit_candidate.py
+@@ -71,7 +71,7 @@
+     exact(merged, reference['entries'], 'complete ordered 72-entry state union')
+     exact(state_fingerprint(merged), reference['execution']['finalState']['fingerprint'], 'merged full-state fingerprint')
+     return dict(schema='private_generation128_numerical_comparison_v1', status='passed',
+-        modelID='registered_qwen35_9b', stageCut=4, requestID=context['request_id'],
++        modelID='registered_qwen35_9b', stageCut=16, requestID=context['request_id'],
+         requestFingerprint=context['fingerprint'], agreementFingerprint=expected_hash,
+         membershipEpoch=expected_agreement['membershipEpoch'], expectedAgreement=expected_agreement,
+         comparedSelectedTokenCount=OUTPUT, selectedTokenIDsSHA256=token_hash(reference['selected']),
+--- a/audit_common.py
++++ b/audit_common.py
+@@ -1,4 +1,4 @@
+-"""Closed registered9B / cut4 / 8192+128 lookahead diagnostic identities."""
++"""Closed registered9B / cut16 candidate / fixed cut4 full-reference / 8192+128 lookahead diagnostic identities."""
+ import math
+ import re
+ import uuid
+@@ -14,13 +14,14 @@
+ CONFIG = 'c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423'
+ MANIFEST = '4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4'
+ LAYOUT = '112ea4bf7ef38bd40a088dd9c654f77607a01c2bb0f37750ea901c2adfddcf94'
+-PLAN = '67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f'
++REFERENCE_PLAN = '67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f'
++PLAN = '2b5aa52cab49c12cfa44f2348326f956127d2ca15b1c55b5632f447901e56293'
+ ARITHMETIC = '0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74'
+-STAGES = ['7d5ebf4cec108854b7a5375a208301ca58d00a33d1fb8ef3e3bb59923f482f0a',
+-          '7b362c5c14e45c17ce1327bc23179dc58b61f8d6a96ca2bc5752976f9fe53264']
+-CONSTRUCTIONS = ['54e01cdceaea0fba5033e1378f4d534a73aae30a56cf052548b7f03fa3b23d72',
+-                 '2b5acaba48a06190b6a4268a8b0ef9f3475318057ab275277f57f3c02dfe6582']
+-RANGES = [(0, 4), (4, 32)]
++STAGES = ['65cb10e0fc8ef439b035ee141695132ca76f88160e8920bd8c72cd780fedbb76',
++          '90eb156179c547bf6024b8f6756d725b6f33af26f379d5aa549e241f15dbb22e']
++CONSTRUCTIONS = ['b8a18013bb81aa763f4a9f165125e606e84c077377eed01ebc7a55ea8f8d00b7',
++                 'f00c549345940b92da7a616a4d26de9a316a67ea0ca0620219cc0bd243e04dd7']
++RANGES = [(0, 16), (16, 32)]
+ REFERENCE_SHA = '748b2d11346b3097435f83db53296c4873c3e42a261493614cbfe896883faaa3'
+ PROMPT_SHA = 'ee6caf0be6391e00ec41df930f0fd6351613969622cbb247b1b4bdaf69afe997'
+ REQUEST_ID = '6426b803-8b80-40ba-8944-b0f4b403a3cf'
+--- a/audit_reference.py
++++ b/audit_reference.py
+@@ -1,7 +1,7 @@
+ """Replay the complete exported final row and validate compact reference history."""
+ import math
+ import struct
+-from audit_common import (ARTIFACT, CONFIG, MANIFEST, LAYOUT, PLAN, ARITHMETIC,
++from audit_common import (ARTIFACT, CONFIG, MANIFEST, LAYOUT, REFERENCE_PLAN, ARITHMETIC,
+     VOCAB, PROMPT, OUTPUT, CHUNK, FRONTIER, FRAMES, fields, exact, integer, sha,
+     parse, profile, token_hash, token_ids, selected_frame)
+ from audit_state import check_state
+@@ -39,7 +39,7 @@
+         maximumTokens=PROMPT + OUTPUT, stopTokenIDs=[])
+     exact(admitted, dict(kind='qwen_full_generation_reference_admitted', schemaVersion=1,
+         **shared, manifestSHA256=MANIFEST, artifactSHA256=ARTIFACT, configurationSHA256=CONFIG,
+-        planSHA256=PLAN, verifiedModelLoaded=False, freshRequestStateCreated=False,
++        planSHA256=REFERENCE_PLAN, verifiedModelLoaded=False, freshRequestStateCreated=False,
+         correctnessOnly=True, throughputMeasurementValid=False), 'reference admitted')
+     for key, value in dict(kind='qwen_full_generation_reference_report', schemaVersion=1,
+         completed=True, modelReleased=True, allRequestStateRetired=True, verifiedFullModelLoads=1,
+@@ -57,7 +57,7 @@
+         candidateNumericalComparisonPerformed=False, physicalTransferQualified=False).items():
+         exact(execution[key], value, 'reference execution.' + key)
+     exact(execution['source'], dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIG,
+-        sourceParameterLayoutSHA256=LAYOUT, planSHA256=PLAN, arithmeticEnvironmentSHA256=ARITHMETIC,
++        sourceParameterLayoutSHA256=LAYOUT, planSHA256=REFERENCE_PLAN, arithmeticEnvironmentSHA256=ARITHMETIC,
+         bf16ConversionEnabled=True, embeddingActivationDType='bfloat16', sourceModelTensorBytes=5038041600,
+         layerCount=32, vocabularySize=VOCAB), 'reference source')
+     exact(execution['sourceLoad'], dict(schemaVersion=1, verifiedAggregateSHA256=ARTIFACT,
+--- a/fabricated.py
++++ b/fabricated.py
+@@ -1,7 +1,7 @@
+ """Invented CPU evidence, not a native candidate or measured result."""
+ import copy
+ import struct
+-from audit_common import (ARTIFACT, CONFIG, MANIFEST, LAYOUT, PLAN, ARITHMETIC,
++from audit_common import (ARTIFACT, CONFIG, MANIFEST, LAYOUT, PLAN, REFERENCE_PLAN, RANGES, ARITHMETIC,
+     STAGES, CONSTRUCTIONS, REQUEST_ID, profile, request_context, token_hash, agreement)
+ from audit_state import state_geometry, state_fingerprint
+ from recorded_math import canonical, digest
+@@ -38,11 +38,11 @@
+         promptFileSHA256=context['prompt_sha'], promptTokenIDsSHA256=context['prompt_tokens_sha'],
+         requestedOutputCount=128, maximumTokens=8320, stopTokenIDs=[])
+     admitted = dict(kind='qwen_full_generation_reference_admitted', schemaVersion=1, **shared,
+-        manifestSHA256=MANIFEST, artifactSHA256=ARTIFACT, configurationSHA256=CONFIG, planSHA256=PLAN,
++        manifestSHA256=MANIFEST, artifactSHA256=ARTIFACT, configurationSHA256=CONFIG, planSHA256=REFERENCE_PLAN,
+         verifiedModelLoaded=False, freshRequestStateCreated=False, correctnessOnly=True, throughputMeasurementValid=False)
+     execution = dict(schema='qwen_full_generation_reference_v1', **shared,
+         source=dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIG,
+-            sourceParameterLayoutSHA256=LAYOUT, planSHA256=PLAN, arithmeticEnvironmentSHA256=ARITHMETIC,
++            sourceParameterLayoutSHA256=LAYOUT, planSHA256=REFERENCE_PLAN, arithmeticEnvironmentSHA256=ARITHMETIC,
+             bf16ConversionEnabled=True, embeddingActivationDType='bfloat16', sourceModelTensorBytes=5038041600,
+             layerCount=32, vocabularySize=248320),
+         sourceLoad=dict(schemaVersion=1, verifiedAggregateSHA256=ARTIFACT, configurationSHA256=CONFIG,
+@@ -71,7 +71,7 @@
+         rankBuildSHA256=['b' * 64, 'c' * 64], numericalPolicySHA256='d' * 64, mtpEnabled=False,
+         prefillSchedulingPolicy='oneChunkLookahead')
+     candidates = []
+-    for rank, (start, end) in enumerate(((0, 4), (4, 32))):
++    for rank, (start, end) in enumerate(RANGES):
+         local_entries = copy.deepcopy([e for e in entries if start <= e['globalLayerIndex'] < end])
+         identity = dict(stageIndex=rank, requestFingerprint=context['fingerprint'], artifactAggregateSHA256=ARTIFACT,
+             storageCommitmentSHA256=expected['storageCommitmentSHA256'], bf16ConversionEnabled=True,
+--- a/test_audit.py
++++ b/test_audit.py
+@@ -38,7 +38,7 @@
+         result = compare(self.reference, self.candidates, self.expected, self.context)
+         self.assertEqual((result['comparedSelectedTokenCount'], result['finalCompletedFrames'],
+                           result['finalCommittedTokens']), (128, 143, 8319))
+-        self.assertEqual(result['stageStateEntryCounts'], [9, 63])
++        self.assertEqual(result['stageStateEntryCounts'], [36, 36])
+         self.assertEqual(result['logicalStateBytes'], 324108320)
+         self.assertEqual(result['finalNativeBF16RowBytesCompared'], 496640)
+         self.assertEqual(result['finalCPUArgmaxTieCount'], 2)

@@ -1,0 +1,50 @@
+{
+  "schema": "private_benchmark_prefill_policy_overlay_v1",
+  "mappings": [
+    {
+      "source": "proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "destination": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "sha256": "39272cd3f59c17e1d3d25e88c1883a8d0195aa07857432f21222dd2b78af0a84",
+      "originalSHA256": "891c0dbf4d4cd1123d7c5ecefd5155d372c045b32bdfa182d90ad2b1b9832ace"
+    },
+    {
+      "source": "proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/BenchmarkPrefillPolicy.swift",
+      "destination": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/BenchmarkPrefillPolicy.swift",
+      "sha256": "bd49ff8c3425efcbda5600fcd88bb68fbb37c9d6098d9392aceeaa4c3db1f8c0",
+      "originalSHA256": null
+    }
+  ],
+  "requiredLookaheadManifestSHA256": "aa91244615528a5534b811d53368cbb6a1b30903dee18d7800027c79a2f391ca",
+  "inputs": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-benchmark-worker-draft-20260915/Sources/NativeWorkerRuntime.swift",
+      "bytes": 2550,
+      "sha256": "891c0dbf4d4cd1123d7c5ecefd5155d372c045b32bdfa182d90ad2b1b9832ace"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-benchmark-worker-draft-20260915/Sources/ResidentEvidenceSink.swift",
+      "bytes": 2466,
+      "sha256": "cc34788d3fbd8409ff0ff086d6cb7d2dfb2a2ee860dfccb8a1fba5496aff6bfe"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-prefill-lookahead-draft/manifest.json",
+      "bytes": 6796,
+      "sha256": "aa91244615528a5534b811d53368cbb6a1b30903dee18d7800027c79a2f391ca"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-prefill-lookahead-draft/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift",
+      "bytes": 3751,
+      "sha256": "9c4afbd7f4a1567ddea2ac6529be841ba03b9c1772d5b53a67c55ce588addea4"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-prefill-lookahead-draft/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "bytes": 18995,
+      "sha256": "664ce9b8fe425c7676599ff2c834ba1d10429111f1c944dce5e2862654c408d9"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-bootstrap-relay-overlay-20260915/workspace/libs/darkbloom-cluster/Tools/ConfiguredOwner/main.swift",
+      "bytes": 5897,
+      "sha256": "20ee07c1451ab8054dff613728efd36ccdf25a4211c3589c4a30e8270d79442e"
+    }
+  ]
+}

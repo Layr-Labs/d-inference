@@ -1,0 +1,11 @@
+--- /Users/developer/DarkbloomDev/cluster-research/qwen27b-cut32-resource-pilot-20260916/resource-operations/prepare_resources.py
++++ prepare_resources.py
+@@ -17,7 +17,7 @@
+ REMOTE = r'''
+ import fcntl, hashlib, json, os, signal, stat, subprocess, sys, time
+ from pathlib import Path
+-root=Path('/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-owner-validation-20260915')
++root=Path('/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-timing-20260915')
+ assert hashlib.sha256((root/'reference_resources.py').read_bytes()).hexdigest()=='ef10b3209e22e1d71586c0616ddd2d3e9c40522453393e57cc9d8e0156b2b354'
+ sys.path.insert(0,str(root))
+ from reference_resources import sample_local,validate_local

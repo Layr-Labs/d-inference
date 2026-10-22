@@ -1,0 +1,37 @@
+--- /Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-probe-clean-rerun-20260915/install_new_tree.py
++++ install_new_tree.py
+@@ -1,4 +1,4 @@
+-"""Remote COPY/HASH only. Creates one exact NEW private owner tree; launches nothing."""
++"""Remote COPY/HASH only. Creates one exact NEW private native-check tree; launches nothing."""
+ import hashlib
+ import json
+ import os
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/owner-native-mtp-probe-clean-20260915')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/qwen-target-verification-check-20260915')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+@@ -17,7 +17,7 @@
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'mtp_probe_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'target_verification_copy_only_tree_v1', 'Wrong deployment schema')
+     files = manifest['files']
+     require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+     require(sum(x['bytes'] for x in files.values()) < 300_000_000, 'Deployment exceeded bound')
+@@ -75,8 +75,8 @@
+             require(info.st_size == files[name]['bytes'] and checksum.hexdigest() == files[name]['sha256'], 'Installed full rehash differs')
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+-    (ROOTS['owner'] / 'evidence').mkdir(mode=0o700)
+-    print(json.dumps(dict(schema='mtp_probe_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    (ROOTS['check'] / 'evidence').mkdir(mode=0o700)
++    print(json.dumps(dict(schema='target_verification_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()

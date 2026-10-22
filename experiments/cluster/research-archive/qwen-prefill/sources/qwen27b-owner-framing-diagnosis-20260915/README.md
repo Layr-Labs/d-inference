@@ -1,0 +1,9 @@
+# 27B outer settings framing failure
+
+The first27B controller failed before creating endpoints. Its empty configurationSHA256 and cpuQualification:true reflect pre-parse defaults. The exact error comes from validateClusterWorkerEnvelope, before readQualificationJSON returns and before readyTemplateBase64 is decoded. The worker event decoder uses a different error string without "owner".
+
+The existing controller and owner readers append a missing final LF but reject internal LF bytes. Original controller JSON has67 LFs and both owners22; passing clean9B outer settings each have one. All original27B Base64 templates already decode to917-byte records with exactly one trailing LF, correct zero placeholder epoch and complementary ranks.
+
+proposed/ and configuration.patch give the minimal correction: compact sorted outer JSON plus one LF, preserving every parsed value and exact Base64 string/decoded template. These proof copies retain the original epoch. Root owns the separate actual-retry derivative/fresh epoch and refreshes raw configuration, deployment, run, prospective agreement and collector pins. No native/controller/owner rebuild is required by this finding.
+
+check_framing.py --controller PATH --owner-rank0 PATH --owner-rank1 PATH is a reusable source-backed Python framing/strict-JSON/template preflight, not execution of Swift or complete Swift semantic decoder parity. checks.json records three original outer refusals, three accepted original templates, three accepted compact27B files, three passing9B files, exact value/template preservation and six malformed framing/JSON refusals. verification.json binds all frozen package members and nine inspected compiled sources to the actual build lineage. The author's initial manifest-verifier format error is separately retained; it changed no runtime or fixture. No compiler, controller, owner, model or network was executed.

@@ -1,0 +1,74 @@
+--- v1/run_selected_stage_load.py
++++ v2/run_selected_stage_load.py
+@@ -70,12 +70,21 @@
+ def observe(tiny, receipt, profile, process=None, executable=None):
+     sample = tiny.sample(process.pid if process else None)
+     receipt['memorySamples'].append(sample)
++    terminal = None
++    if process is not None and sample.get('nativeCommand') == '<defunct>':
++        # ps may race natural exit. Only this Popen object's terminal wait result
++        # can authorize the exact owned zero-RSS tombstone; no live identity relaxes.
++        terminal = process.poll()
++        sample['terminalExitCodeObservedAfterSample'] = terminal
+     # Retain raw observations even when the following policy refuses them.
+     raw = tiny.read_command(['/usr/bin/pmset', '-g', 'batt'])
+     power = dict(timestampUTC=datetime.now(timezone.utc).isoformat(), raw=raw)
+     receipt['powerObservations'].append(power)
+     power['admission'] = power_policy(raw)
+-    resource_policy(sample, profile, process.pid if process else None, executable)
++    resource_policy(sample, profile, process.pid if process else None, executable, terminal_exit_code=terminal)
++    if type(terminal) is int:
++        sample['nativeObservationClassification'] = 'owned_terminal_during_observation'
++        sample['defunctSampleIsLiveRSS'] = False
+     return sample
+ 
+ 
+@@ -124,7 +133,7 @@
+     profile = PROFILES[args.profile]
+     sources = [Path(__file__).resolve(), HERE / 'stage_load_contract.py'] + [HERE / name for name in HELPERS]
+     source_pins = {p.name: sha(p) for p in sources}
+-    receipt = dict(kind='private_guarded_registered_selected_stage_load', schemaVersion=1,
++    receipt = dict(kind='private_guarded_registered_selected_stage_load_v2', schemaVersion=1,
+         startedAtUTC=datetime.now(timezone.utc).isoformat(), status='preparing',
+         registeredProfile=args.profile, stageIndex=args.stage_index, expectedIdentity=profile,
+         runtime=str(runtime), release=str(release), modelDirectory=str(directory),
+@@ -138,6 +147,7 @@
+         memoryPolicy='actual free >=6GiB; pressure 0...2; absolute reported swap zero; fixed per-profile sampled RSS cap',
+         powerPolicy='AC or observed internal battery >=15 percent, checked with every saved memory sample',
+         sampledRSSIsNotPeakGuarantee=True, missingRSSIsNotZero=True,
++        exitObservationContract='exact_owned_defunct_zero_rss_after_terminal_Popen_poll',
+         nativeResourcePolicyChanged=False, parentScreenGrantsNativeAllocationPermission=False,
+         independentMetadataAuditPerformed=False, independentTensorAuditPerformed=False,
+         selectedStageWeightMaterializationRequested=True, modelForwardAuthorized=False,
+--- v1/stage_load_contract.py
++++ v2/stage_load_contract.py
+@@ -74,7 +74,7 @@
+     return dict(source='Battery Power', batteryPercent=int(values[0]), batteryFloorApplied=True)
+ 
+ 
+-def resource_policy(observation, profile, expected_pid=None, expected_executable=None):
++def resource_policy(observation, profile, expected_pid=None, expected_executable=None, terminal_exit_code=None):
+     require(type(observation.get('actualFreeBytes')) is int and observation['actualFreeBytes'] >= MINIMUM_FREE,
+             'Actual free memory is below 6 GiB')
+     require(type(observation.get('pressureLevel')) is int and 0 <= observation['pressureLevel'] <= 2,
+@@ -82,14 +82,18 @@
+     require(type(observation.get('reportedSwapBytes')) is str and
+             Decimal(observation['reportedSwapBytes']) == 0, 'Reported swap must be absolute zero')
+     rss = observation.get('nativeRSSBytes')
++    defunct = observation.get('nativeCommand') == '<defunct>'
++    if defunct:
++        require(type(rss) is int and rss == 0 and type(terminal_exit_code) is int,
++                'Defunct sample lacks zero RSS and confirmed terminal owned process')
+     if rss is not None:
+         require(type(rss) is int and 0 <= rss <= profile['maximumSampledRSSBytes'],
+                 'Sampled native RSS exceeds selected-stage screen')
+         require(type(expected_pid) is int and type(observation.get('nativePID')) is int and
+                 type(observation.get('nativePGID')) is int and observation['nativePID'] == expected_pid and
+                 observation['nativePGID'] == expected_pid, 'Sample belongs to another native process group')
+-        require(type(observation.get('nativeCommand')) is str and
+-                observation['nativeCommand'].startswith(str(expected_executable) + ' --mode qwen-dense-stage-load-check '),
++        require(type(observation.get('nativeCommand')) is str and (defunct or
++                observation['nativeCommand'].startswith(str(expected_executable) + ' --mode qwen-dense-stage-load-check ')),
+                 'Sample belongs to another native command')
+ 
+ 

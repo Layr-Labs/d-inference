@@ -1,0 +1,341 @@
+--- before/reference_inputs.py
++++ after/reference_inputs.py
+@@ -11,9 +11,9 @@
+ from reference_profiles import registered_profile
+ from worker_contract import WorkerSpec, workers
+ 
+-NATIVE = '3dd4353bbde17860dd5c309eb59b0371d221c368fc995f7e452a94f300a3cc0e'
++NATIVE = 'd71726f61ff5cef6c2a7722b0a06fb7d6b7c61af2cb081ff3aef083803f32aac'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+-SOURCE = '84590fc7446649a65610089db35409023dc514c6a487072382af40335f2abbdf'
++SOURCE = 'c80556866c63de8ff800cef947ea6467366bd561f6abcbdf5b73c919df30e183'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+ 
+ 
+--- before/example-job.json
++++ after/example-job.json
+@@ -1 +1 @@
+-{"bundle_sha256":"31edaba87f91f72ab22a1ff1c1ad94842d2c3cc3129a1b4a0ea91382b6f1bdec","chunk_size":16,"deployment":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/native-diagnostics","metallib_sha256":"2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2","model_dir":"/Users/developer/DarkbloomDev/models/Qwen3.8-27B","native_seconds":300,"native_sha256":"3dd4353bbde17860dd5c309eb59b0371d221c368fc995f7e452a94f300a3cc0e","output_count":128,"parent_seconds":315,"prompt_count":32,"prompt_file":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/inputs/prompt.ids.json","prompt_sha256":"6d4c8898c3d6f01ddd8c3e712cde5005c647db64937977dd907935146442e81e","registered_model":"registered_qwen38_27b","request_id":"20801ced-ca29-4faf-b71a-9ebbe1886a14","run_dir":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/short-27b-2","schema":"private_registered_full_generation_reference_job_v1","source_manifest_sha256":"84590fc7446649a65610089db35409023dc514c6a487072382af40335f2abbdf","stage_cut":32,"stop_token_ids":[]}
++{"bundle_sha256":"3f312fd2cc9060b9ca960f8cc200983f371d52c0b64423a4266f0cd08f1f11aa","chunk_size":16,"deployment":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/native-aligned-payload","metallib_sha256":"2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2","model_dir":"/Users/developer/DarkbloomDev/models/Qwen3.8-27B","native_seconds":300,"native_sha256":"d71726f61ff5cef6c2a7722b0a06fb7d6b7c61af2cb081ff3aef083803f32aac","output_count":128,"parent_seconds":315,"prompt_count":32,"prompt_file":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/inputs/prompt.ids.json","prompt_sha256":"6d4c8898c3d6f01ddd8c3e712cde5005c647db64937977dd907935146442e81e","registered_model":"registered_qwen38_27b","request_id":"20801ced-ca29-4faf-b71a-9ebbe1886a14","run_dir":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/short-27b-4","schema":"private_registered_full_generation_reference_job_v1","source_manifest_sha256":"c80556866c63de8ff800cef947ea6467366bd561f6abcbdf5b73c919df30e183","stage_cut":32,"stop_token_ids":[]}
+--- before/native-contract/QwenFullGenerationReferenceBudget.swift
++++ after/native-contract/QwenFullGenerationReferenceBudget.swift
+@@ -11,6 +11,7 @@
+     let sourceByteCounts: [Int]
+     let allocationBounds: [Int]
+     let largestHostTensorBytes: Int
++    let payloadReadScratchBytes = CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+     let stateBytes: Int
+     let fusionBytes: Int
+     let capturedRowsCPUBytes: Int
+@@ -76,8 +77,9 @@
+     func requiredActualFreeBytes(after count: Int) throws -> Int {
+         let remaining = try remainingAllocationBytes(after: count)
+         let host = count == allocationBounds.count ? 0 : largestHostTensorBytes
++        let scratch = count == allocationBounds.count ? 0 : payloadReadScratchBytes
+         return max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+-            try QwenLongPrefillCheckedBytes.sum([remaining, host, host, requestReservedBytes,
++            try QwenLongPrefillCheckedBytes.sum([remaining, host, host, scratch, requestReservedBytes,
+                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+     }
+ 
+--- /dev/null
++++ after/native-contract/QwenRegisteredGenerationReferenceLoading.swift
+@@ -0,0 +1,106 @@
++import Foundation
++import MLX
++import MLXLLM
++import MLXLMCommon
++import MLXNN
++
++/// Registered descriptor admission around the existing full-width materializer.
++/// The legacy diagnostic loader's limits and all actual request math stay intact.
++func loadQwenRegisteredGenerationReferenceBaseline(directory: URL,
++    preflight: QwenFullGenerationReferencePreflight, resources: QwenFullGenerationReferenceResources,
++    check: () throws -> Void) throws -> LoadedModel {
++    try withoutActuallyEscaping(check) { borrowedCheck in
++        try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try borrowedCheck(); try nativeError.check() }
++            do {
++                try checked()
++                guard !_qwen35MTPEnabled else { throw ProbeError("Full generation reference requires MTP disabled") }
++                let source = preflight.admission.source, specification = source.specification
++                let checkpoint = try VerifiedCheckpoint(directory: directory, configurationData: source.configuration,
++                    expectedAggregateSHA256: specification.artifactSHA256,
++                    maximumPayloadBytes: source.resource.maximumManifestPayloadBytes,
++                    expectedManifestSHA256: specification.manifestSHA256)
++                try checkpoint.requireConfiguration(source.configuration); try checked()
++                let base = try JSONDecoder().decode(BaseConfiguration.self, from: source.configuration)
++                guard let policy = base.perLayerQuantization else { throw ProbeError("Registered reference lacks quantization policy") }
++                return try withRandomState(MLXRandom.RandomState(seed: 7)) {
++                    let model = try constructQwenModel(source.configuration)
++                    let layers = try validateDiagnosticQwen(model: model, configuration: source.configuration, policy: policy)
++                    guard layers == specification.layers else { throw ProbeError("Registered reference constructor layer count differs") }
++                    try checked()
++                    let prepared = try PreparedQwenCheckpoint(model: model, checkpoint: checkpoint,
++                        originalConfiguration: source.configuration, policy: policy)
++                    let observed = observedQwenDenseSource(prepared, model: model)
++                    let profile = try QwenRegisteredDenseModelProfile.admit(configuration: source.configuration,
++                        manifest: source.manifest, expectedArtifactAggregateSHA256: checkpoint.aggregate,
++                        canonicalTensors: observed.map(\.canonical), residentDefinition: source.definition)
++                    let requirement = try QwenDenseStorageRequirement.derive(profile: profile,
++                        plan: source.plan, role: .fullReference)
++                    let identity = QwenDenseObservedSourceIdentity(aggregateSHA256: checkpoint.aggregate,
++                        configurationSHA256: checkpoint.configurationSHA256,
++                        verifiedManifestSHA256: checkpoint.verifiedManifestSHA256,
++                        retainedSourceCount: prepared.sourceTensorCount, bf16ConversionEnabled: true)
++                    let storage = try QwenDenseObservedSourceValidation.validateRegistered(observed,
++                        identity: identity, profile: profile, requirement: requirement, plan: source.plan)
++                    _ = try validatedQwenFeedForwardScaleTypes(model, layers: layers,
++                        isMoE: false, requireTwoWaySplit: false)
++                    try resources.prepared(prepared, storage: storage); try checked()
++                    // Reduce file-cache duplication during verified weight reads.
++                    // This requests the same descriptor-local cache policy and
++                    // bounded aligned reader used by selected-stage loading; its
++                    // scratch is included in this reference's free-memory ledger.
++                    try checkpoint.bypassTensorPayloadCache(); try checked()
++                    let receipt = try materializeVerifiedQwenDiagnostic(model: model, prepared: prepared,
++                        originalConfiguration: source.configuration, storage: storage, convertBF16: true,
++                        check: checked, beforeTensor: { name, tensor in
++                            try resources.beforeTensor(name, tensor: tensor); try checked()
++                        })
++                    try checkpoint.checkUnchanged(); try checked()
++                    let geometry = try QwenDenseShortBaselineGeometry(configuration: source.configuration)
++                    let loaded = try finishVerifiedQwenLayerStageBaseline(model: model,
++                        originalConfiguration: source.configuration, receipt: receipt,
++                        expectedAggregateSHA256: checkpoint.aggregate, label: "registered-generation-reference",
++                        layers: specification.layers, hidden: specification.hidden,
++                        vocabulary: source.request.profile.vocabularySize, namespace: geometry.namespace, check: checked)
++                    try checkpoint.checkUnchanged(); try checked()
++                    return loaded
++                }
++            } catch { try nativeError.check(); throw error }
++        }
++    }
++}
++
++/// The complete loaded target must match the selected registered profile.
++/// No legacy six-GiB ceiling is enlarged to admit the larger model.
++func admitQwenRegisteredGenerationReferenceSource(loaded: LoadedModel,
++    admission: QwenRegisteredGenerationReferenceSource
++) throws -> (QwenLongPrefillReferenceSource, VerifiedQwenDiagnosticReceipt) {
++    let specification = admission.specification
++    guard let receipt = loaded.verifiedDiagnosticLoad, receipt.schemaVersion == 1,
++          loaded.family == .qwen35, loaded.feedForwardKind == "dense", loaded.gemmaTrace == nil,
++          loaded.partitionPlan == nil, loaded.partitionStorage == nil, loaded.directShardLoad == nil,
++          loaded.configurationData == admission.configuration,
++          loaded.configHash == specification.configurationSHA256,
++          receipt.configurationSHA256 == loaded.configHash,
++          receipt.verifiedAggregateSHA256 == specification.artifactSHA256,
++          receipt.parameterLayoutSHA256 == loaded.parameterLayoutSHA256,
++          modelParameterLayout(loaded.model) == loaded.parameterLayoutSHA256,
++          receipt.bf16ConversionEnabled, loaded.bf16ConversionEnabled,
++          loaded.embeddingActivationDType == "bfloat16",
++          receipt.loadedTensorBytes == specification.sourceBytes,
++          receipt.sourceModelTensorBytes == specification.sourceBytes,
++          receipt.largestHostTensorBytes == specification.largestTensorBytes,
++          receipt.tensorCount == specification.tensorCount, receipt.sourceTensorCount == specification.tensorCount,
++          loaded.layerCount == specification.layers, loaded.layerCount == admission.plan.layers,
++          loaded.vocabularySize == admission.request.profile.vocabularySize,
++          loaded.model.trainableParameters().flattened().isEmpty,
++          !loaded.model.namedModules().contains(where: { $0.0 == "mtp" || $0.0.hasSuffix(".mtp") }) else {
++        throw ProbeError("Full generation reference differs from its verified registered target")
++    }
++    return (.init(artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
++        sourceConfigurationSHA256: loaded.configHash, sourceParameterLayoutSHA256: loaded.parameterLayoutSHA256,
++        planSHA256: admission.plan.fingerprint, arithmeticEnvironmentSHA256: admission.arithmeticEnvironmentSHA256,
++        bf16ConversionEnabled: loaded.bf16ConversionEnabled, embeddingActivationDType: loaded.embeddingActivationDType,
++        sourceModelTensorBytes: receipt.sourceModelTensorBytes, layerCount: loaded.layerCount,
++        vocabularySize: loaded.vocabularySize), receipt)
++}
+--- /dev/null
++++ after/native-contract/QwenFullGenerationReferenceCheck.swift
+@@ -0,0 +1,189 @@
++import Foundation
++
++struct QwenFullGenerationReferenceCheckRecord: Encodable {
++    let kind = "qwen_full_generation_reference_entry_check"
++    let accepted: Int
++    let rejected: Int
++    let cpuOnly = true
++    let actualAllocatorOrLiveResourceAdmissionPerformed = false
++    let modelOrNativeForwardExecuted = false
++}
++
++func checkQwenFullGenerationReferenceEntry() throws -> QwenFullGenerationReferenceCheckRecord {
++    guard let path = ProcessInfo.processInfo.environment["DARKBLOOM_RETAINED_PROFILE_FIXTURE"] else {
++        throw ProbeError("Full-reference CPU check requires the retained profile fixture")
++    }
++    let data = try BoundedProbeInput.data(URL(fileURLWithPath: path), maximumBytes: 1_048_576)
++    guard sha256(data) == "1a7e2d74df5e055ec31c12478f49d1d07d1bb48cc64d150248859defb518cd25",
++          let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
++        throw ProbeError("Full-reference CPU fixture differs")
++    }
++    var accepted = 0, rejected = 0
++    for (key, model) in [("nine", QwenRegisteredDenseModel.qwen35NineB), ("twentySeven", .qwen38TwentySevenB)] {
++        guard let row = root[key] as? [String: Any] else { throw ProbeError("Missing registered reference fixture") }
++        let result = try checkQwenRegisteredGenerationReferenceModel(row, model: model)
++        accepted += result.accepted; rejected += result.rejected
++    }
++    return .init(accepted: accepted, rejected: rejected)
++}
++
++private func checkQwenRegisteredGenerationReferenceModel(_ row: [String: Any],
++    model: QwenRegisteredDenseModel) throws -> QwenFullGenerationReferenceCheckRecord {
++    let definition = try QwenResidentModelDefinition(model: model)
++    let specification = definition.specification
++    guard let configText = row["configuration"] as? String, let config = Data(base64Encoded: configText),
++          let manifestText = row["manifest"] as? String, let manifest = Data(base64Encoded: manifestText),
++          let tensorsValue = row["canonicalTensors"] else { throw ProbeError("Full-reference model fixture differs") }
++    let tensors = try JSONDecoder().decode([QwenDenseCanonicalTensor].self,
++        from: JSONSerialization.data(withJSONObject: tensorsValue))
++    let prompt = try JSONEncoder().encode(Array(repeating: 17, count: 8192))
++    let id = UUID(uuidString: "00000000-0000-0000-0000-000000000017")!
++    let arguments = ["--mode", QwenFullGenerationReferenceCLI.mode,
++        "--model-dir", "/invented/model", "--tokens-file", "/invented/prompt.json", "--tokens-sha256", sha256(prompt),
++        "--request-id", id.uuidString.lowercased(), "--stage-cut", "4", "--output-count", "128",
++        "--stop-token-ids", "[]", "--timeout-seconds", "300",
++        "--registered-dense-profile", model.rawValue, "--prompt-count", "8192", "--chunk-size", "512"]
++    var accepted = 0, rejected = 0
++    func require(_ condition: Bool, _ message: String) throws {
++        guard condition else { throw ProbeError("Full reference fixture: \(message)") }
++        accepted += 1
++    }
++    func refuse(_ body: () throws -> Void) throws {
++        do { try body() } catch { rejected += 1; return }
++        throw ProbeError("Full reference fixture accepted an invalid case")
++    }
++    func changed(_ flag: String, _ value: String) -> [String] {
++        var copy = arguments; copy[copy.firstIndex(of: flag)! + 1] = value; return copy
++    }
++    func read(_ url: URL, _: Int) throws -> Data {
++        switch url.path {
++        case "/invented/model/config.json": return config
++        case "/invented/model/manifest.json": return manifest
++        case "/invented/prompt.json": return prompt
++        default: throw ProbeError("Unexpected fabricated read")
++        }
++    }
++    let environment = QwenLongPrefillArithmeticEnvironment.requiredValues
++    let cli = try QwenFullGenerationReferenceCLI(arguments: arguments)
++    var reads = 0
++    let input = try cli.preflight(environment: environment, read: { url, count in reads += 1; return try read(url, count) })
++    try require(reads == 3 && input.admission.request.requestID == id
++        && input.admission.request.forwardCount == 143 && input.admission.request.maximumTokens == 8320
++        && input.admission.request.finalCommittedTokens == 8319, "exact O128 request/read geometry")
++    for cut in definition.supportedCuts {
++        let value = try QwenFullGenerationReferenceCLI(arguments: changed("--stage-cut", String(cut)))
++        let admitted = try value.preflight(environment: environment, read: read)
++        try require(admitted.admission.source.plan.stages.map(\.sourceRange) == [0..<cut, cut..<specification.layers], "exact cut")
++    }
++    let stops = try QwenFullGenerationReferenceCLI(arguments: changed("--stop-token-ids", "[0,42,248319]"))
++    try require(stops.stopTokenIDs == [0,42,248319], "explicit sorted stop IDs")
++    for (flag, value) in [
++        ("--mode", "other"), ("--registered-dense-profile", "unknown"),
++        ("--prompt-count", "0"), ("--prompt-count", "8193"), ("--prompt-count", "01"),
++        ("--chunk-size", "0"), ("--chunk-size", "513"), ("--model-dir", "relative"), ("--tokens-file", "relative"),
++        ("--tokens-sha256", String(repeating: "A", count: 64)), ("--request-id", "not-a-uuid"),
++        ("--stage-cut", "04"), ("--stage-cut", "5"), ("--stage-cut", "20"),
++        ("--output-count", "0"), ("--output-count", "129"), ("--output-count", "01"),
++        ("--timeout-seconds", "0"), ("--timeout-seconds", "301"),
++        ("--stop-token-ids", "[true]"), ("--stop-token-ids", "[01]"),
++        ("--stop-token-ids", "[-1]"), ("--stop-token-ids", "[248320]"),
++        ("--stop-token-ids", "[2,1]"), ("--stop-token-ids", "[1,1]"), ("--stop-token-ids", "[1,]"),
++    ] { try refuse { _ = try QwenFullGenerationReferenceCLI(arguments: changed(flag, value)) } }
++    try refuse { _ = try QwenFullGenerationReferenceCLI(arguments: Array(arguments.dropLast())) }
++    var duplicate = arguments; duplicate[0] = "--model-dir"
++    try refuse { _ = try QwenFullGenerationReferenceCLI(arguments: duplicate) }
++    reads = 0
++    var badEnvironment = environment; badEnvironment["MLX_ENABLE_TF32"] = "0"
++    try refuse { _ = try cli.preflight(environment: badEnvironment, read: { url, count in reads += 1; return try read(url, count) }) }
++    try require(reads == 0, "arithmetic refused before file reads")
++    try refuse { _ = try cli.preflight(environment: environment, read: { url, count in
++        url.lastPathComponent == "manifest.json" ? manifest + Data([32]) : try read(url, count)
++    }) }
++    try refuse { _ = try cli.preflight(environment: environment, read: { url, count in
++        url.lastPathComponent == "prompt.json" ? prompt + Data([32]) : try read(url, count)
++    }) }
++    let wrongCount = try QwenFullGenerationReferenceCLI(arguments: changed("--prompt-count", "8191"))
++    try refuse { _ = try wrongCount.preflight(environment: environment, read: read) }
++    let otherModel = model == .qwen35NineB ? QwenRegisteredDenseModel.qwen38TwentySevenB : .qwen35NineB
++    let wrongModel = try QwenFullGenerationReferenceCLI(arguments: changed("--registered-dense-profile", otherModel.rawValue))
++    try refuse { _ = try wrongModel.preflight(environment: environment, read: read) }
++    let profile = try QwenRegisteredDenseModelProfile.admit(configuration: config, manifest: manifest,
++        expectedArtifactAggregateSHA256: specification.artifactSHA256,
++        canonicalTensors: tensors, residentDefinition: definition)
++    let observed = tensors.map { QwenDenseObservedSourceTensor(canonical: $0, sourcePartCount: 1,
++        preparedExpectedShape: $0.shape, constructorParameterIsPacked: $0.sourceDType == "U32") }
++    let requirement = try QwenDenseStorageRequirement.derive(profile: profile, plan: input.admission.source.plan, role: .fullReference)
++    let identity = QwenDenseObservedSourceIdentity(aggregateSHA256: specification.artifactSHA256,
++        configurationSHA256: specification.configurationSHA256, verifiedManifestSHA256: specification.manifestSHA256,
++        retainedSourceCount: tensors.count, bf16ConversionEnabled: true)
++    let source = try QwenDenseObservedSourceValidation.validateRegistered(observed, identity: identity,
++        profile: profile, requirement: requirement, plan: input.admission.source.plan)
++    let admission = input.admission
++    func budget(_ request: QwenLayerStageGenerationRequest, _ requirements: QwenGenerationReferenceRequirements,
++                _ bound: (Int) throws -> Int) throws -> QwenFullGenerationReferenceBudget {
++        try .derive(profile: profile, plan: admission.source.plan, request: request,
++            requirements: requirements, source: source, bound: bound)
++    }
++    let logical = try budget(admission.request, admission.requirements, { $0 })
++    let full = try QwenDenseStorageRequirement.derive(profile: profile, plan: admission.source.plan, role: .fullReference)
++    let expectedFullState = model == .qwen35NineB ? 754_188_320 : 1_616_248_896
++    try require(logical.stateBytes == expectedFullState && logical.fusionBytes == full.fusionReplacementBytes
++        && logical.capturedRowsCPUBytes == 2_979_840 && logical.captureNativeBytes == 1_489_920,
++        "full state once, both fusion banks, two CPU rows and one current native conversion")
++    try require(logical.requestReservedBytes == expectedFullState + full.fusionReplacementBytes + 4_469_760,
++        "combined request reserve")
++    try require(try logical.remainingAllocationBytes(after: 0) == profile.sourceTensorBytes
++        && logical.remainingAllocationBytes(after: specification.tensorCount) == 0, "full source allocation conservation")
++    try require(try logical.requiredActualFreeBytes(after: 0) == max(6 * 1_073_741_824,
++        profile.sourceTensorBytes + 2 * profile.largestSourceTensorBytes + 8 * 1_048_576 + 16_384
++        + logical.requestReservedBytes + 4 * 1_073_741_824), "load free formula includes bounded aligned-read scratch")
++    try require(logical.payloadReadScratchBytes == 8 * 1_048_576 + 16_384,
++        "aligned payload scratch has its own bounded host allowance")
++    try require(try logical.requiredActualFreeBytes(after: specification.tensorCount) == max(6 * 1_073_741_824,
++        logical.requestReservedBytes + 4 * 1_073_741_824), "completed load releases host buffers and payload scratch")
++    try require(try logical.requiredAllocatorBytes(after: specification.tensorCount, active: 100, cache: 200)
++        == 300 + logical.stateBytes + logical.fusionBytes + 1_489_920 + 2 * 1_073_741_824, "host row excluded from allocator requirement")
++    let padded = try budget(admission.request, admission.requirements, { $0 + 16_384 })
++    try require(padded.requestReservedBytes > logical.requestReservedBytes
++        && padded.allocationBounds[0] == logical.allocationBounds[0] + 16_384, "actual per-array bounds used")
++    let short = try QwenFullGenerationReferenceCLI(arguments: changed("--output-count", "1")).preflight(environment: environment, read: read)
++    let shortBudget = try budget(short.admission.request, short.admission.requirements, { $0 })
++    try require(shortBudget.stateBytes < logical.stateBytes && short.admission.request.forwardCount == 16,
++        "output-one state is not reused for O128")
++    // Exercise an actual partial final chunk and a configured chunk larger
++    // than the whole prompt. The ledger charges the largest executed frame.
++    for (promptCount, chunkSize, outputCount) in [(1, 512, 1), (31, 16, 2), (513, 512, 128)] {
++        let ids = Array(repeating: 17, count: promptCount)
++        let data = try JSONEncoder().encode(ids)
++        let value = try QwenRegisteredGenerationReferenceSource(definition: definition,
++            configuration: config, manifest: manifest, promptData: data,
++            expectedPromptSHA256: sha256(data), promptCount: promptCount, requestID: id,
++            stageCut: 4, chunkSize: chunkSize, outputCount: outputCount,
++            stopTokenIDs: [], arithmetic: QwenLongPrefillArithmeticEnvironment.admit(environment))
++        let admitted = try QwenGenerationReferenceAdmission(source: value, request: value.request)
++        let ledger = try budget(admitted.request, admitted.requirements, { $0 })
++        let expected = try value.resource.namedStateBudget(maximumTokens: promptCount + outputCount,
++            chunkSize: min(chunkSize, promptCount))
++        try require(ledger.stateBytes == expected.conservativeStateAndBoundaryBytes
++            && value.request.prefillFrameCount == (promptCount - 1) / chunkSize + 1,
++            "short and partial-chunk budget follows actual maximum frame")
++        let substituted = try QwenLayerStageGenerationRequest(profile: value.request.profile, requestID: id,
++            promptTokenIDs: ids, chunkSize: chunkSize, outputCount: outputCount, stopTokenIDs: [17])
++        try refuse { _ = try QwenGenerationReferenceAdmission(source: value, request: substituted) }
++    }
++    try refuse { _ = try budget(admission.request, short.admission.requirements, { $0 }) }
++    try refuse { _ = try budget(admission.request, admission.requirements, { $0 - 1 }) }
++    try refuse { _ = try budget(admission.request, admission.requirements, { _ in Int.max }) }
++    enum Marker: Error { case original }
++    do {
++        _ = try budget(admission.request, admission.requirements, { _ in throw Marker.original })
++        throw ProbeError("Allocator error was swallowed")
++    } catch Marker.original { accepted += 1 }
++    try logical.requireEntry(name: logical.sourceNames[0], byteCount: logical.sourceByteCounts[0], ordinal: 0)
++    accepted += 1
++    try refuse { try logical.requireEntry(name: logical.sourceNames[1], byteCount: logical.sourceByteCounts[1], ordinal: 0) }
++    try refuse { try logical.requireEntry(name: logical.sourceNames[0], byteCount: logical.sourceByteCounts[0] - 1, ordinal: 0) }
++    try refuse { _ = try logical.remainingAllocationBytes(after: -1) }
++    try refuse { _ = try logical.remainingAllocationBytes(after: specification.tensorCount + 1) }
++    return .init(accepted: accepted, rejected: rejected)
++}

@@ -1,0 +1,90 @@
+--- a/build_inputs.py
++++ b/build_inputs.py
+@@ -5,18 +5,18 @@
+ import os
+ 
+ BASE = Path(__file__).resolve().parent
+-OLD = BASE.parent / 'qwen27b-resident-solo-build-20260915'
++OLD = BASE.parent / 'qwen27b-matched-short-cohort-draft-20260916'
+ DRAFT = BASE
+ WORK = BASE / 'workspace'
+ PACKAGE = WORK / 'experiments/cluster/inference'
+ CACHE = PACKAGE / '.build'
+ FIXTURE = BASE.parent / 'qwen9b-resident-solo-generation-draft-20260915/Tests/retained-inputs.json'
+ PINS = {
+-    OLD / 'source-snapshot.json': '8c26272bebc672cbd08c3b734343a5b344c5f21877d111c2203d0a5b008706cc',
++    OLD / 'source-snapshot.json': '5d5196b5bd29ae49ee5188b9e8bfc1114891e31a452605d10e0f076bc047f9fd',
+     OLD / 'dependency-source-snapshot.json': '674a65c405b10f2ddb25ecc3265de87bf8c28e2f571ef6711527dca37ca263f8',
+-    OLD / 'build-manifest-1.json': 'e75ab1e48acca086f5399aa3f512843723a1eed766734490cbbb4b74c6e36856',
+-    OLD / 'runtime-bundle-1/bundle.json': '71267928a25ea80289cbaf446d5fe231c8dfd1e75d67043ec8a8cfe415dadaa5',
+-    DRAFT / 'source-manifest.json': '20478022532885f77eb6acc662103f67a0a7ce17bd6051e14831cfa0b8906dcb',
++    OLD / 'build-manifest-1.json': 'ceabfece99884fc2f453ddc3d83b1e9c7feb5970cbd4646675f8321b7ffdbb6c',
++    OLD / 'runtime-bundle-1/bundle.json': '7e3800b51331f04ecbd84e745300f3395e90d597eeb9dc592257d4499c769f9a',
++    DRAFT / 'source-manifest.json': '0da443a9a03d768505e88861ddac138fdbb0dd07a09d2e67d9f7faf0780c74ce',
+     FIXTURE: '1a7e2d74df5e055ec31c12478f49d1d07d1bb48cc64d150248859defb518cd25',
+ }
+ 
+@@ -54,7 +54,7 @@
+             raise ValueError('Frozen solo overlay changed: ' + name)
+     sources = json.loads((OLD / 'source-snapshot.json').read_bytes())
+     deps = json.loads((OLD / 'dependency-source-snapshot.json').read_bytes())
+-    if len(sources) != 3292 or len(deps) != 9502:
++    if len(sources) != 3293 or len(deps) != 9502:
+         raise ValueError('Qualified solo source/dependency count differs')
+     lineage = json.loads((DRAFT / 'lineage.json').read_bytes())
+     expected = dict(sources)
+@@ -63,7 +63,7 @@
+             raise ValueError('Solo overlay base differs: ' + relative)
+         expected[relative] = digest(DRAFT / 'proposed' / relative)
+     if len(expected) != 3293:
+-        raise ValueError('Solo overlay must add only the one progress DTO file')
++        raise ValueError('Solo report-bound overlay must preserve the source-file count')
+     return sources, deps, expected, lineage['changedPaths']
+ 
+ 
+--- a/build_check.py
++++ b/build_check.py
+@@ -19,6 +19,10 @@
+     failure = None
+     try:
+         receipt['buildPreparationManifestSHA256'] = verify_preparation()
++        encoding = json.loads((BASE / ('encoding-' + str(args.attempt)) / 'receipt.json').read_bytes())
++        if encoding.get('passed') is not True or encoding.get('buildPreparationManifestSHA256') != receipt['buildPreparationManifestSHA256']:
++            raise ValueError('Exact successful Foundation report encoding check must precede native build')
++        receipt['encodingReceiptSHA256'] = digest(BASE / ('encoding-' + str(args.attempt)) / 'receipt.json')
+         receipt['before'] = verify()
+         receipt['sourceSnapshotSHA256'] = digest(BASE / 'source-snapshot.json')
+         receipt['dependencySnapshotSHA256'] = digest(BASE / 'dependency-source-snapshot.json')
+--- a/package_native.py
++++ b/package_native.py
+@@ -17,6 +17,9 @@
+     verify()
+     if verify_preparation() != receipt['buildPreparationManifestSHA256']:
+         raise RuntimeError('Build preparation changed after build')
++    encoding_path = BASE / ('encoding-' + attempt) / 'receipt.json'
++    if sha(encoding_path) != receipt['encodingReceiptSHA256'] or json.loads(encoding_path.read_bytes()).get('passed') is not True:
++        raise RuntimeError('Exact successful pre-build encoding check changed')
+     check_path = BASE / ('check-' + attempt) / 'receipt.json'
+     checked = json.loads(check_path.read_bytes())
+     if checked.get('passed') is not True or checked.get('binarySHA256') != receipt['binarySHA256']:
+@@ -47,8 +50,9 @@
+             raise RuntimeError('Native bundle copy changed')
+         rows.append(dict(path=name, bytes=destination.stat().st_size, sha256=sha(destination)))
+     source_manifest = dict(schema='qwen27b_resident_solo_build_v1',
+-        baseBuildManifestSHA256='e75ab1e48acca086f5399aa3f512843723a1eed766734490cbbb4b74c6e36856',
+-        shortCohortSourceManifestSHA256=sha(BASE / 'source-manifest.json'),
++        baseBuildManifestSHA256='ceabfece99884fc2f453ddc3d83b1e9c7feb5970cbd4646675f8321b7ffdbb6c',
++        reportBoundSourceManifestSHA256=sha(BASE / 'source-manifest.json'),
++        encodingCheckReceiptSHA256=sha(BASE / ('encoding-' + attempt) / 'receipt.json'),
+         sourceSnapshotSHA256=sha(BASE / 'source-snapshot.json'),
+         dependencySnapshotSHA256=sha(BASE / 'dependency-source-snapshot.json'),
+         buildReceiptSHA256=sha(run / 'receipt.json'), cpuCheckReceiptSHA256=sha(check_path),
+@@ -59,7 +63,7 @@
+         json.dump(source_manifest, target, indent=2, sort_keys=True); target.write('\n')
+     # Preserve the existing supervisor's closed bundle envelope.
+     manifest = dict(schemaVersion=1,
+-        scope='Private registered27B resident solo P8192/C512/O128; one warmup with configured1...3 measured requests, default3; progressive retired-request evidence; compiled and CPU checked only',
++        scope='Private registered27B resident solo P8192/C512/O128; unchanged configured1...3 measured requests; 512KiB final ledger and128KiB progress bounds; compiled and CPU checked only',
+         sourceManifestSHA256=sha(source_path), files=rows)
+     (bundle / 'bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
+     print(json.dumps(dict(bundle=str(bundle), bundleSHA256=sha(bundle / 'bundle.json'),

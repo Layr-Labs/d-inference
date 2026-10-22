@@ -1,0 +1,954 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,7 +4,8 @@
+ 
+ - Add `cluster configure` for pinned per-member setup and the authenticated `cluster worker-owner --stdio` entry. Saving setup does not install software, connect to peers or enable serving.
+ - Add explicit `start --local --distributed` for the saved leader configuration, with matching default-provider references, bounded native ownership and cleanup failure propagation. Ordinary solo startup remains the default.
+-- Limit the current adapter to registered Qwen3.5 9B 4-bit greedy text with MTP off. This source integration is experimental; live provider HTTP qualification and release acceptance remain open. See the [CLI reference](docs/provider/cli-reference.md#darkbloom-cluster-experimental) and [configuration limits](docs/reference/configuration.md#saved-distributed-setup-experimental).
++- Add explicit saved prefill selection between serial (default) and one-chunk lookahead when the installed capability advertises it. Native peers agree before weight loading and retain the additional lookahead reservation and live resource gates; no benchmark capture or environment override is used by serving.
++- Limit the current adapter to registered Qwen3.5 9B 4-bit greedy text with MTP off. This integration remains experimental; broader workload qualification and release acceptance remain open. See the [CLI reference](docs/provider/cli-reference.md#darkbloom-cluster-experimental) and [configuration limits](docs/reference/configuration.md#saved-distributed-setup-experimental).
+ 
+ ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
+ 
+diff --git a/docs/provider/cli-reference.md b/docs/provider/cli-reference.md
+--- a/docs/provider/cli-reference.md
++++ b/docs/provider/cli-reference.md
+@@ -178,6 +178,15 @@
+ the setup, capability and existing local SSH trust-file inputs, but does not
+ install software, contact peers, load a model or enable distributed startup.
+ Configure each member's own leader/follower setup before explicit startup.
++Set `prefillSchedule` in both setup JSON files to `serial_v1` (the default) or
++`one_chunk_lookahead_v1`. Lookahead requires an installed capability that advertises
++it; unsupported selections are refused. `configure` saves the selection explicitly,
++and startup requires both native ranks to agree before loading their stages.
++There is no serving environment override for this choice
++(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
++`ClusterConfigurationStore.save`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift`,
++`QwenResidentAdmission.loadAgreementFingerprint`).
+ The [configuration schema](../reference/configuration.md#saved-distributed-setup-experimental)
+ defines the required pins, installed paths and bounded session behavior.
+ 
+diff --git a/docs/reference/configuration.md b/docs/reference/configuration.md
+--- a/docs/reference/configuration.md
++++ b/docs/reference/configuration.md
+@@ -360,14 +360,17 @@
+ `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift`
+ (`ClusterConfiguration.validate`) and its closed codec in
+ `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift`.
+-There are no field defaults. Unknown fields and unsupported capability adapters,
+-profiles or partitions are refused.
++`prefillSchedule` is the only optional field: omission means `serial_v1` for
++existing setup. New saves always write the selected value explicitly. Unknown
++fields and unsupported capability adapters, profiles, partitions or schedules
++are refused; `null` is not an omitted selection.
+ 
+ | Field | Accepted value / effect | Source symbol |
+ |---|---|---|
+ | `schema` | `darkbloom_cluster_configuration_v1` | `ClusterConfiguration.schemaName` |
+ | `clusterID`, `memberID`, `role` | Cluster/member labels; local `leader` (rank 0) or `follower` (rank 1) | `ClusterConfiguration.validate` |
+ | `publicModelID`, `capabilitySHA256`, `selectedPlanSHA256` | Public model route, exact capability-byte pin and a partition already described by that capability | `ClusterConfiguration.validate` |
++| `prefillSchedule` | `serial_v1` (omitted/default) or `one_chunk_lookahead_v1`, restricted to the pinned capability's supported schedules | `ClusterConfiguration.selectedPrefillSchedule`, `ClusterConfiguration.validate` |
+ | `chunkTokens`, `requestTimeoutSeconds` | Positive integers within capability limits; current maxima 512 tokens and 300 seconds | `ClusterConfiguration.validate` |
+ | `peers` | Exactly two distinct peers in rank order, with `id`, `rank`, `host`, `port`, `user`, `ownerExecutable`, `workerExecutable`, `modelDirectory`, `runtimeBinarySHA256`, `jacclDevice`; both worker hashes match the capability | `ClusterConfiguration.Peer`, `ClusterConfiguration.validate` |
+ | `coordinator` | JACCL `address` (IPv4) and `port`; not the Darkbloom coordinator URL | `ClusterConfiguration.Coordinator`, `ClusterConfiguration.validate` |
+@@ -376,7 +379,8 @@
+ 
+ The current adapter describes only registered Qwen3.5 9B 4-bit
+ (`registered_qwen35_9b_greedy_generation_v1`): two ranks, B1, one active request,
+-greedy text, serial prefill, MTP off and no prefix reuse. Its ceilings are 8,192
++greedy text, serial or one-chunk-lookahead prefill, MTP off and no prefix reuse.
++Its ceilings are 8,192
+ prompt tokens, 128 output tokens, 512-token chunks and 8,320 total context tokens.
+ A resident session allows at most 16 admitted requests and a fixed 300-second
+ lifetime including startup. Request deadlines are also bounded by remaining
+@@ -387,6 +391,27 @@
+ `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+ `DistributedInstalledSession.launch`;
+ `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift`).
++
++The canonical capability advertises `supportedPrefillSchedules`; legacy descriptors
++that omit it support serial only and retain their original bytes. The native
++metadata producer obtains support from the same adapter definition used by native
++admission. A saved choice cannot add support to a worker
++(`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift`,
++`ClusterRuntimeCapabilityCodec`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift`,
++`QwenResidentCapabilityMetadata.describe`).
++
++Lookahead reserves its additional producer boundary, host copy and bookkeeping
++before readiness and each request. It keeps one prepared prompt chunk, does not
++prefetch decode, and retains the existing live resource gates. Capability support
++is not available-memory admission: the actual workers report their local capacity
++and can refuse a request
++(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift`,
++`QwenGenerationPrefillAllowance`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift`,
++`QwenResidentRuntime.load`;
++`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift`,
++`QwenResidentRuntime.reserve`).
+ 
+ Saved configuration and capability files live under
+ `~/.config/darkbloom/clusters/`; the device lease and unresolved ownership journal
+diff --git a/libs/darkbloom-cluster/README.md b/libs/darkbloom-cluster/README.md
+--- a/libs/darkbloom-cluster/README.md
++++ b/libs/darkbloom-cluster/README.md
+@@ -3,7 +3,8 @@
+ Shared Swift modules for the experimental distributed provider. The current
+ implementation provides process control, an SSH owner protocol, a private local
+ bootstrap channel, paired bootstrap relay and a native resident model runtime.
+-Cross-host qualification and provider startup wiring are in progress.
++The installed provider exposes explicit `start --local --distributed`; ordinary
++startup remains solo. See the [CLI reference](../../docs/provider/cli-reference.md#darkbloom-cluster-experimental).
+ 
+ | Module | Responsibility |
+ | --- | --- |
+@@ -15,7 +16,8 @@
+ 
+ The protocol, process, remote and bootstrap modules support macOS 14 and have no MLX dependency. ProviderCore's
+ `DistributedPipeExecutionOwner` adapts them to the existing distributed
+-execution-owner contract. No default model slot or CLI command installs it yet.
++execution-owner contract. The installed session and local HTTP host retain the
++pair through actual cleanup and owner release acknowledgements.
+ Native workers must not spawn untracked descendants. Local child exit does not
+ prove that a worker on another machine has stopped.
+ 
+@@ -36,6 +38,7 @@
+ bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
+ bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
+ bash libs/darkbloom-cluster/Tests/BootstrapChecks/run.sh
++bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+ ```
+ 
+ These runners compile the actual source modules with Swift 6 and warnings as
+@@ -59,8 +62,17 @@
+ also exercises that path with actual local owner/native children. A
+ [private configured owner tool](Tools/ConfiguredOwner/README.md) supports the next
+ cross-host qualification; no such execution is established by the local tests.
+-Unresolved journals refuse a new launch; automatic orphan recovery and installed
+-CLI dispatch remain unfinished.
++Unresolved journals refuse a new launch; automatic orphan recovery remains
++unsupported. Installed `cluster worker-owner --stdio` uses the same ownership
++service with saved local configuration and the canonical device lease.
++
++The pinned capability advertises supported prefill schedules; saved setup selects
++`serial_v1` or `one_chunk_lookahead_v1`. Serial remains the default. Native peers
++bind selection before loading weights and charge lookahead's existing additional
++allowance before readiness and request execution. The product uses the ordinary
++serving driver without benchmark capture. See the
++[configuration contract](../../docs/reference/configuration.md#saved-distributed-setup-experimental)
++for compatibility, limits and admission semantics.
+ 
+ See the [distributed execution plan](../../docs/design/distributed-cluster-execution-plan.md)
+ and [provider test instructions](../../docs/developer/test.md#distributed-provider-lifecycle).
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterPrefillSchedule.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterPrefillSchedule.swift
+new file mode 100644
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterPrefillSchedule.swift
+@@ -0,0 +1,8 @@
++import Foundation
++
++/// Prefill scheduling only; token selection and request concurrency are separate.
++/// Support must be advertised by the installed adapter and admitted natively.
++public enum ClusterPrefillSchedule: String, Codable, CaseIterable, Sendable {
++    case serial = "serial_v1"
++    case oneChunkLookahead = "one_chunk_lookahead_v1"
++}
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
+@@ -59,7 +59,9 @@
+     public let maxActiveRequests = 1
+     public let maxLifetimeSeconds: Int
+     public let maxRequests: Int
++    /// Requests remain serialized even when adjacent prefill stages overlap.
+     public let schedulingPolicy = "serial"
++    public let supportedPrefillSchedules: [ClusterPrefillSchedule]
+     public let selectionPolicy = "greedy"
+     public let modality = "text"
+     public let stopPolicy = "selectedTokenIDs"
+@@ -70,14 +72,20 @@
+                 runtimeModelID: String, artifactSHA256: String, configurationSHA256: String,
+                 manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
+                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
+-                arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int) throws {
++                arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int,
++                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial]) throws {
+         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
+         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
+         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
+         self.profile = profile; self.profileFingerprint = profileFingerprint; self.partitions = partitions
+         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
+         self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
++        self.supportedPrefillSchedules = supportedPrefillSchedules
+         try ClusterRuntimeCapabilityValidation.check(self)
++    }
++
++    public func requireSupport(for schedule: ClusterPrefillSchedule) throws {
++        try workerRequire(supportedPrefillSchedules.contains(schedule), "Prefill schedule is not advertised by this runtime")
+     }
+ 
+     public func selection(planSHA256: String) throws -> ClusterRuntimePartition {
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
+@@ -8,7 +8,7 @@
+     public static func encode(_ value: ClusterRuntimeCapability) throws -> Data {
+         try ClusterRuntimeCapabilityValidation.check(value)
+         let p = value.profile
+-        let object: [String: Any] = [
++        var object: [String: Any] = [
+             "schema": ClusterRuntimeCapability.schema,
+             "workerProtocolVersion": value.workerProtocolVersion, "ownerProtocolVersion": value.ownerProtocolVersion,
+             "bootstrapABIVersion": value.bootstrapABIVersion, "runtimeBinarySHA256": value.runtimeBinarySHA256,
+@@ -33,6 +33,11 @@
+             "selectionPolicy": value.selectionPolicy, "modality": value.modality, "stopPolicy": value.stopPolicy,
+             "speculation": value.speculation, "prefixReuse": value.prefixReuse,
+         ]
++        // Preserve canonical v1 serial-only descriptors byte-for-byte. New
++        // adapters advertise the additional supported schedules explicitly.
++        if value.supportedPrefillSchedules != [.serial] {
++            object["supportedPrefillSchedules"] = value.supportedPrefillSchedules.map(\.rawValue)
++        }
+         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+         try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
+         data.append(10); return data
+@@ -67,13 +72,25 @@
+             let value = try ClusterRuntimePartition(kind: partition.string("kind"), planSHA256: partition.string("planSHA256"), stages: stages)
+             try partition.finish(); return value
+         }
++        let schedules: [ClusterPrefillSchedule]
++        if r.values["supportedPrefillSchedules"] != nil {
++            guard let names = try r.take("supportedPrefillSchedules") as? [String] else {
++                throw ClusterWorkerProtocolError.invalid("Expected prefill schedule names")
++            }
++            schedules = try names.map {
++                guard let value = ClusterPrefillSchedule(rawValue: $0) else {
++                    throw ClusterWorkerProtocolError.invalid("Unknown prefill schedule")
++                }
++                return value
++            }
++        } else { schedules = [.serial] }
+         let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
+             adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
+             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
+             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
+             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
+             arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), maxLifetimeSeconds: r.int("maxLifetimeSeconds"),
+-            maxRequests: r.int("maxRequests"))
++            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules)
+         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
+             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
+             && r.int("maxActiveRequests") == value.maxActiveRequests
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
+@@ -10,6 +10,10 @@
+         try workerRequire([value.runtimeBinarySHA256, value.artifactSHA256, value.configurationSHA256,
+             value.manifestSHA256, value.profileFingerprint, value.arithmeticPolicySHA256]
+             .allSatisfy(ClusterWorkerValidation.hash), "Malformed runtime capability identity")
++        try workerRequire(!value.supportedPrefillSchedules.isEmpty
++            && value.supportedPrefillSchedules.first == .serial
++            && value.supportedPrefillSchedules == ClusterPrefillSchedule.allCases.filter(value.supportedPrefillSchedules.contains),
++            "Missing, duplicate or unordered prefill schedules")
+         let p = value.profile
+         try workerRequire((1...ClusterWorkerLimits.vocabularySize).contains(p.vocabularySize)
+             && (1...ClusterWorkerLimits.promptTokens).contains(p.maximumPromptTokens)
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift
+@@ -1,6 +1,6 @@
+ import Foundation
+ 
+-/// Experimental scheduling only. The ordinary resident facade stays serial.
++/// Native prefill policy. The ordinary resident facade defaults to serial.
+ @_spi(Benchmark) public enum QwenResidentPrefillPolicy: String, Sendable {
+     case serial
+     case oneChunkLookahead
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift
+@@ -1,3 +1,4 @@
++import DarkbloomClusterProtocol
+ import Foundation
+ 
+ /// One definition for the currently admitted resident adapter and its metadata.
+@@ -7,6 +8,7 @@
+     static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
+     static let maximumRequests = 16
+     static let supportedCuts = [4, 8, 12, 16]
++    static let supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
+ 
+     static func profile(specification: QwenDenseRegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
+         guard specification.model == .qwen35NineB else { throw ProbeError("Unsupported resident model") }
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+@@ -10,14 +10,17 @@
+     public let stageCut: Int
+     public let deadlineUptimeNanoseconds: UInt64
+     public let allocatorPolicy: QwenResidentAllocatorPolicy
++    public let prefillSchedule: ClusterPrefillSchedule
+ 
+     public init(identity: ClusterWorkerIdentity, modelDirectory: URL, rank: Int,
+                 stageCut: Int, deadlineUptimeNanoseconds: UInt64,
+-                allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged) {
++                allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged,
++                prefillSchedule: ClusterPrefillSchedule = .serial) {
+         self.identity = identity; self.modelDirectory = modelDirectory
+         self.rank = rank; self.stageCut = stageCut
+         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+         self.allocatorPolicy = allocatorPolicy
++        self.prefillSchedule = prefillSchedule
+     }
+ }
+ 
+@@ -39,6 +42,7 @@
+          read: (URL, Int) throws -> Data) throws {
+         let identity = configuration.identity
+         guard (0...1).contains(configuration.rank), QwenResidentAdapterDefinition.supportedCuts.contains(configuration.stageCut),
++              QwenResidentAdapterDefinition.supportedPrefillSchedules.contains(configuration.prefillSchedule),
+               configuration.modelDirectory.isFileURL,
+               identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
+               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
+@@ -86,7 +90,7 @@
+     }
+ 
+     /// Rank, local path and local uptime are intentionally absent. The explicit
+-    /// allocator policy is common and must agree before either stage is loaded.
++    /// allocator and prefill policies must agree before either stage is loaded.
+     func loadAgreementFingerprint() throws -> String {
+         let identity = configuration.identity
+         return sha256(try canonicalJSONData([
+@@ -94,7 +98,8 @@
+             identity.configurationSHA256, identity.artifactSHA256, specification.manifestSHA256,
+             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
+             configuration.allocatorPolicy.rawValue,
+-        ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
++        ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
++            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)))
+     }
+ 
+     var wireProfile: ClusterWorkerProfile {
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
+@@ -40,6 +40,7 @@
+             arithmeticPolicyID: QwenLongPrefillArithmeticEnvironment.contract,
+             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
+             maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
+-            maxRequests: QwenResidentAdapterDefinition.maximumRequests)
++            maxRequests: QwenResidentAdapterDefinition.maximumRequests,
++            supportedPrefillSchedules: QwenResidentAdapterDefinition.supportedPrefillSchedules)
+     }
+ }
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPrefillSelection.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPrefillSelection.swift
+new file mode 100644
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPrefillSelection.swift
+@@ -0,0 +1,26 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++/// Maps the public product choice into the already bounded native scheduler.
++/// No environment lookup, diagnostic capture, or caller-supplied byte budget.
++enum QwenResidentPrefillSelection {
++    static func policy(_ schedule: ClusterPrefillSchedule) -> QwenResidentPrefillPolicy {
++        switch schedule {
++        case .serial: .serial
++        case .oneChunkLookahead: .oneChunkLookahead
++        }
++    }
++
++    static func loadAgreementFields(_ schedule: ClusterPrefillSchedule) -> [String] {
++        // Existing serial load agreement bytes remain unchanged.
++        schedule == .serial ? [] : ["qwen-resident-prefill-schedule-v1", schedule.rawValue]
++    }
++
++    static func allowance(_ policy: QwenResidentPrefillPolicy, rank: Int,
++                          promptCount: Int, chunkSize: Int, hiddenSize: Int,
++                          elementBytes: Int, bound: (Int) throws -> Int) throws -> QwenGenerationPrefillAllowance? {
++        guard policy == .oneChunkLookahead else { return nil }
++        return try .derive(rank: rank, promptCount: promptCount, chunkSize: chunkSize,
++            hiddenSize: hiddenSize, elementBytes: elementBytes, bound: bound)
++    }
++}
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -58,14 +58,22 @@
+                             return .init(activeBytes: value.activeMemory, cachedBytes: value.cacheMemory,
+                                 peakBytes: value.peakMemory)
+                         }, clearCache: { Memory.clearCache() }, check: checked)
+-                    try maximum.requireLive(); try checked()
++                    let prefill = try QwenResidentPrefillSelection.allowance(
++                        QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
++                        promptCount: admission.profile.maximumPromptTokens, chunkSize: admission.profile.maximumChunkTokens,
++                        hiddenSize: admission.profile.hiddenSize,
++                        elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
++                        bound: QwenResidentResourceEnvironment.allocationBound)
++                    try maximum.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
++                        additionalHostBytes: prefill?.extraHostBytes ?? 0)
++                    try checked()
+                     let loadedIdentity = sha256(try canonicalJSONData([common,
+                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
+                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
+                         disagreementMessage: "Resident peers did not load matching verified stage commitments", check: checked)
+                     try checked()
+-                    return maximum.reservedBytes
++                    return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
+                 } catch {
+                     // Prefer a recorded native fault over a secondary Swift
+                     // validation/shape error before leaving this error scope.
+diff --git a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -75,8 +75,8 @@
+ 
+     private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
+                                   chunkSize: Int) throws -> QwenGenerationPrefillAllowance? {
+-        guard policy == .oneChunkLookahead else { return nil }
+-        return try .derive(rank: collective.rank, promptCount: promptCount, chunkSize: chunkSize,
++        try QwenResidentPrefillSelection.allowance(policy, rank: collective.rank,
++            promptCount: promptCount, chunkSize: chunkSize,
+             hiddenSize: admission.profile.hiddenSize,
+             elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
+             bound: QwenResidentResourceEnvironment.allocationBound)
+@@ -103,7 +103,8 @@
+     /// Metadata/native resource reservation only; no request state or forward.
+     /// Returned bytes are this rank's named allowance, not combined peer RAM.
+     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
+-        try reserve(requestID: requestID, request: value, mode: .serving)
++        try reserve(requestID: requestID, request: value, mode: .serving,
++            prefillPolicy: QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule))
+     }
+ 
+     /// Charges the original state/fusion allowance plus both named host/native
+@@ -145,9 +146,14 @@
+                 try recording.requireCapture(resources.budget)
+                 charge = recording
+             } else {
+-                guard allowance.reservedBytes <= value.capacityLimitBytes,
+-                      allowance.reservedBytes <= baseReady.requestCapacityBytes else {
+-                    throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
++                if let prefill {
++                    try prefill.requireCapacity(baseBytes: allowance.reservedBytes,
++                        ownerLimit: value.capacityLimitBytes, readinessLimit: baseReady.requestCapacityBytes)
++                } else {
++                    guard allowance.reservedBytes <= value.capacityLimitBytes,
++                          allowance.reservedBytes <= baseReady.requestCapacityBytes else {
++                        throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
++                    }
+                 }
+                 charge = nil
+             }
+diff --git a/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/LoadConfiguration.swift b/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/LoadConfiguration.swift
+--- a/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/LoadConfiguration.swift
++++ b/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/LoadConfiguration.swift
+@@ -10,14 +10,17 @@
+     public let stageCut: Int
+     public let deadlineUptimeNanoseconds: UInt64
+     public let allocatorPolicy: QwenResidentAllocatorPolicy
++    public let prefillSchedule: ClusterPrefillSchedule
+ 
+     public init(identity: ClusterWorkerIdentity, modelDirectory: URL, rank: Int,
+                 stageCut: Int, deadlineUptimeNanoseconds: UInt64,
+-                allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged) {
++                allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged,
++                prefillSchedule: ClusterPrefillSchedule = .serial) {
+         self.identity = identity; self.modelDirectory = modelDirectory
+         self.rank = rank; self.stageCut = stageCut
+         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+         self.allocatorPolicy = allocatorPolicy
++        self.prefillSchedule = prefillSchedule
+     }
+ }
+ 
+diff --git a/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/WorkerBootstrapAdmissionCheck.swift b/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/WorkerBootstrapAdmissionCheck.swift
+--- a/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/WorkerBootstrapAdmissionCheck.swift
++++ b/libs/darkbloom-cluster/Tests/BootstrapChecks/Channel/WorkerBootstrapAdmissionCheck.swift
+@@ -31,6 +31,20 @@
+                 "Legacy default changed")
+             accepted += 1
+         }
++        try check(try WorkerConfiguration(arguments: base, now: now).load.prefillSchedule == .serial,
++            "Omitted worker schedule changed")
++        for schedule in ["serial_v1", "one_chunk_lookahead_v1"] {
++            for attachment in [[], extra] {
++                let value = try WorkerConfiguration(arguments: base + ["--prefill-schedule", schedule] + attachment, now: now)
++                try check(value.load.prefillSchedule.rawValue == schedule, "Explicit worker schedule changed")
++                accepted += 1
++            }
++        }
++        for malformed in ["", "serial", "oneChunkLookahead", "SERIAL_V1", "unknown", "1", "serial_v1 "] {
++            try refuse(base + ["--prefill-schedule", malformed])
++        }
++        try refuse(base + ["--prefill-schedule", "serial_v1", "--prefill-schedule", "one_chunk_lookahead_v1"])
++        try refuse(base + ["--prefill-schedule", "serial_v1", "--bootstrap-owner-pid", "123"])
+         let attached = try WorkerConfiguration(arguments: base + extra, now: now)
+         try check(attached.bootstrap?.ownerProcessID == 123 && attached.bootstrap?.deadlineUptimeNanoseconds == lifetime - 1,
+             "Attachment identity changed")
+diff --git a/libs/darkbloom-cluster/Tests/CapabilityChecks/CapabilityProtocolCheck.swift b/libs/darkbloom-cluster/Tests/CapabilityChecks/CapabilityProtocolCheck.swift
+--- a/libs/darkbloom-cluster/Tests/CapabilityChecks/CapabilityProtocolCheck.swift
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/CapabilityProtocolCheck.swift
+@@ -37,6 +37,26 @@
+             try refuse(name) { object in var partitions = object["partitions"] as! [[String: Any]]; edit(&partitions); object["partitions"] = partitions }
+         }
+         try yes("canonical-roundtrip") { try require(try ClusterRuntimeCapabilityCodec.decode(encoded) == value, "Roundtrip differs") }
++        try yes("legacy-serial-descriptor-byte-identity") {
++            try require(value.supportedPrefillSchedules == [.serial], "Legacy capability must remain serial-only")
++            try require(try ClusterRuntimeCapabilityCodec.encode(value) == encoded, "Legacy canonical bytes changed")
++            try value.requireSupport(for: .serial)
++        }
++        try no("legacy-runtime-cannot-enable-lookahead") { try value.requireSupport(for: .oneChunkLookahead) }
++        let advertisedBytes = try modified { $0["supportedPrefillSchedules"] = ["serial_v1", "one_chunk_lookahead_v1"] }
++        try yes("advertised-lookahead-canonical-roundtrip") {
++            let advertised = try ClusterRuntimeCapabilityCodec.decode(advertisedBytes)
++            try advertised.requireSupport(for: .oneChunkLookahead)
++            try require(try ClusterRuntimeCapabilityCodec.encode(advertised) == advertisedBytes, "Advertised schedule bytes changed")
++            try require(advertised.partitions == value.partitions && advertised.profile == value.profile,
++                        "Scheduling changed the model Plan or profile")
++        }
++        let malformedSchedules: [Any] = [NSNull(), true, "serial_v1", [], ["one_chunk_lookahead_v1"],
++                               ["serial_v1", "serial_v1"], ["one_chunk_lookahead_v1", "serial_v1"],
++                               ["serial_v1", "unknown"], ["serial_v1", 1], ["serial_v1"]]
++        for malformed in malformedSchedules {
++            try refuse("prefill-schedules-" + String(describing: malformed)) { $0["supportedPrefillSchedules"] = malformed }
++        }
+         try yes("exact-native-profile-and-arithmetic") {
+             try require(value.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff", "Profile recipe changed")
+             try require(value.arithmeticPolicySHA256 == "0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74", "Arithmetic receipt changed")
+diff --git a/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
+--- a/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
+@@ -238,6 +238,26 @@
+         XCTAssertNotEqual(try rank0.loadAgreementFingerprint(), try defaultPolicy.loadAgreementFingerprint())
+     }
+ 
++    func testLoadAgreementBindsPrefillSelectionBeforeEitherStageLoads() throws {
++        let (config, manifest, _) = try fixture()
++        let common = configuration(cut: 4).identity
++        func admitted(rank: Int, schedule: ClusterPrefillSchedule) throws -> QwenResidentAdmission {
++            let value = QwenResidentLoadConfiguration(identity: common, modelDirectory: URL(fileURLWithPath: "/invented/model"),
++                rank: rank, stageCut: 4, deadlineUptimeNanoseconds: 1000, prefillSchedule: schedule)
++            return try .init(configuration: value, configBytes: config, manifestBytes: manifest,
++                environment: environment(rank: rank), now: 100,
++                read: { _, _ in Data("[[null,\"rdma_en1\"],[\"rdma_en1\",null]]".utf8) })
++        }
++        let serial0 = try admitted(rank: 0, schedule: .serial)
++        let serial1 = try admitted(rank: 1, schedule: .serial)
++        let lookahead0 = try admitted(rank: 0, schedule: .oneChunkLookahead)
++        let lookahead1 = try admitted(rank: 1, schedule: .oneChunkLookahead)
++        XCTAssertEqual(try serial0.loadAgreementFingerprint(), try serial1.loadAgreementFingerprint())
++        XCTAssertEqual(try lookahead0.loadAgreementFingerprint(), try lookahead1.loadAgreementFingerprint())
++        XCTAssertNotEqual(try serial0.loadAgreementFingerprint(), try lookahead1.loadAgreementFingerprint())
++        XCTAssertEqual(serial0.plan.fingerprint, lookahead0.plan.fingerprint)
++    }
++
+     func testCancellationCannotAffectAnotherRequestAndActiveCloseRefuses() throws {
+         let state = QwenResidentControl(deadline: DispatchTime.now().uptimeNanoseconds + 300_000_000_000)
+         let id = UUID()
+diff --git a/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/NativePrefillSelectionCheck.swift b/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/NativePrefillSelectionCheck.swift
+new file mode 100644
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/NativePrefillSelectionCheck.swift
+@@ -0,0 +1,90 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++@main enum NativePrefillSelectionCheck {
++    enum Failure: Error { case assertion(String) }
++    static func require(_ value: Bool, _ message: String) throws {
++        if !value { throw Failure.assertion(message) }
++    }
++    static func refuse(_ body: () throws -> Void) throws {
++        do { try body() } catch is Failure { throw Failure.assertion("Assertion failed inside refusal") }
++        catch { return }
++        throw Failure.assertion("Expected refusal")
++    }
++    static func main() throws {
++        guard CommandLine.arguments.count == 2 else { throw Failure.assertion("Expected retained legacy capability") }
++        let legacyBytes = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
++        let legacy = try ClusterRuntimeCapabilityCodec.decode(legacyBytes)
++        try require(try DistributedInstalledPrefillSelection.workerArguments(capability: legacy, schedule: .serial).isEmpty,
++                    "Old serial worker received an unsupported optional CLI flag")
++        try refuse { _ = try DistributedInstalledPrefillSelection.workerArguments(capability: legacy, schedule: .oneChunkLookahead) }
++        var advertisedObject = try JSONSerialization.jsonObject(with: legacyBytes) as! [String: Any]
++        advertisedObject["supportedPrefillSchedules"] = ["serial_v1", "one_chunk_lookahead_v1"]
++        var advertisedBytes = try JSONSerialization.data(withJSONObject: advertisedObject, options: [.sortedKeys, .withoutEscapingSlashes])
++        advertisedBytes.append(10)
++        let advertised = try ClusterRuntimeCapabilityCodec.decode(advertisedBytes)
++        try require(try DistributedInstalledPrefillSelection.workerArguments(capability: advertised, schedule: .serial).isEmpty,
++                    "New serial worker arguments changed unnecessarily")
++        try require(try DistributedInstalledPrefillSelection.workerArguments(capability: advertised, schedule: .oneChunkLookahead)
++            == ["--prefill-schedule", "one_chunk_lookahead_v1"], "Advertised lookahead flag missing")
++        var allocatorCalls = 0
++        let serial = try QwenResidentPrefillSelection.allowance(.serial, rank: 0,
++            promptCount: 8192, chunkSize: 512, hiddenSize: 4096, elementBytes: 2,
++            bound: { allocatorCalls += 1; return $0 })
++        try require(serial == nil && allocatorCalls == 0, "Serial added a reservation")
++        try require(QwenResidentPrefillSelection.policy(.serial) == .serial
++            && QwenResidentPrefillSelection.policy(.oneChunkLookahead) == .oneChunkLookahead, "Product mapping differs")
++        let oldFields = ["fixture-load-domain", "epoch", "source", "plan", "peers"]
++        let serialFields = oldFields + QwenResidentPrefillSelection.loadAgreementFields(.serial)
++        let left = oldFields + QwenResidentPrefillSelection.loadAgreementFields(.oneChunkLookahead)
++        let right = oldFields + QwenResidentPrefillSelection.loadAgreementFields(.oneChunkLookahead)
++        try require(serialFields == oldFields && left == right && serialFields != right,
++                    "Pre-weight schedule binding lost serial bytes or peer disagreement")
++
++        func allowance(rank: Int, prompt: Int = 8192,
++                       bound: (Int) throws -> Int = { $0 + 4096 }) throws -> QwenGenerationPrefillAllowance {
++            guard let value = try QwenResidentPrefillSelection.allowance(.oneChunkLookahead, rank: rank,
++                promptCount: prompt, chunkSize: 512, hiddenSize: 4096, elementBytes: 2, bound: bound) else {
++                throw Failure.assertion("Missing lookahead charge")
++            }
++            return value
++        }
++        let rank0 = try allowance(rank: 0), rank1 = try allowance(rank: 1)
++        let boundaryBytes = 512 * 4096 * 2
++        try require(rank0.extraNativeBytes == boundaryBytes + 4096
++            && rank0.extraHostBytes == boundaryBytes + 65_536,
++            "Producer must retain its rounded boundary plus independent host copy/bookkeeping")
++        try require(rank1.extraNativeBytes == 0 && rank1.extraHostBytes == 65_536,
++                    "Consumer unexpectedly prefetched or lost bookkeeping charge")
++        for rank in 0...1 {
++            let single = try allowance(rank: rank, prompt: 512)
++            try require(single.extraNativeBytes == 0 && single.extraHostBytes == 65_536,
++                        "A single chunk has no prepared-ahead boundary")
++        }
++        let base = 1_000_000, total = try base + rank0.reservedBytes
++        try rank0.requireCapacity(baseBytes: base, ownerLimit: total, readinessLimit: total)
++        try refuse { try rank0.requireCapacity(baseBytes: base, ownerLimit: total - 1, readinessLimit: total) }
++        try refuse { try rank0.requireCapacity(baseBytes: base, ownerLimit: total, readinessLimit: total - 1) }
++        try refuse { _ = try allowance(rank: 0, bound: { $0 - 1 }) }
++        let huge = try allowance(rank: 0, bound: { _ in Int.max })
++        try refuse { _ = try huge.reservedBytes }
++        try refuse { try rank0.requireCapacity(baseBytes: Int.max, ownerLimit: Int.max, readinessLimit: Int.max) }
++
++        // Actual pure window: at most one prepared future boundary, committed
++        // frontier captured before prefetch, no decode accepted as prompt work.
++        var window = try QwenGenerationPrefillWindow(promptCount: 6, chunkSize: 3)
++        try window.beginPreparation(sequence: 0, nativeCommittedTokens: 0)
++        try window.commitPreparation(sequence: 0, nativeCommittedTokens: 3)
++        let first = try window.beginSend(sequence: 0, nativeCommittedTokens: 3)
++        try window.completeSend(first)
++        try window.beginPreparation(sequence: 1, nativeCommittedTokens: 3)
++        try window.commitPreparation(sequence: 1, nativeCommittedTokens: 6)
++        try window.consume(first)
++        let second = try window.beginSend(sequence: 1, nativeCommittedTokens: 6)
++        try window.completeSend(second); try window.consume(second)
++        try require(window.complete && window.maximumPreparedBoundaries == 1 && window.preparedAheadFrames == 1,
++                    "Prompt window did not drain its single prepared slot")
++        try refuse { try window.beginPreparation(sequence: 2, nativeCommittedTokens: 6) }
++        print("PASS prefill product mapping, bilateral binding material, rank charges, capacity edges and prompt-only frontier")
++    }
++}
+diff --git a/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/README.md b/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/README.md
+new file mode 100644
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/README.md
+@@ -0,0 +1,16 @@
++# Prefill scheduling contract checks
++
++Run `./libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh` on macOS.
++This directly compiles Foundation sources, the existing native scheduler's pure
++window/allowance, and the strict worker parser with an explicit load-value stub.
++It does not load a model, initialize MLX/JACCL, open sockets or run the native worker.
++
++Coverage: serial default, exact public-to-native policy mapping, bilateral load
++agreement material, both rank allowances, single-chunk behavior, allocator and
++capacity refusal, captured prompt frontier, decode exclusion, and closed CLI
++selection with the optional complete bootstrap triple, and old serial-worker
++argument compatibility against the retained canonical capability. Capability and saved
++configuration compatibility run in their existing CapabilityChecks and
++ClusterConfigurationChecks runners. The runtime XCTest adds an actual admission
++fingerprint comparison; this small runner does not claim to execute that test or
++qualify live resource samples, native asynchronous scheduling or throughput.
+diff --git a/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh b/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+new file mode 100755
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+@@ -0,0 +1,34 @@
++#!/bin/bash
++set -euo pipefail
++task_package="$(cd "$(dirname "$0")/../.." && pwd)"
++task_runtime="$task_package/Sources/DarkbloomClusterRuntime"
++task_repo="$(cd "$task_package/../.." && pwd)"
++task_worker="$task_package/../darkbloom-cluster-worker/Sources/DarkbloomClusterWorker"
++task_fixtures="$task_package/Tests/PrefillScheduleChecks"
++task_bootstrap_tests="$task_package/Tests/BootstrapChecks/Channel"
++task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-prefill-schedule.XXXXXXXX")"
++trap 'rm -rf "$task_build"' EXIT
++task_flags=(-swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0")
++task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
++xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterProtocol \
++  -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
++  "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
++xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol \
++  "$task_runtime/ClusterRuntimeError.swift" "$task_runtime/QwenLongPrefillTensorBudget.swift" \
++  "$task_runtime/QwenGenerationPrefillPolicy.swift" "$task_runtime/QwenGenerationPrefillAllowance.swift" \
++  "$task_runtime/QwenResidentPrefillSelection.swift" \
++  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefillSelection.swift" \
++  "$task_fixtures/NativePrefillSelectionCheck.swift" \
++  -o "$task_build/schedule-check"
++"$task_build/schedule-check" "$task_package/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.capability.json"
++xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterBootstrap \
++  -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
++  "$task_package"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
++xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterRuntime \
++  -emit-module-path "$task_build/DarkbloomClusterRuntime.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
++  "$task_bootstrap_tests/LoadConfiguration.swift" -o "$task_build/libDarkbloomClusterRuntime.dylib"
++xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" \
++  -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap \
++  "$task_worker/WorkerConfiguration.swift" "$task_worker/WorkerBootstrapConfiguration.swift" \
++  "$task_bootstrap_tests/WorkerBootstrapAdmissionCheck.swift" -o "$task_build/worker-check"
++"$task_build/worker-check"
+diff --git a/libs/darkbloom-cluster-worker/README.md b/libs/darkbloom-cluster-worker/README.md
+--- a/libs/darkbloom-cluster-worker/README.md
++++ b/libs/darkbloom-cluster-worker/README.md
+@@ -2,7 +2,9 @@
+ 
+ This separate package builds the experimental resident rank worker. Its macOS
+ 26.2 deployment minimum enables native JACCL while the provider-facing control
+-modules retain macOS 14. Provider startup does not enable this worker yet.
++modules retain macOS 14. The provider's explicit `start --local --distributed`
++path launches installed owner processes, each supervising its local native worker.
++Ordinary provider startup remains solo.
+ 
+ Build from the repository root with an explicitly source-matched metallib:
+ 
+@@ -28,10 +30,20 @@
+ and connects before native group initialization. The owning launcher must
+ require this attachment for the authenticated peer path; omitting it retains
+ the experimental native bootstrap. The shared control module includes the paired
+-relay and a private configured owner for qualification. Cross-host execution and
+-the installed provider launcher remain under integration.
+-Neither a worker build nor a pipe fixture qualifies remote ownership, model
+-correctness, external TTFT, or production serving.
++relay and a private configured owner for qualification. The installed
++`cluster worker-owner --stdio` entry requires the authenticated attachment and
++uses the saved local configuration.
++The worker's optional `--prefill-schedule` accepts only `serial_v1` and
++`one_chunk_lookahead_v1`; omission means serial. The installed launcher emits the
++flag only for lookahead, preserving old serial-only worker arguments. Selection
++is immutable for a worker lifetime and participates in native bilateral load
++agreement. `--describe-runtime` advertises supported schedules from the adapter;
++capability metadata does not report readiness or available memory.
++
++Use the saved [configuration selection](../../docs/reference/configuration.md#saved-distributed-setup-experimental)
++for product startup. No environment variable or Benchmark SPI enables lookahead
++in the serving path. Neither a worker build nor a pipe fixture qualifies remote
++ownership, model correctness, external TTFT, or production serving.
+ 
+ See the [shared modules](../darkbloom-cluster/README.md),
+ [execution plan](../../docs/design/distributed-cluster-execution-plan.md), and
+diff --git a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+@@ -12,13 +12,16 @@
+         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
+             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
+             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
+-        guard [names.count * 2, (names.count + WorkerBootstrapConfiguration.names.count) * 2].contains(arguments.count) else {
+-            throw WorkerFailure.invalid("Expected twelve worker pairs and an optional complete bootstrap triple")
++        let optionalNames: Set<String> = ["--prefill-schedule"]
++        let counts = [names.count, names.count + 1, names.count + WorkerBootstrapConfiguration.names.count,
++                      names.count + WorkerBootstrapConfiguration.names.count + 1].map { $0 * 2 }
++        guard counts.contains(arguments.count) else {
++            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule and optional complete bootstrap triple")
+         }
+         var fields: [String: String] = [:]
+         for index in stride(from: 0, to: arguments.count, by: 2) {
+             let key = arguments[index], value = arguments[index + 1]
+-            guard names.union(WorkerBootstrapConfiguration.names).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
++            guard names.union(optionalNames).union(WorkerBootstrapConfiguration.names).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
+                   !value.contains("\0") else { throw WorkerFailure.invalid("Unknown, duplicate or empty worker argument") }
+             fields[key] = value
+         }
+@@ -44,6 +47,9 @@
+               deadline > now, deadline - now <= 300_000_000_000 else {
+             throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime")
+         }
++        guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
++            throw WorkerFailure.invalid("Unknown worker prefill schedule")
++        }
+         bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
+         let peers = try (0...1).map { index -> ClusterWorkerPeer in
+             let label = fields["--peer\(index)-id"]!
+@@ -56,6 +62,7 @@
+         load = .init(identity: .init(membershipEpoch: epoch, modelID: fields["--model-id"]!,
+             artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
+             modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
+-            deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache)
++            deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
++            prefillSchedule: prefillSchedule)
+     }
+ }
+diff --git a/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift
+--- a/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift
+@@ -17,7 +17,13 @@
+             let binary = String(repeating: "1", count: 64)
+             try checks.yes("actual-native-metadata-matches-golden-profile-and-four-plans") {
+                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
+-                try capabilityCheck(value == golden, "Actual native metadata changed")
++                try capabilityCheck(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead], "Adapter schedules differ")
++                var current = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(value)) as! [String: Any]
++                current.removeValue(forKey: "supportedPrefillSchedules")
++                var legacy = try JSONSerialization.data(withJSONObject: current, options: [.sortedKeys, .withoutEscapingSlashes])
++                legacy.append(10)
++                try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(legacy) == golden,
++                    "Native metadata changed beyond advertised prefill schedules")
+             }
+             try checks.yes("binary-binding-remains-separate-from-model-identities") {
+                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
+diff --git a/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift b/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
+@@ -11,6 +11,11 @@
+     public let publicModelID: String
+     public let capabilitySHA256: String
+     public let selectedPlanSHA256: String
++    /// Omission preserves old saved serial setup. New saves materialize this
++    /// choice; null is rejected by the strict codec.
++    public private(set) var prefillSchedule: ClusterPrefillSchedule?
++    public var selectedPrefillSchedule: ClusterPrefillSchedule { prefillSchedule ?? .serial }
++    mutating func makePrefillSelectionExplicit() { prefillSchedule = selectedPrefillSchedule }
+     public let chunkTokens: Int
+     public let requestTimeoutSeconds: Int
+     public let peers: [Peer]
+@@ -61,6 +66,7 @@
+                     "Cluster capability pin differs")
+         try require(ClusterConfigurationSyntax.hash(selectedPlanSHA256), "Invalid selected Plan pin")
+         _ = try capability.selection(planSHA256: selectedPlanSHA256)
++        try capability.requireSupport(for: selectedPrefillSchedule)
+         try require((1...capability.profile.maximumChunkTokens).contains(chunkTokens)
+             && (1...capability.maxLifetimeSeconds).contains(requestTimeoutSeconds), "Cluster request bounds exceed the runtime capability")
+         try require(peers.count == 2 && peers.map(\.rank) == [0, 1]
+diff --git a/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift
+@@ -29,8 +29,15 @@
+         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+             throw ClusterConfigurationError.invalid("Cluster configuration must be an object")
+         }
+-        try keys(object, ["schema", "clusterID", "memberID", "role", "publicModelID", "capabilitySHA256", "selectedPlanSHA256",
+-                          "chunkTokens", "requestTimeoutSeconds", "peers", "coordinator", "trust", "tokenizerFiles"])
++        var expected: Set<String> = ["schema", "clusterID", "memberID", "role", "publicModelID", "capabilitySHA256", "selectedPlanSHA256",
++                                     "chunkTokens", "requestTimeoutSeconds", "peers", "coordinator", "trust", "tokenizerFiles"]
++        if let schedule = object["prefillSchedule"] {
++            guard let name = schedule as? String, ClusterPrefillSchedule(rawValue: name) != nil else {
++                throw ClusterConfigurationError.invalid("Unknown or malformed prefill schedule")
++            }
++            expected.insert("prefillSchedule")
++        }
++        try keys(object, expected)
+         guard let peers = object["peers"] as? [[String: Any]], peers.count == 2,
+               let coordinator = object["coordinator"] as? [String: Any],
+               let trust = object["trust"] as? [String: Any],
+diff --git a/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift
+@@ -72,7 +72,8 @@
+         guard ClusterConfigurationCodec.sha256(capabilityData) == capabilitySHA256 else { throw ClusterConfigurationError.invalid("Capability input digest differs") }
+         let capability = try ClusterRuntimeCapabilityCodec.decode(capabilityData)
+         let input = try ClusterConfigurationFiles.read(configurationInput, maximum: ClusterConfigurationCodec.maximumBytes)
+-        let configuration = try ClusterConfigurationCodec.decode(input, capability: capability, capabilitySHA256: capabilitySHA256)
++        var configuration = try ClusterConfigurationCodec.decode(input, capability: capability, capabilitySHA256: capabilitySHA256)
++        configuration.makePrefillSelectionExplicit()
+         let data = try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilitySHA256)
+         let digest = ClusterConfigurationCodec.sha256(data)
+         let destination = try paths.configurationURL(sha256: digest)
+diff --git a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift
+@@ -14,6 +14,7 @@
+     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
+         configuration = saved.configuration; capability = saved.capability; self.paths = paths
+         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
++        try capability.requireSupport(for: configuration.selectedPrefillSchedule)
+         guard capability.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
+               capability.stateSemantics == "requestOwnedKVAndRecurrent",
+               capability.schedulingPolicy == "serial", capability.selectionPolicy == "greedy",
+@@ -71,6 +72,8 @@
+             "--artifact-sha256", id.artifactSHA256, "--configuration-sha256", id.configurationSHA256,
+             "--peer0-id", id.peers[0].id, "--peer0-build-sha256", id.peers[0].buildSHA256,
+             "--peer1-id", id.peers[1].id, "--peer1-build-sha256", id.peers[1].buildSHA256,
+-            "--deadline-uptime-nanoseconds", String(deadline)] + attachment.workerArguments
++            "--deadline-uptime-nanoseconds", String(deadline)]
++            + (try DistributedInstalledPrefillSelection.workerArguments(capability: capability,
++                schedule: configuration.selectedPrefillSchedule)) + attachment.workerArguments
+     }
+ }
+diff --git a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefillSelection.swift b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefillSelection.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefillSelection.swift
+@@ -0,0 +1,11 @@
++import DarkbloomClusterProtocol
++
++/// Serial omission is required for legacy installed workers whose pinned
++/// capability predates the optional CLI flag. Saved setup is still explicit.
++enum DistributedInstalledPrefillSelection {
++    static func workerArguments(capability: ClusterRuntimeCapability,
++                                schedule: ClusterPrefillSchedule) throws -> [String] {
++        try capability.requireSupport(for: schedule)
++        return schedule == .serial ? [] : ["--prefill-schedule", schedule.rawValue]
++    }
++}
+diff --git a/provider-swift/Tests/ClusterConfigurationChecks/ConfigurationCheck.swift b/provider-swift/Tests/ClusterConfigurationChecks/ConfigurationCheck.swift
+--- a/provider-swift/Tests/ClusterConfigurationChecks/ConfigurationCheck.swift
++++ b/provider-swift/Tests/ClusterConfigurationChecks/ConfigurationCheck.swift
+@@ -57,6 +57,29 @@
+                     "Pretty input changed typed configuration")
+         try require(try ClusterConfigurationCodec.encode(ClusterConfigurationCodec.decode(canonical, capability: capability, capabilitySHA256: capabilityHash),
+             capability: capability, capabilitySHA256: capabilityHash) == canonical, "Canonical round trip differs")
++        try require(configuration.prefillSchedule == nil && configuration.selectedPrefillSchedule == .serial,
++                    "Omitted selection must preserve serial")
++        var selectedSerial = object; selectedSerial["prefillSchedule"] = "serial_v1"
++        let explicitSerial = try decode(selectedSerial)
++        try require(explicitSerial.prefillSchedule == .serial, "Explicit serial selection was lost")
++        let malformedSchedules: [Any] = [NSNull(), true, 1, "serial", "oneChunkLookahead", "unknown", ["serial_v1"]]
++        for malformed in malformedSchedules {
++            var bad = object; bad["prefillSchedule"] = malformed; try rejected { _ = try decode(bad) }
++        }
++        var selectedLookahead = object; selectedLookahead["prefillSchedule"] = "one_chunk_lookahead_v1"
++        try rejected { _ = try decode(selectedLookahead) } // Known enum, unsupported adapter capability.
++        var advertisedObject = try JSONSerialization.jsonObject(with: capabilityData) as! [String: Any]
++        advertisedObject["supportedPrefillSchedules"] = ["serial_v1", "one_chunk_lookahead_v1"]
++        var advertisedData = try JSONSerialization.data(withJSONObject: advertisedObject, options: [.sortedKeys, .withoutEscapingSlashes])
++        advertisedData.append(10)
++        let advertised = try ClusterRuntimeCapabilityCodec.decode(advertisedData)
++        let advertisedHash = ClusterConfigurationCodec.sha256(advertisedData)
++        selectedLookahead["capabilitySHA256"] = advertisedHash
++        let lookahead = try ClusterConfigurationCodec.decode(bytes(selectedLookahead), capability: advertised, capabilitySHA256: advertisedHash)
++        try require(lookahead.selectedPrefillSchedule == .oneChunkLookahead, "Advertised selection lost")
++        try require(try ClusterConfigurationCodec.decode(ClusterConfigurationCodec.encode(lookahead, capability: advertised,
++            capabilitySHA256: advertisedHash), capability: advertised, capabilitySHA256: advertisedHash) == lookahead,
++            "Explicit selection round trip changed")
+         var follower = object; follower["role"] = "follower"; follower["memberID"] = "peer-1"
+         try require(try decode(follower).localRank == 1, "Follower rank differs")
+ 
+@@ -127,7 +150,19 @@
+         try require(result == repeated && commits == 2, "Repeated save did not retain immutable identities")
+         let savedReference = try JSONDecoder().decode(ClusterConfigurationReference.self, from: Data(contentsOf: pointer))
+         let saved = try store.load(reference: savedReference)
+-        try require(saved.configuration == configuration && saved.capability == capability, "Saved immutable records differ")
++        try require(saved.configuration == explicitSerial && saved.capability == capability, "New saves must pin explicit serial selection")
++        try require(saved.configuration.prefillSchedule == .serial, "Saved selection remained implicit")
++        // Retain actual load compatibility with a pre-selection canonical saved
++        // record, without rewriting its original content-addressed identity.
++        let legacyHash = ClusterConfigurationCodec.sha256(canonical)
++        let legacyURL = try paths.configurationURL(sha256: legacyHash)
++        try canonical.write(to: legacyURL)
++        try require(chmod(legacyURL.path, 0o600) == 0, "Cannot create private legacy fixture")
++        let legacySaved = try store.load(reference: .init(configuration: legacyURL.path, sha256: legacyHash))
++        try require(legacySaved.configuration.prefillSchedule == nil
++            && legacySaved.configuration.selectedPrefillSchedule == .serial,
++            "Legacy saved setup was changed or rejected")
++        try require(try Data(contentsOf: legacyURL) == canonical, "Legacy immutable record was rewritten")
+         let output = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result)) as! [String: Any]
+         for field in ["distributedEnabled", "readinessVerified", "installationVerified", "modelFilesVerified", "remoteTrustVerified"] {
+             try require(output[field] as? Bool == false, "Save result made an unverified claim")

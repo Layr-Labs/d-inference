@@ -1,0 +1,11 @@
+--- reviewed-solo/prepare_resources.py
++++ cut32-resource-operations/prepare_resources.py
+@@ -75,8 +75,6 @@
+             for line in credential.read_text().splitlines() if line.startswith('|')]
+     secret = (rows[2][[cell.lower() for cell in rows[0]].index('password')] + '\n').encode()
+     for rank, host in enumerate(['darkbloom-24', 'darkbloom-48']):
+-        if rank != 1:
+-            continue
+         command = SSH + ['-S', 'none', host, shlex.join(['/usr/bin/python3', '-B', '-c', REMOTE])]
+         started = time.monotonic()
+         result = subprocess.run(command, input=secret, capture_output=True, timeout=50)

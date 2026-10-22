@@ -1,0 +1,29 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Collective.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Collective.swift
+@@ -60,6 +60,26 @@
+         return MLXArray(result)
+     }
+ 
++    /// Serialized point-to-point completion; this is not a peer-consumed ACK.
++    /// The returned Send handle aliases the input. Caller must not overlap MLX work.
++    func sendCompleted(_ input: MLXArray, to peer: Int, maximumBytes: Int,
++                       check: () throws -> Void) throws -> MLXArray {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.send(input, peer: peer, group: handle,
++                rank: rank, size: size, maximumBytes: maximumBytes, check: check)
++        }
++    }
++
++    /// Known-shape, exact-dtype receive with evaluated owned-storage admission.
++    /// Validate the wire header first; a failed transfer fences the whole cohort.
++    func receiveCompleted(shape: [Int], dtype: DType, from peer: Int, maximumBytes: Int,
++                          check: () throws -> Void) throws -> MLXArray {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.receive(shape: shape, dtype: dtype, peer: peer,
++                group: handle, rank: rank, size: size, maximumBytes: maximumBytes, check: check)
++        }
++    }
++
+     func barrier() {
+         let result = sum(MLXArray(Int32(rank + 1)))
+         eval(result)

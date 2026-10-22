@@ -55,7 +55,8 @@ extension EngineV2Bridge {
             guard (advertisedContextTokens ?? Int.max) >= cell.promptTokens + cell.outputTokens else { continue }
             do {
                 let tokens = try modelCalibrationPrompt(targetTokens: cell.promptTokens, variant: index)
-                if !(await runModelCalibrationCell(cell, tokens: tokens, requireNominalPosture: requireNominalPosture)) { succeeded = false; break }
+                if await runModelCalibrationCell(cell, tokens: tokens,
+                    requireNominalPosture: requireNominalPosture) == .failed { succeeded = false; break }
             } catch { succeeded = false; break }
         }
         let complete = succeeded && performanceMeasurements.freshRate("isolated_prefill") != nil

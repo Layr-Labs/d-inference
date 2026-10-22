@@ -37,6 +37,14 @@ struct ModelCalibrationPolicyTests {
             contextTokens: 400).isEmpty)
     }
 
+    @Test func cellOutcomeOrdersRowsWorstFirstAndBoundsEarlyStopRetries() {
+        typealias Outcome = ModelCalibrationPolicy.CellOutcome
+        // A cell reports its worst row: any failure fails it, any early stop marks it short.
+        #expect(Outcome.failed < .stoppedEarly && Outcome.stoppedEarly < .reachedLength)
+        #expect([Outcome.reachedLength, .stoppedEarly, .reachedLength].min() == .stoppedEarly)
+        #expect(ModelCalibrationPolicy.shapeWarmupCellTries > 1 && ModelCalibrationPolicy.shapeWarmupCellTries <= 3)
+    }
+
     @Test func shapeWarmupKillSwitchReachesTheProviderJob() {
         typealias Policy = ModelCalibrationPolicy
         let key = Policy.shapeWarmupEnvironmentKey

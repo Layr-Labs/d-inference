@@ -198,6 +198,28 @@ struct ProductionModelCalibrationTests {
         await bridge.shutdown()
     }
 
+    @Test("shape cells whose rows stop early get other prompts, then the last try is accepted")
+    func earlyStoppingShapeCellsRetryBoundedly() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        // Every vocabulary token stops generation, so each row ends after its first token.
+        let bridge = try await makeQwenSlot(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget,
+            eosTokenIds: Set(0..<64)).bridge
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        await bridge.setShapeWarmupModeTest(.always)
+        let admits = await bridge._testCounters().admits
+        await bridge.runShapeWarmupIfNeeded(requireNominalPosture: false, grace: false)
+        #expect(await bridge.shapeWarmupCompletedTest(), "an artifact that always stops early finishes the pass")
+        #expect(!(await bridge.shapeWarmupDue))
+        // Each try of the solo and width-2 cells admits 1 + 2 rows.
+        let tries = ModelCalibrationPolicy.shapeWarmupCellTries
+        #expect(await bridge._testCounters().admits - admits == 3 * tries)
+        #expect(await bridge.backendSlotCapacity().performanceMeasurements?.isolatedPrefill == nil)
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        await bridge.shutdown()
+    }
+
     @Test("a retired standalone warmup session starts no successor once the server drains")
     func standaloneSuccessorWarmupRespectsDrain() async throws {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -235,7 +257,8 @@ struct ProductionModelCalibrationTests {
     }
 
     private func makeQwenSlot(modelID: String, backend: String, budget: GlobalKVCacheBudget,
-        tokenizer: any Tokenizer = ModelCalibrationTokenizer()) async throws -> StandaloneServer.CachedSlot {
+        tokenizer: any Tokenizer = ModelCalibrationTokenizer(),
+        eosTokenIds: Set<Int> = []) async throws -> StandaloneServer.CachedSlot {
         let experts = modelID.contains("27B") ? 0 : 4
         // Keep tensors small but enough real layers for measured prefill to
         // stay inside the existing 20k TPS plausibility bound. A two-layer toy
@@ -263,7 +286,7 @@ struct ProductionModelCalibrationTests {
             kvBytesCapacity: 4 << 30, maxConcurrentRequests: 2, kvBudget: budget,
             kvBackendConfig: backend, weightHash: nil,
             specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)),
-            preparedModel: .init(snapshot: .init(model: model, eosTokenIds: [], extraEOSTokens: []),
+            preparedModel: .init(snapshot: .init(model: model, eosTokenIds: eosTokenIds, extraEOSTokens: []),
                 servingModel: model, assistant: nil,
                 mtpStatus: .disabled(.configDisabled, configured: false), mtpArtifact: nil),
             environment: [PrefixCachePolicy.environmentFlag: "0", KVBackendGuardStore.pathEnvKey: "/dev/null",

@@ -17,6 +17,16 @@ enum ModelCalibrationPolicy {
         var sampled = false
     }
 
+    /// How a cell's rows retired, worst first. Measured cells accept a row the
+    /// sampler stopped early; a shape cell needs every row at full length.
+    enum CellOutcome: Sendable, Comparable {
+        /// Interrupted, refused or failed; the cell published nothing.
+        case failed
+        /// Every row finished, but at least one stopped before `outputTokens`.
+        case stoppedEarly
+        case reachedLength
+    }
+
     /// `0` / `false` / `no` / `off` restores the plain startup cells; `always`
     /// runs the shape cells without the shader-cache probe.
     static let shapeWarmupEnvironmentKey = "DARKBLOOM_TTFT_SHAPE_WARMUP"
@@ -30,6 +40,10 @@ enum ModelCalibrationPolicy {
     static let attentionLoopedKeys = 4_096
     /// Bound on waiting for the startup self-test's service charge to retire.
     static let shapeWarmupSettle: Duration = .seconds(2)
+    /// Prompts a shape cell gets while its default sampler stops rows early.
+    /// The last try is accepted, so an artifact that always stops early
+    /// cannot keep the warmup due.
+    static let shapeWarmupCellTries = 3
 
     enum ShapeWarmupMode: Sendable, Equatable {
         case off

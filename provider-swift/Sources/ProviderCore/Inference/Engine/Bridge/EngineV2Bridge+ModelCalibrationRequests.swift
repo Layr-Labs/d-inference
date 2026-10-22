@@ -3,7 +3,8 @@ import Foundation
 extension EngineV2Bridge {
     func runModelCalibrationCell(_ cell: ModelCalibrationPolicy.Cell, tokens: [Int],
         requireNominalPosture: Bool,
-        timeoutSeconds: Double = ModelCalibrationPolicy.maximumGroupSeconds) async -> Bool {
+        timeoutSeconds: Double = ModelCalibrationPolicy.maximumGroupSeconds) async
+        -> ModelCalibrationPolicy.CellOutcome {
         let ids = (0..<cell.width).map { _ in "calibration-" + UUID().uuidString }
         for id in ids { modelCalibration.requests[id] = cell }
         let timer = Task { [weak self] in
@@ -18,21 +19,21 @@ extension EngineV2Bridge {
                 modelCalibration.pendingObservations.removeValue(forKey: id)
             }
         }
-        let successful = await withTaskCancellationHandler {
-            await withTaskGroup(of: Bool.self) { group in
+        let outcome = await withTaskCancellationHandler {
+            await withTaskGroup(of: ModelCalibrationPolicy.CellOutcome.self) { group in
                 for id in ids {
                     group.addTask { await self.runModelCalibrationRequest(id, cell: cell, tokens: tokens) }
                 }
-                var success = true
-                for await result in group { success = success && result }
-                return success && !Task.isCancelled && !modelCalibration.interrupted
+                var worst = ModelCalibrationPolicy.CellOutcome.reachedLength
+                for await row in group { worst = min(worst, row) }
+                return worst
             }
         } onCancel: {
             Task { await self.interruptModelCalibration(ids) }
         }
-        guard successful, !Task.isCancelled, !modelCalibration.interrupted,
+        guard outcome != .failed, !Task.isCancelled, !modelCalibration.interrupted,
             canSubmitWithNativeOwner(),
-            !requireNominalPosture || calibrationPosturePermitsWork() else { return false }
+            !requireNominalPosture || calibrationPosturePermitsWork() else { return .failed }
         // Every pump and reservation has retired. Publish the cell atomically
         // on this actor; an invalid cell cannot roll back unrelated serving evidence.
         let observations = ids.flatMap { id in
@@ -42,22 +43,25 @@ extension EngineV2Bridge {
             applyRateObservation(observation, requestID: id, calibration: true)
         }
         performanceUpdates?.notify()
-        return true
+        return outcome
     }
 
     private func runModelCalibrationRequest(_ id: String, cell: ModelCalibrationPolicy.Cell,
-        tokens: [Int]) async -> Bool {
-        guard !Task.isCancelled else { return false }
+        tokens: [Int]) async -> ModelCalibrationPolicy.CellOutcome {
+        guard !Task.isCancelled else { return .failed }
         let request = ChatCompletionRequest(model: modelId, messages: [],
             temperature: cell.sampled ? nil : 0, max_tokens: cell.outputTokens, seed: 42)
         let stream = await submitTokenized(promptTokens: tokens, request: request, requestId: id,
             cacheEnabled: false)
-        var success = false
+        var outcome = ModelCalibrationPolicy.CellOutcome.failed
         for await event in stream {
             if Task.isCancelled { cancel(requestId: id); break }
             switch event {
-            case .info: success = true
-            case .error: success = false
+            case .info(_, let completionTokens, _, let finishReason):
+                // A sampled stop token before `max_tokens` finishes "stop" short.
+                outcome = finishReason == "length" || completionTokens >= cell.outputTokens
+                    ? .reachedLength : .stoppedEarly
+            case .error: outcome = .failed
             default: break
             }
         }
@@ -66,7 +70,7 @@ extension EngineV2Bridge {
         // This handle is removed only after KV and service resources are freed.
         await pumpTasks[id]?.value
         await serviceBudget?.waitForRelease(ownerID: serviceOwnerPrefix + ":" + id)
-        return success && !Task.isCancelled
+        return Task.isCancelled ? .failed : outcome
     }
 
     func interruptModelCalibration(_ ids: [String]) {

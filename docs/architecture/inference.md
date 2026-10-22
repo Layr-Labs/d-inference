@@ -967,7 +967,13 @@ exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
 shape cells; otherwise they are skipped. One solo prompt covers stripe-wide
 chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
 One cell at the served width covers plain chunks beside decoding rows and decode
-or MTP verify at that width. Both use the artifact's default sampling. No probe
+or MTP verify at that width. Both use the artifact's default sampling. A cell
+counts only when every row reaches its requested length: a row the sampler
+stops early can retire before later rows join, so the cell reruns with another
+prompt, and its third try is accepted so an artifact that always stops early
+cannot keep the warmup due
+(`provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift`,
+`shapeWarmupCellTries`). No probe
 or cell trains a rate or counter. They share a 20-second wall budget that
 includes prompt rendering. A timeout or refusal completes the attempt; only
 preemption leaves it due, and the retry resumes after the probes and cells

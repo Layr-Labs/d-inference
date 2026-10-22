@@ -84,6 +84,9 @@ extension EngineV2Bridge {
         let remainingSeconds = { budgetSeconds - WedgeMonitor.seconds(clock.now - started) }
         var outcome = "complete"
         var preemption: String?
+        // Tries of the current cell whose rows stopped early, and cells accepted so.
+        var earlyStops = 0
+        var cellsStoppedEarly = 0
         // Each pass runs the next due step: probes until the cache is judged, then cells.
         while true {
             let index = modelCalibration.shapeWarmupCellsCompleted
@@ -96,17 +99,28 @@ extension EngineV2Bridge {
             preemption = shapeWarmupPreemption(requireNominalPosture: requireNominalPosture)
             if preemption != nil { break }
             guard remainingSeconds() >= 1 else { outcome = "budget"; break }
-            // Both probes render one prompt, so the repeat has the first run's shapes.
+            // Both probes render one prompt, so the repeat has the first run's
+            // shapes. Each retry of a cell renders a different example.
+            let variant = probing ? cells.count : index + earlyStops * (cells.count + 1)
             guard let tokens = try? modelCalibrationPrompt(targetTokens: cell.promptTokens,
-                variant: probing ? cells.count : index) else { outcome = "refused"; break }
+                variant: variant) else { outcome = "refused"; break }
             // Sizing a long prompt takes several template renders; the cell gets what is left.
             let cellSeconds = remainingSeconds()
             guard cellSeconds >= 1 else { outcome = "budget"; break }
             let stepStarted = clock.now
-            if await runModelCalibrationCell(cell, tokens: tokens,
-                requireNominalPosture: requireNominalPosture, timeoutSeconds: cellSeconds) {
-                if probing { recordShaderCacheProbe(clock.now - stepStarted) }
-                else { modelCalibration.shapeWarmupCellsCompleted = index + 1 }
+            let result = await runModelCalibrationCell(cell, tokens: tokens,
+                requireNominalPosture: requireNominalPosture, timeoutSeconds: cellSeconds)
+            if result != .failed {
+                if probing { recordShaderCacheProbe(clock.now - stepStarted); continue }
+                // A row that stops early can retire before later rows join, so
+                // the served-width and MTP shapes may not have run yet.
+                if result == .stoppedEarly {
+                    earlyStops += 1
+                    guard earlyStops == ModelCalibrationPolicy.shapeWarmupCellTries else { continue }
+                    cellsStoppedEarly += 1
+                }
+                earlyStops = 0
+                modelCalibration.shapeWarmupCellsCompleted = index + 1
                 continue
             }
             // A partial first probe may have compiled kernels the repeat would reuse.
@@ -128,6 +142,7 @@ extension EngineV2Bridge {
         }
         let detail = "attempt \(modelCalibration.shapeWarmupAttempts)"
             + (probe.isEmpty ? "" : ", probe \(probe.joined(separator: "/")) ms")
+            + (cellsStoppedEarly == 0 ? "" : ", \(cellsStoppedEarly) stopped early")
         Self.shapeWarmupLogger.info(
             "Shape warmup \(modelId): \(summary) \(finished)/\(cells.count) cells in \(elapsedMs) ms (\(detail))")
     }

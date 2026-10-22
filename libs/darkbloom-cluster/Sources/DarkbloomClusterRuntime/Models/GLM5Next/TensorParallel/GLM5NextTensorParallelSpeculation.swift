@@ -114,8 +114,12 @@ final class GLM5NextTensorParallelSpeculation {
 
     /// `historyTokens`: the most columns the NextN history grows to (the
     /// request's charged length, `GLM5NextDSACache.capacityLimit`); nil is the
-    /// cache's own doubling.
+    /// cache's own doubling. A paged history ignores it (it takes pages as it
+    /// fills). `pagePool`: the NextN history lives in its pages, counted
+    /// against `pageAccount` (`GLM5NextTensorParallelPagedKV.swift`); nil keeps
+    /// it contiguous.
     init(mtp: GLM5NextMTP, depth: Int, rank: Int, ranks: Int, primeRows: Int, historyTokens: Int? = nil,
+         pagePool: GLM5NextDSAPagePool? = nil, pageAccount: GLM5NextDSAPageBook.Account? = nil,
          agree: @escaping (MLXArray) -> MLXArray) throws {
         guard (1...GLM5NextMTP.maximumProposalDepth).contains(depth),
               depth + 1 <= GLM5NextTextStage.maximumVerificationTokens,
@@ -127,7 +131,7 @@ final class GLM5NextTensorParallelSpeculation {
         self.primeRows = primeRows; self.agree = agree
         proposedByPosition = Array(repeating: 0, count: depth)
         acceptedByPosition = Array(repeating: 0, count: depth)
-        let state = try mtp.newRequestState()
+        let state = try mtp.newRequestState(pagePool: pagePool, pageAccount: pageAccount)
         state.historyCapacityLimit = historyTokens
         self.state = state
     }

@@ -282,9 +282,16 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 allocationBound: QwenResidentResourceEnvironment.allocationBound)
             envelopes.append(resources)
         }
-        let requestCharge = try GLM5NextTensorParallelRequestCharge(descriptor: descriptor, envelopes: envelopes,
+        // Paged KV histories (`GLM5NextTensorParallelPagedKV.swift`), bound into the agreement.
+        let pagedKV = try Self.pagedKV(environment)
+        var requestCharge = try GLM5NextTensorParallelRequestCharge(descriptor: descriptor, envelopes: envelopes,
             fixedBytes: fixedRequestBytes, speculativeDepth: Self.mtpDepth, maximumBufferBytes: maximumBufferBytes,
             allocationBound: QwenResidentResourceEnvironment.allocationBound)
+        // Pages are charged at FP32 rows until the pool, made with the stage, gives their own bytes.
+        if pagedKV {
+            requestCharge.pagedHistory = .init(configuration: descriptor.configuration.textConfig,
+                pageTokens: Self.dsaPageTokens)
+        }
         let requestReserve = try requestCharge.bytes(contextTokens: descriptor.memoryProfile.maximumContextTokens)
         let shardBytes = try Self.shardBytes(inventory)
         // Every rank holds the NextN layer whole: its loader never shards, so
@@ -327,7 +334,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
                 collective.transport.rawValue, configuration.allocatorPolicy.rawValue,
                 "glm5-next-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"]
-                + Self.laneAgreementFields(lanes)
+                + Self.laneAgreementFields(lanes) + Self.pagedKVAgreementFields(pagedKV)
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
                 + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
@@ -391,6 +398,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 let value = try autoreleasepool { try loader.loadTextStage(plan: plan) }
                 value.tensorParallelMicroBatches = Self.prefillMicroBatches
                 value.freeze()
+                // Every request's DSA and NextN histories live in this rank's page pool.
+                if pagedKV {
+                    let pool = try value.makeDSAPagePool(pageSize: Self.dsaPageTokens)
+                    value.dsaPagePool = pool
+                    requestCharge.pagedHistory = .init(pool: pool)
+                }
                 // The NextN layer, whole, bound to the stage's replicated embedding and head.
                 let head = Self.mtpDepth > 0 ? try autoreleasepool { try loader.loadMTP(stage: value) } : nil
                 head?.freeze()
@@ -442,7 +455,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
                     + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
                     + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
-                    + " vision_bytes=\(visionBytes) media=\(mediaContract)")
+                    + " vision_bytes=\(visionBytes) media=\(mediaContract)"
+                    + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
+                    + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0)")
                 phases.mark("loaded")
                 log(phases.line(rank: collective.rank, path: path))
             }
@@ -505,7 +520,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// `contextTokens` (default the profile's longest) and `history` (default
     /// the cache's own doubling) as in `GLM5NextRequestStateBudget`; the NextN
     /// history is charged three times at its bound either way (a round's
-    /// checkpoint and two draft appends).
+    /// checkpoint and two draft appends); a paged one (`.paged`) is pages
+    /// the owner charges, and here only one read's gather of it.
     static func speculationRequestBytes(configuration c: GLM5NextTextConfiguration,
                                         profile: QwenLayerStageGenerationProfile, depth: Int,
                                         executionPolicy: GLM5NextExecutionPolicy,
@@ -522,7 +538,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let context = contextTokens ?? profile.maximumContextTokens
         let capacity = try bound.columns(contextTokens: context).capacity
         let history = try Bytes.sum([c.kvLoraRank * 4, c.indexHeadDim * 4, c.indexHeadDim * 4, 1].map { width in
-            try Bytes.sum([native(Bytes.product([capacity, width]), copies: 3), native(Bytes.product([chunk, width]))])
+            try Bytes.sum([native(Bytes.product([capacity, width]), copies: bound.isPaged ? 1 : 3),
+                native(Bytes.product([chunk, width]))])
         })
         let plan = try GLM5NextMTPExecution.memoryPlan(configuration: c, maximumInputs: min(context, c.maxPositionEmbeddings),
             limits: .init(maximumPrefillTokens: chunk, maximumDraftTokens: depth), executionPolicy: executionPolicy)
@@ -605,6 +622,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
         guard control.available, reservation == nil, laneBook.isEmpty, stage != nil else { return 0 }
         let cached = Memory.cacheMemory, held = Memory.activeMemory + cached, entries = prefix.count
         let dropped = underPressure ? prefix.sweep() : 0
+        // Pages nobody holds go back with the slabs (all of them once no entry holds any).
+        _ = try? stage?.dsaPagePool?.trim()
         ClusterIdleMemory.releaseFreedBuffers()
         let released = max(0, held - Memory.activeMemory - Memory.cacheMemory)
         // Keep-warm pulses leave a few bytes in the cache between ticks.
@@ -666,7 +685,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 throw ProbeError("GLM tensor-parallel reservation exceeds its owner or readiness capacity")
             }
             // What an idle rank keeps for the next request gives way first.
-            try prefix.yieldingMemory { try Self.requireLiveMemory(bytes: charge) }
+            // A paged rank also needs what its page pool grows by for this request.
+            try prefix.yieldingMemory {
+                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge,
+                    pagedGrowthBytes(request)]))
+            }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds, media: media?.media)
             // Rank 0 prepares the patches off the executor; the request's
@@ -812,6 +835,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// it, voted for its prompt prefix and restored it (or start cold).
     struct OpenedRequest {
         let cache: GLM5NextTextStageCache
+        /// The request's page reservation (nil with contiguous histories); it
+        /// ends with the request's state.
+        let pages: GLM5NextTensorParallelPageReservation?
         /// Prompt tokens restored from the prefix cache.
         let start: Int
         let speculation: GLM5NextTensorParallelSpeculation?
@@ -839,11 +865,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         // Rank 0's features reach rank 1 before the prefill: one sealed sum per frame.
         if let media, try !media.open(rank: rank, tower: vision?.tower, sum: { [group] in group.allSum($0) }, stop: stop) {
-            return OpenedRequest(cache: stage.newCache(), start: 0, speculation: nil,
+            return OpenedRequest(cache: stage.newCache(), pages: nil, start: 0, speculation: nil,
                 chunk: Self.prefillChunk(requestChunk: request.chunkSize), keepAt: 0, media: media, stopped: true)
         }
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
         let prompt = request.promptTokenIDs
+        let pages = try reservePages(request)
         // Every request decodes speculatively, greedy or sampled (bias and
         // penalties too: `QwenStageTokenSampler.verifyRound`). Every request
         // primes the NextN history over its prompt (cheap: no attention, MoE
@@ -854,11 +881,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let speculation = try mtp.map {
             try GLM5NextTensorParallelSpeculation(mtp: $0, depth: Self.mtpDepth, rank: rank, ranks: collective.size,
                 primeRows: descriptor.profile.maximumChunkTokens, historyTokens: historyTokens,
+                pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { [group] in group.allSum($0) })
         }
         // Prompt prefix: the longest chunk boundary both ranks hold.
         let scope = loadAgreement
-        var cache = stage.newCache(), start = 0
+        var cache = stage.newCache(account: pages?.account), start = 0
         if prefix.enabled, media == nil, prompt.count > chunk {
             let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
             let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
@@ -867,11 +895,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     throw ProbeError("GLM tensor-parallel prefix both ranks voted for is gone")
                 }
                 cache = restored.cache; start = agreed
+                // The entry's pages are shared; what the request appends is its own.
+                cache.bindPages(to: pages?.account)
                 try speculation?.restore(restored.mtp)
             }
         }
         Self.boundHistories(cache, tokens: historyTokens)
-        return OpenedRequest(cache: cache, start: start, speculation: speculation, chunk: chunk,
+        return OpenedRequest(cache: cache, pages: pages, start: start, speculation: speculation, chunk: chunk,
             keepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk, prefixEnabled: prefix.enabled && media == nil),
             media: media, stopped: false)
     }

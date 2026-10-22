@@ -23,6 +23,11 @@ import MLXLLM
 /// (`contiguous` copies a view whose buffer is larger than it by more than
 /// 16 KiB); the NextN history is the checkpoint's own and is counted with its
 /// spare columns. `budgetBytes` bounds what the entries hold.
+///
+/// Paged histories (`GLM5NextTensorParallelPagedKV.swift`): an entry shares
+/// the request's pages instead of copying them (a request restored from it
+/// writes past them, copying only a shared partial page), and counts every
+/// page it holds, shared or not, beside its KDA state's buffers.
 final class GLM5NextTensorParallelPrefixCache {
     private struct Entry {
         let key: String
@@ -72,16 +77,19 @@ final class GLM5NextTensorParallelPrefixCache {
         // An entry above the budget is never kept: skip it before its compact
         // copy exists (a long prompt's would be tens of GB beside the request,
         // outside its charge). The logical bytes are a lower bound of the
-        // buffers below, so every entry kept before is still kept.
-        let logical = cache.layers.reduce(0) { total, layer in
+        // buffers below, so every entry kept before is still kept. Paged
+        // histories count their pages (reading `state` would gather them).
+        let logical = cache.heldPages > 0 ? cache.pagedBytes : cache.layers.reduce(0) { total, layer in
             total + ((layer as? GLM5NextDSACache)?.state.reduce(0) { $0 + $1.nbytes } ?? 0)
         }
         guard logical <= budgetBytes else { return }
         let kept = cache.copy()
-        for case let history as GLM5NextDSACache in kept.layers { Self.compact(history) }
+        let paged = kept.heldPages > 0
+        if !paged { for case let history as GLM5NextDSACache in kept.layers { Self.compact(history) } }
         let arrays = kept.layers.flatMap { $0.innerState() } + (mtp?.arrays ?? [])
         eval(arrays)
-        let bytes = Self.bufferBytes(arrays)
+        // Paged: the histories' roots are their page launches' fences; their pages count instead.
+        let bytes = Self.bufferBytes(arrays) + (paged ? kept.pagedBytes + (mtp?.pagedBytes ?? 0) : 0)
         guard bytes <= budgetBytes else { return }
         lock.withLock {
             let key = QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: length)

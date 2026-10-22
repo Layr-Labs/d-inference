@@ -10,6 +10,7 @@ import MLX
 //     [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged]
 //     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
 //     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no]]
+//     [--kv paged|contiguous]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -63,7 +64,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -120,6 +121,12 @@ enum GLMBench {
         options.lanes = lanes
         options.lanesBatched = (fields["--lanes-batched"] ?? "yes") == "yes"
         options.lanesSplitEval = (fields["--lanes-split-eval"] ?? "no") == "yes"
+        // DSA and NextN histories: paged as the product's runtime, or contiguous (A/B).
+        let kv = fields["--kv"] ?? "paged"
+        guard ["paged", "contiguous"].contains(kv) else {
+            throw Failure("glm: --kv takes paged or contiguous")
+        }
+        options.pagedKV = kv == "paged"
         let result = try GLM5NextTensorParallelBench.run(options, log: { note($0) })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

@@ -70,15 +70,22 @@ struct GLM5NextRequestStateBudget: Equatable {
         /// twice, the history and the one fresh buffer an append writes before
         /// the history it replaces is released.
         case reserved(tokens: Int)
+        /// Histories in the pages of a pool (`GLM5NextDSAPagePool`), whose
+        /// pages the owner charges itself (`GLM5NextTensorParallelRequestCharge.pagedHistoryBytes`):
+        /// here only what a read gathers, one layer's history of at most this
+        /// many columns at a time, twice (two micro-batches' reads may coexist).
+        case paged(tokens: Int)
 
         func columns(contextTokens: Int) throws -> (capacity: Int, copies: Int) {
             switch self {
             case .geometric: return (max(256, try GLM5NextRequestStateBudget.product([2, contextTokens])), 3)
-            case .reserved(let tokens):
+            case .reserved(let tokens), .paged(let tokens):
                 guard tokens >= contextTokens else { throw ProbeError("GLM history bound is below its context") }
                 return (tokens, 2)
             }
         }
+
+        var isPaged: Bool { if case .paged = self { true } else { false } }
     }
 
     /// Must match the owner's negotiated authenticated transport limits.
@@ -184,11 +191,20 @@ struct GLM5NextRequestStateBudget: Equatable {
             let widths = [try product([c.kvLoraRank, 4]),
                           try product([c.indexHeadDim, 4]),
                           try product([c.indexHeadDim, 4]), 1]
-            let one = try sum(widths.map { width in
-                try sum([native(product([capacity, width]), copies: copies),
-                         native(product([chunk, width]))])
-            })
-            dsa = try product([one, dsaLayers])
+            if history.isPaged {
+                // Pages hold the histories (charged by the owner); each layer
+                // writes its new input columns, and a read gathers one
+                // layer's history at a time.
+                let incoming = try sum(widths.map { try native(product([chunk, $0])) })
+                let gathered = try sum(widths.map { try native(product([capacity, $0]), copies: copies) })
+                dsa = try sum([product([incoming, dsaLayers]), gathered])
+            } else {
+                let one = try sum(widths.map { width in
+                    try sum([native(product([capacity, width]), copies: copies),
+                             native(product([chunk, width]))])
+                })
+                dsa = try product([one, dsaLayers])
+            }
         }
         let kdaLayers = layers.count - dsaLayers
         var kda = 0

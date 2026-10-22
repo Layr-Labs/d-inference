@@ -31,7 +31,34 @@ import MLXLLM
 /// history, twice; 11 DSA layers and the NextN layer's three copies make
 /// about 77 KB a token, about 81 GB at 1,048,576 tokens, plus the KDA state,
 /// workspaces and scores (`GLM5NextRequestChargeTests`).
+///
+/// With paged histories (`pagedHistory`, `GLM5NextTensorParallelPagedKV.swift`)
+/// the DSA and NextN histories are the request's pages instead
+/// (`pagedHistoryBytes`: 12 histories of `ceil(tokens / 64) + 1` pages, 1,537
+/// bytes a token each for bf16 rows, about 19 GB at 1,048,576 tokens), plus
+/// what a read gathers from them (`GLM5NextRequestStateBudget.HistoryBound.paged`):
+/// no doubling, no append copy.
 struct GLM5NextTensorParallelRequestCharge {
+    /// Tokens and bytes of one page of a paged history.
+    struct PagedHistory: Equatable {
+        let pageTokens: Int
+        let pageBytes: Int
+
+        /// The pool's own (`GLM5NextDSAPagePool.pageBytes`).
+        init(pool: GLM5NextDSAPagePool) { pageTokens = pool.pageSize; pageBytes = pool.pageBytes }
+
+        /// Before the pool exists: every floating plane at FP32 at most, as
+        /// the request budget charges histories; validity one byte.
+        init(configuration c: GLM5NextTextConfiguration, pageTokens: Int) {
+            self.pageTokens = pageTokens
+            pageBytes = pageTokens * ((c.kvLoraRank + 2 * c.indexHeadDim) * 4 + 1)
+        }
+
+        /// `GLM5NextDSAPagePool.pages(tokens:)`: the history's pages and the
+        /// one a copy on write holds beside them until its step commits.
+        func pages(tokens: Int) -> Int { tokens <= 0 ? 0 : (tokens + pageTokens - 1) / pageTokens + 1 }
+    }
+
     let descriptor: GLM5NextResidentDescriptor
     /// Rank 0's and rank 1's stage envelopes at the descriptor's cut: TP
     /// charges each rank both, the whole model.
@@ -44,6 +71,8 @@ struct GLM5NextTensorParallelRequestCharge {
     /// computed once: hashing the inventory for every reservation, on both
     /// ranks in turn, added about 0.24 s to each request's first token.
     let digests: [GLM5NextRequestStateBudget.EvidenceDigests]
+    /// Paged DSA and NextN histories; nil keeps them contiguous.
+    var pagedHistory: PagedHistory?
 
     init(descriptor: GLM5NextResidentDescriptor, envelopes: [GLM5NextResidentResourceEnvelope], fixedBytes: Int,
          speculativeDepth: Int, maximumBufferBytes: Int, allocationBound: @escaping (Int) throws -> Int) throws {
@@ -59,6 +88,18 @@ struct GLM5NextTensorParallelRequestCharge {
     /// outputs, and one verification window's proposals past its last output.
     func historyTokens(contextTokens: Int) -> Int { contextTokens + speculativeDepth + 1 }
 
+    /// Bytes of the pages a request of `contextTokens` holds at most on a
+    /// rank: every DSA layer's history and, when it speculates, the NextN
+    /// history, each at `historyTokens` (as `GLM5NextTensorParallelResidentRuntime.historyPages`
+    /// reserves them). Zero when the histories are contiguous.
+    func pagedHistoryBytes(contextTokens: Int) throws -> Int {
+        guard let pagedHistory else { return 0 }
+        let c = descriptor.configuration.textConfig
+        let histories = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count + (speculativeDepth > 0 ? 1 : 0)
+        return try QwenLongPrefillCheckedBytes.product([histories,
+            pagedHistory.pages(tokens: historyTokens(contextTokens: contextTokens)), pagedHistory.pageBytes])
+    }
+
     func bytes(contextTokens context: Int) throws -> Int {
         typealias Bytes = QwenLongPrefillCheckedBytes
         let p = descriptor.profile, c = descriptor.configuration.textConfig
@@ -69,8 +110,10 @@ struct GLM5NextTensorParallelRequestCharge {
         let scope = GLM5NextRequestStateBudget.Scope(maximumContextTokens: context, maximumPromptTokens: prompt,
             maximumOutputTokens: min(p.maximumOutputTokens, context - 1),
             maximumChunkTokens: min(p.maximumChunkTokens, prompt))
-        let history = GLM5NextRequestStateBudget.HistoryBound.reserved(tokens: historyTokens(contextTokens: context))
-        var terms = [fixedBytes]
+        let tokens = historyTokens(contextTokens: context)
+        let history: GLM5NextRequestStateBudget.HistoryBound = pagedHistory == nil
+            ? .reserved(tokens: tokens) : .paged(tokens: tokens)
+        var terms = [fixedBytes, try pagedHistoryBytes(contextTokens: context)]
         for (envelope, digests) in zip(envelopes, digests) {
             try envelope.requireExecutionEnvironment(envelope.executionEnvironmentSHA256)
             let layers = envelope.rank == 0 ? 0 ..< descriptor.cut : descriptor.cut ..< c.hiddenLayers

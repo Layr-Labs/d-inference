@@ -98,6 +98,9 @@ public enum GLM5NextTensorParallelBench {
         /// Batched rounds also evaluate the NextN proposals before the forward
         /// is built, to time them alone (serializes what otherwise overlaps).
         public var lanesSplitEval = false
+        /// DSA and NextN histories in a page pool, as the product's runtime
+        /// (`GLM5NextTensorParallelPagedKV.swift`); false keeps them contiguous.
+        public var pagedKV = true
         public init(modelDirectory: URL, mode: Mode, shardRank: Int = 0, promptTokenIDs: [Int],
                     chunkSize: Int = 2048, outputCount: Int = 64, repeats: Int = 2, float32Partials: Bool = true) {
             self.modelDirectory = modelDirectory; self.mode = mode; self.shardRank = shardRank
@@ -204,6 +207,10 @@ public enum GLM5NextTensorParallelBench {
         let stage = try loader.loadTextStage(plan: plan)
         stage.tensorParallelMicroBatches = options.microBatches
         stage.freeze()
+        if options.pagedKV {
+            stage.dsaPagePool = try stage.makeDSAPagePool(
+                pageSize: GLM5NextTensorParallelResidentRuntime.dsaPageTokens)
+        }
         let mtp = options.mtpDepth > 0 ? try loader.loadMTP(stage: stage) : nil
         mtp?.freeze()
         try MLX.withError { error in
@@ -229,7 +236,8 @@ public enum GLM5NextTensorParallelBench {
         let loaded = Memory.activeMemory
         let residency = try ClusterStageResidency(bytes: loaded + (24 << 30))
         let loadSeconds = seconds(since: started)
-        log("loaded mode=\(options.mode.rawValue) active=\(loaded) wired=\(residency.receipt.appliedBytes) in \(loadSeconds) s")
+        log("loaded mode=\(options.mode.rawValue) active=\(loaded) wired=\(residency.receipt.appliedBytes) in \(loadSeconds) s"
+            + " paged_kv=\(stage.dsaPagePool?.pageSize ?? 0)")
         if options.census, group == nil {
             let counts = try decodeCensus(stage: stage, prompt: Array(options.promptTokenIDs.prefix(64)))
             log("census: \(counts.values.reduce(0, +)) primitives in one decode step; top: "
@@ -281,13 +289,21 @@ public enum GLM5NextTensorParallelBench {
                                  options: Options) throws -> Run {
         if options.lanes > 1, let mtp { return try generateLanes(stage: stage, mtp: mtp, group: group, options: options) }
         let prompt = options.promptTokenIDs, chunk = max(1, options.chunkSize)
-        let cache = stage.newCache()
+        // As the runtime: the request's pages are reserved before it runs.
+        let pages = try stage.dsaPagePool.map { pool in
+            GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: stage.plan.configuration,
+                    contextTokens: prompt.count + options.outputCount + options.mtpDepth + 1,
+                    speculative: mtp != nil)))
+        }
+        let cache = stage.newCache(account: pages?.account)
         // Each rank proposes and verifies itself; with a peer, every round's
         // tokens are summed and compared as the product does (unsealed unless
         // `sealed`).
         let speculation = try mtp.map { head in
             let value = try GLM5NextTensorParallelSpeculation(mtp: head, depth: options.mtpDepth,
                 rank: group?.rank ?? 0, ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
+                pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { value in group.map { $0.allSum(value) } ?? value })
             value.acceptsProposals = options.mtpCheck != .keepFirst
             value.recordsPhases = true
@@ -454,6 +470,8 @@ public enum GLM5NextTensorParallelBench {
         let chunk = max(1, options.chunkSize)
         struct Lane {
             let cache: GLM5NextTextStageCache
+            /// As the runtime's lanes: each lane's pages reserved before it runs.
+            let pages: GLM5NextTensorParallelPageReservation?
             let speculation: Speculation
             var tokens: [Int]
         }
@@ -463,9 +481,16 @@ public enum GLM5NextTensorParallelBench {
             let base = options.promptTokenIDs
             let shift = (index * 977) % max(1, base.count)
             let prompt = Array(base[shift...] + base[..<shift])
-            let cache = stage.newCache()
+            let pages = try stage.dsaPagePool.map { pool in
+                GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+                    GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool,
+                        configuration: stage.plan.configuration,
+                        contextTokens: prompt.count + options.outputCount + options.mtpDepth + 1, speculative: true)))
+            }
+            let cache = stage.newCache(account: pages?.account)
             let speculation = try Speculation(mtp: mtp, depth: options.mtpDepth, rank: group?.rank ?? 0,
                 ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
+                pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { value in group.map { $0.allSum(value) } ?? value })
             var offset = 0
             var last: (logits: MLXArray, hidden: MLXArray)?
@@ -487,7 +512,7 @@ public enum GLM5NextTensorParallelBench {
             guard let last else { throw ProbeError("GLM bench prefill produced no logits") }
             let first = Int(argMax(last.logits.asType(.float32), axis: -1).item(Int32.self))
             try speculation.begin(carry: first, lastHidden: last.hidden)
-            lanes.append(.init(cache: cache, speculation: speculation, tokens: [first]))
+            lanes.append(.init(cache: cache, pages: pages, speculation: speculation, tokens: [first]))
         }
         let prefillSeconds = seconds(since: prefillStart)
         var steps: [Double] = []
@@ -570,7 +595,12 @@ public enum GLM5NextTensorParallelBench {
 
     /// One decode step's graph (logits and cache updates) by primitive name.
     static func decodeCensus(stage: GLM5NextTextStage, prompt: [Int]) throws -> [String: Int] {
-        let cache = stage.newCache()
+        let pages = try stage.dsaPagePool.map { pool in
+            GLM5NextTensorParallelPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: stage.plan.configuration,
+                    contextTokens: prompt.count + 1, speculative: false)))
+        }
+        let cache = stage.newCache(account: pages?.account)
         let warm = try stage.prepareForward(tokens: MLXArray(prompt.map(Int32.init), [1, prompt.count]), cache: cache,
             readout: .lastToken)
         try warm.commit { roots in eval(roots) }

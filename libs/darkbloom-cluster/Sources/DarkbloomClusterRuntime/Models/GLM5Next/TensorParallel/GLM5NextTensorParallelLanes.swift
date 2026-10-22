@@ -66,8 +66,11 @@ extension GLM5NextTensorParallelResidentRuntime {
     /// times): every speculating lane's round appends in the one batched
     /// verification forward (`decode`), so those copies coexist. Prefill
     /// frames still run one lane at a time, inside its request's whole charge.
+    /// With `pagedHistories` the DSA and NextN histories are pages of the
+    /// rank's pool, charged as the lane's pages (`GLM5NextTensorParallelRequestCharge.pagedHistoryBytes`),
+    /// so they are not here.
     static func laneStateBytes(configuration c: GLM5NextTextConfiguration, contextTokens: Int, speculative: Bool,
-                               historyTokens: Int? = nil,
+                               historyTokens: Int? = nil, pagedHistories: Bool = false,
                                allocationBound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound)
         throws -> Int {
         typealias Bytes = QwenLongPrefillCheckedBytes
@@ -75,7 +78,7 @@ extension GLM5NextTensorParallelResidentRuntime {
         let capacity = try (historyTokens.map { GLM5NextRequestStateBudget.HistoryBound.reserved(tokens: $0) } ?? .geometric)
             .columns(contextTokens: contextTokens).capacity
         let (copies, nextNCopies) = historyTokens == nil ? (1, 1) : (2, 3)
-        let history = try Bytes.sum([c.kvLoraRank * 4, c.indexHeadDim * 4, c.indexHeadDim * 4, 1].map {
+        let history = pagedHistories ? 0 : try Bytes.sum([c.kvLoraRank * 4, c.indexHeadDim * 4, c.indexHeadDim * 4, 1].map {
             try allocationBound(Bytes.product([capacity, $0]))
         })
         let dsaLayers = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count
@@ -129,18 +132,23 @@ extension GLM5NextTensorParallelResidentRuntime {
             guard charge <= value.capacityLimitBytes, laneBook.count < lanes.lanes else {
                 throw ProbeError("GLM lane reservation exceeds its owner ceiling or every lane is taken")
             }
-            // A media lane holds its media charge for its whole life, beside its state.
+            // A media lane holds its media charge for its whole life, beside its state;
+            // a paged lane, its history pages.
             let state = try QwenLongPrefillCheckedBytes.sum([try Self.laneStateBytes(
                 configuration: descriptor.configuration.textConfig,
                 contextTokens: context, speculative: mtp != nil,
-                historyTokens: requestCharge.historyTokens(contextTokens: context)), mediaBytes])
+                historyTokens: requestCharge.historyTokens(contextTokens: context),
+                pagedHistories: requestCharge.pagedHistory != nil),
+                try requestCharge.pagedHistoryBytes(contextTokens: context), mediaBytes])
             let transient = max(0, charge - state)
-            // Every held lane's state, and the largest forward's transients.
+            // Every held lane's state, and the largest forward's transients; a
+            // paged rank also needs what its page pool grows by for this lane.
             let held = laneBook.reservations()
             let states = try QwenLongPrefillCheckedBytes.sum([state] + held.map(\.laneStateBytes))
             let largest = max(transient, held.map(\.transientBytes).max() ?? 0)
             try prefix.yieldingMemory {
-                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([states, largest]))
+                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([states, largest,
+                    pagedGrowthBytes(request)]))
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,

@@ -185,7 +185,7 @@ struct ProductionModelCalibrationTests {
         }
         // Sizing the first cell's prompt takes five renders, about 1 s here.
         let bridge = try await makeQwenSlot(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
-            budget: budget, tokenizer: SlowTemplateTokenizer(renderDelay: 0.2)).bundle.bridge
+            budget: budget, tokenizer: SlowTemplateTokenizer(renderDelay: 0.2)).bridge
         let engine = try #require(await bridge.ownedEngine as? EngineV2)
         await bridge.setShapeWarmupModeTest(.always)
         let steps = engine.capacity().stepsExecuted
@@ -207,23 +207,23 @@ struct ProductionModelCalibrationTests {
         let first = try await makeQwenSlot(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
             budget: budget)
         let second = try await makeQwenSlot(modelID: "qwen3.5-35b-a3b", backend: "auto", budget: budget)
-        for slot in [first, second] { await slot.bundle.bridge.setShapeWarmupModeTest(.always) }
+        for slot in [first, second] { await slot.bridge.setShapeWarmupModeTest(.always) }
         await server.installShapeWarmupSlots(["a": first, "b": second])
         await server.retryShapeWarmups()
         // Server sessions keep the nominal-posture gate; a hot or low-power Mac starts none.
-        if await first.bundle.bridge.scheduledShapeWarmupTest() {
+        if await first.bridge.scheduledShapeWarmupTest() {
             await server.setDrainingForShapeWarmupTest()
-            await first.bundle.bridge.awaitProductionCalibration()
-            #expect(await first.bundle.bridge.shapeWarmupCompletedTest())
+            await first.bridge.awaitProductionCalibration()
+            #expect(await first.bridge.shapeWarmupCompletedTest())
             // The retired session's successor runs on its own background task.
             let deadline = ContinuousClock.now + .seconds(2)
             var successorStarted = false
             while !successorStarted, ContinuousClock.now < deadline {
-                successorStarted = await second.bundle.bridge.scheduledShapeWarmupTest()
+                successorStarted = await second.bridge.scheduledShapeWarmupTest()
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(!successorStarted, "a draining server must not start the next warmup session")
-            #expect(!(await second.bundle.bridge.shapeWarmupCompletedTest()))
+            #expect(!(await second.bridge.shapeWarmupCompletedTest()))
         }
         await server.removeShapeWarmupSlots()
         #expect(budget.serviceBudget.count == 0 && !budget.serviceBudget.idleCalibration.hasSession)
@@ -231,11 +231,11 @@ struct ProductionModelCalibrationTests {
 
     private func makeQwenBridge(modelID: String, backend: String,
         budget: GlobalKVCacheBudget) async throws -> EngineV2Bridge {
-        try await makeQwenSlot(modelID: modelID, backend: backend, budget: budget).bundle.bridge
+        try await makeQwenSlot(modelID: modelID, backend: backend, budget: budget).bridge
     }
 
     private func makeQwenSlot(modelID: String, backend: String, budget: GlobalKVCacheBudget,
-        tokenizer: any Tokenizer = ModelCalibrationTokenizer()) async throws -> QwenCalibrationSlot {
+        tokenizer: any Tokenizer = ModelCalibrationTokenizer()) async throws -> StandaloneServer.CachedSlot {
         let experts = modelID.contains("27B") ? 0 : 4
         // Keep tensors small but enough real layers for measured prefill to
         // stay inside the existing 20k TPS plausibility bound. A two-layer toy
@@ -250,13 +250,15 @@ struct ProductionModelCalibrationTests {
          "shared_expert_intermediate_size":64,"mtp_num_hidden_layers":0}
         """.utf8))
         let model: any LanguageModel = experts > 0 ? Qwen35MoEModel(config) : Qwen35Model(config)
+        let modelType = experts > 0 ? "qwen3_5_moe" : "qwen3_5"
         let container = ModelContainer(context: .init(configuration: .init(id: modelID),
             model: model, processor: CalibrationFixtureProcessor(), tokenizer: tokenizer))
+        let tokenizerHandle = TokenizerHandle(tokenizer)
         let sizing = SlotSizingSnapshot(weightsBytes: 1, fp16KVBytesPerToken: 256,
             maxContextLength: 2_048, defaultMaxTokens: 32)
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(
-            modelId: modelID, modelType: experts > 0 ? "qwen3_5_moe" : "qwen3_5", isVLM: false,
-            modelDirectory: nil, container: container, tokenizer: TokenizerHandle(tokenizer),
+            modelId: modelID, modelType: modelType, isVLM: false,
+            modelDirectory: nil, container: container, tokenizer: tokenizerHandle,
             sizing: sizing,
             kvBytesCapacity: 4 << 30, maxConcurrentRequests: 2, kvBudget: budget,
             kvBackendConfig: backend, weightHash: nil,
@@ -267,17 +269,9 @@ struct ProductionModelCalibrationTests {
             environment: [PrefixCachePolicy.environmentFlag: "0", KVBackendGuardStore.pathEnvKey: "/dev/null",
                 EngineV2KVQuantizationPolicy.environmentKey: "native"],
             startServingTelemetry: false, emitTelemetry: { _ in })
-        return QwenCalibrationSlot(bundle: bundle, container: container, tokenizer: TokenizerHandle(tokenizer),
-            modelType: experts > 0 ? "qwen3_5_moe" : "qwen3_5", sizing: sizing)
+        return StandaloneServer.CachedSlot(bundle: bundle, container: container, tokenizer: tokenizerHandle,
+            modelType: modelType, isVLM: false, sizing: sizing, lastUsedAt: .now)
     }
-}
-
-private struct QwenCalibrationSlot: Sendable {
-    let bundle: ProviderEngineBundle
-    let container: ModelContainer
-    let tokenizer: TokenizerHandle
-    let modelType: String
-    let sizing: SlotSizingSnapshot
 }
 
 /// The calibration fixture's tokens, with each chat-template render taking `renderDelay` seconds.
@@ -324,12 +318,9 @@ private extension EngineV2Bridge {
 }
 
 private extension StandaloneServer {
-    func installShapeWarmupSlots(_ installed: [String: QwenCalibrationSlot]) {
+    func installShapeWarmupSlots(_ installed: [String: CachedSlot]) {
         lifecycleState = .running
-        for (key, slot) in installed {
-            slots[key] = CachedSlot(bundle: slot.bundle, container: slot.container, tokenizer: slot.tokenizer,
-                modelType: slot.modelType, isVLM: false, sizing: slot.sizing, lastUsedAt: .now)
-        }
+        slots.merge(installed) { _, new in new }
     }
     func setDrainingForShapeWarmupTest() { lifecycleDraining = true }
     func removeShapeWarmupSlots() async {

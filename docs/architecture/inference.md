@@ -973,8 +973,9 @@ includes prompt rendering. A timeout or refusal completes the attempt; only
 preemption leaves it due, and the retry resumes after the probes and cells
 already finished. The probe judges the whole cache from its one short shape, so
 a cache that holds it but not the long-prompt or served-width kernels (a process
-stopped between the probe and the cells, or a cache that only saw short prompts)
-skips the cells, and the first such request compiles them as before.
+stopped between the probe and the cells, an earlier attempt the budget cut
+short, or a cache that only saw short prompts) skips the cells, and the first
+such request compiles them as before.
 
 The startup preload warms each loaded model after any passing self-test, before
 registration (or before a standalone listener opens), so routed traffic cannot

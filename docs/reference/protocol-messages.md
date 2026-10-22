@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-21
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -237,7 +237,7 @@ connection, first.
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
-| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
 | `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |
@@ -297,7 +297,7 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Qwen4 SSD-offload allowance or exact `mimo_v2` supplement above raw stored bytes: at least 1 GiB. Exact `glm5_next` likewise adds its supplement to raw source bytes (no disk × 1.2): native copies, tokenizer allowance and a `ceil(disk / 32)` residual, at least 1 GiB + 321 MiB, with no SSD subtraction; see [raw GLM quotation](model-registry-format.md#raw-glm-discovery-quotation). Checked addition and source/catalog floors apply; invalid/missing declarations retain platform legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go)
@@ -441,7 +441,7 @@ routing on them.
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
-| `kv_bytes_per_token` | `int64` | `Int64` | opt | |
+| `kv_bytes_per_token` | `int64` | `Int64` | opt | Capacity price per reserved token (prompt + max output), excluding fixed per-request bytes; it divides `active_token_budget_max`. A GLM slot reports target KV plus native step scratch and embedded-MTP state per token; its capacity also excludes one step's setup |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
 | `kv_backend` | `*string` | `String?` | ptr | resolved KV kind `"paged"` or `"contiguous"`. **Nil = unknown** (pre-0.8.0 provider), never read as `contiguous`; a non-nil `""` still marshals as `"kv_backend":""` |
 | `kv_backend_fallback_reason` | `*string` | `String?` | ptr | why the slot is not on the requested backend: `kill_switch`, `"kernel_preflight: …"`, `"physical_capacity: …"`, `"ineligible: …"`, `"pool_construction_capacity: …"`. **Absent = did not degrade** (the opposite rule to `kv_backend`). Untrusted free text; `registry.KVBackendFallbackTag` ([coordinator/registry/kv_backend.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/kv_backend.go)) folds it to a bounded class before any metric tag |
@@ -796,6 +796,12 @@ normal terminal handling instead of this exemption. The provider emits it
 through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
 the contract in `sanitizeProviderInferenceError`.
 
+A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
+`token_budget_exhausted`, enriched like other capacity rejections
+(`rejection_reason` `token_budget`); its internal
+`request_exceeds_slot_capacity`/`slot_capacity_committed` marker never reaches
+the wire. See [GLM5Next implementation boundary](../architecture/inference.md#glm5next-implementation-boundary).
+
 ### `attestation_response`
 
 Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
@@ -1098,6 +1104,47 @@ coordinator retains the fallback deadline for candidates without matching
 identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
+
+#### MiMo Chat tool-schema preservation
+
+The decrypted Chat body adds no envelope field or schema-metadata trust grant.
+Loaded exact `mimo_v2` selects restoration of the original typed tool declarations;
+caller model names do not select this behavior. The public fixture is a fixed
+provider contract, not evidence of a deployed platform implementation.
+
+| Boundary | Contract | Provider source |
+|---|---|---|
+| Original tools | Preserve typeless enums and Boolean property schemas before native rendering, serving, recount and benchmark preparation. Other loaded families retain existing normalization. | `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift` (`restoring`); [native inference](../architecture/inference.md#native-mimo-v26-candidate) |
+| Hosted-tool fallback | Share the existing function-object/string-name structural filter. Malformed retained declarations still fail SDK decoding; unsupported hosted entries follow existing ingress repair. | `provider-swift/Sources/ProviderCore/InboundChatNormalization.swift` (`isRepresentableTool`); `MiMoV26ToolEvidence.OriginalTool` |
+| Reserved metadata | Reject client-authored reserved schema metadata before tool-choice handling, including `none`. No new caller trust or forced-tool capability follows from capture. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`rejectReservedSchemaMetadata`); `MiMoV26ToolEvidence.restoring` |
+| Public regression | Two newly authored reproductions exercise exact provider/local prompt IDs through scripted generation. Historical external-corpus and live platform qualification remain separate. | `fixtures/prompt-contract/mimo-v26-schema-parity-v1.json`; [fixture procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions) |
+
+#### GLM native prompt contract
+
+GLM-5.3-Flash (catalog `glm-5.3-flash` and the local qualification download)
+adds no WebSocket message or trusted caller field. `GLM5NextPromptPolicy`
+selects its text prompt rules only from the loaded model's `model_type`; caller
+model names cannot authorize the raw-schema path.
+
+| Request-body control | Native text contract | Provider source |
+|---|---|---|
+| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and `off` are thinking-off requests (below); other invalid values reject even when shadowed. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`, `Effort`) |
+| `reasoning.max_tokens` | Positive integer. Selects the nearest effort when no effort alias is present: at most 1,024 renders `low`, at most 8,192 `high`, otherwise `max` (the budgets OpenAI-compatible APIs give `low` and `medium`). The template does not enforce a token budget. | Same source (`Effort.init(reasoningBudget:)`) |
+| `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking` | Boolean only. `true` is a no-op that leaves the rendered prompt unchanged. `false`, like effort `none`/`off`, turns thinking off: the render context adds `enable_thinking: false` (`thinkingOffContextKey`) and the GLM tokenizer appends `</think>` to the template's open generation `<think>`, the empty block the template writes for an assistant turn without reasoning, so the answer is content only. The platform sidecar appends the same text. Thinking-off beside a `true` switch, an effort level or a `reasoning.max_tokens` budget is refused with 400 `invalid_request`. | Same source (`RawControls`, `validate`, `additionalContext`); `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextThinkingTokenizer.swift` (`GLM5NextThinkingTokenizer`) |
+| `include_reasoning`, `reasoning.exclude` | Boolean only. `include_reasoning: true` and `reasoning.exclude: false` are no-ops. The opposite value refuses with 400 `MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported`: the provider has no per-request seam to withhold reasoning it generates. Local HTTP returns the fixed `GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage` with code `unsupported_value`; the coordinator frame keeps the closed `invalid_request` / `client_error` vocabulary. | Same source (`RawControls`, `validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| `clear_thinking`, `chat_template_kwargs.clear_thinking` | Boolean only; top-level precedes template value; default `false`. This clears historical reasoning, not newly generated reasoning. | Same source and symbols |
+| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. | Same source (`normalizedTextInput`, `validateHistory`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
+| Unqualified modes | Reject `preserve_thinking`, top-level `thinking`, other `reasoning` or `chat_template_kwargs` keys, forced tool calls, strict tool decoding, JSON output modes and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
+
+`LocalResponseRequest` retains request-local raw controls for the same later
+loaded-model check; capture alone grants no capability
+(`provider-swift/Sources/ProviderCore/Server/LocalResponseRequest.swift`). The
+fixtures under `fixtures/prompt-contract/glm53-flash/` keep the official template
+as the golden authority and separately identify the `EigenLabs` artifact template
+recognized by `GLM5NextPromptPolicy.templateSHA256`; a LOAD with any other
+template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not
+prove full HTTP/sidecar parity.
+See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`
 

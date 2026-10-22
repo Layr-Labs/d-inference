@@ -318,6 +318,10 @@ public enum EngineV2VisionPrefill {
         templateControls: ChatTemplateControls = .init()
     ) async throws -> PreparedSubmission {
         try MediaIngest.rejectUnsupportedAudio(request)
+        if await container.perform({ $0.model is GLM5NextModel }) {
+            return try await prepareGLM5NextMedia(
+                container: container, request: request, templateControls: templateControls)
+        }
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and

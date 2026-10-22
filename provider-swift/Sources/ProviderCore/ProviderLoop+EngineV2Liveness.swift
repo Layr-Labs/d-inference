@@ -140,6 +140,19 @@ extension ProviderLoop {
         engineV2RecoveryInProgress.insert(modelId)
         defer { engineV2RecoveryInProgress.remove(modelId) }
 
+        // GLM cannot be rebuilt in place (one-shot native contract; no
+        // target-only fallback). Unload retires it through its native owner.
+        if await bridge.hasGLM5NextNativeOwner || GLM5NextPromptPolicy.applies(modelType: slot.modelType) {
+            let recoveryPin = Self.engineV2RecoveryPinPrefix + modelId
+            requestToModel[recoveryPin] = modelId
+            defer { requestToModel.removeValue(forKey: recoveryPin) }
+            logger.error("engine_v2 liveness: GLM slot \(modelId) wedged — unloading through its native owner")
+            recordModelLoadError(model: modelId,
+                message: "GLM engine wedged; in-place recovery is unsupported — slot unloaded")
+            await unloadModel(modelId)
+            return
+        }
+
         // Cooldown: a second confirmed wedge within 120s of the last
         // recovery ATTEMPT means the rebuild did not stick — stop
         // thrashing and fail loud: unload the slot (heartbeats drop it,
@@ -292,7 +305,7 @@ extension ProviderLoop {
                 newBundle.releaseAssistant()
                 clearCacheAfterConfirmedNativeOwnership()
                 rebuildPreparation = rebuildPreparation.fallingBack(reason)
-                prepared = prepared.fallingBack(reason)
+                prepared = try prepared.fallingBack(reason)
                 rebuiltSizing = slot.sizing.replacingAuxiliaryWeightBytes(0)
                 newBundle = try await makeEngineV2BundleForSlot(
                     modelId: modelId,

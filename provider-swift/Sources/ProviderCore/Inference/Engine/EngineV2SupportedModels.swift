@@ -23,6 +23,10 @@
 //   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
 //                       artifact/sidecar validity and per-request bounds remain
 //                       mandatory; this does not activate automatic MTP.
+//   * `glm5_next`    — only the exact coordinator catalog build
+//                       (`GLM5NextCoordinatorServing.catalogModelID`); its load
+//                       still requires the catalog identity, hardware gate and
+//                       embedded MTP. The local download stays local-only.
 //   * `nemotron_h_omni` — only the exact registry id
 //                       `NemotronSuperServingPolicy.modelID`, served by the
 //                       managed Super load; the type alone stays unsupported.
@@ -79,6 +83,9 @@ public enum EngineV2SupportedModels {
     /// Super is the exact registry id with the canonical declaration; the
     /// scanner withholds that id unless its config and index are pinned.
     public static func isSupported(model: ModelInfo) -> Bool {
+        if model.modelType == "glm5_next" {
+            return model.id == GLM5NextCoordinatorServing.catalogModelID
+        }
         switch normalized(model.modelType) {
         case "nemotron_h": return isNemotron35ListingModelID(model.id)
         case NemotronSuperServingPolicy.modelType:
@@ -103,6 +110,7 @@ public enum EngineV2SupportedModels {
         // MiMo has an explicit strict native loader, not generic registry
         // fallback. Its dispatch requires the exact canonical declaration.
         if raw == "mimo_v2" { return modelType == "mimo_v2" }
+        if raw == "flint" { return modelType == "flint" }
         if raw == "gpt_oss" { return true }
         if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }

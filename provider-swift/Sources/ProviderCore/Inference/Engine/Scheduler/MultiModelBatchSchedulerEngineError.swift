@@ -45,6 +45,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     case unsupportedReasoningEffort
     /// Native binary-thinking model received an unknown effort alias.
     case unsupportedNativeReasoningEffort
+    /// The provider returns the reasoning GLM-5.3-Flash generates, so a
+    /// reasoning-exclusion request is a deterministic request error, before
+    /// template rendering. Thinking-off is served.
+    case reasoningExclusionUnsupported
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -114,6 +118,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "This model supports reasoning effort low, medium, or xhigh when thinking is enabled"
         case .unsupportedNativeReasoningEffort:
             return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
+        case .reasoningExclusionUnsupported:
+            return GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

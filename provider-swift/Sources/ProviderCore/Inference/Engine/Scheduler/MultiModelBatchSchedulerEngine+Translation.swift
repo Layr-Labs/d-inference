@@ -15,39 +15,54 @@ import ProviderCoreFoundation
 
 /// Template-only controls recovered from the sealed OpenAI body. They remain
 /// out-of-band because the upstream request type does not model the top-level
-/// Qwen3.8 fields. `enableThinking` is already resolved across top-level and
+/// model-specific fields. `enableThinking` is already resolved across top-level and
 /// `chat_template_kwargs`; the typed request's nested `reasoning.enabled`
-/// remains authoritative when the template context is built.
+/// remains authoritative for its supported families. GLM retains its own exact
+/// effort/clear_thinking evidence until actual model metadata selects its path.
 public struct ChatTemplateControls: Sendable, Equatable {
     public let reasoningEffort: String?
     public let enableThinking: Bool?
     public let preserveThinking: Bool?
+    public let clearThinking: Bool?
     public let promptDate: PromptRenderDate?
     // Included in synthesized equality: refusal evidence cannot be erased by
     // comparing only the permissively decoded legacy control fields.
     var rawMiMoControls = MiMoV26RawControlEvidence()
+    var rawMiMoTools = MiMoV26ToolEvidence()
+    var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
 
     public init(
         reasoningEffort: String? = nil,
         enableThinking: Bool? = nil,
         preserveThinking: Bool? = nil,
+        clearThinking: Bool? = nil,
         promptDate: PromptRenderDate? = nil
     ) {
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
         self.preserveThinking = preserveThinking
+        self.clearThinking = clearThinking
         self.promptDate = promptDate
     }
 
     func withPromptDate(_ date: PromptRenderDate) -> Self {
-        .init(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
-              preserveThinking: preserveThinking, promptDate: date)
-            .withRawMiMoControls(rawMiMoControls)
+        var copy = Self(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
+              preserveThinking: preserveThinking, clearThinking: clearThinking, promptDate: date)
+        copy.rawMiMoControls = rawMiMoControls
+        copy.rawMiMoTools = rawMiMoTools
+        copy.rawGLM5Controls = rawGLM5Controls
+        return copy
     }
 
     func withRawMiMoControls(_ evidence: MiMoV26RawControlEvidence) -> Self {
         var copy = self
         copy.rawMiMoControls = evidence
+        return copy
+    }
+
+    func withRawGLM5Controls(_ evidence: GLM5NextPromptPolicy.RawControls) -> Self {
+        var copy = self
+        copy.rawGLM5Controls = evidence
         return copy
     }
 

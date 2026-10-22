@@ -225,6 +225,11 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     var count: Int { lock.withLock { charges.count } }
     var isIdle: Bool { lock.withLock { charges.isEmpty && unboundedActivities.isEmpty } }
 
+    /// No allowance but `ownerID`'s and no unbounded device activity.
+    func isIdle(except ownerID: String?) -> Bool {
+        lock.withLock { unboundedActivities.isEmpty && charges.keys.allSatisfy { $0 == ownerID } }
+    }
+
     /// No request charge and no unbounded device activity for `duration`.
     func isIdle(for duration: Duration) -> Bool {
         lock.withLock { isIdleLocked(for: duration) }

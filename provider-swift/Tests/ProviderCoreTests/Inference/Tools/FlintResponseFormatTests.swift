@@ -358,6 +358,7 @@ struct FlintResponseFormatOutputTests {
                     outcome.reasoning += parsed.reasoningContent ?? ""
                 case .content(let text): outcome.content += text
                 case .toolCall: outcome.calls += 1
+                case .toolCallDelta(let delta): if delta.completed != nil { outcome.calls += 1 }
                 case .info: break
                 }
             }

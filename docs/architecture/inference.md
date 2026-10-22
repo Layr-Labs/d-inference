@@ -1138,7 +1138,18 @@ Other families keep 512 / 2048 (`usesWidePrefillChunk`):
 | Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
 
 An explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` applies to every family, and the
-step budget follows it unless `DARKBLOOM_CBV2_STEP_TOKENS` is set. Like every
+step budget follows it unless `DARKBLOOM_CBV2_STEP_TOKENS` is set, except
+where a later family policy replaces the geometry. GLM5Next takes its own
+2,048-token chunk and step limits and no stripe (`glm5NextServingScheduler`),
+and calibrated Nemotron models cap the chunk at their calibrated prefill limit
+and drop the stripe (`calibratedPrefillTokenLimit`), both in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`.
+Nemotron Super local serving takes `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`
+and a step that holds one chunk plus its decode rows
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefill.swift`,
+`NemotronSuperLocalPrefill.Policy.apply`). Scheduler-prefill
+benchmark receipts record the geometry the engine was actually built with
+(`EngineV2Factory.ProductionBuild.prefillGeometry`). Like every
 `DARKBLOOM_CBV2_*` key, either override enters the complete-checkpoint
 numerics fingerprint (`PrefixCachePolicy.completeCheckpointIdentity`) and
 disqualifies reviewed serving and deadline profiles

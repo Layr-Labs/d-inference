@@ -351,6 +351,16 @@ public enum ClusterOnboardingUpdate {
         lines.count >= 2 && lines.allSatisfy { $0.hasSuffix(": nothing left running") }
     }
 
+    /// Whether the other Mac's report (its memory, as its plan tool sampled it) may price a plan: only when it was
+    /// taken after this Mac last stopped the cluster's parts. One taken before still counts that Mac's old part,
+    /// which the new one never shares memory with: the re-plan after an update stops both parts, waits for their
+    /// memory (`released`), and must then ask the other Mac again. Without a stop any report does.
+    public static func reportPricesPlan(reportedAt: Date?, partsStoppedAt: Date?) -> Bool {
+        guard let partsStoppedAt else { return true }
+        guard let reportedAt else { return false }
+        return reportedAt > partsStoppedAt
+    }
+
     /// The members whose running worker differs from the digest the saved setup pins. A member whose current digest
     /// is not known now (it did not answer) is not counted: nothing is re-planned on a guess.
     public static func changed(pinned: [String: String], current: [String: String?]) -> [String] {

@@ -86,6 +86,15 @@ public struct ClusterPlacementPolicy: Sendable {
     /// owner rule, on by default where lossless and measured faster. Nil, the
     /// default, credits nothing, and the plain pipeline ranks first.
     public var recordedPipelineSpeculativeFactor: Double?
+    /// The mode this pair keeps (`ClusterServedModes.hold`): the mode it served the same model in before a
+    /// Darkbloom update, or the mode its own served requests showed faster. A candidate of another mode in the
+    /// same hardware group goes ahead of this mode's best only when it is predicted at least `keptModeMargin`
+    /// faster (`.infinity`: never); one in a better group (it loads now, the kept mode does not) still goes
+    /// first. Nil, the default, keeps nothing.
+    public var keptMode: ClusterGenerationMode?
+    public var keptModeMargin = 0.10
+    /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
+    public var keptModeReason: String?
     public init() {}
 }
 
@@ -144,6 +153,9 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     /// impossible (owner, 2026-10-19). `tier` reports what the Macs' memory
     /// allows right now (the load gate still decides).
     public var possible: Bool { ranks.allSatisfy { $0.fit.tier == 0 || ($0.hardwareFits ?? $0.fit.possible) } }
+    /// The planner's first ordering key, lower first: the hardware holds every range, then inside the GPU working
+    /// set, then the load gate admits every rank now (`tier` 0).
+    public var hardwareGroup: Int { (possible ? 0 : 4) + (withinGPUWorkingSet ? 0 : 2) + (tier == 0 ? 0 : 1) }
     public let withinGPUWorkingSet: Bool
     /// Smallest share of admissible memory left over on any rank; negative
     /// when a rank does not fit now.
@@ -277,6 +289,9 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     /// Nil when the layout has no tensor-parallel facts (omitted then, so a
     /// plan of such a layout is byte for byte what it was).
     public var tensorParallel: ClusterTensorParallelAssessment? = nil
+    /// `ClusterPlacementPolicy.keptModeReason` when the kept mode decided the choice (another mode was ranked
+    /// first without it); nil otherwise (omitted then, so every other plan is byte for byte what it was).
+    public var keptModeReason: String? = nil
     /// Every sharded deployment candidate (tensor parallel, pipeline, its
     /// compact decode variant, tensor parallel x pipeline), its prediction and
     /// why it was or was not chosen. Nil under the hand-off opt-in, whose plan
@@ -356,8 +371,9 @@ public enum ClusterPlacementPlanner {
                        candidate.cuts, candidate.mode)
             }
         } ?? admitted
-        let ranked = context.holdingTensorParallelToItsMargin(
+        let unheld = context.holdingTensorParallelToItsMargin(
             context.ordered(qualified.filter(\.possible), regime: policy.regime), regime: policy.regime)
+        let ranked = context.holdingKeptMode(unheld, regime: policy.regime)
         if let forced = policy.forcedMode, ranked.isEmpty {
             throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
                 + (admitted.contains(where: \.possible)
@@ -413,6 +429,9 @@ public enum ClusterPlacementPlanner {
             candidatesConsidered: admitted.count,
             unqualifiedPossible: policy.admitsShape == nil ? nil
                 : admitted.filter(\.possible).count - qualified.filter(\.possible).count)
+        if let kept = policy.keptMode, ranked.first?.mode == kept, unheld.first?.mode != kept {
+            result.keptModeReason = policy.keptModeReason ?? "kept \(kept.rawValue), the mode this pair keeps"
+        }
         if layout.tensorParallel != nil {
             result.tensorParallel = try assessTensorParallel(devices: devices, layout: layout, policy: policy, link: link,
                 prompt: prompt, outputs: outputs, schedules: schedules, ranked: ranked, alone: alone)
@@ -491,6 +510,17 @@ public enum ClusterPlacementPlanner {
             return make(.doesNotFit, "no tensor-parallel placement fits these Macs")
         }
         let time = fastest.prediction(regime).requestSeconds
+        // Predicted faster, but a rank does not fit as its Mac is now (its memory is held, by a running part or
+        // applications), and a split that loads now goes first (`hardwareGroup`): said as such, never as a
+        // qualification refusal (2026-10-22: a tensor-parallel share 6 GB short on a Mac whose old part still
+        // held its memory read "the policy admits no tensor_parallel_v1 shape").
+        if let chosen = ranked.first, fastest.hardwareGroup > chosen.hardwareGroup {
+            let short = fastest.ranks.filter { $0.fit != .now }.map {
+                "\($0.device) needs \(ClusterPlacementExplanation.gibText($0.needBytes)) and admits \(ClusterPlacementExplanation.gibText($0.admissibleNowBytes)) now"
+            }
+            return make(.doesNotFit, String(format: "predicted %.2f s against %.2f s for the chosen placement, but it does not fit as these Macs are now (%@)",
+                time, chosen.prediction(regime).requestSeconds, short.joined(separator: "; ")))
+        }
         let unmeasured = speeds.filter { !$0.split.measured && $0.split.fromHardware == nil }.map(\.device)
         let prior = speeds.filter { $0.split.fromHardware == true }.map(\.device)
         let note = (unmeasured.isEmpty ? "" : "; no shard probe on \(unmeasured.joined(separator: ", ")), so its step is assumed not to shrink")
@@ -825,6 +855,26 @@ public enum ClusterPlacementPlanner {
             return kept + [other] + held + ordered[(otherIndex + 1)...]
         }
 
+        /// `policy.keptMode`: a candidate of another mode ahead of the kept mode's best in the same hardware group
+        /// stays ahead only when it is predicted at least `keptModeMargin` faster; otherwise it goes right after
+        /// it. A better group (the kept mode does not load now) is never overtaken.
+        func holdingKeptMode(_ ordered: [ClusterPlacementCandidate],
+                             regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
+            guard let mode = policy.keptMode, let keptIndex = ordered.firstIndex(where: { $0.mode == mode }) else { return ordered }
+            let anchor = ordered[keptIndex]
+            let margin = policy.keptModeMargin.isNaN ? 0 : max(0, policy.keptModeMargin)
+            let limit = margin.isInfinite ? -Double.infinity : anchor.prediction(regime).requestSeconds * (1 - margin)
+            var held: [ClusterPlacementCandidate] = [], kept: [ClusterPlacementCandidate] = []
+            for candidate in ordered[..<keptIndex] {
+                if hardwareGroup(candidate) == hardwareGroup(anchor), !(candidate.prediction(regime).requestSeconds < limit) {
+                    held.append(candidate)
+                } else {
+                    kept.append(candidate)
+                }
+            }
+            return kept + [anchor] + held + ordered[(keptIndex + 1)...]
+        }
+
         func prediction(_ regime: ClusterPlacementPolicy.Regime, order: [ClusterPlacementDevice],
                         ranges: [ClusterModelLayout.Range], mode: ClusterGenerationMode,
                         schedule: ClusterPrefillSchedule, shares: [Double]? = nil) -> ClusterPlacementPrediction {
@@ -1013,9 +1063,7 @@ public enum ClusterPlacementPlanner {
         /// group: a faster split that needs applications closed first is chosen
         /// only when no split starts on the Macs as they are, so the pair starts
         /// at the fastest split that loads instead of refusing (owner, 2026-10-19).
-        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int {
-            (c.possible ? 0 : 4) + (c.withinGPUWorkingSet ? 0 : 2) + (c.tier == 0 ? 0 : 1)
-        }
+        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int { c.hardwareGroup }
 
         /// The share of its own hardware capacity (what it keeps resident for
         /// the GPU and admits at rest, never what is free now) the tightest

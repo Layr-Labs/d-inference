@@ -296,6 +296,21 @@ func telemetryChecks() throws {
     check(orders.count == 40 && encoded.flatMap { try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: $0) }?.ranks == ["a", "b"]
             && ranked("bad", ["", "b"]).ranks == nil,
           "C15 a speed record names its members in rank order; another order is another setup; an empty label is dropped")
+    // Time-sliced lanes: a request that shared the pair ran at a share of its speed (eight lanes: 12 tok/s each
+    // where one request alone decodes 90), so it is telemetry, never a speed record the planner would read.
+    func lane(_ id: String, _ concurrent: Int?) -> ClusterPairRequestTelemetry {
+        .init(requestID: id, finishedAt: 1, modelID: "m", mode: "tensor_parallel_v1", cut: "0-45|0-45", promptTokens: 30,
+              cachedTokens: 0, completionTokens: 256, firstTokenMilliseconds: 100, decodeTokensPerSecond: concurrent == 7 ? 12 : 90,
+              handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
+              concurrentRequests: concurrent)
+    }
+    let shared = lane("l7", 7), alone = lane("l0", 0), older = lane("old", nil)
+    let laneRecords = [shared, alone, older].reduce(into: [ClusterPairRequestTelemetry]()) { $0 = ClusterServedSpeedFile.adding($1, to: $0) }
+    let olderJSON = (try? JSONEncoder().encode(older)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    let sharedRoundTrip = (try? JSONEncoder().encode(shared)).flatMap { try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: $0) }
+    check(!shared.isSpeedRecord && alone.isSpeedRecord && older.isSpeedRecord && laneRecords.map(\.requestID) == ["l0", "old"]
+            && !olderJSON.contains("concurrentRequests") && sharedRoundTrip?.concurrentRequests == 7,
+          "C16 a request that shared the pair with others is no speed record; one alone, or written before the count, is")
 }
 
 // MARK: D. Worker protocol

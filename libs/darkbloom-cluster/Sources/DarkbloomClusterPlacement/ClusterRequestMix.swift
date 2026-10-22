@@ -28,6 +28,10 @@ extension ClusterPlacementExplanation {
     /// the other, for the request the plan was made for. Nil without a choice.
     public static func deploymentReason(_ result: ClusterPlacementResult) -> String? {
         guard let chosen = result.chosen else { return nil }
+        if let kept = result.keptModeReason {
+            let name = chosen.mode.usesTensorParallelDecode ? "Tensor parallel" : chosen.mode.isHandOff ? "Hand-off (\(chosen.mode.rawValue))" : "Pipeline"
+            return "\(name): \(kept)."
+        }
         let regime = result.regime
         let request = "requests of \(result.promptTokens) prompt and \(result.outputTokens) answer tokens"
         let mine = chosen.prediction(regime)
@@ -75,6 +79,10 @@ extension ClusterPlacementExplanation {
             return "\(name): tensor parallel is predicted slower for \(request) (\(seconds(theirs.requestSeconds)) against "
                 + "\(seconds(mine.requestSeconds)); \(against(theirs, mine)))."
         case .doesNotFit:
+            // A tensor-parallel placement that would load once memory is given back, ranked after one that loads now.
+            if assessment.tensorParallel != nil || assessment.hybrid != nil {
+                return "\(name): tensor parallel is \(assessment.reason)."
+            }
             return "\(name): tensor parallel does not fit in these Macs' memory."
         case .notExecutedByRuntime:
             return "\(name): \(assessment.reason)."

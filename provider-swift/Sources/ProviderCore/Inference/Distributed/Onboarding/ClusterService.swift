@@ -876,8 +876,12 @@ public final class ClusterService: @unchecked Sendable {
                 try? self.store.updateRecord { $0.leadership?.serving = true }
                 failed(lines)
             }
+            // The same model keeps the mode the pair served it in, unless the planner and the pair's own served
+            // requests both find another faster (`ClusterServedModes.hold`). `localPlanModels` asks the other Mac for
+            // its report again: the one `localReachMembers` took above still counts its old part's memory.
+            let keeping = saved.publicModelID == model ? [model: saved.selectedGenerationMode] : [:]
             let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels() {
+            switch live.localPlanModels(keeping: keeping) {
             case .success(let value): choices = value
             case .failure(let failure): return failedStopped(failure.lines)
             }
@@ -887,7 +891,9 @@ public final class ClusterService: @unchecked Sendable {
             }
             if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
             if case .failure(let failure) = live.localServe() { return failedStopped(failure.lines) }
-            say("set the cluster up again after the update: \(model) is starting on both Macs")
+            // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
+            say("set the cluster up again after the update: \(model) is starting on both Macs ("
+                + choices[index].lines.joined(separator: " ") + ")")
         }
     }
 

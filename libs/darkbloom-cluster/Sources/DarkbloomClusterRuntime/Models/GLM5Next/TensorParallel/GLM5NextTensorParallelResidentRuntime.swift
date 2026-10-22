@@ -1078,7 +1078,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
         throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
         let result = try slices.finish()
         if let kept = result.kept {
+            let began = DispatchTime.now().uptimeNanoseconds
             prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
+            if GLM5NextTensorParallelPrefillPlan.frameTiming {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6
+                FileHandle.standardError.write(Data(String(format: "glm-prefill-store-v1 length=%d store_ms=%.1f active_gb=%.2f\n",
+                    kept.end, ms, Double(Memory.activeMemory) / 1e9).utf8))
+            }
         }
         return (result.final, result.kept?.end)
     }

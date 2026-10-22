@@ -310,6 +310,38 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         return try GPU.withCommandBufferLimits(limits, body)
     }
 
+    /// Diagnostic, `DARKBLOOM_GLM_PREFILL_FRAME_TIMING=1`: every prefill frame
+    /// writes one `glm-prefill-frame-v1` line to stderr: its rows and
+    /// micro-batches, the time building its layers (each sum issued as it is
+    /// built, so the GPU runs meanwhile), finishing (the readout and NextN
+    /// priming built), and the commit's evaluation; MLX's active memory at
+    /// its start and end, its peak and the memory limit (GB); the operation
+    /// limit it encoded under. A tp-check rank and a serving rank print the
+    /// same line for the same frame. Never set in production.
+    static let frameTiming = ProcessInfo.processInfo.environment["DARKBLOOM_GLM_PREFILL_FRAME_TIMING"] == "1"
+
+    final class FrameClock {
+        var build: UInt64 = 0
+        var finish: UInt64 = 0
+        var commit: UInt64 = 0
+        var started: UInt64 = 0
+        var activeAtStart = 0
+
+        static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+        func line(_ chunk: Chunk) -> String {
+            func ms(_ n: UInt64) -> String { String(format: "%.1f", Double(n) / 1e6) }
+            func gb(_ b: Int) -> String { String(format: "%.2f", Double(b) / 1e9) }
+            let total = Self.now() - started
+            return "glm-prefill-frame-v1 start=\(chunk.start) end=\(chunk.end)"
+                + " micro_batches=\(chunk.segments.map { $0.microBatchRows.map(String.init).joined(separator: "+") }.joined(separator: "|"))"
+                + " build_ms=\(ms(build)) finish_ms=\(ms(finish)) commit_ms=\(ms(commit)) total_ms=\(ms(total))"
+                + " active_gb=\(gb(activeAtStart))->\(gb(Memory.activeMemory)) peak_gb=\(gb(Memory.peakMemory))"
+                + " limit_gb=\(gb(Memory.memoryLimit)) cache_gb=\(gb(Memory.cacheMemory))"
+                + " ops=\(GLM5NextTensorParallelPrefillPlan.commandBuffers.map { String($0.operations) } ?? "process")"
+        }
+    }
+
     /// One frame (`chunk`) on `stage` from `cache` (at the frame's start):
     /// its segments in one graph, each segment's hidden rows priming
     /// `speculation`'s NextN history in that evaluation as one prefill per
@@ -359,6 +391,7 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         private let inputs: Inputs?
         var layersBuilt: Int { prefill.layersBuilt }
         var layerCount: Int { prefill.layerCount }
+        private let clock = FrameClock()
 
         init(_ chunk: Chunk, stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, prompt: [Int],
              speculation: GLM5NextTensorParallelSpeculation?, inputs: Inputs? = nil) throws {
@@ -381,6 +414,13 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         /// Builds the next `layers` layers; evaluates them unless they are the
         /// frame's last (`finish` evaluates those with the readout).
         func advance(layers: Int) throws {
+            let timing = GLM5NextTensorParallelPrefillPlan.frameTiming
+            if timing, clock.started == 0 {
+                clock.started = FrameClock.now(); clock.activeAtStart = Memory.activeMemory
+                Memory.peakMemory = 0
+            }
+            let began = timing ? FrameClock.now() : 0
+            defer { if timing { clock.build += FrameClock.now() - began } }
             try GLM5NextTensorParallelPrefillPlan.encoding {
                 try prefill.advance(layers: layers)
                 guard layersBuilt < layerCount else { return }
@@ -393,10 +433,15 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
         }
 
         func finish(observe: ((Int, MLXArray) throws -> Void)? = nil) throws -> FrameResult {
-            try GLM5NextTensorParallelPrefillPlan.encoding {
+            let timing = GLM5NextTensorParallelPrefillPlan.frameTiming
+            let finishing = FrameClock.now()
+            let result = try GLM5NextTensorParallelPrefillPlan.encoding {
                 try complete(try prefill.finish(), chunk: chunk, cache: cache, prompt: prompt,
-                    speculation: speculation, inputs: inputs, observe: observe)
+                    speculation: speculation, inputs: inputs, observe: observe,
+                    clock: timing ? (clock, finishing) : nil)
             }
+            if timing { FileHandle.standardError.write(Data((clock.line(chunk) + "\n").utf8)) }
+            return result
         }
     }
 
@@ -404,7 +449,8 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// (with the same input rows), the commit, the kept boundary.
     private static func complete(_ candidate: GLM5NextTextStageCandidate, chunk: Chunk, cache: GLM5NextTextStageCache,
                                  prompt: [Int], speculation: GLM5NextTensorParallelSpeculation?, inputs: Inputs?,
-                                 observe: ((Int, MLXArray) throws -> Void)?) throws -> FrameResult {
+                                 observe: ((Int, MLXArray) throws -> Void)?,
+                                 clock: (FrameClock, UInt64)? = nil) throws -> FrameResult {
         let last = chunk.end == prompt.count
         var checkpoint: GLM5NextMTPCheckpoint?
         if let speculation {
@@ -414,8 +460,13 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
                 if index + 1 == chunk.keptAfter { checkpoint = try speculation.checkpoint() }
             }
         }
+        let committing = FrameClock.now()
         try candidate.commit { roots in
             eval(roots + (try speculation?.evaluationTargets() ?? []) + (checkpoint?.arrays ?? []))
+        }
+        if let (clock, finishing) = clock {
+            clock.finish += committing - finishing
+            clock.commit += FrameClock.now() - committing
         }
         if let observe {
             for (segment, hidden) in zip(chunk.segments, candidate.segmentHidden) { try observe(segment.start, hidden) }

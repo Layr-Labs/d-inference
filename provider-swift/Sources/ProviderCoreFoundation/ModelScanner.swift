@@ -264,10 +264,10 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Weight File Collection
 
-    /// MiMo's strict native loader consumes one of these source-bound receipts.
-    /// Include it in both local attestation and the publisher/downloader file
-    /// list. Do not expand the global filename policy: unrelated existing model
-    /// aggregates must not change merely because they contain a conversion log.
+    /// Include family-specific runtime receipts and distribution notices in
+    /// both attestation and the publisher/downloader inventory. Unrelated
+    /// models retain their existing hashes. Super's indexed config is 8.7 MB,
+    /// so it needs a larger bounded read than MiMo's small configuration.
     private static func modelSpecificIntegrityFileNames(in root: URL) -> Set<String> {
         // HF snapshot symlinks are supported, but never block opening a FIFO
         // or read a special/oversized file during ordinary model discovery.
@@ -278,11 +278,18 @@ public struct ModelScanner: Sendable {
         defer { try? handle.close() }
         var state = stat()
         guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
-              state.st_size > 0, state.st_size <= 1_048_576,
-              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size),
+              state.st_size > 0, state.st_size <= 16_777_216,
+              let data = try? handle.read(upToCount: 16_777_217), data.count == Int(state.st_size),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["model_type"] as? String == "mimo_v2" else { return [] }
-        return ["conversion_manifest.json", "artifact-provenance.json"]
+              let modelType = object["model_type"] as? String else { return [] }
+        switch modelType {
+        case "mimo_v2" where state.st_size <= 1_048_576:
+            return ["conversion_manifest.json", "artifact-provenance.json"]
+        case "nemotron_h_omni":
+            return ["LICENSE.txt", "UPSTREAM_README.md"]
+        default:
+            return []
+        }
     }
 
     /// Whether a filename is an integrity-relevant file (weight or config/tokenizer/template).

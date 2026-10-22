@@ -104,7 +104,7 @@ struct NemotronSuperLocalBindingTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge),
-            fixtureExecution: { _, _, _, _, _ in
+            fixtureExecution: { _, _, _, _, _, _ in
                 await accounting.holdUntilRetired()
                 try Task.checkCancellation()
             })
@@ -138,7 +138,7 @@ struct NemotronSuperLocalBindingTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge, nativeLease: lease),
-            fixtureExecution: { _, _, _, _, _ in
+            fixtureExecution: { _, _, _, _, _, _ in
                 #expect(!lease.snapshot().hasOutstandingHandoff)
                 await accounting.holdUntilRetired()
                 try Task.checkCancellation()
@@ -285,10 +285,17 @@ extension NemotronSuperLocalBindingTests {
         }
         let errors = await events.errors
         let completions = await events.completions
-        #expect(errors == (cancelImage ? ["request cancelled"] : []), "synthetic bridge errors: \(errors)")
+        // A cancel issued at the first consumed chunk can arrive after the
+        // fixture already finished (its tokens are buffered under load); then
+        // the request ends normally. Either way it never ends with another error.
         if cancelImage {
-            // Cancellation may race with already-buffered tokens; the guarantee
-            // is native retirement and an independently usable bridge afterward.
+            #expect(errors == ["request cancelled"] || errors.isEmpty, "synthetic bridge errors: \(errors)")
+        } else {
+            #expect(errors.isEmpty, "synthetic bridge errors: \(errors)")
+        }
+        if cancelImage {
+            // The guarantee is native retirement and an independently usable
+            // bridge afterward.
             let resumed = SuperNativeEvents()
             try await binding.run(request: .init(model: NemotronSuperLocalBinding.modelID,
                 messages: [], temperature: 0, max_tokens: 2), promptTokens: [4, 5]) {

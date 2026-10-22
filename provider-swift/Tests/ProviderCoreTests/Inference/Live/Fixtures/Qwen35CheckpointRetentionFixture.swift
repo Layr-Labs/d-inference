@@ -9,9 +9,10 @@ import Testing
 
 /// Real Qwen3.5-9B weights on the production paged assembly, with the
 /// recurrent complete-checkpoint store. Only the cache root, the installation
-/// key and the solo stripe are test-owned: the stripe is pinned to 2,048
-/// tokens (dense Qwen defaults to 4,096) so a prompt under 10k tokens has
-/// several chunk ends to retain. The catalog `-mtp` artifact's embedded MTP
+/// key and the prompt geometry are test-owned: the stripe is pinned to 2,048
+/// tokens (dense Qwen defaults to 4,096) above the SDK's 512-token plain chunk
+/// (dense Qwen defaults to 2,048) so a prompt under 10k tokens has several
+/// chunk ends to retain. The catalog `-mtp` artifact's embedded MTP
 /// head is served through the production inline assistant when it loads, so
 /// checkpoints carry MTP history as in production; `mtpActive` says so.
 final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
@@ -231,7 +232,12 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
 
     func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1,
                     stripeTokens: Int = Qwen35CheckpointRetentionFixture.stripeTokens) throws -> EngineV2Bridge {
-        var environment = ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(stripeTokens)]
+        let sdk = CBv2SchedulerConfig()
+        var environment = [
+            "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(stripeTokens),
+            EngineV2Factory.prefillChunkKey: String(sdk.prefillChunkSize),
+            EngineV2Factory.stepTokenBudgetKey: String(sdk.maxBatchedTokensPerStep),
+        ]
         if store == nil { environment["DARKBLOOM_PREFIX_CACHE"] = "0" }
         // `.auto` maps catalog IDs to paged; this dev artifact is not listed,
         // so select the native paged backend production uses for the family.

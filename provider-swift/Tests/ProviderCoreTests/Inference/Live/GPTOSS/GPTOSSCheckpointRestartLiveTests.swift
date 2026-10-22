@@ -89,9 +89,11 @@ struct GPTOSSCheckpointRestartLiveTests {
         }
     }
 
-    /// The donor starts alone (one 2,048-token solo stripe), then a second
-    /// request arrives and the rest of its prompt prefills in 512-token
-    /// company chunks. The uniform-cap rule disarmed at that cap change and
+    /// Under the SDK prompt geometry the donor starts alone (one 2,048-token
+    /// solo stripe), then a second request arrives and the rest of its prompt
+    /// prefills in 512-token company chunks; production GPT-OSS keeps 2,048
+    /// throughout, so the test pins that geometry to keep the cap change. The
+    /// uniform-cap rule disarmed at that cap change and
     /// left only the 2,048 boundary; the historical rule keeps capturing, so
     /// the donor leaves its first boundary (1,024, strictly inside the solo
     /// stripe) and its deepest (6,144, past the cap change). Without a
@@ -104,7 +106,8 @@ struct GPTOSSCheckpointRestartLiveTests {
         let fixture = try await GPTOSSCheckpointRestartFixture()
         do {
             let donorStore = try fixture.makeStore()
-            let donorBridge = try fixture.makeBridge(store: donorStore, maxConcurrentRequests: 2)
+            let donorBridge = try fixture.makeBridge(store: donorStore, maxConcurrentRequests: 2,
+                environment: GPTOSSCheckpointRestartFixture.sdkPrefillGeometry)
             let engine = try #require(await donorBridge.engine as? EngineV2)
             let before = try engine.beginForwardShapeObservation()
             let donorTask = Task {
@@ -157,7 +160,8 @@ struct GPTOSSCheckpointRestartLiveTests {
             await donorStore.closeAndWait()
 
             let restoredStore = try fixture.makeStore()
-            let restoredBridge = try fixture.makeBridge(store: restoredStore)
+            let restoredBridge = try fixture.makeBridge(store: restoredStore,
+                environment: GPTOSSCheckpointRestartFixture.sdkPrefillGeometry)
             let repeated = try await run(fixture, bridge: restoredBridge, tokens: fixture.prompts.donor,
                                          scope: "tenant-a", id: "repeat", expectedMarker: "ALDER-427")
             #expect(repeated.hitTokens == deepest && repeated.hitTokens >= 5_120,

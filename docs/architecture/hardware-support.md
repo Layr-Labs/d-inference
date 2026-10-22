@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-21
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -379,6 +379,23 @@ memory concurrency and the coordinator's per-model quality cap. Under Low Power
 Mode or a non-nominal thermal state the bridge serves and reports the configured
 width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
+
+The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV
+grant, windowed-ring size, load quotation or activation floor: the paged pool
+is sized from the largest schedulable chunk, `max(prefillChunkSize,
+soloPrefillStripeTokens)`, which the 2,048-token plain chunk leaves at its
+previous value, and Gemma 4 media keeps its 512-token chunk. It does let a
+mixed step carry up to 4,096 prompt tokens beside decode rows, the size dense
+Qwen's solo stripe already reached. That working set rides the
+unchanged activation reserve. The
+[2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
+put its KV-subtracted peak at eight concurrent 32k-token prompts well inside
+Gemma's floor, 0.1 GiB above GPT-OSS's (which the previous geometry already
+reached) and 0.3 GiB above Qwen3.5-9B's previous peak, itself above the
+default. Those two floors need a long-context re-measurement coordinated with
+platform admission. MoE Qwen keeps the SDK geometry because its peak rose
+2.1 GiB (`EngineV2Factory.prefillGeometry`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`).
 
 ### Cross-repository agreement
 

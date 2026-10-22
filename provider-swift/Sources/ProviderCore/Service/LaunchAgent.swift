@@ -262,8 +262,10 @@ public enum LaunchAgent: Sendable {
     /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
+    /// `DARKBLOOM_CBV2_PREFILL_CHUNK` / `DARKBLOOM_CBV2_STEP_TOKENS`: `512` and
+    /// `2048` roll the measured families back to the SDK prompt geometry.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
-    /// admission-mode control. Both must persist in the provider job because
+    /// admission-mode control. All must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
@@ -279,6 +281,8 @@ public enum LaunchAgent: Sendable {
     /// verification is the MiMo default; each rollback must reach the job.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
+        EngineV2Factory.prefillChunkKey,
+        EngineV2Factory.stepTokenBudgetKey,
         PrefillDeadlineMode.environmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,

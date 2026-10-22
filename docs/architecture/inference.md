@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -289,8 +289,10 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `maxBatchedTokensPerStep` / `prefillChunkSize` / `maxWaiting` | 2048 / 512 / 64 (`CBv2SchedulerConfig` init defaults) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
-| `soloPrefillStripeTokens` | 2048 (`defaultSoloPrefillStripeTokens`); 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for GPT-OSS, dense Qwen3.5/3.8 and Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
+| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for GPT-OSS and Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
+| `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
 | `requestTimeout` | 120 s legacy total wall, used only when `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` is affirmative | `EngineLoopV2.swift`, `CBv2EngineLoopConfig`; `EngineV2Factory+Configuration.swift` |
@@ -300,6 +302,53 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 
 Environment variables are named here, never defaulted; defaults live in
 [`../reference/configuration.md`](../reference/configuration.md).
+
+### Prompt geometry
+
+With one partial prefill (`maxConcurrentPartialPrefills`), the plain chunk is
+the prompt work a busy engine runs beside its decode rows: a solo stripe never
+arms beside an unpaused decode row (`SchedulerV2.plan`). GPT-OSS, dense
+Qwen3.5/3.8 and Gemma 4 take the 2,048-token plain chunk and a 4,096-token
+step, so a full chunk and a finishing row's remainder share one step with the
+decode rows. The wider chunk amortizes each step's fixed host and readback cost
+over more prompt tokens and gives MoE expert GEMMs more rows per expert; a
+prompt needs a quarter of the mixed steps, so decode rows also spend more steps
+without prompt work. The chunk replaces the 2,048-token GPT-OSS and Gemma 4
+stripes rather than exceeding them, and dense Qwen's 4,096-token stripe stays
+armed above it, so the paged pool's `maxPrefillChunk`
+(`max(prefillChunkSize, soloPrefillStripeTokens)`, `makeSegmentedPagedBackend`)
+and every windowed-ring KV charge stay unchanged. The trade is inter-token
+latency: a decode token that shares a step with prompt work waits for the whole
+chunk, so the p90 gap shrinks while the p99 gap grows two to three times. The
+[2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
+record the load, engine and memory evidence; the activation effect is in
+[hardware support](hardware-support.md#serving-width-by-chip).
+
+Requests with bidirectional media blocks, Gemma 4 images and video frames,
+keep the SDK's 512-token plain chunk (`bidirectionalMediaPrefillChunkCeiling`,
+`CBv2SchedulerConfig.plainPrefillChunkSize`). A paged span-bearing chunk
+attends in one unblocked call whose score tensor grows with the chunk length
+times the history (`PagedLayerCache.prefillAttend`); a chunk that begins at a
+block still extends over the whole block. Qwen media is causal, attends in
+query blocks like text and takes the plain chunk.
+
+Other families keep 512 / 2048 (`usesWidePrefillChunk`):
+
+| Family | Reason |
+|---|---|
+| Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
+| MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
+| Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
+
+An explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` applies to every family, and the
+step budget follows it unless `DARKBLOOM_CBV2_STEP_TOKENS` is set. Like every
+`DARKBLOOM_CBV2_*` key, either override enters the complete-checkpoint
+numerics fingerprint (`PrefixCachePolicy.completeCheckpointIdentity`) and
+disqualifies reviewed serving and deadline profiles
+(`ServingPerformanceProfiles.runtimeOverridesAreAbsent`,
+`DeadlineRuntimeEnvironment.permitsQualification`). A solo chunk on GPT-OSS or
+Gemma 4 no longer counts toward `soloStripeChunks`, which still counts chunks
+wider than `prefillChunkSize`.
 
 ### Deadlines
 
@@ -1111,6 +1160,12 @@ or change consumer/OpenRouter routing.
 7. MTP is fail-open to target-only decode: artifact resolution failure or
    `DARKBLOOM_CBV2_MTP` off never refuses a load — `EngineV2SlotFactory+MTP.swift`,
    `MTPContractsV2.swift` (`envEnabled`).
+8. Default prompt geometry never widens the largest schedulable chunk or a
+   bidirectional media chunk: the wide plain chunk equals the former GPT-OSS
+   and Gemma 4 stripe and stays below dense Qwen's, and block-bearing requests
+   keep the SDK chunk — `EngineV2Factory+Configuration.swift`
+   (`usesWidePrefillChunk`, `prefillGeometry`), `SchedulerV2.swift`
+   (`prefillChunkCap`).
 
 ## Failure modes
 

@@ -15,6 +15,11 @@ struct ModelPrefixBenchmarkDiagnosticsTests {
         let diagnostic = ModelPrefixBenchmarkFixture.checkpointEnvironment(
             root: root, soloPrefillStripeTokens: 1_024)
         #expect(diagnostic[EngineV2Factory.soloPrefillStripeKey] == "1024")
+        // The pinned stripe keeps the SDK plain chunk it was specified above.
+        #expect(diagnostic[EngineV2Factory.prefillChunkKey] == "512")
+        #expect(diagnostic[EngineV2Factory.stepTokenBudgetKey] == "2048")
+        #expect(ordinary[EngineV2Factory.prefillChunkKey] == nil)
+        #expect(ordinary[EngineV2Factory.stepTokenBudgetKey] == nil)
         #expect(diagnostic["DARKBLOOM_PREFIX_CACHE_MEMORY"] == "0")
         #expect(diagnostic["DARKBLOOM_PREFIX_CACHE_TEST_ROOT"] == root.path)
     }

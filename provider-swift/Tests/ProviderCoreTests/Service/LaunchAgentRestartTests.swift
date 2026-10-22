@@ -178,6 +178,30 @@ struct LaunchAgentEnvironmentTests {
         #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
+    @Test func forwardsPrefillGeometryRollbackToProviderJob() {
+        // The wide mixed-step chunk is the default for measured families; its
+        // rollback only works if it reaches the launchd-managed provider job.
+        let rollback = [
+            EngineV2Factory.prefillChunkKey: "512",
+            EngineV2Factory.stepTokenBudgetKey: "2048",
+        ]
+        let out = LaunchAgent.passthroughEnvironment(
+            from: rollback.merging(["UNRELATED_SECRET": "excluded"]) { value, _ in value })
+        #expect(out == rollback)
+        // Foreground and launchd resolve the same geometry from the same shell.
+        let shell = [EngineV2Factory.prefillChunkKey: "1024", EngineV2Factory.stepTokenBudgetKey: "3072"]
+        #expect(EngineV2Factory.prefillGeometry(
+            model: nil, environment: LaunchAgent.passthroughEnvironment(from: shell))
+            == EngineV2Factory.prefillGeometry(model: nil, environment: shell))
+        #expect(EngineV2Factory.prefillGeometry(model: nil, environment: shell).maxBatchedTokensPerStep == 3072)
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log", environment: out)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == rollback)
+        #expect(WatchdogAgent.passthroughEnvKeys.allSatisfy { !rollback.keys.contains($0) })
+    }
+
     @Test func forwardsMiMoResidencyRollbackToProviderJob() {
         // Standing MiMo residency is the default; the operator's rollback is
         // only effective if it reaches the launchd-managed provider process.

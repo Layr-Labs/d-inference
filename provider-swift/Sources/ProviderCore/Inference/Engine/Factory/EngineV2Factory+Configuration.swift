@@ -55,12 +55,84 @@ extension EngineV2Factory {
     static func defaultSoloPrefillStripeTokens(
         for model: (any LanguageModel)?
     ) -> Int {
-        guard let model else { return defaultSoloPrefillStripeTokens }
-        // MoE subclasses the dense target, so exclude it explicitly.
-        if model is Qwen35Model, !(model is Qwen35MoEModel) {
-            return defaultDenseQwenSoloPrefillStripeTokens
+        isDenseQwen35(model) ? defaultDenseQwenSoloPrefillStripeTokens : defaultSoloPrefillStripeTokens
+    }
+
+    /// MoE subclasses the dense target, so exclude it explicitly.
+    static func isDenseQwen35(_ model: (any LanguageModel)?) -> Bool {
+        model is Qwen35Model && !(model is Qwen35MoEModel)
+    }
+
+    public static let prefillChunkKey = "DARKBLOOM_CBV2_PREFILL_CHUNK"
+    public static let stepTokenBudgetKey = "DARKBLOOM_CBV2_STEP_TOKENS"
+    /// Plain chunk, and therefore the prompt work beside decode rows, for the
+    /// families whose busy-engine serving measurements back it
+    /// (`usesWidePrefillChunk`).
+    public static let widePrefillChunkTokens = 2048
+
+    /// Prompt geometry resolved once per engine; the paged pool is sized from it.
+    public struct PrefillGeometry: Equatable, Sendable {
+        public let prefillChunkTokens: Int
+        public let maxBatchedTokensPerStep: Int
+        public let soloPrefillStripeTokens: Int?
+        /// Plain chunk for requests with bidirectional media blocks, when it
+        /// is narrower than `prefillChunkTokens`.
+        public let bidirectionalMediaPrefillChunkCeiling: Int?
+    }
+
+    public static func prefillGeometry(
+        model: (any LanguageModel)?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> PrefillGeometry {
+        let chunk = prefillChunkTokens(model: model, environment: environment)
+        let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
+        return PrefillGeometry(
+            prefillChunkTokens: chunk,
+            maxBatchedTokensPerStep: stepTokenBudget(abovePlainChunk: chunk, environment: environment),
+            soloPrefillStripeTokens: soloPrefillStripeTokens(
+                abovePlainChunk: chunk, model: model, environment: environment),
+            bidirectionalMediaPrefillChunkCeiling: chunk > sdkChunk ? sdkChunk : nil)
+    }
+
+    /// GPT-OSS, dense Qwen3.5/3.8 (its 4,096-token stripe stays armed above
+    /// the chunk) and Gemma 4. Nemotron and Bonsai demanded checkpoints split
+    /// only an armed 2,048-token stripe; MoE Qwen's measured activation peak
+    /// rises about 2 GiB under the wide geometry; Qwen3-VL, Qwen4, MiMo and
+    /// other families have no busy-engine measurement of it.
+    static func usesWidePrefillChunk(_ model: (any LanguageModel)?) -> Bool {
+        model is GPTOSSModel || isDenseQwen35(model)
+            || model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
+    }
+
+    /// Absent selects the family default. A positive explicit value applies to
+    /// every model; zero, negative, or malformed values restore the SDK chunk.
+    static func prefillChunkTokens(
+        model: (any LanguageModel)?, environment: [String: String]
+    ) -> Int {
+        let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
+        guard let raw = environment[prefillChunkKey] else {
+            return usesWidePrefillChunk(model) ? widePrefillChunkTokens : sdkChunk
         }
-        return defaultSoloPrefillStripeTokens
+        guard let value = Int(raw), value > 0 else { return sdkChunk }
+        return value
+    }
+
+    /// Absent selects twice the plain chunk, never below the SDK budget, so a
+    /// full chunk and a finishing row's remainder fit beside decode rows. An
+    /// explicit value must cover the plain chunk; smaller, zero, negative, or
+    /// malformed values restore the SDK budget, raised to the plain chunk.
+    static func stepTokenBudget(
+        abovePlainChunk plainChunk: Int, environment: [String: String]
+    ) -> Int {
+        let sdkBudget = CBv2SchedulerConfig().maxBatchedTokensPerStep
+        guard let raw = environment[stepTokenBudgetKey] else {
+            let (doubled, overflow) = plainChunk.multipliedReportingOverflow(by: 2)
+            return max(sdkBudget, overflow ? Int.max : doubled)
+        }
+        guard let value = Int(raw), value >= plainChunk else {
+            return max(sdkBudget, plainChunk)
+        }
+        return value
     }
 
     /// One scheduler config sizes the paged pool and runs the engine. Keeping it
@@ -72,13 +144,15 @@ extension EngineV2Factory {
         performanceProfile: ServingPerformanceProfile? = nil,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
+        let geometry = prefillGeometry(model: model, environment: environment)
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: nativeConcurrentRequestLimit(
-                requested: maxConcurrentRequests, model: model, environment: environment))
-        config.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
-            abovePlainChunk: config.prefillChunkSize,
-            model: model,
-            environment: environment)
+                requested: maxConcurrentRequests, model: model, environment: environment),
+            maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
+            prefillChunkSize: geometry.prefillChunkTokens,
+            soloPrefillStripeTokens: geometry.soloPrefillStripeTokens)
+        // Paged span-bearing chunks attend unblocked, so media keeps the SDK width.
+        config.bidirectionalMediaPrefillChunkCeiling = geometry.bidirectionalMediaPrefillChunkCeiling
         config.mixedStepPrefillTokenCap = MixedPrefillPolicy.resolve(
             modelID: modelID, profile: performanceProfile, environment: environment,
             requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)

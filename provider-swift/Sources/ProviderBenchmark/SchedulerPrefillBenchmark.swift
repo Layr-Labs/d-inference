@@ -14,7 +14,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
     /// 4 adds per-cell memory evidence and full-context warmup.
-    public static let currentSchemaVersion = 4
+    /// 5 adds `prefillChunkTokens` and `maxBatchedTokensPerStep`: the plain
+    /// chunk is no longer always 512, so a nil stripe alone is ambiguous.
+    public static let currentSchemaVersion = 5
 
     public struct Sample: Codable, Sendable {
         public let strategy: String
@@ -43,9 +45,13 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// Selection versus the backends the measured engines were built with.
     public let kvBackend: BenchmarkKVBackend
     /// Effective `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` the measured engines
-    /// were built with (nil = plain 512-token chunks). Recorded so a stripe
-    /// arm can never masquerade as a plain-chunk baseline.
+    /// were built with (nil = no stripe above `prefillChunkTokens`). Recorded
+    /// so a stripe arm can never masquerade as a plain-chunk baseline.
     public let soloPrefillStripeTokens: Int?
+    /// Effective plain chunk and step budget of the measured engines; absent
+    /// before schema 5, when every production chunk was 512 tokens.
+    public let prefillChunkTokens: Int?
+    public let maxBatchedTokensPerStep: Int?
     public let samples: [Sample]
 
     public func jsonString() throws -> String {
@@ -122,19 +128,17 @@ public enum SchedulerPrefillBenchmark {
         log("load memory: active_bytes=\(Memory.activeMemory) peak_bytes=\(Memory.peakMemory)")
         let baseTokens = facts.baseTokens
 
-        // The production factory selects the dense-Qwen long-context stripe
-        // from the resolved serving model, not from the VLM wrapper. Record
-        // the same effective value in the benchmark receipt so a default
-        // production run cannot be reported as the generic 2,048-token arm.
-        let effectiveSoloPrefillStripeTokens = try await container.perform {
-            context -> Int? in
+        // The production factory selects prompt geometry from the resolved
+        // serving model, not from the VLM wrapper. Record the same effective
+        // values in the benchmark receipt so a default production run cannot
+        // be reported as another family's geometry.
+        let geometry = try await container.perform {
+            context -> EngineV2Factory.PrefillGeometry in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
                 model: context.model,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory)
-            return EngineV2Factory.soloPrefillStripeTokens(
-                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize,
-                model: servingModel)
+            return EngineV2Factory.prefillGeometry(model: servingModel)
         }
 
         log("kv backend selection \(kvBackend.rawValue)")
@@ -202,7 +206,9 @@ public enum SchedulerPrefillBenchmark {
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
                 selection: kvBackend.rawValue, resolved: resolved),
-            soloPrefillStripeTokens: effectiveSoloPrefillStripeTokens,
+            soloPrefillStripeTokens: geometry.soloPrefillStripeTokens,
+            prefillChunkTokens: geometry.prefillChunkTokens,
+            maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
             samples: samples
         )
     }

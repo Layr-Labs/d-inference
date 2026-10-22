@@ -3,6 +3,7 @@
 // validation, and every way the resident active-decode sentinel can fail.
 
 import Foundation
+import MLXLLM
 import MLXLMCommon
 import Testing
 
@@ -109,6 +110,30 @@ struct SchedulerPrefillDecisionLiveRunnerTests {
                 baseTokens, to: workload.rows[row].promptTokens, offset: row * 17 + 1))
         }
         #expect(engine.cancelledIDs.isEmpty)
+    }
+
+    @Test("live engines run the simulated geometry rather than the family default")
+    func liveEngineEnvironmentPinsSimulatedGeometry() throws {
+        let configuration = SchedulerPrefillDecisionScenarios.configuration(
+            modeledPromptTokensPerSecond: nil, timingBasis: "test")
+        let environment = Runner.engineEnvironment(
+            ["UNRELATED": "kept", EngineV2Factory.prefillChunkKey: "4096"],
+            configuration: configuration, cap: 1)
+        #expect(environment["UNRELATED"] == "kept")
+        #expect(environment[EngineV2Factory.maxPartialPrefillsKey] == "1")
+        // GPT-OSS defaults to a 2,048-token plain chunk with no stripe; the
+        // pinned geometry restores the configured chunk, budget and stripe.
+        let gptoss = GPTOSSModel(try JSONDecoder().decode(GPTOSSConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: [
+                "model_type": "gpt_oss", "num_hidden_layers": 2, "num_local_experts": 4,
+                "num_experts_per_tok": 2, "vocab_size": 128, "rms_norm_eps": 1e-5,
+                "hidden_size": 64, "intermediate_size": 64, "head_dim": 64,
+                "num_attention_heads": 4, "num_key_value_heads": 2, "sliding_window": 32,
+            ])))
+        let geometry = EngineV2Factory.prefillGeometry(model: gptoss, environment: environment)
+        #expect(geometry.prefillChunkTokens == configuration.prefillChunkTokens)
+        #expect(geometry.maxBatchedTokensPerStep == configuration.maxBatchedTokensPerStep)
+        #expect(geometry.soloPrefillStripeTokens == configuration.soloPrefillStripeTokens)
     }
 
     @Test("packed counters that move backwards clamp to zero")

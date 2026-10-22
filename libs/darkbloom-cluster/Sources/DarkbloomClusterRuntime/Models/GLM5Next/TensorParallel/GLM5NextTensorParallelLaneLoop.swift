@@ -45,12 +45,21 @@ protocol GLM5NextTensorParallelLaneNative: AnyObject {
     /// A joining request: both ranks check they hold the same request, vote
     /// for its prompt prefix and restore it or start cold (collective).
     func open(_ request: QwenLayerStageGenerationRequest, check: () throws -> Void) throws -> Lane
-    /// The lane's next prefill frame on its own (solo) grid; nil once its
-    /// prompt is in. `merging` (no lane decodes this step) may run several of
-    /// its chunks as one frame, with the same arithmetic.
-    func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame?
-    /// Runs that frame (collective); the final one returns the agreed first token.
+    /// The lane's next prefill frame on its own (solo) grid, or the next
+    /// slice of its frame in progress; nil once its prompt is in. With
+    /// `decoding` (other lanes decode this step) the frame may run in layer
+    /// slices, one a step, and may merge chunks either way, with the same
+    /// arithmetic as the request alone.
+    func nextFrame(_ lane: Lane, decoding: Bool) -> GLM5NextTensorParallelLaneWire.Frame?
+    /// Runs that frame or slice (collective); the final frame's last slice
+    /// returns the agreed first token.
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int?
+    /// True while the lane's frame has slices left to run.
+    func prefillInProgress(_ lane: Lane) -> Bool
+    /// Prompt tokens the lane has yet to prefill.
+    func remainingPrompt(_ lane: Lane) -> Int
+    /// Lanes prefill shortest remaining prompt first (else join order).
+    var prefillShortestFirst: Bool { get }
     /// True when the lane decodes in MTP rounds, false for one token a step.
     func speculates(_ lane: Lane) -> Bool
     /// The decode seam: one decode unit for each of `units`, in order, and
@@ -88,9 +97,13 @@ extension GLM5NextTensorParallelLaneNative {
 ///    joinable (a media lane once rank 0 prepared its patches), into free
 ///    slots: both ranks check the request and vote its prompt prefix, as one
 ///    request does. The loop goes on while a started lane waits to be joinable.
-/// 3. At most one prefill frame, of the earliest joined lane still prefilling,
-///    on that request's own chunk grid (`prefillFrameEnd`), so every frame is
-///    the frame the request alone runs.
+/// 3. At most one prefill frame or slice: the lane with a frame in progress
+///    (unless a shorter prompt's whole rest fits one slice: that prompt goes
+///    between the slices), else the lane still prefilling with the shortest
+///    remaining prompt (`prefillShortestFirst`; ties and otherwise: join
+///    order), on that request's own chunk grid (`prefillFrameEnd`), so every
+///    frame computes what the request alone computes. While lanes decode, a
+///    frame runs in layer slices, one a step (`nextFrame(_:decoding:)`).
 /// 4. One decode unit for every decoding lane (`GLM5NextTensorParallelLaneNative.decode`).
 ///
 /// The plan crosses inside the step's one sealed sum
@@ -233,9 +246,24 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
             return lane.native != nil && lane.prefilled && !lane.ended && lane.stoppedAt == nil
                 && lane.tokens.count - lane.answered <= backlog
         }
-        let prefilling = slots.values.filter { $0.native != nil && !$0.prefilled }.min { $0.order < $1.order }
-        // With no lane decoding, the frame may merge chunks: nobody waits on it.
-        let frame = prefilling.flatMap { native.nextFrame($0.native!, merging: decoding.isEmpty) }
+        // A frame in progress goes on, unless a shorter prompt's whole rest
+        // fits one slice (it runs between the frame's slices); else the
+        // shortest remaining prompt starts a frame.
+        let waiting = slots.values.filter { $0.native != nil && !$0.prefilled }
+        let inProgress = waiting.first { native.prefillInProgress($0.native!) }
+        let next = waiting.min { a, b in
+            if native.prefillShortestFirst {
+                let (x, y) = (native.remainingPrompt(a.native!), native.remainingPrompt(b.native!))
+                if x != y { return x < y }
+            }
+            return a.order < b.order
+        }
+        var prefilling = inProgress ?? next
+        if native.prefillShortestFirst, let inProgress, let next, next !== inProgress,
+           let frame = native.nextFrame(next.native!, decoding: !decoding.isEmpty), Self.betweenSlices(frame) {
+            prefilling = next
+        }
+        let frame = prefilling.flatMap { native.nextFrame($0.native!, decoding: !decoding.isEmpty) }
         var plan = Wire.Plan(step: step, stop: slots.isEmpty && leaving.isEmpty && !book.hasStarted, lanes: lanes,
             depth: native.depth,
             prefixEnabled: native.prefixEnabled, slots: Array(repeating: .init(), count: lanes))
@@ -409,16 +437,23 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
             slots[slot] = lane
             lane.native = try native.open(lane.request, check: check)
         }
+        let inProgress = slots.values.filter { $0.native.map { native.prefillInProgress($0) } ?? false }
         if let slot = plan.slots.indices.first(where: { plan.slots[$0].role == .prefill }) {
             let value = plan.slots[slot]
             guard let lane = slots[slot], let state = lane.native, !lane.prefilled,
-                  let frame = native.nextFrame(state, merging: !plan.slots.contains { $0.role == .decode }),
-                  frame == value.frame else {
+                  let frame = native.nextFrame(state, decoding: plan.slots.contains { $0.role == .decode }),
+                  frame == value.frame,
+                  inProgress.allSatisfy({ $0 === lane }) || (native.prefillShortestFirst && Self.betweenSlices(frame))
+            else {
                 throw ProbeError("GLM lane prefill frame differs from this rank's lane")
             }
             let first = try native.prefill(state, frame, check: check)
-            guard (first != nil) == frame.final else { throw ProbeError("GLM lane prefill frame did not end as planned") }
+            guard (first != nil) == (frame.final && frame.finishes) else {
+                throw ProbeError("GLM lane prefill frame did not end as planned")
+            }
             if let first { lane.agree([first]) }
+        } else if !inProgress.isEmpty {
+            throw ProbeError("GLM lane plan leaves a frame in progress unfinished")
         }
         let decoding = plan.slots.indices.filter { plan.slots[$0].role == .decode }
         if !decoding.isEmpty {
@@ -446,6 +481,12 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
     }
 
     // MARK: Both ranks
+
+    /// A prompt's whole rest as one frame of one slice: it may run between
+    /// the slices of another lane's frame in progress.
+    static func betweenSlices(_ frame: Wire.Frame) -> Bool {
+        frame.final && frame.finishes && frame.layers.lowerBound == 0
+    }
 
     /// Retires one lane on this rank: its native state, its prompt-cache
     /// report and its finish, or, cancelled, its retirement without one.

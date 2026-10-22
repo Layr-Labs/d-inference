@@ -83,8 +83,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// partials, 15,724-token prompt): 4,096-token chunks 3,311 tok/s,
     /// 8,192: 3,614. Charged as four request workspaces in all.
     static let bulkPrefillChunkTokens = 8192
-    /// A request with no other lane decoding prefills consecutive chunks
-    /// together in one graph (frame), up to this many tokens
+    /// A request prefills consecutive chunks together in one graph (frame),
+    /// up to this many tokens (beside decoding lanes only in layer slices,
+    /// `lanePrefillSliceMilliseconds`)
     /// (`GLM5NextTensorParallelPrefillPlan`; 0: each chunk alone). Every
     /// chunk keeps its micro-batches, so tokens are unchanged; a graph's edges
     /// leave its last sums waiting for the link and its first micro-batches
@@ -104,6 +105,46 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// chunk). Bigger micro-batches read each layer's expert weights once per
     /// more rows; tokens are unchanged.
     static let prefillMicroBatchTokens: Int? = nil
+    /// While other lanes decode, a lane's prefill frame runs in layer slices
+    /// of about this long, one a step, each followed by every decoding lane's
+    /// unit (`GLM5NextTensorParallelPrefillPlan.Slices`), so no decoding lane
+    /// waits longer than a slice for its next round, and frames merge chunks
+    /// (up to `mergedPrefillTokens`) beside decoding lanes too. A slice builds
+    /// the frame's next layers for every micro-batch exactly as the whole
+    /// frame does: tokens and caches are unchanged. nil: frames run whole,
+    /// merging only while no lane decodes (a decoding lane then waits a whole
+    /// 8,192-token chunk, about 2 s).
+    static let lanePrefillSliceMilliseconds: Double? = 500
+    /// The pair's prefill compute per prompt token (merged frames, 31.5K:
+    /// 3,973 tok/s), which sizes a slice; only timing depends on it.
+    static let prefillMillisecondsPerToken = 0.252
+    /// Lanes still prefilling take frames shortest remaining prompt first
+    /// (ties: join order), so a short request does not wait for a long one's
+    /// whole prompt; a frame in progress always finishes first. False: join
+    /// order. Either way each lane's frames are its own.
+    static let lanePrefillShortestFirst = true
+
+    /// The layers of a frame's next slice, from `built` of `layers`: the
+    /// frame's rest without `slicing`, else the next of the frame's slices,
+    /// as many as its estimated time needs at `lanePrefillSliceMilliseconds`,
+    /// with near-equal layer counts. Both ranks derive it.
+    static func prefillSlice(from built: Int, layers: Int, tokens: Int, slicing: Bool) -> Range<Int> {
+        guard slicing, let budget = lanePrefillSliceMilliseconds, budget > 0, built < layers else { return built ..< layers }
+        let estimate = Double(tokens) * prefillMillisecondsPerToken
+        let slices = min(layers, max(1, Int((estimate / budget).rounded(.up))))
+        return built ..< ((1 ... slices).lazy.map { $0 * layers / slices }.first { $0 > built } ?? layers)
+    }
+
+    /// A sliced frame's held arrays between slices: every micro-batch's
+    /// residual streams and pending mHC expand (`[T, hcMult + 1, hidden]`
+    /// activations, `post`/`comb` in float32), at the longest frame. Held
+    /// while other lanes' units run, so admission charges it beside the
+    /// largest forward's transients.
+    static func prefillFrontierBytes(configuration c: GLM5NextTextConfiguration) throws -> Int {
+        guard lanePrefillSliceMilliseconds != nil else { return 0 }
+        return try QwenLongPrefillCheckedBytes.product([mergedPrefillTokens,
+            try QwenLongPrefillCheckedBytes.sum([(c.hcMult + 1) * c.hiddenSize * 2, (c.hcMult + c.hcMult * c.hcMult) * 4])])
+    }
     /// NextN (MTP) proposals each greedy decode round verifies
     /// (`GLM5NextTensorParallelSpeculation`, at most
     /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
@@ -921,22 +962,50 @@ public final class GLM5NextTensorParallelResidentRuntime {
                          merging: Bool = true)
         throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
         guard !opened.stopped else { throw ProbeError("GLM tensor-parallel request stopped before its media crossed") }
-        var inputs: ((Int, Int) throws -> MLXArray?)?
-        if let media = opened.media {
-            guard let embedding = stage.embedding else {
-                throw ProbeError("GLM tensor-parallel media needs the stage's embedding")
-            }
-            inputs = { lower, upper in
-                try media.embeddings(tokens: MLXArray(prompt[lower ..< upper].map(Int32.init), [1, upper - lower]),
-                    from: lower, to: upper, embedding: { embedding($0) })
-            }
-        }
         let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
             chunkTokens: opened.chunk, keepAt: opened.keepAt,
             bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
             microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging)
         let result = try GLM5NextTensorParallelPrefillPlan.run(frame, stage: stage, cache: opened.cache, prompt: prompt,
-            speculation: opened.speculation, inputs: inputs)
+            speculation: opened.speculation, inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
+        if let kept = result.kept {
+            prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
+        }
+        return (result.final, result.kept?.end)
+    }
+
+    /// A media request's input embeddings by prompt positions
+    /// (`GLM5NextTensorParallelMedia.embeddings`); nil for text.
+    static func mediaInputs(_ prompt: [Int], opened: OpenedRequest, stage: GLM5NextTextStage)
+        throws -> GLM5NextTensorParallelPrefillPlan.Inputs? {
+        guard let media = opened.media else { return nil }
+        guard let embedding = stage.embedding else {
+            throw ProbeError("GLM tensor-parallel media needs the stage's embedding")
+        }
+        return { lower, upper in
+            try media.embeddings(tokens: MLXArray(prompt[lower ..< upper].map(Int32.init), [1, upper - lower]),
+                from: lower, to: upper, embedding: { embedding($0) })
+        }
+    }
+
+    /// A lane's frame `offset ..< end` begun in layer slices (`runPrefillFrame`'s
+    /// frame, `merging` as there; a media request's frames from their input
+    /// embeddings, as there).
+    func beginPrefillFrame(_ prompt: [Int], offset: Int, end: Int, opened: OpenedRequest, stage: GLM5NextTextStage,
+                           merging: Bool) throws -> GLM5NextTensorParallelPrefillPlan.Slices {
+        guard !opened.stopped else { throw ProbeError("GLM tensor-parallel request stopped before its media crossed") }
+        let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
+            chunkTokens: opened.chunk, keepAt: opened.keepAt,
+            bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
+            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging)
+        return try .init(frame, stage: stage, cache: opened.cache, prompt: prompt, speculation: opened.speculation,
+            inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
+    }
+
+    /// The last slice of a lane's frame: `runPrefillFrame`'s results.
+    func finishPrefillFrame(_ slices: GLM5NextTensorParallelPrefillPlan.Slices, prompt: [Int])
+        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
+        let result = try slices.finish()
         if let kept = result.kept {
             prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
         }

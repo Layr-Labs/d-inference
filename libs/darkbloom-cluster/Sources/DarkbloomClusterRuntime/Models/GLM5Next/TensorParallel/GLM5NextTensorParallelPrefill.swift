@@ -25,8 +25,8 @@ import MLXLLM
 /// every `chunkTokens`. `mergedTokens` 0 runs every segment alone, as before
 /// segmented prefill. A graph is a lane's prefill frame
 /// (`GLM5NextTensorParallelResidentRuntime.prefillFrameEnd`,
-/// `runPrefillFrame`): the lane loop merges only while no lane decodes, so a
-/// decoding lane never waits behind a long frame.
+/// `runPrefillFrame`); beside decoding lanes the lane loop runs a frame in
+/// layer slices (`Slices`), so a decoding lane never waits behind a long frame.
 struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     struct Segment: Equatable, Sendable {
         let start: Int
@@ -200,20 +200,77 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// the NextN history is primed with the same rows.
     static func run(_ chunk: Chunk, stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, prompt: [Int],
                     speculation: GLM5NextTensorParallelSpeculation?, observe: ((Int, MLXArray) throws -> Void)? = nil,
-                    inputs: ((_ lower: Int, _ upper: Int) throws -> MLXArray?)? = nil)
-        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?,
-                   kept: (end: Int, cache: GLM5NextTextStageCache, history: GLM5NextMTPCheckpoint?)?) {
-        let last = chunk.end == prompt.count
-        let segments = chunk.segments.map { GLM5NextPrefillSegment(microBatchRows: $0.microBatchRows) }
-        let candidate: GLM5NextTextStageCandidate
-        if let embedded = try inputs?(chunk.start, chunk.end) {
-            candidate = try stage.prepareForward(embeddings: embedded, cache: cache, segments: segments,
-                readout: last ? .lastToken : .none, snapshotAfter: chunk.snapshotAfter)
-        } else {
-            let tokens = MLXArray(prompt[chunk.start ..< chunk.end].map(Int32.init), [1, chunk.tokens])
-            candidate = try stage.prepareForward(tokens: tokens, cache: cache, segments: segments,
-                readout: last ? .lastToken : .none, snapshotAfter: chunk.snapshotAfter)
+                    inputs: Inputs? = nil) throws -> FrameResult {
+        let slices = try Slices(chunk, stage: stage, cache: cache, prompt: prompt, speculation: speculation,
+            inputs: inputs)
+        try slices.advance(layers: slices.layerCount)
+        return try slices.finish(observe: observe)
+    }
+
+    /// A media prompt's input embeddings for prompt positions `lower ..< upper`
+    /// (`run`'s `inputs`), nil where they hold no media rows.
+    typealias Inputs = (_ lower: Int, _ upper: Int) throws -> MLXArray?
+    typealias FrameResult = (final: (logits: MLXArray, lastHidden: MLXArray)?,
+                             kept: (end: Int, cache: GLM5NextTextStageCache, history: GLM5NextMTPCheckpoint?)?)
+
+    /// A frame (`chunk`, from its tokens or, with media rows, its `inputs`)
+    /// run in layer slices (`GLM5NextTextStage.beginForward`): `advance(layers:)`
+    /// builds and evaluates the next layers of every micro-batch, so other
+    /// lanes may run their units between slices; `finish()` reads out, primes
+    /// NextN, commits and keeps the boundary. `run` is all layers then
+    /// `finish`, so a sliced frame's micro-batches, ops and their order are
+    /// `run`'s and its results `run`'s bits; only when the GPU runs each part
+    /// changes. `cache` must not change until `finish` (no other lane touches it).
+    final class Slices {
+        let chunk: Chunk
+        private let prefill: GLM5NextSlicedPrefill
+        private let cache: GLM5NextTextStageCache
+        private let prompt: [Int]
+        private let speculation: GLM5NextTensorParallelSpeculation?
+        private let inputs: Inputs?
+        var layersBuilt: Int { prefill.layersBuilt }
+        var layerCount: Int { prefill.layerCount }
+
+        init(_ chunk: Chunk, stage: GLM5NextTextStage, cache: GLM5NextTextStageCache, prompt: [Int],
+             speculation: GLM5NextTensorParallelSpeculation?, inputs: Inputs? = nil) throws {
+            self.chunk = chunk; self.cache = cache; self.prompt = prompt; self.speculation = speculation
+            self.inputs = inputs
+            let segments = chunk.segments.map { GLM5NextPrefillSegment(microBatchRows: $0.microBatchRows) }
+            let readout: GLM5NextTextStageReadout = chunk.end == prompt.count ? .lastToken : .none
+            if let embedded = try inputs?(chunk.start, chunk.end) {
+                prefill = try stage.beginForward(embeddings: embedded, cache: cache, segments: segments,
+                    readout: readout, snapshotAfter: chunk.snapshotAfter)
+            } else {
+                prefill = try stage.beginForward(
+                    tokens: MLXArray(prompt[chunk.start ..< chunk.end].map(Int32.init), [1, chunk.tokens]),
+                    cache: cache, segments: segments, readout: readout, snapshotAfter: chunk.snapshotAfter)
+            }
         }
+
+        /// Builds the next `layers` layers; evaluates them unless they are the
+        /// frame's last (`finish` evaluates those with the readout).
+        func advance(layers: Int) throws {
+            try prefill.advance(layers: layers)
+            guard layersBuilt < layerCount else { return }
+            let frontier = prefill.frontier
+            try MLX.withError { error in
+                eval(frontier)
+                try error.check()
+            }
+        }
+
+        func finish(observe: ((Int, MLXArray) throws -> Void)? = nil) throws -> FrameResult {
+            try complete(try prefill.finish(), chunk: chunk, cache: cache, prompt: prompt, speculation: speculation,
+                inputs: inputs, observe: observe)
+        }
+    }
+
+    /// A frame's rest once its candidate is built: NextN priming per segment
+    /// (with the same input rows), the commit, the kept boundary.
+    private static func complete(_ candidate: GLM5NextTextStageCandidate, chunk: Chunk, cache: GLM5NextTextStageCache,
+                                 prompt: [Int], speculation: GLM5NextTensorParallelSpeculation?, inputs: Inputs?,
+                                 observe: ((Int, MLXArray) throws -> Void)?) throws -> FrameResult {
+        let last = chunk.end == prompt.count
         var checkpoint: GLM5NextMTPCheckpoint?
         if let speculation {
             for (index, segment) in chunk.segments.enumerated() {

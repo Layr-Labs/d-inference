@@ -9,10 +9,11 @@ import MLXLMCommon
 ///
 /// Every lane keeps the arithmetic of its request served alone. It opens with
 /// the same digest agreement and prefix vote (`openRequest`), prefills frame
-/// by frame on its own grid (`prefillFrameEnd`, `runPrefillFrame`) and decodes
-/// in its own MTP rounds or one-token steps, with its own stage cache, NextN
-/// state and sampler; only the order in which lanes' frames and units run is
-/// the loop's. The decode units of one step run one lane after another
+/// by frame on its own grid (`prefillFrameEnd`; beside decoding lanes in
+/// layer slices, `prefillSlice`, which build the frame's ops in its order)
+/// and decodes in its own MTP rounds or one-token steps, with its own stage
+/// cache, NextN state and sampler; only the order in which lanes' frames,
+/// slices and units run is the loop's. The decode units of one step run one lane after another
 /// (`decode`, the decode seam): each is bitwise its request's solo unit. A
 /// batched executor that verifies several lanes' windows in one forward
 /// replaces that seam and nothing else.
@@ -22,7 +23,8 @@ import MLXLMCommon
 /// and bulk prefill workspaces, NextN work and windows) is its named state
 /// (`laneStateBytes`) and the transients of its forward. Lanes run one
 /// forward at a time, so the host holds every held lane's state and the
-/// largest of their transients. A lane the host cannot hold now is refused,
+/// largest of their transients, beside one sliced frame's held arrays
+/// (`prefillFrontierBytes`). A lane the host cannot hold now is refused,
 /// alone; the running lanes go on.
 ///
 /// Media: a lane carrying images or video runs the solo request's media path
@@ -30,7 +32,9 @@ import MLXLMCommon
 /// reservation on, off the executor, and joins it only once that ended, so
 /// the running lanes never wait for a decode; when it joins, its features are
 /// made and agreed in its open, its prefill frames splice them and prime the
-/// NextN history, and it decodes in MTP rounds as any lane. Its media charge
+/// NextN history (beside decoding lanes in layer slices from those input
+/// embeddings, as a text lane's from its tokens), and it decodes in MTP
+/// rounds as any lane. Its media charge
 /// (`GLM5NextTensorParallelMedia.requestBytes`) is held with its state for
 /// its whole life.
 ///
@@ -141,13 +145,15 @@ extension GLM5NextTensorParallelResidentRuntime {
                 pagedHistories: requestCharge.pagedHistory != nil),
                 try requestCharge.pagedHistoryBytes(contextTokens: context), mediaBytes])
             let transient = max(0, charge - state)
-            // Every held lane's state, and the largest forward's transients; a
-            // paged rank also needs what its page pool grows by for this lane.
+            // Every held lane's state, the largest forward's transients, a sliced
+            // frame's arrays held while other lanes' units run, and on a paged
+            // rank what its page pool grows by for this lane.
             let held = laneBook.reservations()
             let states = try QwenLongPrefillCheckedBytes.sum([state] + held.map(\.laneStateBytes))
             let largest = max(transient, held.map(\.transientBytes).max() ?? 0)
+            let frontier = try Self.prefillFrontierBytes(configuration: descriptor.configuration.textConfig)
             try prefix.yieldingMemory {
-                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([states, largest,
+                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([states, largest, frontier,
                     pagedGrowthBytes(request)]))
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
@@ -238,6 +244,8 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         /// output index, until it is published.
         var logprobs: [Int: ClusterWorkerTokenLogprobs] = [:]
         var drawn = 0
+        /// The frame in progress (layer slices left to run) and whether it merges.
+        var slices: (frame: GLM5NextTensorParallelPrefillPlan.Slices, merging: Bool)?
 
         init(request: QwenLayerStageGenerationRequest, sampler: QwenStageTokenSampler?, opened: Runtime.OpenedRequest,
              speculates: Bool, draw: ((MLXArray) -> MLXArray)?, propose: GLM5NextMTP.ProposalSelection?) {
@@ -283,21 +291,44 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
             propose: speculates ? runtime.proposalSelection(sampler) : nil)
     }
 
-    func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
-        let count = lane.request.promptTokenIDs.count
+    var prefillShortestFirst: Bool { Runtime.lanePrefillShortestFirst }
+    func prefillInProgress(_ lane: Lane) -> Bool { lane.slices != nil }
+    func remainingPrompt(_ lane: Lane) -> Int { lane.request.promptTokenIDs.count - lane.offset }
+
+    /// A frame merges chunks unless lanes decode and frames are not sliced;
+    /// beside decoding lanes it runs in slices (`Runtime.prefillSlice`).
+    func nextFrame(_ lane: Lane, decoding: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
+        let count = lane.request.promptTokenIDs.count, layers = stage.layers.count
+        if let (frame, _) = lane.slices {
+            let slice = Runtime.prefillSlice(from: frame.layersBuilt, layers: layers, tokens: frame.chunk.tokens,
+                slicing: decoding)
+            return .init(offset: frame.chunk.start, end: frame.chunk.end, final: frame.chunk.end == count,
+                layers: slice, finishes: slice.upperBound == layers)
+        }
         guard lane.offset < count else { return nil }
         let end = Runtime.prefillFrameEnd(offset: lane.offset, promptCount: count, chunk: lane.opened.chunk,
-            keepAt: lane.opened.keepAt, merging: merging)
-        return .init(offset: lane.offset, end: end, final: end == count)
+            keepAt: lane.opened.keepAt, merging: Self.merges(decoding: decoding))
+        let slice = Runtime.prefillSlice(from: 0, layers: layers, tokens: end - lane.offset, slicing: decoding)
+        return .init(offset: lane.offset, end: end, final: end == count, layers: slice,
+            finishes: slice.upperBound == layers)
     }
 
+    private static func merges(decoding: Bool) -> Bool { !decoding || Runtime.lanePrefillSliceMilliseconds != nil }
+
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int? {
-        guard frame == nextFrame(lane, merging: false) || frame == nextFrame(lane, merging: true) else {
-            throw ProbeError("GLM lane prefill frame is not the lane's next")
+        let decoding = [false, true].first { frame == nextFrame(lane, decoding: $0) }
+        guard let decoding else { throw ProbeError("GLM lane prefill frame is not the lane's next") }
+        let prompt = lane.request.promptTokenIDs
+        if lane.slices == nil {
+            let merging = Self.merges(decoding: decoding)
+            lane.slices = (try runtime.beginPrefillFrame(prompt, offset: frame.offset, end: frame.end,
+                opened: lane.opened, stage: stage, merging: merging), merging)
         }
-        // Equal merging and single-chunk frames run the same micro-batches.
-        let result = try runtime.runPrefillFrame(lane.request.promptTokenIDs, offset: frame.offset, end: frame.end,
-            opened: lane.opened, stage: stage, merging: frame == nextFrame(lane, merging: true))
+        let slices = lane.slices!.frame
+        try slices.advance(layers: frame.layers.count)
+        guard frame.finishes else { try check(); return nil }
+        lane.slices = nil
+        let result = try runtime.finishPrefillFrame(slices, prompt: prompt)
         if let at = result.stored { lane.stored.append(at) }
         lane.offset = frame.end
         try check()

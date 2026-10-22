@@ -14,7 +14,8 @@ import Foundation
 /// The plan names, per slot, the lane that holds it (its request ID), what it
 /// does this step (join, one prefill frame, one decode unit, leave) and the
 /// agreed facts rank 1 checks against its own lane (tokens agreed, the decode
-/// unit's input token and window, the frame's bounds). Rank 1's report carries
+/// unit's input token and window, the frame's bounds and the layers of its
+/// slice this step runs). Rank 1's report carries
 /// what only it knows: a lane its own owner cancelled or whose deadline passed
 /// here, which rank 0 then plans to leave.
 enum GLM5NextTensorParallelLaneWire {
@@ -22,9 +23,9 @@ enum GLM5NextTensorParallelLaneWire {
     static let maximumLanes = QwenBatchWire.maximumLanes
     static let planMagic = 0x474C_31   // "GL1"
     static let reportMagic = 0x474C_32 // "GL2"
-    static let version = 1
+    static let version = 2
     static let headWords = 8
-    static let slotWords = 18
+    static let slotWords = 20
     static let reportHeadWords = 6
     static let reportSlotWords = 2
     /// Words are integers strictly inside this bound (exact in float32).
@@ -59,10 +60,16 @@ enum GLM5NextTensorParallelLaneWire {
         }
     }
 
+    /// A prefill frame `offset ..< end` of a lane's prompt (`final`: it ends
+    /// the prompt), or the slice of it this step runs: its stage layers
+    /// `layers`; `finishes` when they are the frame's last (the frame then
+    /// commits, and a final frame agrees the lane's first token).
     struct Frame: Equatable {
         let offset: Int
         let end: Int
         let final: Bool
+        let layers: Range<Int>
+        let finishes: Bool
     }
 
     struct Slot: Equatable {
@@ -148,9 +155,11 @@ enum GLM5NextTensorParallelLaneWire {
             w[base + 12] = slot.window.map { $0 + 1 } ?? 0
             w[base + 13] = slot.frame?.offset ?? 0
             w[base + 14] = slot.frame?.end ?? 0
-            w[base + 15] = slot.frame.map { $0.final ? 1 : 0 } ?? 0
+            w[base + 15] = slot.frame.map { ($0.final ? 1 : 0) + ($0.finishes ? 2 : 0) } ?? 0
             w[base + 16] = slot.leave?.rawValue ?? 0
             w[base + 17] = slot.kept
+            w[base + 18] = slot.frame?.layers.lowerBound ?? 0
+            w[base + 19] = slot.frame?.layers.upperBound ?? 0
         }
         let end = headWords + plan.lanes * slotWords
         w[7] = checksum(w[0..<7] + w[headWords..<end])
@@ -200,14 +209,20 @@ enum GLM5NextTensorParallelLaneWire {
             let base = headWords + index * slotWords
             guard let state = SlotState(rawValue: w[base]), let role = Role(rawValue: w[base + 9]),
                   w[base + 10] >= 0, w[base + 11] >= 0, w[base + 12] >= 0, w[base + 13] >= 0,
-                  w[base + 14] >= w[base + 13], [0, 1].contains(w[base + 15]), (0...4).contains(w[base + 16]),
-                  w[base + 17] >= 0 else {
+                  w[base + 14] >= w[base + 13], (0...3).contains(w[base + 15]), (0...4).contains(w[base + 16]),
+                  w[base + 17] >= 0, w[base + 18] >= 0, w[base + 19] >= w[base + 18] else {
                 throw ProbeError("GLM lane plan slot is malformed")
             }
             var slot = Slot(state: state, requestID: state == .empty ? nil : id(w[(base + 1)...(base + 8)]), role: role)
             slot.tokens = w[base + 10]; slot.last = w[base + 11] - 1
             slot.window = w[base + 12] == 0 ? nil : w[base + 12] - 1
-            if role == .prefill { slot.frame = Frame(offset: w[base + 13], end: w[base + 14], final: w[base + 15] == 1) }
+            if role == .prefill {
+                guard w[base + 14] > w[base + 13], w[base + 19] > w[base + 18] else {
+                    throw ProbeError("GLM lane plan has an empty prefill frame or slice")
+                }
+                slot.frame = Frame(offset: w[base + 13], end: w[base + 14], final: w[base + 15] & 1 == 1,
+                    layers: w[base + 18] ..< w[base + 19], finishes: w[base + 15] & 2 == 2)
+            }
             slot.leave = w[base + 16] == 0 ? nil : Leave(rawValue: w[base + 16])
             slot.kept = w[base + 17]
             guard (state == .leaving) == (slot.leave != nil), role == .none || state == .active,

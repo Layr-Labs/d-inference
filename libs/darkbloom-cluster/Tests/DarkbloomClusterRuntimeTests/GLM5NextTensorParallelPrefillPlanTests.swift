@@ -266,10 +266,12 @@ struct GLM5NextTensorParallelPrefillPlanTests {
     }
 
     /// Prefill of a tiny whole-model stage with a NextN layer, either by the
-    /// runtime's loop before merging (`legacy`) or by `plan`.
+    /// runtime's loop before merging (`legacy`) or by `plan`; with
+    /// `sliceLayers`, each frame in layer slices of that many layers
+    /// (`Plan.Slices`), another request's one-token step between slices.
     static func prefill(_ stage: GLM5NextTextStage, mtp: GLM5NextMTP, prompt: [Int], chunk: Int, bulk: Int,
                         merged: Int, legacy: Bool = false, prefix: Bool = true,
-                        inputs: ((Int, Int) throws -> MLXArray?)? = nil) throws -> Prefilled {
+                        inputs: ((Int, Int) throws -> MLXArray?)? = nil, sliceLayers: Int? = nil) throws -> Prefilled {
         let speculation = try GLM5NextTensorParallelSpeculation(mtp: mtp, depth: 1, rank: 0, ranks: 1,
             primeRows: 3, agree: { $0 })
         let cache = stage.newCache()
@@ -310,6 +312,27 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         }
         let plan = Plan.make(promptCount: prompt.count, start: 0, chunkTokens: chunk, keepAt: keepAt,
             bulkTokens: bulk, microBatches: 2, mergedTokens: merged)
+        if let sliceLayers {
+            let other = stage.newCache()
+            var result: (logits: MLXArray, lastHidden: MLXArray)?
+            for (index, chunk) in plan.chunks.enumerated() {
+                let slices = try Plan.Slices(chunk, stage: stage, cache: cache, prompt: prompt, speculation: speculation,
+                    inputs: inputs)
+                while slices.layersBuilt < slices.layerCount {
+                    try slices.advance(layers: min(sliceLayers, slices.layerCount - slices.layersBuilt))
+                    let step = try stage.prepareForward(tokens: MLXArray([Int32(5 + index)], [1, 1]), cache: other,
+                        readout: .lastToken)
+                    try step.commit { try fence($0) }
+                }
+                let frame = try slices.finish()
+                if let final = frame.final { result = final }
+                if let kept = frame.kept { try keep(kept.end, kept.cache, kept.history) }
+            }
+            let history = try speculation.evaluationTargets()
+            let final = try #require(result)
+            try fence(history + [final.logits, final.lastHidden])
+            return .init(logits: final.logits, lastHidden: final.lastHidden, cache: cache, history: history, kept: kept)
+        }
         let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation, inputs: inputs,
             keep: keep)
         let history = try speculation.evaluationTargets()
@@ -337,16 +360,18 @@ struct GLM5NextTensorParallelPrefillPlanTests {
             microBatches: 2, mergedTokens: 16)
         #expect(plan.chunks.map(\.tokens) == [16, 16, 5] && plan.chunks[2].snapshotAfter == 1)
         let legacy = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: 0, legacy: true)
-        for merged in [0, 16, 64] {
-            let value = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: merged)
-            #expect(Self.same([value.logits, value.lastHidden], [legacy.logits, legacy.lastHidden]), "merged \(merged)")
+        // Whole frames, and frames in layer slices with another request's steps between.
+        for (merged, slices) in [(0, nil), (16, nil), (64, nil), (16, 1), (64, 2), (0, 3)] as [(Int, Int?)] {
+            let value = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: merged,
+                sliceLayers: slices)
+            #expect(Self.same([value.logits, value.lastHidden], [legacy.logits, legacy.lastHidden]), "merged \(merged) slices \(slices ?? 0)")
             let (a, b) = (value.cache.layers.flatMap(\.state), legacy.cache.layers.flatMap(\.state))
             try Self.fence(a + b)
-            #expect(value.cache.offset == prompt.count && Self.same(a, b), "merged \(merged)")
-            #expect(Self.same(value.history, legacy.history), "merged \(merged)")
+            #expect(value.cache.offset == prompt.count && Self.same(a, b), "merged \(merged) slices \(slices ?? 0)")
+            #expect(Self.same(value.history, legacy.history), "merged \(merged) slices \(slices ?? 0)")
             #expect(value.kept.count == 1 && legacy.kept.count == 1)
             for (x, y) in zip(value.kept, legacy.kept) {
-                #expect(x.0 == y.0 && Self.same(x.1, y.1) && Self.same(x.2, y.2), "merged \(merged)")
+                #expect(x.0 == y.0 && Self.same(x.1, y.1) && Self.same(x.2, y.2), "merged \(merged) slices \(slices ?? 0)")
             }
         }
     }
@@ -387,14 +412,15 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         let text = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: 0, legacy: true,
             prefix: false)
         #expect(!Self.same([legacy.logits], [text.logits]), "the media rows change the result")
-        for merged in [0, 16, 64] {
+        // Whole frames, and frames in layer slices with another request's steps between.
+        for (merged, slices) in [(0, nil), (16, nil), (64, nil), (16, 1), (64, 2)] as [(Int, Int?)] {
             let value = try Self.prefill(stage, mtp: mtp, prompt: prompt, chunk: 4, bulk: 8, merged: merged,
-                prefix: false, inputs: inputs)
-            #expect(Self.same([value.logits, value.lastHidden], [legacy.logits, legacy.lastHidden]), "merged \(merged)")
+                prefix: false, inputs: inputs, sliceLayers: slices)
+            #expect(Self.same([value.logits, value.lastHidden], [legacy.logits, legacy.lastHidden]), "merged \(merged) slices \(slices ?? 0)")
             let (a, b) = (value.cache.layers.flatMap(\.state), legacy.cache.layers.flatMap(\.state))
             try Self.fence(a + b)
-            #expect(value.cache.offset == prompt.count && Self.same(a, b), "merged \(merged)")
-            #expect(Self.same(value.history, legacy.history), "merged \(merged)")
+            #expect(value.cache.offset == prompt.count && Self.same(a, b), "merged \(merged) slices \(slices ?? 0)")
+            #expect(Self.same(value.history, legacy.history), "merged \(merged) slices \(slices ?? 0)")
             #expect(value.kept.isEmpty && legacy.kept.isEmpty)
         }
     }

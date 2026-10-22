@@ -21,7 +21,7 @@ struct GLM5NextTensorParallelLaneTests {
             slots: Array(repeating: .init(), count: 3))
         plan.slots[0] = .init(state: .active, requestID: a, role: .decode, tokens: 17, last: 151_000, window: 2)
         plan.slots[1] = .init(state: .active, requestID: b, role: .prefill, tokens: 0,
-            frame: .init(offset: 8192, end: 12_288, final: true))
+            frame: .init(offset: 8192, end: 12_288, final: true, layers: 10 ..< 15, finishes: false))
         plan.slots[2] = .init(state: .leaving, requestID: UUID(), tokens: 9, leave: .clientStop, kept: 6)
         let report = Wire.Report(step: 41, lanes: 3, prefixEnabled: true, leaveWanted: [false, true, false],
             tokens: [17, 0, 9])
@@ -33,6 +33,18 @@ struct GLM5NextTensorParallelLaneTests {
         plan.slots[0].window = nil
         #expect(try Wire.read(zip(try Wire.words(plan), try Wire.words(report)).map { $0 + $1 }, lanes: 3, step: 41)
             .plan.slots[0].window == nil)
+        // A frame's last slice, and a whole frame.
+        for frame in [Wire.Frame(offset: 0, end: 4096, final: false, layers: 40 ..< 45, finishes: true),
+                      Wire.Frame(offset: 0, end: 16_384, final: true, layers: 0 ..< 45, finishes: true)] {
+            plan.slots[1].frame = frame
+            #expect(try Wire.read(zip(try Wire.words(plan), try Wire.words(report)).map { $0 + $1 }, lanes: 3, step: 41)
+                .plan.slots[1].frame == frame)
+        }
+        // An empty slice is refused.
+        plan.slots[1].frame = .init(offset: 0, end: 4096, final: false, layers: 3 ..< 3, finishes: false)
+        #expect(throws: ProbeError.self) {
+            try Wire.read(zip(try Wire.words(plan), try Wire.words(report)).map { $0 + $1 }, lanes: 3, step: 41)
+        }
     }
 
     @Test func anotherStepOrADamagedWordStopsBothRanks() throws {
@@ -82,6 +94,37 @@ struct GLM5NextTensorParallelLaneTests {
         #expect(frames(3931, prefix: true) == [3931])
         // From a restored prefix.
         #expect(frames(20_000, start: 4096, prefix: true) == [12_288, 16_384, 20_000])
+    }
+
+    /// Beside decoding lanes a frame runs in near-equal layer slices of about
+    /// `lanePrefillSliceMilliseconds`; alone, whole.
+    @Test func slicesBoundEachStepBesideDecodingLanes() throws {
+        let budget = try #require(Runtime.lanePrefillSliceMilliseconds)
+        func slices(_ tokens: Int, layers: Int = 45, decoding: Bool = true) -> [Range<Int>] {
+            var ranges: [Range<Int>] = [], built = 0
+            while built < layers {
+                let slice = Runtime.prefillSlice(from: built, layers: layers, tokens: tokens, slicing: decoding)
+                ranges.append(slice); built = slice.upperBound
+            }
+            return ranges
+        }
+        #expect(slices(16_384, decoding: false) == [0 ..< 45])
+        #expect(slices(100) == [0 ..< 45])
+        for tokens in [2_048, 4_096, 8_192, 15_116, 16_384] {
+            let ranges = slices(tokens)
+            let count = Int((Double(tokens) * Runtime.prefillMillisecondsPerToken / budget).rounded(.up))
+            #expect(ranges.count == count, "\(tokens) tokens")
+            #expect(ranges.allSatisfy { Double(tokens) * Runtime.prefillMillisecondsPerToken * Double($0.count) / 45
+                <= budget * 1.2 }, "\(tokens) tokens")
+            #expect(Set(ranges.map(\.count)).count <= 2 && ranges.last?.upperBound == 45)
+        }
+        // Slicing that starts mid-frame takes the next boundary.
+        #expect(Runtime.prefillSlice(from: 7, layers: 45, tokens: 16_384, slicing: true) == 7 ..< 10)
+        #expect(Runtime.prefillSlice(from: 7, layers: 45, tokens: 16_384, slicing: false) == 7 ..< 45)
+        // The held arrays of a sliced frame at GLM's widths: under 1 GiB.
+        let c = try GLM5NextMetadataTestFixture(layers: 8).configuration.textConfig
+        let frontier = try Runtime.prefillFrontierBytes(configuration: c)
+        #expect(frontier == Runtime.mergedPrefillTokens * ((c.hcMult + 1) * c.hiddenSize * 2 + (c.hcMult + c.hcMult * c.hcMult) * 4))
     }
 
     @Test func aLaneIsChargedItsOwnContext() throws {
@@ -234,6 +277,57 @@ struct GLM5NextTensorParallelLaneTests {
         // Open (digest and prefix vote), three frames, then one unit a step.
         #expect(run.link.kinds.prefix(4) == ["step", "open", "step", "prefill"])
     }
+
+    /// A long prompt joining decoding lanes prefills in layer slices, one a
+    /// step, every decoding lane's unit between them; every lane keeps its
+    /// solo tokens. Alone, a frame runs whole.
+    @Test func aFrameBesideDecodingLanesRunsInSlicesWithUnitsBetween() throws {
+        let run = try FakePair(lanes: 3)
+        let specs: [FakePair.Spec] = [
+            .init(tick: 0, prompt: 2, output: 64),
+            .init(tick: 0, prompt: 3, output: 64),
+            .init(tick: 4, prompt: 26, output: 6),
+        ]
+        try run.serve(specs)
+        for (index, spec) in specs.enumerated() {
+            #expect(run.hosts[0].record(run.ids[index]).tokens
+                == Array(FakeLaneNative.solo(prompt: run.prompts[index], count: spec.output)), "lane \(index)")
+        }
+        #expect(run.link.mismatch == nil)
+        // The long prompt's 7 frames ran in slices, decoding lanes' units between.
+        #expect(run.natives[0].unitsBesideFramesInProgress > 0)
+        #expect(run.natives[0].slices > 7 + 2)
+    }
+
+    /// A prompt short enough for one slice, joining while another lane's
+    /// frame runs in slices beside decoding lanes, runs between those slices.
+    @Test func aOneSlicePromptRunsBetweenAnotherFramesSlices() throws {
+        let run = try FakePair(lanes: 4)
+        try run.serve([
+            .init(tick: 0, prompt: 3, output: 64), .init(tick: 2, prompt: 4, output: 4),
+            .init(tick: 3, prompt: 2, output: 3),
+        ])
+        #expect(run.natives[0].shortFramesBetweenSlices >= 1)
+        for (index, output) in [64, 4, 3].enumerated() {
+            #expect(run.hosts[0].record(run.ids[index]).tokens
+                == Array(FakeLaneNative.solo(prompt: run.prompts[index], count: output)), "lane \(index)")
+        }
+        #expect(run.link.mismatch == nil)
+    }
+
+    /// A short prompt joining while a longer one prefills takes the next
+    /// frame (shortest remaining prompt first): its first token comes long
+    /// before the longer prompt's.
+    @Test func aShortPromptPrefillsBeforeALongerOne() throws {
+        let run = try FakePair(lanes: 3)
+        try run.serve([.init(tick: 0, prompt: 40, output: 3), .init(tick: 1, prompt: 3, output: 3)])
+        let order = run.hosts[0].firstTokens
+        #expect(order == [run.ids[1], run.ids[0]])
+        for index in 0 ..< 2 {
+            #expect(run.hosts[0].record(run.ids[index]).tokens
+                == Array(FakeLaneNative.solo(prompt: run.prompts[index], count: 3)))
+        }
+    }
 }
 
 // MARK: - Fakes
@@ -282,10 +376,15 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
         var agreed = 0
         /// Rank 0, `reportsLogprobs`: each drawn token's, by output index, until published.
         var logprobs: [Int: ClusterWorkerTokenLogprobs] = [:]
+        /// The frame in progress: its end and the layers built.
+        var frame: (end: Int, built: Int)?
         init(request: QwenLayerStageGenerationRequest) { self.request = request }
         var solo: [Int] { FakeLaneNative.solo(prompt: request.promptTokenIDs, count: request.outputCount + 1) }
     }
     static let chunk = 4
+    /// Layers of the fake stage; beside decoding lanes a frame of more than 2
+    /// tokens runs one a step.
+    static let layers = 3
     static let stopToken = 1
     let rank: Int
     let depth = 2
@@ -314,6 +413,13 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     static func logprobs(token: Int, ordinal: Int) -> ClusterWorkerTokenLogprobs {
         .init(logprob: -Float(ordinal) / 8, top: [.init(tokenID: token, logprob: -Float(ordinal) / 8)])
     }
+    /// Decode units run while some lane's frame had slices left.
+    private(set) var unitsBesideFramesInProgress = 0
+    private(set) var slices = 0
+    /// Whole one-slice frames run while another lane's frame was in progress.
+    private(set) var shortFramesBetweenSlices = 0
+    var prefillShortestFirst = true
+    private var lanes: [ObjectIdentifier: Lane] = [:]
 
     init(rank: Int, link: FakeLink) { self.rank = rank; self.link = link }
 
@@ -339,16 +445,36 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
         return Lane(request: request)
     }
 
-    func nextFrame(_ lane: Lane, merging: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
+    func prefillInProgress(_ lane: Lane) -> Bool { lane.frame != nil }
+    func remainingPrompt(_ lane: Lane) -> Int { lane.request.promptTokenIDs.count - lane.offset }
+
+    func nextFrame(_ lane: Lane, decoding: Bool) -> GLM5NextTensorParallelLaneWire.Frame? {
         let count = lane.request.promptTokenIDs.count
+        let end = lane.frame?.end ?? min(count, lane.offset + Self.chunk)
         guard lane.offset < count else { return nil }
-        let end = min(count, lane.offset + Self.chunk)
-        return .init(offset: lane.offset, end: end, final: end == count)
+        // Beside decoding lanes, frames of more than 2 tokens run one layer a step.
+        let built = lane.frame?.built ?? 0
+        let layers = built ..< (decoding && end - lane.offset > 2 ? built + 1 : Self.layers)
+        return .init(offset: lane.offset, end: end, final: end == count, layers: layers,
+            finishes: layers.upperBound == Self.layers)
     }
 
     func prefill(_ lane: Lane, _ frame: GLM5NextTensorParallelLaneWire.Frame, check: () throws -> Void) throws -> Int? {
-        guard frame == nextFrame(lane, merging: false) else { throw ProbeError("fake frame is not the lane's next") }
-        _ = try link.exchange(rank: rank, kind: "prefill", [Float(frame.end - frame.offset)])
+        guard frame == nextFrame(lane, decoding: false) || frame == nextFrame(lane, decoding: true) else {
+            throw ProbeError("fake frame is not the lane's next")
+        }
+        lanes[ObjectIdentifier(lane)] = lane
+        if lanes.values.contains(where: { $0 !== lane && $0.frame != nil }) {
+            guard GLM5NextTensorParallelLaneLoop<FakeLaneNative>.betweenSlices(frame) else {
+                throw ProbeError("fake: a frame started beside a frame in progress")
+            }
+            shortFramesBetweenSlices += 1
+        }
+        _ = try link.exchange(rank: rank, kind: "prefill",
+            [Float(frame.end - frame.offset), Float(frame.layers.lowerBound), Float(frame.layers.upperBound)])
+        slices += 1
+        guard frame.finishes else { lane.frame = (frame.end, frame.layers.upperBound); return nil }
+        lane.frame = nil
         lane.offset = frame.end
         guard frame.final else { return nil }
         lane.agreed = 1
@@ -361,6 +487,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     func decode(_ units: [GLM5NextTensorParallelDecodeUnit<Lane>], whileRunning: (Int) throws -> Void,
                 check: () throws -> Void) throws -> [[Int]] {
         mostDecodeUnitsInOneStep = max(mostDecodeUnitsInOneStep, units.count)
+        if lanes.values.contains(where: { $0.frame != nil }) { unitsBesideFramesInProgress += units.count }
         return try units.enumerated().map { index, unit in
             let lane = unit.lane, solo = lane.solo, n = lane.agreed
             guard unit.last == solo[n - 1], (unit.window != nil) == speculates(lane) else {
@@ -378,7 +505,8 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     }
 
     func close(_ lane: Lane, kept: Int, leave: GLM5NextTensorParallelLaneWire.Leave) -> (reused: Int, stored: [Int]) {
-        (0, [])
+        lanes[ObjectIdentifier(lane)] = nil
+        return (0, [])
     }
 
     func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs? {
@@ -408,6 +536,9 @@ final class FakeLaneHost: QwenBatchServingHost, @unchecked Sendable {
     private let lock = NSLock()
     private var records: [UUID: Record] = [:]
     private var outstanding: [UUID: (ordinal: Int, polls: Int)] = [:]
+    private var firstTokenOrder: [UUID] = []
+    /// Requests in the order their first token was published.
+    var firstTokens: [UUID] { lock.withLock { firstTokenOrder } }
 
     init(rank: Int, pair: FakePair) { self.rank = rank; self.pair = pair }
     func record(_ id: UUID) -> Record { lock.withLock { records[id] ?? Record() } }
@@ -432,6 +563,7 @@ final class FakeLaneHost: QwenBatchServingHost, @unchecked Sendable {
             }
             records[requestID, default: .init()].tokens.append(tokenID)
             outstanding[requestID] = (ordinal, 0)
+            if ordinal == 0 { firstTokenOrder.append(requestID) }
         }
     }
     func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] { throw ProbeError("fake host: lanes answer one by one") }

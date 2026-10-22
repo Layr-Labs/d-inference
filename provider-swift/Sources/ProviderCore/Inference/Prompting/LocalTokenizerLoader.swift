@@ -17,7 +17,8 @@ import ProviderCoreFoundation
 import Tokenizers
 
 public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
-    /// The prompt token cache settings (`PromptTokenCachePolicy`).
+    /// The environment the prompt token cache reads its settings from
+    /// (`PromptTokenCachePolicy`).
     private let environment: [String: String]
 
     public init(environment: [String: String] = ProcessInfo.processInfo.environment) {

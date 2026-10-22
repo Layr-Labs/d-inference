@@ -1035,8 +1035,9 @@ swift-transformers encoder already encodes those pieces independently, and
 reuses the token IDs of pieces seen before in the same prefix-cache scope. New
 long prompts encode their pieces on up to four cores. The cache renders Gemma 4
 and GPT-OSS templates through `ChatTemplateLoopRewrites`, linear-time forms of
-their per-message history scans that render the same text, so a long agent
-history no longer costs up to 0.72 s of rendering on every request. The IDs
+their per-message history scans that render the same text, so render time no
+longer grows with the square of the history length (0.72 s for 1,603 Gemma 4
+messages on an M3 Ultra, on every request). The IDs
 equal the unchanged `applyChatTemplate` path's: tokenizers or templates outside
 those conditions, or failing a load-time comparison, keep that path, and
 sampled background comparisons against the served template disable reuse on a

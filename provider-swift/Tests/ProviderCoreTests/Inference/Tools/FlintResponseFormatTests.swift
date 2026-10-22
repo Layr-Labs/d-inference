@@ -260,6 +260,10 @@ struct FlintResponseFormatPolicyTests {
             #expect(prepared.mode == ToolConstraintMode.none)
             #expect(prepared.tools == request.tools, "declarations still render as received")
             #expect(prepared.messages == request.messages, "no forcing instruction")
+            // The rendered prompt is the format-less one the coordinator sidecar mirrors.
+            let unformatted = try ToolChoicePromptPolicy.prepare(
+                F.request(format: #"{"type":"text"}"#, tools: F.tools, choice: choice), modelType: "flint")
+            #expect(prepared.messages == unformatted.messages && prepared.tools == unformatted.tools)
             #expect(prepared.allowedToolNames.isEmpty && prepared.compiledTools == nil)
             #expect(!prepared.requiresToolCall && prepared.responseFormat != nil)
             let constraint = try #require(try ToolConstraintFactory.make(prepared: prepared, request: request,

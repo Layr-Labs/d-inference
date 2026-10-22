@@ -26,31 +26,18 @@ enum ToolChoicePromptPolicy {
         modelType: String? = nil,
         allowInternalSchemaMetadata: Bool = true
     ) throws -> Prepared {
-        guard let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType) else {
-            return try prepareToolChoice(
-                request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-        }
-        var prepared: Prepared
-        if request.toolChoice != .mode(.none), let tools = request.tools, !tools.isEmpty {
-            // Recursive's Flint contract: tools plus a response format get only
-            // the response format, whatever tool_choice asked for. Declarations
-            // still render as the template receives them (original messages, no
-            // forcing text), but no call may be generated or returned.
-            try validateToolNames(tools)
-            if case .function(let name)? = request.toolChoice,
-               !tools.contains(where: { $0.function.name == name }) {
-                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice names an undeclared function")
-            }
-            try ToolConstraintValidation.rejectReservedSchemaMetadata(
-                tools, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-            prepared = Prepared(
-                messages: request.messages, tools: tools, mode: .none, compiledTools: nil,
-                allowsParallelCalls: false, allowedToolNames: [])
-        } else {
-            prepared = try prepareToolChoice(
-                request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-        }
+        let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
+        let choice = try prepareToolChoice(
+            request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        guard let responseFormat else { return choice }
+        // Recursive's Flint contract: tools plus a response format get only the
+        // response format, whatever tool_choice asked for. The prompt renders
+        // exactly as it would without the format (Flint keeps the original
+        // messages and the declared tools), so the coordinator sidecar's mirror
+        // needs no format rule; only generation changes: no call is allowed.
+        var prepared = Prepared(
+            messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
+            allowsParallelCalls: false, allowedToolNames: [])
         prepared.responseFormat = responseFormat
         return prepared
     }

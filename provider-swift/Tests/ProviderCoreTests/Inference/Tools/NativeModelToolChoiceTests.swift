@@ -82,7 +82,7 @@ struct NativeModelToolChoiceTests {
     }
 
     @Test func nativeQwenParserAcceptanceDoesNotBroadenOtherFamilies() throws {
-        for type in ["qwen4_exp", "qwen4_exp_text"] {
+        for type in ["qwen4_exp", "qwen4_exp_text", "qwen3_5"] {
             let context = ChatTemplateFixContext(modelId: "owned-flash-next", modelType: type)
             for mode: ToolConstraintMode in [.required, .named("add")] {
                 let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)

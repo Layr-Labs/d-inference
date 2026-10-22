@@ -10,6 +10,9 @@ enum ProviderPromptContractPipeline {
     }
     static func validateNativeControls(_ controls: ChatTemplateControls, modelType: String?) throws {
         try controls.rawMiMoControls.validate(modelType: modelType)
+        if GLM5NextPromptPolicy.applies(modelType: modelType) {
+            try controls.rawGLM5Controls.validate()
+        }
     }
     static func tokenizeProviderBody(
         _ body: Data,
@@ -19,8 +22,9 @@ enum ProviderPromptContractPipeline {
         if MiMoV26TemplateFix.applies(to: .init(modelType: modelType)) {
             try MiMoV26TemplateFix.validateRawControls(body)
         }
-        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        let decodedRequest = try ProviderLoop.decodeOpenAIRequest(body, modelType: modelType)
         let templateControls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+        let request = try templateControls.rawMiMoTools.restoring(decodedRequest, modelType: modelType)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         return try tokenize(
             prepared: prepared,
@@ -57,6 +61,13 @@ enum ProviderPromptContractPipeline {
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
         try validateNativeControls(templateControls, modelType: modelType)
+        if GLM5NextPromptPolicy.applies(modelType: modelType) {
+            guard !preserveMiMoMediaParts else {
+                throw MultiModelBatchSchedulerEngineError.multimodalRejected("native media owner required")
+            }
+            return try GLM5NextPromptPolicy.normalizedTextInput(
+                request: request, prepared: prepared, controls: templateControls)
+        }
         try MediaIngest.rejectUnsupportedAudio(request,
             modelType: preserveMiMoMediaParts ? modelType : nil)
         try DiffusionGemmaReasoningControl.validate(

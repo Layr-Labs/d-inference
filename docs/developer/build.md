@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -44,6 +44,33 @@ native runtime change. The SDK's `MiMoOpenRouter` media fixtures are test-only
 resources, not provider product resources. MiMo provider fixture preparation
 uses bounded synthetic weights; the genuine audio codec is a separately
 hash-verified input. See [provider and SDK tests](test.md#provider-and-sdk).
+
+Building the GLM5Next target, media, MTP and loader candidates does not
+register the architecture with the model factories or provider. Follow the
+[prerequisite test procedure](test.md#glm5next-prerequisite-tests); do not use a
+successful SDK build as proof of the [complete integration](../design/glm53-flash-native.md).
+
+The GLM official template uses numeric attribute access such as
+`content.0.type`, which the pinned Swift-Jinja 2.3.6 does not parse. Builds use
+the ordinary locked Swift-Jinja pin with no SwiftPM edit mode or dependency
+patch. Our `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact instead ships a
+separately identified template that writes those accesses as `[0]` subscripts.
+Its derivation and equivalence evidence are in
+`fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
+rewrite another artifact's template to hide the parser limitation.
+
+The SSD test working-volume selector is runtime-only fixture configuration;
+it does not change the provider cache or Swift/native build inputs. Rebuild
+provider test products after fixture-source changes before using `--skip-build`,
+then apply the optional directory override at execution time as documented in
+[SSD test working volume](test.md#ssd-test-working-volume).
+
+MiMo tool-schema regression checks require a rebuilt provider test product after
+source changes. Reuse only an inactive, owned scratch directory with the selected
+public gitlinks and locked package graph; record the resulting test executable
+identity before any `--skip-build` selection. The [focused fixture recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+uses metadata and scripted generation, not a substitute native runtime or a
+binary copied from a different dependency composition.
 
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
@@ -219,8 +246,11 @@ Retaining source or running a build does not authorize hosting or traffic change
 For changes to the trusted PR reviewer, no provider build is required. Run the
 offline Python suites in [threat-review verification](threat-model-review.md#verify)
 and validate changed workflow YAML. The review workflow uploads content-free
-failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
-workflow change to merge.
+failure diagnostics and last-request progress, including scanner and canonical
+context revisions. After merge, new runs use current default-branch scanner code
+and separately read the PR base threat model. Integration replays bounded exact
+source from each model's own reviewed scope. Native Bedrock response-format
+compatibility requires the bounded live smoke check in addition to offline tests.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.
@@ -249,6 +279,14 @@ artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.
 Backend build and deployment configuration belongs in the platform repository.
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 

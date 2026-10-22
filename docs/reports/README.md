@@ -5,6 +5,7 @@
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
 
 - [Mixed-step prefill geometry](2026-10-21-mixed-step-prefill-geometry.md) - load, engine, inter-token latency and KV-subtracted activation measurements behind the 2,048 / 4,096 prompt geometry and the Gemma 4 media ceiling.
+- [GLM-5.3-Flash single-Mac qualification record](2026-10-21-glm53-flash-single-mac-qualification.md)
 - [Bonsai 9B publication delay](2026-10-15-bonsai9b-publication.md)
 
 - [Provider v0.8.0 — release notes](../releases/v0.8.0-notes.md)
@@ -259,3 +260,4 @@ retained in this tree.
 - [2026-10-07-autopilot-shadow-evidence.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-07-autopilot-shadow-evidence.md)
 - [README.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/evidence/2026-09-08-gemma-qat-defaults/README.md)
 - [README.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/evidence/all-model-prefix-2026-10-03/README.md)
+- [Nemotron Super image ingress measurements — 2026-10-15](2026-10-15-nemotron-super-image-ingress.md)

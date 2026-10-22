@@ -151,6 +151,7 @@ extension ProviderLoop {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelID, isVLM: original.isVLM, modelDirectory: directory,
                 container: originalContainer, specDecPreparation: preparation,
+                maximumContextLength: original.sizing.maxContextLength,
                 assistantLoader: engineV2SlotHooks?.assistantLoader ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry,
                 logInfo: { logger.info($0) }, logWarning: { logger.warning($0) })
@@ -184,7 +185,11 @@ extension ProviderLoop {
             return StagedProviderMTPUpgrade(modelID: modelID, original: original,
                 replacement: replacement, sizing: sizing, lease: lease)
         } catch {
-            if let replacement { await replacement.bridge.shutdown(); replacement.releaseAssistant() }
+            if let replacement {
+                do { try await GLM5NextRetirement.beforeRelease(replacement.bridge) }
+                catch { await GLM5NextRetirement.retainUnpublished(replacement, with: [self]); throw error }
+                replacement.releaseAssistant()
+            }
             prepared?.assistant?.release()
             prepared = nil
             clearCacheAfterConfirmedNativeOwnership()
@@ -196,7 +201,8 @@ extension ProviderLoop {
 
     func commitMTPUpgradeIfIdle(_ staged: StagedProviderMTPUpgrade) async throws -> Bool {
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
+        var retainActivity = false
+        defer { if !retainActivity { deviceActivity.finish() } }
         let modelID = staged.modelID
         guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
@@ -233,7 +239,12 @@ extension ProviderLoop {
             lastInferenceAt: original.lastInferenceAt)
         // Publication is committed. Shutdown of the old idle engine releases
         // its pool before the minimal replacement grant is grown.
-        await original.engineV2.shutdown()
+        do { try await GLM5NextRetirement.beforeRelease(original.engineV2) }
+        catch {
+            retainActivity = true
+            await GLM5NextRetirement.retainUnpublished(original.engineBundle, with: [self, staged.replacement, deviceActivity])
+            throw error
+        }
         original.engineBundle.releaseAssistant()
         await staged.replacement.bridge.startSSDPrefixCacheStatsLogger()
         await staged.replacement.bridge.configureMTPStatus(staged.replacement.mtpStatus)
@@ -250,8 +261,14 @@ extension ProviderLoop {
 
     func discardMTPUpgrade(_ staged: StagedProviderMTPUpgrade) async {
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
-        await staged.replacement.bridge.shutdown()
+        var retainActivity = false
+        defer { if !retainActivity { deviceActivity.finish() } }
+        do { try await GLM5NextRetirement.beforeRelease(staged.replacement.bridge) }
+        catch {
+            retainActivity = true
+            await GLM5NextRetirement.retainUnpublished(staged.replacement, with: [self, deviceActivity])
+            return
+        }
         staged.replacement.releaseAssistant()
         staged.original = nil
         clearCacheAfterConfirmedNativeOwnership()

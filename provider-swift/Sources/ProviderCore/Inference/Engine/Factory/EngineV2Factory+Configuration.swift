@@ -158,7 +158,81 @@ extension EngineV2Factory {
             requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
+        if let limit = calibratedPrefillTokenLimit(model: model) {
+            // Calibrated W4A4/FP8 workspace is a hard execution bound, not a
+            // throughput preference. Environment/profile overrides cannot widen it.
+            let limit = max(1, limit)
+            config.prefillChunkSize = min(config.prefillChunkSize, limit)
+            config.soloPrefillStripeTokens = nil
+            config.mixedStepPrefillTokenCap = min(config.mixedStepPrefillTokenCap ?? limit, limit)
+        }
         return config
+    }
+
+    /// The single source of GLM step geometry; the paged backend's query bound,
+    /// the engine's step-scratch envelope and the scheduler all derive from it.
+    /// The native engine prices one worst-case step at setup and refuses
+    /// activation when it exceeds the post-load envelope (about 56.8 GB on a
+    /// 256 GiB host, shared with KV). A prefill-sized paged row reads its
+    /// latent history once per DSA layer instead of retaining ~46 MB of
+    /// selected latents per query token. The price is a setup amount for the
+    /// step geometry plus a rate per context token of each request
+    /// (`GLM5NextStepScratch`), which the engine charges for the history its
+    /// pool can hold (GLM5NextStepPriceTests); the provider caps running rows
+    /// to what that check admits (`glm5NextActivatableRows`).
+    static let glm5NextMaximumPrefillChunkTokens = 2048
+    static let glm5NextMaximumStepTokens = 2048
+    /// Narrows both GLM limits for a test whose small fixture context must
+    /// still span a chunk boundary; it can never widen them.
+    #if DEBUG
+    @TaskLocal static var glm5NextStepTokensForTesting: Int?
+    #endif
+
+    /// Installs the GLM chunk and step limits, bounded by the context; the
+    /// generic 512-token default chunk is not GLM's geometry. Solo stripes,
+    /// including an operator override, are always disabled.
+    static func glm5NextServingScheduler(_ base: CBv2SchedulerConfig, context: Int)
+        -> CBv2SchedulerConfig
+    {
+        var scheduler = base
+        #if DEBUG
+        let narrowed = max(1, glm5NextStepTokensForTesting ?? Int.max)
+        #else
+        let narrowed = Int.max
+        #endif
+        scheduler.prefillChunkSize = min(context, glm5NextMaximumPrefillChunkTokens, narrowed)
+        scheduler.maxBatchedTokensPerStep = min(context, glm5NextMaximumStepTokens, narrowed)
+        scheduler.soloPrefillStripeTokens = nil
+        scheduler.soloPrefillStripeMediaCeiling = nil
+        return scheduler
+    }
+
+    /// Names every native reason the protected GLM engine stayed inactive, with
+    /// the step geometry it was priced at, so a refused load (for example a
+    /// step-scratch `capacityExhausted(needed:available:)`) is diagnosable from
+    /// the error and logs. Nil when the engine activated its issued tuple.
+    static func glm5NextActivationRefusal(
+        mtpInactiveReason: String?, pagedAttentionWorkInactiveReason: String?,
+        nativeCompletionFault: String?, scheduler: CBv2SchedulerConfig
+    ) -> String? {
+        let reasons = [
+            mtpInactiveReason.map { "mtp: \($0)" },
+            pagedAttentionWorkInactiveReason.map { "paged attention work: \($0)" },
+            nativeCompletionFault.map { "native completion fault: \($0)" },
+        ].compactMap { $0 }
+        guard !reasons.isEmpty else { return nil }
+        return "GLM protected engine did not activate its issued tuple: "
+            + reasons.joined(separator: "; ")
+            + " [max_concurrent_requests=\(scheduler.maxConcurrentRequests)"
+            + " step_tokens=\(scheduler.maxBatchedTokensPerStep)"
+            + " prefill_chunk_tokens=\(scheduler.prefillChunkSize)]"
+    }
+
+    /// Calibrated ModelOpt workspace bound of a Nemotron target, if it has one.
+    static func calibratedPrefillTokenLimit(model: (any LanguageModel)?) -> Int? {
+        (model as? NemotronHModel)?.calibratedPrefillTokenLimit
+            ?? (model as? NemotronSuperRecurrentAdapter)?.calibratedPrefillTokenLimit
+            ?? (model as? NemotronSuperMTPTextTarget)?.calibratedPrefillTokenLimit
     }
 
     static let qwen4BatchedQSAEnvKey = "DARKBLOOM_QWEN4_BATCHED_QSA"
@@ -169,6 +243,9 @@ extension EngineV2Factory {
     static func configureNativeQwen4Batching(
         model: any LanguageModel, environment: [String: String]
     ) throws {
+        if let limit = calibratedPrefillTokenLimit(model: model), limit <= 0 {
+            throw CBv2KVError.backendIneligible(reason: "calibrated Nemotron workspace cannot fit one token")
+        }
         guard let target = model as? any CBv2Qwen4BatchCapabilityConfiguring else { return }
         let enabled = environment[qwen4BatchedQSAEnvKey] == "1"
         do {

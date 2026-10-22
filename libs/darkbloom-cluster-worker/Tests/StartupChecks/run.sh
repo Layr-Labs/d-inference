@@ -83,9 +83,11 @@ check pipeline-leaves-fast-synch-alone 1 "" "darkbloom-collective-sync-v1" --
 check tensor-parallel-lifts-the-command-buffer-size-bound 1 "darkbloom-command-buffer-budget-v1 max_mb=1000000 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-command-buffer-size 1 "darkbloom-command-buffer-budget-v1 max_mb=50 source=launcher" "" MLX_MAX_MB_PER_BUFFER=50 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-the-command-buffer-size-alone 1 "" "darkbloom-command-buffer-budget-v1" --
-# GLM tensor parallel fuses its sum fences (a launcher value is kept); Qwen
-# tensor parallel and GLM pipelines leave them alone.
-CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-fuses-its-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 source=worker" "" -- --generation-mode tensor_parallel_v1
+# Fused sum fences are a launcher's opt-in for GLM tensor parallel (kept and
+# logged); by default no rank sets them. Qwen tensor parallel and GLM
+# pipelines leave them alone.
+CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-leaves-the-sum-fences-off-by-default 1 "" "darkbloom-fence-fusion-v1" -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-opted-in-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-explicit-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 -- --generation-mode tensor_parallel_v1
 check qwen-tensor-parallel-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_glm53_flash check glm-pipeline-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" --

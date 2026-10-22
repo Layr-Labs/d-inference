@@ -58,13 +58,20 @@ enum WorkerCommandBufferBudget {
 /// input). Two dependent dispatches fewer on each of a step's 90 sums.
 /// Measured, GLM-5.3-Flash TP2 on two M5 Ultra: plain decode 12.58 -> 12.43 ms
 /// a step, tokens identical. Only when and where the GPU waits changes, never
-/// what it computes; a launcher value is kept.
+/// what it computes.
+///
+/// A launcher's opt-in only: with batched lanes the verification rows run
+/// each site as 32 threadgroups a row, every one spinning on its fence, and
+/// two lanes' rows (192 threadgroups) stalled each round about 0.7 s on the
+/// pair (2 concurrent requests at 0.7-1.5 tok/s). No rank sets them itself;
+/// a launcher value is kept and logged.
 enum WorkerFenceFusion {
     static let variables = ["MLX_METAL_FUSED_FENCE_UPDATE", "MLX_METAL_FENCED_INPUTS"]
 
     static func apply(mode: ClusterGenerationMode, family: ClusterResidentModelCatalog.Family?,
                       environment: [String: String]) -> String? {
-        guard mode == .tensorParallel, family == .glm5Next else { return nil }
+        guard mode == .tensorParallel, family == .glm5Next,
+              variables.contains(where: { environment[$0] != nil }) else { return nil }
         let values = variables.map { name -> String in
             if let explicit = environment[name] { return "\(name)=\(explicit)" }
             setenv(name, "1", 1)

@@ -1,0 +1,9 @@
+### Hardware-only cluster split, prompt-prefix cache for every family, GLM cluster residency
+
+- The split across the Macs is chosen from each Mac's hardware and measured speed alone: free pages, cached files and what other programs hold never move it. A range fits a Mac when its whole need is within the GPU's working set, the allocator's and buffer limits, and what the Mac's memory gate can admit at rest (physical memory less the system's own wired share and the file cache macOS always keeps, 10/27 of the rest). The live answer per Mac is still shown ("Quit apps on … first") and the load gate still decides each load.
+- Gemma 4 pairs keep and reuse the prompt prefix too: each sliding-window layer's window is kept at every frontier and restored exactly, so a repeated 3,521-token prompt's first token comes in 0.08 s instead of 0.98 s on an M3 Ultra + M5 Max pair, and after both Macs restart the SSD tier gives it back in 0.23 s.
+- GLM-5.3-Flash pairs keep and reuse the prompt prefix (resident and encrypted SSD tiers) with the same two-rank agreement as the other families: DSA histories are kept once per prompt, KDA state per frontier.
+- A GLM stage holds standing GPU residency, as MiMo's does: without it every command buffer made its tens of gigabytes of weights resident again and decode fell to 0.5 tok/s (30 tok/s on one Mac with it, same tokens).
+- A GLM pair always uses the keyed, encrypted data plane, including over the paired link; a model `config.json` up to 32 MiB is accepted (GLM's NVFP4 configuration is 10 MB); a model folder whose bytes are a catalog entry's is listed by that entry's name.
+
+- Compact GLM convolution and recurrent cache states at transaction ownership boundaries before using the smaller retained-state reservation. Keep pending prefill histories and cast allocations charged per layer, enabling automatic 2048-token placement without choosing a hardware-specific split.

@@ -81,6 +81,18 @@ a new CLI alone does not update an old test binary or qualify a checkpoint forma
 Next.js server runtime, not static file hosting. Follow its [README](../../landing/README.md)
 for local development; keep production credentials out of builds and tests.
 
+### Cluster Packages
+
+`provider-swift/Package.swift` depends on the local package `libs/darkbloom-cluster`
+(protocol, process, security, remote and placement products linked into
+`ProviderCore`) and declares the test-only `cluster-member-fixture-child`
+executable target. The cluster worker is its own package,
+`libs/darkbloom-cluster-worker`, built natively for macOS 26.2 with the real
+JACCL backend by `libs/darkbloom-cluster-worker/build-native-worker.sh`, or for
+a release by `scripts/build-cluster-helpers.sh`
+([cluster helpers](../operations/provider-release.md#cluster-helpers)). Build
+the worker with the same source-matched metallib as the provider.
+
 ## SDK 27 Release Builds And Caches
 
 Release compilation and SDK qualification use separate
@@ -321,3 +333,10 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Landing](../../landing/README.md)
+
+For background cluster qualification, stage the complete app and sign it with
+an available Apple-issued development identity. An ad-hoc binary's Terminal or
+SSH access does not establish background Local Network permission. Keep the
+bundle identifier and signing team consistent; record post-signing hashes.
+Development signing is separate from the Developer ID and notarization gates
+in [provider releases](../operations/provider-release.md).

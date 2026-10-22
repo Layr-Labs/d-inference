@@ -1,0 +1,60 @@
+{
+  "aggregate_sha256" : "ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c",
+  "created_at" : "2026-09-18T04:00:20Z",
+  "file_count" : 8,
+  "files" : [
+    {
+      "path" : "chat_template.jinja",
+      "role" : "template",
+      "sha256" : "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "size_bytes" : 8952
+    },
+    {
+      "path" : "config.json",
+      "role" : "config",
+      "sha256" : "238de7c512cc56a733421e3fd011d88f8260739e3d00e32c5d65b7943cc9f837",
+      "size_bytes" : 58145
+    },
+    {
+      "path" : "generation_config.json",
+      "role" : "config",
+      "sha256" : "cddd0dbd24dbf13229f872b4100c5a0bfe5186eeb09e171b2fc2bac701e98034",
+      "size_bytes" : 85
+    },
+    {
+      "path" : "hadamard.json",
+      "role" : "config",
+      "sha256" : "7132a3ec364f0bdac1f08f905f24f0ad2f14245060f592637a0396826d3b5fe6",
+      "size_bytes" : 297903
+    },
+    {
+      "path" : "model.safetensors",
+      "role" : "weight",
+      "sha256" : "130de5925082c168b7866b2e91b52e44abbafc99017e3ca352b77b5b55a269ed",
+      "size_bytes" : 8595477990
+    },
+    {
+      "path" : "preprocessor_config.json",
+      "role" : "preprocessor",
+      "sha256" : "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "size_bytes" : 390
+    },
+    {
+      "path" : "tokenizer.json",
+      "role" : "tokenizer",
+      "sha256" : "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+      "size_bytes" : 12809320
+    },
+    {
+      "path" : "tokenizer_config.json",
+      "role" : "tokenizer",
+      "sha256" : "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+      "size_bytes" : 17928
+    }
+  ],
+  "model_id" : "ternary-bonsai-2-27b",
+  "r2_prefix" : "v2\/ternary-bonsai-2-27b--5ef58466aad5\/2026-09-17-r1",
+  "schema_version" : 1,
+  "total_size_bytes" : 8608670713,
+  "version" : "2026-09-17-r1"
+}

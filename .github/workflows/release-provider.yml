@@ -11,6 +11,9 @@ name: Provider Release Lane (reusable)
 # Builds and ships:
 #   - Darkbloom.app          (signed, notarized app; the only installed artifact)
 #   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
+#   - Darkbloom.app/Contents/Helpers/darkbloom-cluster-worker, darkbloom-cluster-plan
+#     (+ mlx.metallib, pagedattention.metal): the cluster rank and placement tool
+#     a cluster member launches; required, refused when missing
 #   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
 #   - bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib: regular-file
 #     copies of the app's CLI, Secure Enclave helper and Metal kernels. Release
@@ -190,6 +193,7 @@ jobs:
         env:
           BIN_DIR: ${{ steps.build.outputs.bin-dir }}
           METALLIB: ${{ steps.build.outputs.metallib }}
+          CLUSTER_HELPERS: ${{ steps.build.outputs.cluster-helpers-dir }}
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
         run: |
           set -euo pipefail
@@ -197,6 +201,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --cluster-helpers "$CLUSTER_HELPERS" \
             --output "$RUNNER_TEMP/unsigned-provider" --version "$VERSION"
           COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-provider.tar.gz" -C "$RUNNER_TEMP/unsigned-provider" .
           # dev and staging lanes share one GitHub run id, so their unsigned
@@ -510,6 +515,8 @@ jobs:
               <string>APPL</string>
               <key>LSMinimumSystemVersion</key>
               <string>14.0</string>
+              <key>NSLocalNetworkUsageDescription</key>
+              <string>Darkbloom connects to the other Macs of your cluster over the Thunderbolt link to serve models together.</string>
           </dict>
           </plist>
           PLIST
@@ -566,6 +573,17 @@ jobs:
           codesign --force --options runtime --timestamp \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
+          # Cluster helpers (S18): the worker a member launches for its rank
+          # and the placement tool beside it, with the Metal library and
+          # paged-attention source they load from Contents/Helpers. Developer
+          # ID + hardened runtime under their own identifiers and network-only
+          # entitlements, so the application firewall's "allow signed
+          # software" covers a rank that listens, without a per-build prompt.
+          # Workers inherit the app's Local Network approval as its
+          # responsible process. Required: the script fails when they are
+          # missing (the unsigned artifact was already refused without them).
+          ./scripts/sign-cluster-helpers.sh "$APP" "$KEYCHAIN_PATH" "$DEVELOPER_ID" "$APPLE_TEAM_ID" \
+            provider-swift/entitlements-cluster-worker.plist
           # darkbloom-enclave only uses ephemeral SE keys (no keychain).
           # It gets its own entitlements without keychain-access-groups and
           # application-identifier so AMFI doesn't require a provisioning
@@ -589,6 +607,10 @@ jobs:
 
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
+          # Local Network privacy (macOS 15+): the alert names the app and
+          # shows this text once; the approval follows the bundle identifier
+          # and team, so updates and reboots keep it (S18).
+          /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist" >/dev/null
 
           # Packaged post-sign smoke: the release-candidate evaluator must be
           # exposed by the exact signed main executable. This checks command
@@ -745,6 +767,9 @@ jobs:
           grep -qx \
             "./$APP_NAME/Contents/Helpers/darkbloom-fan-helper" \
             /tmp/darkbloom-bundle-files.txt
+          for helper in darkbloom-cluster-worker darkbloom-cluster-plan mlx.metallib pagedattention.metal; do
+            grep -qx "./$APP_NAME/Contents/Helpers/$helper" /tmp/darkbloom-bundle-files.txt
+          done
           grep -qx \
             "./$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1" \
             /tmp/darkbloom-bundle-files.txt
@@ -815,6 +840,11 @@ jobs:
           FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
+          # The cluster helpers in the FINAL archived bytes: present where the
+          # installed provider looks, matched to the app's Metal library, and
+          # signed under their own Developer ID identifiers.
+          python3 scripts/provider-signing-validation.py cluster-helpers --app "$SMOKE_ROOT/$APP_NAME"
+          ./scripts/sign-cluster-helpers.sh --verify "$SMOKE_ROOT/$APP_NAME" "$APPLE_TEAM_ID"
           codesign --verify --deep --strict --verbose=2 \
             "$SMOKE_ROOT/$APP_NAME"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \

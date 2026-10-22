@@ -16,6 +16,7 @@ backend operating guides belong to
 - [Attestation](provider/attestation.md) and [troubleshooting](provider/troubleshooting.md)
 - [Local direct mode](provider/direct-mode.md) and [network self-route](provider/self-route.md)
 - [Fan control](provider/fan-control.md) and [beta features](provider/beta-features.md)
+- [Always-on cluster members](provider/cluster-always-on.md): link wait, restart budget, coordinated update, permissions asked once
 
 ## Understand And Develop
 

@@ -160,8 +160,31 @@ extension ModelScanner {
         // Expand only the username, not the remainder: Foundation path
         // standardization must not collapse `link/..` before following the link.
         let end = path.firstIndex(of: "/") ?? path.endIndex
+        let username = String(path[path.index(after: path.startIndex)..<end])
+        // CFFIXED_USER_HOME can make Foundation expand even an unknown user.
+        // Prove the explicit account exists without replacing Foundation's
+        // current-user home override or resolving the path's remaining suffix.
+        guard namedCacheUserExists(username) else { return nil }
         let expanded = (String(path[..<end]) as NSString).expandingTildeInPath
         return expanded.hasPrefix("~") ? nil : expanded + path[end...]
+    }
+
+    private static func namedCacheUserExists(_ username: String) -> Bool {
+        var size = 16 * 1024
+        while size <= 1024 * 1024 {
+            var record = passwd()
+            var found: UnsafeMutablePointer<passwd>?
+            var buffer = [CChar](repeating: 0, count: size)
+            let status = username.withCString { name in
+                buffer.withUnsafeMutableBufferPointer { bytes in
+                    guard let base = bytes.baseAddress else { return EINVAL }
+                    return getpwnam_r(name, &record, base, bytes.count, &found)
+                }
+            }
+            if status != ERANGE { return status == 0 && found != nil }
+            size *= 2
+        }
+        return false
     }
 
     /// Resolve existing ancestors with `realpath` so links and `..` follow

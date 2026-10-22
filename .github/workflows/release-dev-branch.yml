@@ -115,6 +115,7 @@ jobs:
         env:
           BIN_DIR: ${{ steps.build.outputs.bin-dir }}
           METALLIB: ${{ steps.build.outputs.metallib }}
+          CLUSTER_HELPERS: ${{ steps.build.outputs.cluster-helpers-dir }}
           SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -126,6 +127,7 @@ jobs:
           UNSIGNED="$RUNNER_TEMP/unsigned-provider"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --cluster-helpers "$CLUSTER_HELPERS" \
             --output "$UNSIGNED" --version "$VERSION"
 
           STAGE="$RUNNER_TEMP/dev-branch-bundle"
@@ -167,6 +169,10 @@ jobs:
           if [ -f "$APP/Contents/Helpers/darkbloom-fan-helper" ]; then
             codesign --force --sign - "$APP/Contents/Helpers/darkbloom-fan-helper"
           fi
+          # The cluster helpers (ad-hoc too), resources first: a nested code location may hold no unsigned file.
+          for helper in mlx.metallib pagedattention.metal darkbloom-cluster-worker darkbloom-cluster-plan; do
+            codesign --force --sign - "$APP/Contents/Helpers/$helper"
+          done
           codesign --force --sign - "$APP/Contents/MacOS/$ENCLAVE_NAME"
           codesign --force --sign - "$APP/Contents/MacOS/$CLI_NAME"
           codesign --force --sign - "$APP"

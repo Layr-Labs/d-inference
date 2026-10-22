@@ -58,6 +58,8 @@ on:
       - 'scripts/provider_release_github.py'
       - 'scripts/provider_release_identity.py'
       - 'scripts/provider-signing-validation.py'
+      - 'scripts/build-cluster-helpers.sh'
+      - 'scripts/sign-cluster-helpers.sh'
       - 'scripts/stage-swiftpm-resource-bundles.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'
       - 'scripts/prepare-metal-toolchain.py'

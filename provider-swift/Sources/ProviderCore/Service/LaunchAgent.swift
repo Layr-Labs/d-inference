@@ -87,7 +87,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String] = [],
         configPath: URL? = nil,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        clusterMember: Bool = false
     ) throws {
         // Determine the binary path (current executable)
         let binaryPath = currentExecutablePath()
@@ -102,9 +103,24 @@ public enum LaunchAgent: Sendable {
             coordinatorURL: coordinatorURL,
             models: models,
             configPath: configPath,
-            localEndpoint: localEndpoint
+            localEndpoint: localEndpoint,
+            clusterMember: clusterMember
         )
         try loadService()
+    }
+
+    /// Whether the installed provider job runs a cluster member (S18): its
+    /// supervisor owns restarts' backoff and the coordinated update, so the
+    /// watchdog must not update its binary on its own.
+    public static func installedJobIsClusterMember(at path: URL = plistPath()) -> Bool {
+        guard let data = try? Data(contentsOf: path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String] else { return false }
+        return isClusterMemberJob(arguments)
+    }
+
+    static func isClusterMemberJob(_ programArguments: [String]) -> Bool {
+        programArguments.dropFirst().contains("--cluster-member")
     }
 
     // MARK: - Stop
@@ -347,7 +363,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String],
         configPath: URL?,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        clusterMember: Bool = false
     ) throws {
         let plist = plistPath()
         let parentDir = plist.deletingLastPathComponent()
@@ -358,13 +375,15 @@ public enum LaunchAgent: Sendable {
 
         let log = logPath().path
 
-        let programArguments = serviceProgramArguments(
-            binaryPath: binaryPath,
-            coordinatorURL: coordinatorURL,
-            models: models,
-            configPath: configPath,
-            localEndpoint: localEndpoint
-        )
+        let programArguments = clusterMember
+            ? clusterMemberProgramArguments(binaryPath: binaryPath, coordinatorURL: coordinatorURL, configPath: configPath)
+            : serviceProgramArguments(
+                binaryPath: binaryPath,
+                coordinatorURL: coordinatorURL,
+                models: models,
+                configPath: configPath,
+                localEndpoint: localEndpoint
+            )
 
         let plistDict = makeServicePlist(
             label: label,
@@ -411,6 +430,18 @@ public enum LaunchAgent: Sendable {
             if localEndpoint.noAuth {
                 arguments.append("--no-auth")
             }
+        }
+        return arguments
+    }
+
+    /// The cluster-member job (S18): launchd runs the supervisor, which runs
+    /// the member. Same label, log, RunAtLoad and watchdog as a solo provider;
+    /// no model selection or local endpoint (the saved setup decides).
+    static func clusterMemberProgramArguments(binaryPath: String, coordinatorURL: String, configPath: URL?) -> [String] {
+        var arguments = [binaryPath, "start", "--foreground", "--cluster-member", "--supervise",
+                         "--coordinator-url", coordinatorURL]
+        if let configPath {
+            arguments.append(contentsOf: ["--config", configPath.standardizedFileURL.path])
         }
         return arguments
     }

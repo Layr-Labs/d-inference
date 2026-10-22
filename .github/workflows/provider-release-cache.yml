@@ -76,6 +76,7 @@ jobs:
         env:
           BIN_DIR: ${{ steps.build.outputs.bin-dir }}
           METALLIB: ${{ steps.build.outputs.metallib }}
+          CLUSTER_HELPERS: ${{ steps.build.outputs.cluster-helpers-dir }}
         run: |
           set -euo pipefail
           REPORTED=$("$BIN_DIR/darkbloom" --version)
@@ -83,6 +84,7 @@ jobs:
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --cluster-helpers "$CLUSTER_HELPERS" \
             --output "$RUNNER_TEMP/unsigned-roundtrip" --version "$VERSION"
           COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-roundtrip.tar.gz" -C "$RUNNER_TEMP/unsigned-roundtrip" .
           python3 scripts/provider-signing-validation.py unpack \

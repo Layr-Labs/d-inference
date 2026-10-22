@@ -1,0 +1,40 @@
+{
+  "payloads": [
+    {
+      "renewal": 1,
+      "expires_at_unix_nano": 1791763320000000000,
+      "payload_hex": "44424e4c01000000000000000118dd9f3f122cb000",
+      "payload_base64": "REJOTAEAAAAAAAAAARjdnz8SLLAA"
+    },
+    {
+      "renewal": 90,
+      "expires_at_unix_nano": 1791766880123456789,
+      "payload_hex": "44424e4c01000000000000005a18dda27bfa118d15",
+      "payload_base64": "REJOTAEAAAAAAAAAWhjdonv6EY0V"
+    },
+    {
+      "renewal": 18446744073709551615,
+      "expires_at_unix_nano": 9223372036854775807,
+      "payload_hex": "44424e4c01ffffffffffffffff7fffffffffffffff",
+      "payload_base64": "REJOTAH//////////3//////////"
+    }
+  ],
+  "frame": {
+    "type": "native_pair_lease",
+    "version": 1,
+    "member_nonce": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": "22222222222222222222222222222222",
+    "generation": 7,
+    "sequence": 12,
+    "payload": "REJOTAEAAAAAAAAAARjdnz8SLLAA",
+    "prepare_before_unix_nano": 1791763225000000000,
+    "expires_at_unix_nano": 1791763320000000000
+  },
+  "refused_payload_hex": [
+    "44424e4c0200000000000000010000000000000001",
+    "44424e4c0100000000000000000000000000000001",
+    "44424e4c0100000000000000010000000000000000",
+    "44424e4c0100000000000000018000000000000000",
+    "44424e4c010000000000000001000000000000000100"
+  ]
+}

@@ -236,15 +236,32 @@ state; an existing guard remains intact
 `kickstartIfLoaded`; `provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `recoverDownProvider`). Use `darkbloom start` to start a stopped provider.
 
+## Two Macs as one provider
+
+Two Macs joined by a Thunderbolt 5 cable are set up once with `darkbloom cluster`
+on each Mac: see [two-mac-cluster.md](./two-mac-cluster.md) (one command on
+each Mac: `darkbloom cluster`; no SSH, no network settings typed).
+
 ## Uninstall
 
 ```bash
 sudo darkbloom fan uninstall    # only if fan control was enabled
+darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
 darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
 darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
 rm -rf ~/.darkbloom ~/.config/darkbloom
 sudo rm -f /usr/local/bin/darkbloom
 ```
+
+`darkbloom cluster link --remove` (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`)
+restores what `darkbloom cluster` changed for a two-Mac link: it removes the
+network service `Darkbloom Cluster Link (<port>)`, switches the services it
+turned off on that port on again and puts the port back into its bridge, or,
+for a link set up by an earlier version, removes the root launchd job
+`io.darkbloom.cluster-link.<port>` and the address it kept. Run it before
+deleting `~/.darkbloom`, which holds the record of what was changed; without
+the record it still removes Darkbloom's own service or job. It changes nothing
+on a Mac that never ran `darkbloom cluster`.
 
 `darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
 disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`

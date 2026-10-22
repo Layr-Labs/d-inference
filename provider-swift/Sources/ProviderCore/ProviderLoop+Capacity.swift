@@ -79,6 +79,9 @@ extension ProviderLoop {
     /// `attempt`: internal retry counter for the stale-snapshot guard below;
     /// callers use the default.
     internal func updateAggregateCapacity(attempt: Int = 0) async {
+        // A member's capacity is its pair slot or nothing; it samples no
+        // local memory (the pair's memory is on its owners).
+        if isClusterMember { await refreshClusterPairCapacity(); return }
         // Reserve epoch at entry: the hops below (engine summary, KV
         // outstanding) are actor suspensions, and a reserve push landing
         // across them (a verified prefetch raising the floor, a retirement

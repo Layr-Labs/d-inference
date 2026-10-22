@@ -1,0 +1,37 @@
+{
+ "SPThunderboltDataType": [
+  {
+   "_name": "thunderboltusb4_bus_2",
+   "device_name_key": "MacBook Pro",
+   "receptacle_1_tag": {
+    "current_speed_key": "Up to 120 Gb/s",
+    "receptacle_id_key": "3",
+    "receptacle_status_key": "receptacle_no_devices_connected"
+   }
+  },
+  {
+   "_items": [
+    {
+     "_name": "Mac Studio",
+     "device_name_key": "Mac15,14"
+    }
+   ],
+   "_name": "thunderboltusb4_bus_1",
+   "device_name_key": "MacBook Pro",
+   "receptacle_1_tag": {
+    "current_speed_key": "80 Gb/s",
+    "receptacle_id_key": "2",
+    "receptacle_status_key": "receptacle_connected"
+   }
+  },
+  {
+   "_name": "thunderboltusb4_bus_0",
+   "device_name_key": "MacBook Pro",
+   "receptacle_1_tag": {
+    "current_speed_key": "Up to 120 Gb/s",
+    "receptacle_id_key": "1",
+    "receptacle_status_key": "receptacle_no_devices_connected"
+   }
+  }
+ ]
+}

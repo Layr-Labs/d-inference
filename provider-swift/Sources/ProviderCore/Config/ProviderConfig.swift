@@ -520,6 +520,9 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 }
 
 public struct ProviderConfig: Sendable, Equatable, Codable {
+    /// Inert saved cluster setup; startup requires a separate explicit
+    /// distributed opt-in. Never an approval or serving capacity.
+    public var cluster: ClusterConfigurationReference?
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
@@ -533,7 +536,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
-        cache: CacheSettings = CacheSettings()
+        cache: CacheSettings = CacheSettings(),
+        cluster: ClusterConfigurationReference? = nil
     ) {
         self.provider = provider
         self.backend = backend
@@ -541,6 +545,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
         self.cache = cache
+        self.cluster = cluster
     }
 
     enum CodingKeys: String, CodingKey {
@@ -550,6 +555,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
         case cache
+        case cluster
     }
 
     public init(from decoder: Decoder) throws {
@@ -563,6 +569,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         ) ?? GemmaOptimizationSettings()
         self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
         try self.cache.validate()
+        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
     }
 
     /// Generate a default config based on detected hardware.
@@ -666,7 +673,22 @@ public enum ConfigManager: Sendable {
         return config
     }
 
-    /// Save config to a file path, creating parent directories as needed.
+    /// The config at `path`, or the build's defaults when nothing exists at
+    /// that path: a new Mac has no provider.toml until its first cluster
+    /// setup is saved, and `darkbloom cluster` reads the coordinator (for
+    /// Darkbloom's catalog) before that. A file that exists but cannot be read
+    /// or decoded still throws, as `load(from:)` does.
+    public static func loadOrDefaults(from path: URL) throws -> ProviderConfig {
+        var value = stat()
+        if lstat(path.path, &value) != 0, errno == ENOENT {
+            return ProviderConfig(provider: ProviderSettings(name: "darkbloom"), backend: BackendSettings(),
+                                  coordinator: CoordinatorSettings())
+        }
+        return try load(from: path)
+    }
+
+    /// Save config to a file path, creating parent directories as needed. The
+    /// file is replaced atomically and owner-only (`ProviderConfigFile`).
     public static func save(_ config: ProviderConfig, to path: URL) throws {
         let dir = path.deletingLastPathComponent()
         do {
@@ -679,7 +701,7 @@ public enum ConfigManager: Sendable {
 
         let toml = serialize(config)
         do {
-            try toml.write(to: path, atomically: true, encoding: .utf8)
+            try ProviderConfigFile.replace(path, with: Data(toml.utf8))
         } catch {
             throw ConfigError.writeFailed(path: path.path, underlying: error)
         }
@@ -704,7 +726,7 @@ public enum ConfigManager: Sendable {
     /// ``parseValidating(_:)`` (via ``load(from:)``) on that path.
     public static func parse(_ content: String) -> ProviderConfig {
         do {
-            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+            return try decodeRemembered(content)
         } catch {
             // Fall back to defaults on malformed TOML (matches previous behavior)
             return ProviderConfig(
@@ -725,10 +747,22 @@ public enum ConfigManager: Sendable {
     /// undecodable FILE is rejected.
     public static func parseValidating(_ content: String) throws -> ProviderConfig {
         do {
-            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+            return try decodeRemembered(content)
         } catch {
             throw ConfigError.parseFailed(detail: "\(error)")
         }
+    }
+
+    /// TOMLKit never frees the C++ table a parse builds (its `TOMLTable` has no deinit), so every parse stayed in memory
+    /// for the life of the process. The cluster service parses `provider.toml` every tick (the member sync reads the
+    /// saved cache settings): both services grew about 1 MiB a minute. The same text decodes to the same value, so the
+    /// last few decoded texts are remembered and only a text not seen recently is parsed. Failures are not remembered.
+    private static let decodedTexts = RememberedProviderConfigurations(capacity: 8)
+    private static func decodeRemembered(_ content: String) throws -> ProviderConfig {
+        if let known = decodedTexts.value(for: content) { return known }
+        let value = try TOMLDecoder().decode(ProviderConfig.self, from: content)
+        decodedTexts.remember(value, for: content)
+        return value
     }
 
     /// Serialize a ProviderConfig to the provider's TOML config format.
@@ -739,6 +773,28 @@ public enum ConfigManager: Sendable {
             // Should never happen with our well-defined types, but return empty
             // string rather than crashing (matches previous graceful behavior).
             return ""
+        }
+    }
+}
+
+/// The last `capacity` provider configuration texts and what they decoded to, most recent first.
+final class RememberedProviderConfigurations: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity: Int
+    private var entries: [(text: String, value: ProviderConfig)] = []
+    init(capacity: Int) { self.capacity = max(1, capacity) }
+    func value(for text: String) -> ProviderConfig? {
+        lock.withLock {
+            guard let index = entries.firstIndex(where: { $0.text == text }) else { return nil }
+            let entry = entries.remove(at: index); entries.insert(entry, at: 0)
+            return entry.value
+        }
+    }
+    func remember(_ value: ProviderConfig, for text: String) {
+        lock.withLock {
+            entries.removeAll { $0.text == text }
+            entries.insert((text, value), at: 0)
+            if entries.count > capacity { entries.removeLast(entries.count - capacity) }
         }
     }
 }

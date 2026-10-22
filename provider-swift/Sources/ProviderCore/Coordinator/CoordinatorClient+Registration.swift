@@ -39,6 +39,8 @@ extension CoordinatorClient {
             modelAutopilot: state.modelAutopilot,
             ordinaryServingModelIDs: ordinaryServingModelIDs,
             autopilotInventory: state.autopilotInventory,
+            memberRegistrationNonce: memberNegotiation?.nonce,
+            clusterResume: nativePairMember?.resumeClaim,
             appAttestResumeNonce: nwConnection === connection ? appAttestResumeNonce : nil
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
@@ -132,7 +134,9 @@ extension CoordinatorClient {
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
             idleUnloadMins: config.idleUnloadMins,
-            modelAutopilot: modelAutopilot
+            modelAutopilot: modelAutopilot,
+            // S16: a member's current session and its data-plane protection.
+            clusterSession: nativePairMember?.sessionStatus
         )
 
         do {

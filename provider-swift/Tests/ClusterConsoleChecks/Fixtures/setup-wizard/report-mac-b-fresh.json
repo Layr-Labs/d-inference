@@ -1,0 +1,197 @@
+{
+ "checks": [
+  {
+   "detail": "No saved cluster reference; ordinary solo behavior is unchanged.",
+   "name": "savedConfiguration",
+   "outcome": "notRun"
+  },
+  {
+   "detail": "ready: an active RDMA port publishes the IPv4-mapped GID that JACCL requires. The cluster port en6 cannot be isolated yet (Internet Sharing shares to en6 directly): Darkbloom does not change Internet Sharing: in System Settings \u2192 General \u2192 Sharing, click \u24d8 next to Internet Sharing and turn off \u201cThunderbolt 2\u201d (en6) under \u201cTo devices using\u201d (or turn Internet Sharing off), then run `darkbloom cluster` again, because a port taken out of the bridge would otherwise be shared to directly. Local interface state only: no peer was contacted and no collective ran.",
+   "name": "localLink",
+   "outcome": "passed"
+  },
+  {
+   "detail": "rdma_en6 (en6): ready \u00b7 port active \u00b7 member of bridge0 \u00b7 own IPv4 address \u00b7 IPv4-mapped GID published \u00b7 not isolated: member of bridge0 in the network settings, Internet Sharing shares over bridge0, Internet Sharing shares to en6 directly, no network service of Darkbloom's. The cluster port en6 cannot be isolated yet (Internet Sharing shares to en6 directly): Darkbloom does not change Internet Sharing: in System Settings \u2192 General \u2192 Sharing, click \u24d8 next to Internet Sharing and turn off \u201cThunderbolt 2\u201d (en6) under \u201cTo devices using\u201d (or turn Internet Sharing off), then run `darkbloom cluster` again, because a port taken out of the bridge would otherwise be shared to directly.",
+   "name": "localLinkDevice.rdma_en6",
+   "outcome": "passed"
+  },
+  {
+   "detail": "portInBridge, internetSharingOverPortBridge, internetSharingToPort, clusterServiceMissing: The cluster port en6 cannot be isolated yet (Internet Sharing shares to en6 directly): Darkbloom does not change Internet Sharing: in System Settings \u2192 General \u2192 Sharing, click \u24d8 next to Internet Sharing and turn off \u201cThunderbolt 2\u201d (en6) under \u201cTo devices using\u201d (or turn Internet Sharing off), then run `darkbloom cluster` again, because a port taken out of the bridge would otherwise be shared to directly.",
+   "name": "localLinkIsolation.rdma_en6",
+   "outcome": "failed"
+  }
+ ],
+ "journal": "absent",
+ "link": {
+  "guidance": "The cluster port en6 cannot be isolated yet (Internet Sharing shares to en6 directly): Darkbloom does not change Internet Sharing: in System Settings \u2192 General \u2192 Sharing, click \u24d8 next to Internet Sharing and turn off \u201cThunderbolt 2\u201d (en6) under \u201cTo devices using\u201d (or turn Internet Sharing off), then run `darkbloom cluster` again, because a port taken out of the bridge would otherwise be shared to directly.",
+  "port": {
+   "blockers": [
+    "internetSharingToPort"
+   ],
+   "bridge": "bridge0",
+   "device": "rdma_en6",
+   "findings": [
+    "portInBridge",
+    "internetSharingOverPortBridge",
+    "internetSharingToPort",
+    "clusterServiceMissing"
+   ],
+   "gidPublished": true,
+   "hardwarePort": "Thunderbolt 2",
+   "hasIPv4Address": true,
+   "interface": "en6",
+   "isolated": false,
+   "isolationGuidance": "The cluster port en6 cannot be isolated yet (Internet Sharing shares to en6 directly): Darkbloom does not change Internet Sharing: in System Settings \u2192 General \u2192 Sharing, click \u24d8 next to Internet Sharing and turn off \u201cThunderbolt 2\u201d (en6) under \u201cTo devices using\u201d (or turn Internet Sharing off), then run `darkbloom cluster` again, because a port taken out of the bridge would otherwise be shared to directly.",
+   "verdict": "ready"
+  },
+  "portsDown": 2,
+  "state": "ready",
+  "thunderbolt": {
+   "receptacles": [
+    {
+     "connected": false,
+     "id": 1,
+     "speed": "Up to 120 Gb/s"
+    },
+    {
+     "connected": true,
+     "id": 2,
+     "peerModel": "Mac15,14",
+     "peerName": "Mac Studio",
+     "speed": "80 Gb/s"
+    },
+    {
+     "connected": false,
+     "id": 3,
+     "speed": "Up to 120 Gb/s"
+    }
+   ]
+  }
+ },
+ "mac": {
+  "chip": "Apple M5 Max",
+  "diskFreeBytes": 341674728714,
+  "diskTotalBytes": 1995165736960,
+  "osMajor": 27,
+  "osMinor": 0,
+  "osVersion": "27.0 (26A428)",
+  "physicalMemoryBytes": 137438953472,
+  "profile": {
+   "allocatorLimitBytes": 130567005798,
+   "chip": "Apple M5 Max",
+   "efficiencyCores": 12,
+   "gpuCores": 40,
+   "gpuMaximumBufferBytes": 86586540032,
+   "gpuRecommendedWorkingSetBytes": 115448725504,
+   "memory": {
+    "actualFreeBytes": 47957278720,
+    "admissibleNowBytes": 47957278720,
+    "allocatorHeadroomBytes": 2147483648,
+    "anonymousBytes": 45198049280,
+    "compressorBytes": 0,
+    "countedFileCacheBytes": 0,
+    "fileBackedBytes": 37789204480,
+    "fileCacheAboveReserveBytes": 0,
+    "fileCacheReserveBytes": 48497983488,
+    "gatePolicy": "registered_dense_selected_stage_load_resources_v3",
+    "judged": true,
+    "loadScratchBytes": 8404992,
+    "loadingHeadroomBytes": 4294967296,
+    "minimumAdmissibleBytes": 6442450944,
+    "minimumTrulyFreeBytes": 16777216,
+    "pageSizeBytes": 16384,
+    "pageableBytes": 130944532480,
+    "physicalMemoryBytes": 137438953472,
+    "pressureLevel": 1,
+    "sampledUTC": "2026-10-10T15:49:34Z",
+    "swapUsedBytes": 0,
+    "wiredBytes": 5527863296
+   },
+   "osBuild": "26A428",
+   "osVersion": "27.0",
+   "performanceCores": 6,
+   "physicalMemoryBytes": 137438953472,
+   "power": {
+    "lowPowerMode": false,
+    "onExternalPower": true,
+    "thermalState": "nominal"
+   },
+   "schema": "darkbloom_cluster_device_profile_v1"
+  }
+ },
+ "memoryGuard": {
+  "baselineBytes": 17179869184,
+  "decision": "clear",
+  "wiredBytes": 5540036608
+ },
+ "models": [
+  {
+   "artifactSHA256": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+   "folder": "Qwen3.5-9B-2026-09-03-r1",
+   "modelID": "Qwen3.5-9B",
+   "totalBytes": 6113952230,
+   "version": "2026-09-03-r1"
+  },
+  {
+   "artifactSHA256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+   "folder": "Qwen3.8-27B-4bit-mtp-2026-09-03-r1",
+   "modelID": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "totalBytes": 16320415757,
+   "version": "2026-09-03-r1"
+  },
+  {
+   "artifactSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+   "folder": "gpt-oss-20b-2026-05-25-r1",
+   "modelID": "gpt-oss-20b",
+   "totalBytes": 12104215835,
+   "version": "2026-05-25-r1"
+  },
+  {
+   "artifactSHA256": "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
+   "folder": "mimo-v2.6-flash-mopd-2026-09-28-r1",
+   "modelID": "mimo-v2.6-flash-mopd",
+   "totalBytes": 172863462401,
+   "version": "2026-09-28-r1"
+  },
+  {
+   "artifactSHA256": "366d9285ec367633c25b5c064ad94482e04be043c2a515a16e4fcf12c0a8f85b",
+   "folder": "nvidia-nemotron-3.5-lightning-2026-09-30-r1",
+   "modelID": "nvidia-nemotron-3.5-lightning",
+   "totalBytes": 19059595830,
+   "version": "2026-09-30-r1"
+  },
+  {
+   "artifactSHA256": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+   "folder": "qwen3.5-35b-a3b-2026-08-25-r1",
+   "modelID": "qwen3.5-35b-a3b",
+   "totalBytes": 20893747852,
+   "version": "2026-08-25-r1"
+  },
+  {
+   "artifactSHA256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+   "folder": "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1",
+   "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+   "totalBytes": 21308856601,
+   "version": "2026-08-11-r1"
+  },
+  {
+   "artifactSHA256": "ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c",
+   "folder": "ternary-bonsai-2-27b-2026-09-17-r1",
+   "modelID": "ternary-bonsai-2-27b",
+   "totalBytes": 8608670713,
+   "version": "2026-09-17-r1"
+  }
+ ],
+ "observedAt": "2026-10-10T15:49:34Z",
+ "pairingCode": {
+  "algorithm": "ssh-ed25519",
+  "basis": "ownHostKey",
+  "code": "950918",
+  "differsFromPin": false
+ },
+ "saved": {
+  "state": "notConfigured"
+ },
+ "schema": "darkbloom_cluster_setup_report_v1",
+ "version": "0.9.19"
+}

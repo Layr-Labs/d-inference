@@ -192,6 +192,8 @@ extension ProviderLoop {
         promptWork: PromptWork? = nil,
         send: SendHandle
     ) async {
+        // A member answers only through its published pair slot (S09).
+        if isClusterMember && clusterPairSlot == nil { rejectClusterMemberInference(requestId, send: send); return }
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
         }
@@ -359,6 +361,16 @@ extension ProviderLoop {
             return
         }
         profile.mark(.parsed)
+
+        // A member serves only its pair's model, and only while that slot is
+        // live. Refuse anything else here, before any local admission sample.
+        if isClusterMember && !clusterPairSlotServes(chatRequest.model) {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503), profile: profile),
+                fallbackFailure: .capacity, send: send)
+            return
+        }
 
         // Reject unknown/non-native audio before acceptance or cold loading.
         // Only provider-owned architecture metadata selects MiMo dispatch;

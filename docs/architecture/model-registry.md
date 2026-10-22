@@ -56,6 +56,19 @@ receipt. A malformed GLM inventory has no generic loadable discovery fallback;
 only the tokenizer shipped in the snapshot is supported. These checks do not
 replace catalog/source identity or native pre-allocation validation.
 
+### Uncached reads and writes
+
+`ModelDownloader.uncachedWrites` (default off; single-Mac downloads are
+unchanged) writes shards with the file cache off and computes the per-file and
+aggregate SHA-256 from uncached reads. The two-Mac cluster's catalog download
+sets it, so provisioning a model does not leave tens of GB in the Mac's file
+cache before a memory-gated load. `WeightHasher` reads weights for the
+provider's start-time hash with `F_NOCACHE` too (same digest; it falls back to
+the earlier readers when the uncached read fails). The cluster store clones an
+installed model with the catalog's exact published `manifest.json` bytes,
+because the cluster worker pins those bytes; see
+[two Macs as one provider](../provider/two-mac-cluster.md#models).
+
 ## Publication
 
 The local manifest builder and publication scripts may call approved external

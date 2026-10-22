@@ -256,6 +256,15 @@ connection, first.
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
 | `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
+| `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | omitted/`""` keeps ordinary solo; `"cluster_member"` is the control-only member role (empty ordinary `models`, separate `cluster_models`, fresh `member_registration_nonce`) — grants no trust or model capability |
+| `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
+| `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
+| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`) |
+
+An attested registration is encoded by the raw-attestation encoder, not the
+Codable one. Both write the three member fields, and only for the member role
+(`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
+`encodeRegisterPreservingRawAttestation`).
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -1061,6 +1070,45 @@ drift correction for the coordinator's ledger, not reservations.
 
 ## Coordinator → provider
 
+The Go side of the member fields above and of `cluster_member_accepted` is in
+`Layr-Labs/darkbloom-platform`; a `coordinator/` path named for them on this
+page is a file in that repository.
+
+### `cluster_member_accepted`
+
+Go `ClusterMemberAcceptedMessage` (`darkbloom-platform:coordinator/protocol/execution_role.go`) ·
+Swift `CoordinatorMessage.clusterMemberAccepted` (`ClusterMemberAccepted`).
+Sent once per member-role connection as the last step of handling
+[`register`](#register) (`acknowledgeClusterMember`,
+`darkbloom-platform:coordinator/api/provider/cluster_member.go`): after every check that can
+refuse the connection, and whether or not a native runtime catalog is
+configured. A refused or solo registration is sent none. One acceptance per
+negotiation, before a ten-second deadline; the negotiation is discarded on
+reconnect. It proves protocol support and connection binding only — never
+attestation, runtime approval, native-owner authorization or serving
+readiness. A solo connection ignores it. See
+[cluster-control-protocol.md](cluster-control-protocol.md).
+
+A starting member waits for this frame for a bounded time (30 s for a
+foreground `darkbloom start --local --distributed` or `--cluster-member`). Its
+reconnects stay inside that wait: a retry the backoff would place after the
+wait's end is made at the end and runs to its own terms (one ten-second window
+for the handshake, then its connection's ten-second deadline); an attempt
+already under way at the wait's end gets the same terms, so an acceptance
+arriving inside its connection's deadline still connects. A reconnect begun
+after the wait's end never extends it. A wait in which
+no attempt reached the coordinator fails as "coordinator could not be reached",
+not as a refusal of the member role; a reached coordinator that sent no valid
+acceptance in time still ends the member (it is not reconnected under a new
+nonce).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | string | String | req | exactly `cluster_member_accepted` |
+| `execution_role` | string | `ProviderExecutionRole` | req | exactly `cluster_member` |
+| `member_registration_nonce` | string | String | req | exact nonce from this connection's registration |
+| `provider_id` | string | String | req | nonempty, at most 128 UTF-8 bytes |
+
 ### `inference_request`
 
 Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
@@ -1231,13 +1279,16 @@ paused residency. Only a matching live lease can transfer residency ownership.
 Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 `backend == "mlx-swift"`; the provider replies with `load_model_status`.
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
-`model_autopilot` commands instead.
+`model_autopilot` commands instead. Never sent to a `cluster_member` connection
+or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
+`darkbloom-platform:coordinator/registry/verified_pair_commands.go`).
 
 ### `prefetch_model`
 
 Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
 (`int`, opt, advisory). Download + verify only, no GPU load; the provider
-replies with `prefetch_model_status` and then `models_update`.
+replies with `prefetch_model_status` and then `models_update`. Refused for a
+`cluster_member` connection or a pair-held device, like `load_model`.
 
 ### `desired_models`
 
@@ -1256,7 +1307,9 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. Source:
+Both announce completed updates through `models_update`. A `cluster_member`
+connection is offered no entries and receives only the empty set; a nonempty set
+is refused for a member connection or a pair-held device. Source:
 [coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 See [revision lifecycle](../architecture/model-revisions.md).
 
@@ -1449,3 +1502,20 @@ backend-capacity heartbeat. See [autopilot architecture](../architecture/model-a
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
 - [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md) — producer, sink and cadence of every datum
 - [api-contracts.md#headers](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#headers) — the `X-Timing` header
+
+## Private cluster still-image reservation
+
+This worker-local additive field is separate from the coordinator WebSocket
+contract and grants no advertised serving modality. Existing authenticated
+worker records protect its transport; the native generation agreement binds
+its bytes and spans before execution.
+
+| Field | Presence and bounds | Source |
+|---|---|---|
+| `ClusterWorkerReservation.stillImages` | Optional; omitted when nil. Base64 JSON envelope, at most `135_000` decoded bytes; GLM pipeline only, no alternate route or MiMo envelope | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift` (`reservation`) |
+| `configurationSHA256` | Required lowercase SHA-256, equal to loaded immutable config | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterStillImages.swift` (`ClusterStillImages`) |
+| `images` | Exactly one still PNG; at most `96 * 1024` encoded bytes, `1024 * 1024` source pixels and `1024` feature tokens; exact causal token offset/count | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterStillImages.swift` (`validateStructure`, `validate`) |
+
+Each worker independently checks actual PNG metadata and SDK resize geometry.
+Video, animation, unknown fields, overlapping/unowned spans and foreign model
+admission refuse. Payloads and token IDs are not telemetry.

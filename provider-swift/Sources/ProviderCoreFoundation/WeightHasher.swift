@@ -21,7 +21,7 @@ public struct WeightHasher: Sendable {
     /// Buffer size for streaming file reads (64 KB).
     private static let bufferSize = 65536
     /// Keep each streaming buffer small even if the constant changes later.
-    private static let maxStreamingBufferSize = 1024 * 1024
+    static let maxStreamingBufferSize = 1024 * 1024
     /// Last-resort whole-file reads are only acceptable for small metadata files.
     static let maxWholeFileFallbackBytes: UInt64 = 64 * 1024 * 1024
 
@@ -240,7 +240,11 @@ public struct WeightHasher: Sendable {
 
     #if canImport(Darwin)
     /// One reusable page-aligned 1 MiB buffer and `F_NOCACHE`; nil on any
-    /// failure so the caller's existing readers run.
+    /// failure so the caller's existing readers run. A cached read would leave
+    /// every byte resident, and the host memory gate of a cluster rank would
+    /// then refuse that very model's load (M5 Ultra leader, 2026-10-13: 213 GiB
+    /// of cache, 23 GiB free after the hash). The cluster worker's verifier and
+    /// the cable copy read the same way.
     static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }

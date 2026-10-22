@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import CryptoKit
+import ProviderCoreFoundation
 @testable import ProviderCore
 
 @Suite("Model catalog client + downloader", .serialized)
@@ -281,6 +283,40 @@ struct ModelCatalogTests {
         #expect(try Data(contentsOf: final) == full)
         #expect(!FileManager.default.fileExists(atPath: partial.path))
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
+    }
+
+    @Test("uncachedWrites (cluster provisioning) verifies SHA-256 uncached; single-Mac downloads keep it off")
+    func uncachedDownloadVerifiesDigest() async throws {
+        let full = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        var downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+        #expect(!downloader.uncachedWrites)
+        downloader.uncachedWrites = true
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let digest = CryptoKit.SHA256.hash(data: full).map { String(format: "%02x", $0) }.joined()
+        let good = dir.appendingPathComponent("model.safetensors")
+        let ok = try await downloader.downloadFile(from: "https://cdn.example.test/model.safetensors", to: good, label: "model.safetensors",
+            onProgress: nil, required: true, expectedSHA256: digest, attempts: 1)
+        #expect(ok)
+        #expect(try Data(contentsOf: good) == full)
+        #expect(ModelDownloader.sha256Uncached(good).map(ModelDownloader.hex) == digest)
+        let bad = dir.appendingPathComponent("other.safetensors")
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await downloader.downloadFile(from: "https://cdn.example.test/other.safetensors", to: bad, label: "other.safetensors",
+                onProgress: nil, required: true, expectedSHA256: String(repeating: "0", count: 64), attempts: 1)
+        }
+        #expect(!FileManager.default.fileExists(atPath: bad.path))
+        #expect(!FileManager.default.fileExists(atPath: bad.appendingPathExtension("part").path))
+        // The aggregate over files read uncached matches the cached reader's.
+        let keyed = [(file: good, sortKey: "model.safetensors")]
+        #expect(ModelDownloader.aggregateUncached(keyed) == WeightHasher.hashFilesWithRelativeKey(keyed))
     }
 
     @Test("downloadFile discards a 206 resume whose Content-Range mismatches and re-downloads")

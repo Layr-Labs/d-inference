@@ -27,6 +27,10 @@ MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' &
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 MIMO_PREPARE = ('python3 scripts/prepare-mimo-prompt-fixtures.py '
                 '--output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"')
+MIMO_HTTP_PREPARE = ('python3 scripts/test-prepare-mimo-image-http-fixtures.py\n'
+                     + MIMO_PREPARE + '\n'
+                     + 'python3 scripts/prepare-mimo-image-http-fixtures.py '
+                     '--output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"')
 MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
                          'python3 scripts/prepare-mimo-provider-fixtures.py '
@@ -264,7 +268,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
             "python3 scripts/test-profile-inventory-auth.py",
-            MIMO_PREPARE,
+            MIMO_HTTP_PREPARE,
             MIMO_PROVIDER_PREPARE,
             PROVIDER_TEST_COMMAND,
             *MIMO_NATIVE_COMMANDS.values(),
@@ -476,7 +480,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_fixture_prerequisites_are_fail_closed_in_provider_and_parity(self):
         for job_id in ("test-provider", "test-provider-parity"):
             steps = step_blocks(self.jobs[job_id])
-            fixtures = [step for step in steps if run_command(step) == MIMO_PREPARE]
+            expected_prepare = MIMO_HTTP_PREPARE if job_id == "test-provider" else MIMO_PREPARE
+            fixtures = [step for step in steps if run_command(step) == expected_prepare]
             self.assertEqual(len(fixtures), 1)
             expected_id = "mimo-prompt-fixtures" if job_id == "test-provider" else "mimo-fixtures"
             self.assertEqual(field(fixtures[0], "id"), expected_id)

@@ -270,11 +270,18 @@ inputs from the repository root in fresh directories:
 - `scripts/prepare-mimo-prompt-fixtures.py` downloads four hash-pinned public
   metadata files, not trained model weights or the genuine audio codec. These
   inputs require no private model or credentials.
+- `scripts/prepare-mimo-image-http-fixtures.py` downloads hash-pinned metadata
+  and creates deterministic PNGs for actual HTTP image ingress. Both ordinary
+  provider CI and SDK release qualification prepare these before the full suite;
+  GitHub applies the emitted environment variables to the following test step.
 
 ```bash
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-test-fixtures.XXXXXX")"
 python3 -B scripts/prepare-mimo-provider-fixtures.py --output "$FIXTURE_ROOT/provider"
 python3 -B scripts/prepare-mimo-prompt-fixtures.py --output "$FIXTURE_ROOT/prompt"
+python3 -B scripts/prepare-mimo-image-http-fixtures.py --output "$FIXTURE_ROOT/image-http" --github-env "$FIXTURE_ROOT/image-http.env"
+export MIMO_CLUSTER_IMAGE_METADATA_DIR="$FIXTURE_ROOT/image-http"
+export MIMO_CLUSTER_IMAGE_ASSET_DIR="$FIXTURE_ROOT/image-http"
 export MIMO_V26_SERIAL_LOAD_FIXTURES="$FIXTURE_ROOT/provider"
 export MIMO_V26_WIRED_METADATA_FIXTURE="$FIXTURE_ROOT/provider/tiny-bf16"
 export MIMO_PROMPT_ARTIFACT_DIRECTORY="$FIXTURE_ROOT/prompt"
@@ -693,6 +700,32 @@ provider resource copies and run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
 
+### Two-Mac Cluster Checks
+
+The coordinator-wire vectors
+`provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json`
+and `native_pair_lease_vector.json` pin a cluster member's registration
+(signed roster with Secure Enclave pins, device profile with numerics class,
+measured edges, inventory and plan digests) and the coordinator's pair lease
+frame (member nonce, epoch, generation, renewal payloads and a refused payload).
+`CoordinatorWireVectorTests` and `provider-swift/Tests/ClusterPairingChecks/run.sh`
+check the provider against them; the platform's own tests must agree. Refresh them only together with the
+coordinator change, after review.
+
+The `cluster-member-fixture-child` executable target (`provider-swift/Tests/ClusterMemberFixtureChild/`)
+is a CPU-only stand-in for an installed owner and its native child, run by the
+native-pair member control tests over the real owner pipe and key prelude. It is
+not a product and no release ships it.
+
+Cluster logic that needs no model or GPU is covered by check runners compiled
+with plain `swiftc`: each `provider-swift/Tests/Cluster*Checks/run.sh`,
+`libs/darkbloom-cluster/Tests/*Checks/run.sh` and
+`libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
+exits non-zero on a failure. The library's XCTest targets
+(`swift test --package-path libs/darkbloom-cluster`) and the worker package's
+tests (built for macOS 26.2) need the GPU and exclusive device access. A
+loopback or fixture pass never counts as a two-Mac hardware pass.
+
 ## Focused Tooling Checks
 
 For the PR reviewer, run the seven offline suites listed in
@@ -1004,3 +1037,118 @@ exclusive GPU access.
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)
 - [Provider release](../operations/provider-release.md)
+
+## Cluster onboarding UI checks
+
+Run `bash provider-swift/Tests/ClusterOnboardingChecks/run.sh` from the repository
+root for model-free pseudo-terminal checks of setup stages, menu selection,
+failed test responses, terminal restoration and plain output. Set
+`ONBOARDING_TRANSCRIPTS` to a private output directory to retain screen text.
+The harness compiles only the onboarding flow, terminal and scripted operations;
+it does not configure a network port, start a service or load a model.
+
+`ClusterOnboardingPeerLabelTests` checks the live adapter with injected pairing
+facts: fresh authenticated peer labels replace saved display names, changed
+peer identity refuses reuse, and saved serving intent remains unchanged. Run
+that filter with the provider test setup described above. These checks do not
+prove macOS authorization, Recovery changes, TCC approval or installed-service
+behavior.
+
+## Finite GLM terminal-status schedule
+
+Select `GLM5NextCalibrationTerminalStatusRaceTests` in an isolated CPU test
+process with `DARKBLOOM_GLM_METADATA_BINDING_REQUIRED=1` and the existing required
+metadata fixture inputs. Supply the source-matched CPU helper through
+`DARKBLOOM_GLM_DISPATCH_CPU_CHILD` and
+`DARKBLOOM_GLM_DISPATCH_CPU_CHILD_SHA256`; the fixture verifies its bytes before use.
+See `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/GLM5NextCalibrationDispatchRunFixture.swift`
+(`init`) and `provider-swift/Tests/CalibrationDispatchCPUChild/main.swift`.
+
+The test pauses a real driver after its terminal status sample, allows the other
+driver to finish its actual archive sync and close, observes the actual transport
+close, then releases the first driver. Both encrypted drivers, actual CPU child
+exits, acknowledgment consumption and durable fences must complete. The observer
+changes scheduling only; it supplies no status or completion. For a RED/GREEN
+comparison, retain identical test/fixture bytes and change only the control
+decision under review. Count an actual `terminal transport lost` failure
+separately from compilation, fixture setup, watchdog failures and skips.
+See the [retirement semantics](../architecture/inference.md#finite-glm-paired-control-retirement).
+
+## GLM cluster prefill gates
+
+Check the [GLM cluster prefill bounds](../architecture/inference.md#glm-cluster-prefill-bounds)
+against the frozen composed source before running an isolated test process.
+Keep passing, failing and skipped tests separate; missing fixture coverage is
+not a pass.
+
+- Geometry/default checks: `ResidualStreamTransportTests` covers authenticated
+  logical-array geometry, chunk rejection, bounded record ranges and unchanged
+  raw/default limits; `LongContextLimitsTests` checks the explicit GLM chunk
+  choice without raising other models' default. Their sources are
+  `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ResidualStreamTransportTests.swift`
+  and `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/LongContextLimitsTests.swift`.
+  A range-partition assertion does not execute encryption or a large transfer.
+- Metadata/budget checks: supply a verified immutable metadata fixture through
+  `DARKBLOOM_GLM_METADATA_DIRECTORY` for
+  `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/GLM5NextServingMetadataTests.swift`
+  (`largerChunksChargeWholeResidualsAndRejectStaleWorkspaceScope`). It checks
+  registered text/image layout agreement, whole-boundary charges and refusal of
+  stale workspace scope. Synthetic allowance equality does not measure peaks;
+  the envelope test also queries actual device allocation bounds.
+- Composed-source gates: run calibration authorization/binding and
+  provider-to-worker quote tests for the finite scope, plus
+  `provider-swift/Tests/ClusterPlacementChecks/PlacementSetupCheck.swift` for
+  short-prompt preference rejection, artifact matching, both chunk caps and
+  explicit-limit preservation. Old quote/binary identity and overbound controls
+  must still refuse.
+
+Native qualification additionally requires a real full-size encrypted residual
+round trip with byte/shape equality and bounded sealed frames, active/missing/
+invalidated data-plane controls, then paired serving and cancellation/fault
+retirement. Test availability alone does not establish execution. Measure
+per-rank native high-water and host wire/assembly peaks through normal peer
+acknowledgement and retirement, including cold dense DSA, later sparse DSA and
+cache-growth boundaries under the actual serving policy. Retain the conservative
+workspace until evidence matches its complete scope. Private image and MTP
+execution need separate coverage; CPU geometry/metadata checks do not qualify
+them or establish production readiness or throughput.
+
+## GLM cluster still-image checks
+
+Run `bash libs/darkbloom-cluster/Tests/StillImageChecks/run.sh` for isolated
+Foundation/CryptoKit protocol checks. The script compiles in a unique temporary
+directory and never links MLX or touches a model or provider state. It checks
+malformed/overflow bounds, source/pixel/span commitments, marker ownership,
+video refusal, codec round trips, nil omission, profile and route refusal.
+
+Metadata-only GLM image tests in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/GLM5NextClusterImageMetadataTests.swift`
+cover PNG geometry, animation and rank-specific LOAD/workspace accounting.
+CPU checks do not establish native output parity, memory peaks, cleanup or
+paired cancellation. The parent qualification owner must build the frozen
+composition, select the candidate through
+`darkbloom cluster local glm-5.3-flash --private-glm-image-qualification` and test
+still-image HTTP serving, changed-pixel controls, chunk-boundary spans, repeated
+text/media isolation, paired retirement and cancel/fault cleanup on both ranks.
+
+## Restricted-umask update and encrypted GLM fixture checks
+
+Run `SelfUpdaterTests` with an isolated installation root and inherited
+`umask 077`. Keep the exact `0755` fan-helper assertion and existing bundle,
+hash, symlink and rollback checks; the extraction child must not change the
+parent's mask or weaken archive-path checks.
+
+`GLM5NextEncryptedCheckpointTests` funds the MTP-enabled fixture from its actual
+bounded assistant allocation quote at 1536 inputs, in addition to the existing
+64MiB target allowance and unchanged admission watermark. Both parameter arms
+and protected-import cancellation must execute. Preserve 1024-token restore/logit
+parity, positive MTP metrics and confirmed retirement with zero outstanding
+budget. A quote equality assertion is not execution evidence; use the rebuilt
+provider tests and normal isolated native-test lane.
+
+`ClusterServiceAgentTests` covers Local Network app attribution, replacement
+of older unassociated jobs, symlinked CLI entry points and unbundled tools.
+`ClusterConsoleChecks` preserves the socket failure in setup/lease diagnostics.
+Live qualification must close both setup terminals and check lease stability
+and follower connections in both role orientations; a foreground SSH success
+alone does not qualify detached background serving.

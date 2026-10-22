@@ -305,6 +305,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        // Capture before acquisition and tokenization consume the budget.
+        // Preparation can run on another task, so the value is passed
+        // explicitly instead of being read from the task-local again.
+        let distributedRequestOrigin = DistributedRequestOrigin.current
         let templateControls = self.templateControls.resolvingPromptDate()
         // A local HTTP engine may be shared by concurrent Chat/Responses calls.
         // The fallback usage channel belongs to this request, never to the engine.
@@ -343,9 +347,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reserve) and is retained only for ProviderLoop where
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
+        let acquired = try await acquireForCompletion(modelId: request.model)
+        // Time spent in a cluster pair's request queue is not the pair's
+        // first-token or request budget: those start when the queue lets go.
+        let origin = acquired.queueExitedAt.map { exited in distributedRequestOrigin.map { max($0, exited) } ?? exited }
+            ?? distributedRequestOrigin
         return try await prepareAcquiredCompletion(
             request: request, templateControls: templateControls, requestUsage: requestUsage,
-            acquired: try await acquireForCompletion(modelId: request.model))
+            distributedRequestOrigin: origin, acquired: acquired)
     }
 
     /// Keep registry/acquisition snapshots out of the parent preparation frame.
@@ -382,11 +391,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     private func prepareAcquiredCompletion(
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
-        requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
+        requestUsage: EngineV2RequestUsageSignal,
+        distributedRequestOrigin: ContinuousClock.Instant?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         guard let lease = acquired.nativeConsumerLease else {
             return try await prepareCompletion(request: request, templateControls: templateControls,
-                requestUsage: requestUsage, acquired: consume acquired)
+                requestUsage: requestUsage, distributedRequestOrigin: distributedRequestOrigin,
+                acquired: consume acquired)
         }
         let releaseBox = acquired.releaseToken
         // A second token cannot adopt, abandon, fire or cancel a first token's
@@ -400,7 +411,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard let acquired = payload.take() else { throw NativeLocalConsumerOwnershipError.invalidBinding }
                     do {
                         return try await prepareCompletion(request: request, templateControls: templateControls,
-                            requestUsage: requestUsage, acquired: consume acquired)
+                            requestUsage: requestUsage, distributedRequestOrigin: distributedRequestOrigin,
+                            acquired: consume acquired)
                     } catch {
                         await releaseBox.fire()
                         throw error
@@ -425,7 +437,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     private func prepareCompletion(
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
-        requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
+        requestUsage: EngineV2RequestUsageSignal,
+        distributedRequestOrigin: ContinuousClock.Instant?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         var request = request
         let tokenizer = acquired.tokenizer
@@ -509,6 +522,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         if glmMedia, await engineV2Bridge?.servesGLM5NextMedia != true {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
+        }
+        if glmMedia, let bridge = engineV2Bridge, await bridge.clusterGLMImageConfiguration != nil {
+            do {
+                return try await prepareClusterGLMImage(request: request, templateControls: templateControls,
+                    requestUsage: requestUsage, prepared: prepared, toolHandler: toolHandler, acquired: consume acquired)
+            } catch { await releaseBox.fire(); throw error }
         }
         if modelType == "mimo_v2", MediaIngest.hasMedia(request) {
             do {
@@ -724,6 +743,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation,
                         promptWork: promptWork,
+                        distributedRequestOrigin: distributedRequestOrigin,
                         measurementPurpose: measurementPurpose
                     )
                     do {
@@ -945,6 +965,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     serviceReservationID: serviceReservationID,
                     serviceReservation: serviceReservation,
                     promptWork: promptWork,
+                    distributedRequestOrigin: distributedRequestOrigin,
                     measurementPurpose: measurementPurpose
                 )
                 do {
@@ -1002,6 +1023,52 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         try firstContentDeadline?.check()
     }
 
+    private func prepareClusterGLMImage(request: OpenAIChatCompletionRequest,
+        templateControls: ChatTemplateControls, requestUsage: EngineV2RequestUsageSignal,
+        prepared: ToolChoicePromptPolicy.Prepared, toolHandler: BatchedToolStreamHandler?,
+        acquired: consuming AcquiredModel
+    ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try checkFirstContentDeadline()
+        guard engineV2Logprobs == nil, request.responseFormat?.requiresJSONOutput != true,
+              let bridge = acquired.engineV2Bridge, let binding = try await bridge.clusterGLMImageIngress() else {
+            throw MultiModelBatchSchedulerEngineError.multimodalRejected("GLM cluster image output controls")
+        }
+        let maximum = request.maxTokens ?? binding.defaultOutput
+        let host = try binding.ingress.prepare(request: request, controls: templateControls,
+            tokenizer: acquired.tokenizer.inner, maximumPromptTokens: binding.maximumPrompt, maximumOutputTokens: maximum)
+        let constraint = try ToolConstraintFactory.make(prepared: prepared, request: request,
+            tokenizer: acquired.tokenizer, modelContext: .init(modelId: request.model, modelType: acquired.modelType),
+            defaultMaxTokens: maximum, stopTokenIDs: bridge.stopTokenIds, nativePromptTokens: host.tokens)
+        guard constraint == nil else {
+            throw MultiModelBatchSchedulerEngineError.multimodalRejected("GLM cluster image token constraints")
+        }
+        try checkFirstContentDeadline()
+        let id = "req-" + UUID().uuidString
+        let upstream = try await bridge.submitTokenized(promptTokens: host.tokens,
+            request: Self.translate(openAIRequest: request, defaultMaxTokens: maximum,
+                logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed),
+            requestId: id, cacheScope: cacheScope, cacheEnabled: false, usageSignal: requestUsage,
+            clusterStillImages: host.wire, mediaKind: .image, firstContentDeadline: firstContentDeadline, profile: profile,
+            measurementPurpose: measurementPurpose)
+        do {
+            try checkFirstContentDeadline()
+            // The rendered image prompt may already leave a think block open.
+            // Seed the parser before forwarding output, including length stops
+            // that arrive before the model emits the closing marker.
+            let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+                reasoningParser: request.reasoningParser, stream: request.stream,
+                promptTokens: host.tokens,
+                decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+            ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
+            return try await makeDeadlineCheckedEventStream(
+                upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
+                toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
+                reasoningPrefix: reasoningPrefix,
+                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                    .init(modelId: request.model, modelType: acquired.modelType)))
+        } catch { await bridge.cancel(requestId: id); throw error }
+    }
+
     /// Same authenticated parser, acquired lease, bridge, tool validator and
     /// native reasoning router as text. Never enter generic VLM generation.
     private func prepareNativeMiMoMedia(request: OpenAIChatCompletionRequest,
@@ -1011,6 +1078,38 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent,Error> {
         try checkFirstContentDeadline()
         try templateControls.rawMiMoControls.validateMedia(modelType:acquired.modelType)
+        if let bridge = acquired.engineV2Bridge, let binding = try await bridge.draftMiMoImageIngress() {
+            guard engineV2Logprobs == nil,request.responseFormat?.requiresJSONOutput != true else {
+                throw MultiModelBatchSchedulerEngineError.multimodalRejected("MiMo cluster media output controls")
+            }
+            let normalized = try ProviderPromptContractPipeline.normalizedInput(prepared:prepared,request:request,
+                modelType:acquired.modelType,templateControls:templateControls,preserveMiMoMediaParts:true)
+            let maximum = request.maxTokens ?? binding.defaultOutput
+            let host = try binding.ingress.prepare(normalized:normalized,tokenizer:acquired.tokenizer.inner,
+                maximumPromptTokens:binding.maximumPrompt,maximumOutputTokens:maximum)
+            let constraint = try ToolConstraintFactory.make(prepared:prepared,request:request,
+                tokenizer:acquired.tokenizer,modelContext:.init(modelId:request.model,modelType:acquired.modelType),
+                defaultMaxTokens:maximum,stopTokenIDs:bridge.stopTokenIds,nativePromptTokens:host.tokens)
+            guard constraint == nil else {
+                throw MultiModelBatchSchedulerEngineError.multimodalRejected("MiMo cluster media token constraints")
+            }
+            try checkFirstContentDeadline()
+            let id = "req-" + UUID().uuidString
+            let upstream = try await bridge.submitTokenized(promptTokens:host.tokens,
+                request:Self.translate(openAIRequest:request,defaultMaxTokens:maximum,
+                    logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
+                requestId:id,cacheScope:cacheScope,cacheEnabled:true,usageSignal:requestUsage,
+                mimoClusterImages:host.wire,firstContentDeadline:firstContentDeadline,profile:profile,
+                measurementPurpose:measurementPurpose)
+            do {
+                return try makeEventStream(upstream:upstream,cancelUpstream:{ await bridge.cancel(requestId:id) },
+                    toolHandler:toolHandler,prepared:prepared,releaseBox:acquired.releaseToken,
+                    usageSignal:requestUsage,nativeReasoningPrefix:"",
+                    preserveInnerReasoningSpans:ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                        .init(modelId:request.model,modelType:acquired.modelType)),
+                    nativeMiMoChannels:true,nativeMiMoThinkingEnabled:thinkingEnabled)
+            } catch { await bridge.cancel(requestId:id);throw error }
+        }
         guard engineV2Logprobs == nil, request.minP == nil || request.minP == 0,
               request.responseFormat?.requiresJSONOutput != true,
               let bridge = acquired.engineV2Bridge, acquired.nativeConsumerLease != nil else {

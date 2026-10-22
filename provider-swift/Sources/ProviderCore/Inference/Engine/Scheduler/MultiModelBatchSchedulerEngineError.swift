@@ -101,6 +101,13 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// already includes the cause for the human-readable `error` field.
     case platformTerminal(
         cause: InferenceTerminalCause, message: String, attemptUsage: UsageInfo)
+    /// A cluster pair refused the request before it reached the pair: the
+    /// request asks for something the loaded model on that pair can never do
+    /// as asked (prompt or output over its limits, logprobs, constrained
+    /// decoding). Deterministic for the request, so 400. `message` comes from
+    /// the closed refusal's own template (rule and model limits only, never
+    /// request content), so it may be shown to the client.
+    case distributedRequestRefused(DistributedRequestRefusal, message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -141,6 +148,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "This model requires at least one user message that is not only a tool response"
         case .platformTerminal(_, let message, _):
             return message
+        case .distributedRequestRefused(_, let message):
+            return message
         }
     }
 
@@ -162,6 +171,12 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         // capacity by the broader substring checks below.
         if lowercased.hasPrefix(EngineV2Translation.multimodalRejectedPrefix) {
             return .multimodalRejected(message)
+        }
+        if let refused = EngineV2Translation.distributedRefusal(fromMessage: message) {
+            return .distributedRequestRefused(refused.refusal, message: refused.message)
+        }
+        if message == EngineV2Translation.distributedUnavailableMessage {
+            return .requestRejected("Distributed session is unavailable")
         }
         if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
             return .advertisedContextExceeded

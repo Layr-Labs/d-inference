@@ -115,6 +115,12 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
     // MARK: - Load or Create
 
+    /// Reuse a paired identity without creating, deleting or repairing keys.
+    /// A missing or unusable key must leave the existing pairing untouched.
+    static func loadExisting(accessGroup: String? = nil, label: String? = nil) throws -> PersistentEnclaveKey {
+        try findExisting(accessGroup: resolveAccessGroup(accessGroup), label: label ?? defaultLabel)
+    }
+
     /// Load an existing persistent key from the keychain, or create one if not
     /// found. New keys are created under `defaultLabel` (v2) with
     /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.

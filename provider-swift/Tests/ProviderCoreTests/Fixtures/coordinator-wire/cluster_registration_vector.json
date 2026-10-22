@@ -1,0 +1,93 @@
+{
+  "cluster_id": "studio-ring",
+  "member_keys": [
+    {
+      "pin": "266e33d3430af87bec6817286da78bf802a3fea6463cf64f4afeeb70e887b1ee",
+      "private_scalar": "de022a35b7d5fc628d7ad84e06c6196af4e7bbfbdd68cbe26aa267cd7f7d92b7",
+      "se_public_key": "BNUDvTkf7MJwH18NhIIM3D16xCxXO6A9xPxX7ZtiZ7L0P+Sj22ADub3gMA/OHUYLV+322Atpeh3qay5i6lu8hjk="
+    },
+    {
+      "pin": "6b9472cca287f39bdb0dc9bd8d3de78c7b748d6798b180d180ba3bbc88778443",
+      "private_scalar": "6a46314284f5e460c6d2b28822c064b53c96ec476aa8732cfad1f18d3a785874",
+      "se_public_key": "BNec/9s0CAdwSkuUO4aeVyXNS8bSJHx4UKOCLe8QWHdrsSlZ2peHKFC3PJvCsFm1L/ct7cutyh9cwWWNtlI2ujY="
+    },
+    {
+      "pin": "94d7fadede2630665c99a2154519abeef2d1d0f8ab847e6ae9d000c424011a1a",
+      "private_scalar": "6840cd0c9548f57a8cc60cf7876c48b1718dae95e6e4be7fbccbd4940154ea3c",
+      "se_public_key": "BC5J/StABEZSZ5q05aNIITKqp5/lHV/M/0PMhh0t+hsKTC5Vml0Gk4IysR0E43W+hU8C8FUVQaMyTacmkNtdi/w="
+    }
+  ],
+  "registration": {
+    "version": 3,
+    "cluster_id": "studio-ring",
+    "rank": 0,
+    "policy_sha256": "",
+    "member_pin": "6b9472cca287f39bdb0dc9bd8d3de78c7b748d6798b180d180ba3bbc88778443",
+    "roster": {
+      "generation": 3,
+      "members": [
+        {
+          "pin": "266e33d3430af87bec6817286da78bf802a3fea6463cf64f4afeeb70e887b1ee",
+          "se_public_key": "BNUDvTkf7MJwH18NhIIM3D16xCxXO6A9xPxX7ZtiZ7L0P+Sj22ADub3gMA/OHUYLV+322Atpeh3qay5i6lu8hjk=",
+          "signature": "MEQCIHkYrT00fD3O2AifLI8SJ/01IRjEbX+2LcmWTjygsz0bAiAxEa2hU86FRVJnTzZI498lys9iQf46LdxmpRVMuUh5qw=="
+        },
+        {
+          "pin": "6b9472cca287f39bdb0dc9bd8d3de78c7b748d6798b180d180ba3bbc88778443",
+          "se_public_key": "BNec/9s0CAdwSkuUO4aeVyXNS8bSJHx4UKOCLe8QWHdrsSlZ2peHKFC3PJvCsFm1L/ct7cutyh9cwWWNtlI2ujY=",
+          "signature": "MEQCIGj9Vot7MasF9O/7w96Soa+rCVcHMkU952oeqXTrLreOAiA630foTdFtxijYOXgWqAl84FHmHEopylApa+HXCOu0jQ=="
+        },
+        {
+          "pin": "94d7fadede2630665c99a2154519abeef2d1d0f8ab847e6ae9d000c424011a1a",
+          "se_public_key": "BC5J/StABEZSZ5q05aNIITKqp5/lHV/M/0PMhh0t+hsKTC5Vml0Gk4IysR0E43W+hU8C8FUVQaMyTacmkNtdi/w=",
+          "signature": "MEYCIQDX9k1dBVBAE0pqIl9BjGr/QDJyKfXEi0WOTZsIeRsLhAIhAMa8eqeGAKxmMoV/30eFT/KHkXk3uRYOHpjuDEJhpMCM"
+        }
+      ]
+    },
+    "device_profile": {
+      "chip_name": "Apple M3 Ultra",
+      "numerics_class": "g15d-nax0-mlx-fixture-macos26.2",
+      "gpu_cores": 80,
+      "memory_bytes": 274877906944,
+      "usable_wired_bytes": 240518168576,
+      "os_build": "25C56"
+    },
+    "edges": [
+      {
+        "peer_pin": "266e33d3430af87bec6817286da78bf802a3fea6463cf64f4afeeb70e887b1ee",
+        "transport": "rdma",
+        "measured_mbps": 64000,
+        "measured_rtt_us": 9
+      },
+      {
+        "peer_pin": "94d7fadede2630665c99a2154519abeef2d1d0f8ab847e6ae9d000c424011a1a",
+        "transport": "tcp_thunderbolt",
+        "measured_mbps": 20000,
+        "measured_rtt_us": 60
+      }
+    ],
+    "inventory": [
+      {
+        "model": "fixture/cluster-model",
+        "artifact_sha256": "eed55e693de3065d6aca4dbe5e2c27e07bb16b8a71d6d5f791af5ef0b42f6c4b"
+      }
+    ],
+    "plans": [
+      {
+        "policy_sha256": "cd0419281264d7eaf503a096b4e27940d8b547b6115be5ad5374e809efdea2f1",
+        "model": "fixture/cluster-model",
+        "plan_sha256": "0bc68891e392eebd8d724ef75f1231abed1deb668db113e69b28ddf2cf99e1e6",
+        "members": [
+          "6b9472cca287f39bdb0dc9bd8d3de78c7b748d6798b180d180ba3bbc88778443",
+          "266e33d3430af87bec6817286da78bf802a3fea6463cf64f4afeeb70e887b1ee",
+          "94d7fadede2630665c99a2154519abeef2d1d0f8ab847e6ae9d000c424011a1a"
+        ],
+        "cuts": [
+          20,
+          41
+        ]
+      }
+    ]
+  },
+  "roster_canonical": "6461726b626c6f6f6d2f636c75737465722d726f737465722f7631000000000b73747564696f2d72696e67000000000000000300000003266e33d3430af87bec6817286da78bf802a3fea6463cf64f4afeeb70e887b1ee0000004104d503bd391fecc2701f5f0d84820cdc3d7ac42c573ba03dc4fc57ed9b6267b2f43fe4a3db6003b9bde0300fce1d460b57edf6d80b697a1dea6b2e62ea5bbc86396b9472cca287f39bdb0dc9bd8d3de78c7b748d6798b180d180ba3bbc887784430000004104d79cffdb340807704a4b943b869e5725cd4bc6d2247c7850a3822def1058776bb12959da97872850b73c9bc2b059b52ff72dedcbadca1f5cc1658db65236ba3694d7fadede2630665c99a2154519abeef2d1d0f8ab847e6ae9d000c424011a1a00000041042e49fd2b40044652679ab4e5a3482132aaa79fe51d5fccff43cc861d2dfa1b0a4c2e559a5d06938232b11d04e375be854f02f0551541a3324da72690db5d8bfc",
+  "roster_sha256": "76e8706106f052cf13e418267c7e52ab168202334ff036719c667bec364310b0"
+}

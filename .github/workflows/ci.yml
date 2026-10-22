@@ -122,7 +122,10 @@ jobs:
       - name: Prepare pinned public MiMo metadata and original corpus
         id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
-        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+        run: |
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
+          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"
       - name: Prepare bounded synthetic MiMo provider fixtures offline
         id: mimo-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}

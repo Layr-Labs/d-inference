@@ -173,6 +173,38 @@ Code: `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`.
 Operator steps: [cache storage](../../provider/cache-storage.md).
 
+## Two-Mac cluster (experimental)
+
+A [two-Mac cluster](../../provider/two-mac-cluster.md) keeps the same rules
+across the Thunderbolt cable:
+
+- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17); both
+  screens show the same six-digit code and both owners confirm it. The peer's
+  pin is stored owner-only (0600), and both Macs verify each other before any
+  data-plane key exists. A DEBUG build without the signed build's keychain
+  entitlement may keep its Secure Enclave key's opaque handle in an owner-only
+  file (`DARKBLOOM_DEBUG_SE_KEY_FILE`, `SecureEnclaveIdentity.debugPersisted`);
+  the key itself never leaves the Secure Enclave, and a release build has no
+  such path.
+- **Cable bytes.** The link control channel (commands, control leases, model
+  copies) is keyed by the pairing's edge secret with fresh nonces both ways;
+  the data plane (activations, KV hand-offs, cache transfers) is encrypted and
+  authenticated with rekeying, and tampered records are refused. The control
+  lease runs on a listener and epoch label of its own; no key material crosses
+  Macs when control fails over.
+- **Model copies.** A Mac accepts a model from its paired Mac only when this
+  build's qualification records pin the manifest's aggregate digest, verifies
+  every file as it arrives, has its own worker check the staged files before
+  the folder is renamed into place, and refuses hard links and unexpected files.
+- **Cluster prompt cache at rest.** AES-GCM under a key derived from the
+  Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
+  passed to ranks on an input pipe (never in an environment), scoped to model,
+  plan, rank and Mac.
+- **Helpers.** The cluster worker and placement tool ship in
+  `Darkbloom.app/Contents/Helpers`, Developer ID signed with hardened runtime
+  and network client/server entitlements only
+  (`provider-swift/entitlements-cluster-worker.plist`).
+
 ## Invariants And Failure Modes
 
 - Do not fall back to plaintext when decryption/authentication fails.

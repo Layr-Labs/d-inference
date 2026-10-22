@@ -19,6 +19,9 @@ outputs:
   metallib:
     description: Source-validated Metal library
     value: ${{ steps.metallib.outputs.metallib }}
+  cluster-helpers-dir:
+    description: Unsigned cluster worker and placement tool with their Metal library (release lane only)
+    value: ${{ steps.cluster-helpers.outputs.cluster_helpers_dir }}
   build-sdk-version:
     description: SDK selected for Swift compilation
     value: ${{ steps.identity.outputs.sdk_version }}
@@ -169,6 +172,12 @@ runs:
         while IFS= read -r macos; do
           cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
         done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
+    - name: Prepare MiMo image HTTP fixtures
+      if: inputs.lane == 'qualification'
+      shell: bash
+      run: |
+        python3 scripts/prepare-mimo-image-http-fixtures.py \
+          --output "$RUNNER_TEMP/mimo-sdk-image-http-fixtures" --github-env "$GITHUB_ENV"
     - name: Test provider with release SDK
       if: inputs.lane == 'qualification'
       shell: bash
@@ -237,6 +246,28 @@ runs:
           test -x "$BIN_DIR/$product"
         done
         echo "bin_dir=$BIN_DIR" >> "$GITHUB_OUTPUT"
+    - name: Build cluster helpers (worker and placement tool)
+      # The installed provider launches darkbloom-cluster-worker (and runs
+      # darkbloom-cluster-plan beside it) from Darkbloom.app/Contents/Helpers.
+      # Built by the worker package's native build (macOS 26.2, real JACCL)
+      # against the SAME source-matched metallib as the provider; staged into
+      # the app by provider-signing-validation.py, which refuses an app
+      # without them.
+      if: inputs.lane == 'release'
+      id: cluster-helpers
+      shell: bash
+      env:
+        MATCHED_METALLIB: ${{ steps.metallib.outputs.metallib }}
+      run: |
+        set -euo pipefail
+        export DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS="$(sysctl -n hw.logicalcpu)"
+        OUT="$RUNNER_TEMP/cluster-helpers"
+        ./scripts/build-cluster-helpers.sh "$MATCHED_METALLIB" "$OUT"
+        for helper in darkbloom-cluster-worker darkbloom-cluster-plan; do
+          test -x "$OUT/$helper"
+        done
+        cmp "$OUT/mlx.metallib" "$MATCHED_METALLIB"
+        echo "cluster_helpers_dir=$OUT" >> "$GITHUB_OUTPUT"
     - name: Retain SDK test diagnostics
       if: always() && inputs.lane == 'qualification'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

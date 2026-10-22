@@ -43,6 +43,13 @@ public struct ModelDownloader: Sendable {
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
+    /// When set, the foreground download reports (bytes so far, total bytes) here about four times a second instead
+    /// of drawing its own progress bars (a caller that owns the screen, like `darkbloom cluster`, shows the progress).
+    public var byteProgress: (@Sendable (Int64, Int64) -> Void)?
+    /// When true, downloaded bytes are written and verified with the file cache off (F_NOCACHE writes, uncached
+    /// per-file and aggregate hashing), as the cluster's model copy over the cable does, so fetching a model does not
+    /// take memory from a model load. Off by default: single-Mac downloads keep their behaviour.
+    public var uncachedWrites = false
 
     public init(
         r2CDNURL: String? = nil,

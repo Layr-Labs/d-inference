@@ -379,3 +379,12 @@ another inference service present; they do not qualify this revision.
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable
 - [`cli-reference.md`](./cli-reference.md) — `provider.toml` keys and their defaults
 - [../consumer/models.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/models.md) — the model catalog as consumers see it
+
+## GLM cluster still-image candidate
+
+The private GLM cluster image slice adds rank-0 vision weights and bounded media
+workspace to the text pair's load/request requirements. It does not establish a
+new RAM tier or qualified catalog modality. Only bounded still PNG input is
+implemented; video remains unqualified and audio is refused. See
+[cluster image execution](../architecture/inference.md#bounded-glm-cluster-still-images)
+and [its memory quotation](../architecture/hardware-support.md#glm-cluster-image-accounting).

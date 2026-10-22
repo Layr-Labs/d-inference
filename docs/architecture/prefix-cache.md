@@ -898,3 +898,17 @@ rules applied to these signals.
 - [`inference.md`](inference.md) — the request path this cache sits in
 - [`hardware-support.md`](hardware-support.md) — the KV budget the grants come from
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/kv-cache-lookup-shadowing.md`](../design/kv-cache-lookup-shadowing.md) — superseded design records
+
+## GLM cluster image prefix isolation
+
+The bounded GLM cluster still-image slice always offers a disabled prefix cache
+on both ranks. It neither restores nor captures image prompt state. The full
+encoded-media/config/span commitment participates in the bilateral generation
+request identity, while authenticated cache scope remains caller-owned. This
+keeps token-identical prompts with different pixels from sharing native state;
+text prefix behavior is unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift`
+(`agreeGLM5NextStagePrefixPlan`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`).

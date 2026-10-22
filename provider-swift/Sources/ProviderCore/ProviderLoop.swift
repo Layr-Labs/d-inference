@@ -603,6 +603,60 @@ public actor ProviderLoop {
     /// coordinator's per-model catalog routing filter). Set in `run()`.
     internal var coordinatorClient: CoordinatorClient?
 
+    // MARK: - Native pair member (private cluster staging, fail-closed)
+
+    /// Set when the serving configuration closes; member installation is only
+    /// valid before serving starts.
+    internal var nativePairConfigurationClosed = false
+    /// The staged member control owner; installed only in member mode.
+    /// `nativePairMemberStatus` stays nil in ordinary solo serving.
+    internal var nativePairMemberControl: NativePairMemberControl?
+
+    // MARK: - Cluster member connection state
+
+    /// Identity of the current accepted member control connection; nil while
+    /// unacknowledged or after a boundary. Never a grant by itself.
+    internal var memberConnectionID: UUID?
+    /// Whether any connection on this loop completed member acceptance; used by
+    /// `clusterMemberStopsOnDisconnect` to end the loop after a later drop.
+    internal var memberHadAcceptedConnection = false
+    /// Set when the member's accepted connection ended or trust was lost; the
+    /// event dispatcher consumes and stops instead of serving.
+    internal var memberControlRequiresStop = false
+    /// Why the member stopped (the first latched reason); nil while serving.
+    public internal(set) var memberStopReason: String?
+    /// Startup member-registration wait state (single waiter).
+    internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
+    internal var memberRegistrationTimer: Task<Void, Never>?
+    internal var memberRegistrationWaitID: UUID?
+    /// The current wait's deadline, handed to the coordinator client so its
+    /// reconnects stay inside it.
+    internal var memberRegistrationWaitDeadline: ContinuousClock.Instant?
+    /// The pair slot this leader member serves (S09), at most one; nil on a
+    /// follower and whenever the pair is not ready.
+    internal var clusterPairSlot: ClusterPairSlotHandle?
+    /// Keeps the member's published capacity current while a pair slot exists.
+    internal var clusterPairCapacityTask: Task<Void, Never>?
+    /// The last pair formation's warmup canary (S18), for the member heartbeat.
+    internal var clusterPairWarmup: ClusterPairWarmupResult?
+    /// The warmup canary's deadline; nil when the canary is off
+    /// (`DARKBLOOM_CLUSTER_WARMUP=0`). Tests set it per loop.
+    internal var clusterPairWarmupTimeoutSeconds: Double? =
+        ProviderLoop.clusterWarmupEnabled() ? ProviderLoop.clusterWarmupTimeoutSeconds : nil
+    /// When the pair slot's engine was first seen wedged ("crashed"), for the
+    /// supervisor's liveness guard (S18).
+    internal var clusterPairWedgedSince: ContinuousClock.Instant?
+    /// The leader's serving context for committed starts (S10), and the one
+    /// start it serves: its epoch, whether the session asked it to stop, and
+    /// whether the pair is still forming.
+    internal var clusterPairServing: ClusterPairServingContext?
+    internal var clusterPairServingEpoch: UUID?
+    internal var clusterPairServingStopped = false
+    internal var clusterPairServingForming = false
+    /// The follower member's link serving of its committed starts; retained
+    /// here because the session control holds its serving host weakly.
+    internal var clusterPairFollower: DistributedMemberLinkFollower?
+
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
     /// choke point every material slot-state change already flows through.
@@ -808,8 +862,7 @@ public actor ProviderLoop {
         var unsupportedModelIds: [String] = []
         var ineligibleModelIds: [String] = []
         for model in config.models where advertised[model.id] == nil {
-            guard ModelRuntimeRequirements.isEligible(
-                modelID: model.id, available: config.runtimeCapabilities)
+            guard config.admitsModel(model.id)
             else {
                 ineligibleModelIds.append(model.id)
                 continue
@@ -1051,8 +1104,35 @@ public actor ProviderLoop {
     }
 
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
+    /// The signer a cluster member registers with and countersigns its
+    /// roster with (`darkbloom cluster member-identity`): the same key the
+    /// member's loop uses.
+    public static func clusterMemberSigner() -> (any AttestationSigner)? { createAttestationSigner() }
+
+    /// The signer the pairing ceremony (S17) pins, chosen exactly as the
+    /// member's attestation signer is, and whether it outlives this process:
+    /// a pin is worth storing only when the next start signs with the same key.
+    public static func clusterPairingSigner() -> (signer: any AttestationSigner, persistent: Bool)? {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugPersisted(at: path) {
+            return (key, true)
+        }
+        #endif
+        if PersistentEnclaveKey.isAvailable, let key = try? PersistentEnclaveKey.loadOrCreateVerified() { return (key, true) }
+        if let key = try? SecureEnclaveIdentity.createEphemeral() { return (key, false) }
+        return nil
+    }
+
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable {
+            do { return try SecureEnclaveIdentity.debugPersisted(at: path) }
+            catch { log.warning("Debug Secure Enclave key file unusable (\(error)); using the ordinary signer") }
+        }
+        #endif
 
         if PersistentEnclaveKey.isAvailable {
             do {

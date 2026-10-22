@@ -4,6 +4,7 @@
 // router fixes BasicRequestContext's 2 MiB limit, so these routes collect and
 // decode here, then use the same MLXOpenAIService and response framing.
 
+import NIOCore
 import Foundation
 import Hummingbird
 import MLXLMServer
@@ -26,6 +27,7 @@ where Inner.Context == BasicRequestContext {
     public let inner: Inner
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
+    let distributedResponses: (any DistributedHTTPResponseProviding)?
     /// The reasoning parser a request that names none is served with, by its model's type (see
     /// `makeLocalInferenceApplication`); nil: the request's own. Without it the local API returned Gemma's thought
     /// channel and GPT-OSS's Harmony markers in `content`, on a single Mac and on a cluster alike.
@@ -39,6 +41,7 @@ where Inner.Context == BasicRequestContext {
         service: MLXOpenAIService,
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
+        distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
         reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil,
         responseConversations: LocalResponseConversationStore = LocalResponseConversationStore(),
         serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)? = nil
@@ -48,6 +51,7 @@ where Inner.Context == BasicRequestContext {
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
+        self.distributedResponses = distributedResponses
         self.serviceForRawChat = serviceForRawChat
     }
 
@@ -177,6 +181,30 @@ where Inner.Context == BasicRequestContext {
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
         if item.request.stream == true {
+            if let distributedResponses {
+                let response = try distributedResponses.begin()
+                do {
+                    guard let channel = LocalHTTPConnectionScope.current else {
+                        throw MultiModelBatchSchedulerEngineError.requestRejected("Missing local connection observation")
+                    }
+                    // A full close is definitive. Input half-close alone is
+                    // allowed; the serialized SSE writer probes for write loss.
+                    channel.closeFuture.whenComplete { [weak response] _ in
+                        guard let response else { return }
+                        // Delivery is impossible after a full close. This ends
+                        // only the HTTP hold; engine/lease retirement stays held.
+                        response.disconnect(); response.finish()
+                    }
+                    if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
+                    let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
+                        try await requestService.streamChatCompletionFrames(
+                            request: item.request, frameGenerationErrors: true)
+                    }
+                    return DistributedHTTPEventStream.response(frames, control: response)
+                } catch {
+                    response.disconnect(); response.finish(); throw error
+                }
+            }
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
             return Self.sseResponse(frames)

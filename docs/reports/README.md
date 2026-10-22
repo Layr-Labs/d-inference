@@ -119,6 +119,7 @@ Dated records and raw native evidence retain their original content, revisions a
 - [Native loaded-engine endpoint resumption](2026-10-11-native-serving-resumption-qualification.md) - real Apple verification, full loopback coordinator, encrypted inference across a 125-second break, unchanged loaded engine and assertion counter, and exactly-one-refund evidence.
 - [Native inference and quantized checkpoint qualification](2026-10-11-native-inference-checkpoint-storage.md) — eight-artifact storage/restore measurements, matched prefill controls, OS-backed process restart, and explicit performance limits.
 - [Runtime KV quantization qualification](2026-10-09-runtime-kv-quantization.md) — exact-artifact paired storage/quality controls, real adaptive MTP and encrypted complete-cache reuse, with latency and qualification limits.
+- [Two-Mac baseline, load generator and catalog model matrix](2026-10-09-two-mac-baseline-and-model-matrix.md) - single-Mac product-path baseline for Qwen3.5 9B on an M3 Ultra and an M5 Max, the status of every catalog model on each Mac, and the benchmarking tools added; no two-Mac measurement (the link was down), with clock and sample-size limits.
 
 ## Retired Original Records
 

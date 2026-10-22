@@ -134,6 +134,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
+| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -168,6 +169,11 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
+| `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)) |
+| `--always-on` | flag | `false` | With `--cluster-member`: install the member as the provider LaunchAgent run by the supervisor ([always-on members](./cluster-always-on.md)) |
+| `--supervise` | flag, **hidden** | `false` | With `--cluster-member`: run the supervisor in this process; launchd passes it for `--always-on` |
+| `--distributed` | flag | `false` | With `--local`: serve the saved cluster setup as its rank 0 and register with the coordinator as a control-only member; the cluster service starts it |
+| `--no-coordinator` | flag | `false` | With `--distributed`: never contact a coordinator; the cluster serves on the local API only (`ClusterLocalServing.leaderArguments`). Rejects `--coordinator-url`. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) starts it this way |
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain a running provider before replacing its process/configuration |
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
 
@@ -490,6 +496,30 @@ cache precedence is specified in [model cache configuration](../reference/config
 
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
+A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
+Mac's Bonjour (`.local`) URL (`Local.networkURL`).
+
+### `darkbloom cluster local`
+
+The setup response check uses the model's default reasoning controls. It does not send a binary thinking override; if its token budget ends during reasoning, it reports that the model is still thinking. This is a liveness check, not an answer-quality benchmark. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift` and `ClusterSetupWizardLiveOperations.prompt`.
+
+```bash
+darkbloom cluster local [<model>] [--bind <address>]
+```
+
+| Argument / flag | Type | Default | Effect |
+|---|---|---|---|
+| `<model>` | `String?` | none | Choose this model (its id or listed name, any case) without the list |
+| `--bind <address>` | `String?` | `0.0.0.0` (`ClusterServingScope.localOnlyDefaultBind`) | Where the leader's API listens: `localhost` or a numeric IPv4/IPv6 address (`ClusterServingScope.isValidBind`) |
+| `--model-dir`, `--worker` | `String?`, **hidden** | none | As for `darkbloom cluster` (developer) |
+| `--private-glm-image-qualification` | flag, **hidden** | `false` | Select the bounded GLM image candidate on the current paired leader for local qualification; requires the exact cached GLM artifact, uses automatic placement, and does not grant coordinator or solo serving |
+
+Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
+saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
+`localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
+The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
+otherwise. Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+(`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit
@@ -1804,3 +1834,41 @@ Source: `provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.sw
 | `revision` | empty string | CLI-generated identity for the approved configuration |
 | `paused` | `false` | Suspend new automatic changes while retaining ready models |
 | `min_idle_seconds` | `60` | Inactivity guard, independent from minimum residence |
+
+## GLM automatic finite-calibration placement
+
+`darkbloom cluster glm-calibration-candidates --input /absolute/quote-template.json --planner-sha256 <installed-helper-sha256> [--speed /absolute/measurement.json ...]` scans every structural GLM boundary on this Mac using the installed plan helper. The owner-only template may omit `request.selection.cut`. The scan performs metadata reads and device queries, acquires local metadata exclusion, and loads no model. Its result is an observation, not an authorization.
+
+Collect a snapshot on each Mac, retain both as owner-only files, then pass the same two snapshots on both Macs:
+
+```sh
+darkbloom cluster glm-calibration-run --input /absolute/dispatch.json \
+  --placement /absolute/rank0.candidates.json \
+  --placement /absolute/rank1.candidates.json
+```
+
+The command chooses a cut automatically, inserts it into the local quotation in memory, and follows the existing signed quote, pair agreement, owner, live admission and finite-run path. Snapshots expire after 120 seconds; a changed local template or lack of a common feasible cut refuses before launch. The quotation worker rechecks current memory, so a changed device can refuse a previously feasible choice. Resample both Macs instead of increasing bounds or forcing a cut. Omitting `--placement` retains explicit-cut diagnostic behavior. The JSON result includes `automaticPlacement` with the selected cut, prediction provenance and separate measured-best/calibrated flags.
+
+The finite experiment accepts the following scope; these are calibration
+ceilings, separate from general serving limits:
+
+| Field | Bound | Validation source |
+|---|---|---|
+| Prompt / prefill chunk | `1...2048` each; chunk no greater than the actual prompt | `GLM5NextCalibration.Authorization.validate`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Qualification/GLM5NextCalibration.swift` |
+| Output | `1...16` | Same authorization and the selection validators |
+| Selected context | At least selected maximum prompt + maximum output, at most `2064` | `GLM5NextCalibrationDocument.validate`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationDocument.swift`; `GLM5NextAutomaticPlacement.scan`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextAutomaticPlacement.swift` |
+
+A full 2048-prompt/16-output experiment requires context 2064. Obtain fresh
+matching quotes and scope bindings from the source-matched installed helpers;
+older lower-scope quotes cannot authorize the larger request. Experimental
+workspace allowances do not become measured serving evidence. The
+[GLM cluster prefill contract](../architecture/inference.md#glm-cluster-prefill-bounds)
+retains separate logical-array, raw-frame and encrypted-record bounds.
+
+These commands do not enable a public GLM endpoint. See [placement semantics](../architecture/inference.md#exact-quote-placement).
+
+The `cluster` setup installs its background service with the enclosing app's
+Local Network identity. A signed app keeps serving after the setup terminal
+closes. A development fallback names its session lifetime limitation on screen;
+keep that Terminal or SSH session open. See [cluster service
+permissions](cluster-always-on.md#permissions-asked-once).

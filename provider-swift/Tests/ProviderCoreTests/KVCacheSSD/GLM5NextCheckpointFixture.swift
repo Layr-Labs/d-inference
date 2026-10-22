@@ -76,6 +76,27 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
             let factory = try GLM5NextMTPExecution(target: model, predictor: predictor,
                 maximumInputs: 1536, storage: .contiguous)
             let assistant = try GLM5NextMTPAdapter(target: model, predictor: predictor, factory: factory)
+            // Preserve the target-only allowance and fund the actual bounded
+            // assistant quote separately, including the admission watermark.
+            let admissionConfig = model.cbv2NativeAdmissionConfig
+            let allocationLimits = CBv2MTPAllocationLimits(
+                maximumPrefillTokens: Self.chunk, maximumDraftTokens: 1)
+            let resolution = CBv2MTPBoundedAdmission.resolve(
+                spec: assistant.boundedRequestAllocation(limits: allocationLimits),
+                limits: allocationLimits, policy: Memory.allocationFootprintPolicy())
+            guard case .bounded(let quote) = resolution else {
+                Issue.record("encrypted fixture MTP allocation quote unavailable: \(resolution)")
+                throw CBv2CompleteCheckpointError.invalidManifest
+            }
+            let assistantBytes = try #require(quote.bytes(forTokens: factory.maximumInputs))
+            let assistantCapacity = Double(assistantBytes) / (1 - admissionConfig.watermarkFraction)
+            let targetCapacity = 64 << 20
+            guard assistantCapacity.isFinite, assistantCapacity >= 0,
+                assistantCapacity.rounded(.up) < Double(Int.max - targetCapacity - 1)
+            else { throw CBv2CompleteCheckpointError.invalidManifest }
+            let nativeCapacity = targetCapacity + Int(assistantCapacity.rounded(.up)) + 1
+            #expect(nativeCapacity - Int(Double(nativeCapacity) * admissionConfig.watermarkFraction)
+                >= assistantBytes + targetCapacity - Int(Double(targetCapacity) * admissionConfig.watermarkFraction))
             let limits = try CBv2PagedGatheredAttentionLimits(maximumBatchSize: 1,
                 maximumQueryTokens: Self.chunk, maximumContextTokens: 1536,
                 maximumInFlightGraphs: 2, maximumScratchBytes: 128 << 20,
@@ -84,7 +105,7 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
             let resources: GLM5NextMTPExecution.NativeResources
             do {
                 resources = try factory.makeNativeResources(assistant: assistant,
-                    config: .init(capacityBytes: 64 << 20, dtype: .float32,
+                    config: .init(capacityBytes: nativeCapacity, dtype: .float32,
                         maxPrefillChunk: Self.chunk, nominalMaxSequenceLength: 1536,
                         maxBufferLength: 16 << 20, segmentSizeBytes: 64 << 10,
                         layerDTypes: model.cbv2CompleteCheckpointKVDTypes, gatheredAttention: limits),
@@ -108,6 +129,8 @@ final class GLM5NextCheckpointFixture: @unchecked Sendable {
                     maxSpeculativeBatch: 1, fixedDraftTokens: 1, verificationMode: .serialTarget),
                 processMemoryOwner: resources.processMemoryOwner, nativeCompletionTracking: true,
                 nativeExecutionContract: resources.contract)
+            #expect(engine.resolvedMTPAdmission == resolution,
+                "fixture capacity and engine must consume the identical bounded assistant quote")
             nativeContracts[ObjectIdentifier(engine)] = resources.contract.id
             engines.append(engine)
             return engine

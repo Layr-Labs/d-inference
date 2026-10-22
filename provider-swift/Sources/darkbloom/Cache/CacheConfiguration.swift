@@ -9,6 +9,8 @@ struct CacheSettingsStatus: Encodable {
     let dailyWriteSource: String
     let volume: CacheVolume?
     let problem: String?
+    /// The pair's prefix tier on this Mac (same settings, its own root).
+    let cluster: ClusterPrefixSSDInspection
     let scope = "saved_settings"
     var storageCheck: String {
         problem ?? (volume == nil ? "built-in storage (checked when cache opens)" : "passed")
@@ -39,10 +41,12 @@ func inspectCacheSettings(_ settings: CacheSettings) -> CacheSettingsStatus {
     let bytes = settings.dailyWriteGB.map { _ in
         CacheStorage.dailyWriteBytes(settings: settings, environment: [:])
     }
+    let cluster = ClusterPrefixSSDInspection.inspect(
+        root: ClusterPrefixCacheSettings.product(cacheSettings: settings, environment: [:]).root)
     return CacheSettingsStatus(directory: CacheStorage.root(for: settings).path,
         dailyWriteBytes: bytes, unlimited: bytes.map { $0 == 0 },
         dailyWriteSource: bytes == nil ? "startup_environment_or_default" : "saved_settings",
-        volume: volume, problem: problem)
+        volume: volume, problem: problem, cluster: cluster)
 }
 
 /// Re-read under the shared config lock, preserving unrelated concurrent edits.

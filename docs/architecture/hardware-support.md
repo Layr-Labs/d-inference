@@ -657,3 +657,44 @@ and `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factor
 - [routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md) — coordinator servability predictor
 - [`components/mlx-swift.md`](components/mlx-swift.md) — the pinned MLX stack and the SwiftPM platform floor
 - [`../design/activation-reserve-overhaul-plan.md`](../design/activation-reserve-overhaul-plan.md) — the plan that introduced per-model floors
+
+## Cluster serving and idle sleep
+
+Cluster members use process-owned macOS power assertions while serving. The
+[lifetime and retry rules](inference.md#cluster-serving-and-idle-sleep) apply
+on every supported chip; explicit sleep and lid closure remain OS decisions.
+
+## Finite GLM control evidence
+
+The [finite paired-control retirement](inference.md#finite-glm-paired-control-retirement)
+path preserves native owner retirement and resource accounting. Its encrypted
+loopback CPU regression exercises control and process lifetime with synthetic
+report values; it establishes no model, GPU, RDMA, hardware-capacity or serving
+qualification. The dispatch summary explicitly keeps `servingGrant` and
+`qualifiesMaximumEnvelope` false
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationDispatch.swift`,
+`execute`).
+
+## Automatic placement from exact resource quotes
+
+The GLM finite-calibration scanner uses the current load-gate sample, allocator active/cache usage, maximum buffer bound and independent native/host authorization ceilings. Available unified memory excludes the larger of the load gate's headroom and the authorized OS headroom. The exact full-construction and request peaks remain overlapped in the reservation. A structural cut is feasible only if both rank quotes fit all their bounds; no layer count, device name or memory ratio grants admission.
+
+Snapshots are short-lived observations. The signed quotation worker resamples current bounds before returning its selected quote, and later live load/request gates remain unchanged. A feasible snapshot is neither a memory-calibration pass nor proof of measured fastest throughput. See [the shared placement decision](inference.md#exact-quote-placement).
+
+## GLM cluster image accounting
+
+The explicit `ClusterGLMImageCandidate.profileID` assigns the native vision tower
+to rank 0. Ordinary text layouts and LOAD quotes exclude these image allocations;
+the candidate alone enables them through its bound runtime profile.
+`GLM5NextStageLoadResources` derives its source allocations from the verified
+inventory and charges three additional vision allocation copies for construction
+and layout aliases. `GLM5NextImageBudget` adds per-rank encoded-wire ownership and
+rank-0 pixel/patch/feature, bounded tiled attention, embedding splice and
+conservative native scratch to text state; these charges are additive. Planner
+work includes tower construction and conservatively charges the larger media
+workspace on every rank. Admission still checks current OS/native capacity.
+These bounds are not measured image qualification or a new hardware minimum.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextStageLoadResources.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextImageBudget.swift`, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`.

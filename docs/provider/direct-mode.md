@@ -185,6 +185,13 @@ for parser selection and incomplete thinking, and the
 [regression recipe](../developer/test.md#local-responses-and-reasoning-regressions)
 for isolated helper/router checks.
 
+Flint (`model_type: flint`) reads the same reasoning controls on Chat
+Completions and Responses. Effort values and thinking switches are accepted
+with no effect; `reasoning.exclude: true`, `include_reasoning: false` or
+`reasoning.enabled: false` omit reasoning from the response while its tokens
+are still counted. `stop` and JSON `response_format` apply to the answer after
+reasoning. See [Native Flint](../architecture/inference.md#native-flint).
+
 ## Verify
 
 ```bash

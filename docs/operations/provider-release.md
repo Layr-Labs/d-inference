@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -408,7 +408,10 @@ relaxed designated requirement that keeps the bundle identifier
 `io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
 (`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
 the full Apple-team requirement unchanged, and a prod coordinator is never
-served a pre-release version. The dev coordinator also hashes the bundle rather
+served a pre-release version. The installer extracts the release archive with
+`/usr/bin/tar` under umask 022, so a restrictive caller umask cannot leave the
+installed app owner-only; private state it creates elsewhere keeps its own modes
+(`scripts/install.sh`, `install_bundle_atomically`). The dev coordinator also hashes the bundle rather
 than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
 device-attestation tier, not a code-signature tier.
 

@@ -18,7 +18,8 @@ import ProviderCoreFoundation
 /// model-specific fields. `enableThinking` is already resolved across top-level and
 /// `chat_template_kwargs`; the typed request's nested `reasoning.enabled`
 /// remains authoritative for its supported families. GLM retains its own exact
-/// effort/clear_thinking evidence until actual model metadata selects its path.
+/// effort/clear_thinking evidence, and Flint its reasoning-control and
+/// visibility evidence, until actual model metadata selects that path.
 public struct ChatTemplateControls: Sendable, Equatable {
     public let reasoningEffort: String?
     public let enableThinking: Bool?
@@ -30,6 +31,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
     var rawMiMoControls = MiMoV26RawControlEvidence()
     var rawMiMoTools = MiMoV26ToolEvidence()
     var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
+    var rawFlintControls = FlintRequestPolicy.RawControls()
 
     public init(
         reasoningEffort: String? = nil,
@@ -51,6 +53,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
         copy.rawMiMoControls = rawMiMoControls
         copy.rawMiMoTools = rawMiMoTools
         copy.rawGLM5Controls = rawGLM5Controls
+        copy.rawFlintControls = rawFlintControls
         return copy
     }
 
@@ -63,6 +66,12 @@ public struct ChatTemplateControls: Sendable, Equatable {
     func withRawGLM5Controls(_ evidence: GLM5NextPromptPolicy.RawControls) -> Self {
         var copy = self
         copy.rawGLM5Controls = evidence
+        return copy
+    }
+
+    func withRawFlintControls(_ evidence: FlintRequestPolicy.RawControls) -> Self {
+        var copy = self
+        copy.rawFlintControls = evidence
         return copy
     }
 
@@ -158,17 +167,19 @@ extension MultiModelBatchSchedulerEngine {
     /// remains authoritative to preserve that authenticated boundary.
     /// `logprobs`/`topLogprobs` overlay the OpenAI knobs of the same names
     /// onto the internal shape; on the coordinator path they arrive via
-    /// `EngineV2LogprobsPlumbing`.
+    /// `EngineV2LogprobsPlumbing`. `engineStopStrings: false` withholds `stop`
+    /// from the engine's raw-text holdback when a native constraint owns it.
     static func translate(
         openAIRequest request: OpenAIChatCompletionRequest,
         defaultMaxTokens: Int,
         logprobs: Bool? = nil,
         topLogprobs: Int? = nil,
         logitBias: [String: Float]? = nil,
-        seed: UInt64? = nil
+        seed: UInt64? = nil,
+        engineStopStrings: Bool = true
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
-            guard let stops = request.stop, !stops.isEmpty else { return nil }
+            guard engineStopStrings, let stops = request.stop, !stops.isEmpty else { return nil }
             return .multiple(stops)
         }()
         return ChatCompletionRequest(

@@ -2068,14 +2068,46 @@ allowlist and does not establish that a Flint slot used paged attention. Record
 the resolved backend in every performance receipt. Contiguous measurements are
 separate reference results, not evidence of paged throughput.
 
-Flint chooses reasoning automatically. `FlintRequestPolicy` rejects explicit
-reasoning effort/enabled controls, media and combined JSON response-format/tool
-requests. Output limits remain ordinary completion-token limits.
+Flint always decides for itself whether to reason; it has no trained switch,
+effort level or budget, and its pinned template reads none of these controls
+([Recursive's serving guide](https://github.com/RecursiveSI/flint/blob/2a247be0c0aec895ccb0ac7ca92229ec6df37288/sglang/README.md)).
+`FlintRequestPolicy` accepts `reasoning_effort` and `reasoning.effort` (none,
+minimal, low, medium, high or xhigh), `reasoning.enabled`, `enable_thinking`
+and `chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
+prompt. Malformed values, unknown efforts, `preserve_thinking`, other reasoning
+keys and media are refused. When a request sets `reasoning.exclude` true,
+`include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
+withholds the generated reasoning, so chat completions, the Responses API and
+the coordinator relay return only content and tool calls. The withheld tokens
+still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
+the response hash covers only emitted output, and withheld reasoning counts as
+first output for the first-content deadline. Output limits remain ordinary
+completion-token limits.
+
 `ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
 exact `model_type: flint` request, including requests without tools. It verifies
-the rendered assistant boundary and pinned tokenizer markers. Custom stop
-strings are rejected because independent stop-string matching could terminate
-an unfinished reasoning span or call. Other model families retain their policies.
+the rendered assistant boundary and pinned tokenizer markers. Engine stop-string
+matching stays off for Flint because it could end an unfinished reasoning span
+or call. Instead, up to four client `stop` sequences of at most 256 bytes are
+matched by `FlintAnswerStops` against visible answer bytes only: reasoning,
+call frames and arguments never advance a match. `FlintAnswerStopConstraint`
+leaves only an answer EOS after the first match, so the request finishes with
+`stop`, and `FlintAnswerStopFilter` withholds the sequence and everything after
+it before the channel splitter or tool parser sees it. Other model families
+retain their policies.
+
+A JSON `response_format` (`json_object`, or `json_schema` within the shared
+fail-closed schema subset) constrains the content after optional reasoning, as
+in Recursive's guide. `FlintJSONContentAutomaton` replaces the boundary's
+content phase: reasoning is unconstrained, and visible content must be one JSON
+value of the compiled grammar; declared object properties are the only keys
+generated. A schema outside the subset is a 400 before generation.
+`FlintResponseFormat.validate` decodes and checks the completed content again;
+a failure, including an output budget that ends before the value completes, is
+a typed 422 rather than a successful completion. Tools plus a response format
+get only the response format, whatever `tool_choice` asked: the prompt renders
+as it would without the format, so the coordinator prompt sidecar needs no
+format rule, and no call may be generated or returned.
 
 | Prepared tool choice | Native output boundary |
 |---|---|
@@ -2154,6 +2186,11 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift` (`make`),
 `provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift` (`FlintNativeProtocolConstraint`),
 `provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift` (`FlintNativeProtocolBoundary`),
+`provider-swift/Sources/ProviderCore/Inference/FlintAnswerStops.swift`,
+`provider-swift/Sources/ProviderCore/Inference/FlintAnswerStopConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
 `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,

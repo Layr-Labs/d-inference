@@ -920,6 +920,14 @@ and stops/drains them. `DARKBLOOM_FLINT_PORT` selects an unused port;
 owned file. Keep these model-dependent checks separate from tiny-fixture,
 public-CI and signed-release evidence.
 
+`FlintOpenRouterLiveTests` uses the same environment plus
+`DARKBLOOM_FLINT_OPENROUTER_LIVE=1` and always serves paged attention. It sends
+the parameters OpenRouter lists for Flint over loopback HTTP: reasoning effort,
+enabled and exclude controls (chat, streaming and Responses), `stop`,
+`json_object` and strict `json_schema` (alone and with tools), named tools,
+`logprobs`/`top_logprobs` and `seed`. Source:
+`provider-swift/Tests/ProviderCoreTests/Server/FlintOpenRouterLiveTests.swift`.
+
 Keep adversarial history assertions on visible answer content and unintended
 calls. Do not replace a failed answer with a reasoning-only assertion. An
 unconstrained raw-token diagnostic can help identify which terminal was sampled,

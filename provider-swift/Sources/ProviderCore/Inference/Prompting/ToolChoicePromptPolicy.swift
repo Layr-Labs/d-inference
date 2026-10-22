@@ -35,9 +35,11 @@ enum ToolChoicePromptPolicy {
         // exactly as it would without the format (Flint keeps the original
         // messages and the declared tools), so the coordinator sidecar's mirror
         // needs no format rule; only generation changes: no call is allowed.
-        var prepared = Prepared(
-            messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
-            allowsParallelCalls: false, allowedToolNames: [])
+        var prepared = choice.tools?.isEmpty == false
+            ? Prepared(
+                messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
+                allowsParallelCalls: false, allowedToolNames: [])
+            : choice
         prepared.responseFormat = responseFormat
         return prepared
     }

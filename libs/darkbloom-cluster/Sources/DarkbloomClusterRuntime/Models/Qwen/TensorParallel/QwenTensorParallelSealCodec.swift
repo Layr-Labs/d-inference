@@ -94,7 +94,7 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
         return min(bytes, index * per) ..< min(bytes, (index + 1) * per)
     }
 
-    private func nonce(sender: Int, counter: UInt64, piece: Int) throws -> AES.GCM.Nonce {
+    func nonce(sender: Int, counter: UInt64, piece: Int) throws -> AES.GCM.Nonce {
         var bytes = [UInt8](repeating: 0, count: 12)
         bytes[0] = UInt8(piece >> 8); bytes[1] = UInt8(piece & 0xFF)
         bytes[3] = UInt8(sender)
@@ -128,7 +128,7 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
     /// `aad` and the piece size: no streamed piece opens as a whole-frame
     /// piece (the data differ in length), and a rank that cuts other pieces
     /// is refused.
-    private func streamedAAD(counter: UInt64, bytes: Int, sender: Int, piece: Int, of count: Int) -> Data {
+    func streamedAAD(counter: UInt64, bytes: Int, sender: Int, piece: Int, of count: Int) -> Data {
         var data = aad(counter: counter, bytes: bytes, sender: sender, piece: piece, of: count)
         data.append(contentsOf: withUnsafeBytes(of: UInt32(Self.streamedPieceBytes).bigEndian) { Array($0) })
         return data
@@ -200,6 +200,38 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
         return 0
     }
 
+    /// `streamedAAD`'s and `nonce`'s bytes, built on the stack: a decode-sized
+    /// sum seals and opens one piece on its critical path, where the Data and
+    /// array allocations of building them cost about as much as the AES-GCM
+    /// call itself. The bytes are the same (`streamedHeaderMatchesTheReference`).
+    func withStreamedHeader<R>(counter: UInt64, bytes: Int, sender: Int, piece: Int, of count: Int,
+                               _ body: (AES.GCM.Nonce, UnsafeRawBufferPointer) throws -> R) throws -> R {
+        let aadCount = scope.count + 8 + 8 + 1 + 4 + 4 + 4
+        return try withUnsafeTemporaryAllocation(of: UInt8.self, capacity: aadCount + 12) { buffer in
+            let base = buffer.baseAddress!
+            func put<T: FixedWidthInteger>(_ value: T, at offset: Int) {
+                withUnsafeBytes(of: value.bigEndian) { raw in
+                    for (i, byte) in raw.enumerated() { base[offset + i] = byte }
+                }
+            }
+            scope.copyBytes(to: base, count: scope.count)
+            var at = scope.count
+            put(counter, at: at); at += 8
+            put(UInt64(bytes), at: at); at += 8
+            base[at] = UInt8(sender); at += 1
+            put(UInt32(piece), at: at); at += 4
+            put(UInt32(count), at: at); at += 4
+            put(UInt32(Self.streamedPieceBytes), at: at); at += 4
+            // The nonce: piece (big-endian, 2 bytes), 0, sender, counter (big-endian).
+            let nonce = base + aadCount
+            nonce[0] = UInt8(piece >> 8); nonce[1] = UInt8(piece & 0xFF); nonce[2] = 0; nonce[3] = UInt8(sender)
+            put(counter, at: aadCount + 4)
+            return try body(
+                try AES.GCM.Nonce(data: UnsafeRawBufferPointer(start: nonce, count: 12)),
+                UnsafeRawBufferPointer(start: base, count: aadCount))
+        }
+    }
+
     /// One streamed piece: `length` plaintext bytes become `length` ciphertext
     /// bytes, then the tag. Any thread, any order within a counter.
     func sealPiece(_ plaintext: UnsafeRawPointer, _ length: Int, _ sealed: UnsafeMutableRawPointer, _ counter: UInt64,
@@ -207,9 +239,10 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
         guard !refused, Self.isStreamedPiece(piece, of: count, total: total, length: length),
               let sendKey = keys(counter: counter, bytes: total)?.send else { return 1 }
         do {
-            let box = try AES.GCM.seal(UnsafeRawBufferPointer(start: plaintext, count: length), using: sendKey,
-                nonce: try nonce(sender: rank, counter: counter, piece: piece),
-                authenticating: streamedAAD(counter: counter, bytes: total, sender: rank, piece: piece, of: count))
+            let box = try withStreamedHeader(counter: counter, bytes: total, sender: rank, piece: piece, of: count) {
+                try AES.GCM.seal(UnsafeRawBufferPointer(start: plaintext, count: length), using: sendKey,
+                    nonce: $0, authenticating: $1)
+            }
             guard box.ciphertext.count == length, box.tag.count == Self.tagBytes else { return 1 }
             let out = sealed.assumingMemoryBound(to: UInt8.self)
             box.ciphertext.copyBytes(to: out, count: length)
@@ -233,11 +266,12 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
         let opened: Data
         do {
             // Views of the received frame: the piece is not first copied out of it.
-            let box = try AES.GCM.SealedBox(nonce: try nonce(sender: peer, counter: counter, piece: piece),
-                ciphertext: UnsafeRawBufferPointer(start: source, count: length),
-                tag: UnsafeRawBufferPointer(start: source + length, count: Self.tagBytes))
-            opened = try AES.GCM.open(box, using: receiveKey,
-                authenticating: streamedAAD(counter: counter, bytes: total, sender: peer, piece: piece, of: count))
+            opened = try withStreamedHeader(counter: counter, bytes: total, sender: peer, piece: piece, of: count) {
+                let box = try AES.GCM.SealedBox(nonce: $0,
+                    ciphertext: UnsafeRawBufferPointer(start: source, count: length),
+                    tag: UnsafeRawBufferPointer(start: source + length, count: Self.tagBytes))
+                return try AES.GCM.open(box, using: receiveKey, authenticating: $1)
+            }
         } catch { return refuse(counter: counter, piece: piece) }
         guard opened.count == length else { return refuse(counter: counter, piece: piece) }
         opened.copyBytes(to: plaintext.assumingMemoryBound(to: UInt8.self), count: length)

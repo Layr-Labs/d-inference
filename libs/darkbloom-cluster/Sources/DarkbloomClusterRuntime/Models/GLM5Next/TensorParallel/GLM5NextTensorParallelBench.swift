@@ -346,11 +346,33 @@ public enum GLM5NextTensorParallelBench {
             var lazyToken = MLXArray([token], [1, 1])
             var previous = DispatchTime.now().uptimeNanoseconds
             var pending: MLXArray?
+            // GLM53_TP_VOCAB_PARALLEL=1: each rank projects half the vocabulary
+            // (`lastTokenVocabularyPart`) and one small sum agrees on the greedy
+            // token: the same argmax (ties keep the lower index, rank 0's half).
+            let vocabulary = group.flatMap { group in
+                ProcessInfo.processInfo.environment["GLM53_TP_VOCAB_PARALLEL"] == "1" ? group : nil
+            }
+            let readout: GLM5NextTextStageReadout = vocabulary.map {
+                .lastTokenVocabularyPart(part: $0.rank, parts: 2)
+            } ?? .lastToken
             for _ in 1 ..< max(1, options.outputCount) {
-                let candidate = try stage.prepareForward(tokens: lazyToken, cache: cache, readout: .lastToken)
+                let candidate = try stage.prepareForward(tokens: lazyToken, cache: cache, readout: readout)
                 try candidate.commit { roots in asyncEval(roots) }
                 guard case .final(let output) = candidate.output else { throw ProbeError("GLM bench decode produced no logits") }
-                let next = argMax(output.logits[0..., -1, 0...].asType(.float32), axis: -1).asType(.int32).reshaped(1, 1)
+                let next: MLXArray
+                if let group = vocabulary {
+                    let row = output.logits[0..., -1, 0...].asType(.float32)
+                    let local = argMax(row, axis: -1).reshaped(1)
+                    let mine = concatenated([
+                        takeAlong(row, local.reshaped(1, 1), axis: -1).reshaped(1),
+                        local.asType(.float32) + Float(group.rank * row.dim(-1)),
+                    ])
+                    let zero = MLXArray.zeros([2], dtype: .float32)
+                    let pair = group.allSum(concatenated(group.rank == 0 ? [mine, zero] : [zero, mine]))
+                    next = MLX.where(pair[2] .> pair[0], pair[3], pair[1]).asType(.int32).reshaped(1, 1)
+                } else {
+                    next = argMax(output.logits[0..., -1, 0...].asType(.float32), axis: -1).asType(.int32).reshaped(1, 1)
+                }
                 asyncEval(next)
                 if let pending {
                     tokens.append(Int(pending.item(Int32.self)))

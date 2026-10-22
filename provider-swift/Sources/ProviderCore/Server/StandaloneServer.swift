@@ -563,8 +563,10 @@ public actor StandaloneServer {
             while !Task.isCancelled {
                 try? await taskSleep(sweepInterval)
                 if Task.isCancelled { break }
-                kvBudget.proactiveReclaimSweep()
+                // Warmup first: the sweep skips while a session runs, whereas a
+                // flush queued first could land after the session starts and cancel it.
                 await self?.retryShapeWarmups()
+                kvBudget.proactiveReclaimSweep()
             }
         }
         lifecycleState = .running

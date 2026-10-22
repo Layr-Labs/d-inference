@@ -24,7 +24,13 @@ struct BenchmarkRuntimeGenerationOptionsTests {
             "--runtime-generation", "--runtime-mtp", "--runtime-concurrency", "1,2,4,8",
         ])
         #expect(concurrent.runtimeConcurrency == "1,2,4,8")
+        #expect(!concurrent.runtimeStagger)
         #expect(concurrent.benchmarkModeConflict() == nil)
+        let staggered = try Benchmark.parse([
+            "--runtime-generation", "--runtime-concurrency", "4", "--runtime-stagger",
+        ])
+        #expect(staggered.runtimeStagger)
+        #expect(staggered.benchmarkModeConflict() == nil)
     }
 
     @Test func incompatibleModesAndUnscopedRuntimeOptionsAreRefused() throws {
@@ -35,6 +41,9 @@ struct BenchmarkRuntimeGenerationOptionsTests {
         #expect(try Benchmark.parse(["--runtime-mtp"]).benchmarkModeConflict() != nil)
         #expect(
             try Benchmark.parse(["--runtime-concurrency", "1,2"]).benchmarkModeConflict() != nil)
+        #expect(
+            try Benchmark.parse(["--runtime-generation", "--runtime-stagger"])
+                .benchmarkModeConflict() != nil)
         #expect(
             try Benchmark.parse(["--runtime-prompt-file", "/tmp/input"]).benchmarkModeConflict()
                 != nil)

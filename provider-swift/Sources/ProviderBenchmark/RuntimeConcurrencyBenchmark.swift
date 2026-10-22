@@ -18,6 +18,8 @@ public enum RuntimeConcurrencyBenchmark {
         /// Submit to first token, and to the third.
         let firstTokenMs: Double?
         let thirdTokenMs: Double?
+        /// Submit to each of the first eight tokens.
+        let earlyTokenMs: [Double]
         /// (tokens - 1) / (last arrival - first arrival).
         let decodeTokensPerSecond: Double?
     }
@@ -44,13 +46,21 @@ public enum RuntimeConcurrencyBenchmark {
         let mtpActive: Bool
         let resolvedBackend: String
         let maxTokens: Int
+        /// Row i of a B-row batch stops after `staggeredMaxTokens` tokens.
+        let staggered: Bool
         let warmupMaxTokens: Int
         let cells: [Cell]
     }
 
+    /// Row i of a B-row batch: maxTokens * (B - i) / B, at least 3, so rows
+    /// finish one by one and the last decodes alone.
+    static func staggeredMaxTokens(_ maxTokens: Int, row: Int, batchSize: Int) -> Int {
+        max(3, maxTokens * (batchSize - row) / batchSize)
+    }
+
     public static func run(
         modelID: String, modelDirectory: URL, prompt: String, batchSizes: [Int],
-        maxTokens: Int, warmupMaxTokens: Int = 32, backend: String,
+        maxTokens: Int, staggered: Bool = false, warmupMaxTokens: Int = 32, backend: String,
         mtpEnabled: Bool, assistantDirectory: URL? = nil, renderDate: String,
         checkpointQuantizationConfig: String = "balanced"
     ) async throws -> (json: String, succeeded: Bool) {
@@ -107,7 +117,13 @@ public enum RuntimeConcurrencyBenchmark {
                     resolvedBackend = session.backend
                     let stopTokens = await session.stopTokenIDs()
                     var requests = try (0 ..< batchSize).map(prepared)
-                    for index in requests.indices { requests[index].stopTokens = stopTokens }
+                    for index in requests.indices {
+                        requests[index].stopTokens = stopTokens
+                        if staggered {
+                            requests[index].maxTokens = staggeredMaxTokens(
+                                maxTokens, row: index, batchSize: batchSize)
+                        }
+                    }
                     var warmup = requests
                     for index in warmup.indices { warmup[index].maxTokens = warmupMaxTokens }
                     _ = try await runBatch(session, warmup)
@@ -138,7 +154,8 @@ public enum RuntimeConcurrencyBenchmark {
             let report = Report(
                 modelID: modelID, runtimeIdentity: EngineV2Factory.benchmarkRuntimeIdentity(),
                 mtpRequested: mtpEnabled, mtpActive: mtpActive, resolvedBackend: resolvedBackend,
-                maxTokens: maxTokens, warmupMaxTokens: warmupMaxTokens, cells: cells)
+                maxTokens: maxTokens, staggered: staggered, warmupMaxTokens: warmupMaxTokens,
+                cells: cells)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let json = String(decoding: try encoder.encode(report), as: UTF8.self)
@@ -218,6 +235,7 @@ public enum RuntimeConcurrencyBenchmark {
                 firstTokenMs: row.arrivalNanos.first.map { ms($0, from: row.submittedNanos) },
                 thirdTokenMs: row.arrivalNanos.count > 2
                     ? ms(row.arrivalNanos[2], from: row.submittedNanos) : nil,
+                earlyTokenMs: row.arrivalNanos.prefix(8).map { ms($0, from: row.submittedNanos) },
                 decodeTokensPerSecond: rate)
         }
         var windowRate: Double?

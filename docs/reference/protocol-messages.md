@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -575,8 +575,15 @@ define the mirror.
 | Key | Meaning |
 |---|---|
 | `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
-| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time since the newest observation at snapshot, even if an older completed observation arrives later |
 | `workload_buckets` | Bounded numeric buckets with `phase` (`prefill`, `decode`, `native_media_prefill`), `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation`, and optional `concurrent_requests` (peak observed request overlap; 1–64; omitted by legacy providers) |
+
+The Swift producer applies the same age rule independently to each workload
+bucket and current-posture series
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift`,
+`EnginePerformanceMeasurements.observe`).
+Completed samples retain the existing receipt-order EWMA and sample counts;
+snapshot time does not replace observation time. Wire fields are unchanged.
 
 `native_media_prefill` records the target decoder's actual computed suffix for
 owner-bound native media, after encoder preparation. It retains cache and
@@ -753,6 +760,15 @@ Go `InferenceResponseChunkMessage` · Swift `InferenceResponseChunk`.
 | `request_id` | `string` | `String` | req | |
 | `data` | `string` | `String` | opt | SSE chunk text; empty when E2E encryption is active |
 | `encrypted_data` | `*EncryptedPayload` | `EncryptedPayload?` | opt | [`EncryptedPayload`](#encryptedpayload) |
+
+A [streamed `auto` tool call](../architecture/inference.md#streamed-auto-tool-calls)
+spans several chunks whose `choices[].delta.tool_calls` entries share one
+`index`: the first carries `id`, `type`, `function.name` and an empty
+`function.arguments`, later ones only `index` and a `function.arguments`
+fragment. Consumers concatenate the fragments by `index`. Every other call is
+one entry carrying the complete call
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`,
+`streamChatCompletionFrames`).
 
 ### `inference_complete`
 

@@ -39,6 +39,7 @@ public enum EngineV2KVQuantizationPolicy {
         case invalidSelection(String)
         case invalidCheckpointSelection(String)
         case requiresPagedBackend(String)
+        case flintRequiresNative
 
         public var description: String {
             switch self {
@@ -48,6 +49,8 @@ public enum EngineV2KVQuantizationPolicy {
                 "Invalid checkpoint KV quantization \"\(raw)\"; expected balanced, k8v4, k8v8 or native"
             case .requiresPagedBackend(let reason):
                 "Live quantized KV requires paged execution; select native live precision for \(reason)"
+            case .flintRequiresNative:
+                "Flint currently requires native BF16 KV and native checkpoint precision"
             }
         }
     }
@@ -74,6 +77,13 @@ public enum EngineV2KVQuantizationPolicy {
         purpose: Purpose = .live
     ) throws -> EngineV2KVQuantizationSelection {
         guard modelType != "mimo_v2" else { return .native }
+        if modelType == "flint" {
+            let raw = environment[purpose.environmentKey] ?? byModel[modelID] ?? global
+            if let raw, !raw.isEmpty, try parseSelection(raw, purpose: purpose) != .native {
+                throw Failure.flintRequiresNative
+            }
+            return .native
+        }
         return try parseSelection(
             environment[purpose.environmentKey] ?? byModel[modelID] ?? global ?? "", purpose: purpose)
     }

@@ -117,6 +117,9 @@ public actor GlobalKVCacheBudget {
             reclaimableBytes: { snapshot().cache },
             isReclaimAllowed: {
                 let registry = MiMoV26NativeLoadRegistry.shared
+                // Failed GLM owners retain their arrays and ledger claims. An
+                // allocator cache trim frees only unowned cached allocations;
+                // it neither retires those owners nor refunds their claims.
                 return !registry.hasRetainedFault && !registry.hasUnretiredClosingTransactions
             })
     }

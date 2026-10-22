@@ -134,6 +134,8 @@ final class ProviderEngineBundle: @unchecked Sendable {
     let mtpArtifact: SpecDecArtifact?
     let mtpStatus: MTPActivationStatus
     let assistantBytes: UInt64
+    /// GLM step setup charged per step beside request reservations; 0 elsewhere.
+    let glm5NextStepSetupBytes: Int
 
     private let lock = NSLock()
     private var assistant: ProviderMTPAssistantHandle?
@@ -145,9 +147,11 @@ final class ProviderEngineBundle: @unchecked Sendable {
         assistantBytes: UInt64,
         mtpArtifact: SpecDecArtifact?,
         mtpStatus: MTPActivationStatus,
-        pinnedAssistant: (any AnyObject & Sendable)? = nil
+        pinnedAssistant: (any AnyObject & Sendable)? = nil,
+        glm5NextStepSetupBytes: Int = 0
     ) {
         self.bridge = bridge
+        self.glm5NextStepSetupBytes = glm5NextStepSetupBytes
         self.assistant = assistant
         self.assistantBytes = assistantBytes
         self.mtpArtifact = mtpArtifact

@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-21
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -107,7 +107,15 @@ using the existing DBK3 authenticated-encryption format. Keys remain in the
 Mac's Secure Enclave/Keychain hierarchy; selecting a different payload volume
 does not copy keys there. A dev build has its own installation KEK and Secure
 Enclave key (keychain prefix `io.darkbloom.dev`), so it cannot read a production
-provider's cache, and the reverse. Lookup names remain keyed HMACs. Some operational
+provider's cache, and the reverse. An ad hoc signed build has no keychain access
+group, so it gets no persistent cache key: its SSD stores are refused with
+`key_unavailable` unless an ephemeral key is explicitly allowed. For
+qualification only, a DEBUG build can instead derive the KEK from an
+operator-created private file (`DARKBLOOM_DEBUG_CACHE_KEY_FILE`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift`).
+That key material sits on disk protected only by file ownership, mode `0600`
+and the volume's encryption, not the Secure Enclave; release builds do not
+contain this path. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
 are unchanged. TTL checks on reuse, tenant binding and authentication remain in

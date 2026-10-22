@@ -18,12 +18,13 @@ extension EngineV2Factory {
         defaultDate: PromptRenderDate
     ) throws -> BenchmarkPrompt {
         let inbound = try ProviderLoop.decodeInboundChatRequest(body)
-        let request = inbound.request
-        guard !MediaIngest.hasMedia(request) else {
+        let decodedRequest = inbound.request
+        guard !MediaIngest.hasMedia(decodedRequest) else {
             throw BenchmarkPromptError.mediaRequiresHTTP
         }
         let supplied = inbound.extensions.templateControls
         let controls = supplied.promptDate == nil ? supplied.withPromptDate(defaultDate) : supplied
+        let request = try controls.rawMiMoTools.restoring(decodedRequest, modelType: modelType)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         let overrides = inbound.extensions.samplingOverrides
         let logprobs = inbound.extensions.logprobsSpec

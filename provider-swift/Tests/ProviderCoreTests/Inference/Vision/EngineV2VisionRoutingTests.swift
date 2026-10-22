@@ -1207,6 +1207,34 @@ struct EngineV2VisionRoutingTests {
             })
     }
 
+    @Test("bridge capacity refusal stays a pre-stream 503, not a construction refusal")
+    func bridgeCapacityRefusalIsNotAConstructionRefusal() async throws {
+        let (gate, budget) = makeBudgetedVisionGate()
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine, kvBudget: budget)
+        let telemetry = VisionTelemetrySink()
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: false, reservedTokens: 61_440)
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in throw refusal },
+            emitTelemetry: telemetry.callback())
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: bridge, plumbing: plumbing, visionGate: gate)
+
+        do {
+            _ = try await router.streamChatCompletion(request: imageRequest())
+            Issue.record("expected tokenBudgetExhausted throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == refusal)
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 503)
+        }
+        #expect(engine.submitted.isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
+            })
+    }
+
     @Test("MediaError out of construction keeps its deterministic 4xx (not a refusal)")
     func mediaErrorFromConstructionKeeps4xx() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))

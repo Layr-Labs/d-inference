@@ -268,6 +268,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
+    /// `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY`: the same default-on standing
+    /// residency for a published GLM engine, with the same rollback values.
     /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
     /// on by default for the supported MiMo identities; preserve its opt-out
     /// in the provider job independently of the global cache kill switch.
@@ -283,11 +285,14 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.
+    /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
+    /// is the GLM default; its serial-target rollback must reach the job.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
+        GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         PromptTokenCachePolicy.environmentKey,
@@ -295,6 +300,7 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.verifyEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
+        GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

@@ -7,7 +7,14 @@ import MLXLMServer
 /// rendering and output parsing both consume this plan, so they cannot
 /// disagree about thinking, tools or structured output.
 struct NemotronSuperRequestPlan: Sendable {
-    enum Failure: Error, Equatable { case unsupportedControl }
+    enum Failure: Error, Equatable { case unsupportedControl, tooManyContentParts }
+
+    /// Content parts one request may carry across all its messages, counted
+    /// after the response-format instruction is inserted and refused before
+    /// any render. The pinned template's cost grows with parts × prompt
+    /// length; rendering merges adjacent text parts
+    /// (`NemotronSuperPromptContract`), and this bounds what remains.
+    static let maximumContentParts = 4096
 
     /// Messages carry the provider's tool-choice and response-format text.
     let request: OpenAIChatCompletionRequest
@@ -17,13 +24,22 @@ struct NemotronSuperRequestPlan: Sendable {
     /// `formatted` is a request that `MLXOpenAIService` already passed through
     /// `OpenAIResponseFormatSupport.preparedRequest`; otherwise the instruction
     /// is inserted here exactly once. The request must name `modelID`.
+    /// `trustsSchemaMetadata` admits the reserved tool-schema marker, as the
+    /// generic engine does for coordinator requests: there the coordinator's
+    /// authenticated normalizer or this provider's decode inserted it. Local
+    /// requests leave it false, so a client-sent marker is refused.
     init(body: Data, formatted: OpenAIChatCompletionRequest? = nil,
-         modelID: String = NemotronSuperLocalBinding.modelID) throws {
+         modelID: String = NemotronSuperLocalBinding.modelID, trustsSchemaMetadata: Bool = false) throws {
         let decoded = try formatted ?? OpenAIResponseFormatSupport.preparedRequest(
             ProviderLoop.decodeOpenAIRequest(body))
+        let contentParts = decoded.messages.reduce(0) { count, message in
+            guard case .parts(let parts) = message.content else { return count }
+            return count + parts.count
+        }
+        guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
         try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
-            modelType: "nemotron_h_omni", allowInternalSchemaMetadata: false)
+            modelType: "nemotron_h_omni", allowInternalSchemaMetadata: trustsSchemaMetadata)
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools

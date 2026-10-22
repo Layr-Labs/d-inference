@@ -7,11 +7,15 @@ import MLXLMServer
 ///
 /// Streaming follows the token-level parser: in reasoning, `<think>` deltas
 /// are dropped and the first `</think>` ends reasoning; every later byte is
-/// content, including literal markers. A complete response follows
+/// content, including literal markers. With `force_nonempty_content`, a
+/// stream whose reasoning never closes repeats it as content at the end
+/// (vLLM `nemotron_v3`). A complete response follows
 /// `extract_reasoning`: text before the first `<think>` is discarded, the
 /// first `</think>` splits, a leading newline is removed only when the output
 /// itself opened the span, and `force_nonempty_content` turns unterminated
-/// reasoning into content. Thinking off makes all output content.
+/// reasoning into content. Thinking off makes all output content. Markers
+/// match literally, as the reference matches code points or marker tokens: a
+/// combining mark after `>` does not hide one.
 struct NemotronSuperReasoningChannel {
     static let open = "<think>"
     static let close = "</think>"
@@ -32,9 +36,6 @@ struct NemotronSuperReasoningChannel {
         inReasoning = controls.enableThinking
     }
 
-    /// Bytes withheld only while they may still complete a marker.
-    var heldCharacterCount: Int { held.count }
-
     /// Incremental split; concatenated results equal the streamed reference.
     mutating func stream(_ text: String) -> [ParsedReasoning] {
         guard inReasoning else { return text.isEmpty ? [] : [.init(content: text, reasoningContent: nil)] }
@@ -42,7 +43,7 @@ struct NemotronSuperReasoningChannel {
         var pieces: [ParsedReasoning] = []
         while inReasoning, !held.isEmpty {
             let earliest = [Self.open, Self.close].compactMap { marker in
-                held.range(of: marker).map { (marker, $0) }
+                held.range(of: marker, options: .literal).map { (marker, $0) }
             }.min { $0.1.lowerBound < $1.1.lowerBound }
             guard let (marker, range) = earliest else {
                 let keep = Self.partialMarkerSuffix(held)
@@ -70,14 +71,18 @@ struct NemotronSuperReasoningChannel {
         return pieces
     }
 
+    /// At the end of a stream: thinking never reached `</think>`, so no
+    /// content exists, and the request forces content from its reasoning.
+    var promotesUnterminatedReasoning: Bool { forceNonemptyContent && inReasoning }
+
     /// `UltraV3ReasoningParser.extract_reasoning` for a complete output.
     func complete(_ output: String) -> Split {
         guard thinking else { return Split(reasoning: nil, content: output.isEmpty ? nil : output) }
         var body = Substring(output)
-        let opened = output.range(of: Self.open)
+        let opened = output.range(of: Self.open, options: .literal)
         if let opened { body = output[opened.upperBound...] }
         var split: Split
-        if let closed = body.range(of: Self.close) {
+        if let closed = body.range(of: Self.close, options: .literal) {
             let content = body[closed.upperBound...]
             split = Split(reasoning: String(body[..<closed.lowerBound]),
                           content: content.isEmpty ? nil : String(content))

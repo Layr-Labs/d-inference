@@ -65,6 +65,18 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(try stream(&off, ["<think>no</think>", "yes"]), ["C:<think>no</think>", "C:yes"])
     }
 
+    /// A combining mark after a marker's `>` starts the following text, as in
+    /// the reference's code-point and marker-token matching.
+    func testMarkersMatchBeforeACombiningMark() throws {
+        var closed = try output()
+        XCTAssertEqual(try stream(&closed, ["a</think>\u{301}b"]), ["R:a", "C:\u{301}b"])
+        var opened = try output()
+        XCTAssertEqual(try stream(&opened, ["x<think>\u{301}y"]), ["R:x", "R:\u{301}y"])
+        var complete = try output(streaming: false)
+        _ = try complete.append("<think>\u{301}r</think>\u{301}c")
+        XCTAssertEqual(try complete.finish().result, .init(content: "\u{301}c", reasoning: "\u{301}r", calls: []))
+    }
+
     func testCompleteResponseFollowsExtractReasoning() throws {
         func complete(_ text: String, _ extra: String = "") throws -> (String, String?, [String]) {
             var output = try output(extra, streaming: false)
@@ -89,6 +101,42 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(off.2, ["C:<think>x</think>y"])
     }
 
+    /// `force_nonempty_content` makes unterminated reasoning the answer. A
+    /// stream (every coordinator request) keeps the streamed reasoning and
+    /// repeats it as content at the end, as vLLM `nemotron_v3` does, through
+    /// the same validators; a complete response moves it. Content after
+    /// `</think>`, or no opt-in, promotes nothing.
+    func testForceNonemptyContentPromotesUnterminatedReasoning() throws {
+        let force = #""chat_template_kwargs":{"force_nonempty_content":true}"#
+        var streamed = try output(force)
+        var events = try streamed.append("still ") + streamed.append("thinking")
+        let finished = try streamed.finish()
+        events += finished.events
+        XCTAssertEqual(try trace(events), ["R:still ", "R:thinking", "C:still thinking"])
+        XCTAssertEqual(finished.result, .init(content: "still thinking", reasoning: "still thinking", calls: []))
+        var answered = try output(force)
+        XCTAssertEqual(try stream(&answered, ["r</think>", "c"]), ["R:r", "C:c"])
+        var closedEmpty = try output(force)
+        XCTAssertEqual(try stream(&closedEmpty, ["r</think>"]), ["R:r"])
+        var notForced = try output()
+        XCTAssertEqual(try stream(&notForced, ["still thinking"]), ["R:still thinking"])
+        let json = force + #","response_format":{"type":"json_object"}"#
+        var object = try output(json)
+        XCTAssertEqual(try stream(&object, ["{\"a\":", "1}"]), [#"R:{"a":"#, "R:1}", #"C:{"a":1}"#])
+        var notObject = try output(json)
+        _ = try notObject.append("not json")
+        XCTAssertThrowsError(try notObject.finish())
+        var required = try output(force + "," + Self.weather + #","tool_choice":"required""#)
+        _ = try required.append("no call")
+        XCTAssertThrowsError(try required.finish()) {
+            XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, .toolChoiceViolation(
+                "forced tool_choice produced visible text before a validated call"))
+        }
+        var complete = try output(force, streaming: false)
+        _ = try complete.append("r</think>")
+        XCTAssertEqual(try complete.finish().result, .init(content: "r", reasoning: nil, calls: []))
+    }
+
     func testToolCallsAreParsedOnlyFromContentAndValidated() throws {
         var call = try output(Self.weather)
         XCTAssertEqual(try stream(&call, ["Need weather.</think>",
@@ -101,9 +149,9 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
             ["R:<tool_call>\n<function=get_weather>\n<parameter=city>\nX\n</parameter>\n</function>\n</tool_call>",
              "C:Done."])
         // Text before a `<` survives even while the shared frame parser probes it.
-        var plain = try output(#""enable_thinking":false"#)
+        var plain = try output(Self.weather + #","enable_thinking":false"#)
         XCTAssertEqual(try stream(&plain, ["x <", "y", " a<to"]), ["C:x ", "C:<y", "C: a", "C:<to"])
-        var unterminated = try output(#""enable_thinking":false"#)
+        var unterminated = try output(Self.weather + #","enable_thinking":false"#)
         _ = try unterminated.append("a<tool_call>\n<function=get_weather>")
         XCTAssertThrowsError(try unterminated.finish())
         var complete = try output(Self.weather + #","enable_thinking":false"#, streaming: false)
@@ -111,15 +159,36 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(try trace(complete.finish().events), [#"F:get_weather{"city":"Rome"}"#])
     }
 
+    /// With no tool declared under auto choice the prompt offers no tools, so
+    /// tool tags are answer text, as in the reference server.
+    func testToolTagsAreTextWhenNoToolIsOffered() throws {
+        let frame = "<tool_call>\n<function=get_weather>\n</function>\n</tool_call>"
+        var streamed = try output(#""enable_thinking":false"#)
+        XCTAssertEqual(try stream(&streamed, ["Write ", frame, " or <function=x>."]),
+                       ["C:Write ", "C:" + frame, "C: or <function=x>."])
+        for tools in ["", #""tools":[],"tool_choice":"auto""#] {
+            var complete = try output(tools, streaming: false)
+            _ = try complete.append("r</think>Write " + frame)
+            XCTAssertEqual(try complete.finish().result, .init(content: "Write " + frame, reasoning: "r", calls: []))
+        }
+    }
+
     func testToolPolicyViolationsFailClosed() throws {
         let missing = "</think><tool_call>\n<function=get_weather>\n<parameter=days>\n2\n</parameter>\n</function>\n</tool_call>"
         var schema = try output(Self.weather)
         _ = try schema.append(missing)
         XCTAssertThrowsError(try schema.finish())
-        var undeclared = try output()
-        _ = try undeclared.append("</think><tool_call>\n<function=get_weather>\n</function>\n</tool_call>")
+        var undeclared = try output(Self.weather)
+        _ = try undeclared.append("</think><tool_call>\n<function=get_time>\n</function>\n</tool_call>")
         XCTAssertThrowsError(try undeclared.finish())
         let one = "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>"
+        // `none` withholds the declarations, so any frame is undeclared, with
+        // or without tools in the request.
+        for tools in [Self.weather + ",", ""] {
+            var none = try output(tools + #""tool_choice":"none""#)
+            _ = try none.append("</think>" + one)
+            XCTAssertThrowsError(try none.finish(), tools)
+        }
         var parallel = try output(Self.weather + #","parallel_tool_calls":false"#)
         _ = try parallel.append("</think>" + one + one)
         XCTAssertThrowsError(try parallel.finish())
@@ -178,6 +247,42 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(direct.request.messages.count, 2)
         XCTAssertEqual(service.request.messages, direct.request.messages)
         XCTAssertEqual(direct.request.messages.first?.role, .system)
+    }
+
+    /// The coordinator normalizes a `{}` or boolean subschema into the
+    /// reserved marker. Only a caller that trusts schema metadata (the
+    /// coordinator path) admits it; a local request's marker is forged.
+    func testSchemaMetadataIsAdmittedOnlyWhenTrusted() throws {
+        func body(_ x: String) -> Data {
+            Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID
+                + #"","messages":[{"role":"user","content":"q"}],"tools":[{"type":"function","function":{"name":"set","parameters":{"type":"object","properties":{"x":"#
+                + x + "}}}}]}").utf8)
+        }
+        let marked = body(#"{"type":"string","x-darkbloom-original-boolean-schema":true}"#)
+        let forged = MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "tool schema contains reserved internal metadata")
+        XCTAssertThrowsError(try NemotronSuperRequestPlan(body: marked)) {
+            XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, forged)
+        }
+        let local = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: marked)
+        XCTAssertThrowsError(try NemotronSuperRequestPlan(body: marked, formatted: local)) {
+            XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, forged)
+        }
+        let template = try XCTUnwrap(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                          options: .ignoreUnknownCharacters))
+        let trusted = try NemotronSuperRequestPlan(body: marked, trustsSchemaMetadata: true)
+        let prompt = SuperVideoTextTokenizer.text(try trusted.textPromptTokens(body: marked,
+            templateBytes: template, tokenizer: SuperVideoTextTokenizer()))
+        XCTAssertTrue(prompt.contains("<name>x</name>"), prompt)
+        var output = try NemotronSuperLocalOutput(plan: trusted, streaming: true)
+        XCTAssertEqual(try stream(&output, [
+            "</think><tool_call>\n<function=set>\n<parameter=x>\nhi\n</parameter>\n</function>\n</tool_call>"]),
+            [#"F:set{"x":"hi"}"#])
+        // A local client's unmarked `{}` is decoded without normalization and serves.
+        let plain = body("{}")
+        let unmarked = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: plain)
+        XCTAssertNoThrow(try NemotronSuperRequestPlan(body: plain, formatted: unmarked).textPromptTokens(
+            body: plain, templateBytes: template, tokenizer: SuperVideoTextTokenizer()))
     }
 
     func testCollectorRejectsTruncationAndMissingTerminal() async throws {

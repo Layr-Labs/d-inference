@@ -91,20 +91,23 @@ enum NemotronSuperServingPolicy {
         let requests: Int
         /// The owner's exact prefix checkpoint bank; zero when absent.
         let prefixBankBytes: Int
-        /// KV headroom the LOAD claim requires, never above the grant.
+        /// KV headroom the LOAD claim requires: the part the grant holds
+        /// (`grantKVBytes` and the bank) within the grant, and a speculating
+        /// owner's round work beside it.
         let admissionKVBytes: Int
     }
 
     /// Speculation and concurrency come from provider policy and replace any
-    /// value of those keys; the depth defaults to `defaultDepthByRequests`
-    /// and KV storage to segmented paged. Verification, prefill chunk,
-    /// decode-step and KV storage keys keep the operator's value, else the
-    /// default above or the builder's. Either owner, on either KV backend,
-    /// turns exact prefix reuse on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the
-    /// grant has room for a `defaultPrefixBankBytes` bank (or an
-    /// operator-sized one) beside every request's fixed bytes; an operator
-    /// value, including the global kill switch, wins. The builder sizes the
-    /// same bank from the same grant, requests and keys.
+    /// value of those keys; the depth defaults to `defaultDepthByRequests`.
+    /// Verification, prefill chunk, decode-step and KV storage keys keep the
+    /// operator's value, else the default above or the builder's; the builder
+    /// serves paged KV only and refuses other storage
+    /// (`NemotronSuperLocalKVBackend`). Either owner turns exact prefix reuse
+    /// on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant has room for a
+    /// `defaultPrefixBankBytes` bank (or an operator-sized one) beside every
+    /// request's fixed bytes (`grantKVBytes`); an operator value, including
+    /// the global prefix-cache kill switch, wins. The builder sizes the same
+    /// bank from the same grant, requests and keys.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
                          kvBytesCapacity: Int, pinned: Bool = true,
                          physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
@@ -121,9 +124,6 @@ enum NemotronSuperServingPolicy {
         } else {
             environment.removeValue(forKey: NemotronSuperLocalMTP.enabledKey)
         }
-        if environment[NemotronSuperLocalKVBackend.key] == nil {
-            environment[NemotronSuperLocalKVBackend.key] = "paged"
-        }
         let flag = PrefixCachePolicy.memoryEnvironmentFlag
         var candidate = environment
         candidate[flag] = "1"
@@ -131,8 +131,7 @@ enum NemotronSuperServingPolicy {
             let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
                 kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
                 pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
-            kvBytesCapacity >= admissionKVBytes(requests: requests, speculates: speculates,
-                environment: environment) + bank {
+            bank <= kvBytesCapacity - grantKVBytes(requests: requests, speculates: speculates) {
             environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
@@ -140,8 +139,8 @@ enum NemotronSuperServingPolicy {
             pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes ?? 0
         return LoadPlan(environment: environment, speculates: speculates, requests: requests,
             prefixBankBytes: bank,
-            admissionKVBytes: min(kvBytesCapacity,
-                admissionKVBytes(requests: requests, speculates: speculates, environment: environment) + bank))
+            admissionKVBytes: admissionKVBytes(requests: requests, speculates: speculates,
+                environment: environment, kvBytesCapacity: kvBytesCapacity, bankBytes: bank))
     }
 
     /// Fixed bytes one request reserves (recurrent state, request workspace,
@@ -219,24 +218,43 @@ enum NemotronSuperServingPolicy {
         return overflow ? Int.max : rounded
     }
 
-    /// KV headroom the LOAD claim requires: every configured request's fixed
-    /// bytes, with speculation the owner's round work once
-    /// (`speculativeOwnerBoundBytes` for the environment's depth table at
-    /// `contextTokens`), plus 2 GiB for KV and the admission watermark. The
-    /// built bridge's exact grant check (`UnserviceableGrant`) and the
-    /// builder's exact round reservation stay authoritative.
+    /// The part of the LOAD claim's KV headroom the KV grant holds: every
+    /// configured request's fixed bytes plus 2 GiB for KV and the admission
+    /// watermark. A speculating owner's round work is reserved apart from
+    /// the grant (EngineV2 keeps it out of every request's fixed bytes).
+    static func grantKVBytes(requests: Int, speculates: Bool) -> Int {
+        let perRequest = speculates ? speculativeRequestBoundBytes : plainRequestBoundBytes
+        let (fixed, fixedOverflow) = max(1, requests).multipliedReportingOverflow(by: perRequest)
+        let (total, overflow) = fixed.addingReportingOverflow(2 << 30)
+        return fixedOverflow || overflow ? Int.max : total
+    }
+
+    /// KV headroom the LOAD claim requires: `grantKVBytes` and, with
+    /// speculation, the owner's round work once (`speculativeOwnerBoundBytes`
+    /// for the environment's depth table at `contextTokens`). The built
+    /// bridge's exact grant check (`UnserviceableGrant`) and the builder's
+    /// exact round reservation stay authoritative.
     static func admissionKVBytes(requests: Int, speculates: Bool, environment: [String: String] = [:],
                                  contextTokens: Int = contextTokens) -> Int {
-        let requests = max(1, requests)
-        let perRequest = speculates ? speculativeRequestBoundBytes : plainRequestBoundBytes
-        let owner = speculates
-            ? speculativeOwnerBoundBytes(requests: requests, environment: environment,
+        admissionKVBytes(requests: requests, speculates: speculates, environment: environment,
+                         contextTokens: contextTokens, kvBytesCapacity: .max)
+    }
+
+    /// The same headroom under a KV grant: `grantKVBytes` and `bankBytes`,
+    /// which the grant holds, within the grant; the round work beside it,
+    /// whatever the grant's size.
+    static func admissionKVBytes(requests: Int, speculates: Bool, environment: [String: String] = [:],
+                                 contextTokens: Int = contextTokens, kvBytesCapacity: Int,
+                                 bankBytes: Int = 0) -> Int {
+        let (held, heldOverflow) = grantKVBytes(requests: requests, speculates: speculates)
+            .addingReportingOverflow(max(0, bankBytes))
+        let round = speculates
+            ? speculativeOwnerBoundBytes(requests: max(1, requests), environment: environment,
                 contextTokens: contextTokens)
             : 0
-        let (fixed, fixedOverflow) = requests.multipliedReportingOverflow(by: perRequest)
-        let (withOwner, ownerOverflow) = fixed.addingReportingOverflow(owner)
-        let (total, overflow) = withOwner.addingReportingOverflow(2 << 30)
-        return fixedOverflow || ownerOverflow || overflow ? Int.max : total
+        let (total, overflow) = min(max(0, kvBytesCapacity), heldOverflow ? .max : held)
+            .addingReportingOverflow(round)
+        return overflow ? Int.max : total
     }
 
     // MARK: - Prefix checkpoint bank
@@ -288,12 +306,13 @@ enum NemotronSuperServingPolicy {
     }
 
     /// LOAD quotes of the pinned checkpoint, header-derived and recorded from
-    /// its verified shards: the installation's resident payload and staging
-    /// (including `backendAllowanceBytes`), and the embedded head's payload and
+    /// its verified shards: the installation's resident payload (the tower's
+    /// video embedder included) and staging (including
+    /// `backendAllowanceBytes`), and the embedded head's payload and
     /// construction allowance. The managed load recomputes them and claims
     /// `NemotronSuperLoadClaim.bytes`: both payloads and the larger transient.
-    static let pinnedInstallationPayloadBytes: UInt64 = 73_213_230_600
-    static let pinnedInstallationStagingBytes: UInt64 = 8_887_435_264
+    static let pinnedInstallationPayloadBytes: UInt64 = 73_217_162_760
+    static let pinnedInstallationStagingBytes: UInt64 = 8_903_163_904
     static let pinnedHeadPayloadBytes: UInt64 = 1_769_654_296
     static let pinnedHeadConstructionBytes: UInt64 = 7_078_617_184
     static var pinnedInstallationLoadBytes: UInt64 { pinnedInstallationPayloadBytes + pinnedInstallationStagingBytes }
@@ -313,35 +332,28 @@ enum NemotronSuperServingPolicy {
     }
 
     struct DiscoveryFootprint: Equatable {
-        /// The default configuration's resident installation and head, and
-        /// the larger of their load transient and the serving room (owner-wide
-        /// prefill lane, admission KV and the media charge of one single-image
-        /// request), in GiB.
+        /// The managed load's LOAD size in GiB, the same on every Mac: what
+        /// the narrowest configuration requires of the ledger
+        /// (`NemotronSuperLoadFit.narrowestRequirementBytes`, its claim and the
+        /// admission slack), never below the shard bytes and
+        /// `nativeLoadTransientBytes`. Not the resident size.
         let estimatedMemoryGb: Double
         /// LOAD bytes above the shard bytes: staging, backend allowance and
         /// head construction. Not activation, KV or media.
         let nativeLoadTransientBytes: UInt64
     }
 
-    /// Scan-time requirement of the largest default configuration (eight
-    /// speculative requests; the plain owner needs less), so a cold quote or
-    /// pre-accept check never admits a load the managed claim then refuses,
-    /// and the load leaves room for an image. The prefix bank is not part of
-    /// it: `loadPlan` enables the bank only when the grant also holds it.
+    /// Scan-time size of the managed load. Super's own gate
+    /// (`ProviderLoop.nemotronSuperLoadRequirements`) admits its loads from the
+    /// ledger, with no load reserve; gates that compare this size and the
+    /// load headroom with free memory less the load reserve (cold quotes,
+    /// the coordinator's cold-load routing) stay stricter. It holds no media:
+    /// an image request is charged its whole media reservation.
     static func discoveryFootprint(sizeBytes: UInt64) -> DiscoveryFootprint {
-        let lane = UInt64(NemotronSuperLocalPrefill.pinnedLaneBytes(
-            chunkTokens: NemotronSuperLocalPrefill.defaultChunkTokens))
-        let kv = UInt64(admissionKVBytes(requests: defaultConcurrentRequests, speculates: true))
-        // Unreachable unless the binding refuses its own largest image; the
-        // footprint then fails closed instead of advertising room it lacks.
-        let media = mediaChargeBytes(imageCount: 1) ?? UInt64(Int.max)
-        let serving = lane + kv + media
-        // The load transient runs in the serving room before anything serves.
-        let load = pinnedLoadClaimBytes(speculates: true, servingBytes: Int(clamping: serving))
-        let transient = pinnedLoadClaimBytes(speculates: true)
-        return DiscoveryFootprint(
-            estimatedMemoryGb: Double(load + serving) / 1_073_741_824,
-            nativeLoadTransientBytes: transient > sizeBytes ? transient - sizeBytes : 0)
+        let claim = pinnedLoadClaimBytes(speculates: true)
+        let load = max(NemotronSuperLoadFit.narrowestRequirementBytes, sizeBytes, claim)
+        return DiscoveryFootprint(estimatedMemoryGb: Double(load) / 1_073_741_824,
+            nativeLoadTransientBytes: claim > sizeBytes ? claim - sizeBytes : 0)
     }
 
     // MARK: - Image media charge
@@ -390,5 +402,48 @@ enum NemotronSuperServingPolicy {
         let tokens = UInt64(min(imageCount * grid.tokens, contextTokens))
         return ingress + UInt64(imageCount) * maximumImageDecodeBytes + encodedCopies
             + tokens * mediaBytesPerVisualToken + activation
+    }
+
+    // MARK: - Video media charge
+
+    /// Coded frame ceiling of the video binding: 4096 x 2160 (DCI 4K; UHD and
+    /// both portrait forms fit).
+    static let maximumVideoFramePixels = 4_096 * 2_160
+    /// Decoder working set per coded pixel: the MiMo AVAssetReader sampler's
+    /// 32-byte transient and the frame's RGB8 copy.
+    static let videoDecodeBytesPerCodedPixel: UInt64 = 32 + 3
+    /// The sampler's fixed 1 MiB allowance and the SDK's 256 MiB per-frame
+    /// normalization budget.
+    static let videoDecodeAllowanceBytes: UInt64 = (1 << 20) + (256 << 20)
+    /// Per projected row of a tubelet (4,096 wide, charged as Float32): the
+    /// batch outputs, their concatenation and the gathered kept rows.
+    static let videoBytesPerFeatureRow: UInt64 = 3 * 4_096 * 4
+    /// Per row of an EVS scoring window (4,096 wide, BF16 features): the
+    /// window's concatenated copy (2 bytes an element), its FP32 promotion
+    /// and square (8), the unit rows (2), their pairwise products (2) and
+    /// the products' FP32 cast (4).
+    static let videoScoringBytesPerRow: UInt64 = 18 * 4_096
+    /// Frame grid ceiling of the video binding. `frameGrid` targets 1,024
+    /// patches, but its rounding reaches 1,056 for aspect ratios up to 4:1
+    /// and 1,080 up to 16:1; only more extreme ratios exceed 1,088 (272 rows
+    /// per tubelet), and they are refused.
+    static let maximumVideoGridPatches = 1_088
+
+    /// Upper bound of what the binding reserves from the shared ledger for
+    /// one encoded video request (the only media of its request): the ingress
+    /// quote at the largest body and `NemotronSuperLocalImageBinding.videoChargeBytes`
+    /// at the largest body, coded frame, frame grid (32 x 34 patches) and
+    /// sampled frame count. It stays within one largest image's charge
+    /// (`mediaChargeBytes(imageCount: 1)`); a one-part capacity quote charges
+    /// the larger of the two. nil when the binding refuses those maxima.
+    static var videoMediaChargeBytes: UInt64? {
+        guard let ingress = try? NemotronSuperLocalImageBinding.encodedHeaderQuote(
+                bodyBytes: maximumEncodedBodyBytes, templateBytes: pinnedTemplateBytes),
+            let video = try? NemotronSuperLocalImageBinding.videoChargeBytes(
+                encodedBytes: maximumEncodedBodyBytes / 4 * 3, codedPixels: maximumVideoFramePixels,
+                patchRows: 32, patchColumns: maximumVideoGridPatches / 32,
+                tubelets: (NemotronSuperVideoPreprocessing.maximumFrames + 1) / 2)
+        else { return nil }
+        return ingress + video
     }
 }

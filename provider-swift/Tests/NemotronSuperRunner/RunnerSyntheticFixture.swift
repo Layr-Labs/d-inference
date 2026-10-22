@@ -21,7 +21,7 @@ enum RunnerSyntheticFixture {
             numHiddenLayers: 3, numAttentionHeads: 1, numKeyValueHeads: 1,
             mambaNumHeads: 1, mambaHeadDim: 16, ssmStateSize: 4, convKernel: 4, nGroups: 1,
             intermediateSize: 16, moeIntermediateSize: 16, moeSharedExpertIntermediateSize: 16,
-            nRoutedExperts: 2, numExpertsPerTok: 1, hybridOverridePattern: "M*E", headDim: 16))
+            nRoutedExperts: 2, numExpertsPerTok: 1, hybridOverridePattern: "M*E", headDim: 64))
         let tower = NemotronRadio(NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
             channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3))
         let images = NemotronSuperImageComposition(tower: tower,
@@ -30,8 +30,9 @@ enum RunnerSyntheticFixture {
         return try NemotronSuperModel(languageModel: language, imageComposition: images)
     }
 
-    /// One attention layer x (K+V) x one KV head x head_dim 16 x fp16.
-    static let fp16KVBytesPerToken = 64
+    /// One attention layer x (K+V) x one KV head x head_dim 64 (the paged KV
+    /// kernels' narrowest) x fp16.
+    static let fp16KVBytesPerToken = 256
     static let eosTokenIDs: Set<Int> = [31]
 
     /// Writes two shards and returns a source whose shard SHA-256 values were

@@ -5,8 +5,9 @@ import MLXLMServer
 import MLXVLM
 
 /// The Super chat route over one loaded owner. Text renders with the owner's
-/// own tokenizer and runs on its text binding; inline images run on the
-/// owner's image binding, target-only when the owner speculates for text.
+/// own tokenizer and runs on its text binding; inline images, or one inline
+/// video, run on the owner's image binding, target-only when the owner
+/// speculates for text.
 /// Both stream through the reference reasoning, tool and structured-output
 /// parsers. The qualification runner installs `service` on the local HTTP
 /// stack (`LocalInferenceHTTP` plumbs it); a managed provider slot serves
@@ -37,8 +38,9 @@ struct NemotronSuperLocalImageHTTP: Sendable {
 
     /// Reference prompt length of a text request, the usage floor when a
     /// stream ends before its terminal usage; 0 for media or a refused body.
-    func promptTokenCount(body: Data) -> Int {
-        guard let plan = try? NemotronSuperRequestPlan(body: body, modelID: owner.modelID), !plan.hasMedia,
+    func promptTokenCount(body: Data, trustsSchemaMetadata: Bool = false) -> Int {
+        guard let plan = try? NemotronSuperRequestPlan(body: body, modelID: owner.modelID,
+                                                       trustsSchemaMetadata: trustsSchemaMetadata), !plan.hasMedia,
             let tokens = try? plan.textPromptTokens(body: body, templateBytes: template,
                                                     tokenizer: tokenizer.inner)
         else { return 0 }
@@ -59,10 +61,12 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// The engine for one immutable raw request body. `cacheScope` partitions
     /// prefix reuse (nil: none); the hook's single local operator shares one
     /// partition. Image requests reuse only within their image identity.
-    func engine(body: Data, hasMedia: Bool, cacheScope: String? = "") -> any MLXServerEngine {
+    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`.
+    func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
+                trustsSchemaMetadata: Bool = false) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
-                               cacheScope: cacheScope)
+                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata)
     }
 }
 
@@ -79,6 +83,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let template: Data
     let owner: NemotronSuperLocalBridgeBuilder.Owner
     let cacheScope: String?
+    let trustsSchemaMetadata: Bool
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -91,12 +96,23 @@ private struct SuperHTTPEngine: MLXServerEngine {
     /// `request` already carries the service's response-format instruction.
     func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let owner = self.owner
         guard request.model == owner.modelID else { throw unsupported() }
+        // The owner admits its configured concurrency before the request plan
+        // decodes the body, the prompt is rendered or media is reserved, so a
+        // busy owner refuses at once. Every exit before the task takes it over
+        // returns it.
+        guard owner.admitLocalRequest() else {
+            throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
+        }
+        var admissionTransferred = false
+        defer { if !admissionTransferred { owner.finishLocalRequest() } }
         let media = if case .text = route { false } else { true }
         let output: NemotronSuperLocalOutput
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
         do {
-            let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID)
+            let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID,
+                                                    trustsSchemaMetadata: trustsSchemaMetadata)
             output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
             switch route {
             case .image(let images):
@@ -119,15 +135,9 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
-        // The owner admits its configured concurrency; an image would otherwise
-        // reserve and prepare media only for the bridge to refuse it.
-        guard owner.admitLocalRequest() else {
-            throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
-        }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output)
         let scope = LocalRequestCancellation.current
-        let owner = self.owner
         let task = Task {
             let registration = scope?.register { relay.cancel() }
             defer { registration?.remove(); owner.finishLocalRequest() }
@@ -138,10 +148,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 await relay.complete()
             } catch { await relay.fail(SuperHTTPErrors.map(error, media: media)) }
         }
+        admissionTransferred = true
         relay.installCancellation { task.cancel() }
         pair.continuation.onTermination = { _ in task.cancel() }
-        // Preserve pre-header error status for rejected requests. This also keeps
-        // transport preparation cancellation attached until a real event exists.
+        // Media and bridge-admission refusals precede the first native chunk,
+        // where the stream starts, so they keep their pre-header status. This
+        // also keeps transport preparation cancellation attached until then.
         try await withTaskCancellationHandler {
             try await relay.waitUntilStarted()
         } onCancel: { task.cancel() }
@@ -162,9 +174,12 @@ enum SuperHTTPErrors {
             case .closed, .retainedFault:
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidInput:
-                return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline image request")
+                return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline media request")
             case .invalidFeatures:
-                return MultiModelBatchSchedulerEngineError.generationFailed("native image features were not finite")
+                return MultiModelBatchSchedulerEngineError.generationFailed("native media features were not finite")
+            case .inconsistentVideoFeatures:
+                return MultiModelBatchSchedulerEngineError.generationFailed(
+                    "native video features did not match the admitted layout")
             }
         }
         if let failure = error as? NemotronSuperLocalBinding.Failure {
@@ -188,6 +203,9 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.generationFailed("native output handling failed")
             }
         }
+        if error is NemotronSuperVideoDecode.Failure || error is NemotronSuperVideoPreprocessing.Failure {
+            return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
+        }
         if error is DecodingError || error is NemotronSuperImageDecode.Failure
             || error is NemotronSuperImagePreprocessing.Failure || error is MediaIngest.MediaError
             || error is NemotronSuperPromptContract.Failure || error is NemotronSuperRequestPlan.Failure
@@ -199,7 +217,7 @@ enum SuperHTTPErrors {
     }
 
     private static func invalidRequest(media: Bool) -> Error {
-        media ? MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline image request")
+        media ? MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline media request")
             : MultiModelBatchSchedulerEngineError.invalidToolPayload(
                 "unsupported or contradictory Nemotron Super request")
     }
@@ -208,6 +226,8 @@ enum SuperHTTPErrors {
 /// Stream state and startup result are actor-owned. Cancellation registration
 /// uses a separate lock so transport callbacks never wait on this actor.
 /// Every native chunk passes the request's output parser before it is yielded.
+/// The stream starts at the first chunk the parser accepts, even one it
+/// withholds, so a held answer's validation failure is a stream error.
 /// Parser and validator errors map identically for text and image routes, so
 /// the relay maps them with `media: false`.
 actor SuperImageHTTPRelay {
@@ -247,8 +267,12 @@ actor SuperImageHTTPRelay {
             }
             guard !text.isEmpty else { return }
             if firstChunkAt == nil { firstChunkAt = Date() }
-            do { yield(try output.append(text)) }
-            catch {
+            do {
+                yield(try output.append(text))
+                // Held output (structured content, tool calls) yields nothing
+                // until finish; generation has started all the same.
+                if failure == nil { started(.success(())) }
+            } catch {
                 failure = SuperHTTPErrors.map(error, media: false)
                 cancel()
             }
